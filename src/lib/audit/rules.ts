@@ -1,0 +1,251 @@
+// Audit rules engine — checks parsed bills for common billing errors
+// Each rule is a pure function: ParsedBill → AuditFinding[]
+
+import type {
+  ParsedBill,
+  BillLineItem,
+  AuditFinding,
+  CMSPPLRate,
+} from "../billing/types";
+import { randomUUID } from "crypto";
+
+type AuditRule = (
+  bill: ParsedBill,
+  benchmarks: Map<string, CMSPPLRate>
+) => AuditFinding[];
+
+// ============================================================================
+// RULE 1: Overcharge Detection (vs. CMS Medicare benchmark)
+// ============================================================================
+
+const OVERCHARGE_THRESHOLD = 2.0; // Flag if billed > 2x Medicare rate
+
+const checkOvercharges: AuditRule = (bill, benchmarks) => {
+  const findings: AuditFinding[] = [];
+
+  for (const item of bill.lineItems) {
+    const benchmark = benchmarks.get(item.procedureCode);
+    if (!benchmark) continue;
+
+    const ratio = item.billedAmount / benchmark.nationalAverage;
+    if (ratio > OVERCHARGE_THRESHOLD && item.billedAmount > 50) {
+      const estimatedOvercharge =
+        item.billedAmount - benchmark.nationalAverage;
+
+      findings.push({
+        id: randomUUID(),
+        type: "overcharge",
+        severity:
+          ratio > 5
+            ? "critical"
+            : ratio > 3
+              ? "high"
+              : "medium",
+        lineItems: [item.lineNumber],
+        title: `Potential overcharge on ${item.category}`,
+        description: `You were billed $${item.billedAmount.toFixed(2)} for ${item.category.toLowerCase()}, which is ${ratio.toFixed(1)}x the Medicare national average of $${benchmark.nationalAverage.toFixed(2)}. While private insurance rates are typically higher than Medicare, amounts exceeding 2x the benchmark warrant review.`,
+        estimatedOvercharge,
+        benchmarkSource: "CMS PPL",
+        benchmarkAmount: benchmark.nationalAverage,
+        billedAmount: item.billedAmount,
+        confidence: 0.7,
+        actionable: true,
+      });
+    }
+  }
+
+  return findings;
+};
+
+// ============================================================================
+// RULE 2: Duplicate Line Item Detection
+// ============================================================================
+
+const checkDuplicates: AuditRule = (bill) => {
+  const findings: AuditFinding[] = [];
+  const seen = new Map<string, BillLineItem[]>();
+
+  for (const item of bill.lineItems) {
+    const key = `${item.procedureCode}-${item.serviceDate}`;
+    if (!seen.has(key)) seen.set(key, []);
+    seen.get(key)!.push(item);
+  }
+
+  for (const [, items] of seen) {
+    if (items.length > 1) {
+      const totalOvercharge = items
+        .slice(1)
+        .reduce((sum, i) => sum + i.billedAmount, 0);
+
+      findings.push({
+        id: randomUUID(),
+        type: "duplicate",
+        severity: totalOvercharge > 500 ? "high" : "medium",
+        lineItems: items.map((i) => i.lineNumber),
+        title: `Possible duplicate charge for ${items[0].category}`,
+        description: `The same procedure code (${items[0].procedureCode}) appears ${items.length} times on ${items[0].serviceDate}. Unless multiple distinct procedures were performed, this may be a duplicate charge totaling $${totalOvercharge.toFixed(2)}.`,
+        estimatedOvercharge: totalOvercharge,
+        benchmarkSource: "Internal",
+        billedAmount: items.reduce((sum, i) => sum + i.billedAmount, 0),
+        confidence: 0.6,
+        actionable: true,
+      });
+    }
+  }
+
+  return findings;
+};
+
+// ============================================================================
+// RULE 3: Balance Billing Detection
+// ============================================================================
+
+const checkBalanceBilling: AuditRule = (bill) => {
+  const findings: AuditFinding[] = [];
+
+  for (const item of bill.lineItems) {
+    if (
+      item.allowedAmount !== undefined &&
+      item.insurancePaid !== undefined &&
+      item.patientResponsibility !== undefined
+    ) {
+      // Patient should owe: allowed - insurance paid (copay/coinsurance/deductible)
+      // If patient responsibility > allowed - insurance paid, possible balance billing
+      const expectedPatientShare =
+        item.allowedAmount - item.insurancePaid;
+      const excess = item.patientResponsibility - expectedPatientShare;
+
+      if (excess > 10) {
+        // Allow $10 rounding buffer
+        findings.push({
+          id: randomUUID(),
+          type: "balance_billing",
+          severity: excess > 200 ? "high" : "medium",
+          lineItems: [item.lineNumber],
+          title: `Possible balance billing on ${item.category}`,
+          description: `You were charged $${item.patientResponsibility.toFixed(2)} for this service, but based on the allowed amount ($${item.allowedAmount.toFixed(2)}) minus what insurance paid ($${item.insurancePaid.toFixed(2)}), your share should be approximately $${expectedPatientShare.toFixed(2)}. The excess of $${excess.toFixed(2)} may be illegal balance billing, depending on your state and network status.`,
+          estimatedOvercharge: excess,
+          benchmarkSource: "Internal",
+          billedAmount: item.billedAmount,
+          confidence: 0.75,
+          actionable: true,
+        });
+      }
+    }
+  }
+
+  return findings;
+};
+
+// ============================================================================
+// RULE 4: Unbundling Detection (common code pairs that should be bundled)
+// ============================================================================
+
+// CCI (Correct Coding Initiative) common unbundling pairs
+// These are codes that should NOT be billed together
+const UNBUNDLING_PAIRS: Array<[string, string, string]> = [
+  ["36415", "36416", "Venipuncture should not be billed alongside capillary blood collection"],
+  ["99213", "99214", "Cannot bill two E/M visits at different levels on same date"],
+  ["80053", "80048", "Comprehensive metabolic panel includes basic metabolic panel"],
+  ["80061", "82465", "Lipid panel includes total cholesterol"],
+  ["85025", "85027", "CBC with differential includes CBC without"],
+  ["80053", "82310", "Comprehensive metabolic panel includes calcium"],
+  ["80053", "84443", "CMP does not include TSH — but check if TSH was actually ordered separately"],
+];
+
+const checkUnbundling: AuditRule = (bill) => {
+  const findings: AuditFinding[] = [];
+  const codeSet = new Set(bill.lineItems.map((i) => i.procedureCode));
+  const codeToItem = new Map(
+    bill.lineItems.map((i) => [i.procedureCode, i])
+  );
+
+  for (const [code1, code2, reason] of UNBUNDLING_PAIRS) {
+    if (codeSet.has(code1) && codeSet.has(code2)) {
+      const item1 = codeToItem.get(code1)!;
+      const item2 = codeToItem.get(code2)!;
+
+      // Only flag if same service date
+      if (item1.serviceDate === item2.serviceDate) {
+        const smallerAmount = Math.min(
+          item1.billedAmount,
+          item2.billedAmount
+        );
+
+        findings.push({
+          id: randomUUID(),
+          type: "unbundling",
+          severity: smallerAmount > 200 ? "high" : "medium",
+          lineItems: [item1.lineNumber, item2.lineNumber],
+          title: "Possible unbundling — services should be billed together",
+          description: `${reason}. Codes ${code1} and ${code2} were both billed on ${item1.serviceDate}. If these should be bundled, the separate charge of $${smallerAmount.toFixed(2)} may be an overcharge.`,
+          estimatedOvercharge: smallerAmount,
+          benchmarkSource: "Internal",
+          billedAmount: item1.billedAmount + item2.billedAmount,
+          confidence: 0.65,
+          actionable: true,
+        });
+      }
+    }
+  }
+
+  return findings;
+};
+
+// ============================================================================
+// RULE 5: Missing Insurance Adjustment
+// ============================================================================
+
+const checkMissingAdjustments: AuditRule = (bill) => {
+  const findings: AuditFinding[] = [];
+
+  for (const item of bill.lineItems) {
+    if (
+      item.billedAmount > 0 &&
+      item.allowedAmount !== undefined &&
+      item.billedAmount > item.allowedAmount
+    ) {
+      const expectedAdjustment = item.billedAmount - item.allowedAmount;
+
+      // Check if adjustment was actually applied
+      if (
+        item.adjustments === undefined ||
+        item.adjustments < expectedAdjustment * 0.9
+      ) {
+        // Patient is being charged based on billed amount, not allowed
+        if (
+          item.patientResponsibility !== undefined &&
+          item.patientResponsibility > item.allowedAmount * 0.5
+        ) {
+          findings.push({
+            id: randomUUID(),
+            type: "missing_adjustment",
+            severity: expectedAdjustment > 300 ? "high" : "medium",
+            lineItems: [item.lineNumber],
+            title: `Insurance adjustment may not have been applied for ${item.category}`,
+            description: `The billed amount is $${item.billedAmount.toFixed(2)} but the allowed amount is $${item.allowedAmount.toFixed(2)}. The difference of $${expectedAdjustment.toFixed(2)} should be written off as a contractual adjustment, not passed to you.`,
+            estimatedOvercharge: expectedAdjustment,
+            benchmarkSource: "Internal",
+            billedAmount: item.billedAmount,
+            confidence: 0.7,
+            actionable: true,
+          });
+        }
+      }
+    }
+  }
+
+  return findings;
+};
+
+// ============================================================================
+// ALL RULES
+// ============================================================================
+
+export const ALL_RULES: AuditRule[] = [
+  checkOvercharges,
+  checkDuplicates,
+  checkBalanceBilling,
+  checkUnbundling,
+  checkMissingAdjustments,
+];

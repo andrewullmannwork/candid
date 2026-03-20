@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@aws-sdk/client-textract": "^3.1013.0",
     "@supabase/supabase-js": "^2.99.3",
     "firebase": "^12.11.0",
     "firebase-admin": "^13.7.0",
