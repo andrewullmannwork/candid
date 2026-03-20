@@ -12,30 +12,34 @@ export default function DashboardPage() {
         Welcome{user?.firebaseUser.displayName ? `, ${user.firebaseUser.displayName}` : ""}
       </h1>
       <p className="mt-2 text-gray-600">
-        Get started by uploading a medical bill or EOB for a free audit.
+        Upload your bills, check your plan benefits, and find out if you&apos;re overpaying.
       </p>
 
       <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-6">
         <DashCard
           title="Upload a Bill"
-          description="Upload your EOB or itemized bill for analysis."
+          description="Upload your EOB or itemized bill for a free Candid Claim audit."
           href="/upload"
           cta="Upload Document"
         />
         <DashCard
+          title="Candid Plan"
+          description="Discover insurance benefits you may not be using."
+          href="/plan"
+          cta="Check My Benefits"
+        />
+        <DashCard
+          title="Candid Claim"
+          description="View your bill audit results and find overcharges."
+          href="/audit"
+          cta="View Audit"
+        />
+        <DashCard
           title="Your Profile"
-          description="Add your insurance details for more accurate audits."
+          description="Add your insurance details for personalized results."
           href="/profile"
           cta="Complete Profile"
         />
-      </div>
-
-      <div className="mt-8 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-        <h3 className="font-medium text-blue-900">Coming Soon</h3>
-        <p className="mt-1 text-sm text-blue-700">
-          Bill audit engine, dispute letter generation, and Mestimate price comparison are under
-          development. Upload your bills now so they&apos;re ready when we launch.
-        </p>
       </div>
     </div>
   );

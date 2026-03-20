@@ -66,8 +66,8 @@ export default function LandingPage() {
           Stop Overpaying for Healthcare
         </h1>
         <p className="mt-6 text-xl text-gray-600 max-w-2xl">
-          Candid audits your medical bills for errors, generates dispute letters, and shows you what
-          you should actually be paying. Free audit. No surprises.
+          Candid finds overcharges on your medical bills, uncovers insurance benefits you&apos;re
+          missing, and gives you the tools to fight back. Free audit. Free plan check. No surprises.
         </p>
 
         {/* Waitlist form */}
@@ -101,20 +101,24 @@ export default function LandingPage() {
       <section className="px-6 py-16 bg-gray-50">
         <div className="max-w-5xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-8">
           <ValueCard
-            title="Bill Audit"
-            description="Upload your medical bill or EOB. Our AI finds overcharges, duplicate charges, and coding errors — flagging exactly where you may have been overcharged."
+            title="Candid Claim"
+            description="Upload your medical bill or EOB. We find overcharges, duplicate charges, and coding errors — flagging exactly where you may have been overcharged."
+            badge="Free"
           />
           <ValueCard
-            title="Dispute Letters"
-            description="Generate professional dispute letters populated with the specific errors found in your bill. Review, edit, and send them yourself."
+            title="Candid Plan"
+            description="Discover insurance benefits you're not using — from covered therapy sessions and dietitian visits to HSA-eligible body scans and wellness programs."
+            badge="Free"
           />
           <ValueCard
-            title="Mestimate"
-            description="See what your procedure actually costs — what you paid vs. what others paid vs. what your plan should cover. Powered by public pricing data."
+            title="Candid Case"
+            description="Need to fight a claim? Generate dispute letters with your evidence, or find healthcare billing attorneys in your area. No referral fees — just specialists."
+            badge="Coming Soon"
           />
           <ValueCard
-            title="Find a Specialist"
-            description="If you need legal help, find healthcare billing attorneys in your area through our directory. No referral fees, no recommendations — just specialists."
+            title="Candid Care"
+            description="See what healthcare actually costs — what you paid vs. what others paid, which providers bill fairly, and where to find the best value. Powered by real billing data."
+            badge="Coming Soon"
           />
         </div>
       </section>
@@ -145,7 +149,10 @@ export default function LandingPage() {
           </a>
         </div>
         <p>&copy; {new Date().getFullYear()} Candid. All rights reserved.</p>
-        <p className="mt-2 text-xs text-gray-400">
+        <p className="mt-1 text-xs text-gray-400">
+          Candid is an Airgetlam Labs LLC company.
+        </p>
+        <p className="mt-1 text-xs text-gray-400">
           Candid is not a healthcare provider, law firm, or insurance company. All outputs are
           informational and do not constitute legal or medical advice.
         </p>
@@ -154,10 +161,21 @@ export default function LandingPage() {
   );
 }
 
-function ValueCard({ title, description }: { title: string; description: string }) {
+function ValueCard({ title, description, badge }: { title: string; description: string; badge?: string }) {
   return (
     <div className="p-6 bg-white rounded-xl border">
-      <h3 className="text-lg font-semibold text-gray-900 mb-2">{title}</h3>
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
+        {badge && (
+          <span className={`text-xs font-medium px-2 py-1 rounded ${
+            badge === "Free"
+              ? "bg-green-100 text-green-700"
+              : "bg-gray-100 text-gray-500"
+          }`}>
+            {badge}
+          </span>
+        )}
+      </div>
       <p className="text-gray-600">{description}</p>
     </div>
   );

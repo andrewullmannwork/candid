@@ -8,8 +8,10 @@ import type { ReactNode } from "react";
 const navItems = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/upload", label: "Upload" },
-  { href: "/audit", label: "Audit Results" },
+  { href: "/audit", label: "Candid Claim" },
+  { href: "/plan", label: "Candid Plan" },
   { href: "/disputes", label: "Dispute Letters" },
+  { href: "/care", label: "Candid Care" },
   { href: "/profile", label: "Profile" },
   { href: "/billing", label: "Billing" },
   { href: "/support", label: "Support" },

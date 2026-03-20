@@ -7,6 +7,7 @@ import { createServerClient } from "@/lib/supabase/server";
 import { extractTextFromDocument } from "@/lib/ocr";
 import { parseBillFromOCR } from "@/lib/billing/parser";
 import { runAudit } from "@/lib/audit";
+import { collectPricingData } from "@/lib/care/collector";
 
 export async function POST(req: NextRequest) {
   try {
@@ -81,6 +82,25 @@ export async function POST(req: NextRequest) {
     // Run audit
     const auditReport = await runAudit(parsedBill);
 
+    // Collect anonymized pricing data for Candid Care
+    // Non-blocking: pricing collection failure should not break the audit pipeline
+    let pricingCollected = 0;
+    try {
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("state")
+        .eq("user_id", doc.user_id)
+        .single();
+
+      const result = await collectPricingData(
+        parsedBill,
+        profile?.state || null
+      );
+      pricingCollected = result.collected;
+    } catch {
+      // Pricing collection is best-effort — don't fail the request
+    }
+
     // Update document status
     await supabase
       .from("documents")
@@ -90,6 +110,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       report: auditReport,
+      pricingDataCollected: pricingCollected,
     });
   } catch (error) {
     console.error("Document processing error:", error);

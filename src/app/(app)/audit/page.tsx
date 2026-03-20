@@ -66,7 +66,7 @@ export default function AuditPage() {
 
   return (
     <div className="max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold mb-6">Bill Audit Results</h1>
+      <h1 className="text-2xl font-bold mb-6">Candid Claim</h1>
 
       {!report && !loading && (
         <div className="bg-white rounded-lg shadow p-8 text-center">

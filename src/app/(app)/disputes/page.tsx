@@ -3,8 +3,17 @@
 import { useState, useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import type { DisputeLetter } from "@/lib/billing/types";
+import { SubscriptionGate } from "@/lib/subscription/subscription-gate";
 
 export default function DisputesPage() {
+  return (
+    <SubscriptionGate requiredTier="pro" featureName="Dispute Letters">
+      <DisputesContent />
+    </SubscriptionGate>
+  );
+}
+
+function DisputesContent() {
   const searchParams = useSearchParams();
   const [letter, setLetter] = useState<DisputeLetter | null>(null);
   const [editedBody, setEditedBody] = useState("");
