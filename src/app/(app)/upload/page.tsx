@@ -52,9 +52,9 @@ function UploadForm() {
           return;
         }
 
-        // Upload to Supabase Storage
-        const fileId = crypto.randomUUID();
-        const storagePath = `${user.userId}/${fileId}.pdf`;
+        // Pre-generate the document ID so we can pass it to the audit page
+        const documentId = crypto.randomUUID();
+        const storagePath = `${user.userId}/${documentId}.pdf`;
 
         const { error: uploadError } = await supabase.storage
           .from("documents")
@@ -62,8 +62,9 @@ function UploadForm() {
 
         if (uploadError) throw uploadError;
 
-        // Insert document metadata
+        // Insert document metadata with the pre-generated ID
         const { error: dbError } = await supabase.from("documents").insert({
+          id: documentId,
           user_id: user.userId,
           storage_path: storagePath,
           file_name: file.name,
@@ -74,6 +75,12 @@ function UploadForm() {
         });
 
         if (dbError) throw dbError;
+
+        // Store document info in sessionStorage so the audit page can auto-process it
+        sessionStorage.setItem(
+          "pendingAudit",
+          JSON.stringify({ documentId, billType: docType, fileName: file.name })
+        );
 
         setUploaded(true);
       } catch (err) {
@@ -98,19 +105,26 @@ function UploadForm() {
       <div className="max-w-lg">
         <div className="p-6 bg-green-50 border border-green-200 rounded-xl text-center">
           <h3 className="text-lg font-semibold text-green-800">Document Uploaded</h3>
-          <p className="mt-2 text-green-700">{fileName} has been uploaded successfully.</p>
-          <p className="mt-2 text-sm text-green-600">
-            We&apos;ll notify you when the audit engine is ready to process your document.
+          <p className="mt-2 text-green-700">{fileName} uploaded successfully.</p>
+          <p className="mt-3 text-sm text-green-700 bg-green-100 rounded-lg p-3">
+            The more bills you upload, the more complete your picture — upload all your
+            EOBs and itemized bills, then run the audit to find overcharges across all of them.
           </p>
           <button
             onClick={() => {
               setUploaded(false);
               setFileName("");
             }}
-            className="mt-4 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm"
+            className="mt-4 px-5 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium"
           >
-            Upload Another
+            Upload Another Document
           </button>
+          <a
+            href="/audit"
+            className="mt-3 block text-sm text-blue-600 hover:underline"
+          >
+            Done uploading — run audit now
+          </a>
         </div>
       </div>
     );

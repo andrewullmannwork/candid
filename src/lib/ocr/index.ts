@@ -6,12 +6,12 @@ import type { OCRProvider, OCRResult } from "./types";
 export type { OCRResult, OCRProvider } from "./types";
 
 async function getProvider(): Promise<OCRProvider> {
-  const providerName = process.env.OCR_PROVIDER || "aws-textract";
+  const providerName = process.env.OCR_PROVIDER || "google-document-ai";
 
   switch (providerName) {
-    case "aws-textract": {
-      const { textractProvider } = await import("./textract");
-      return textractProvider;
+    case "google-document-ai": {
+      const { documentAIProvider } = await import("./document-ai");
+      return documentAIProvider;
     }
     default:
       throw new Error(`Unknown OCR provider: ${providerName}`);

@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import type { DisputeLetter } from "@/lib/billing/types";
 import { SubscriptionGate } from "@/lib/subscription/subscription-gate";
+import { downloadCaseFile } from "@/lib/casefile";
 
 export default function DisputesPage() {
   return (
@@ -60,6 +61,12 @@ function DisputesContent() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadCaseFile = () => {
+    if (!letter) return;
+    // Use the edited body so any user edits are included
+    downloadCaseFile({ ...letter, body: editedBody });
   };
 
   if (!letter) {
@@ -147,9 +154,15 @@ function DisputesContent() {
             </button>
             <button
               onClick={handleDownload}
-              className="text-sm px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700"
+              className="text-sm px-3 py-1.5 rounded border border-gray-300 hover:bg-gray-50"
             >
-              Download
+              Letter Only
+            </button>
+            <button
+              onClick={handleDownloadCaseFile}
+              className="text-sm px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 font-medium"
+            >
+              Download Case File
             </button>
           </div>
         </div>
@@ -175,6 +188,51 @@ function DisputesContent() {
           <span className="text-gray-700">{letter.legalBasis}</span>
         </div>
       )}
+
+      {/* Case File callout */}
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-5 mt-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="font-semibold text-blue-900 mb-1">Download your full Case File</h3>
+            <p className="text-sm text-blue-800 mb-3">
+              The Case File bundles everything you need to fight this claim: your dispute
+              letter, audit findings, evidence log, a 30-day follow-up checklist, and an
+              escalation guide if the dispute isn&apos;t resolved.
+            </p>
+            <ul className="text-sm text-blue-700 space-y-1">
+              <li>✓ Dispute letter (including any edits you made)</li>
+              <li>✓ Audit findings &amp; evidence summary</li>
+              <li>✓ Step-by-step sending instructions</li>
+              <li>✓ 30-day follow-up reminder date</li>
+              <li>✓ Escalation guide (state agencies, external review, attorney)</li>
+            </ul>
+          </div>
+          <button
+            onClick={handleDownloadCaseFile}
+            className="shrink-0 bg-blue-600 text-white px-5 py-2.5 rounded-lg hover:bg-blue-700 font-medium text-sm whitespace-nowrap"
+          >
+            Download Case File
+          </button>
+        </div>
+      </div>
+
+      {/* Next steps */}
+      <div className="bg-white rounded-lg shadow p-5 mt-4">
+        <h3 className="font-semibold mb-3">Next Steps</h3>
+        <ol className="text-sm text-gray-700 space-y-2 list-decimal list-inside">
+          <li>Review your letter above and make any edits needed.</li>
+          <li>
+            Send via certified mail with return receipt (USPS Form 3811) — this
+            creates a paper trail.
+          </li>
+          <li>Keep a copy of the signed letter and this case file in your records.</li>
+          <li>Follow up if you don&apos;t hear back within 30 days.</li>
+          <li>
+            If unresolved, escalate to your state Insurance Commissioner or consider
+            consulting a healthcare attorney.
+          </li>
+        </ol>
+      </div>
     </div>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { AuditReport, AuditFinding } from "@/lib/billing/types";
 
 export default function AuditPage() {
@@ -10,9 +10,23 @@ export default function AuditPage() {
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingFileName, setPendingFileName] = useState<string | null>(null);
 
-  // In production, documentId would come from the upload flow
-  // For now, this page displays results after processing
+  // On mount, check for a pending audit from the upload flow
+  useEffect(() => {
+    const raw = sessionStorage.getItem("pendingAudit");
+    if (!raw) return;
+    try {
+      const { documentId, billType, fileName } = JSON.parse(raw);
+      sessionStorage.removeItem("pendingAudit");
+      setPendingFileName(fileName || null);
+      handleProcess(documentId, billType);
+    } catch {
+      sessionStorage.removeItem("pendingAudit");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleProcess = async (documentId: string, billType: string) => {
     setLoading(true);
     setError(null);
@@ -87,6 +101,9 @@ export default function AuditPage() {
         <div className="bg-white rounded-lg shadow p-8 text-center">
           <div className="animate-spin text-4xl mb-4">⚙️</div>
           <h2 className="text-xl font-semibold mb-2">Analyzing your bill...</h2>
+          {pendingFileName && (
+            <p className="text-sm text-gray-500 mb-1">{pendingFileName}</p>
+          )}
           <p className="text-gray-600">
             Extracting line items, checking benchmarks, and looking for errors.
           </p>
