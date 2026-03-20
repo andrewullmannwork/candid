@@ -144,6 +144,32 @@ export type Database = {
           updated_at?: string;
         };
       };
+      site_copy: {
+        Row: {
+          id: string;
+          key: string;
+          value: string;
+          section: string;
+          description: string | null;
+          updated_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          key: string;
+          value: string;
+          section?: string;
+          description?: string | null;
+          updated_by?: string | null;
+        };
+        Update: {
+          value?: string;
+          section?: string;
+          description?: string | null;
+          updated_by?: string | null;
+        };
+      };
       support_tickets: {
         Row: {
           id: string;

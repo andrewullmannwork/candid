@@ -12,6 +12,8 @@ const adminNav = [
   { href: "/admin/documents", label: "Documents" },
   { href: "/admin/consent", label: "Consent Audit" },
   { href: "/admin/tickets", label: "Support Tickets" },
+  { href: "/admin/copy", label: "Site Copy" },
+  { href: "/admin/subscriptions", label: "Subscriptions" },
 ];
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
