@@ -41,7 +41,7 @@ export default function SignInPage() {
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center">
           <Link href="/" className="text-2xl font-bold text-blue-600">
-            Meddit
+            Candid
           </Link>
           <h1 className="mt-4 text-xl font-semibold">Sign in to your account</h1>
         </div>

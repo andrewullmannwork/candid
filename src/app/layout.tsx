@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Meddit — Stop Overpaying for Healthcare",
+  title: "Candid — Stop Overpaying for Healthcare",
   description:
     "Audit your medical bills, generate dispute letters, and see what you should actually be paying. Free bill audit, powered by AI.",
 };

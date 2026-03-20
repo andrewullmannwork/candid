@@ -47,7 +47,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       <aside className="w-56 bg-gray-50 border-r flex flex-col">
         <div className="p-4 border-b">
           <Link href="/" className="text-lg font-bold text-blue-600">
-            Meddit
+            Candid
           </Link>
         </div>
         <nav className="flex-1 p-3 space-y-1">

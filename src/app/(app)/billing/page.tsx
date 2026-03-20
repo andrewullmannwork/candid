@@ -41,7 +41,7 @@ export default function BillingPage() {
         <div className="flex items-center justify-between">
           <div>
             <h3 className="font-semibold text-gray-900">
-              Current Plan: {tier === "pro" ? "Meddit Pro" : "Meddit Free"}
+              Current Plan: {tier === "pro" ? "Candid Pro" : "Candid Free"}
             </h3>
             <p className="text-sm text-gray-500 mt-1">
               Status: {status === "active" ? "Active" : status === "none" ? "Free tier" : status}
@@ -51,7 +51,7 @@ export default function BillingPage() {
       </div>
 
       <div className="mt-6 p-6 bg-blue-50 border border-blue-200 rounded-xl">
-        <h3 className="font-medium text-blue-900">Meddit Pro — Coming Soon</h3>
+        <h3 className="font-medium text-blue-900">Candid Pro — Coming Soon</h3>
         <ul className="mt-2 space-y-1 text-sm text-blue-700">
           <li>Unlimited dispute letters</li>
           <li>Full Mestimate price comparison</li>

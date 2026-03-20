@@ -19,7 +19,7 @@ import {
 } from "firebase/auth";
 import { getFirebaseAuth } from "@/lib/firebase/client";
 
-interface MedditUser {
+interface CandidUser {
   firebaseUser: FirebaseUser;
   userId: string;
   email: string;
@@ -27,7 +27,7 @@ interface MedditUser {
 }
 
 interface AuthContextValue {
-  user: MedditUser | null;
+  user: CandidUser | null;
   loading: boolean;
   signUpWithEmail: (email: string, password: string) => Promise<void>;
   signInWithEmail: (email: string, password: string) => Promise<void>;
@@ -37,7 +37,7 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-async function syncWithBackend(firebaseUser: FirebaseUser): Promise<MedditUser> {
+async function syncWithBackend(firebaseUser: FirebaseUser): Promise<CandidUser> {
   const idToken = await firebaseUser.getIdToken();
   const res = await fetch("/api/auth/sync", {
     method: "POST",
@@ -59,15 +59,15 @@ async function syncWithBackend(firebaseUser: FirebaseUser): Promise<MedditUser> 
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<MedditUser | null>(null);
+  const [user, setUser] = useState<CandidUser | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(getFirebaseAuth(), async (firebaseUser) => {
       if (firebaseUser) {
         try {
-          const medditUser = await syncWithBackend(firebaseUser);
-          setUser(medditUser);
+          const candidUser = await syncWithBackend(firebaseUser);
+          setUser(candidUser);
         } catch (err) {
           console.error("Auth sync failed:", err);
           setUser(null);

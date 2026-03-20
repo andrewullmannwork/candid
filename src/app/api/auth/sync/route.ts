@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
     } else {
       const customer = await getStripe().customers.create({
         email,
-        metadata: { meddit_user_id: userId, firebase_uid: uid },
+        metadata: { candid_user_id: userId, firebase_uid: uid },
       });
       stripeCustomerId = customer.id;
 

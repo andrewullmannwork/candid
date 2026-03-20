@@ -40,7 +40,7 @@ export default function LandingPage() {
     <div className="flex flex-col min-h-screen">
       {/* Nav */}
       <nav className="flex items-center justify-between px-6 py-4 border-b">
-        <span className="text-xl font-bold text-blue-600">Meddit</span>
+        <span className="text-xl font-bold text-blue-600">Candid</span>
         <div className="flex items-center gap-4">
           {user ? (
             <Link
@@ -66,7 +66,7 @@ export default function LandingPage() {
           Stop Overpaying for Healthcare
         </h1>
         <p className="mt-6 text-xl text-gray-600 max-w-2xl">
-          Meddit audits your medical bills for errors, generates dispute letters, and shows you what
+          Candid audits your medical bills for errors, generates dispute letters, and shows you what
           you should actually be paying. Free audit. No surprises.
         </p>
 
@@ -140,13 +140,13 @@ export default function LandingPage() {
           <Link href="/terms" className="hover:text-gray-700">
             Terms of Service
           </Link>
-          <a href="mailto:support@meddit.com" className="hover:text-gray-700">
+          <a href="mailto:support@candid.com" className="hover:text-gray-700">
             Contact
           </a>
         </div>
-        <p>&copy; {new Date().getFullYear()} Meddit. All rights reserved.</p>
+        <p>&copy; {new Date().getFullYear()} Candid. All rights reserved.</p>
         <p className="mt-2 text-xs text-gray-400">
-          Meddit is not a healthcare provider, law firm, or insurance company. All outputs are
+          Candid is not a healthcare provider, law firm, or insurance company. All outputs are
           informational and do not constitute legal or medical advice.
         </p>
       </footer>

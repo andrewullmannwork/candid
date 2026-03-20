@@ -55,10 +55,10 @@ export default function SignUpPage() {
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center">
           <Link href="/" className="text-2xl font-bold text-blue-600">
-            Meddit
+            Candid
           </Link>
           <h1 className="mt-4 text-xl font-semibold">Create your account</h1>
-          <p className="mt-1 text-sm text-gray-500">You must be 18 or older to use Meddit.</p>
+          <p className="mt-1 text-sm text-gray-500">You must be 18 or older to use Candid.</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">

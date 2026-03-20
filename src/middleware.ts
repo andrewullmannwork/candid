@@ -34,7 +34,7 @@ export function middleware(req: NextRequest) {
   // Middleware provides a fast client-side redirect for unauthenticated users.
   // The auth token is stored in localStorage by Firebase client SDK,
   // so server middleware can only check for a session indicator cookie.
-  const sessionIndicator = req.cookies.get("meddit_session");
+  const sessionIndicator = req.cookies.get("candid_session");
 
   if (!sessionIndicator) {
     const loginUrl = new URL("/", req.url);
