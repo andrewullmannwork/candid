@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
-import { createBrowserClient } from "@/lib/supabase/client";
 
 const INSURERS = [
   "Aetna",
@@ -27,6 +28,9 @@ const US_STATES = [
 
 export default function ProfilePage() {
   const { user } = useAuth();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const isOnboarding = searchParams.get("onboarding") === "true";
   const [insurer, setInsurer] = useState("");
   const [planType, setPlanType] = useState("");
   const [state, setState] = useState("");
@@ -37,20 +41,25 @@ export default function ProfilePage() {
 
   useEffect(() => {
     if (!user) return;
-    const supabase = createBrowserClient();
 
     async function loadProfile() {
-      const { data } = await supabase
-        .from("profiles")
-        .select("*")
-        .eq("user_id", user!.userId)
-        .single();
+      try {
+        const idToken = await user!.firebaseUser.getIdToken();
+        const res = await fetch("/api/profile", {
+          headers: { Authorization: `Bearer ${idToken}` },
+        });
 
-      if (data) {
-        setInsurer(data.insurer || "");
-        setPlanType(data.plan_type || "");
-        setState(data.state || "");
-        setPrimaryConcern(data.primary_concern || "");
+        if (res.ok) {
+          const { profile } = await res.json();
+          if (profile) {
+            setInsurer(profile.insurer || "");
+            setPlanType(profile.plan_type || "");
+            setState(profile.state || "");
+            setPrimaryConcern(profile.primary_concern || "");
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load profile:", err);
       }
       setLoading(false);
     }
@@ -64,21 +73,37 @@ export default function ProfilePage() {
     setSaving(true);
     setSaved(false);
 
-    const supabase = createBrowserClient();
-    await supabase.from("profiles").upsert(
-      {
-        user_id: user.userId,
-        insurer: insurer || null,
-        plan_type: planType || null,
-        state: state || null,
-        primary_concern: primaryConcern || null,
-      },
-      { onConflict: "user_id" }
-    );
+    try {
+      const idToken = await user.firebaseUser.getIdToken();
+      const res = await fetch("/api/profile", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          insurer: insurer || null,
+          plan_type: planType || null,
+          state: state || null,
+          primary_concern: primaryConcern || null,
+        }),
+      });
 
-    setSaving(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 3000);
+      if (!res.ok) throw new Error("Save failed");
+
+      setSaved(true);
+
+      if (isOnboarding) {
+        router.push("/upload");
+        return;
+      }
+
+      setTimeout(() => setSaved(false), 3000);
+    } catch (err) {
+      console.error("Failed to save profile:", err);
+    } finally {
+      setSaving(false);
+    }
   }
 
   if (loading) {
@@ -87,7 +112,18 @@ export default function ProfilePage() {
 
   return (
     <div className="max-w-lg">
-      <h1 className="text-2xl font-bold text-gray-900">Your Profile</h1>
+      {isOnboarding && (
+        <div className="mb-6 flex items-center gap-2 text-sm text-gray-500">
+          <span className="flex items-center justify-center w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-bold">1</span>
+          <span className="font-medium text-blue-600">Profile</span>
+          <span className="mx-1">→</span>
+          <span className="flex items-center justify-center w-6 h-6 rounded-full bg-gray-200 text-gray-500 text-xs font-bold">2</span>
+          <span>Upload Documents</span>
+        </div>
+      )}
+      <h1 className="text-2xl font-bold text-gray-900">
+        {isOnboarding ? "Complete Your Profile" : "Your Profile"}
+      </h1>
       <p className="mt-2 text-gray-600">
         Adding your insurance details helps us provide more accurate audits.
       </p>
@@ -153,13 +189,26 @@ export default function ProfilePage() {
           disabled={saving}
           className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium"
         >
-          {saving ? "Saving..." : "Save Profile"}
+          {saving
+            ? "Saving..."
+            : isOnboarding
+            ? "Save & Continue to Upload"
+            : "Save Profile"}
         </button>
 
-        {saved && (
+        {saved && !isOnboarding && (
           <p className="text-green-600 text-sm">Profile saved successfully.</p>
         )}
       </form>
+
+      {isOnboarding && (
+        <Link
+          href="/upload"
+          className="mt-4 block text-center text-sm text-gray-500 hover:text-gray-700"
+        >
+          Skip for now — go to upload
+        </Link>
+      )}
     </div>
   );
 }

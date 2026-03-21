@@ -1,14 +1,19 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
 
 export default function SignInPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { signInWithEmail, signInWithGoogle } = useAuth();
-  const [email, setEmail] = useState("");
+
+  const existingAccount = searchParams.get("existing") === "true";
+  const prefillEmail = searchParams.get("email") || "";
+
+  const [email, setEmail] = useState(prefillEmail);
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -20,8 +25,15 @@ export default function SignInPage() {
     try {
       await signInWithEmail(email, password);
       router.push("/dashboard");
-    } catch {
-      setError("Invalid email or password");
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      if (code === "auth/user-not-found" || code === "auth/wrong-password" || code === "auth/invalid-credential") {
+        setError("Invalid email or password.");
+      } else if (code === "auth/too-many-requests") {
+        setError("Too many failed attempts. Please try again later.");
+      } else {
+        setError("Sign in failed. Please try again.");
+      }
     } finally {
       setLoading(false);
     }
@@ -45,6 +57,17 @@ export default function SignInPage() {
           </Link>
           <h1 className="mt-4 text-xl font-semibold">Sign in to your account</h1>
         </div>
+
+        {existingAccount && (
+          <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg text-center">
+            <p className="text-sm text-blue-800 font-medium">
+              It looks like you already have an account.
+            </p>
+            <p className="text-sm text-blue-700 mt-1">
+              Sign in below to continue where you left off.
+            </p>
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <input

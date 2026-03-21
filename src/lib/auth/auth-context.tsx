@@ -19,33 +19,48 @@ import {
 } from "firebase/auth";
 import { getFirebaseAuth } from "@/lib/firebase/client";
 
-interface CandidUser {
+export interface CandidUser {
   firebaseUser: FirebaseUser;
   userId: string;
   email: string;
   stripeCustomerId: string;
 }
 
+interface ConsentPayload {
+  type: string;
+  version: string;
+  hash: string;
+}
+
 interface AuthContextValue {
   user: CandidUser | null;
   loading: boolean;
-  signUpWithEmail: (email: string, password: string) => Promise<void>;
+  signUpWithEmail: (
+    email: string,
+    password: string,
+    consents?: ConsentPayload[]
+  ) => Promise<CandidUser>;
   signInWithEmail: (email: string, password: string) => Promise<void>;
-  signInWithGoogle: () => Promise<void>;
+  signInWithGoogle: (consents?: ConsentPayload[]) => Promise<void>;
   signOut: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-async function syncWithBackend(firebaseUser: FirebaseUser): Promise<CandidUser> {
+async function syncWithBackend(
+  firebaseUser: FirebaseUser,
+  consents?: ConsentPayload[]
+): Promise<CandidUser> {
   const idToken = await firebaseUser.getIdToken();
   const res = await fetch("/api/auth/sync", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ idToken }),
+    body: JSON.stringify({ idToken, consents }),
   });
 
   if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    console.error("Auth sync failed:", res.status, errBody);
     throw new Error("Failed to sync auth");
   }
 
@@ -66,8 +81,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const unsubscribe = onAuthStateChanged(getFirebaseAuth(), async (firebaseUser) => {
       if (firebaseUser) {
         try {
-          const candidUser = await syncWithBackend(firebaseUser);
-          setUser(candidUser);
+          // Only sync if we don't already have a user set (avoids double sync after signup)
+          if (!user || user.firebaseUser.uid !== firebaseUser.uid) {
+            const candidUser = await syncWithBackend(firebaseUser);
+            setUser(candidUser);
+          }
         } catch (err) {
           console.error("Auth sync failed:", err);
           setUser(null);
@@ -79,24 +97,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return unsubscribe;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const signUpWithEmail = useCallback(async (email: string, password: string) => {
-    await createUserWithEmailAndPassword(getFirebaseAuth(), email, password);
-    // onAuthStateChanged will handle the sync
-  }, []);
+  const signUpWithEmail = useCallback(
+    async (email: string, password: string, consents?: ConsentPayload[]): Promise<CandidUser> => {
+      const cred = await createUserWithEmailAndPassword(getFirebaseAuth(), email, password);
+      // Sync immediately with consent data so everything is recorded server-side
+      const candidUser = await syncWithBackend(cred.user, consents);
+      setUser(candidUser);
+      return candidUser;
+    },
+    []
+  );
 
   const signInWithEmail = useCallback(async (email: string, password: string) => {
     await signInWithEmailAndPassword(getFirebaseAuth(), email, password);
   }, []);
 
-  const signInWithGoogle = useCallback(async () => {
+  const signInWithGoogle = useCallback(async (consents?: ConsentPayload[]) => {
     const provider = new GoogleAuthProvider();
-    await signInWithPopup(getFirebaseAuth(), provider);
+    const cred = await signInWithPopup(getFirebaseAuth(), provider);
+    const candidUser = await syncWithBackend(cred.user, consents);
+    setUser(candidUser);
   }, []);
 
   const signOut = useCallback(async () => {
     await firebaseSignOut(getFirebaseAuth());
+    // Clear the session cookie
+    document.cookie = "candid_session=; path=/; max-age=0";
     setUser(null);
   }, []);
 

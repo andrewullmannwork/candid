@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { createBrowserClient } from "@/lib/supabase/client";
 import { useAuth } from "@/lib/auth/auth-context";
 import { getConsentDocument } from "./consent-documents";
 import type { ConsentType } from "@/lib/supabase/types";
@@ -30,61 +29,72 @@ export function useConsent(type: ConsentType): UseConsentReturn {
   const consentDoc = getConsentDocument(type);
   const currentVersion = consentDoc.version;
 
-  // Check if user has consented to the current version
+  // Check if user has consented to the current version (via API)
   useEffect(() => {
     if (!user) {
       setLoading(false);
       return;
     }
 
-    const supabase = createBrowserClient();
-
     async function checkConsent() {
-      // Get the most recent consent event for this type
-      const { data } = await supabase
-        .from("consent_events")
-        .select("consent_version, granted")
-        .eq("user_id", user!.userId)
-        .eq("consent_type", type)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .single();
+      try {
+        const idToken = await user!.firebaseUser.getIdToken();
+        const res = await fetch("/api/consent", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({
+            action: "check",
+            consentType: type,
+            consentVersion: currentVersion,
+            consentTextHash: consentDoc.hash,
+          }),
+        });
 
-      if (!data) {
-        // Never consented
+        if (res.ok) {
+          const data = await res.json();
+          setHasConsented(data.hasConsented);
+          setNeedsReconsent(data.needsReconsent);
+        } else {
+          // If check fails, assume no consent
+          setHasConsented(false);
+          setNeedsReconsent(false);
+        }
+      } catch (err) {
+        console.error("Consent check failed:", err);
         setHasConsented(false);
-        setNeedsReconsent(false);
-      } else if (!data.granted) {
-        // Most recent event is a revocation
-        setHasConsented(false);
-        setNeedsReconsent(false);
-      } else if (data.consent_version !== currentVersion) {
-        // Consented to a prior version — need re-consent
-        setHasConsented(false);
-        setNeedsReconsent(true);
-      } else {
-        setHasConsented(true);
         setNeedsReconsent(false);
       }
       setLoading(false);
     }
 
     checkConsent();
-  }, [user, type, currentVersion]);
+  }, [user, type, currentVersion, consentDoc.hash]);
 
   const grantConsent = useCallback(async () => {
     if (!user) throw new Error("Must be authenticated to grant consent");
 
-    const supabase = createBrowserClient();
-    const { error } = await supabase.from("consent_events").insert({
-      user_id: user.userId,
-      consent_type: type,
-      consent_version: currentVersion,
-      consent_text_hash: consentDoc.hash,
-      granted: true,
+    const idToken = await user.firebaseUser.getIdToken();
+    const res = await fetch("/api/consent", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({
+        action: "grant",
+        consentType: type,
+        consentVersion: currentVersion,
+        consentTextHash: consentDoc.hash,
+      }),
     });
 
-    if (error) throw new Error(`Failed to record consent: ${error.message}`);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || "Failed to record consent");
+    }
 
     setHasConsented(true);
     setNeedsReconsent(false);
@@ -93,23 +103,34 @@ export function useConsent(type: ConsentType): UseConsentReturn {
   const revokeConsent = useCallback(async () => {
     if (!user) throw new Error("Must be authenticated to revoke consent");
 
-    // Record revocation event
-    const supabase = createBrowserClient();
-    const { error } = await supabase.from("consent_events").insert({
-      user_id: user.userId,
-      consent_type: type,
-      consent_version: currentVersion,
-      consent_text_hash: consentDoc.hash,
-      granted: false,
+    const idToken = await user.firebaseUser.getIdToken();
+    const res = await fetch("/api/consent", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({
+        action: "revoke",
+        consentType: type,
+        consentVersion: currentVersion,
+        consentTextHash: consentDoc.hash,
+      }),
     });
 
-    if (error) throw new Error(`Failed to record revocation: ${error.message}`);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || "Failed to record revocation");
+    }
 
-    // If revoking health data consent, trigger document deletion via API
+    // If revoking health data consent, trigger document deletion
     if (type === "health_data_upload") {
       await fetch("/api/consent/revoke", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
         body: JSON.stringify({ consentType: type }),
       });
     }

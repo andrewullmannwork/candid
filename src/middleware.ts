@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 /** Public routes that don't require authentication */
 const PUBLIC_ROUTES = [
   "/",
+  "/auth/signin",
+  "/auth/signup",
   "/waitlist",
   "/privacy",
   "/terms",

@@ -48,12 +48,12 @@ select
   facility_name,
   facility_npi,
   count(*) as data_points,
-  round(avg(billed_amount), 2) as avg_billed,
-  round(percentile_cont(0.5) within group (order by billed_amount), 2) as median_billed,
-  round(min(billed_amount), 2) as min_billed,
-  round(max(billed_amount), 2) as max_billed,
-  round(avg(allowed_amount), 2) as avg_allowed,
-  round(avg(patient_paid), 2) as avg_patient_paid,
+  round(avg(billed_amount)::numeric, 2) as avg_billed,
+  round(percentile_cont(0.5) within group (order by billed_amount)::numeric, 2) as median_billed,
+  round(min(billed_amount)::numeric, 2) as min_billed,
+  round(max(billed_amount)::numeric, 2) as max_billed,
+  round(avg(allowed_amount)::numeric, 2) as avg_allowed,
+  round(avg(patient_paid)::numeric, 2) as avg_patient_paid,
   -- Confidence: higher when more user-verified data points exist
   round(
     (count(*) filter (where data_source = 'user_bill')::numeric / greatest(count(*), 1)) * 0.5
