@@ -15,6 +15,7 @@ import {
   signInWithPopup,
   GoogleAuthProvider,
   signOut as firebaseSignOut,
+  updateProfile,
   type User as FirebaseUser,
 } from "firebase/auth";
 import { getFirebaseAuth } from "@/lib/firebase/client";
@@ -38,7 +39,8 @@ interface AuthContextValue {
   signUpWithEmail: (
     email: string,
     password: string,
-    consents?: ConsentPayload[]
+    consents?: ConsentPayload[],
+    displayName?: string
   ) => Promise<CandidUser>;
   signInWithEmail: (email: string, password: string) => Promise<void>;
   signInWithGoogle: (consents?: ConsentPayload[]) => Promise<void>;
@@ -51,7 +53,17 @@ async function syncWithBackend(
   firebaseUser: FirebaseUser,
   consents?: ConsentPayload[]
 ): Promise<CandidUser> {
-  const idToken = await firebaseUser.getIdToken();
+  let idToken: string;
+  try {
+    idToken = await firebaseUser.getIdToken();
+  } catch (err) {
+    const code = (err as { code?: string })?.code;
+    if (code === "auth/network-request-failed") {
+      throw Object.assign(new Error("Network unavailable — will retry"), { code });
+    }
+    throw err;
+  }
+
   const res = await fetch("/api/auth/sync", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -107,8 +119,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signUpWithEmail = useCallback(
-    async (email: string, password: string, consents?: ConsentPayload[]): Promise<CandidUser> => {
+    async (email: string, password: string, consents?: ConsentPayload[], displayName?: string): Promise<CandidUser> => {
       const cred = await createUserWithEmailAndPassword(getFirebaseAuth(), email, password);
+      if (displayName) {
+        await updateProfile(cred.user, { displayName });
+      }
       // Sync immediately with consent data so everything is recorded server-side
       const candidUser = await syncWithBackend(cred.user, consents);
       setUser(candidUser);

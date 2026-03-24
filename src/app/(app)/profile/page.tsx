@@ -164,6 +164,7 @@ interface ProfileData {
   // Demographics
   date_of_birth: string;
   sex: string;
+  phone: string;
   // Dependents (JSON string of array)
   dependents: string;
 }
@@ -192,6 +193,7 @@ const EMPTY_PROFILE: ProfileData = {
   primary_concern: "",
   date_of_birth: "",
   sex: "",
+  phone: "",
   dependents: "[]",
 };
 
@@ -202,9 +204,15 @@ export default function ProfilePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const isOnboarding = searchParams.get("onboarding") === "true";
+  const prefillPhone = searchParams.get("phone") || "";
+  const prefillDob = searchParams.get("dob") || "";
 
   const [step, setStep] = useState(0);
-  const [profile, setProfile] = useState<ProfileData>(EMPTY_PROFILE);
+  const [profile, setProfile] = useState<ProfileData>({
+    ...EMPTY_PROFILE,
+    phone: prefillPhone,
+    date_of_birth: prefillDob,
+  });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savedGlobal, setSavedGlobal] = useState(false);
@@ -217,6 +225,7 @@ export default function ProfilePage() {
   const [cardScanning, setCardScanning] = useState(false);
   const [cardScanned, setCardScanned] = useState(false);
   const [cardError, setCardError] = useState("");
+  const [cardScanAttempts, setCardScanAttempts] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Load existing profile ─────────────────────────────────────────────────
@@ -248,10 +257,11 @@ export default function ProfilePage() {
               primary_concern: p.primary_concern || "",
               date_of_birth: p.date_of_birth || "",
               sex: p.sex || "",
+              phone: p.phone || "",
               dependents: p.dependents ? JSON.stringify(p.dependents) : "[]",
             };
             setProfile(loaded);
-            const hasSomeData = !!(loaded.insurer || loaded.plan_type || loaded.state || loaded.group_number || loaded.member_id || loaded.primary_concern || loaded.deductible_individual || loaded.copay_primary);
+            const hasSomeData = Object.entries(loaded).some(([k, v]) => k !== "dependents" && v && v !== "[]");
             setHasExistingProfile(hasSomeData);
             // If no existing data and not onboarding, go straight to edit
             if (!hasSomeData && !isOnboarding) setEditMode(true);
@@ -288,7 +298,7 @@ export default function ProfilePage() {
           body[field] = parseFloat(body[field] as string) || null;
         }
       }
-      await fetch("/api/profile", {
+      const res = await fetch("/api/profile", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -296,6 +306,10 @@ export default function ProfilePage() {
         },
         body: JSON.stringify(body),
       });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        console.error("Profile save failed:", res.status, errBody);
+      }
     } catch (err) {
       console.error("Failed to save:", err);
     } finally {
@@ -328,7 +342,15 @@ export default function ProfilePage() {
     if (step < STEPS.length - 1) {
       setStep(step + 1);
     } else {
-      if (isOnboarding) router.push("/upload");
+      // Last step — exit wizard
+      if (isOnboarding) {
+        router.push("/upload");
+      } else {
+        // Check if any data was entered during this session
+        const hasSomeData = !!(profile.insurer || profile.plan_type || profile.state || profile.group_number || profile.member_id || profile.primary_concern || profile.deductible_individual || profile.copay_primary || profile.date_of_birth);
+        setHasExistingProfile(hasSomeData);
+        setEditMode(false);
+      }
     }
   }
 
@@ -374,7 +396,15 @@ export default function ProfilePage() {
       }));
       setCardScanned(true);
     } catch (err) {
-      setCardError(err instanceof Error ? err.message : "Could not read card. You can enter details manually.");
+      const attempts = cardScanAttempts + 1;
+      setCardScanAttempts(attempts);
+      if (attempts >= 2) {
+        setCardError("Card scan didn't work — let's enter your details manually instead.");
+        // Auto-advance to manual entry after 2 failures
+        setTimeout(() => setStep(1), 1500);
+      } else {
+        setCardError(err instanceof Error ? err.message : "Could not read card. Try again or enter details manually.");
+      }
     } finally {
       setCardScanning(false);
     }
@@ -413,13 +443,13 @@ export default function ProfilePage() {
 
   // ── Read-only profile view (non-onboarding, has data, not editing) ──────
   if (!editMode && hasExistingProfile && !isOnboarding) {
-    // Core fields for benefits: insurer, plan_type, state. Nice-to-have: the rest.
-    const coreFields = [profile.insurer, profile.plan_type, profile.state];
-    const coreFilled = coreFields.filter(Boolean).length;
+    // Profile is "functional" if we have enough to identify the plan:
+    // insurer + plan_type, OR group_number + plan_type, OR insurer + group_number
+    const identifiers = [profile.insurer, profile.plan_type, profile.group_number, profile.state].filter(Boolean).length;
     const allFields = [profile.insurer, profile.plan_type, profile.plan_name, profile.state, profile.group_number, profile.deductible_individual, profile.copay_primary];
     const filledCount = allFields.filter(Boolean).length;
     const totalCount = allFields.length;
-    const allFilled = coreFilled >= 2; // insurer + plan_type is enough to consider profile functional
+    const allFilled = identifiers >= 2; // any 2 of insurer/plan_type/group_number/state is enough
 
     return (
       <div className="max-w-lg mx-auto">
@@ -459,6 +489,17 @@ export default function ProfilePage() {
         )}
 
         <div className="space-y-4">
+          {/* Account info from Firebase + profile */}
+          <ProfileSection title="Account">
+            <ProfileField label="Email" value={user?.firebaseUser.email || ""} />
+            <ProfileField label="Name" value={user?.firebaseUser.displayName || ""} />
+            <ProfileField label="Sign-in method" value={
+              user?.firebaseUser.providerData?.[0]?.providerId === "google.com" ? "Google" :
+              user?.firebaseUser.providerData?.[0]?.providerId === "password" ? "Email & Password" :
+              user?.firebaseUser.providerData?.[0]?.providerId || "Unknown"
+            } />
+            <ProfileField label="Phone" value={profile.phone || user?.firebaseUser.phoneNumber || ""} />
+          </ProfileSection>
           <ProfileSection title="Insurance">
             <ProfileField label="Insurer" value={profile.insurer} />
             <ProfileField label="Plan name" value={profile.plan_name} />
@@ -678,6 +719,7 @@ export default function ProfilePage() {
         <AboutYouStep
           profile={profile}
           saving={saving}
+          isOnboarding={isOnboarding}
           onContinue={(data) => advance(data)}
           onSkip={skip}
         />
@@ -760,6 +802,24 @@ function PlanDetailsStep({
         </select>
         <Tip>The company name on your insurance card.</Tip>
       </Field>
+
+      {insurer === "Other" && (
+        <div className="p-4 bg-blue-50 border border-blue-100 rounded-xl">
+          <p className="text-sm font-medium text-blue-800">Help us support your insurer</p>
+          <p className="text-xs text-blue-600 mt-1">
+            Upload your plan document (Summary of Benefits and Coverage) and we&apos;ll have your plan&apos;s specific benefits ready within 48 hours.
+          </p>
+          <Link
+            href="/upload"
+            className="inline-flex items-center gap-1 mt-2 text-xs font-semibold text-blue-700 hover:text-blue-900"
+          >
+            Upload plan document
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+            </svg>
+          </Link>
+        </div>
+      )}
 
       <Field label="Plan name">
         <input
@@ -973,17 +1033,20 @@ function CostsStep({
 function AboutYouStep({
   profile,
   saving,
+  isOnboarding = false,
   onContinue,
   onSkip,
 }: {
   profile: ProfileData;
   saving: boolean;
+  isOnboarding?: boolean;
   onContinue: (data: Partial<ProfileData>) => void;
   onSkip: () => void;
 }) {
   const [dob, setDob] = useState(profile.date_of_birth);
   const [sex, setSex] = useState(profile.sex);
-  const hasAny = !!(dob || sex);
+  const [phoneNum, setPhoneNum] = useState(profile.phone);
+  const hasAny = !!(dob || sex || phoneNum);
 
   return (
     <div className="space-y-5">
@@ -994,6 +1057,17 @@ function AboutYouStep({
           wellness visits, and preventive care you may be eligible for.
         </p>
       </div>
+
+      <Field label="Phone number">
+        <input
+          type="tel"
+          value={phoneNum}
+          onChange={(e) => setPhoneNum(e.target.value)}
+          placeholder="(555) 123-4567"
+          className={inputClass}
+        />
+        <Tip>Required for account verification and important notifications about your benefits.</Tip>
+      </Field>
 
       <Field label="Date of birth">
         <input
@@ -1029,17 +1103,25 @@ function AboutYouStep({
         <Tip>Helps recommend sex-specific screenings (e.g. prostate, breast cancer, cervical).</Tip>
       </Field>
 
+      {isOnboarding && (!phoneNum.trim() || phoneNum.replace(/\D/g, "").length < 10 || !dob) && (
+        <p className="text-xs text-amber-600 bg-amber-50 p-2.5 rounded-xl">
+          Phone number and date of birth are required to create your account.
+        </p>
+      )}
+
       <div className="flex flex-col gap-2 pt-2">
         <button
-          onClick={() => onContinue({ date_of_birth: dob, sex })}
-          disabled={saving}
+          onClick={() => onContinue({ date_of_birth: dob, sex, phone: phoneNum })}
+          disabled={saving || (isOnboarding && (!phoneNum.trim() || phoneNum.replace(/\D/g, "").length < 10 || !dob))}
           className="w-full py-3 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors"
         >
           {saving ? "Saving…" : hasAny ? "Save & Continue →" : "Continue →"}
         </button>
-        <button onClick={onSkip} className="w-full py-2.5 text-sm text-gray-400 hover:text-gray-600 transition-colors">
-          Skip this step
-        </button>
+        {!isOnboarding && (
+          <button onClick={onSkip} className="w-full py-2.5 text-sm text-gray-400 hover:text-gray-600 transition-colors">
+            Skip this step
+          </button>
+        )}
       </div>
     </div>
   );

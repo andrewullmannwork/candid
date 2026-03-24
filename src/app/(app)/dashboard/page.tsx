@@ -114,7 +114,7 @@ export default function DashboardPage() {
     : [];
   const filledFields = profileFields.filter(Boolean).length;
   const totalFields = 6;
-  const profileComplete = filledFields >= 3;
+  const profileComplete = filledFields >= 2; // any 2 identifiers is enough
   const hasDocuments = documents.length > 0;
 
   const firstName = user?.firebaseUser.displayName?.split(" ")[0] || "";
@@ -265,6 +265,18 @@ export default function DashboardPage() {
 
         {planResult && planResult.totalBenefits > 0 ? (
           <>
+            {/* Important Notice */}
+            <div className="p-3 bg-gray-50 border border-gray-100 rounded-xl mb-4">
+              <p className="text-[11px] text-gray-400 leading-relaxed">
+                <span className="font-semibold text-gray-500">Important Notice:</span>{" "}
+                Candid provides general information about benefits commonly available with your
+                type of insurance plan. This is not a guarantee of coverage. Actual benefits vary by
+                specific plan, employer, and state. Always contact your insurance company to verify
+                your specific benefits before seeking services. Candid does not provide insurance
+                advice. Candid is an Airgetlam Labs LLC company.
+              </p>
+            </div>
+
             {/* Progress ring + score */}
             <div className="p-5 bg-white border border-gray-100 rounded-2xl mb-4">
               <div className="flex items-center gap-5">
@@ -294,7 +306,7 @@ export default function DashboardPage() {
                   <p className="text-xs text-gray-500 mt-0.5">
                     {planResult.totalBenefits - usedBenefitsCount} covered benefit{planResult.totalBenefits - usedBenefitsCount !== 1 ? "s" : ""} you may not be using yet.
                     {planResult.benefits.some((b) => b.benefit.hsaFsaEligible) && (
-                      <span className="text-purple-600 font-medium"> {planResult.benefits.filter((b) => b.benefit.hsaFsaEligible).length} are HSA/FSA eligible.</span>
+                      <span className="text-purple-600 font-medium"> {planResult.benefits.filter((b) => b.benefit.hsaFsaEligible).length} can be paid with HSA/FSA if you have one.</span>
                     )}
                   </p>
                 </div>
@@ -442,19 +454,24 @@ function BenefitRow({ item, onToggle, isUsed }: { item: AnalyzedBenefit; onToggl
             </svg>
           )}
         </button>
-        <div className="min-w-0">
-          <p className={`text-sm font-medium truncate ${isUsed ? "text-green-800" : "text-gray-900"}`}>{item.benefit.title}</p>
+        <Link href={`/plan#${item.benefit.id}`} className="min-w-0 group">
+          <p className={`text-sm font-medium truncate group-hover:text-blue-600 transition-colors ${isUsed ? "text-green-800" : "text-gray-900"}`}>{item.benefit.title}</p>
           <p className="text-xs text-gray-400 truncate">{BENEFIT_CATEGORY_LABELS[item.benefit.category as BenefitCategory]}</p>
-        </div>
+        </Link>
       </div>
       <div className="flex items-center gap-2 shrink-0 ml-3">
+        {item.isRecommended && !isUsed && (
+          <span className="text-[10px] font-semibold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">For you</span>
+        )}
         {item.benefit.hsaFsaEligible && (
           <span className="text-[10px] font-semibold text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded">HSA/FSA</span>
         )}
         {isUsed ? (
           <span className="text-[10px] font-semibold text-green-600">Using</span>
         ) : (
-          <span className="text-[10px] font-semibold text-amber-600">Not used</span>
+          <Link href={`/plan#${item.benefit.id}`} className="text-[10px] font-semibold text-blue-600 hover:text-blue-700">
+            Learn more
+          </Link>
         )}
       </div>
     </div>

@@ -89,7 +89,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-screen bg-gray-50/50">
       {/* Sidebar */}
-      <aside className="w-[220px] bg-white border-r border-gray-100 flex flex-col shrink-0">
+      <aside className="w-[220px] bg-white border-r border-gray-100 flex flex-col shrink-0 sticky top-0 h-screen overflow-y-auto">
         {/* Logo */}
         <div className="px-5 h-16 flex items-center border-b border-gray-100">
           <Link href="/" className="flex items-center gap-2">

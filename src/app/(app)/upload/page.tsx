@@ -4,8 +4,8 @@ import { useState, useCallback, useEffect } from "react";
 import { useDropzone } from "react-dropzone";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
-import { createBrowserClient } from "@/lib/supabase/client";
-import { ConsentGate } from "@/lib/consent/consent-gate";
+import { useConsent } from "@/lib/consent/use-consent";
+import { getConsentDocument } from "@/lib/consent/consent-documents";
 
 // ─── Document type info ─────────────────────────────────────────────────────
 
@@ -30,19 +30,37 @@ const DOC_TYPES = {
       "Look for CPT codes (5-digit numbers) — if you see them, it's itemized",
     ],
   },
+  sbc: {
+    label: "Plan Document (SBC)",
+    short: "Plan Document",
+    description: "Your Summary of Benefits and Coverage — the official document describing what your plan covers. Helps us provide accurate, plan-specific information.",
+    tips: [
+      "Log into your insurer's portal and look for 'Plan Documents' or 'Summary of Benefits'",
+      "It's usually an 8-page PDF with a standardized format",
+      "Your HR department can also provide this if you have employer-sponsored insurance",
+    ],
+  },
 } as const;
 
 // ─── Upload form ────────────────────────────────────────────────────────────
 
 function UploadForm() {
   const { user } = useAuth();
-  const [docType, setDocType] = useState<"eob" | "itemized_bill">("eob");
+  const [docType, setDocType] = useState<"eob" | "itemized_bill" | "sbc">("eob");
   const [uploading, setUploading] = useState(false);
   const [uploaded, setUploaded] = useState(false);
   const [error, setError] = useState("");
   const [fileName, setFileName] = useState("");
-  const [showTips, setShowTips] = useState<"eob" | "itemized_bill" | null>(null);
+  const [showTips, setShowTips] = useState<"eob" | "itemized_bill" | "sbc" | null>(null);
   const [profileMissing, setProfileMissing] = useState(false);
+
+  // Consent state — inline, not blocking
+  const { hasConsented, loading: consentLoading, grantConsent } = useConsent("health_data_upload");
+  const [showConsentModal, setShowConsentModal] = useState(false);
+  const [consentChecked, setConsentChecked] = useState(false);
+  const [consentSubmitting, setConsentSubmitting] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const consentDoc = getConsentDocument("health_data_upload");
 
   // Check if insurance profile is filled
   useEffect(() => {
@@ -66,75 +84,40 @@ function UploadForm() {
     checkProfile();
   }, [user]);
 
-  const onDrop = useCallback(
-    async (acceptedFiles: File[]) => {
-      if (!user || acceptedFiles.length === 0) return;
-
-      const file = acceptedFiles[0];
-      const allowedTypes = [
-        "application/pdf",
-        "image/jpeg",
-        "image/png",
-        "image/heic",
-        "image/heif",
-      ];
-      // HEIC files on some devices may not set a MIME type
-      const isHeic = /\.(heic|heif)$/i.test(file.name);
-      if (!allowedTypes.includes(file.type) && !isHeic) {
-        setError("Accepted formats: PDF, JPEG, PNG, or HEIC (iPhone photos).");
-        return;
-      }
-      if (file.size > 20 * 1024 * 1024) {
-        setError("File must be under 20MB.");
-        return;
-      }
-
+  // Actual upload logic — called after consent is confirmed
+  const doUpload = useCallback(
+    async (file: File) => {
+      if (!user) return;
       setUploading(true);
       setError("");
       setFileName(file.name);
 
       try {
-        const supabase = createBrowserClient();
+        const idToken = await user.firebaseUser.getIdToken();
 
-        const { data: consentEvent } = await supabase
-          .from("consent_events")
-          .select("id")
-          .eq("user_id", user.userId)
-          .eq("consent_type", "health_data_upload")
-          .eq("granted", true)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .single();
+        // Upload file via API to bypass RLS
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("docType", docType);
 
-        if (!consentEvent) {
-          setError("Health data consent is required. Please refresh the page.");
+        const res = await fetch("/api/documents/upload", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${idToken}` },
+          body: formData,
+        });
+
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          if (errBody.error?.includes("consent")) {
+            setError("Health data consent is required. Please try again.");
+          } else {
+            setError(errBody.error || "Upload failed. Please try again.");
+          }
           setUploading(false);
           return;
         }
 
-        const documentId = crypto.randomUUID();
-        const ext = file.name.split(".").pop()?.toLowerCase() || "pdf";
-        const storagePath = `${user.userId}/${documentId}.${ext}`;
-        const contentType = file.type || (isHeic ? "image/heic" : "application/octet-stream");
-
-        const { error: uploadError } = await supabase.storage
-          .from("documents")
-          .upload(storagePath, file, { contentType });
-
-        if (uploadError) throw uploadError;
-
-        const { error: dbError } = await supabase.from("documents").insert({
-          id: documentId,
-          user_id: user.userId,
-          storage_path: storagePath,
-          file_name: file.name,
-          file_size: file.size,
-          doc_type: docType,
-          consent_event_id: consentEvent.id,
-          status: "uploaded",
-        });
-
-        if (dbError) throw dbError;
+        const { documentId } = await res.json();
 
         sessionStorage.setItem(
           "pendingAudit",
@@ -151,6 +134,60 @@ function UploadForm() {
     },
     [user, docType]
   );
+
+  // Intercept drop: validate file, then check consent before uploading
+  const onDrop = useCallback(
+    async (acceptedFiles: File[]) => {
+      if (!user || acceptedFiles.length === 0) return;
+
+      const file = acceptedFiles[0];
+      const allowedTypes = [
+        "application/pdf",
+        "image/jpeg",
+        "image/png",
+        "image/heic",
+        "image/heif",
+      ];
+      const isHeic = /\.(heic|heif)$/i.test(file.name);
+      if (!allowedTypes.includes(file.type) && !isHeic) {
+        setError("Accepted formats: PDF, JPEG, PNG, or HEIC (iPhone photos).");
+        return;
+      }
+      if (file.size > 20 * 1024 * 1024) {
+        setError("File must be under 20MB.");
+        return;
+      }
+
+      // If consent already granted, upload immediately
+      if (hasConsented) {
+        doUpload(file);
+      } else {
+        // Stash the file and show consent modal
+        setPendingFile(file);
+        setShowConsentModal(true);
+      }
+    },
+    [user, hasConsented, doUpload]
+  );
+
+  // After consent is granted, upload the pending file
+  async function handleConsentGrant() {
+    setConsentSubmitting(true);
+    try {
+      await grantConsent();
+      setShowConsentModal(false);
+      setConsentChecked(false);
+      if (pendingFile) {
+        doUpload(pendingFile);
+        setPendingFile(null);
+      }
+    } catch (err) {
+      console.error("Consent grant failed:", err);
+      setError("Failed to record consent. Please try again.");
+    } finally {
+      setConsentSubmitting(false);
+    }
+  }
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -239,8 +276,8 @@ function UploadForm() {
         {/* Document type selector */}
         <div>
           <label className="text-sm font-medium text-gray-700 mb-2 block">What are you uploading?</label>
-          <div className="grid grid-cols-2 gap-3">
-            {(["eob", "itemized_bill"] as const).map((type) => {
+          <div className="grid grid-cols-3 gap-3">
+            {(["eob", "itemized_bill", "sbc"] as const).map((type) => {
               const info = DOC_TYPES[type];
               const selected = docType === type;
               return (
@@ -350,17 +387,62 @@ function UploadForm() {
           </div>
         )}
       </div>
+
+      {/* ── Inline consent modal — shown on first upload attempt ─────────── */}
+      {showConsentModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[80vh] flex flex-col shadow-2xl">
+            <div className="p-6 border-b">
+              <h2 className="text-xl font-bold text-gray-900">{consentDoc.title}</h2>
+              <p className="text-sm text-gray-500 mt-1">Version {consentDoc.version} — Required before uploading health documents</p>
+            </div>
+
+            <div className="p-6 overflow-y-auto flex-1">
+              <pre className="whitespace-pre-wrap font-sans text-sm text-gray-700 leading-relaxed">
+                {consentDoc.fullText}
+              </pre>
+            </div>
+
+            <div className="p-6 border-t space-y-4">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={consentChecked}
+                  onChange={(e) => setConsentChecked(e.target.checked)}
+                  className="mt-1 h-4 w-4 rounded border-gray-300"
+                />
+                <span className="text-sm text-gray-700">
+                  I have read and understand the above {consentDoc.title} and I explicitly consent to its terms.
+                </span>
+              </label>
+
+              <div className="flex gap-3 justify-end">
+                <button
+                  onClick={() => {
+                    setShowConsentModal(false);
+                    setConsentChecked(false);
+                    setPendingFile(null);
+                  }}
+                  className="px-4 py-2 text-gray-600 hover:text-gray-800 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  disabled={!consentChecked || consentSubmitting}
+                  onClick={handleConsentGrant}
+                  className="px-6 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-semibold text-sm"
+                >
+                  {consentSubmitting ? "Processing..." : "I Accept — Upload"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 export default function UploadPage() {
-  return (
-    <ConsentGate
-      type="health_data_upload"
-      declineMessage="You must consent to health data processing before uploading medical documents. This is a separate consent from the Terms of Service, required by law. You can grant this consent at any time."
-    >
-      <UploadForm />
-    </ConsentGate>
-  );
+  return <UploadForm />;
 }

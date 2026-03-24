@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { createBrowserClient } from "@/lib/supabase/client";
+import { useAdminQuery } from "@/lib/admin/use-admin-query";
 
 interface WaitlistEntry {
   id: string;
@@ -14,15 +14,19 @@ interface WaitlistEntry {
 export default function AdminWaitlistPage() {
   const [entries, setEntries] = useState<WaitlistEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const { query } = useAdminQuery();
 
   useEffect(() => {
-    const supabase = createBrowserClient();
     async function load() {
-      const { data } = await supabase
-        .from("waitlist")
-        .select("*")
-        .order("created_at", { ascending: false });
-      setEntries(data || []);
+      try {
+        const data = await query({
+          table: "waitlist",
+          order: { column: "created_at", ascending: false },
+        });
+        setEntries(data || []);
+      } catch (err) {
+        console.error("Failed to load waitlist:", err);
+      }
       setLoading(false);
     }
     load();

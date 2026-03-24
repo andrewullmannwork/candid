@@ -67,7 +67,12 @@ export default function CandidPlanPage() {
   const [result, setResult] = useState<PlanAnalysisResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [expandedBenefit, setExpandedBenefit] = useState<string | null>(null);
+  // Auto-expand benefit from URL hash (e.g. /plan#benefit-id)
+  const [expandedBenefit, setExpandedBenefit] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    const hash = window.location.hash.slice(1);
+    return hash || null;
+  });
   const [usedBenefits, setUsedBenefits] = useState<Set<string>>(() => {
     if (typeof window === "undefined") return new Set();
     try {

@@ -70,6 +70,7 @@ export async function POST(req: NextRequest) {
     insurance_card_path,
     date_of_birth,
     sex,
+    phone,
     dependents,
   } = body;
 
@@ -103,6 +104,7 @@ export async function POST(req: NextRequest) {
   if (insurance_card_path !== undefined) update.insurance_card_path = insurance_card_path || null;
   if (date_of_birth !== undefined) update.date_of_birth = date_of_birth || null;
   if (sex !== undefined) update.sex = sex || null;
+  if (phone !== undefined) update.phone = phone || null;
   if (dependents !== undefined) {
     // Store as JSONB — parse if string, pass through if already object
     try {
@@ -119,6 +121,54 @@ export async function POST(req: NextRequest) {
   if (error) {
     console.error("Profile save error:", error);
     return NextResponse.json({ error: "Failed to save profile" }, { status: 500 });
+  }
+
+  // ── Insurer catalog matching ─────────────────────────────────────────────
+  // If user entered an insurer, try to match it against the catalog.
+  // If no match found, queue for discovery.
+  if (insurer && insurer !== "Other") {
+    try {
+      // Fuzzy match: check if any catalog entry's name or aliases match
+      const { data: catalogEntries } = await supabase
+        .from("insurer_catalog")
+        .select("id, name, aliases");
+
+      if (catalogEntries) {
+        const normalizedInput = insurer.toLowerCase().trim();
+        const match = catalogEntries.find((entry) => {
+          if (entry.name.toLowerCase() === normalizedInput) return true;
+          if (entry.aliases?.some((alias: string) => alias.toLowerCase() === normalizedInput)) return true;
+          // Partial match: input contains catalog name or vice versa
+          if (entry.name.toLowerCase().includes(normalizedInput)) return true;
+          if (normalizedInput.includes(entry.name.toLowerCase())) return true;
+          return entry.aliases?.some((alias: string) =>
+            alias.toLowerCase().includes(normalizedInput) || normalizedInput.includes(alias.toLowerCase())
+          );
+        });
+
+        if (!match) {
+          // No match — check if already queued to avoid duplicates
+          const { data: existingQueue } = await supabase
+            .from("insurer_discovery_queue")
+            .select("id")
+            .eq("insurer_name_raw", insurer)
+            .eq("status", "pending")
+            .limit(1);
+
+          if (!existingQueue || existingQueue.length === 0) {
+            await supabase.from("insurer_discovery_queue").insert({
+              insurer_name_raw: insurer,
+              requested_by: user.id,
+              source: "profile",
+              status: "pending",
+            });
+          }
+        }
+      }
+    } catch (err) {
+      // Non-critical — don't fail the profile save
+      console.warn("Insurer catalog matching failed:", err);
+    }
   }
 
   return NextResponse.json({ success: true });

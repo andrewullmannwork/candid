@@ -3,6 +3,14 @@
 // These are general categories, not specific plan details. Users are always
 // directed to contact their insurer for verification.
 
+export interface DemographicCriteria {
+  minAge?: number;
+  maxAge?: number;
+  sex?: "male" | "female";
+  hasDependents?: boolean;
+  hasChildren?: boolean; // Has dependents with relationship "child"
+}
+
 export interface Benefit {
   id: string;
   category: BenefitCategory;
@@ -14,6 +22,7 @@ export interface Benefit {
   planTypes: string[]; // Which plan types typically include this
   excludedPlanTypes?: string[]; // Plan types that typically don't cover this
   states?: string[]; // State-specific mandates (empty = all states)
+  recommendedFor?: DemographicCriteria; // If set, benefit is prioritized for matching users
 }
 
 export type BenefitCategory =
@@ -72,6 +81,7 @@ export const BENEFITS_CATALOG: Benefit[] = [
       "Ask your doctor to order the screening as preventive (not diagnostic). If a polyp is found during a colonoscopy, some plans may apply cost-sharing for the removal — ask beforehand.",
     hsaFsaEligible: false,
     planTypes: ALL_PLANS,
+    recommendedFor: { minAge: 40 },
   },
   {
     id: "vaccinations",
@@ -85,6 +95,7 @@ export const BENEFITS_CATALOG: Benefit[] = [
       "Get vaccinated at your doctor's office or an in-network pharmacy. Confirm the provider is in-network to avoid charges.",
     hsaFsaEligible: false,
     planTypes: ALL_PLANS,
+    recommendedFor: { minAge: 50 },
   },
   {
     id: "diabetes-screening",
@@ -98,6 +109,7 @@ export const BENEFITS_CATALOG: Benefit[] = [
       "Request during your annual wellness visit. Make sure the lab is in-network.",
     hsaFsaEligible: false,
     planTypes: ALL_PLANS,
+    recommendedFor: { minAge: 35 },
   },
 
   // ── Mental Health ────────────────────────────────────────────────────
@@ -167,6 +179,7 @@ export const BENEFITS_CATALOG: Benefit[] = [
       "Ask your doctor if you qualify (typically prediabetes diagnosis). Search for CDC-recognized DPP programs in your area or online.",
     hsaFsaEligible: true,
     planTypes: ["PPO", "HMO", "EPO", "Medicare", "Medicare Advantage"],
+    recommendedFor: { minAge: 40 },
   },
 
   // ── Physical Therapy & Rehab ─────────────────────────────────────────
@@ -282,6 +295,7 @@ export const BENEFITS_CATALOG: Benefit[] = [
       "Ask your primary care provider if they offer CCM services. You must consent to enrollment. Medicare covers 80% after deductible.",
     hsaFsaEligible: true,
     planTypes: ["Medicare", "Medicare Advantage", "PPO", "HMO"],
+    recommendedFor: { minAge: 50 },
   },
   {
     id: "remote-monitoring",
@@ -338,6 +352,7 @@ export const BENEFITS_CATALOG: Benefit[] = [
       "Call your insurer's durable medical equipment (DME) line or use an insurer-approved breast pump supplier. Order before or after birth.",
     hsaFsaEligible: false,
     planTypes: ALL_COMMERCIAL,
+    recommendedFor: { sex: "female", minAge: 18, maxAge: 45, hasChildren: true },
   },
   {
     id: "contraception",
@@ -351,5 +366,6 @@ export const BENEFITS_CATALOG: Benefit[] = [
       "Ask your doctor to prescribe a covered method. If your preferred brand isn't covered, request an exception/prior auth.",
     hsaFsaEligible: false,
     planTypes: ALL_COMMERCIAL,
+    recommendedFor: { sex: "female", minAge: 18, maxAge: 50 },
   },
 ];

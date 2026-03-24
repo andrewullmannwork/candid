@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { createBrowserClient } from "@/lib/supabase/client";
+import { useAdminQuery } from "@/lib/admin/use-admin-query";
 
 interface TicketRow {
   id: string;
@@ -15,27 +15,31 @@ interface TicketRow {
 export default function AdminTicketsPage() {
   const [tickets, setTickets] = useState<TicketRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const { query, update } = useAdminQuery();
 
   useEffect(() => {
-    const supabase = createBrowserClient();
     async function load() {
-      const { data } = await supabase
-        .from("support_tickets")
-        .select("*")
-        .order("created_at", { ascending: false });
-      setTickets(data || []);
+      try {
+        const data = await query({
+          table: "support_tickets",
+          order: { column: "created_at", ascending: false },
+        });
+        setTickets(data || []);
+      } catch (err) {
+        console.error("Failed to load tickets:", err);
+      }
       setLoading(false);
     }
     load();
   }, []);
 
   async function updateStatus(id: string, newStatus: string) {
-    const supabase = createBrowserClient();
-    await supabase
-      .from("support_tickets")
-      .update({ status: newStatus })
-      .eq("id", id);
-    setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, status: newStatus } : t)));
+    try {
+      await update("support_tickets", id, { status: newStatus });
+      setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, status: newStatus } : t)));
+    } catch (err) {
+      console.error("Failed to update ticket:", err);
+    }
   }
 
   if (loading) return <div className="text-gray-500">Loading tickets...</div>;

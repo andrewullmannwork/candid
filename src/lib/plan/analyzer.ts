@@ -6,12 +6,18 @@ import {
   BENEFIT_CATEGORY_LABELS,
   type Benefit,
   type BenefitCategory,
+  type DemographicCriteria,
 } from "./benefits-catalog";
 
 export interface PlanAnalysisInput {
   insurer: string;
   planType: string;
   state: string;
+  // Demographics for personalized sorting
+  dateOfBirth?: string;
+  sex?: string;
+  hasDependents?: boolean;
+  hasChildren?: boolean;
 }
 
 export interface PlanAnalysisResult {
@@ -26,6 +32,8 @@ export interface AnalyzedBenefit {
   benefit: Benefit;
   categoryLabel: string;
   relevanceNote?: string; // Why this is relevant to this user's plan
+  relevanceScore: number; // 0-100, higher = more relevant to this specific user
+  isRecommended: boolean; // Demographically recommended
 }
 
 export function analyzePlan(input: PlanAnalysisInput): PlanAnalysisResult {
@@ -58,12 +66,23 @@ export function analyzePlan(input: PlanAnalysisInput): PlanAnalysisResult {
     return benefit.states.includes(input.state);
   });
 
-  // Build analyzed benefits with relevance notes
-  const analyzed: AnalyzedBenefit[] = stateFiltered.map((benefit) => ({
-    benefit,
-    categoryLabel: BENEFIT_CATEGORY_LABELS[benefit.category],
-    relevanceNote: getRelevanceNote(benefit, input),
-  }));
+  // Calculate user age from DOB
+  const userAge = input.dateOfBirth ? getAge(input.dateOfBirth) : undefined;
+
+  // Build analyzed benefits with relevance notes and scores
+  const analyzed: AnalyzedBenefit[] = stateFiltered.map((benefit) => {
+    const score = computeRelevanceScore(benefit, input, userAge);
+    return {
+      benefit,
+      categoryLabel: BENEFIT_CATEGORY_LABELS[benefit.category],
+      relevanceNote: getRelevanceNote(benefit, input),
+      relevanceScore: score,
+      isRecommended: score >= 70,
+    };
+  });
+
+  // Sort: recommended first, then by score descending
+  analyzed.sort((a, b) => b.relevanceScore - a.relevanceScore);
 
   // Count by category
   const categoryCounts: Record<string, number> = {};
@@ -79,6 +98,74 @@ export function analyzePlan(input: PlanAnalysisInput): PlanAnalysisResult {
     profileComplete,
     missingFields,
   };
+}
+
+function getAge(dateOfBirth: string): number {
+  const dob = new Date(dateOfBirth);
+  const today = new Date();
+  let age = today.getFullYear() - dob.getFullYear();
+  const m = today.getMonth() - dob.getMonth();
+  if (m < 0 || (m === 0 && today.getDate() < dob.getDate())) age--;
+  return age;
+}
+
+function computeRelevanceScore(
+  benefit: Benefit,
+  input: PlanAnalysisInput,
+  userAge?: number
+): number {
+  let score = 50; // Base score for plan-type-matched benefits
+
+  const rec = benefit.recommendedFor;
+  if (!rec) return score; // No demographic criteria = neutral relevance
+
+  let demographicMatch = true;
+  let matchCount = 0;
+
+  // Age check
+  if (rec.minAge != null || rec.maxAge != null) {
+    if (userAge != null) {
+      const ageMatch =
+        (rec.minAge == null || userAge >= rec.minAge) &&
+        (rec.maxAge == null || userAge <= rec.maxAge);
+      if (ageMatch) {
+        score += 25;
+        matchCount++;
+      } else {
+        demographicMatch = false;
+        score -= 15;
+      }
+    }
+    // If age unknown, don't penalize
+  }
+
+  // Sex check
+  if (rec.sex) {
+    if (input.sex) {
+      if (input.sex === rec.sex) {
+        score += 15;
+        matchCount++;
+      } else {
+        demographicMatch = false;
+        score -= 20; // Strong signal — e.g. prostate screening for females
+      }
+    }
+  }
+
+  // Dependents check
+  if (rec.hasDependents && input.hasDependents) {
+    score += 10;
+    matchCount++;
+  }
+  if (rec.hasChildren && input.hasChildren) {
+    score += 10;
+    matchCount++;
+  }
+
+  // Bonus for multiple matches
+  if (matchCount >= 2) score += 10;
+
+  return Math.max(0, Math.min(100, score));
 }
 
 function getRelevanceNote(

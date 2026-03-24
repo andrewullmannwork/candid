@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useEffect, useState, type ReactNode } from "react";
-import { createBrowserClient } from "@/lib/supabase/client";
 
 const adminNav = [
   { href: "/admin/waitlist", label: "Waitlist" },
@@ -14,6 +13,7 @@ const adminNav = [
   { href: "/admin/tickets", label: "Support Tickets" },
   { href: "/admin/copy", label: "Site Copy" },
   { href: "/admin/subscriptions", label: "Subscriptions" },
+  { href: "/admin/pipeline", label: "Benefit Pipeline" },
 ];
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
@@ -24,16 +24,20 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!user || authLoading) return;
-    const supabase = createBrowserClient();
 
     async function checkAdmin() {
-      const { data } = await supabase
-        .from("users")
-        .select("is_admin")
-        .eq("id", user!.userId)
-        .single();
-
-      setIsAdmin(data?.is_admin ?? false);
+      try {
+        const idToken = await user!.firebaseUser.getIdToken();
+        const res = await fetch("/api/auth/admin-check", {
+          headers: { Authorization: `Bearer ${idToken}` },
+        });
+        if (res.ok) {
+          const { isAdmin: admin } = await res.json();
+          setIsAdmin(admin);
+        }
+      } catch (err) {
+        console.error("Admin check failed:", err);
+      }
       setLoading(false);
     }
 

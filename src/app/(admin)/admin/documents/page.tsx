@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { createBrowserClient } from "@/lib/supabase/client";
+import { useAdminQuery } from "@/lib/admin/use-admin-query";
 
 interface DocRow {
   id: string;
@@ -16,15 +16,19 @@ interface DocRow {
 export default function AdminDocumentsPage() {
   const [docs, setDocs] = useState<DocRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const { query } = useAdminQuery();
 
   useEffect(() => {
-    const supabase = createBrowserClient();
     async function load() {
-      const { data } = await supabase
-        .from("documents")
-        .select("*")
-        .order("created_at", { ascending: false });
-      setDocs(data || []);
+      try {
+        const data = await query({
+          table: "documents",
+          order: { column: "created_at", ascending: false },
+        });
+        setDocs(data || []);
+      } catch (err) {
+        console.error("Failed to load documents:", err);
+      }
       setLoading(false);
     }
     load();

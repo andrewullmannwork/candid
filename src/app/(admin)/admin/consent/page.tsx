@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { createBrowserClient } from "@/lib/supabase/client";
+import { useAdminQuery } from "@/lib/admin/use-admin-query";
 
 interface ConsentRow {
   id: string;
@@ -16,16 +16,20 @@ interface ConsentRow {
 export default function AdminConsentPage() {
   const [events, setEvents] = useState<ConsentRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const { query } = useAdminQuery();
 
   useEffect(() => {
-    const supabase = createBrowserClient();
     async function load() {
-      const { data } = await supabase
-        .from("consent_events")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(200);
-      setEvents(data || []);
+      try {
+        const data = await query({
+          table: "consent_events",
+          order: { column: "created_at", ascending: false },
+          limit: 200,
+        });
+        setEvents(data || []);
+      } catch (err) {
+        console.error("Failed to load consent events:", err);
+      }
       setLoading(false);
     }
     load();
