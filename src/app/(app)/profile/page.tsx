@@ -1,9 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
+import type { InsuranceCardFields } from "@/app/api/profile/scan-card/route";
+
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const INSURERS = [
   "Aetna",
@@ -17,7 +20,16 @@ const INSURERS = [
   "Other",
 ];
 
-const PLAN_TYPES = ["HMO", "PPO", "EPO", "HDHP", "Medicare", "Medicare Advantage", "Medicaid", "Other"];
+const PLAN_TYPES = [
+  "HMO",
+  "PPO",
+  "EPO",
+  "HDHP",
+  "Medicare",
+  "Medicare Advantage",
+  "Medicaid",
+  "Other",
+];
 
 const US_STATES = [
   "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
@@ -26,36 +38,225 @@ const US_STATES = [
   "VA","WA","WV","WI","WY","DC",
 ];
 
+const STEPS = [
+  { id: "card",        label: "Insurance Card" },
+  { id: "plan",        label: "Plan Details" },
+  { id: "costs",       label: "Your Costs" },
+  { id: "about_you",   label: "About You" },
+  { id: "dependents",  label: "Family" },
+  { id: "concern",     label: "Your Situation" },
+];
+
+// ─── Tip component ─────────────────────────────────────────────────────────
+
+function Tip({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="mt-1.5 text-xs text-gray-400 leading-relaxed">{children}</p>
+  );
+}
+
+// ─── Field wrapper ─────────────────────────────────────────────────────────
+
+function Field({
+  label,
+  tip,
+  children,
+  optional = true,
+}: {
+  label: string;
+  tip?: string;
+  children: React.ReactNode;
+  optional?: boolean;
+}) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <label className="text-sm font-medium text-gray-700">{label}</label>
+        {optional && <span className="text-xs text-gray-400">Optional</span>}
+      </div>
+      {children}
+      {tip && <Tip>{tip}</Tip>}
+    </div>
+  );
+}
+
+const inputClass =
+  "w-full px-3.5 py-2.5 text-sm border border-gray-200 rounded-xl bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow";
+
+const selectClass =
+  "w-full px-3.5 py-2.5 text-sm border border-gray-200 rounded-xl bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow appearance-none";
+
+// ─── Card visual tip ────────────────────────────────────────────────────────
+
+function CardDiagram() {
+  return (
+    <div className="relative mx-auto w-full max-w-sm rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-600 to-blue-800 p-5 shadow-lg text-white text-xs font-mono select-none">
+      <div className="flex justify-between items-start mb-4">
+        <div className="text-base font-bold tracking-wide opacity-90">Your Insurer</div>
+        <div className="opacity-60 text-right">Insurance Card</div>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <div className="opacity-60 text-[10px] uppercase tracking-widest mb-0.5">Member Name</div>
+          <div className="font-semibold">Your Name</div>
+        </div>
+        <div>
+          <div className="opacity-60 text-[10px] uppercase tracking-widest mb-0.5">Plan Type</div>
+          <div className="font-semibold">PPO / HMO</div>
+        </div>
+        <div className="bg-white/10 rounded-lg p-2">
+          <div className="opacity-70 text-[10px] uppercase tracking-widest mb-0.5">Member ID ←</div>
+          <div className="font-bold text-yellow-200">XYZ123456789</div>
+        </div>
+        <div className="bg-white/10 rounded-lg p-2">
+          <div className="opacity-70 text-[10px] uppercase tracking-widest mb-0.5">Group # ←</div>
+          <div className="font-bold text-yellow-200">A12345</div>
+        </div>
+        <div>
+          <div className="opacity-60 text-[10px] uppercase tracking-widest mb-0.5">PCP Copay</div>
+          <div className="font-semibold">$25</div>
+        </div>
+        <div>
+          <div className="opacity-60 text-[10px] uppercase tracking-widest mb-0.5">Specialist</div>
+          <div className="font-semibold">$50</div>
+        </div>
+      </div>
+      <div className="absolute top-2 right-2 w-2 h-2 rounded-full bg-yellow-300 opacity-70" />
+    </div>
+  );
+}
+
+// ─── Step progress bar ──────────────────────────────────────────────────────
+
+function StepProgress({ current, total }: { current: number; total: number }) {
+  return (
+    <div className="flex items-center gap-1.5 mb-8">
+      {STEPS.map((step, i) => (
+        <div key={step.id} className="flex items-center gap-1.5 flex-1">
+          <div
+            className={`flex-1 h-1 rounded-full transition-all duration-300 ${
+              i < current ? "bg-blue-600" : i === current ? "bg-blue-300" : "bg-gray-100"
+            }`}
+          />
+          {i < STEPS.length - 1 && null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Profile types ──────────────────────────────────────────────────────────
+
+interface ProfileData {
+  insurer: string;
+  plan_type: string;
+  plan_name: string;
+  state: string;
+  group_number: string;
+  member_id: string;
+  deductible_individual: string;
+  oop_max_individual: string;
+  copay_primary: string;
+  copay_specialist: string;
+  copay_er: string;
+  coinsurance_pct: string;
+  primary_concern: string;
+  // Demographics
+  date_of_birth: string;
+  sex: string;
+  // Dependents (JSON string of array)
+  dependents: string;
+}
+
+interface Dependent {
+  name: string;
+  relationship: string; // "spouse" | "partner" | "child" | "other"
+  date_of_birth: string;
+  sex: string;
+  on_same_plan: boolean;
+}
+
+const EMPTY_PROFILE: ProfileData = {
+  insurer: "",
+  plan_type: "",
+  plan_name: "",
+  state: "",
+  group_number: "",
+  member_id: "",
+  deductible_individual: "",
+  oop_max_individual: "",
+  copay_primary: "",
+  copay_specialist: "",
+  copay_er: "",
+  coinsurance_pct: "",
+  primary_concern: "",
+  date_of_birth: "",
+  sex: "",
+  dependents: "[]",
+};
+
+// ─── Main component ─────────────────────────────────────────────────────────
+
 export default function ProfilePage() {
   const { user } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
   const isOnboarding = searchParams.get("onboarding") === "true";
-  const [insurer, setInsurer] = useState("");
-  const [planType, setPlanType] = useState("");
-  const [state, setState] = useState("");
-  const [primaryConcern, setPrimaryConcern] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [loading, setLoading] = useState(true);
 
+  const [step, setStep] = useState(0);
+  const [profile, setProfile] = useState<ProfileData>(EMPTY_PROFILE);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [savedGlobal, setSavedGlobal] = useState(false);
+  const [editMode, setEditMode] = useState(isOnboarding);
+  const [hasExistingProfile, setHasExistingProfile] = useState(false);
+
+  // Card upload state
+  const [cardFile, setCardFile] = useState<File | null>(null);
+  const [cardDragging, setCardDragging] = useState(false);
+  const [cardScanning, setCardScanning] = useState(false);
+  const [cardScanned, setCardScanned] = useState(false);
+  const [cardError, setCardError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Load existing profile ─────────────────────────────────────────────────
   useEffect(() => {
     if (!user) return;
 
-    async function loadProfile() {
+    async function load() {
       try {
         const idToken = await user!.firebaseUser.getIdToken();
         const res = await fetch("/api/profile", {
           headers: { Authorization: `Bearer ${idToken}` },
         });
-
         if (res.ok) {
-          const { profile } = await res.json();
-          if (profile) {
-            setInsurer(profile.insurer || "");
-            setPlanType(profile.plan_type || "");
-            setState(profile.state || "");
-            setPrimaryConcern(profile.primary_concern || "");
+          const { profile: p } = await res.json();
+          if (p) {
+            const loaded: ProfileData = {
+              insurer: p.insurer || "",
+              plan_type: p.plan_type || "",
+              plan_name: p.plan_name || "",
+              state: p.state || "",
+              group_number: p.group_number || "",
+              member_id: p.member_id || "",
+              deductible_individual: p.deductible_individual != null ? String(p.deductible_individual) : "",
+              oop_max_individual: p.oop_max_individual != null ? String(p.oop_max_individual) : "",
+              copay_primary: p.copay_primary != null ? String(p.copay_primary) : "",
+              copay_specialist: p.copay_specialist != null ? String(p.copay_specialist) : "",
+              copay_er: p.copay_er != null ? String(p.copay_er) : "",
+              coinsurance_pct: p.coinsurance_pct != null ? String(p.coinsurance_pct) : "",
+              primary_concern: p.primary_concern || "",
+              date_of_birth: p.date_of_birth || "",
+              sex: p.sex || "",
+              dependents: p.dependents ? JSON.stringify(p.dependents) : "[]",
+            };
+            setProfile(loaded);
+            const hasSomeData = !!(loaded.insurer || loaded.plan_type || loaded.state || loaded.group_number || loaded.member_id || loaded.primary_concern || loaded.deductible_individual || loaded.copay_primary);
+            setHasExistingProfile(hasSomeData);
+            // If no existing data and not onboarding, go straight to edit
+            if (!hasSomeData && !isOnboarding) setEditMode(true);
+          } else if (!isOnboarding) {
+            setEditMode(true);
           }
         }
       } catch (err) {
@@ -64,150 +265,1028 @@ export default function ProfilePage() {
       setLoading(false);
     }
 
-    loadProfile();
+    load();
   }, [user]);
 
-  async function handleSave(e: React.FormEvent) {
-    e.preventDefault();
+  // ── Save current step's data ──────────────────────────────────────────────
+  async function saveStep(data: Partial<Record<keyof ProfileData, string>>) {
     if (!user) return;
     setSaving(true);
-    setSaved(false);
-
     try {
       const idToken = await user.firebaseUser.getIdToken();
-      const res = await fetch("/api/profile", {
+      const body: Record<string, string | number | null> = {};
+      for (const [k, v] of Object.entries(data)) {
+        body[k] = v || null;
+      }
+      // Convert numeric fields
+      const numericFields = [
+        "deductible_individual","oop_max_individual","copay_primary",
+        "copay_specialist","copay_er","coinsurance_pct",
+      ];
+      for (const field of numericFields) {
+        if (field in body && body[field] != null) {
+          body[field] = parseFloat(body[field] as string) || null;
+        }
+      }
+      await fetch("/api/profile", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${idToken}`,
         },
-        body: JSON.stringify({
-          insurer: insurer || null,
-          plan_type: planType || null,
-          state: state || null,
-          primary_concern: primaryConcern || null,
-        }),
+        body: JSON.stringify(body),
       });
-
-      if (!res.ok) throw new Error("Save failed");
-
-      setSaved(true);
-
-      if (isOnboarding) {
-        router.push("/upload");
-        return;
-      }
-
-      setTimeout(() => setSaved(false), 3000);
     } catch (err) {
-      console.error("Failed to save profile:", err);
+      console.error("Failed to save:", err);
     } finally {
       setSaving(false);
     }
   }
 
+  // ── Step navigation ───────────────────────────────────────────────────────
+  async function advance(data?: Partial<Record<keyof ProfileData, string>>) {
+    if (data) {
+      setProfile((prev) => ({ ...prev, ...data }));
+      await saveStep(data);
+    }
+    if (step < STEPS.length - 1) {
+      setStep(step + 1);
+    } else {
+      // Done
+      if (isOnboarding) {
+        router.push("/upload");
+      } else {
+        setEditMode(false);
+        setHasExistingProfile(true);
+        setSavedGlobal(true);
+        setTimeout(() => setSavedGlobal(false), 3000);
+      }
+    }
+  }
+
+  function skip() {
+    if (step < STEPS.length - 1) {
+      setStep(step + 1);
+    } else {
+      if (isOnboarding) router.push("/upload");
+    }
+  }
+
+  // ── Insurance card scanning ───────────────────────────────────────────────
+  async function scanCard(file: File) {
+    setCardScanning(true);
+    setCardError("");
+    try {
+      const idToken = await user!.firebaseUser.getIdToken();
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/profile/scan-card", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${idToken}` },
+        body: fd,
+      });
+      if (!res.ok) {
+        const { error } = await res.json();
+        throw new Error(error || "Scan failed");
+      }
+      const { fields }: { fields: InsuranceCardFields } = await res.json();
+
+      // Pre-fill profile fields with extracted values
+      setProfile((prev) => ({
+        ...prev,
+        insurer: fields.insurer || prev.insurer,
+        plan_type: fields.planType || prev.plan_type,
+        plan_name: fields.planName || prev.plan_name,
+        group_number: fields.groupNumber || prev.group_number,
+        member_id: fields.memberId || prev.member_id,
+        deductible_individual: fields.deductibleIndividual != null
+          ? String(fields.deductibleIndividual) : prev.deductible_individual,
+        oop_max_individual: fields.oopMaxIndividual != null
+          ? String(fields.oopMaxIndividual) : prev.oop_max_individual,
+        copay_primary: fields.copayPrimary != null
+          ? String(fields.copayPrimary) : prev.copay_primary,
+        copay_specialist: fields.copaySpecialist != null
+          ? String(fields.copaySpecialist) : prev.copay_specialist,
+        copay_er: fields.copayEr != null
+          ? String(fields.copayEr) : prev.copay_er,
+        coinsurance_pct: fields.coinsurancePct != null
+          ? String(fields.coinsurancePct) : prev.coinsurance_pct,
+      }));
+      setCardScanned(true);
+    } catch (err) {
+      setCardError(err instanceof Error ? err.message : "Could not read card. You can enter details manually.");
+    } finally {
+      setCardScanning(false);
+    }
+  }
+
+  function handleCardDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setCardDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file) {
+      setCardFile(file);
+      scanCard(file);
+    }
+  }
+
+  function handleCardFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) {
+      setCardFile(file);
+      scanCard(file);
+    }
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
+
   if (loading) {
-    return <div className="text-gray-500">Loading profile...</div>;
+    return (
+      <div className="flex items-center justify-center min-h-32">
+        <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  const isLastStep = step === STEPS.length - 1;
+  const headerTitle = isOnboarding ? "Set up your profile" : "Your Profile";
+
+  // ── Read-only profile view (non-onboarding, has data, not editing) ──────
+  if (!editMode && hasExistingProfile && !isOnboarding) {
+    // Core fields for benefits: insurer, plan_type, state. Nice-to-have: the rest.
+    const coreFields = [profile.insurer, profile.plan_type, profile.state];
+    const coreFilled = coreFields.filter(Boolean).length;
+    const allFields = [profile.insurer, profile.plan_type, profile.plan_name, profile.state, profile.group_number, profile.deductible_individual, profile.copay_primary];
+    const filledCount = allFields.filter(Boolean).length;
+    const totalCount = allFields.length;
+    const allFilled = coreFilled >= 2; // insurer + plan_type is enough to consider profile functional
+
+    return (
+      <div className="max-w-lg mx-auto">
+        <div className="flex items-center justify-between mb-6">
+          <h1 className="text-2xl font-bold text-gray-900">Your Profile</h1>
+          <button
+            onClick={() => { setEditMode(true); setStep(1); }}
+            className="px-4 py-2 text-sm font-semibold text-blue-600 border border-blue-200 rounded-xl hover:bg-blue-50 transition-colors"
+          >
+            {allFilled ? "Update insurance info" : "Complete profile"}
+          </button>
+        </div>
+
+        {!allFilled && (
+          <div className="mb-5 p-4 bg-blue-50 border border-blue-100 rounded-2xl">
+            <div className="flex items-center gap-3">
+              <div className="flex-1">
+                <p className="text-sm font-medium text-blue-800">
+                  Profile {Math.round((filledCount / totalCount) * 100)}% complete
+                </p>
+                <p className="text-xs text-blue-600 mt-0.5">Add more details for better audit accuracy and personalized benefits.</p>
+              </div>
+            </div>
+            <div className="mt-2 h-1.5 bg-blue-200 rounded-full overflow-hidden">
+              <div className="h-full bg-blue-600 rounded-full" style={{ width: `${Math.round((filledCount / totalCount) * 100)}%` }} />
+            </div>
+          </div>
+        )}
+
+        {savedGlobal && (
+          <div className="mb-5 flex items-center gap-2 p-3 bg-green-50 border border-green-100 rounded-xl">
+            <svg className="w-4 h-4 text-green-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+            </svg>
+            <p className="text-sm text-green-700 font-medium">Profile saved.</p>
+          </div>
+        )}
+
+        <div className="space-y-4">
+          <ProfileSection title="Insurance">
+            <ProfileField label="Insurer" value={profile.insurer} />
+            <ProfileField label="Plan name" value={profile.plan_name} />
+            <ProfileField label="Plan type" value={profile.plan_type} />
+            <ProfileField label="State" value={profile.state} />
+            <ProfileField label="Group #" value={profile.group_number} />
+            <ProfileField label="Member ID" value={profile.member_id} />
+          </ProfileSection>
+          <ProfileSection title="Cost Structure">
+            <ProfileField label="Deductible" value={profile.deductible_individual} prefix="$" />
+            <ProfileField label="OOP max" value={profile.oop_max_individual} prefix="$" />
+            <ProfileField label="PCP copay" value={profile.copay_primary} prefix="$" />
+            <ProfileField label="Specialist" value={profile.copay_specialist} prefix="$" />
+            <ProfileField label="ER copay" value={profile.copay_er} prefix="$" />
+            <ProfileField label="Coinsurance" value={profile.coinsurance_pct} suffix="%" />
+          </ProfileSection>
+          <ProfileSection title="About You">
+            <ProfileField label="Date of birth" value={profile.date_of_birth} />
+            <ProfileField label="Sex" value={profile.sex === "prefer_not_to_say" ? "Prefer not to say" : profile.sex} />
+          </ProfileSection>
+          {(() => {
+            let deps: Dependent[] = [];
+            try { deps = JSON.parse(profile.dependents || "[]"); } catch { /* empty */ }
+            return deps.length > 0 ? (
+              <ProfileSection title="Family">
+                {deps.map((d: Dependent, i: number) => (
+                  <div key={i} className="col-span-2 flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">{d.name || "Unnamed"}</p>
+                      <p className="text-xs text-gray-400">{d.relationship}{d.date_of_birth ? ` · Born ${d.date_of_birth}` : ""}</p>
+                    </div>
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${d.on_same_plan ? "bg-blue-50 text-blue-600" : "bg-gray-100 text-gray-500"}`}>
+                      {d.on_same_plan ? "On your plan" : "Separate plan"}
+                    </span>
+                  </div>
+                ))}
+              </ProfileSection>
+            ) : null;
+          })()}
+          {profile.primary_concern && (
+            <ProfileSection title="Your Situation">
+              <p className="text-sm text-gray-700 leading-relaxed">{profile.primary_concern}</p>
+            </ProfileSection>
+          )}
+        </div>
+      </div>
+    );
   }
 
   return (
-    <div className="max-w-lg">
-      {isOnboarding && (
-        <div className="mb-6 flex items-center gap-2 text-sm text-gray-500">
-          <span className="flex items-center justify-center w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-bold">1</span>
-          <span className="font-medium text-blue-600">Profile</span>
-          <span className="mx-1">→</span>
-          <span className="flex items-center justify-center w-6 h-6 rounded-full bg-gray-200 text-gray-500 text-xs font-bold">2</span>
-          <span>Upload Documents</span>
+    <div className="max-w-lg mx-auto">
+      {/* Header */}
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-gray-900">{headerTitle}</h1>
+        <p className="mt-1.5 text-sm text-gray-500">
+          {isOnboarding
+            ? "The more you share, the more accurately we can audit your bills."
+            : "Update your insurance details to improve audit accuracy."}
+        </p>
+      </div>
+
+      {/* Step progress */}
+      <StepProgress current={step} total={STEPS.length} />
+
+      {/* Step label */}
+      <div className="mb-5">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold text-blue-600 uppercase tracking-widest">
+            Step {step + 1} of {STEPS.length}
+          </span>
+          <span className="text-xs text-gray-400">{STEPS[step].label}</span>
+        </div>
+      </div>
+
+      {/* ── Step 0: Insurance Card ──────────────────────────────────────────── */}
+      {step === 0 && (
+        <div className="space-y-6">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900 mb-1">Upload your insurance card</h2>
+            <p className="text-sm text-gray-500">
+              We&apos;ll read your card and pre-fill your plan details automatically.
+              Your physical card or a screenshot both work.
+            </p>
+          </div>
+
+          {/* Card diagram */}
+          <CardDiagram />
+
+          {/* Upload zone */}
+          {!cardScanned ? (
+            <div
+              onDragOver={(e) => { e.preventDefault(); setCardDragging(true); }}
+              onDragLeave={() => setCardDragging(false)}
+              onDrop={handleCardDrop}
+              onClick={() => fileInputRef.current?.click()}
+              className={`relative flex flex-col items-center justify-center gap-3 p-8 border-2 border-dashed rounded-2xl cursor-pointer transition-all ${
+                cardDragging
+                  ? "border-blue-400 bg-blue-50"
+                  : "border-gray-200 bg-gray-50 hover:border-blue-300 hover:bg-blue-50/50"
+              }`}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*,application/pdf"
+                className="hidden"
+                onChange={handleCardFileChange}
+              />
+              {cardScanning ? (
+                <>
+                  <div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                  <p className="text-sm text-gray-600 font-medium">Reading your card…</p>
+                </>
+              ) : (
+                <>
+                  <div className="w-12 h-12 rounded-2xl bg-blue-100 flex items-center justify-center">
+                    <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-sm font-medium text-gray-700">
+                      Drop your card here, or <span className="text-blue-600">browse</span>
+                    </p>
+                    <p className="text-xs text-gray-400 mt-1">Photo, screenshot, or PDF — up to 10MB</p>
+                  </div>
+                </>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center gap-3 p-4 bg-green-50 border border-green-100 rounded-2xl">
+              <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center shrink-0">
+                <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-green-800">Card scanned successfully</p>
+                <p className="text-xs text-green-600 truncate">{cardFile?.name}</p>
+              </div>
+              <button
+                onClick={() => { setCardScanned(false); setCardFile(null); }}
+                className="text-xs text-gray-400 hover:text-gray-600"
+              >
+                Rescan
+              </button>
+            </div>
+          )}
+
+          {cardError && (
+            <div className="p-3 bg-amber-50 border border-amber-100 rounded-xl">
+              <p className="text-xs text-amber-700">{cardError}</p>
+            </div>
+          )}
+
+          {/* Tips */}
+          <div className="p-4 bg-gray-50 rounded-2xl space-y-2">
+            <p className="text-xs font-semibold text-gray-600 uppercase tracking-widest">Where to find your card</p>
+            <ul className="text-xs text-gray-500 space-y-1.5">
+              <li className="flex items-start gap-2">
+                <span className="mt-0.5 w-4 h-4 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-[10px] font-bold shrink-0">1</span>
+                Check your physical wallet — most insurers provide a card at enrollment
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="mt-0.5 w-4 h-4 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-[10px] font-bold shrink-0">2</span>
+                Log into your insurer&apos;s member portal and download a digital card
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="mt-0.5 w-4 h-4 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-[10px] font-bold shrink-0">3</span>
+                Check your employer&apos;s benefits portal or any welcome email from your insurer
+              </li>
+            </ul>
+          </div>
+
+          <div className="flex flex-col gap-2 pt-2">
+            <button
+              onClick={() => advance()}
+              className="w-full py-3 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 transition-colors"
+            >
+              {cardScanned ? "Continue with scanned details →" : "Continue →"}
+            </button>
+            <button
+              onClick={skip}
+              className="w-full py-2.5 text-sm text-gray-400 hover:text-gray-600 transition-colors"
+            >
+              Skip — I&apos;ll enter details manually
+            </button>
+          </div>
         </div>
       )}
-      <h1 className="text-2xl font-bold text-gray-900">
-        {isOnboarding ? "Complete Your Profile" : "Your Profile"}
-      </h1>
-      <p className="mt-2 text-gray-600">
-        Adding your insurance details helps us provide more accurate audits.
-      </p>
 
-      <form onSubmit={handleSave} className="mt-6 space-y-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Insurer</label>
-          <select
-            value={insurer}
-            onChange={(e) => setInsurer(e.target.value)}
-            className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="">Select your insurer</option>
-            {INSURERS.map((i) => (
-              <option key={i} value={i}>{i}</option>
-            ))}
-          </select>
-        </div>
+      {/* ── Step 1: Plan Details ────────────────────────────────────────────── */}
+      {step === 1 && (
+        <PlanDetailsStep
+          profile={profile}
+          saving={saving}
+          onContinue={(data) => advance(data)}
+          onSkip={skip}
+        />
+      )}
 
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Plan Type</label>
-          <select
-            value={planType}
-            onChange={(e) => setPlanType(e.target.value)}
-            className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="">Select plan type</option>
-            {PLAN_TYPES.map((p) => (
-              <option key={p} value={p}>{p}</option>
-            ))}
-          </select>
-        </div>
+      {/* ── Step 2: Your Costs ──────────────────────────────────────────────── */}
+      {step === 2 && (
+        <CostsStep
+          profile={profile}
+          saving={saving}
+          onContinue={(data) => advance(data)}
+          onSkip={skip}
+        />
+      )}
 
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">State</label>
-          <select
-            value={state}
-            onChange={(e) => setState(e.target.value)}
-            className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="">Select your state</option>
-            {US_STATES.map((s) => (
-              <option key={s} value={s}>{s}</option>
-            ))}
-          </select>
-        </div>
+      {/* ── Step 3: About You ─────────────────────────────────────────────── */}
+      {step === 3 && (
+        <AboutYouStep
+          profile={profile}
+          saving={saving}
+          onContinue={(data) => advance(data)}
+          onSkip={skip}
+        />
+      )}
 
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Primary Billing Concern
-          </label>
-          <textarea
-            value={primaryConcern}
-            onChange={(e) => setPrimaryConcern(e.target.value)}
-            placeholder="e.g., I received a $5,000 ER bill that seems too high..."
-            rows={3}
-            className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
+      {/* ── Step 4: Family & Dependents ───────────────────────────────────── */}
+      {step === 4 && (
+        <DependentsStep
+          profile={profile}
+          saving={saving}
+          onContinue={(data) => advance(data)}
+          onSkip={skip}
+        />
+      )}
 
+      {/* ── Step 5: Primary Concern ─────────────────────────────────────────── */}
+      {step === 5 && (
+        <ConcernStep
+          profile={profile}
+          saving={saving}
+          isOnboarding={isOnboarding}
+          isLastStep={isLastStep}
+          savedGlobal={savedGlobal}
+          onContinue={(data) => advance(data)}
+          onSkip={skip}
+        />
+      )}
+
+      {/* Back nav */}
+      {step > 0 && (
         <button
-          type="submit"
-          disabled={saving}
-          className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium"
+          onClick={() => setStep(step - 1)}
+          className="mt-4 flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-600 transition-colors"
         >
-          {saving
-            ? "Saving..."
-            : isOnboarding
-            ? "Save & Continue to Upload"
-            : "Save Profile"}
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+          Back
         </button>
+      )}
+    </div>
+  );
+}
 
-        {saved && !isOnboarding && (
-          <p className="text-green-600 text-sm">Profile saved successfully.</p>
-        )}
-      </form>
+// ─── Step sub-components ─────────────────────────────────────────────────────
 
-      {isOnboarding && (
-        <Link
-          href="/upload"
-          className="mt-4 block text-center text-sm text-gray-500 hover:text-gray-700"
+function PlanDetailsStep({
+  profile,
+  saving,
+  onContinue,
+  onSkip,
+}: {
+  profile: ProfileData;
+  saving: boolean;
+  onContinue: (data: Partial<ProfileData>) => void;
+  onSkip: () => void;
+}) {
+  const [insurer, setInsurer] = useState(profile.insurer);
+  const [planType, setPlanType] = useState(profile.plan_type);
+  const [planName, setPlanName] = useState(profile.plan_name);
+  const [state, setState] = useState(profile.state);
+  const [groupNumber, setGroupNumber] = useState(profile.group_number);
+  const [memberId, setMemberId] = useState(profile.member_id);
+
+  const hasAny = insurer || planType || planName || state || groupNumber || memberId;
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-lg font-semibold text-gray-900 mb-1">Plan details</h2>
+        <p className="text-sm text-gray-500">
+          This tells us which benefits apply to your plan and how to read your EOBs.
+        </p>
+      </div>
+
+      <Field label="Insurance company">
+        <select value={insurer} onChange={(e) => setInsurer(e.target.value)} className={selectClass}>
+          <option value="">Select your insurer</option>
+          {INSURERS.map((i) => <option key={i} value={i}>{i}</option>)}
+        </select>
+        <Tip>The company name on your insurance card.</Tip>
+      </Field>
+
+      <Field label="Plan name">
+        <input
+          type="text"
+          value={planName}
+          onChange={(e) => setPlanName(e.target.value)}
+          placeholder="e.g., Aetna Choice POS II, BCBS Blue Preferred"
+          className={inputClass}
+        />
+        <Tip>The specific product name — often shown below the insurer name on your card or in your member portal.</Tip>
+      </Field>
+
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Plan type">
+          <select value={planType} onChange={(e) => setPlanType(e.target.value)} className={selectClass}>
+            <option value="">Select type</option>
+            {PLAN_TYPES.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </Field>
+        <Field label="State">
+          <select value={state} onChange={(e) => setState(e.target.value)} className={selectClass}>
+            <option value="">State</option>
+            {US_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </Field>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Group number">
+          <input
+            type="text"
+            value={groupNumber}
+            onChange={(e) => setGroupNumber(e.target.value)}
+            placeholder="e.g., A12345"
+            className={inputClass}
+          />
+          <Tip>Labeled &quot;Group #&quot; or &quot;Grp&quot; on your card — ties your plan to your employer.</Tip>
+        </Field>
+        <Field label="Member ID">
+          <input
+            type="text"
+            value={memberId}
+            onChange={(e) => setMemberId(e.target.value)}
+            placeholder="e.g., XYZ123456"
+            className={inputClass}
+          />
+          <Tip>Your unique insurance ID — often labeled &quot;Member ID&quot; or &quot;ID #&quot;.</Tip>
+        </Field>
+      </div>
+
+      <div className="flex flex-col gap-2 pt-2">
+        <button
+          onClick={() =>
+            onContinue({ insurer, plan_type: planType, plan_name: planName, state, group_number: groupNumber, member_id: memberId })
+          }
+          disabled={saving}
+          className="w-full py-3 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors"
         >
-          Skip for now — go to upload
+          {saving ? "Saving…" : hasAny ? "Save & Continue →" : "Continue →"}
+        </button>
+        <button onClick={onSkip} className="w-full py-2.5 text-sm text-gray-400 hover:text-gray-600 transition-colors">
+          Skip this step
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CostsStep({
+  profile,
+  saving,
+  onContinue,
+  onSkip,
+}: {
+  profile: ProfileData;
+  saving: boolean;
+  onContinue: (data: Partial<ProfileData>) => void;
+  onSkip: () => void;
+}) {
+  const [deductible, setDeductible] = useState(profile.deductible_individual);
+  const [oopMax, setOopMax] = useState(profile.oop_max_individual);
+  const [copayPrimary, setCopayPrimary] = useState(profile.copay_primary);
+  const [copaySpecialist, setCopaySpecialist] = useState(profile.copay_specialist);
+  const [copayEr, setCopayEr] = useState(profile.copay_er);
+  const [coinsurance, setCoinsurance] = useState(profile.coinsurance_pct);
+
+  const hasAny = deductible || oopMax || copayPrimary || copaySpecialist || copayEr || coinsurance;
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-lg font-semibold text-gray-900 mb-1">Your cost structure</h2>
+        <p className="text-sm text-gray-500">
+          These numbers let us calculate exactly how much you were actually owed.
+          Find them on your Summary of Benefits or any EOB.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Individual deductible">
+          <div className="relative">
+            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">$</span>
+            <input
+              type="number"
+              value={deductible}
+              onChange={(e) => setDeductible(e.target.value)}
+              placeholder="1,500"
+              className={`${inputClass} pl-7`}
+            />
+          </div>
+          <Tip>What you pay out-of-pocket before insurance starts covering costs. Resets annually.</Tip>
+        </Field>
+        <Field label="Out-of-pocket max">
+          <div className="relative">
+            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">$</span>
+            <input
+              type="number"
+              value={oopMax}
+              onChange={(e) => setOopMax(e.target.value)}
+              placeholder="5,000"
+              className={`${inputClass} pl-7`}
+            />
+          </div>
+          <Tip>After this, insurance covers 100% for the year.</Tip>
+        </Field>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <Field label="PCP copay">
+          <div className="relative">
+            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">$</span>
+            <input
+              type="number"
+              value={copayPrimary}
+              onChange={(e) => setCopayPrimary(e.target.value)}
+              placeholder="25"
+              className={`${inputClass} pl-7`}
+            />
+          </div>
+          <Tip>Primary care visit</Tip>
+        </Field>
+        <Field label="Specialist">
+          <div className="relative">
+            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">$</span>
+            <input
+              type="number"
+              value={copaySpecialist}
+              onChange={(e) => setCopaySpecialist(e.target.value)}
+              placeholder="50"
+              className={`${inputClass} pl-7`}
+            />
+          </div>
+          <Tip>Specialist copay</Tip>
+        </Field>
+        <Field label="ER visit">
+          <div className="relative">
+            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">$</span>
+            <input
+              type="number"
+              value={copayEr}
+              onChange={(e) => setCopayEr(e.target.value)}
+              placeholder="300"
+              className={`${inputClass} pl-7`}
+            />
+          </div>
+          <Tip>Emergency room</Tip>
+        </Field>
+      </div>
+
+      <Field label="Coinsurance">
+        <div className="relative">
+          <input
+            type="number"
+            value={coinsurance}
+            onChange={(e) => setCoinsurance(e.target.value)}
+            placeholder="20"
+            min="0"
+            max="100"
+            className={`${inputClass} pr-7`}
+          />
+          <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">%</span>
+        </div>
+        <Tip>Your share of costs after the deductible. Example: 20% means you pay 20%, insurance pays 80%.</Tip>
+      </Field>
+
+      <div className="flex flex-col gap-2 pt-2">
+        <button
+          onClick={() =>
+            onContinue({
+              deductible_individual: deductible,
+              oop_max_individual: oopMax,
+              copay_primary: copayPrimary,
+              copay_specialist: copaySpecialist,
+              copay_er: copayEr,
+              coinsurance_pct: coinsurance,
+            })
+          }
+          disabled={saving}
+          className="w-full py-3 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors"
+        >
+          {saving ? "Saving…" : hasAny ? "Save & Continue →" : "Continue →"}
+        </button>
+        <button onClick={onSkip} className="w-full py-2.5 text-sm text-gray-400 hover:text-gray-600 transition-colors">
+          Skip this step
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AboutYouStep({
+  profile,
+  saving,
+  onContinue,
+  onSkip,
+}: {
+  profile: ProfileData;
+  saving: boolean;
+  onContinue: (data: Partial<ProfileData>) => void;
+  onSkip: () => void;
+}) {
+  const [dob, setDob] = useState(profile.date_of_birth);
+  const [sex, setSex] = useState(profile.sex);
+  const hasAny = !!(dob || sex);
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-lg font-semibold text-gray-900">About you</h2>
+        <p className="text-sm text-gray-500 mt-1">
+          This helps us recommend age- and sex-specific benefits like cancer screenings,
+          wellness visits, and preventive care you may be eligible for.
+        </p>
+      </div>
+
+      <Field label="Date of birth">
+        <input
+          type="date"
+          value={dob}
+          onChange={(e) => setDob(e.target.value)}
+          className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+        />
+        <Tip>Used to recommend age-appropriate screenings (e.g. colonoscopy at 45+, mammogram at 40+).</Tip>
+      </Field>
+
+      <Field label="Sex assigned at birth">
+        <div className="grid grid-cols-3 gap-2">
+          {[
+            { value: "female", label: "Female" },
+            { value: "male", label: "Male" },
+            { value: "prefer_not_to_say", label: "Prefer not to say" },
+          ].map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setSex(opt.value)}
+              className={`px-3 py-2.5 text-sm font-medium rounded-xl border-2 transition-all ${
+                sex === opt.value
+                  ? "border-blue-500 bg-blue-50 text-blue-700"
+                  : "border-gray-200 text-gray-600 hover:border-gray-300"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <Tip>Helps recommend sex-specific screenings (e.g. prostate, breast cancer, cervical).</Tip>
+      </Field>
+
+      <div className="flex flex-col gap-2 pt-2">
+        <button
+          onClick={() => onContinue({ date_of_birth: dob, sex })}
+          disabled={saving}
+          className="w-full py-3 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors"
+        >
+          {saving ? "Saving…" : hasAny ? "Save & Continue →" : "Continue →"}
+        </button>
+        <button onClick={onSkip} className="w-full py-2.5 text-sm text-gray-400 hover:text-gray-600 transition-colors">
+          Skip this step
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DependentsStep({
+  profile,
+  saving,
+  onContinue,
+  onSkip,
+}: {
+  profile: ProfileData;
+  saving: boolean;
+  onContinue: (data: Partial<ProfileData>) => void;
+  onSkip: () => void;
+}) {
+  const [deps, setDeps] = useState<Dependent[]>(() => {
+    try { return JSON.parse(profile.dependents || "[]"); }
+    catch { return []; }
+  });
+
+  function addDependent() {
+    setDeps([...deps, { name: "", relationship: "child", date_of_birth: "", sex: "", on_same_plan: true }]);
+  }
+
+  function updateDep(idx: number, field: keyof Dependent, value: string | boolean) {
+    setDeps(deps.map((d, i) => i === idx ? { ...d, [field]: value } : d));
+  }
+
+  function removeDep(idx: number) {
+    setDeps(deps.filter((_, i) => i !== idx));
+  }
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-lg font-semibold text-gray-900">Family &amp; dependents</h2>
+        <p className="text-sm text-gray-500 mt-1">
+          Adding family members on your plan helps us surface relevant benefits like
+          pediatric care, maternity coverage, and family deductible tracking.
+        </p>
+      </div>
+
+      {deps.length === 0 ? (
+        <div className="p-6 border-2 border-dashed border-gray-200 rounded-2xl text-center">
+          <p className="text-sm text-gray-500">No dependents added yet.</p>
+          <button
+            onClick={addDependent}
+            className="mt-3 px-4 py-2 text-sm font-semibold text-blue-600 border border-blue-200 rounded-xl hover:bg-blue-50 transition-colors"
+          >
+            + Add a family member
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {deps.map((dep, idx) => (
+            <div key={idx} className="p-4 bg-gray-50 rounded-2xl space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                  {dep.relationship === "spouse" || dep.relationship === "partner" ? "Partner" : dep.relationship === "child" ? "Child" : "Dependent"} {idx + 1}
+                </span>
+                <button onClick={() => removeDep(idx)} className="text-xs text-red-400 hover:text-red-600">
+                  Remove
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-medium text-gray-600 block mb-1">Name</label>
+                  <input
+                    value={dep.name}
+                    onChange={(e) => updateDep(idx, "name", e.target.value)}
+                    placeholder="First name"
+                    className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600 block mb-1">Relationship</label>
+                  <select
+                    value={dep.relationship}
+                    onChange={(e) => updateDep(idx, "relationship", e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="spouse">Spouse</option>
+                    <option value="partner">Partner</option>
+                    <option value="child">Child</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-medium text-gray-600 block mb-1">Date of birth</label>
+                  <input
+                    type="date"
+                    value={dep.date_of_birth}
+                    onChange={(e) => updateDep(idx, "date_of_birth", e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600 block mb-1">Sex</label>
+                  <select
+                    value={dep.sex}
+                    onChange={(e) => updateDep(idx, "sex", e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">—</option>
+                    <option value="female">Female</option>
+                    <option value="male">Male</option>
+                  </select>
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={dep.on_same_plan}
+                  onChange={(e) => updateDep(idx, "on_same_plan", e.target.checked)}
+                  className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-sm text-gray-600">On my insurance plan</span>
+              </label>
+            </div>
+          ))}
+
+          <button
+            onClick={addDependent}
+            className="w-full py-2.5 border-2 border-dashed border-gray-200 rounded-xl text-sm font-medium text-gray-500 hover:border-blue-300 hover:text-blue-600 transition-colors"
+          >
+            + Add another
+          </button>
+        </div>
+      )}
+
+      <div className="flex flex-col gap-2 pt-2">
+        <button
+          onClick={() => onContinue({ dependents: JSON.stringify(deps) })}
+          disabled={saving}
+          className="w-full py-3 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors"
+        >
+          {saving ? "Saving…" : deps.length > 0 ? "Save & Continue →" : "Continue →"}
+        </button>
+        <button onClick={onSkip} className="w-full py-2.5 text-sm text-gray-400 hover:text-gray-600 transition-colors">
+          {deps.length === 0 ? "No dependents — skip" : "Skip this step"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ConcernStep({
+  profile,
+  saving,
+  isOnboarding,
+  isLastStep,
+  savedGlobal,
+  onContinue,
+  onSkip,
+}: {
+  profile: ProfileData;
+  saving: boolean;
+  isOnboarding: boolean;
+  isLastStep: boolean;
+  savedGlobal: boolean;
+  onContinue: (data: Partial<ProfileData>) => void;
+  onSkip: () => void;
+}) {
+  const [concern, setConcern] = useState(profile.primary_concern);
+
+  const doneLabel = isOnboarding ? "Finish & Upload Documents →" : "Save Profile";
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-lg font-semibold text-gray-900 mb-1">What brings you here?</h2>
+        <p className="text-sm text-gray-500">
+          Tell us briefly what happened. This helps us prioritize the right audit checks for your situation.
+        </p>
+      </div>
+
+      <Field label="Your situation">
+        <textarea
+          value={concern}
+          onChange={(e) => setConcern(e.target.value)}
+          placeholder="e.g., I got a $4,200 ER bill after my insurance paid, and the EOB doesn't match what the hospital billed…"
+          rows={4}
+          className={inputClass}
+        />
+        <Tip>No pressure — even a brief description helps. You can always update this later.</Tip>
+      </Field>
+
+      {savedGlobal && (
+        <div className="flex items-center gap-2 p-3 bg-green-50 border border-green-100 rounded-xl">
+          <svg className="w-4 h-4 text-green-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+          </svg>
+          <p className="text-sm text-green-700 font-medium">Profile saved.</p>
+        </div>
+      )}
+
+      <div className="flex flex-col gap-2 pt-2">
+        <button
+          onClick={() => onContinue({ primary_concern: concern })}
+          disabled={saving}
+          className="w-full py-3 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors"
+        >
+          {saving ? "Saving…" : doneLabel}
+        </button>
+        {isOnboarding && (
+          <button onClick={onSkip} className="w-full py-2.5 text-sm text-gray-400 hover:text-gray-600 transition-colors">
+            Skip — go to upload
+          </button>
+        )}
+      </div>
+
+      {!isOnboarding && (
+        <Link href="/dashboard" className="block text-center text-xs text-gray-400 hover:text-gray-600">
+          ← Back to dashboard
         </Link>
+      )}
+    </div>
+  );
+}
+
+// ─── Read-only profile helpers ───────────────────────────────────────────────
+
+function ProfileSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="p-5 bg-white border border-gray-100 rounded-2xl">
+      <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-3">{title}</h3>
+      <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function ProfileField({ label, value, prefix, suffix }: { label: string; value: string; prefix?: string; suffix?: string }) {
+  return (
+    <div>
+      <p className="text-xs text-gray-400">{label}</p>
+      {value ? (
+        <p className="text-sm font-medium text-gray-900">{prefix}{value}{suffix}</p>
+      ) : (
+        <p className="text-sm text-gray-300 italic">Not set</p>
       )}
     </div>
   );

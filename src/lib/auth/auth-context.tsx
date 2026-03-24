@@ -87,8 +87,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setUser(candidUser);
           }
         } catch (err) {
-          console.error("Auth sync failed:", err);
-          setUser(null);
+          const code = (err as { code?: string })?.code;
+          if (code === "auth/network-request-failed") {
+            // Transient network issue — keep existing user state if available, retry silently
+            console.warn("Network issue during auth sync — will retry on next state change");
+          } else {
+            console.error("Auth sync failed:", err);
+            setUser(null);
+          }
         }
       } else {
         setUser(null);

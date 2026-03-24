@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
+import { sendPasswordResetEmail } from "firebase/auth";
+import { getFirebaseAuth } from "@/lib/firebase/client";
 import { useAuth } from "@/lib/auth/auth-context";
 
 export default function SignInPage() {
@@ -17,6 +19,7 @@ export default function SignInPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -36,6 +39,20 @@ export default function SignInPage() {
       }
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleForgotPassword() {
+    if (!email) {
+      setError("Enter your email address first, then click Forgot password.");
+      return;
+    }
+    try {
+      await sendPasswordResetEmail(getFirebaseAuth(), email);
+      setResetSent(true);
+      setError("");
+    } catch {
+      setError("Could not send reset email. Please check the address and try again.");
     }
   }
 
@@ -78,14 +95,30 @@ export default function SignInPage() {
             onChange={(e) => setEmail(e.target.value)}
             className="w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
-          <input
-            type="password"
-            required
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
+          <div>
+            <input
+              type="password"
+              required
+              placeholder="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <button
+              type="button"
+              onClick={handleForgotPassword}
+              className="mt-1.5 text-xs text-blue-600 hover:text-blue-700 font-medium"
+            >
+              Forgot password?
+            </button>
+          </div>
+
+          {resetSent && (
+            <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+              <p className="text-sm text-green-700">Password reset email sent. Check your inbox.</p>
+            </div>
+          )}
+
           <button
             type="submit"
             disabled={loading}

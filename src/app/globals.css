@@ -2,7 +2,7 @@
 
 :root {
   --background: #ffffff;
-  --foreground: #171717;
+  --foreground: #0f172a;
 }
 
 @theme inline {
@@ -17,5 +17,29 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+/* Subtle gradient mesh for hero backgrounds */
+.gradient-mesh {
+  background-image:
+    radial-gradient(at 27% 37%, hsla(215, 98%, 61%, 0.08) 0px, transparent 50%),
+    radial-gradient(at 97% 21%, hsla(215, 98%, 61%, 0.05) 0px, transparent 50%),
+    radial-gradient(at 52% 99%, hsla(215, 98%, 61%, 0.06) 0px, transparent 50%),
+    radial-gradient(at 10% 29%, hsla(256, 96%, 67%, 0.04) 0px, transparent 50%);
+}
+
+/* Glow effect for CTAs */
+.glow-blue {
+  box-shadow: 0 0 20px hsla(217, 91%, 60%, 0.15), 0 8px 32px hsla(217, 91%, 60%, 0.1);
+}
+
+.glow-blue:hover {
+  box-shadow: 0 0 24px hsla(217, 91%, 60%, 0.25), 0 12px 40px hsla(217, 91%, 60%, 0.15);
 }
