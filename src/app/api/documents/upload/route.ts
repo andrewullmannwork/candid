@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { FLAGS } from "@/lib/config/feature-flags";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -67,8 +68,21 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
-  if (file.size > 20 * 1024 * 1024) {
-    return NextResponse.json({ error: "File must be under 20MB." }, { status: 400 });
+  if (file.size > FLAGS.UPLOAD_MAX_FILE_SIZE) {
+    return NextResponse.json({ error: `File must be under ${Math.round(FLAGS.UPLOAD_MAX_FILE_SIZE / 1024 / 1024)}MB.` }, { status: 400 });
+  }
+
+  // Check per-user document limit
+  const { count: userDocCount } = await supabase
+    .from("documents")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", user.id);
+
+  if (userDocCount != null && userDocCount >= FLAGS.UPLOAD_MAX_PER_USER) {
+    return NextResponse.json(
+      { error: `You've reached the upload limit of ${FLAGS.UPLOAD_MAX_PER_USER} documents. Contact support if you need more.` },
+      { status: 429 }
+    );
   }
 
   const documentId = crypto.randomUUID();
@@ -84,7 +98,10 @@ export async function POST(req: NextRequest) {
 
   if (uploadError) {
     console.error("Storage upload error:", uploadError);
-    return NextResponse.json({ error: "Failed to upload file." }, { status: 500 });
+    const msg = uploadError.message?.includes("not found")
+      ? "Storage bucket not configured. Please contact support."
+      : "Failed to upload file. Please try again.";
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 
   // Insert document record

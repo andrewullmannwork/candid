@@ -14,6 +14,7 @@ const adminNav = [
   { href: "/admin/copy", label: "Site Copy" },
   { href: "/admin/subscriptions", label: "Subscriptions" },
   { href: "/admin/pipeline", label: "Benefit Pipeline" },
+  { href: "/admin/settings", label: "Settings" },
 ];
 
 export default function AdminLayout({ children }: { children: ReactNode }) {

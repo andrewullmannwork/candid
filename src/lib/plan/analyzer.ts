@@ -69,8 +69,22 @@ export function analyzePlan(input: PlanAnalysisInput): PlanAnalysisResult {
   // Calculate user age from DOB
   const userAge = input.dateOfBirth ? getAge(input.dateOfBirth) : undefined;
 
+  // Hard-exclude benefits that don't match user's sex or children status
+  const demographicFiltered = stateFiltered.filter((benefit) => {
+    const rec = benefit.recommendedFor;
+    if (!rec) return true; // No demographic criteria — include
+
+    // Hard exclusion: sex-specific benefits (e.g. breast pump for males, prostate for females)
+    if (rec.sex && input.sex && rec.sex !== input.sex) return false;
+
+    // Hard exclusion: children-required benefits when user has no children
+    if (rec.hasChildren && input.hasChildren === false) return false;
+
+    return true;
+  });
+
   // Build analyzed benefits with relevance notes and scores
-  const analyzed: AnalyzedBenefit[] = stateFiltered.map((benefit) => {
+  const analyzed: AnalyzedBenefit[] = demographicFiltered.map((benefit) => {
     const score = computeRelevanceScore(benefit, input, userAge);
     return {
       benefit,

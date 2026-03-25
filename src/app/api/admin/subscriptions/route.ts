@@ -1,8 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
+import { getAdminAuth } from "@/lib/firebase/admin";
 import { getStripe } from "@/lib/stripe";
 
-export async function GET() {
+async function verifyAdmin(req: NextRequest) {
+  const authHeader = req.headers.get("authorization");
+  if (!authHeader?.startsWith("Bearer ")) return null;
+  try {
+    const decoded = await getAdminAuth().verifyIdToken(authHeader.slice(7));
+    const supabase = createServerClient();
+    const { data: user } = await supabase
+      .from("users")
+      .select("id, is_admin")
+      .eq("firebase_uid", decoded.uid)
+      .single();
+    return user?.is_admin ? user : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function GET(req: NextRequest) {
+  const admin = await verifyAdmin(req);
+  if (!admin) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const supabase = createServerClient();
 
   const { data, error } = await supabase
@@ -22,6 +45,11 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  const admin = await verifyAdmin(req);
+  if (!admin) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { action, stripe_customer_id, reason } = await req.json();
 
   if (!stripe_customer_id || !action) {

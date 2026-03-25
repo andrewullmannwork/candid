@@ -40,6 +40,18 @@ const STATUS_COLORS: Record<string, string> = {
   verified: "bg-green-100 text-green-700",
 };
 
+interface ProcessingStats {
+  usage: {
+    today: number;
+    month: number;
+    dailyLimit: number;
+    monthlyLimit: number;
+    ocrEnabled: boolean;
+    autoProcess: boolean;
+  };
+  queuedDocuments: number;
+}
+
 export default function PipelinePage() {
   const { user } = useAuth();
   const [tab, setTab] = useState<"queue" | "catalog">("queue");
@@ -47,6 +59,8 @@ export default function PipelinePage() {
   const [catalog, setCatalog] = useState<InsurerCatalogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const { query, update } = useAdminQuery();
+  const [processingStats, setProcessingStats] = useState<ProcessingStats | null>(null);
+  const [processingAction, setProcessingAction] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -61,10 +75,43 @@ export default function PipelinePage() {
       ]);
       setQueue(queueData || []);
       setCatalog(catalogData || []);
+
+      // Load processing stats
+      if (user) {
+        const token = await user.firebaseUser.getIdToken();
+        const statsRes = await fetch("/api/admin/processing", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (statsRes.ok) {
+          setProcessingStats(await statsRes.json());
+        }
+      }
     } catch (err) {
       console.error("Failed to load pipeline data:", err);
     }
     setLoading(false);
+  }
+
+  async function processAllQueued() {
+    if (!user) return;
+    setProcessingAction(true);
+    try {
+      const token = await user.firebaseUser.getIdToken();
+      const res = await fetch("/api/admin/processing", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ action: "process_all_queued" }),
+      });
+      const result = await res.json();
+      setExtractResult(result.message);
+      loadData();
+    } catch (err) {
+      setExtractResult("Failed to process queued documents");
+    }
+    setProcessingAction(false);
   }
 
   async function updateQueueStatus(id: string, status: string) {
@@ -169,6 +216,62 @@ export default function PipelinePage() {
           Refresh
         </button>
       </div>
+
+      {/* Processing Stats Bar */}
+      {processingStats && (
+        <div className="mb-6 p-4 bg-gray-50 border border-gray-200 rounded-xl">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold text-gray-700">Document AI Processing</h3>
+            <div className="flex items-center gap-2">
+              {processingStats.queuedDocuments > 0 && (
+                <button
+                  onClick={processAllQueued}
+                  disabled={processingAction}
+                  className="px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {processingAction ? "Processing..." : `Process ${processingStats.queuedDocuments} queued`}
+                </button>
+              )}
+              <span className={`px-2 py-0.5 text-xs font-medium rounded ${processingStats.usage.ocrEnabled ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
+                OCR {processingStats.usage.ocrEnabled ? "ON" : "OFF"}
+              </span>
+              <span className={`px-2 py-0.5 text-xs font-medium rounded ${processingStats.usage.autoProcess ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
+                Auto-process {processingStats.usage.autoProcess ? "ON" : "OFF"}
+              </span>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-4 text-xs">
+            <div>
+              <span className="text-gray-400">Today</span>
+              <div className="flex items-center gap-2 mt-0.5">
+                <div className="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${processingStats.usage.today / processingStats.usage.dailyLimit > 0.8 ? "bg-red-500" : "bg-blue-500"}`}
+                    style={{ width: `${Math.min(100, (processingStats.usage.today / processingStats.usage.dailyLimit) * 100)}%` }}
+                  />
+                </div>
+                <span className="font-medium text-gray-600">{processingStats.usage.today}/{processingStats.usage.dailyLimit}</span>
+              </div>
+            </div>
+            <div>
+              <span className="text-gray-400">This Month</span>
+              <div className="flex items-center gap-2 mt-0.5">
+                <div className="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${processingStats.usage.month / processingStats.usage.monthlyLimit > 0.8 ? "bg-red-500" : "bg-blue-500"}`}
+                    style={{ width: `${Math.min(100, (processingStats.usage.month / processingStats.usage.monthlyLimit) * 100)}%` }}
+                  />
+                </div>
+                <span className="font-medium text-gray-600">{processingStats.usage.month}/{processingStats.usage.monthlyLimit}</span>
+              </div>
+            </div>
+            <div>
+              <span className="text-gray-400">Queued</span>
+              <p className="font-medium text-gray-600 mt-0.5">{processingStats.queuedDocuments} document{processingStats.queuedDocuments !== 1 ? "s" : ""}</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-4 gap-4 mb-6">

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useAuth } from "@/lib/auth/auth-context";
 
 interface SubscriptionRow {
   id: string;
@@ -18,6 +19,7 @@ interface SubscriptionRow {
 }
 
 export default function AdminSubscriptionsPage() {
+  const { user: authUser } = useAuth();
   const [subs, setSubs] = useState<SubscriptionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionTarget, setActionTarget] = useState<string | null>(null);
@@ -27,14 +29,18 @@ export default function AdminSubscriptionsPage() {
   const [result, setResult] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
   useEffect(() => {
+    if (!authUser) return;
     async function load() {
-      const res = await fetch("/api/admin/subscriptions");
+      const token = await authUser!.firebaseUser.getIdToken();
+      const res = await fetch("/api/admin/subscriptions", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
       const data = await res.json();
       setSubs(data.subscriptions || []);
       setLoading(false);
     }
     load();
-  }, []);
+  }, [authUser]);
 
   async function handleAction() {
     if (!actionTarget || !actionType) return;
@@ -42,9 +48,13 @@ export default function AdminSubscriptionsPage() {
     setResult(null);
 
     try {
+      const token = await authUser!.firebaseUser.getIdToken();
       const res = await fetch("/api/admin/subscriptions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
           action: actionType,
           stripe_customer_id: actionTarget,

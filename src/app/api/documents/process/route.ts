@@ -8,6 +8,7 @@ import { extractTextFromDocument } from "@/lib/ocr";
 import { parseBillFromOCR } from "@/lib/billing/parser";
 import { runAudit } from "@/lib/audit";
 import { collectPricingData } from "@/lib/care/collector";
+import { checkProcessingBudget, recordProcessingUsage } from "@/lib/config/processing-usage";
 
 export async function POST(req: NextRequest) {
   try {
@@ -20,11 +21,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!["eob", "itemized_bill"].includes(billType)) {
+    if (!["eob", "itemized_bill", "sbc"].includes(billType)) {
       return NextResponse.json(
-        { error: "billType must be 'eob' or 'itemized_bill'" },
+        { error: "billType must be 'eob', 'itemized_bill', or 'sbc'" },
         { status: 400 }
       );
+    }
+
+    // SBC documents don't go through the audit pipeline
+    if (billType === "sbc") {
+      return NextResponse.json({
+        success: true,
+        report: null,
+        message: "SBC document uploaded successfully. It will be processed through the benefits pipeline.",
+        pricingDataCollected: 0,
+      });
     }
 
     const supabase = createServerClient();
@@ -41,6 +52,30 @@ export async function POST(req: NextRequest) {
         { error: "Document not found" },
         { status: 404 }
       );
+    }
+
+    // Check processing budget (cost protection)
+    const adminOverride = req.headers.get("x-admin-override") === "true";
+    if (!adminOverride) {
+      const budget = await checkProcessingBudget(1);
+      if (!budget.allowed) {
+        // Queue the document instead of processing
+        await supabase
+          .from("documents")
+          .update({ status: "queued" })
+          .eq("id", documentId);
+        return NextResponse.json({
+          success: false,
+          queued: true,
+          error: budget.reason,
+          usage: {
+            dailyUsed: budget.dailyUsed,
+            dailyLimit: budget.dailyLimit,
+            monthlyUsed: budget.monthlyUsed,
+            monthlyLimit: budget.monthlyLimit,
+          },
+        }, { status: 429 });
+      }
     }
 
     // Update status to processing
@@ -69,7 +104,27 @@ export async function POST(req: NextRequest) {
     const buffer = Buffer.from(await fileData.arrayBuffer());
 
     // Run OCR
-    const ocrResult = await extractTextFromDocument(buffer, "application/pdf");
+    let ocrResult;
+    try {
+      ocrResult = await extractTextFromDocument(buffer, "application/pdf");
+    } catch (ocrErr) {
+      const msg = ocrErr instanceof Error ? ocrErr.message : "OCR failed";
+      const isConfig = msg.includes("DOCUMENT_AI_PROCESSOR_ID") || msg.includes("env var");
+      await supabase
+        .from("documents")
+        .update({ status: "error" })
+        .eq("id", documentId);
+      return NextResponse.json(
+        { error: isConfig
+          ? "Document processing is not configured yet. Please contact support."
+          : `OCR failed: ${msg}` },
+        { status: isConfig ? 503 : 500 }
+      );
+    }
+
+    // Record OCR usage for cost tracking
+    const pageCount = ocrResult.pages?.length || 1;
+    await recordProcessingUsage(pageCount);
 
     // Parse bill from OCR text
     const parsedBill = parseBillFromOCR(

@@ -167,6 +167,24 @@ interface ProfileData {
   phone: string;
   // Dependents (JSON string of array)
   dependents: string;
+  // Plan matching
+  matched_plan_id: string;
+  plan_source: string; // 'employer', 'marketplace', 'off_exchange', 'medicare', 'medicaid'
+}
+
+interface PlanSearchResult {
+  id: string;
+  hiosId: string;
+  name: string;
+  type: string;
+  state: string;
+  metalLevel: string;
+  premium: number;
+  deductible: number;
+  oopMax: number;
+  year: number;
+  hasSbcUrl: boolean;
+  dataStatus: string;
 }
 
 interface Dependent {
@@ -195,7 +213,17 @@ const EMPTY_PROFILE: ProfileData = {
   sex: "",
   phone: "",
   dependents: "[]",
+  matched_plan_id: "",
+  plan_source: "",
 };
+
+const PLAN_SOURCES = [
+  { value: "employer", label: "Employer / Group Plan" },
+  { value: "marketplace", label: "Healthcare.gov / State Exchange" },
+  { value: "off_exchange", label: "Individual (Off-Exchange)" },
+  { value: "medicare", label: "Medicare" },
+  { value: "medicaid", label: "Medicaid" },
+];
 
 // ─── Main component ─────────────────────────────────────────────────────────
 
@@ -259,6 +287,8 @@ export default function ProfilePage() {
               sex: p.sex || "",
               phone: p.phone || "",
               dependents: p.dependents ? JSON.stringify(p.dependents) : "[]",
+              matched_plan_id: p.matched_plan_id || "",
+              plan_source: p.plan_source || "",
             };
             setProfile(loaded);
             const hasSomeData = Object.entries(loaded).some(([k, v]) => k !== "dependents" && v && v !== "[]");
@@ -498,7 +528,7 @@ export default function ProfilePage() {
               user?.firebaseUser.providerData?.[0]?.providerId === "password" ? "Email & Password" :
               user?.firebaseUser.providerData?.[0]?.providerId || "Unknown"
             } />
-            <ProfileField label="Phone" value={profile.phone || user?.firebaseUser.phoneNumber || ""} />
+            <ProfileField label="Phone" value={profile.phone || ""} />
           </ProfileSection>
           <ProfileSection title="Insurance">
             <ProfileField label="Insurer" value={profile.insurer} />
@@ -777,12 +807,69 @@ function PlanDetailsStep({
   onContinue: (data: Partial<ProfileData>) => void;
   onSkip: () => void;
 }) {
+  const { user } = useAuth();
   const [insurer, setInsurer] = useState(profile.insurer);
   const [planType, setPlanType] = useState(profile.plan_type);
   const [planName, setPlanName] = useState(profile.plan_name);
   const [state, setState] = useState(profile.state);
   const [groupNumber, setGroupNumber] = useState(profile.group_number);
   const [memberId, setMemberId] = useState(profile.member_id);
+  const [planSource, setPlanSource] = useState(profile.plan_source);
+  const [matchedPlanId, setMatchedPlanId] = useState(profile.matched_plan_id);
+  const [matchedPlan, setMatchedPlan] = useState<PlanSearchResult | null>(null);
+
+  // Plan name autocomplete
+  const [planSuggestions, setPlanSuggestions] = useState<PlanSearchResult[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [searchingPlans, setSearchingPlans] = useState(false);
+  const searchTimeout = useRef<NodeJS.Timeout | null>(null);
+
+  function handlePlanNameChange(value: string) {
+    setPlanName(value);
+    setMatchedPlanId("");
+    setMatchedPlan(null);
+
+    // Debounced search
+    if (searchTimeout.current) clearTimeout(searchTimeout.current);
+    if (value.length < 3 || !user) {
+      setPlanSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+
+    searchTimeout.current = setTimeout(async () => {
+      setSearchingPlans(true);
+      try {
+        const token = await user.firebaseUser.getIdToken();
+        const res = await fetch("/api/plan/search", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ query: value, insurer, state }),
+        });
+        if (res.ok) {
+          const { plans } = await res.json();
+          setPlanSuggestions(plans || []);
+          setShowSuggestions((plans || []).length > 0);
+        }
+      } catch {
+        // Non-critical
+      }
+      setSearchingPlans(false);
+    }, 400);
+  }
+
+  function selectPlan(plan: PlanSearchResult) {
+    setPlanName(plan.name);
+    setMatchedPlanId(plan.id);
+    setMatchedPlan(plan);
+    setShowSuggestions(false);
+    // Auto-fill plan type and state if available
+    if (plan.type && !planType) setPlanType(plan.type);
+    if (plan.state && !state) setState(plan.state);
+  }
 
   const hasAny = insurer || planType || planName || state || groupNumber || memberId;
 
@@ -821,15 +908,73 @@ function PlanDetailsStep({
         </div>
       )}
 
+      <Field label="How do you get your insurance?">
+        <div className="grid grid-cols-2 gap-2">
+          {PLAN_SOURCES.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setPlanSource(opt.value)}
+              className={`px-3 py-2 text-xs font-medium rounded-xl border-2 transition-all text-left ${
+                planSource === opt.value
+                  ? "border-blue-500 bg-blue-50 text-blue-700"
+                  : "border-gray-200 text-gray-600 hover:border-gray-300"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </Field>
+
       <Field label="Plan name">
-        <input
-          type="text"
-          value={planName}
-          onChange={(e) => setPlanName(e.target.value)}
-          placeholder="e.g., Aetna Choice POS II, BCBS Blue Preferred"
-          className={inputClass}
-        />
-        <Tip>The specific product name — often shown below the insurer name on your card or in your member portal.</Tip>
+        <div className="relative">
+          <input
+            type="text"
+            value={planName}
+            onChange={(e) => handlePlanNameChange(e.target.value)}
+            onFocus={() => planSuggestions.length > 0 && setShowSuggestions(true)}
+            onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+            placeholder="e.g., Aetna Choice POS II, BCBS Blue Preferred"
+            className={inputClass}
+          />
+          {searchingPlans && (
+            <div className="absolute right-3 top-1/2 -translate-y-1/2">
+              <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            </div>
+          )}
+          {showSuggestions && planSuggestions.length > 0 && (
+            <div className="absolute z-20 left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-60 overflow-y-auto">
+              {planSuggestions.map((plan) => (
+                <button
+                  key={plan.id}
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => selectPlan(plan)}
+                  className="w-full text-left px-3 py-2.5 hover:bg-blue-50 border-b border-gray-100 last:border-b-0"
+                >
+                  <p className="text-sm font-medium text-gray-900">{plan.name}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {plan.type} · {plan.metalLevel} · {plan.state}
+                    {plan.deductible != null && ` · $${plan.deductible.toLocaleString()} deductible`}
+                  </p>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        {matchedPlan ? (
+          <div className="mt-1.5 p-2.5 bg-green-50 border border-green-100 rounded-xl">
+            <p className="text-xs font-medium text-green-700">
+              Plan matched: {matchedPlan.name} ({matchedPlan.type}, {matchedPlan.metalLevel})
+            </p>
+            <p className="text-xs text-green-600 mt-0.5">
+              Deductible: ${matchedPlan.deductible?.toLocaleString() || "N/A"} · OOP Max: ${matchedPlan.oopMax?.toLocaleString() || "N/A"}
+            </p>
+          </div>
+        ) : (
+          <Tip>Start typing your plan name — we&apos;ll search our database of {">"}50,000 plans to find yours.</Tip>
+        )}
       </Field>
 
       <div className="grid grid-cols-2 gap-3">
@@ -873,7 +1018,7 @@ function PlanDetailsStep({
       <div className="flex flex-col gap-2 pt-2">
         <button
           onClick={() =>
-            onContinue({ insurer, plan_type: planType, plan_name: planName, state, group_number: groupNumber, member_id: memberId })
+            onContinue({ insurer, plan_type: planType, plan_name: planName, state, group_number: groupNumber, member_id: memberId, plan_source: planSource, matched_plan_id: matchedPlanId || undefined })
           }
           disabled={saving}
           className="w-full py-3 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors"

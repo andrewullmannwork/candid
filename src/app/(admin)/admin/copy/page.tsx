@@ -22,14 +22,18 @@ export default function AdminCopyPage() {
   const [filter, setFilter] = useState("");
 
   useEffect(() => {
+    if (!authUser) return;
     async function load() {
-      const res = await fetch("/api/admin/copy");
+      const token = await authUser!.firebaseUser.getIdToken();
+      const res = await fetch("/api/admin/copy", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
       const data = await res.json();
       setCopy(data.copy || []);
       setLoading(false);
     }
     load();
-  }, []);
+  }, [authUser]);
 
   async function handleSave(key: string) {
     if (!authUser) return;

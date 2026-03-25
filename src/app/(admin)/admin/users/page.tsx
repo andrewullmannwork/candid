@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useAuth } from "@/lib/auth/auth-context";
 
 interface UserDetail {
   id: string;
@@ -37,15 +38,24 @@ interface UserDetail {
 }
 
 export default function AdminUsersPage() {
+  const { user: adminUser } = useAuth();
   const [users, setUsers] = useState<UserDetail[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [expandedUser, setExpandedUser] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<UserDetail | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [deleteResult, setDeleteResult] = useState<{ success: boolean; message: string } | null>(null);
 
   async function loadUsers(q?: string) {
+    if (!adminUser) return;
     setLoading(true);
+    const token = await adminUser.firebaseUser.getIdToken();
     const url = q ? `/api/admin/users?q=${encodeURIComponent(q)}` : "/api/admin/users";
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
     const data = await res.json();
     setUsers(data.users || []);
     setLoading(false);
@@ -53,11 +63,40 @@ export default function AdminUsersPage() {
 
   useEffect(() => {
     loadUsers();
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adminUser]);
 
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
     loadUsers(search);
+  }
+
+  async function handleDeleteUser() {
+    if (!deleteTarget || !adminUser) return;
+    setDeleting(true);
+    setDeleteResult(null);
+    try {
+      const idToken = await adminUser.firebaseUser.getIdToken();
+      const res = await fetch("/api/admin/users/delete", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({ userId: deleteTarget.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setDeleteResult({ success: true, message: `Deleted ${deleteTarget.email}. ${data.log?.join(", ") || ""}` });
+      setDeleteTarget(null);
+      setDeleteConfirmText("");
+      setExpandedUser(null);
+      loadUsers(search || undefined);
+    } catch (err) {
+      setDeleteResult({ success: false, message: err instanceof Error ? err.message : "Deletion failed" });
+    } finally {
+      setDeleting(false);
+    }
   }
 
   const statusColor: Record<string, string> = {
@@ -267,11 +306,78 @@ export default function AdminUsersPage() {
                         </div>
                       </div>
                     )}
+
+                    {/* Delete user */}
+                    {!u.is_admin && (
+                      <div className="pt-3 border-t">
+                        <button
+                          onClick={() => { setDeleteTarget(u); setDeleteConfirmText(""); setDeleteResult(null); }}
+                          className="px-4 py-2 bg-red-600 text-white text-xs rounded-lg hover:bg-red-700"
+                        >
+                          Delete All User Data
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Delete result banner */}
+      {deleteResult && (
+        <div className={`mt-4 p-3 rounded-lg text-sm ${
+          deleteResult.success ? "bg-green-50 text-green-800 border border-green-200" : "bg-red-50 text-red-800 border border-red-200"
+        }`}>
+          {deleteResult.message}
+          <button onClick={() => setDeleteResult(null)} className="ml-2 underline text-xs">dismiss</button>
+        </div>
+      )}
+
+      {/* Delete confirmation modal */}
+      {deleteTarget && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl max-w-md w-full p-6 shadow-2xl">
+            <h2 className="text-lg font-bold text-red-700">Delete User Data</h2>
+            <p className="mt-2 text-sm text-gray-700">
+              This will permanently delete <strong>all data</strong> for <strong>{deleteTarget.email}</strong>:
+            </p>
+            <ul className="mt-2 text-xs text-gray-600 space-y-1 list-disc list-inside">
+              <li>Profile and insurance info</li>
+              <li>Uploaded documents and storage files</li>
+              <li>Consent records</li>
+              <li>Support tickets</li>
+              <li>Stripe customer record</li>
+              <li>Firebase Auth account</li>
+            </ul>
+            <p className="mt-4 text-sm text-gray-700">
+              Type <strong>DELETE</strong> to confirm:
+            </p>
+            <input
+              type="text"
+              value={deleteConfirmText}
+              onChange={(e) => setDeleteConfirmText(e.target.value)}
+              placeholder="DELETE"
+              className="mt-1 w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-red-500 focus:outline-none"
+            />
+            <div className="mt-4 flex gap-3 justify-end">
+              <button
+                onClick={() => { setDeleteTarget(null); setDeleteConfirmText(""); }}
+                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+              >
+                Cancel
+              </button>
+              <button
+                disabled={deleteConfirmText !== "DELETE" || deleting}
+                onClick={handleDeleteUser}
+                className="px-4 py-2 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {deleting ? "Deleting..." : "Permanently Delete"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

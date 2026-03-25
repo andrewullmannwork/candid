@@ -1,7 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
+import { getAdminAuth } from "@/lib/firebase/admin";
+
+async function verifyAdmin(req: NextRequest) {
+  const authHeader = req.headers.get("authorization");
+  if (!authHeader?.startsWith("Bearer ")) return null;
+  try {
+    const decoded = await getAdminAuth().verifyIdToken(authHeader.slice(7));
+    const supabase = createServerClient();
+    const { data: user } = await supabase
+      .from("users")
+      .select("id, is_admin")
+      .eq("firebase_uid", decoded.uid)
+      .single();
+    return user?.is_admin ? user : null;
+  } catch {
+    return null;
+  }
+}
 
 export async function GET(req: NextRequest) {
+  const admin = await verifyAdmin(req);
+  if (!admin) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const supabase = createServerClient();
   const q = req.nextUrl.searchParams.get("q")?.trim();
 

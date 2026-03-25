@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
-import { createBrowserClient } from "@/lib/supabase/client";
 
 export default function SupportPage() {
   const { user } = useAuth();
@@ -19,21 +18,26 @@ export default function SupportPage() {
     setError("");
 
     try {
-      const supabase = createBrowserClient();
-      const { error: dbError } = await supabase.from("support_tickets").insert({
-        user_id: user.userId,
-        email: user.email,
-        subject,
-        body,
+      const idToken = await user.firebaseUser.getIdToken();
+      const res = await fetch("/api/support", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({ subject, body }),
       });
 
-      if (dbError) throw dbError;
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to submit ticket");
+      }
 
       setSubmitted(true);
       setSubject("");
       setBody("");
-    } catch {
-      setError("Failed to submit ticket. Please try again.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to submit ticket. Please try again.");
     } finally {
       setSubmitting(false);
     }

@@ -72,6 +72,8 @@ export async function POST(req: NextRequest) {
     sex,
     phone,
     dependents,
+    matched_plan_id,
+    plan_source,
   } = body;
 
   const supabase = createServerClient();
@@ -105,6 +107,8 @@ export async function POST(req: NextRequest) {
   if (date_of_birth !== undefined) update.date_of_birth = date_of_birth || null;
   if (sex !== undefined) update.sex = sex || null;
   if (phone !== undefined) update.phone = phone || null;
+  if (matched_plan_id !== undefined) update.matched_plan_id = matched_plan_id || null;
+  if (plan_source !== undefined) update.plan_source = plan_source || null;
   if (dependents !== undefined) {
     // Store as JSONB — parse if string, pass through if already object
     try {
