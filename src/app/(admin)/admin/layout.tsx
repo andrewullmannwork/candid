@@ -14,6 +14,7 @@ const adminNav = [
   { href: "/admin/copy", label: "Site Copy" },
   { href: "/admin/subscriptions", label: "Subscriptions" },
   { href: "/admin/pipeline", label: "Benefit Pipeline" },
+  { href: "/admin/sbc-tickets", label: "SBC Tickets" },
   { href: "/admin/settings", label: "Settings" },
 ];
 

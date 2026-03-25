@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { Suspense, useState, useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import type { DisputeLetter } from "@/lib/billing/types";
 import { SubscriptionGate } from "@/lib/subscription/subscription-gate";
@@ -9,7 +9,9 @@ import { downloadCaseFile } from "@/lib/casefile";
 export default function DisputesPage() {
   return (
     <SubscriptionGate requiredTier="pro" featureName="Dispute Letters">
-      <DisputesContent />
+      <Suspense>
+        <DisputesContent />
+      </Suspense>
     </SubscriptionGate>
   );
 }

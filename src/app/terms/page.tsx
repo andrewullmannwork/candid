@@ -18,6 +18,11 @@ export default function TermsPage() {
           {tosDoc.fullText}
         </pre>
       </div>
+      <div className="mt-12 border-t pt-8 text-sm text-gray-500 space-y-2">
+        <p>
+          See also: <Link href="/privacy" className="text-blue-600 hover:underline">Privacy Policy</Link> &middot; <Link href="/health-data" className="text-blue-600 hover:underline">Health Data Consent</Link>
+        </p>
+      </div>
     </div>
   );
 }
