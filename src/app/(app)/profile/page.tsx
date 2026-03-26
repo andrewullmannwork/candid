@@ -582,6 +582,16 @@ function ProfileContent() {
               <p className="text-sm text-gray-700 leading-relaxed">{profile.primary_concern}</p>
             </ProfileSection>
           )}
+
+          {/* Privacy & Data link */}
+          <div className="mt-6 pt-4 border-t border-gray-100 text-center">
+            <Link
+              href="/settings"
+              className="text-sm text-blue-600 hover:underline"
+            >
+              Privacy &amp; Data Settings
+            </Link>
+          </div>
         </div>
       </div>
     );

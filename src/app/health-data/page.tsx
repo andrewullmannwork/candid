@@ -9,7 +9,7 @@ export default function HealthDataPage() {
       <Link href="/" className="text-blue-600 hover:underline text-sm">
         &larr; Back to home
       </Link>
-      <h1 className="mt-6 text-3xl font-bold text-gray-900">Health Data Consent</h1>
+      <h1 className="mt-6 text-3xl font-bold text-gray-900">Consumer Health Data Privacy Policy</h1>
       <p className="mt-2 text-sm text-gray-500">
         Version {healthDoc.version} &middot; Effective {healthDoc.effectiveDate}
       </p>

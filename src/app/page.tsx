@@ -340,7 +340,7 @@ export default function LandingPage() {
             <div className="flex items-center gap-6 text-xs text-gray-400">
               <Link href="/privacy" className="hover:text-gray-700 transition-colors">Privacy</Link>
               <Link href="/terms" className="hover:text-gray-700 transition-colors">Terms</Link>
-              <Link href="/health-data" className="hover:text-gray-700 transition-colors">Health Data</Link>
+              <Link href="/health-data" className="hover:text-gray-700 transition-colors">Consumer Health Data Privacy Policy</Link>
               <a href="mailto:support@candid.com" className="hover:text-gray-700 transition-colors">Support</a>
             </div>
           </div>

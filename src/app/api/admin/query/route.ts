@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { logAdminAction } from "@/lib/admin/audit-log";
 
 // Allowed tables for admin queries — whitelist to prevent arbitrary table access
 const ALLOWED_TABLES = [
@@ -16,25 +17,34 @@ const ALLOWED_TABLES = [
   "plan_catalog",
   "plan_benefits",
   "sbc_tickets",
+  "admin_audit_log",
 ] as const;
 
 type AllowedTable = (typeof ALLOWED_TABLES)[number];
 
-async function verifyAdmin(req: NextRequest) {
+async function verifyAdmin(req: NextRequest): Promise<
+  | { authorized: false }
+  | { authorized: true; adminUserId: string; adminEmail: string }
+> {
   const authHeader = req.headers.get("authorization");
-  if (!authHeader?.startsWith("Bearer ")) return false;
+  if (!authHeader?.startsWith("Bearer ")) return { authorized: false };
 
   try {
     const decoded = await getAdminAuth().verifyIdToken(authHeader.slice(7));
     const supabase = createServerClient();
     const { data } = await supabase
       .from("users")
-      .select("is_admin")
+      .select("id, is_admin")
       .eq("firebase_uid", decoded.uid)
       .single();
-    return data?.is_admin === true;
+    if (data?.is_admin !== true) return { authorized: false };
+    return {
+      authorized: true,
+      adminUserId: data.id,
+      adminEmail: decoded.email || "unknown",
+    };
   } catch {
-    return false;
+    return { authorized: false };
   }
 }
 
@@ -44,7 +54,8 @@ async function verifyAdmin(req: NextRequest) {
  * Returns data from the specified table using service role (bypasses RLS).
  */
 export async function POST(req: NextRequest) {
-  if (!(await verifyAdmin(req))) {
+  const admin = await verifyAdmin(req);
+  if (!admin.authorized) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
   }
 
@@ -84,6 +95,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  // Audit log
+  await logAdminAction({
+    adminUserId: admin.adminUserId,
+    adminEmail: admin.adminEmail,
+    action: "query_table",
+    targetTable: table,
+    details: `Queried ${table} (select: ${select}, limit: ${limit})`,
+    ipAddress: req.headers.get("x-forwarded-for") || req.headers.get("x-real-ip"),
+  });
+
   return NextResponse.json({ data });
 }
 
@@ -93,7 +114,8 @@ export async function POST(req: NextRequest) {
  * Updates a row by id using service role.
  */
 export async function PATCH(req: NextRequest) {
-  if (!(await verifyAdmin(req))) {
+  const admin = await verifyAdmin(req);
+  if (!admin.authorized) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
   }
 
@@ -110,6 +132,16 @@ export async function PATCH(req: NextRequest) {
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
+  // Audit log
+  await logAdminAction({
+    adminUserId: admin.adminUserId,
+    adminEmail: admin.adminEmail,
+    action: "update_record",
+    targetTable: table,
+    details: `Updated row ${id} in ${table}`,
+    ipAddress: req.headers.get("x-forwarded-for") || req.headers.get("x-real-ip"),
+  });
 
   return NextResponse.json({ success: true });
 }
