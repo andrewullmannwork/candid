@@ -253,23 +253,23 @@ export function parseSBCText(text: string, documentId?: string): SBCParseResult 
 
   // ── Extract OOP max ─────────────────────────────────────────────────────
 
-  // Try structured format: "For in-network providers: $X/individual or $Y/family"
-  const inOopMatch = text.match(/out[- ]of[- ]pocket[\s\S]{0,200}?in[- ]network[^$]*?\$([\d,]+)\s*\/\s*individual[^$]*?\$([\d,]+)\s*\/\s*family/im)
-    || text.match(/in[- ]network\s+providers?[:\s]*\$([\d,]+)\s*\/?\s*individual[^\n]*\$([\d,]+)\s*\/?\s*family/im);
-  if (inOopMatch) {
-    plan.in_oop_max_individual = parseInt(inOopMatch[1].replace(/,/g, ""), 10);
-    plan.in_oop_max_family = parseInt(inOopMatch[2].replace(/,/g, ""), 10);
-  }
-  const outOopMatch = text.match(/out[- ]of[- ]pocket[\s\S]{0,400}?out[- ]of[- ]network[^$]*?\$([\d,]+)\s*\/\s*individual[^$]*?\$([\d,]+)\s*\/\s*family/im)
-    || text.match(/out[- ]of[- ]network\s+providers?[:\s]*\$([\d,]+)\s*\/?\s*individual[^\n]*\$([\d,]+)\s*\/?\s*family/im);
-  if (outOopMatch) {
-    plan.out_oop_max_individual = parseInt(outOopMatch[1].replace(/,/g, ""), 10);
-    plan.out_oop_max_family = parseInt(outOopMatch[2].replace(/,/g, ""), 10);
-  }
-  // Fallback: try simpler patterns
-  if (!plan.in_oop_max_individual) {
-    const simpleOop = text.match(/in[- ]network[^$\n]*?\$([\d,]+)\s*\/\s*individual/im);
-    if (simpleOop) plan.in_oop_max_individual = parseInt(simpleOop[1].replace(/,/g, ""), 10);
+  // Strategy: find the "out-of-pocket" question section. In SBC PDFs, the in-network
+  // answer often appears just BEFORE the question text due to column layout extraction.
+  // So we grab a window around the "out-of-pocket" text (200 chars before, 800 after).
+  const oopSectionIdx = text.search(/out[- ]of[- ]pocket\s+limit/i);
+  if (oopSectionIdx >= 0) {
+    const oopSection = text.slice(Math.max(0, oopSectionIdx - 200), oopSectionIdx + 800);
+
+    const inOop = oopSection.match(/in[- ]network[^$]*?\$([\d,]+)\s*\/?\s*individual[^$]*?\$([\d,]+)\s*\/?\s*family/im);
+    if (inOop) {
+      plan.in_oop_max_individual = parseInt(inOop[1].replace(/,/g, ""), 10);
+      plan.in_oop_max_family = parseInt(inOop[2].replace(/,/g, ""), 10);
+    }
+    const outOop = oopSection.match(/out[- ]of[- ]network[^$]*?\$([\d,]+)\s*\/?\s*individual[^$]*?\$([\d,]+)\s*\/?\s*family/im);
+    if (outOop) {
+      plan.out_oop_max_individual = parseInt(outOop[1].replace(/,/g, ""), 10);
+      plan.out_oop_max_family = parseInt(outOop[2].replace(/,/g, ""), 10);
+    }
   }
 
   // Combined medical/Rx OOP
@@ -452,8 +452,8 @@ export function parseSBCText(text: string, documentId?: string): SBCParseResult 
   const confidence = parsedFields / totalFields;
 
   if (services.length === 0) warnings.push("No per-service cost sharing was extracted");
-  if (!plan.in_deductible_individual) warnings.push("Could not extract in-network deductible");
-  if (!plan.in_oop_max_individual) warnings.push("Could not extract in-network OOP max");
+  if (plan.in_deductible_individual == null) warnings.push("Could not extract in-network deductible");
+  if (plan.in_oop_max_individual == null) warnings.push("Could not extract in-network OOP max");
   if (!plan.plan_name) warnings.push("Could not extract plan name");
 
   plan.confidence = Math.round(confidence * 100) / 100;
