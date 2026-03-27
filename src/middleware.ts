@@ -33,11 +33,12 @@ export function middleware(req: NextRequest) {
   const gpcHeader = req.headers.get("sec-gpc");
   let response: NextResponse | undefined;
 
-  // Allow public routes and static assets
+  // Allow public routes, static assets, and API routes (API routes handle their own auth)
   if (
     isPublicRoute(pathname) ||
     pathname.startsWith("/_next") ||
-    pathname.startsWith("/favicon")
+    pathname.startsWith("/favicon") ||
+    pathname.startsWith("/api/")
   ) {
     response = NextResponse.next();
   } else {

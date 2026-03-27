@@ -1,5 +1,8 @@
 // POST /api/documents/process
-// Triggers OCR extraction on an uploaded document, then runs audit
+// Triggers OCR extraction on an uploaded document, then:
+// - Classifies the document type (SBC, EOB, bill, card)
+// - If SBC: parses plan data → creates insurance_plans + plan_covered_services
+// - If bill/EOB: runs audit pipeline
 // Requires authenticated user + health data consent
 
 import { NextRequest, NextResponse } from "next/server";
@@ -9,6 +12,8 @@ import { parseBillFromOCR } from "@/lib/billing/parser";
 import { runAudit } from "@/lib/audit";
 import { collectPricingData } from "@/lib/care/collector";
 import { checkProcessingBudget, recordProcessingUsage } from "@/lib/config/processing-usage";
+import { classifyDocument } from "@/lib/classifier";
+import { parseSBCText } from "@/lib/plan/sbc-parser";
 
 export async function POST(req: NextRequest) {
   try {
@@ -26,16 +31,6 @@ export async function POST(req: NextRequest) {
         { error: "billType must be 'eob', 'itemized_bill', or 'sbc'" },
         { status: 400 }
       );
-    }
-
-    // SBC documents don't go through the audit pipeline
-    if (billType === "sbc") {
-      return NextResponse.json({
-        success: true,
-        report: null,
-        message: "SBC document uploaded successfully. It will be processed through the benefits pipeline.",
-        pricingDataCollected: 0,
-      });
     }
 
     const supabase = createServerClient();
@@ -59,7 +54,6 @@ export async function POST(req: NextRequest) {
     if (!adminOverride) {
       const budget = await checkProcessingBudget(1);
       if (!budget.allowed) {
-        // Queue the document instead of processing
         await supabase
           .from("documents")
           .update({ status: "queued" })
@@ -103,7 +97,7 @@ export async function POST(req: NextRequest) {
     // Convert to buffer for OCR
     const buffer = Buffer.from(await fileData.arrayBuffer());
 
-    // Run OCR
+    // ── Run OCR ──────────────────────────────────────────────────────────────
     let ocrResult;
     try {
       ocrResult = await extractTextFromDocument(buffer, "application/pdf");
@@ -126,7 +120,32 @@ export async function POST(req: NextRequest) {
     const pageCount = ocrResult.pages?.length || 1;
     await recordProcessingUsage(pageCount);
 
-    // Parse bill from OCR text
+    // ── Classify document ────────────────────────────────────────────────────
+    const classification = classifyDocument({
+      text: ocrResult.text,
+      fileName: doc.file_name,
+      userSelectedType: billType,
+    });
+
+    // Save classification results to document
+    await supabase
+      .from("documents")
+      .update({
+        classified_type: classification.classifiedType,
+        classification_confidence: classification.confidence,
+        classification_signals: classification.signals,
+        type_mismatch: classification.mismatch,
+      })
+      .eq("id", documentId);
+
+    // ── Route by document type ───────────────────────────────────────────────
+
+    // SBC documents: parse plan data instead of running audit
+    if (billType === "sbc" || classification.classifiedType === "sbc") {
+      return await handleSBCDocument(supabase, doc, ocrResult.text, documentId, classification);
+    }
+
+    // EOB / Itemized Bill: run audit pipeline
     const parsedBill = parseBillFromOCR(
       ocrResult,
       documentId,
@@ -134,11 +153,9 @@ export async function POST(req: NextRequest) {
       billType
     );
 
-    // Run audit
     const auditReport = await runAudit(parsedBill);
 
-    // Collect anonymized pricing data for Candid Care
-    // Non-blocking: pricing collection failure should not break the audit pipeline
+    // Collect anonymized pricing data for Candid Care (non-blocking)
     let pricingCollected = 0;
     try {
       const { data: profile } = await supabase
@@ -153,7 +170,7 @@ export async function POST(req: NextRequest) {
       );
       pricingCollected = result.collected;
     } catch {
-      // Pricing collection is best-effort — don't fail the request
+      // Pricing collection is best-effort
     }
 
     // Update document status
@@ -166,6 +183,11 @@ export async function POST(req: NextRequest) {
       success: true,
       report: auditReport,
       pricingDataCollected: pricingCollected,
+      classification: {
+        classifiedType: classification.classifiedType,
+        confidence: classification.confidence,
+        mismatch: classification.mismatch,
+      },
     });
   } catch (error) {
     console.error("Document processing error:", error);
@@ -173,5 +195,155 @@ export async function POST(req: NextRequest) {
       { error: "Processing failed. Please try again." },
       { status: 500 }
     );
+  }
+}
+
+// ── SBC document handler ───────────────────────────────────────────────────────
+
+type SupabaseClient = ReturnType<typeof createServerClient>;
+
+async function handleSBCDocument(
+  supabase: SupabaseClient,
+  doc: { id: string; user_id: string; file_name: string },
+  ocrText: string,
+  documentId: string,
+  classification: { classifiedType: string; confidence: number; mismatch: boolean }
+) {
+  try {
+    // Parse SBC into structured plan data
+    const parseResult = parseSBCText(ocrText, documentId);
+
+    // Create insurance_plans record
+    const planInsert = {
+      ...parseResult.plan,
+      user_id: doc.user_id,
+      source: "sbc_upload" as const,
+      source_document_id: documentId,
+      is_active: true,
+      verification_status: "unverified" as const,
+    };
+
+    // Deactivate any existing active plans for this user
+    await supabase
+      .from("insurance_plans")
+      .update({ is_active: false })
+      .eq("user_id", doc.user_id)
+      .eq("is_active", true);
+
+    const { data: newPlan, error: planError } = await supabase
+      .from("insurance_plans")
+      .insert(planInsert)
+      .select("id")
+      .single();
+
+    if (planError || !newPlan) {
+      console.error("Failed to create insurance plan:", planError);
+      await supabase.from("documents").update({ status: "error" }).eq("id", documentId);
+      return NextResponse.json({
+        success: false,
+        error: "Failed to save parsed plan data",
+        parseWarnings: parseResult.parseWarnings,
+      }, { status: 500 });
+    }
+
+    // Create plan_covered_services rows
+    let servicesCreated = 0;
+    if (parseResult.services.length > 0) {
+      // Batch lookup service_catalog IDs by slug
+      const slugs = [...new Set(parseResult.services.map((s) => s.serviceSlug))];
+      const { data: serviceCatalog } = await supabase
+        .from("service_catalog")
+        .select("id, slug")
+        .in("slug", slugs);
+
+      const slugToId = new Map(serviceCatalog?.map((s) => [s.slug, s.id]) || []);
+
+      const serviceInserts = parseResult.services
+        .filter((s) => slugToId.has(s.serviceSlug))
+        .map((s) => ({
+          insurance_plan_id: newPlan.id,
+          service_id: slugToId.get(s.serviceSlug)!,
+          place_of_service: s.placeOfService || "any",
+          in_copay: s.inCopay,
+          in_coinsurance: s.inCoinsurance,
+          in_deductible_applies: s.inDeductibleApplies,
+          in_copay_waiver_condition: s.inCopayWaiverCondition,
+          in_cost_description: s.inCostDescription,
+          out_copay: s.outCopay,
+          out_coinsurance: s.outCoinsurance,
+          out_deductible_applies: s.outDeductibleApplies,
+          out_cost_description: s.outCostDescription,
+          oon_paid_at_in_network: s.oonPaidAtInNetwork,
+          annual_limit: s.annualLimit,
+          annual_limit_value: s.annualLimitValue,
+          prior_auth_required: s.priorAuthRequired,
+          penalty_no_precert: s.penaltyNoPrecert,
+          covered: s.covered,
+          coverage_conditions: s.coverageConditions,
+          supply_limit_days: s.supplyLimitDays,
+          home_delivery_copay: s.homeDeliveryCopay,
+          step_therapy_required: s.stepTherapyRequired,
+          notes: s.notes,
+          confidence: s.confidence,
+          source: "sbc_parsed" as const,
+        }));
+
+      if (serviceInserts.length > 0) {
+        const { error: svcError } = await supabase
+          .from("plan_covered_services")
+          .insert(serviceInserts);
+
+        if (svcError) {
+          console.error("Failed to insert covered services:", svcError);
+        } else {
+          servicesCreated = serviceInserts.length;
+        }
+      }
+    }
+
+    // Link document to insurance plan
+    await supabase
+      .from("documents")
+      .update({
+        status: "processed",
+        linked_insurance_plan_id: newPlan.id,
+      })
+      .eq("id", documentId);
+
+    // Set as active plan on profile (if user doesn't already have one or we just created a new one)
+    await supabase
+      .from("profiles")
+      .update({ active_insurance_plan_id: newPlan.id })
+      .eq("user_id", doc.user_id);
+
+    return NextResponse.json({
+      success: true,
+      report: null,
+      sbcParsed: true,
+      insurancePlanId: newPlan.id,
+      planData: {
+        planName: parseResult.plan.plan_name,
+        planType: parseResult.plan.plan_type,
+        inDeductible: parseResult.plan.in_deductible_individual,
+        outDeductible: parseResult.plan.out_deductible_individual,
+        inOopMax: parseResult.plan.in_oop_max_individual,
+        outOopMax: parseResult.plan.out_oop_max_individual,
+        servicesExtracted: servicesCreated,
+      },
+      parseWarnings: parseResult.parseWarnings,
+      confidence: parseResult.confidence,
+      classification: {
+        classifiedType: classification.classifiedType,
+        confidence: classification.confidence,
+        mismatch: classification.mismatch,
+      },
+    });
+  } catch (err) {
+    console.error("SBC processing error:", err);
+    await supabase.from("documents").update({ status: "error" }).eq("id", documentId);
+    return NextResponse.json({
+      success: false,
+      error: "SBC processing failed. Please try again.",
+    }, { status: 500 });
   }
 }

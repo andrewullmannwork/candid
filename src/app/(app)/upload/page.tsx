@@ -53,6 +53,19 @@ function UploadForm() {
   const [fileName, setFileName] = useState("");
   const [showTips, setShowTips] = useState<"eob" | "itemized_bill" | "sbc" | null>(null);
   const [profileMissing, setProfileMissing] = useState(false);
+  const [classificationResult, setClassificationResult] = useState<{
+    classifiedType: string;
+    confidence: number;
+    mismatch: boolean;
+  } | null>(null);
+  const [sbcParsed, setSbcParsed] = useState<{
+    planName?: string;
+    inDeductible?: number;
+    outDeductible?: number;
+    inOopMax?: number;
+    outOopMax?: number;
+    servicesExtracted?: number;
+  } | null>(null);
 
   // Consent state — inline, not blocking
   const { hasConsented, loading: consentLoading, grantConsent } = useConsent("health_data_upload");
@@ -119,10 +132,33 @@ function UploadForm() {
 
         const { documentId } = await res.json();
 
-        sessionStorage.setItem(
-          "pendingAudit",
-          JSON.stringify({ documentId, billType: docType, fileName: file.name })
-        );
+        // For SBC documents, auto-process to extract plan data
+        if (docType === "sbc") {
+          try {
+            const processRes = await fetch("/api/documents/process", {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${idToken}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ documentId, billType: "sbc" }),
+            });
+            const processData = await processRes.json();
+            if (processData.classification) {
+              setClassificationResult(processData.classification);
+            }
+            if (processData.sbcParsed && processData.planData) {
+              setSbcParsed(processData.planData);
+            }
+          } catch {
+            // Non-critical: upload succeeded even if processing failed
+          }
+        } else {
+          sessionStorage.setItem(
+            "pendingAudit",
+            JSON.stringify({ documentId, billType: docType, fileName: file.name })
+          );
+        }
 
         setUploaded(true);
       } catch (err) {
@@ -216,22 +252,89 @@ function UploadForm() {
           </div>
           <h3 className="text-lg font-semibold text-green-800">Document uploaded</h3>
           <p className="mt-1 text-sm text-green-700">{fileName}</p>
-          <p className="mt-3 text-xs text-green-600 bg-green-100 rounded-xl p-3 leading-relaxed">
-            Upload more bills for a more complete picture — the more documents we analyze, the better your audit.
-          </p>
+
+          {/* Classification result */}
+          {classificationResult && (
+            <div className="mt-3">
+              <span className={`inline-block px-2.5 py-1 rounded-full text-xs font-medium ${
+                classificationResult.mismatch
+                  ? "bg-amber-100 text-amber-800"
+                  : "bg-blue-100 text-blue-700"
+              }`}>
+                Detected as: {classificationResult.classifiedType === "sbc" ? "Plan Document (SBC)"
+                  : classificationResult.classifiedType === "eob" ? "Explanation of Benefits"
+                  : classificationResult.classifiedType === "itemized_bill" ? "Itemized Bill"
+                  : classificationResult.classifiedType === "insurance_card" ? "Insurance Card"
+                  : classificationResult.classifiedType}
+                {classificationResult.confidence > 0 && ` (${Math.round(classificationResult.confidence * 100)}%)`}
+              </span>
+              {classificationResult.mismatch && (
+                <p className="mt-2 text-xs text-amber-700 bg-amber-50 rounded-lg p-2">
+                  This document looks different from what you selected. We processed it as your selected type, but results may be more accurate if the type matches.
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* SBC parse results */}
+          {sbcParsed && (
+            <div className="mt-3 text-left bg-green-100 rounded-xl p-3 space-y-1.5">
+              <p className="text-xs font-semibold text-green-800">Plan details extracted and saved to your profile</p>
+              {sbcParsed.planName && (
+                <p className="text-xs text-green-700">Plan: {sbcParsed.planName}</p>
+              )}
+              <div className="grid grid-cols-2 gap-1 text-xs text-green-700">
+                {sbcParsed.inDeductible != null && (
+                  <p>In-network deductible: ${sbcParsed.inDeductible.toLocaleString()}</p>
+                )}
+                {sbcParsed.outDeductible != null && (
+                  <p>Out-of-network deductible: ${sbcParsed.outDeductible.toLocaleString()}</p>
+                )}
+                {sbcParsed.inOopMax != null && (
+                  <p>In-network OOP max: ${sbcParsed.inOopMax.toLocaleString()}</p>
+                )}
+                {sbcParsed.outOopMax != null && (
+                  <p>Out-of-network OOP max: ${sbcParsed.outOopMax.toLocaleString()}</p>
+                )}
+              </div>
+              {sbcParsed.servicesExtracted != null && sbcParsed.servicesExtracted > 0 && (
+                <p className="text-xs text-green-700">{sbcParsed.servicesExtracted} covered services parsed</p>
+              )}
+            </div>
+          )}
+
+          {!sbcParsed && (
+            <p className="mt-3 text-xs text-green-600 bg-green-100 rounded-xl p-3 leading-relaxed">
+              Upload more bills for a more complete picture — the more documents we analyze, the better your audit.
+            </p>
+          )}
           <div className="mt-5 flex flex-col gap-2">
             <button
-              onClick={() => { setUploaded(false); setFileName(""); }}
+              onClick={() => {
+                setUploaded(false);
+                setFileName("");
+                setClassificationResult(null);
+                setSbcParsed(null);
+              }}
               className="w-full py-2.5 bg-green-600 text-white rounded-xl text-sm font-semibold hover:bg-green-700 transition-colors"
             >
               Upload another document
             </button>
-            <Link
-              href="/audit"
-              className="w-full py-2.5 border border-green-200 text-green-700 rounded-xl text-sm font-medium hover:bg-green-50 transition-colors text-center"
-            >
-              Done uploading — run audit
-            </Link>
+            {sbcParsed ? (
+              <Link
+                href="/plan"
+                className="w-full py-2.5 border border-green-200 text-green-700 rounded-xl text-sm font-medium hover:bg-green-50 transition-colors text-center"
+              >
+                View your plan benefits
+              </Link>
+            ) : (
+              <Link
+                href="/audit"
+                className="w-full py-2.5 border border-green-200 text-green-700 rounded-xl text-sm font-medium hover:bg-green-50 transition-colors text-center"
+              >
+                Done uploading — run audit
+              </Link>
+            )}
           </div>
         </div>
       </div>

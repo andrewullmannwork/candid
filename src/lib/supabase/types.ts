@@ -1,54 +1,302 @@
 /** Generated types — replace with `supabase gen types typescript` output after migration. */
+
+// ── Enum Types ─────────────────────────────────────────────────────────────────
+
+export type ConsentType =
+  | "tos"
+  | "privacy_policy"
+  | "health_data_upload"
+  | "marketplace_data_sharing"
+  | "aggregate_data_monetization";
+
+export type SubscriptionStatus =
+  | "none"
+  | "trialing"
+  | "active"
+  | "canceled"
+  | "past_due";
+
+export type DocType = "eob" | "itemized_bill" | "insurance_card" | "sbc" | "other";
+export type DocStatus = "uploaded" | "processing" | "processed" | "queued" | "error";
+
+export type InsurancePlanSource =
+  | "sbc_upload"
+  | "plan_doc_upload"
+  | "catalog_match"
+  | "manual"
+  | "insurance_card";
+
+export type VerificationStatus =
+  | "unverified"
+  | "user_confirmed"
+  | "cms_matched"
+  | "multi_user_verified";
+
+export type PlaceOfService =
+  | "pcp_office"
+  | "specialist_office"
+  | "outpatient_facility"
+  | "inpatient_facility"
+  | "independent_facility"
+  | "home"
+  | "virtual"
+  | "retail_pharmacy"
+  | "home_delivery_pharmacy"
+  | "designated_pharmacy"
+  | "any";
+
+export type ServiceCategory =
+  | "office_visit"
+  | "emergency"
+  | "hospital"
+  | "imaging"
+  | "lab"
+  | "rx"
+  | "therapy"
+  | "mental_health"
+  | "maternity"
+  | "dme"
+  | "preventive"
+  | "other";
+
+export type CoveredServiceSource = "sbc_parsed" | "plan_doc_parsed" | "cms_data" | "manual";
+
+// ── Table Types ────────────────────────────────────────────────────────────────
+
+// Users
+export interface UserRow {
+  id: string;
+  firebase_uid: string;
+  email: string;
+  display_name: string | null;
+  is_admin: boolean;
+  created_at: string;
+}
+
+// Profiles
+export interface ProfileRow {
+  id: string;
+  user_id: string;
+  insurer: string | null;
+  plan_type: string | null;
+  state: string | null;
+  primary_concern: string | null;
+  // Plan fields (deprecated — use insurance_plans)
+  plan_name: string | null;
+  group_number: string | null;
+  member_id: string | null;
+  deductible_individual: number | null;
+  oop_max_individual: number | null;
+  copay_primary: number | null;
+  copay_specialist: number | null;
+  copay_er: number | null;
+  coinsurance_pct: number | null;
+  insurance_card_path: string | null;
+  // Demographics
+  date_of_birth: string | null;
+  sex: "male" | "female" | "prefer_not_to_say" | null;
+  phone: string | null;
+  dependents: unknown; // JSONB: [{ name, relationship, date_of_birth, sex, on_same_plan }]
+  // Plan matching (deprecated — use insurance_plans)
+  matched_plan_id: string | null;
+  plan_source: string | null;
+  // New: active insurance plan
+  active_insurance_plan_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// Documents
+export interface DocumentRow {
+  id: string;
+  user_id: string;
+  storage_path: string;
+  file_name: string;
+  file_size: number;
+  doc_type: DocType;
+  consent_event_id: string;
+  status: DocStatus;
+  // Classification (migration 009)
+  classified_type: string | null;
+  classification_confidence: number | null;
+  classification_signals: unknown | null; // JSONB
+  type_mismatch: boolean;
+  linked_insurance_plan_id: string | null;
+  created_at: string;
+}
+
+// Service Catalog
+export interface ServiceCatalogRow {
+  id: string;
+  slug: string;
+  name: string;
+  category: ServiceCategory;
+  description: string | null;
+  is_preventive_eligible: boolean;
+  commonly_disputed: boolean;
+  dispute_rate: number;
+  misbill_rate: number;
+  denial_rate: number;
+  avg_overcharge_pct: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// Insurance Plans
+export interface InsurancePlanRow {
+  id: string;
+  user_id: string;
+  // Identity
+  plan_name: string | null;
+  insurer_name: string | null;
+  plan_type: string | null;
+  plan_year: number | null;
+  state: string | null;
+  group_number: string | null;
+  member_id: string | null;
+  coverage_period_start: string | null;
+  coverage_period_end: string | null;
+  coverage_tier: string | null;
+  // In-network
+  in_deductible_individual: number | null;
+  in_deductible_family: number | null;
+  in_oop_max_individual: number | null;
+  in_oop_max_family: number | null;
+  in_coinsurance_default: number | null;
+  // Out-of-network
+  out_deductible_individual: number | null;
+  out_deductible_family: number | null;
+  out_oop_max_individual: number | null;
+  out_oop_max_family: number | null;
+  out_coinsurance_default: number | null;
+  // Premium
+  premium_total: number | null;
+  premium_employee: number | null;
+  premium_employer: number | null;
+  premium_subsidy: number | null;
+  premium_frequency: string | null;
+  // Plan rules
+  deductible_calc_method: "embedded" | "aggregate" | null;
+  combined_medical_rx_oop: boolean | null;
+  oop_exclusions: unknown | null; // JSONB
+  other_deductibles: unknown | null; // JSONB
+  referral_required: boolean | null;
+  network_name: string | null;
+  mail_order_pharmacy: boolean | null;
+  coordination_type: "primary" | "secondary" | "unknown" | null;
+  // Claims & appeals
+  timely_filing_days_in: number | null;
+  timely_filing_days_out: number | null;
+  appeals_deadline_days: number | null;
+  external_review_available: boolean | null;
+  claims_timelines: unknown | null; // JSONB
+  contact_info: unknown | null; // JSONB
+  // Admin / ERISA
+  admin_info: unknown | null; // JSONB
+  // Continuation
+  cobra_months: number | null;
+  medical_benefits_extension: boolean | null;
+  // Compliance
+  minimum_essential_coverage: boolean | null;
+  minimum_value_standard: boolean | null;
+  // Provenance
+  source: InsurancePlanSource;
+  source_document_id: string | null;
+  matched_catalog_plan_id: string | null;
+  confidence: number;
+  // Verification
+  verification_status: VerificationStatus;
+  verification_count: number;
+  cms_match_confidence: number | null;
+  // Status
+  is_active: boolean;
+  verified_by_user: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export type InsurancePlanInsert = Partial<InsurancePlanRow> & {
+  user_id: string;
+};
+
+// Plan Covered Services
+export interface PlanCoveredServiceRow {
+  id: string;
+  insurance_plan_id: string;
+  service_id: string;
+  place_of_service: PlaceOfService;
+  // In-network
+  in_copay: number | null;
+  in_coinsurance: number | null;
+  in_deductible_applies: boolean | null;
+  in_copay_waiver_condition: string | null;
+  in_cost_description: string | null;
+  // Out-of-network
+  out_copay: number | null;
+  out_coinsurance: number | null;
+  out_deductible_applies: boolean | null;
+  out_cost_description: string | null;
+  // Rules
+  oon_paid_at_in_network: boolean;
+  annual_limit: string | null;
+  annual_limit_value: number | null;
+  prior_auth_required: boolean | null;
+  penalty_no_precert: number | null;
+  covered: boolean;
+  coverage_conditions: string | null;
+  exclusion_reason: string | null;
+  // Rx-specific
+  supply_limit_days: number | null;
+  home_delivery_copay: number | null;
+  specialty_pharmacy_required: boolean | null;
+  step_therapy_required: boolean | null;
+  quantity_limit: string | null;
+  designated_pharmacy_required: boolean | null;
+  ancillary_charge_applies: boolean | null;
+  // Other
+  multiple_surgery_reduction: boolean | null;
+  notes: string | null;
+  // Provenance
+  confidence: number;
+  source: CoveredServiceSource;
+  created_at: string;
+}
+
+export type PlanCoveredServiceInsert = Partial<PlanCoveredServiceRow> & {
+  insurance_plan_id: string;
+  service_id: string;
+};
+
+// Claim Insights
+export interface ClaimInsightRow {
+  id: string;
+  service_id: string;
+  insurer_name: string;
+  total_claims_seen: number;
+  denial_count: number;
+  overcharge_count: number;
+  avg_overcharge_amount: number;
+  avg_overcharge_pct: number;
+  dispute_filed_count: number;
+  dispute_success_count: number;
+  most_common_error_type: string | null;
+  updated_at: string;
+}
+
+// ── Legacy Database type (kept for backwards compat with existing code) ────────
+
 export type Database = {
   public: {
     Tables: {
       users: {
-        Row: {
-          id: string;
-          firebase_uid: string;
-          email: string;
-          display_name: string | null;
-          is_admin: boolean;
-          created_at: string;
-        };
-        Insert: {
-          id?: string;
-          firebase_uid: string;
-          email: string;
-          display_name?: string | null;
-          is_admin?: boolean;
-          created_at?: string;
-        };
-        Update: {
-          display_name?: string | null;
-          email?: string;
-        };
+        Row: UserRow;
+        Insert: Partial<UserRow> & { firebase_uid: string; email: string };
+        Update: { display_name?: string | null; email?: string };
       };
       profiles: {
-        Row: {
-          id: string;
-          user_id: string;
-          insurer: string | null;
-          plan_type: string | null;
-          state: string | null;
-          primary_concern: string | null;
-          created_at: string;
-          updated_at: string;
-        };
-        Insert: {
-          id?: string;
-          user_id: string;
-          insurer?: string | null;
-          plan_type?: string | null;
-          state?: string | null;
-          primary_concern?: string | null;
-        };
-        Update: {
-          insurer?: string | null;
-          plan_type?: string | null;
-          state?: string | null;
-          primary_concern?: string | null;
-        };
+        Row: ProfileRow;
+        Insert: Partial<ProfileRow> & { user_id: string };
+        Update: Partial<ProfileRow>;
       };
       waitlist: {
         Row: {
@@ -67,30 +315,16 @@ export type Database = {
         Update: never;
       };
       documents: {
-        Row: {
-          id: string;
+        Row: DocumentRow;
+        Insert: Partial<DocumentRow> & {
           user_id: string;
           storage_path: string;
           file_name: string;
           file_size: number;
-          doc_type: "eob" | "itemized_bill";
+          doc_type: DocType;
           consent_event_id: string;
-          status: "uploaded" | "processing" | "processed" | "error";
-          created_at: string;
         };
-        Insert: {
-          id?: string;
-          user_id: string;
-          storage_path: string;
-          file_name: string;
-          file_size: number;
-          doc_type: "eob" | "itemized_bill";
-          consent_event_id: string;
-          status?: "uploaded";
-        };
-        Update: {
-          status?: "uploaded" | "processing" | "processed" | "error";
-        };
+        Update: Partial<DocumentRow>;
       };
       consent_events: {
         Row: {
@@ -141,7 +375,6 @@ export type Database = {
           subscription_status?: SubscriptionStatus;
           subscription_tier?: "free" | "pro";
           current_period_end?: string | null;
-          updated_at?: string;
         };
       };
       site_copy: {
@@ -191,23 +424,28 @@ export type Database = {
         };
         Update: {
           status?: "open" | "in_progress" | "resolved" | "closed";
-          updated_at?: string;
         };
+      };
+      service_catalog: {
+        Row: ServiceCatalogRow;
+        Insert: Partial<ServiceCatalogRow> & { slug: string; name: string; category: ServiceCategory };
+        Update: Partial<ServiceCatalogRow>;
+      };
+      insurance_plans: {
+        Row: InsurancePlanRow;
+        Insert: InsurancePlanInsert;
+        Update: Partial<InsurancePlanRow>;
+      };
+      plan_covered_services: {
+        Row: PlanCoveredServiceRow;
+        Insert: PlanCoveredServiceInsert;
+        Update: Partial<PlanCoveredServiceRow>;
+      };
+      claim_insights: {
+        Row: ClaimInsightRow;
+        Insert: Partial<ClaimInsightRow> & { service_id: string; insurer_name: string };
+        Update: Partial<ClaimInsightRow>;
       };
     };
   };
 };
-
-export type ConsentType =
-  | "tos"
-  | "privacy_policy"
-  | "health_data_upload"
-  | "marketplace_data_sharing"
-  | "aggregate_data_monetization";
-
-export type SubscriptionStatus =
-  | "none"
-  | "trialing"
-  | "active"
-  | "canceled"
-  | "past_due";

@@ -17,7 +17,7 @@ async function getAuthUser(req: NextRequest) {
   }
 }
 
-/** GET /api/profile — load the current user's profile */
+/** GET /api/profile — load the current user's profile + active insurance plan */
 export async function GET(req: NextRequest) {
   const decoded = await getAuthUser(req);
   if (!decoded) {
@@ -42,7 +42,31 @@ export async function GET(req: NextRequest) {
     .eq("user_id", user.id)
     .single();
 
-  return NextResponse.json({ profile: profile || null });
+  // Fetch active insurance plan if linked
+  let insurancePlan = null;
+  let coveredServices = null;
+  if (profile?.active_insurance_plan_id) {
+    const { data: plan } = await supabase
+      .from("insurance_plans")
+      .select("*")
+      .eq("id", profile.active_insurance_plan_id)
+      .single();
+    insurancePlan = plan;
+
+    if (plan) {
+      const { data: services } = await supabase
+        .from("plan_covered_services")
+        .select("*, service_catalog(slug, name, category)")
+        .eq("insurance_plan_id", plan.id);
+      coveredServices = services;
+    }
+  }
+
+  return NextResponse.json({
+    profile: profile || null,
+    insurancePlan,
+    coveredServices,
+  });
 }
 
 /** POST /api/profile — save/update the current user's profile (partial updates supported) */
@@ -110,7 +134,6 @@ export async function POST(req: NextRequest) {
   if (matched_plan_id !== undefined) update.matched_plan_id = matched_plan_id || null;
   if (plan_source !== undefined) update.plan_source = plan_source || null;
   if (dependents !== undefined) {
-    // Store as JSONB — parse if string, pass through if already object
     try {
       update.dependents = typeof dependents === "string" ? JSON.parse(dependents) : dependents;
     } catch {
@@ -127,12 +150,84 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Failed to save profile" }, { status: 500 });
   }
 
+  // ── Dual-write: sync plan data to insurance_plans ─────────────────────────
+  // When plan-related fields are submitted, also write to the normalized tables
+  const hasPlanData = plan_name !== undefined || deductible_individual !== undefined
+    || copay_primary !== undefined || coinsurance_pct !== undefined
+    || matched_plan_id !== undefined || insurer !== undefined;
+
+  if (hasPlanData) {
+    try {
+      // Check if user already has an active insurance plan
+      const { data: existingProfile } = await supabase
+        .from("profiles")
+        .select("active_insurance_plan_id")
+        .eq("user_id", user.id)
+        .single();
+
+      const planUpdate: Record<string, unknown> = {
+        user_id: user.id,
+        source: "manual",
+        is_active: true,
+      };
+
+      if (plan_name !== undefined) planUpdate.plan_name = plan_name || null;
+      if (insurer !== undefined) planUpdate.insurer_name = insurer || null;
+      if (plan_type !== undefined) planUpdate.plan_type = plan_type || null;
+      if (state !== undefined) planUpdate.state = state || null;
+      if (group_number !== undefined) planUpdate.group_number = group_number || null;
+      if (member_id !== undefined) planUpdate.member_id = member_id || null;
+      if (deductible_individual !== undefined) planUpdate.in_deductible_individual = deductible_individual || null;
+      if (oop_max_individual !== undefined) planUpdate.in_oop_max_individual = oop_max_individual || null;
+      if (coinsurance_pct !== undefined) planUpdate.in_coinsurance_default = coinsurance_pct ? coinsurance_pct / 100 : null;
+      if (matched_plan_id !== undefined) planUpdate.matched_catalog_plan_id = matched_plan_id || null;
+      if (plan_source !== undefined) {
+        // Map plan_source to a valid source if it's a recognized value
+        const validSources = ["sbc_upload", "plan_doc_upload", "catalog_match", "manual", "insurance_card"];
+        if (plan_source && validSources.includes(plan_source)) {
+          planUpdate.source = plan_source;
+        }
+      }
+
+      if (existingProfile?.active_insurance_plan_id) {
+        // Update existing plan
+        await supabase
+          .from("insurance_plans")
+          .update(planUpdate)
+          .eq("id", existingProfile.active_insurance_plan_id);
+      } else {
+        // Create new plan
+        const { data: newPlan } = await supabase
+          .from("insurance_plans")
+          .insert(planUpdate)
+          .select("id")
+          .single();
+
+        if (newPlan) {
+          // Link to profile
+          await supabase
+            .from("profiles")
+            .update({ active_insurance_plan_id: newPlan.id })
+            .eq("user_id", user.id);
+
+          // Create plan_covered_services rows for copays
+          await syncCopayServices(supabase, newPlan.id, { copay_primary, copay_specialist, copay_er });
+        }
+      }
+
+      // If updating existing plan, also sync copays
+      if (existingProfile?.active_insurance_plan_id && (copay_primary !== undefined || copay_specialist !== undefined || copay_er !== undefined)) {
+        await syncCopayServices(supabase, existingProfile.active_insurance_plan_id, { copay_primary, copay_specialist, copay_er });
+      }
+    } catch (err) {
+      // Non-critical — don't fail the profile save
+      console.warn("Insurance plan dual-write failed:", err);
+    }
+  }
+
   // ── Insurer catalog matching ─────────────────────────────────────────────
-  // If user entered an insurer, try to match it against the catalog.
-  // If no match found, queue for discovery.
   if (insurer && insurer !== "Other") {
     try {
-      // Fuzzy match: check if any catalog entry's name or aliases match
       const { data: catalogEntries } = await supabase
         .from("insurer_catalog")
         .select("id, name, aliases");
@@ -142,7 +237,6 @@ export async function POST(req: NextRequest) {
         const match = catalogEntries.find((entry) => {
           if (entry.name.toLowerCase() === normalizedInput) return true;
           if (entry.aliases?.some((alias: string) => alias.toLowerCase() === normalizedInput)) return true;
-          // Partial match: input contains catalog name or vice versa
           if (entry.name.toLowerCase().includes(normalizedInput)) return true;
           if (normalizedInput.includes(entry.name.toLowerCase())) return true;
           return entry.aliases?.some((alias: string) =>
@@ -151,7 +245,6 @@ export async function POST(req: NextRequest) {
         });
 
         if (!match) {
-          // No match — check if already queued to avoid duplicates
           const { data: existingQueue } = await supabase
             .from("insurer_discovery_queue")
             .select("id")
@@ -170,10 +263,53 @@ export async function POST(req: NextRequest) {
         }
       }
     } catch (err) {
-      // Non-critical — don't fail the profile save
       console.warn("Insurer catalog matching failed:", err);
     }
   }
 
   return NextResponse.json({ success: true });
+}
+
+// ── Helper: sync copay fields to plan_covered_services ─────────────────────
+
+type SupabaseClient = ReturnType<typeof createServerClient>;
+
+async function syncCopayServices(
+  supabase: SupabaseClient,
+  insurancePlanId: string,
+  copays: { copay_primary?: number; copay_specialist?: number; copay_er?: number }
+) {
+  const copayMap: Record<string, number | undefined> = {
+    pcp_visit: copays.copay_primary,
+    specialist_visit: copays.copay_specialist,
+    er_visit: copays.copay_er,
+  };
+
+  for (const [slug, copay] of Object.entries(copayMap)) {
+    if (copay === undefined) continue;
+
+    // Look up service_catalog ID by slug
+    const { data: service } = await supabase
+      .from("service_catalog")
+      .select("id")
+      .eq("slug", slug)
+      .single();
+
+    if (!service) continue;
+
+    // Upsert the covered service row
+    await supabase
+      .from("plan_covered_services")
+      .upsert(
+        {
+          insurance_plan_id: insurancePlanId,
+          service_id: service.id,
+          place_of_service: "any",
+          in_copay: copay,
+          source: "manual",
+          confidence: 1,
+        },
+        { onConflict: "insurance_plan_id,service_id,place_of_service" }
+      );
+  }
 }

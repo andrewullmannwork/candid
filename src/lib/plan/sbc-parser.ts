@@ -1,0 +1,467 @@
+// SBC Parser — extracts structured plan data from SBC OCR text
+// Produces insurance_plans + plan_covered_services records
+// SBCs follow a standardized federal DOL/HHS template
+
+import type { InsurancePlanInsert, PlanCoveredServiceInsert } from "@/lib/supabase/types";
+
+export interface SBCParseResult {
+  plan: Partial<InsurancePlanInsert>;
+  services: SBCParsedService[];
+  confidence: number;
+  parseWarnings: string[];
+}
+
+export interface SBCParsedService {
+  serviceSlug: string;
+  placeOfService: string;
+  inCopay: number | null;
+  inCoinsurance: number | null;
+  inDeductibleApplies: boolean | null;
+  inCopayWaiverCondition: string | null;
+  inCostDescription: string;
+  outCopay: number | null;
+  outCoinsurance: number | null;
+  outDeductibleApplies: boolean | null;
+  outCostDescription: string;
+  oonPaidAtInNetwork: boolean;
+  annualLimit: string | null;
+  annualLimitValue: number | null;
+  priorAuthRequired: boolean | null;
+  penaltyNoPrecert: number | null;
+  covered: boolean;
+  coverageConditions: string | null;
+  supplyLimitDays: number | null;
+  homeDeliveryCopay: number | null;
+  stepTherapyRequired: boolean | null;
+  notes: string | null;
+  confidence: number;
+}
+
+// ── Helper: parse dollar amounts ─────────────────────────────────────────────
+
+function parseDollar(text: string): number | null {
+  const m = text.match(/\$\s*([\d,]+(?:\.\d{2})?)/);
+  return m ? parseFloat(m[1].replace(/,/g, "")) : null;
+}
+
+function parsePercent(text: string): number | null {
+  const m = text.match(/(\d+)\s*%/);
+  return m ? parseInt(m[1], 10) / 100 : null;
+}
+
+// ── Helper: extract cost sharing from a cell description ─────────────────────
+
+interface CostSharing {
+  copay: number | null;
+  coinsurance: number | null;
+  deductibleApplies: boolean | null;
+  copayWaiverCondition: string | null;
+  rawDescription: string;
+}
+
+function parseCostSharing(text: string): CostSharing {
+  const raw = text.trim();
+  const result: CostSharing = {
+    copay: null,
+    coinsurance: null,
+    deductibleApplies: null,
+    copayWaiverCondition: null,
+    rawDescription: raw,
+  };
+
+  if (!raw || /not\s+covered/i.test(raw)) {
+    return result;
+  }
+
+  // "No charge" = 100% covered
+  if (/no\s+charge/i.test(raw)) {
+    result.copay = 0;
+    result.coinsurance = 0;
+    result.deductibleApplies = false;
+    return result;
+  }
+
+  // Extract copay: "$20 copay/visit", "$250 copay/visit"
+  const copayMatch = raw.match(/\$\s*([\d,]+(?:\.\d{2})?)\s*(?:copay|co-pay)/i);
+  if (copayMatch) {
+    result.copay = parseFloat(copayMatch[1].replace(/,/g, ""));
+  }
+
+  // Extract coinsurance: "10% coinsurance", "30% coinsurance"
+  const coinsMatch = raw.match(/(\d+)\s*%\s*(?:coinsurance|co-insurance)/i);
+  if (coinsMatch) {
+    result.coinsurance = parseInt(coinsMatch[1], 10) / 100;
+  }
+
+  // Check deductible applies
+  if (/deductible\s+(?:does\s+)?not\s+apply/i.test(raw)) {
+    result.deductibleApplies = false;
+  } else if (/(?:after|then|plus)\s+.*deductible/i.test(raw) || /deductible.*(?:then|plus)/i.test(raw)) {
+    result.deductibleApplies = true;
+  } else if (/plan\s+deductible/i.test(raw)) {
+    result.deductibleApplies = true;
+  }
+
+  // Copay waiver condition: "waived if admitted"
+  const waiverMatch = raw.match(/(?:copay\s+)?(?:is\s+)?waived\s+if\s+(\w+)/i);
+  if (waiverMatch) {
+    result.copayWaiverCondition = `waived if ${waiverMatch[1]}`;
+  }
+
+  return result;
+}
+
+// ── SBC service mapping: SBC row text → service_catalog slug ─────────────────
+
+interface ServiceMapping {
+  patterns: RegExp[];
+  slug: string;
+  placeOfService?: string;
+}
+
+const SBC_SERVICE_MAPPINGS: ServiceMapping[] = [
+  // Office visits
+  { patterns: [/primary\s+care\s+visit/i, /primary\s+care.*injury\s+or\s+illness/i], slug: "pcp_visit" },
+  { patterns: [/specialist\s+visit/i], slug: "specialist_visit" },
+  { patterns: [/preventive\s+care/i, /screening.*immunization/i], slug: "preventive_care" },
+  // Tests
+  { patterns: [/diagnostic\s+test/i, /x-ray.*blood\s+work/i], slug: "diagnostic_test" },
+  { patterns: [/imaging/i, /CT.*PET.*MRI/i, /advanced.*imaging/i], slug: "advanced_imaging" },
+  // Rx
+  { patterns: [/generic\s+drugs?\s*\(?tier\s*1/i], slug: "generic_rx_tier1", placeOfService: "retail_pharmacy" },
+  { patterns: [/preferred\s+brand\s+drugs?\s*\(?tier\s*2/i], slug: "preferred_brand_rx_tier2", placeOfService: "retail_pharmacy" },
+  { patterns: [/non[- ]preferred.*drugs?\s*\(?tier\s*3/i], slug: "non_preferred_rx_tier3", placeOfService: "retail_pharmacy" },
+  { patterns: [/specialty\s+drugs?\s*\(?tier\s*4/i], slug: "specialty_rx_tier4", placeOfService: "retail_pharmacy" },
+  // Surgery
+  { patterns: [/facility\s+fee.*(?:ambulatory|surgery)/i, /outpatient.*facility/i], slug: "outpatient_surgery_facility" },
+  { patterns: [/physician.*(?:surgeon|surgery)\s+fee/i], slug: "outpatient_surgery_physician" },
+  // Emergency
+  { patterns: [/emergency\s+room/i, /emergency.*care/i], slug: "er_visit" },
+  { patterns: [/emergency\s+(?:medical\s+)?transport/i, /ambulance/i], slug: "emergency_transport_ground" },
+  { patterns: [/urgent\s+care/i], slug: "urgent_care" },
+  // Hospital
+  { patterns: [/facility\s+fee.*hospital\s+room/i, /hospital\s+stay.*facility/i, /inpatient.*facility/i], slug: "inpatient_facility" },
+  { patterns: [/physician.*(?:surgeon)?\s+fees?$/i, /hospital\s+stay.*physician/i, /inpatient.*physician/i], slug: "inpatient_physician" },
+  // Mental health
+  { patterns: [/mental\s+health.*outpatient/i, /behavioral\s+health.*outpatient/i, /outpatient\s+(?:mental|behavioral)/i], slug: "mental_health_outpatient" },
+  { patterns: [/mental\s+health.*inpatient/i, /behavioral\s+health.*inpatient/i, /inpatient\s+(?:mental|behavioral)/i], slug: "mental_health_inpatient" },
+  { patterns: [/substance\s+(?:abuse|use)/i], slug: "substance_abuse_outpatient" },
+  // Pregnancy
+  { patterns: [/office\s+visits?\s*$/i, /prenatal/i, /maternity.*office/i], slug: "prenatal_visit" },
+  { patterns: [/childbirth.*delivery.*facility/i, /delivery\s+facility/i], slug: "delivery_facility" },
+  { patterns: [/childbirth.*delivery.*professional/i, /delivery\s+professional/i], slug: "delivery_professional" },
+  // Recovery
+  { patterns: [/rehabilitation/i, /physical.*speech.*(?:hearing|occupational)/i], slug: "pt_rehab" },
+  { patterns: [/habilitation/i], slug: "habilitation" },
+  { patterns: [/skilled\s+nursing/i], slug: "skilled_nursing" },
+  { patterns: [/home\s+health/i], slug: "home_health" },
+  // Other
+  { patterns: [/durable\s+medical\s+equipment/i], slug: "durable_medical_equipment" },
+  { patterns: [/hospice/i], slug: "hospice_inpatient" },
+  { patterns: [/children.*eye\s+exam/i], slug: "childrens_eye_exam" },
+  { patterns: [/children.*glasses/i], slug: "childrens_glasses" },
+  { patterns: [/children.*dental/i], slug: "childrens_dental" },
+  { patterns: [/chiropractic/i], slug: "chiropractic" },
+  { patterns: [/acupuncture/i], slug: "acupuncture" },
+];
+
+function matchServiceSlug(text: string): { slug: string; placeOfService: string } | null {
+  for (const mapping of SBC_SERVICE_MAPPINGS) {
+    for (const pattern of mapping.patterns) {
+      if (pattern.test(text)) {
+        return {
+          slug: mapping.slug,
+          placeOfService: mapping.placeOfService || "any",
+        };
+      }
+    }
+  }
+  return null;
+}
+
+// ── Main SBC parser ──────────────────────────────────────────────────────────
+
+export function parseSBCText(text: string, documentId?: string): SBCParseResult {
+  const warnings: string[] = [];
+  const plan: Partial<InsurancePlanInsert> = {
+    source: "sbc_upload",
+  };
+
+  if (documentId) {
+    plan.source_document_id = documentId;
+  }
+
+  // ── Extract plan identity ───────────────────────────────────────────────
+
+  // Plan name / insurer from header — SBC format: "Employer LLC: Plan Name"
+  // Try the structured header line first
+  const structuredHeader = text.match(/(?:Coverage Period|Coverage for)[^\n]*\n[^\n]*?:\s*(.+?)(?:\n|$)/im);
+  if (structuredHeader) {
+    plan.plan_name = structuredHeader[1].trim();
+  }
+  // Also try "Employer: Plan Name" pattern from the SBC title section
+  const employerPlan = text.match(/([A-Z][^\n:]{3,50}):\s+((?:Open Access|PPO|HMO|EPO|POS|HDHP|OAP)[^\n]*)/im);
+  if (employerPlan) {
+    plan.plan_name = employerPlan[2].trim();
+    // Store the employer name in admin_info
+    plan.admin_info = { employer_name: employerPlan[1].trim() };
+  }
+
+  // Coverage period
+  const periodMatch = text.match(/coverage\s+period[:\s]*(\d{2})\/(\d{2})\/(\d{4})\s*[-–]\s*(\d{2})\/(\d{2})\/(\d{4})/i);
+  if (periodMatch) {
+    plan.coverage_period_start = `${periodMatch[3]}-${periodMatch[1]}-${periodMatch[2]}`;
+    plan.coverage_period_end = `${periodMatch[6]}-${periodMatch[4]}-${periodMatch[5]}`;
+    plan.plan_year = parseInt(periodMatch[3], 10);
+  }
+
+  // Plan type
+  const planTypeMatch = text.match(/plan\s+type[:\s]*(HMO|PPO|EPO|POS|OAP|HDHP|POS)/i);
+  if (planTypeMatch) {
+    plan.plan_type = planTypeMatch[1].toUpperCase();
+  }
+
+  // Coverage tier
+  const tierMatch = text.match(/coverage\s+for[:\s]*(individual|family|individual.*family)/i);
+  if (tierMatch) {
+    const t = tierMatch[1].toLowerCase();
+    if (/individual.*family/i.test(t)) plan.coverage_tier = "individual_family";
+    else if (/family/i.test(t)) plan.coverage_tier = "family";
+    else plan.coverage_tier = "individual";
+  }
+
+  // ── Extract deductibles ─────────────────────────────────────────────────
+
+  // In-network deductible
+  const inDedMatch = text.match(/(?:what\s+is\s+the\s+)?overall\s+deductible.*?in[- ]network[^$]*?\$([\d,]+)\s*\/?\s*individual[^$]*?\$([\d,]+)\s*\/?\s*family/im)
+    || text.match(/in[- ]network\s+providers?[:\s]*\$([\d,]+)\s*\/?\s*individual[^$]*?\$([\d,]+)\s*\/?\s*family/im);
+  if (inDedMatch) {
+    plan.in_deductible_individual = parseInt(inDedMatch[1].replace(/,/g, ""), 10);
+    plan.in_deductible_family = parseInt(inDedMatch[2].replace(/,/g, ""), 10);
+  } else {
+    // Try simpler pattern
+    const simpleInDed = text.match(/in[- ]network[^$\n]*?\$([\d,]+)\s*\/\s*individual/i);
+    if (simpleInDed) plan.in_deductible_individual = parseInt(simpleInDed[1].replace(/,/g, ""), 10);
+  }
+
+  // Out-of-network deductible
+  const outDedMatch = text.match(/out[- ]of[- ]network\s+providers?[:\s]*\$([\d,]+)\s*\/?\s*individual[^$]*?\$([\d,]+)\s*\/?\s*family/im);
+  if (outDedMatch) {
+    plan.out_deductible_individual = parseInt(outDedMatch[1].replace(/,/g, ""), 10);
+    plan.out_deductible_family = parseInt(outDedMatch[2].replace(/,/g, ""), 10);
+  }
+
+  // ── Extract OOP max ─────────────────────────────────────────────────────
+
+  // Try structured format: "For in-network providers: $X/individual or $Y/family"
+  const inOopMatch = text.match(/out[- ]of[- ]pocket[\s\S]{0,200}?in[- ]network[^$]*?\$([\d,]+)\s*\/\s*individual[^$]*?\$([\d,]+)\s*\/\s*family/im)
+    || text.match(/in[- ]network\s+providers?[:\s]*\$([\d,]+)\s*\/?\s*individual[^\n]*\$([\d,]+)\s*\/?\s*family/im);
+  if (inOopMatch) {
+    plan.in_oop_max_individual = parseInt(inOopMatch[1].replace(/,/g, ""), 10);
+    plan.in_oop_max_family = parseInt(inOopMatch[2].replace(/,/g, ""), 10);
+  }
+  const outOopMatch = text.match(/out[- ]of[- ]pocket[\s\S]{0,400}?out[- ]of[- ]network[^$]*?\$([\d,]+)\s*\/\s*individual[^$]*?\$([\d,]+)\s*\/\s*family/im)
+    || text.match(/out[- ]of[- ]network\s+providers?[:\s]*\$([\d,]+)\s*\/?\s*individual[^\n]*\$([\d,]+)\s*\/?\s*family/im);
+  if (outOopMatch) {
+    plan.out_oop_max_individual = parseInt(outOopMatch[1].replace(/,/g, ""), 10);
+    plan.out_oop_max_family = parseInt(outOopMatch[2].replace(/,/g, ""), 10);
+  }
+  // Fallback: try simpler patterns
+  if (!plan.in_oop_max_individual) {
+    const simpleOop = text.match(/in[- ]network[^$\n]*?\$([\d,]+)\s*\/\s*individual/im);
+    if (simpleOop) plan.in_oop_max_individual = parseInt(simpleOop[1].replace(/,/g, ""), 10);
+  }
+
+  // Combined medical/Rx OOP
+  if (/combined\s+medical.*(?:pharmacy|rx)\s+out[- ]of[- ]pocket/i.test(text)) {
+    plan.combined_medical_rx_oop = true;
+  }
+
+  // ── Referral required ───────────────────────────────────────────────────
+
+  if (/do\s+you\s+need\s+a\s+referral.*?(?:no\.?|you\s+can\s+see)/im.test(text)) {
+    plan.referral_required = false;
+  } else if (/do\s+you\s+need\s+a\s+referral.*?(?:yes)/im.test(text)) {
+    plan.referral_required = true;
+  }
+
+  // ── Minimum Essential Coverage / Minimum Value ──────────────────────────
+
+  if (/minimum\s+essential\s+coverage\??\s*yes/i.test(text)) {
+    plan.minimum_essential_coverage = true;
+  }
+  if (/minimum\s+value\s+standard[s]?\??\s*yes/i.test(text)) {
+    plan.minimum_value_standard = true;
+  }
+
+  // ── OOP exclusions ──────────────────────────────────────────────────────
+
+  const oopExclMatch = text.match(/what\s+is\s+not\s+included\s+in\s+the\s+out[- ]of[- ]pocket\s+limit\??\s*(.+?)(?=will\s+you|do\s+you|$)/im);
+  if (oopExclMatch) {
+    const excls = oopExclMatch[1].trim();
+    const items: string[] = [];
+    if (/penalt/i.test(excls)) items.push("precert_penalties");
+    if (/premium/i.test(excls)) items.push("premiums");
+    if (/balance[- ]bill/i.test(excls)) items.push("balance_billing");
+    if (/doesn.*cover/i.test(excls)) items.push("non_covered_services");
+    if (items.length > 0) plan.oop_exclusions = items;
+  }
+
+  // ── Other specific deductibles ──────────────────────────────────────────
+
+  const otherDedMatch = text.match(/other\s+deductibles.*?\$([\d,]+)\s+for\s+(.+?)(?:\.|there\s+are)/im);
+  if (otherDedMatch) {
+    plan.other_deductibles = { [otherDedMatch[2].trim().toLowerCase()]: parseInt(otherDedMatch[1].replace(/,/g, ""), 10) };
+  }
+
+  // ── Contact info ────────────────────────────────────────────────────────
+
+  const phoneMatch = text.match(/(?:call|phone)[:\s]*(1?[-.]?\d{3}[-.]?\d{3}[-.]?\d{4})/i);
+  if (phoneMatch) {
+    plan.contact_info = { phone: phoneMatch[1] };
+  }
+
+  // ── Extract per-service cost sharing ────────────────────────────────────
+
+  const services: SBCParsedService[] = [];
+
+  // SBC service rows follow a pattern:
+  // "Service Name" | "In-Network cost" | "Out-of-Network cost" | "Limitations"
+  // We scan for known service names and extract the surrounding text
+
+  // Split text into rough sections by looking for service-like headings
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const match = matchServiceSlug(line);
+    if (!match) continue;
+
+    // Gather context: the next several lines likely contain cost sharing info
+    const context = lines.slice(i, Math.min(i + 8, lines.length)).join(" ");
+
+    // Look for in-network and out-of-network patterns in context
+    // SBC format: in-network column first, then out-of-network
+    const inNetSection = context.match(/(?:in[- ]network|you\s+will\s+pay\s+the\s+least)[:\s]*(.+?)(?:out[- ]of[- ]network|you\s+will\s+pay\s+the\s+most|limitations|$)/im);
+    const outNetSection = context.match(/(?:out[- ]of[- ]network|you\s+will\s+pay\s+the\s+most)[:\s]*(.+?)(?:limitations|none|$|\n\n)/im);
+
+    // Parse cost sharing from the context (simpler approach when columns aren't cleanly separated)
+    const inText = inNetSection?.[1] || "";
+    const outText = outNetSection?.[1] || "";
+
+    // Fallback: parse the whole context
+    const contextCost = parseCostSharing(context);
+
+    const inCost = inText ? parseCostSharing(inText) : contextCost;
+    const outCost = outText ? parseCostSharing(outText) : { copay: null, coinsurance: null, deductibleApplies: null, copayWaiverCondition: null, rawDescription: "" };
+
+    // Check for special rules
+    const oonAtIn = /out[- ]of[- ]network.*(?:paid|covered)\s+at\s+(?:the\s+)?in[- ]network/i.test(context)
+      || /in[- ]network\s+cost[- ]?shar/i.test(context);
+
+    const penaltyMatch = context.match(/\$([\d,]+)\s+penalty/i);
+    const limitMatch = context.match(/(?:limited|coverage\s+is\s+limited)\s+to\s+(\d+)\s+(days?|visits?)/i);
+    const priorAuth = /prior\s+auth/i.test(context) || /precert/i.test(context);
+
+    // Check if "Not covered"
+    const notCovered = /not\s+covered/i.test(context) && !inCost.copay && !inCost.coinsurance;
+
+    // Rx-specific
+    const supplyMatch = context.match(/(\d+)[- ]day\s+supply/i);
+    const stepTherapy = /step\s+therapy/i.test(context);
+    const homeDelivery = context.match(/home\s+delivery.*?\$([\d,]+)/i);
+
+    const waiver = inCost.copayWaiverCondition || (context.match(/waived\s+if\s+(\w+)/i)?.[0] ?? null);
+
+    services.push({
+      serviceSlug: match.slug,
+      placeOfService: match.placeOfService,
+      inCopay: inCost.copay,
+      inCoinsurance: inCost.coinsurance,
+      inDeductibleApplies: inCost.deductibleApplies,
+      inCopayWaiverCondition: waiver,
+      inCostDescription: inCost.rawDescription || contextCost.rawDescription,
+      outCopay: outCost.copay,
+      outCoinsurance: outCost.coinsurance,
+      outDeductibleApplies: outCost.deductibleApplies,
+      outCostDescription: outCost.rawDescription,
+      oonPaidAtInNetwork: oonAtIn,
+      annualLimit: limitMatch ? `${limitMatch[1]} ${limitMatch[2]}` : null,
+      annualLimitValue: limitMatch ? parseInt(limitMatch[1], 10) : null,
+      priorAuthRequired: priorAuth || null,
+      penaltyNoPrecert: penaltyMatch ? parseInt(penaltyMatch[1].replace(/,/g, ""), 10) : null,
+      covered: !notCovered,
+      coverageConditions: null,
+      supplyLimitDays: supplyMatch ? parseInt(supplyMatch[1], 10) : null,
+      homeDeliveryCopay: homeDelivery ? parseFloat(homeDelivery[1]) : null,
+      stepTherapyRequired: stepTherapy || null,
+      notes: null,
+      confidence: inCost.copay !== null || inCost.coinsurance !== null ? 0.75 : 0.4,
+    });
+  }
+
+  // ── Extract excluded services ───────────────────────────────────────────
+
+  const excludedSection = text.match(/(?:services\s+your\s+plan\s+generally\s+does\s+not\s+cover|excluded\s+services)[:\s]*(.+?)(?:other\s+covered\s+services|your\s+rights|$)/im);
+  if (excludedSection) {
+    const excluded = excludedSection[1];
+    const excludedItems = excluded.match(/[•●■✦]\s*([^•●■✦\n]+)/g) || excluded.split(/\n/).filter((l) => l.trim().length > 3);
+
+    for (const item of excludedItems) {
+      const cleaned = item.replace(/^[•●■✦]\s*/, "").trim();
+      if (cleaned.length < 3) continue;
+
+      // Try to match to a service
+      const serviceMatch = matchServiceSlug(cleaned);
+      if (serviceMatch) {
+        services.push({
+          serviceSlug: serviceMatch.slug,
+          placeOfService: "any",
+          inCopay: null, inCoinsurance: null, inDeductibleApplies: null,
+          inCopayWaiverCondition: null, inCostDescription: "Not covered",
+          outCopay: null, outCoinsurance: null, outDeductibleApplies: null,
+          outCostDescription: "Not covered",
+          oonPaidAtInNetwork: false,
+          annualLimit: null, annualLimitValue: null,
+          priorAuthRequired: null, penaltyNoPrecert: null,
+          covered: false,
+          coverageConditions: null,
+          supplyLimitDays: null, homeDeliveryCopay: null, stepTherapyRequired: null,
+          notes: `Excluded: ${cleaned}`,
+          confidence: 0.9,
+        });
+      }
+    }
+  }
+
+  // ── Calculate overall confidence ────────────────────────────────────────
+
+  let parsedFields = 0;
+  let totalFields = 10; // key fields we try to extract
+  if (plan.plan_name) parsedFields++;
+  if (plan.plan_year) parsedFields++;
+  if (plan.plan_type) parsedFields++;
+  if (plan.in_deductible_individual !== undefined) parsedFields++;
+  if (plan.in_oop_max_individual !== undefined) parsedFields++;
+  if (plan.out_deductible_individual !== undefined) parsedFields++;
+  if (plan.out_oop_max_individual !== undefined) parsedFields++;
+  if (plan.referral_required !== undefined) parsedFields++;
+  if (plan.combined_medical_rx_oop !== undefined) parsedFields++;
+  if (services.length > 0) parsedFields++;
+
+  const confidence = parsedFields / totalFields;
+
+  if (services.length === 0) warnings.push("No per-service cost sharing was extracted");
+  if (!plan.in_deductible_individual) warnings.push("Could not extract in-network deductible");
+  if (!plan.in_oop_max_individual) warnings.push("Could not extract in-network OOP max");
+  if (!plan.plan_name) warnings.push("Could not extract plan name");
+
+  plan.confidence = Math.round(confidence * 100) / 100;
+
+  return {
+    plan,
+    services,
+    confidence: Math.round(confidence * 100) / 100,
+    parseWarnings: warnings,
+  };
+}

@@ -15,7 +15,7 @@ export async function POST(request: Request) {
     // Fetch user profile with demographics + plan match
     const { data: profile, error } = await supabase
       .from("profiles")
-      .select("insurer, plan_type, state, date_of_birth, sex, dependents, matched_plan_id, plan_source")
+      .select("insurer, plan_type, state, date_of_birth, sex, dependents, matched_plan_id, plan_source, active_insurance_plan_id")
       .eq("user_id", userId)
       .single();
 
@@ -35,7 +35,79 @@ export async function POST(request: Request) {
       hasChildren = deps.some((d: { relationship: string }) => d.relationship === "child");
     } catch { /* empty */ }
 
-    // ── Check for real plan data first ──────────────────────────────────
+    // ── Priority 0: User has insurance_plans + plan_covered_services ────
+    if (profile.active_insurance_plan_id) {
+      const { data: userPlan } = await supabase
+        .from("insurance_plans")
+        .select("*")
+        .eq("id", profile.active_insurance_plan_id)
+        .single();
+
+      if (userPlan) {
+        const { data: coveredServices } = await supabase
+          .from("plan_covered_services")
+          .select("*, service_catalog(slug, name, category)")
+          .eq("insurance_plan_id", userPlan.id);
+
+        if (coveredServices && coveredServices.length > 0) {
+          const benefits = coveredServices
+            .filter((s) => s.covered !== false)
+            .map((s) => ({
+              benefit: {
+                id: s.id,
+                category: s.service_catalog?.category || "general",
+                title: s.service_catalog?.name || "Unknown Service",
+                description: s.in_cost_description || s.out_cost_description || "",
+                whyUnderutilized: "",
+                howToAccess: s.notes || "Contact your insurer for details.",
+                hsaFsaEligible: false,
+                planTypes: [userPlan.plan_type || ""],
+              },
+              categoryLabel: s.service_catalog?.category || "General",
+              relevanceNote: `From your ${userPlan.plan_name || "uploaded"} plan`,
+              relevanceScore: 95,
+              isRecommended: true,
+              costSharing: {
+                inNetwork: {
+                  copay: s.in_copay,
+                  coinsurance: s.in_coinsurance,
+                  deductibleApplies: s.in_deductible_applies,
+                  costDescription: s.in_cost_description,
+                },
+                outOfNetwork: {
+                  copay: s.out_copay,
+                  coinsurance: s.out_coinsurance,
+                  deductibleApplies: s.out_deductible_applies,
+                  costDescription: s.out_cost_description,
+                },
+                annualLimit: s.annual_limit,
+                priorAuthRequired: s.prior_auth_required,
+                penaltyNoPrecert: s.penalty_no_precert,
+              },
+            }));
+
+          return NextResponse.json({
+            benefits,
+            categoryCounts: {},
+            totalBenefits: benefits.length,
+            profileComplete: true,
+            missingFields: [],
+            dataSource: "user_plan",
+            planName: userPlan.plan_name,
+            planSummary: {
+              inDeductible: userPlan.in_deductible_individual,
+              outDeductible: userPlan.out_deductible_individual,
+              inOopMax: userPlan.in_oop_max_individual,
+              outOopMax: userPlan.out_oop_max_individual,
+              planType: userPlan.plan_type,
+              verificationStatus: userPlan.verification_status,
+            },
+          });
+        }
+      }
+    }
+
+    // ── Check for real plan data from catalog ──────────────────────────────
     // Priority 1: User has a matched_plan_id from autocomplete
     // Priority 2: Fuzzy insurer match to verified plan data
     let hasRealPlanData = false;
