@@ -1,8 +1,10 @@
 // Google Cloud Document AI OCR provider
 // Reuses the Firebase Admin service account — no extra credentials needed.
-// Requires: npm install @google-cloud/documentai
+// Supports large PDFs by splitting into chunks (Document AI sync API has a 15-page limit).
 
 import type { OCRProvider, OCRResult, OCRPage, OCRBlock } from "./types";
+
+const MAX_PAGES_PER_REQUEST = 15;
 
 let _client: any = null;
 let _sdk: any = null;
@@ -42,11 +44,123 @@ async function getClient() {
   return _client;
 }
 
+/** Count pages in a PDF buffer without fully parsing it */
+function estimatePageCount(buffer: Buffer): number {
+  const pdfStr = buffer.toString("latin1");
+  const pageMatches = pdfStr.match(/\/Type\s*\/Page\b/g);
+  const pagesTreeMatches = pdfStr.match(/\/Type\s*\/Pages\b/g);
+  return pageMatches
+    ? pageMatches.length - (pagesTreeMatches?.length || 0)
+    : 1;
+}
+
+/** Split a PDF into chunks of maxPages using pdf-lib */
+async function splitPDF(buffer: Buffer, maxPages: number): Promise<Buffer[]> {
+  const { PDFDocument } = await import("pdf-lib");
+  const srcDoc = await PDFDocument.load(buffer);
+  const totalPages = srcDoc.getPageCount();
+
+  if (totalPages <= maxPages) {
+    return [buffer];
+  }
+
+  const chunks: Buffer[] = [];
+  for (let start = 0; start < totalPages; start += maxPages) {
+    const end = Math.min(start + maxPages, totalPages);
+    const chunkDoc = await PDFDocument.create();
+    const copiedPages = await chunkDoc.copyPages(
+      srcDoc,
+      Array.from({ length: end - start }, (_, i) => start + i)
+    );
+    for (const page of copiedPages) {
+      chunkDoc.addPage(page);
+    }
+    const chunkBytes = await chunkDoc.save();
+    chunks.push(Buffer.from(chunkBytes));
+  }
+
+  return chunks;
+}
+
+/** Process a single PDF buffer through Document AI */
+async function processChunk(
+  chunkBuffer: Buffer,
+  mimeType: string,
+  processorName: string
+): Promise<{ text: string; pages: OCRPage[]; totalConfidence: number; blockCount: number }> {
+  const client = await getClient();
+
+  const [result] = await client.processDocument({
+    name: processorName,
+    rawDocument: {
+      content: chunkBuffer.toString("base64"),
+      mimeType: mimeType || "application/pdf",
+    },
+  });
+
+  const document = result.document;
+  if (!document?.text) {
+    return { text: "", pages: [], totalConfidence: 0, blockCount: 0 };
+  }
+
+  const fullText = document.text;
+  const pages: OCRPage[] = [];
+  let totalConfidence = 0;
+  let blockCount = 0;
+
+  for (const page of document.pages || []) {
+    const pageNumber = (page.pageNumber || 1) as number;
+    const pageBlocks: OCRBlock[] = [];
+    const pageLines: string[] = [];
+
+    for (const line of page.lines || []) {
+      const lineText = extractTextFromLayout(line.layout, fullText);
+      const confidence = line.layout?.confidence ?? 0;
+
+      pageLines.push(lineText);
+      pageBlocks.push({
+        text: lineText,
+        confidence: confidence as number,
+        boundingBox: extractBoundingBox(line.layout),
+        blockType: "LINE",
+      });
+
+      totalConfidence += confidence as number;
+      blockCount++;
+    }
+
+    if (pageBlocks.length === 0) {
+      for (const paragraph of page.paragraphs || []) {
+        const paraText = extractTextFromLayout(paragraph.layout, fullText);
+        const confidence = paragraph.layout?.confidence ?? 0;
+
+        pageLines.push(paraText);
+        pageBlocks.push({
+          text: paraText,
+          confidence: confidence as number,
+          boundingBox: extractBoundingBox(paragraph.layout),
+          blockType: "LINE",
+        });
+
+        totalConfidence += confidence as number;
+        blockCount++;
+      }
+    }
+
+    pages.push({
+      pageNumber,
+      text: pageLines.join("\n"),
+      blocks: pageBlocks,
+    });
+  }
+
+  return { text: fullText, pages, totalConfidence, blockCount };
+}
+
 export const documentAIProvider: OCRProvider = {
   name: "google-document-ai",
 
   async extractText(fileBuffer: Buffer, mimeType: string): Promise<OCRResult> {
-    const client = await getClient();
     const { projectId } = getCredentials();
     const location = process.env.DOCUMENT_AI_LOCATION || "us";
     const processorId = process.env.DOCUMENT_AI_PROCESSOR_ID;
@@ -57,80 +171,51 @@ export const documentAIProvider: OCRProvider = {
       );
     }
 
-    const name = `projects/${projectId}/locations/${location}/processors/${processorId}`;
+    const processorName = `projects/${projectId}/locations/${location}/processors/${processorId}`;
 
-    const [result] = await client.processDocument({
-      name,
-      rawDocument: {
-        content: fileBuffer.toString("base64"),
-        mimeType: mimeType || "application/pdf",
-      },
-    });
+    // Check if we need to split the PDF into chunks
+    const isPDF = mimeType === "application/pdf" || mimeType?.includes("pdf");
+    const estimatedPages = isPDF ? estimatePageCount(fileBuffer) : 1;
 
-    const document = result.document;
-    if (!document?.text) {
-      return { text: "", pages: [], confidence: 0 };
-    }
+    if (isPDF && estimatedPages > MAX_PAGES_PER_REQUEST) {
+      // Split and process in chunks
+      const chunks = await splitPDF(fileBuffer, MAX_PAGES_PER_REQUEST);
 
-    const fullText = document.text;
+      let allText = "";
+      const allPages: OCRPage[] = [];
+      let totalConfidence = 0;
+      let totalBlocks = 0;
+      let pageOffset = 0;
 
-    // Build pages from Document AI page structure
-    const pages: OCRPage[] = [];
-    let totalConfidence = 0;
-    let blockCount = 0;
+      for (const chunk of chunks) {
+        const result = await processChunk(chunk, mimeType, processorName);
+        allText += result.text;
 
-    for (const page of document.pages || []) {
-      const pageNumber = (page.pageNumber || 1) as number;
-      const pageBlocks: OCRBlock[] = [];
-      const pageLines: string[] = [];
-
-      // Extract lines from Document AI's line segments
-      for (const line of page.lines || []) {
-        const lineText = extractTextFromLayout(line.layout, fullText);
-        const confidence = line.layout?.confidence ?? 0;
-
-        pageLines.push(lineText);
-        pageBlocks.push({
-          text: lineText,
-          confidence: confidence as number,
-          boundingBox: extractBoundingBox(line.layout),
-          blockType: "LINE",
-        });
-
-        totalConfidence += confidence as number;
-        blockCount++;
-      }
-
-      // Fallback: if no lines, try paragraphs
-      if (pageBlocks.length === 0) {
-        for (const paragraph of page.paragraphs || []) {
-          const paraText = extractTextFromLayout(paragraph.layout, fullText);
-          const confidence = paragraph.layout?.confidence ?? 0;
-
-          pageLines.push(paraText);
-          pageBlocks.push({
-            text: paraText,
-            confidence: confidence as number,
-            boundingBox: extractBoundingBox(paragraph.layout),
-            blockType: "LINE",
+        // Adjust page numbers for concatenation
+        for (const page of result.pages) {
+          allPages.push({
+            ...page,
+            pageNumber: page.pageNumber + pageOffset,
           });
-
-          totalConfidence += confidence as number;
-          blockCount++;
         }
+        pageOffset += result.pages.length;
+        totalConfidence += result.totalConfidence;
+        totalBlocks += result.blockCount;
       }
 
-      pages.push({
-        pageNumber,
-        text: pageLines.join("\n"),
-        blocks: pageBlocks,
-      });
+      return {
+        text: allText,
+        pages: allPages,
+        confidence: totalBlocks > 0 ? totalConfidence / totalBlocks : 0,
+      };
     }
 
+    // Single chunk — process directly
+    const result = await processChunk(fileBuffer, mimeType, processorName);
     return {
-      text: fullText,
-      pages,
-      confidence: blockCount > 0 ? totalConfidence / blockCount : 0,
+      text: result.text,
+      pages: result.pages,
+      confidence: result.blockCount > 0 ? result.totalConfidence / result.blockCount : 0,
     };
   },
 };

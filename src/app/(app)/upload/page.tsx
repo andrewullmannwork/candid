@@ -31,13 +31,23 @@ const DOC_TYPES = {
     ],
   },
   sbc: {
-    label: "Plan Document (SBC)",
-    short: "Plan Document",
-    description: "Your Summary of Benefits and Coverage — the official document describing what your plan covers. Helps us provide accurate, plan-specific information.",
+    label: "Summary of Benefits (SBC)",
+    short: "SBC",
+    description: "Your Summary of Benefits and Coverage — the standardized 8-page document from your insurer describing what your plan covers.",
     tips: [
-      "Log into your insurer's portal and look for 'Plan Documents' or 'Summary of Benefits'",
-      "It's usually an 8-page PDF with a standardized format",
+      "Log into your insurer's portal and look for 'Summary of Benefits and Coverage'",
+      "It's a standardized 8-page PDF required by federal law",
       "Your HR department can also provide this if you have employer-sponsored insurance",
+    ],
+  },
+  plan_document: {
+    label: "Full Plan Document",
+    short: "Plan Doc",
+    description: "Your full plan certificate or benefits booklet — the detailed document (often 50+ pages) with all plan rules, covered services, and exclusions.",
+    tips: [
+      "This is the longer document your insurer or employer provides — not the 8-page SBC",
+      "Check your insurer's portal under 'Plan Documents' or 'Certificate of Coverage'",
+      "Ask your HR department for the full plan certificate or benefits booklet",
     ],
   },
 } as const;
@@ -46,12 +56,12 @@ const DOC_TYPES = {
 
 function UploadForm() {
   const { user } = useAuth();
-  const [docType, setDocType] = useState<"eob" | "itemized_bill" | "sbc">("eob");
+  const [docType, setDocType] = useState<"eob" | "itemized_bill" | "sbc" | "plan_document">("eob");
   const [uploading, setUploading] = useState(false);
   const [uploaded, setUploaded] = useState(false);
   const [error, setError] = useState("");
   const [fileName, setFileName] = useState("");
-  const [showTips, setShowTips] = useState<"eob" | "itemized_bill" | "sbc" | null>(null);
+  const [showTips, setShowTips] = useState<"eob" | "itemized_bill" | "sbc" | "plan_document" | null>(null);
   const [profileMissing, setProfileMissing] = useState(false);
   const [classificationResult, setClassificationResult] = useState<{
     classifiedType: string;
@@ -132,8 +142,8 @@ function UploadForm() {
 
         const { documentId } = await res.json();
 
-        // For SBC documents, auto-process to extract plan data
-        if (docType === "sbc") {
+        // For SBC and plan documents, auto-process to extract plan data
+        if (docType === "sbc" || docType === "plan_document") {
           try {
             const processRes = await fetch("/api/documents/process", {
               method: "POST",
@@ -379,8 +389,8 @@ function UploadForm() {
         {/* Document type selector */}
         <div>
           <label className="text-sm font-medium text-gray-700 mb-2 block">What are you uploading?</label>
-          <div className="grid grid-cols-3 gap-3">
-            {(["eob", "itemized_bill", "sbc"] as const).map((type) => {
+          <div className="grid grid-cols-2 gap-3">
+            {(["eob", "itemized_bill", "sbc", "plan_document"] as const).map((type) => {
               const info = DOC_TYPES[type];
               const selected = docType === type;
               return (

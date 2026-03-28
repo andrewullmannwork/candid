@@ -26,9 +26,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!["eob", "itemized_bill", "sbc"].includes(billType)) {
+    if (!["eob", "itemized_bill", "sbc", "plan_document"].includes(billType)) {
       return NextResponse.json(
-        { error: "billType must be 'eob', 'itemized_bill', or 'sbc'" },
+        { error: "billType must be 'eob', 'itemized_bill', 'sbc', or 'plan_document'" },
         { status: 400 }
       );
     }
@@ -97,63 +97,36 @@ export async function POST(req: NextRequest) {
     // Convert to buffer for OCR
     const buffer = Buffer.from(await fileData.arrayBuffer());
 
-    // ── Page count check (for PDFs) ─────────────────────────────────────────
-    // Document AI synchronous API has a 15-page limit. For larger documents,
-    // we check page count and file size first and provide helpful guidance.
+    // ── Page limit check (hard cap at 90 pages to prevent abuse) ────────────
     if (doc.file_name?.toLowerCase().endsWith(".pdf")) {
-      // Count /Type /Page occurrences (each physical page has one)
       const pdfStr = buffer.toString("latin1");
       const pageMatches = pdfStr.match(/\/Type\s*\/Page\b/g);
-      // Subtract /Type /Pages entries (page tree nodes, not actual pages)
       const pagesTreeMatches = pdfStr.match(/\/Type\s*\/Pages\b/g);
       const estimatedPages = pageMatches
         ? pageMatches.length - (pagesTreeMatches?.length || 0)
-        : null;
+        : 0;
 
-      // Also use file size as a signal: SBCs are ~100-500KB, full plan docs are 500KB+
-      const fileSizeKB = buffer.length / 1024;
-
-      if ((estimatedPages && estimatedPages > 30) || (fileSizeKB > 600 && billType !== "sbc")) {
-        // This is likely a full plan document, not an EOB or SBC
-        await supabase.from("documents").update({
-          status: "error",
-          classified_type: "plan_document",
-          classification_confidence: 0.8,
-          type_mismatch: billType !== "sbc" && billType !== "plan_document",
-        }).eq("id", documentId);
-
+      if (estimatedPages > 90) {
+        await supabase.from("documents").update({ status: "error" }).eq("id", documentId);
         return NextResponse.json({
           success: false,
-          error: `This document has ${estimatedPages} pages — it looks like a full plan document, not ${billType === "eob" ? "an EOB" : billType === "itemized_bill" ? "an itemized bill" : "an SBC"}. EOBs are typically 1-5 pages and SBCs are 8-10 pages. Try uploading your Summary of Benefits and Coverage (SBC) instead — it's the standardized 8-page document from your insurer.`,
-          classification: {
-            classifiedType: "plan_document",
-            confidence: 0.8,
-            mismatch: true,
-          },
+          error: `This document is ${estimatedPages} pages, which exceeds the 90-page limit. Please upload a shorter document or just the relevant sections.`,
         }, { status: 400 });
       }
     }
 
     // ── Run OCR ──────────────────────────────────────────────────────────────
+    // Document AI handles large PDFs by splitting into 15-page chunks automatically.
     let ocrResult;
     try {
       ocrResult = await extractTextFromDocument(buffer, "application/pdf");
     } catch (ocrErr) {
       const msg = ocrErr instanceof Error ? ocrErr.message : "OCR failed";
       const isConfig = msg.includes("DOCUMENT_AI_PROCESSOR_ID") || msg.includes("env var");
-      const isPageLimit = msg.includes("pages in the document") || msg.includes("page limit");
       await supabase
         .from("documents")
         .update({ status: "error" })
         .eq("id", documentId);
-
-      if (isPageLimit) {
-        return NextResponse.json({
-          success: false,
-          error: "This document is too long for processing. EOBs are typically 1-5 pages and SBCs are 8-10 pages. If this is a full plan document (50+ pages), try uploading just the Summary of Benefits and Coverage (SBC) section instead.",
-          classification: { classifiedType: "plan_document", confidence: 0.7, mismatch: true },
-        }, { status: 400 });
-      }
 
       return NextResponse.json(
         { error: isConfig
@@ -187,8 +160,13 @@ export async function POST(req: NextRequest) {
 
     // ── Route by document type ───────────────────────────────────────────────
 
-    // SBC documents: parse plan data instead of running audit
-    if (billType === "sbc" || classification.classifiedType === "sbc") {
+    // SBC and plan documents: parse plan data instead of running audit
+    // Route to SBC parser if user selected SBC/plan_document OR classifier detected it
+    const isPlanDoc = billType === "sbc" || billType === "plan_document"
+      || classification.classifiedType === "sbc"
+      || classification.classifiedType === "plan_document";
+
+    if (isPlanDoc) {
       return await handleSBCDocument(supabase, doc, ocrResult.text, documentId, classification);
     }
 
