@@ -258,8 +258,18 @@ async function handleSBCDocument(
 
       const slugToId = new Map(serviceCatalog?.map((s) => [s.slug, s.id]) || []);
 
-      const serviceInserts = parseResult.services
-        .filter((s) => slugToId.has(s.serviceSlug))
+      // Deduplicate: keep highest-confidence entry per (slug, place_of_service)
+      const deduped = new Map<string, typeof parseResult.services[0]>();
+      for (const s of parseResult.services) {
+        if (!slugToId.has(s.serviceSlug)) continue;
+        const key = `${s.serviceSlug}|${s.placeOfService || "any"}`;
+        const existing = deduped.get(key);
+        if (!existing || s.confidence > existing.confidence) {
+          deduped.set(key, s);
+        }
+      }
+
+      const serviceInserts = [...deduped.values()]
         .map((s) => ({
           insurance_plan_id: newPlan.id,
           service_id: slugToId.get(s.serviceSlug)!,
@@ -291,7 +301,7 @@ async function handleSBCDocument(
       if (serviceInserts.length > 0) {
         const { error: svcError } = await supabase
           .from("plan_covered_services")
-          .insert(serviceInserts);
+          .upsert(serviceInserts, { onConflict: "insurance_plan_id,service_id,place_of_service" });
 
         if (svcError) {
           console.error("Failed to insert covered services:", svcError);

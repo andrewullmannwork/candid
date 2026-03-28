@@ -253,22 +253,59 @@ export function parseSBCText(text: string, documentId?: string): SBCParseResult 
 
   // ── Extract OOP max ─────────────────────────────────────────────────────
 
-  // Strategy: find the "out-of-pocket" question section. In SBC PDFs, the in-network
-  // answer often appears just BEFORE the question text due to column layout extraction.
-  // So we grab a window around the "out-of-pocket" text (200 chars before, 800 after).
-  const oopSectionIdx = text.search(/out[- ]of[- ]pocket\s+limit/i);
-  if (oopSectionIdx >= 0) {
-    const oopSection = text.slice(Math.max(0, oopSectionIdx - 200), oopSectionIdx + 800);
+  // Strategy: find ALL "For in-network providers: $X/individual" patterns in the text.
+  // The SBC has exactly two such blocks: one for deductibles, one for OOP max.
+  // The deductible block appears first, the OOP block appears second.
+  // We extract both and assign based on position.
+  const allInNetworkMatches: { index: number; individual: number; family: number }[] = [];
+  const allOutNetworkMatches: { index: number; individual: number; family: number }[] = [];
 
-    const inOop = oopSection.match(/in[- ]network[^$]*?\$([\d,]+)\s*\/?\s*individual[^$]*?\$([\d,]+)\s*\/?\s*family/im);
-    if (inOop) {
-      plan.in_oop_max_individual = parseInt(inOop[1].replace(/,/g, ""), 10);
-      plan.in_oop_max_family = parseInt(inOop[2].replace(/,/g, ""), 10);
+  const inNetRegex = /(?:for\s+)?in[- ]network\s+providers?[:\s]*\$([\d,]+)\s*\/?\s*individual[^$]*?\$([\d,]+)\s*\/?\s*family/gi;
+  let inMatch;
+  while ((inMatch = inNetRegex.exec(text)) !== null) {
+    allInNetworkMatches.push({
+      index: inMatch.index,
+      individual: parseInt(inMatch[1].replace(/,/g, ""), 10),
+      family: parseInt(inMatch[2].replace(/,/g, ""), 10),
+    });
+  }
+
+  const outNetRegex = /(?:for\s+)?out[- ]of[- ]network\s+providers?[:\s]*\$([\d,]+)\s*\/?\s*individual[^$]*?\$([\d,]+)\s*\/?\s*family/gi;
+  let outMatch;
+  while ((outMatch = outNetRegex.exec(text)) !== null) {
+    allOutNetworkMatches.push({
+      index: outMatch.index,
+      individual: parseInt(outMatch[1].replace(/,/g, ""), 10),
+      family: parseInt(outMatch[2].replace(/,/g, ""), 10),
+    });
+  }
+
+  // First occurrence = deductible (already extracted above, but use as fallback)
+  // Second occurrence = OOP max
+  if (allInNetworkMatches.length >= 2) {
+    plan.in_oop_max_individual = allInNetworkMatches[1].individual;
+    plan.in_oop_max_family = allInNetworkMatches[1].family;
+  } else if (allInNetworkMatches.length === 1 && plan.in_deductible_individual != null) {
+    // Only one match — it's the deductible, OOP not found
+  } else if (allInNetworkMatches.length === 1) {
+    // Can't tell if it's deductible or OOP — check proximity to "out-of-pocket"
+    const oopIdx = text.search(/out[- ]of[- ]pocket\s+limit/i);
+    if (oopIdx >= 0 && Math.abs(allInNetworkMatches[0].index - oopIdx) < 500) {
+      plan.in_oop_max_individual = allInNetworkMatches[0].individual;
+      plan.in_oop_max_family = allInNetworkMatches[0].family;
     }
-    const outOop = oopSection.match(/out[- ]of[- ]network[^$]*?\$([\d,]+)\s*\/?\s*individual[^$]*?\$([\d,]+)\s*\/?\s*family/im);
-    if (outOop) {
-      plan.out_oop_max_individual = parseInt(outOop[1].replace(/,/g, ""), 10);
-      plan.out_oop_max_family = parseInt(outOop[2].replace(/,/g, ""), 10);
+  }
+
+  if (allOutNetworkMatches.length >= 2) {
+    plan.out_oop_max_individual = allOutNetworkMatches[1].individual;
+    plan.out_oop_max_family = allOutNetworkMatches[1].family;
+  } else if (allOutNetworkMatches.length === 1 && plan.out_deductible_individual != null) {
+    // Only one match — it's the deductible
+  } else if (allOutNetworkMatches.length === 1) {
+    const oopIdx = text.search(/out[- ]of[- ]pocket\s+limit/i);
+    if (oopIdx >= 0 && Math.abs(allOutNetworkMatches[0].index - oopIdx) < 500) {
+      plan.out_oop_max_individual = allOutNetworkMatches[0].individual;
+      plan.out_oop_max_family = allOutNetworkMatches[0].family;
     }
   }
 
