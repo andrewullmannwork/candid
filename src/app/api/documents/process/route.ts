@@ -14,6 +14,7 @@ import { collectPricingData } from "@/lib/care/collector";
 import { checkProcessingBudget, recordProcessingUsage } from "@/lib/config/processing-usage";
 import { classifyDocument } from "@/lib/classifier";
 import { parseSBCText } from "@/lib/plan/sbc-parser";
+import { parsePlanDocument } from "@/lib/plan/plan-doc-parser";
 
 export async function POST(req: NextRequest) {
   try {
@@ -235,14 +236,18 @@ async function handleSBCDocument(
   classification: { classifiedType: string; confidence: number; mismatch: boolean }
 ) {
   try {
-    // Parse SBC into structured plan data
-    const parseResult = parseSBCText(ocrText, documentId);
+    // Parse plan data — use plan-doc parser for plan certificates, SBC parser for SBCs
+    const isFullPlanDoc = classification.classifiedType === "plan_document"
+      || (classification.classifiedType !== "sbc" && ocrText.length > 50000);
+    const parseResult = isFullPlanDoc
+      ? parsePlanDocument(ocrText)
+      : parseSBCText(ocrText, documentId);
 
     // Create insurance_plans record
     const planInsert = {
       ...parseResult.plan,
       user_id: doc.user_id,
-      source: "sbc_upload" as const,
+      source: (isFullPlanDoc ? "plan_doc_upload" : "sbc_upload") as string,
       source_document_id: documentId,
       is_active: true,
       verification_status: "unverified" as const,

@@ -33,6 +33,13 @@ export default function SignUpPage() {
   const tosDoc = getConsentDocument("tos");
   const privacyDoc = getConsentDocument("privacy_policy");
 
+  function formatPhone(value: string): string {
+    const digits = value.replace(/\D/g, "").slice(0, 10);
+    if (digits.length <= 3) return digits;
+    if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
+    return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+  }
+
   function validatePassword(pw: string): string[] {
     const errors: string[] = [];
     if (pw.length < 10) errors.push("At least 10 characters");
@@ -76,16 +83,24 @@ export default function SignUpPage() {
 
   async function handleCreateAccount(e: React.FormEvent) {
     e.preventDefault();
-    if (!fullName.trim()) {
-      setAccountError("Full legal name is required.");
+    if (!fullName.trim() || fullName.trim().split(/\s+/).length < 2) {
+      setAccountError("Please enter your full legal name (first and last).");
       return;
     }
-    if (!phone.trim() || phone.replace(/\D/g, "").length < 10) {
-      setAccountError("A valid phone number is required.");
+    const phoneDigits = phone.replace(/\D/g, "");
+    if (!phoneDigits || phoneDigits.length !== 10) {
+      setAccountError("Please enter a valid 10-digit US phone number.");
       return;
     }
     if (!dateOfBirth) {
       setAccountError("Date of birth is required.");
+      return;
+    }
+    const dob = new Date(dateOfBirth);
+    const eighteenYearsAgo = new Date();
+    eighteenYearsAgo.setFullYear(eighteenYearsAgo.getFullYear() - 18);
+    if (dob > eighteenYearsAgo) {
+      setAccountError("You must be at least 18 years old to use Candid.");
       return;
     }
     if (!tosAccepted || !privacyAccepted) {
@@ -290,9 +305,9 @@ export default function SignUpPage() {
               <input
                 type="tel"
                 required
-                placeholder="Phone number"
+                placeholder="Phone number (xxx) xxx-xxxx"
                 value={phone}
-                onChange={(e) => setPhone(e.target.value)}
+                onChange={(e) => setPhone(formatPhone(e.target.value))}
                 className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
               <div>
@@ -301,7 +316,9 @@ export default function SignUpPage() {
                   type="date"
                   required
                   value={dateOfBirth}
+                  max={new Date(new Date().setFullYear(new Date().getFullYear() - 18)).toISOString().split("T")[0]}
                   onChange={(e) => setDateOfBirth(e.target.value)}
+                  placeholder="MM/DD/YYYY"
                   className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
               </div>

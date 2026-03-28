@@ -31,9 +31,9 @@ These retention periods are legally binding — they are published in our Privac
 - Same cascade as above
 - Action logged in `admin_audit_log`
 
-**Email-requested:** User emails support@candid.com
+**Support ticket:** User submits a support ticket at candidclaim.com
 - SOP: Admin processes within 7 business days using admin deletion endpoint
-- Confirm deletion to user in writing (email reply)
+- Confirm deletion to user in writing (via support ticket reply)
 
 ## 3. Server Log Retention (90-day promise)
 

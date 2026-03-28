@@ -1,0 +1,587 @@
+// Plan Document Parser — extracts structured plan data from full plan certificate OCR text
+// Plan certificates (e.g., Cigna "Plan Benefits" documents) have a completely different
+// format from SBCs. They use "The Schedule" sections with "Calendar Year Deductible",
+// "$X per person", service copays like "$20 per visit copay, then 100%", and full
+// ERISA/COBRA details. This parser is designed to be flexible across insurer formats.
+
+import type { InsurancePlanInsert, PlanCoveredServiceInsert } from "@/lib/supabase/types";
+import type { SBCParseResult, SBCParsedService } from "./sbc-parser";
+
+// Re-export the same result type for consistency
+export type PlanDocParseResult = SBCParseResult;
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+function parseDollar(text: string): number | null {
+  const m = text.match(/\$\s*([\d,]+(?:\.\d{2})?)/);
+  return m ? parseFloat(m[1].replace(/,/g, "")) : null;
+}
+
+function parsePercent(text: string): number | null {
+  const m = text.match(/(\d+)\s*%/);
+  return m ? parseInt(m[1], 10) / 100 : null;
+}
+
+function firstMatch(text: string, patterns: RegExp[]): RegExpMatchArray | null {
+  for (const p of patterns) {
+    const m = text.match(p);
+    if (m) return m;
+  }
+  return null;
+}
+
+// ── Cost description parser ─────────────────────────────────────────────────
+// Parses strings like "$20 per visit copay, then 100%" or "Plan deductible, then 90%"
+function parseCostDescription(desc: string): {
+  copay: number | null;
+  coinsurance: number | null;
+  deductibleApplies: boolean;
+  copayWaiverCondition: string | null;
+} {
+  const copay = parseDollar(desc);
+  const deductibleApplies = /deductible/i.test(desc);
+
+  // Coinsurance: "then 90%" means plan pays 90%, user pays 10%
+  const coinMatch = desc.match(/then\s+(\d+)\s*%/i);
+  let coinsurance: number | null = null;
+  if (coinMatch) {
+    const planPays = parseInt(coinMatch[1], 10);
+    if (planPays < 100) {
+      coinsurance = (100 - planPays) / 100; // Convert plan-pays to user-pays
+    }
+  }
+
+  // "100%" with no copay = fully covered
+  if (/^\s*100\s*%\s*$/.test(desc.trim()) || desc.trim() === "100%") {
+    coinsurance = 0;
+  }
+
+  // Waiver conditions: "waived if admitted"
+  const waiverMatch = desc.match(/\(waived\s+if\s+([^)]+)\)/i);
+  const copayWaiverCondition = waiverMatch ? waiverMatch[1].trim() : null;
+
+  return { copay, coinsurance, deductibleApplies, copayWaiverCondition };
+}
+
+// ── Service mapping ─────────────────────────────────────────────────────────
+// Maps plan doc service names to service_catalog slugs
+const SERVICE_NAME_MAP: Record<string, { slug: string; place: string }[]> = {
+  "primary care physician's office visit": [{ slug: "pcp_visit", place: "pcp_office" }],
+  "primary care physician's office": [{ slug: "pcp_visit", place: "pcp_office" }],
+  "primary care physician": [{ slug: "pcp_visit", place: "pcp_office" }],
+  "physician's services": [{ slug: "pcp_visit", place: "pcp_office" }],
+  "primary care physician virtual office visit": [{ slug: "telehealth", place: "virtual" }],
+  "specialty care physician's office visit": [{ slug: "specialist_visit", place: "specialist_office" }],
+  "specialty care physician's office": [{ slug: "specialist_visit", place: "specialist_office" }],
+  "specialty care physician virtual office visit": [{ slug: "telehealth_specialist", place: "virtual" }],
+  "consultant and referral physician's services": [{ slug: "specialist_visit", place: "specialist_office" }],
+  "hospital emergency room": [{ slug: "er_visit", place: "emergency" }],
+  "emergency services": [{ slug: "er_visit", place: "emergency" }],
+  "urgent care facility": [{ slug: "urgent_care", place: "outpatient_facility" }],
+  "urgent care": [{ slug: "urgent_care", place: "outpatient_facility" }],
+  "convenience care clinic": [{ slug: "urgent_care", place: "pcp_office" }],
+  "air ambulance": [{ slug: "air_ambulance", place: "any" }],
+  "ambulance": [{ slug: "ambulance", place: "any" }],
+  "inpatient hospital": [{ slug: "inpatient_hospital", place: "inpatient_facility" }],
+  "inpatient facility": [{ slug: "inpatient_hospital", place: "inpatient_facility" }],
+  "semi-private room and board": [{ slug: "inpatient_hospital", place: "inpatient_facility" }],
+  "outpatient facility services": [{ slug: "outpatient_surgery", place: "outpatient_facility" }],
+  "outpatient hospital facility": [{ slug: "outpatient_surgery", place: "outpatient_facility" }],
+  "skilled nursing facility": [{ slug: "skilled_nursing", place: "inpatient_facility" }],
+  "routine preventive care": [{ slug: "preventive_care", place: "any" }],
+  "immunizations": [{ slug: "immunizations", place: "any" }],
+  "mammograms": [{ slug: "mammogram", place: "any" }],
+  "physical therapy": [{ slug: "physical_therapy", place: "any" }],
+  "speech therapy": [{ slug: "speech_therapy", place: "any" }],
+  "occupational therapy": [{ slug: "occupational_therapy", place: "any" }],
+  "chiropractic": [{ slug: "chiropractic", place: "specialist_office" }],
+  "mental health": [{ slug: "mental_health_outpatient", place: "any" }],
+  "substance use disorder": [{ slug: "substance_abuse_outpatient", place: "any" }],
+  "maternity": [{ slug: "maternity_delivery", place: "inpatient_facility" }],
+  "prenatal care": [{ slug: "maternity_prenatal", place: "any" }],
+  "postnatal care": [{ slug: "maternity_postnatal", place: "any" }],
+  "durable medical equipment": [{ slug: "dme", place: "home" }],
+  "prosthetic devices": [{ slug: "prosthetics", place: "any" }],
+  "hearing aids": [{ slug: "hearing_aids", place: "any" }],
+  "hospice": [{ slug: "hospice", place: "any" }],
+  "home health care": [{ slug: "home_health", place: "home" }],
+  "laboratory services": [{ slug: "lab_work", place: "any" }],
+  "radiology services": [{ slug: "imaging_xray", place: "any" }],
+  "advanced radiological imaging": [{ slug: "imaging_advanced", place: "any" }],
+  "outpatient cardiac rehabilitation": [{ slug: "cardiac_rehab", place: "any" }],
+  "organ transplant": [{ slug: "organ_transplant", place: "inpatient_facility" }],
+  "mdlive urgent care": [{ slug: "telehealth", place: "virtual" }],
+  "mdlive primary care": [{ slug: "telehealth", place: "virtual" }],
+  "mdlive specialty care": [{ slug: "telehealth_specialist", place: "virtual" }],
+  "mdlive behavioral": [{ slug: "mental_health_outpatient", place: "virtual" }],
+};
+
+function matchServiceSlug(serviceName: string): { slug: string; place: string } | null {
+  const lower = serviceName.toLowerCase().trim();
+
+  // Direct match
+  for (const [key, mappings] of Object.entries(SERVICE_NAME_MAP)) {
+    if (lower.includes(key)) return mappings[0];
+  }
+
+  // Fuzzy keyword matching
+  if (/prescri.*drug|pharmacy|rx/i.test(lower)) {
+    if (/tier\s*1|generic/i.test(lower)) return { slug: "generic_rx", place: "any" };
+    if (/tier\s*2|preferred.*brand/i.test(lower)) return { slug: "preferred_brand_rx", place: "any" };
+    if (/tier\s*3|non.?preferred/i.test(lower)) return { slug: "non_preferred_brand_rx", place: "any" };
+    if (/tier\s*4|specialty/i.test(lower)) return { slug: "specialty_rx", place: "any" };
+    return { slug: "generic_rx", place: "any" };
+  }
+
+  if (/lab/i.test(lower)) return { slug: "lab_work", place: "any" };
+  if (/x.?ray|radiol/i.test(lower)) return { slug: "imaging_xray", place: "any" };
+  if (/mri|mra|cat\s*scan|pet\s*scan|ct/i.test(lower)) return { slug: "imaging_advanced", place: "any" };
+  if (/therap/i.test(lower)) return { slug: "physical_therapy", place: "any" };
+  if (/surg/i.test(lower)) return { slug: "outpatient_surgery", place: "any" };
+  if (/pregnan|matern|deliver|birth/i.test(lower)) return { slug: "maternity_delivery", place: "inpatient_facility" };
+
+  return null;
+}
+
+// ── Main parser ─────────────────────────────────────────────────────────────
+
+export function parsePlanDocument(text: string): PlanDocParseResult {
+  const warnings: string[] = [];
+  const plan: Partial<InsurancePlanInsert> = {};
+
+  // ── Plan identity ───────────────────────────────────────────────────────
+
+  // Insurer name: "CIGNA HEALTH AND LIFE INSURANCE COMPANY" or similar
+  const insurerPatterns = [
+    /(?:CIGNA|Cigna|AETNA|Aetna|BLUE\s*CROSS|Blue\s*Cross|UNITED\s*HEALTH|United\s*Health|ANTHEM|Anthem|HUMANA|Humana|KAISER|Kaiser)[\w\s&,.]*/i,
+    /([A-Z][A-Z\s&]+(?:INSURANCE|HEALTH|LIFE)\s+(?:COMPANY|CORPORATION|GROUP|INC))/,
+  ];
+  const insurerMatch = firstMatch(text, insurerPatterns);
+  if (insurerMatch) {
+    let name = insurerMatch[0].trim().replace(/\s+/g, " ");
+    // Normalize common names
+    if (/cigna/i.test(name)) plan.insurer_name = "Cigna";
+    else if (/aetna/i.test(name)) plan.insurer_name = "Aetna";
+    else if (/blue\s*cross/i.test(name)) plan.insurer_name = "Blue Cross Blue Shield";
+    else if (/united\s*health/i.test(name)) plan.insurer_name = "UnitedHealthcare";
+    else if (/anthem/i.test(name)) plan.insurer_name = "Anthem";
+    else if (/humana/i.test(name)) plan.insurer_name = "Humana";
+    else if (/kaiser/i.test(name)) plan.insurer_name = "Kaiser Permanente";
+    else plan.insurer_name = name.slice(0, 100);
+  }
+
+  // Plan name: "OPEN ACCESS PLUS" or from coverage line
+  // Prioritize recognizable plan type names over generic header matches
+  const planNamePatterns = [
+    /OPEN\s+ACCESS\s+PLUS/i,
+    /((?:CHOICE|SELECT|PREFERRED|BASIC|PREMIUM|STANDARD)[A-Z\s]*(?:PLUS|PPO|HMO|EPO|POS|HDHP|HSA))/i,
+    /([A-Z][A-Z\s]+(?:PLUS|PPO|HMO|EPO|POS|HDHP|HSA)[A-Z\s]*)/,
+    /GROUP\s+POLICY.*?[-–]\s*\w+\s+(.*?)(?:\n|BENEFITS)/i,
+  ];
+  const planNameMatch = firstMatch(text, planNamePatterns);
+  if (planNameMatch) {
+    let name = (planNameMatch[1] || planNameMatch[0]).trim().replace(/\s+/g, " ");
+    // Clean up
+    name = name.replace(/\s*MEDICAL\s*BENEFITS?\s*/i, "").replace(/\s*IN-NETWORK\s*/i, " ").trim();
+    if (name.length > 3 && name.length < 100) {
+      plan.plan_name = name;
+      plan.network_name = name;
+    }
+  }
+
+  // Plan type
+  if (/open\s*access\s*plus|OAP/i.test(text)) plan.plan_type = "OAP";
+  else if (/\bPPO\b/i.test(text)) plan.plan_type = "PPO";
+  else if (/\bHMO\b/i.test(text)) plan.plan_type = "HMO";
+  else if (/\bEPO\b/i.test(text)) plan.plan_type = "EPO";
+  else if (/\bPOS\b/i.test(text)) plan.plan_type = "POS";
+  else if (/\bHDHP\b/i.test(text)) plan.plan_type = "HDHP";
+
+  // Employer / policyholder
+  const employerPatterns = [
+    /POLICYHOLDER:\s*(.+)/i,
+    /(?:name of the Plan|Plan Sponsor)[\s:]+(.+)/i,
+    /(?:Employer|Group)\s*Name:\s*(.+)/i,
+  ];
+  const employerMatch = firstMatch(text, employerPatterns);
+  if (employerMatch?.[1]) {
+    plan.employer_name = employerMatch[1].trim().replace(/\s+/g, " ").slice(0, 200);
+  }
+
+  // Policy number
+  const policyPatterns = [
+    /(?:GROUP\s+)?POLICY.*?(\d{5,})/i,
+    /Policy\s*(?:Number|#|No)[\s.:]*(\d{5,})/i,
+  ];
+  const policyMatch = firstMatch(text, policyPatterns);
+
+  // Coverage period / effective date
+  const effectivePatterns = [
+    /EFFECTIVE\s+DATE:\s*(\w+\s+\d{1,2},?\s+\d{4})/i,
+    /effective\s+(?:on|as\s+of)\s+(\w+\s+\d{1,2},?\s+\d{4})/i,
+    /coverage\s+(?:begins|starts|effective)\s*:?\s*(\d{1,2}\/\d{1,2}\/\d{4})/i,
+  ];
+  const effectiveMatch = firstMatch(text, effectivePatterns);
+  if (effectiveMatch?.[1]) {
+    try {
+      const d = new Date(effectiveMatch[1]);
+      if (!isNaN(d.getTime())) {
+        plan.coverage_period_start = d.toISOString().slice(0, 10);
+        // Plan docs usually cover 1 year
+        const endDate = new Date(d);
+        endDate.setFullYear(endDate.getFullYear() + 1);
+        endDate.setDate(endDate.getDate() - 1);
+        plan.coverage_period_end = endDate.toISOString().slice(0, 10);
+      }
+    } catch { /* skip */ }
+  }
+
+  // ── Cost structure ──────────────────────────────────────────────────────
+
+  // Calendar Year Deductible — plan docs use "$500 per person" / "$1,000 per family"
+  const deductibleSection = text.match(
+    /Calendar\s+Year\s+Deductible[\s\S]{0,500}/i
+  )?.[0] || "";
+
+  if (deductibleSection) {
+    const indivMatch = deductibleSection.match(
+      /Individual[\s\S]{0,60}?\$\s*([\d,]+)\s*(?:per\s*person)?/i
+    );
+    const familyMatch = deductibleSection.match(
+      /Family\s+Maximum[\s\S]{0,60}?\$\s*([\d,]+)\s*(?:per\s*family)?/i
+    );
+    if (indivMatch) plan.in_deductible_individual = parseFloat(indivMatch[1].replace(/,/g, ""));
+    if (familyMatch) plan.in_deductible_family = parseFloat(familyMatch[1].replace(/,/g, ""));
+
+    // Deductible calc method: "Individual Calculation" = embedded
+    if (/Individual\s+Calculation/i.test(deductibleSection)) {
+      plan.deductible_calc_method = "embedded";
+    } else if (/Aggregate/i.test(deductibleSection)) {
+      plan.deductible_calc_method = "aggregate";
+    }
+  }
+  if (plan.in_deductible_individual == null) warnings.push("Could not extract in-network deductible");
+
+  // Out-of-Pocket Maximum — look for the one in The Schedule section (near deductible)
+  // Multiple occurrences exist; the one with dollar amounts is in The Schedule
+  const oopMatches = [...text.matchAll(/Out-of-Pocket\s+(?:Maximum|Limit)[\s\S]{0,500}/gi)];
+  for (const oopM of oopMatches) {
+    const oopSection = oopM[0];
+    const indivMatch = oopSection.match(
+      /Individual[\s\S]{0,80}?\$\s*([\d,]+)\s*(?:per\s*person)?/i
+    );
+    const familyMatch = oopSection.match(
+      /Family\s+Maximum[\s\S]{0,80}?\$\s*([\d,]+)\s*(?:per\s*family)?/i
+    );
+    if (indivMatch && !plan.in_oop_max_individual) {
+      plan.in_oop_max_individual = parseFloat(indivMatch[1].replace(/,/g, ""));
+    }
+    if (familyMatch && !plan.in_oop_max_family) {
+      plan.in_oop_max_family = parseFloat(familyMatch[1].replace(/,/g, ""));
+    }
+    if (plan.in_oop_max_individual) break; // Got what we need
+  }
+  if (plan.in_oop_max_individual == null) warnings.push("Could not extract in-network OOP max");
+
+  // Default coinsurance: "The Percentage of Covered Expenses the Plan Pays: 90%"
+  const coinPatterns = [
+    /Percentage\s+of\s+Covered\s+Expenses.*?(\d+)\s*%/i,
+    /plan\s+pays\s*:?\s*(\d+)\s*%/i,
+    /coinsurance[:\s]+(\d+)\s*%/i,
+  ];
+  const coinMatch = firstMatch(text, coinPatterns);
+  if (coinMatch?.[1]) {
+    const planPays = parseInt(coinMatch[1], 10);
+    plan.in_coinsurance_default = (100 - planPays) / 100;
+  }
+
+  // Combined Med/Rx OOP
+  if (/Combined\s+Medical.*?Pharmacy.*?Out-of-Pocket/i.test(text)) {
+    const yesNo = text.match(/Combined\s+Medical.*?Pharmacy[\s\S]{0,200}?(Yes|No)/i);
+    plan.combined_medical_rx_oop = yesNo?.[1]?.toLowerCase() === "yes";
+  }
+
+  // Referral required
+  if (/referral.*not\s+required|no\s+referral\s+required|direct\s+access/i.test(text)) {
+    plan.referral_required = false;
+  } else if (/referral.*required/i.test(text)) {
+    plan.referral_required = true;
+  }
+
+  // ── ERISA / Admin info ──────────────────────────────────────────────────
+
+  const adminInfo: Record<string, string> = {};
+
+  if (policyMatch?.[1]) adminInfo.policy_number = policyMatch[1];
+  if (plan.employer_name) plan.employer_name = plan.employer_name;
+
+  // EIN
+  const einMatch = text.match(/(?:EIN|Employer\s+Identification\s+Number)[:\s]*(\d{9}|\d{2}-?\d{7})/i);
+  if (einMatch?.[1]) adminInfo.ein = einMatch[1].replace(/-/g, "");
+
+  // ERISA plan number — must be exactly 3 digits, not part of a longer number
+  const planNumMatch = text.match(/Plan\s+Number[:\s]*\n?\s*(\d{3})\b/i);
+  if (planNumMatch?.[1] && !/\d/.test(text.charAt(text.indexOf(planNumMatch[0]) + planNumMatch[0].length))) {
+    adminInfo.erisa_plan_number = planNumMatch[1];
+  }
+
+  // Plan administrator address
+  const adminAddrMatch = text.match(
+    /(?:sponsor|administrator)[\s\S]{0,200}?(\d+\s+\w[\w\s]+(?:Avenue|Ave|Street|St|Boulevard|Blvd|Road|Rd|Drive|Dr|Way|Lane|Ln)[,.\s]+(?:Suite|Ste|#)?\s*\d*[,.\s]+\w[\w\s]+,\s*[A-Z]{2}\s+\d{5})/i
+  );
+  if (adminAddrMatch?.[1]) adminInfo.plan_administrator_address = adminAddrMatch[1].trim();
+
+  // Fiscal year end
+  const fiscalMatch = text.match(/(?:fiscal|plan)\s+year\s+end[:\s]*(\d{1,2}\/\d{1,2})/i);
+  if (fiscalMatch?.[1]) adminInfo.fiscal_year_end = fiscalMatch[1];
+
+  if (Object.keys(adminInfo).length > 0) {
+    plan.admin_info = adminInfo;
+  }
+
+  // ── Contact info ────────────────────────────────────────────────────────
+
+  const contactInfo: Record<string, string> = {};
+
+  // Phone
+  const phoneMatch = text.match(/(?:Customer\s+Service|call)[\s\S]{0,100}?(1-\d{3}-\d{3}-\d{4}|\(\d{3}\)\s*\d{3}-\d{4})/i);
+  if (phoneMatch?.[1]) contactInfo.phone = phoneMatch[1];
+
+  // Portal
+  if (/mycigna\.com/i.test(text)) contactInfo.portal_url = "myCigna.com";
+  else {
+    const portalMatch = text.match(/(?:visit|online|portal|website)[:\s]*((?:www\.|my)[a-z0-9]+\.[a-z]{2,})/i);
+    if (portalMatch?.[1]) contactInfo.portal_url = portalMatch[1];
+  }
+
+  // Grievance email
+  const grievanceMatch = text.match(/(?:grievance|complaint)[\s\S]{0,200}?([\w.+-]+@[\w.-]+\.[a-z]{2,})/i);
+  if (grievanceMatch?.[1]) contactInfo.grievance_email = grievanceMatch[1];
+
+  // State regulator
+  const regulatorMatch = text.match(
+    /(?:Department\s+of\s+(?:Insurance|Managed\s+Health)|DMHC|DOI)[\s\S]{0,100}?((?:1-)?\d{3}[-.]\d{3}[-.]\d{4}|\(\d{3}\)\s*\d{3}[-.]\d{4})/i
+  );
+  if (regulatorMatch?.[1]) {
+    const stateMatch = text.match(/(California|CA|New York|NY|Texas|TX|Florida|FL|Illinois|IL|Pennsylvania|PA|Ohio|OH|Georgia|GA|Michigan|MI|Arizona|AZ)\s+(?:Department|DMHC)/i);
+    contactInfo.state_regulator = `${stateMatch?.[1] || "State"}: ${regulatorMatch[1]}`;
+  }
+
+  if (Object.keys(contactInfo).length > 0) {
+    plan.contact_info = contactInfo;
+  }
+
+  // ── Claims timelines ────────────────────────────────────────────────────
+
+  const timelines: Record<string, number> = {};
+  const preserviceMatch = text.match(/pre-?service[\s\S]{0,100}?(\d+)\s*(?:calendar\s+)?days/i);
+  if (preserviceMatch?.[1]) timelines.preservice_days = parseInt(preserviceMatch[1], 10);
+  const urgentMatch = text.match(/urgent[\s\S]{0,100}?(\d+)\s*hours/i);
+  if (urgentMatch?.[1]) timelines.preservice_urgent_hours = parseInt(urgentMatch[1], 10);
+  const postserviceMatch = text.match(/post-?service[\s\S]{0,100}?(\d+)\s*(?:calendar\s+)?days/i);
+  if (postserviceMatch?.[1]) timelines.postservice_days = parseInt(postserviceMatch[1], 10);
+  const concurrentMatch = text.match(/concurrent[\s\S]{0,100}?(\d+)\s*hours/i);
+  if (concurrentMatch?.[1]) timelines.concurrent_hours = parseInt(concurrentMatch[1], 10);
+  if (Object.keys(timelines).length > 0) plan.claims_timelines = timelines;
+
+  // ── Timely filing ───────────────────────────────────────────────────────
+
+  const timelyMatch = text.match(/(?:file|submit)[\s\S]{0,100}?(?:within|no\s+later\s+than)\s+(\d+)\s*days/i);
+  if (timelyMatch?.[1]) plan.timely_filing_days_in = parseInt(timelyMatch[1], 10);
+
+  // ── COBRA ───────────────────────────────────────────────────────────────
+
+  const cobraMatch = text.match(/COBRA[\s\S]{0,500}?(\d+)\s*months/i);
+  if (cobraMatch?.[1]) plan.cobra_months = parseInt(cobraMatch[1], 10);
+
+  // ── Services ────────────────────────────────────────────────────────────
+
+  const services: SBCParsedService[] = [];
+  const seenKeys = new Set<string>();
+
+  // Pattern: "Service Name\n\n$X per visit copay, then Y%" or "Plan deductible, then Y%"
+  const costPatterns = [
+    // "$20 per visit copay, then 100%"
+    /(\$\d[\d,.]*\s+per\s+visit\s+copay[^%]*\d+\s*%)/gi,
+    // "$250 per visit copay (waived if admitted), then plan deductible, then 90%"
+    /(\$\d[\d,.]*\s+per\s+visit\s+copay\s*\([^)]+\)[^%]*\d+\s*%)/gi,
+    // "Plan deductible, then 90%"
+    /(Plan\s+deductible,\s+then\s+\d+\s*%)/gi,
+    // "100%" standalone
+    // "No charge after $X Copay"
+    /No\s+charge\s+after\s+\$\d[\d,.]*\s+Copay/gi,
+  ];
+
+  // Find each cost description and look backward for the service name
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    // Check if this line contains a cost description
+    // Exclude standalone "100%" — too ambiguous (matches preventive, allergy serum, etc.)
+    // Those are handled by matching "$X copay, then 100%" or "Plan deductible, then 90%"
+    const isCostLine = /^\$\d+.*copay|^Plan\s+deductible|^No\s+charge\s+after/i.test(line);
+    if (!isCostLine) continue;
+
+    // Look backward for the service name (typically 1-5 lines before)
+    let serviceName = "";
+    for (let j = i - 1; j >= Math.max(0, i - 8); j--) {
+      const prevLine = lines[j].trim();
+      if (!prevLine) continue;
+      // Skip page headers, numbers, "myCigna.com", "IN-NETWORK", "BENEFIT HIGHLIGHTS"
+      if (/^\d+$/.test(prevLine)) continue;
+      if (/^myCigna|^IN-NETWORK|^BENEFIT HIGHLIGHTS|^OUT-OF-NETWORK|^Note:/i.test(prevLine)) continue;
+      // If this looks like a previous cost line, stop
+      if (/^\$\d+.*copay|^Plan\s+deductible|^No\s+charge|^100\s*%$/i.test(prevLine)) break;
+      serviceName = prevLine + (serviceName ? " " + serviceName : "");
+      // Break if this looks like a complete service name header — starts with capital,
+      // long enough to not be a continuation word (like "Visit", "Services", "Facility")
+      // and not a known continuation fragment
+      const isContinuation = /^(?:Visit|Services?|Facility|Provider|Benefits?|Room|Charges?|Care)$/i.test(prevLine)
+        || prevLine.length <= 15;
+      if (/^[A-Z]/.test(prevLine) && prevLine.length > 3 && !isContinuation) break;
+    }
+
+    if (!serviceName) continue;
+
+    const mapping = matchServiceSlug(serviceName);
+    if (!mapping) continue;
+
+    const key = `${mapping.slug}:${mapping.place}`;
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+
+    const parsed = parseCostDescription(line);
+
+    // Check for annual limit in nearby lines
+    let annualLimit: string | null = null;
+    let annualLimitValue: number | null = null;
+    for (let j = Math.max(0, i - 5); j <= Math.min(lines.length - 1, i + 3); j++) {
+      const nearLine = lines[j].trim();
+      const limitMatch = nearLine.match(/(?:Calendar\s+Year\s+)?Maximum:\s*(.+)/i);
+      if (limitMatch) {
+        annualLimit = limitMatch[1].trim();
+        const numMatch = annualLimit.match(/(\d+)\s*(?:days|visits|sessions)/i);
+        if (numMatch) annualLimitValue = parseInt(numMatch[1], 10);
+        if (/unlimited/i.test(annualLimit)) { annualLimit = "Unlimited"; annualLimitValue = null; }
+      }
+    }
+
+    // Check for prior auth
+    let priorAuth: boolean | null = null;
+    for (let j = Math.max(0, i - 10); j <= Math.min(lines.length - 1, i + 5); j++) {
+      if (/prior\s+auth|pre-?cert|pre-?authorization/i.test(lines[j])) {
+        priorAuth = true;
+        break;
+      }
+    }
+
+    // Rx-specific: supply days and home delivery
+    let supplyLimitDays: number | null = null;
+    let homeDeliveryCopay: number | null = null;
+    if (/rx|drug|pharmacy|tier/i.test(serviceName)) {
+      const supplyMatch = serviceName.match(/(\d+).?day/i) || line.match(/(\d+).?day/i);
+      if (supplyMatch) supplyLimitDays = parseInt(supplyMatch[1], 10);
+      if (/home\s+delivery|mail\s+order/i.test(serviceName)) {
+        homeDeliveryCopay = parsed.copay;
+      }
+    }
+
+    services.push({
+      serviceSlug: mapping.slug,
+      placeOfService: mapping.place,
+      inCopay: parsed.copay,
+      inCoinsurance: parsed.coinsurance,
+      inDeductibleApplies: parsed.deductibleApplies,
+      inCopayWaiverCondition: parsed.copayWaiverCondition,
+      inCostDescription: line,
+      outCopay: null, // Plan doc typically doesn't have OON details
+      outCoinsurance: null,
+      outDeductibleApplies: null,
+      outCostDescription: "",
+      oonPaidAtInNetwork: /emergency|air\s*ambulance/i.test(serviceName),
+      annualLimit,
+      annualLimitValue,
+      priorAuthRequired: priorAuth,
+      penaltyNoPrecert: null,
+      covered: true,
+      coverageConditions: null,
+      supplyLimitDays,
+      homeDeliveryCopay,
+      stepTherapyRequired: null,
+      notes: null,
+      confidence: 0.7,
+    });
+  }
+
+  // ── Exclusions ──────────────────────────────────────────────────────────
+
+  const exclusionSection = text.match(
+    /Exclusions[\s\S]{0,5000}?(?=Coordination\s+of\s+Benefits|Payment\s+of\s+Benefits|Termination|$)/i
+  )?.[0] || "";
+
+  if (exclusionSection) {
+    const exclusionPatterns = [
+      /(?:not\s+covered|excluded)[\s:]*([^.;]+)/gi,
+    ];
+    for (const pattern of exclusionPatterns) {
+      let m;
+      while ((m = pattern.exec(exclusionSection)) !== null) {
+        const excl = m[1].trim();
+        const mapping = matchServiceSlug(excl);
+        if (mapping) {
+          const key = `${mapping.slug}:${mapping.place}`;
+          if (!seenKeys.has(key)) {
+            seenKeys.add(key);
+            services.push({
+              serviceSlug: mapping.slug,
+              placeOfService: mapping.place,
+              inCopay: null, inCoinsurance: null, inDeductibleApplies: false,
+              inCopayWaiverCondition: null, inCostDescription: "Not covered",
+              outCopay: null, outCoinsurance: null, outDeductibleApplies: false,
+              outCostDescription: "Not covered",
+              oonPaidAtInNetwork: false,
+              annualLimit: null, annualLimitValue: null,
+              priorAuthRequired: null, penaltyNoPrecert: null,
+              covered: false,
+              coverageConditions: excl.length < 200 ? excl : null,
+              supplyLimitDays: null, homeDeliveryCopay: null,
+              stepTherapyRequired: null, notes: null,
+              confidence: 0.5,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  // ── Confidence calculation ──────────────────────────────────────────────
+
+  let confidence = 0;
+  let fields = 0;
+  const critical = [
+    plan.insurer_name, plan.plan_name, plan.in_deductible_individual,
+    plan.in_oop_max_individual, plan.in_coinsurance_default,
+  ];
+  for (const f of critical) {
+    fields++;
+    if (f != null) confidence += 0.15;
+  }
+  if (plan.employer_name) confidence += 0.05;
+  if (plan.plan_type) confidence += 0.05;
+  if (plan.coverage_period_start) confidence += 0.05;
+  if (plan.admin_info && Object.keys(plan.admin_info).length > 2) confidence += 0.05;
+  if (plan.contact_info) confidence += 0.03;
+  if (services.length > 5) confidence += 0.05;
+  if (services.length > 15) confidence += 0.05;
+  confidence = Math.min(confidence, 1.0);
+  confidence = Math.round(confidence * 100) / 100;
+
+  return {
+    plan,
+    services,
+    confidence,
+    parseWarnings: warnings,
+  };
+}

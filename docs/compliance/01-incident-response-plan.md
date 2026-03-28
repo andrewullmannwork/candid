@@ -92,7 +92,7 @@ What we are doing: [Containment and remediation steps taken]
 
 What you can do: [Recommended user actions — change passwords, monitor accounts, etc.]
 
-For questions, contact us at: support@candid.com
+For questions, submit a support ticket at: candidclaim.com
 
 Sincerely,
 Airgetlam Labs LLC

@@ -78,7 +78,7 @@ Dear [Name],
 We received your [type of request] on [date]. We will fulfill your request
 within 30 days. If we need additional time, we will notify you.
 
-If you have questions, reply to this email.
+If you have questions, submit another support ticket at candidclaim.com.
 
 Sincerely,
 Candid Support
@@ -97,12 +97,14 @@ Your [type of request] submitted on [date] has been completed.
 [For deletion: All personal data associated with your account has been deleted.]
 [For correction: The following data has been updated: [details].]
 
-If you have questions, reply to this email.
+If you have questions, submit another support ticket at candidclaim.com.
 
 Sincerely,
 Candid Support
 Airgetlam Labs LLC
 ```
+
+> **Current process (pre-launch):** Admin manually monitors `support_tickets` table and responds to the user's registered email. Automated ticket reply + Resend email integration is a fast-follow (see `Items before go live` note).
 
 ## 5. Record Keeping
 

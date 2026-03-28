@@ -149,6 +149,7 @@ export interface InsurancePlanRow {
   // Identity
   plan_name: string | null;
   insurer_name: string | null;
+  employer_name: string | null;
   plan_type: string | null;
   plan_year: number | null;
   state: string | null;

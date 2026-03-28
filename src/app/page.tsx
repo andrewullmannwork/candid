@@ -341,7 +341,7 @@ export default function LandingPage() {
               <Link href="/privacy" className="hover:text-gray-700 transition-colors">Privacy</Link>
               <Link href="/terms" className="hover:text-gray-700 transition-colors">Terms</Link>
               <Link href="/health-data" className="hover:text-gray-700 transition-colors">Consumer Health Data Privacy Policy</Link>
-              <a href="mailto:support@candid.com" className="hover:text-gray-700 transition-colors">Support</a>
+              <Link href="/support" className="hover:text-gray-700 transition-colors">Support</Link>
             </div>
           </div>
           <p className="mt-6 text-[11px] text-gray-400 leading-relaxed max-w-2xl">

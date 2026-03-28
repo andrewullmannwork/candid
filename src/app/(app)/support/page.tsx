@@ -49,7 +49,7 @@ export default function SupportPage() {
         <div className="p-6 bg-green-50 border border-green-200 rounded-xl text-center">
           <h3 className="text-lg font-semibold text-green-800">Ticket Submitted</h3>
           <p className="mt-2 text-green-700">
-            We&apos;ve received your support request and will respond via email.
+            We&apos;ve received your support request and will be in touch shortly.
           </p>
           <button
             onClick={() => setSubmitted(false)}

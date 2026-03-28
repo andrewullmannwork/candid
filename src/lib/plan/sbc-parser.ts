@@ -203,7 +203,7 @@ export function parseSBCText(text: string, documentId?: string): SBCParseResult 
   const employerPlan = text.match(/([A-Z][^\n:]{3,50}):\s+((?:Open Access|PPO|HMO|EPO|POS|HDHP|OAP)[^\n]*)/im);
   if (employerPlan) {
     plan.plan_name = employerPlan[2].trim();
-    plan.admin_info = { employer_name: employerPlan[1].trim() };
+    plan.employer_name = employerPlan[1].trim();
   }
 
   // ── Insurer name — detect from domain, branding, or repeated mentions ────
