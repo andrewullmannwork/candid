@@ -203,8 +203,36 @@ export function parseSBCText(text: string, documentId?: string): SBCParseResult 
   const employerPlan = text.match(/([A-Z][^\n:]{3,50}):\s+((?:Open Access|PPO|HMO|EPO|POS|HDHP|OAP)[^\n]*)/im);
   if (employerPlan) {
     plan.plan_name = employerPlan[2].trim();
-    // Store the employer name in admin_info
     plan.admin_info = { employer_name: employerPlan[1].trim() };
+  }
+
+  // ── Insurer name — detect from domain, branding, or repeated mentions ────
+  const insurerPatterns: [RegExp, string][] = [
+    [/cigna/i, "Cigna"],
+    [/united\s*health/i, "UnitedHealthcare"],
+    [/anthem/i, "Anthem"],
+    [/aetna/i, "Aetna"],
+    [/humana/i, "Humana"],
+    [/kaiser/i, "Kaiser Permanente"],
+    [/blue\s*cross/i, "Blue Cross Blue Shield"],
+    [/molina/i, "Molina Healthcare"],
+    [/oscar/i, "Oscar Health"],
+    [/centene|ambetter|wellcare/i, "Centene"],
+    [/highmark/i, "Highmark"],
+    [/carefirst/i, "CareFirst"],
+    [/florida\s*blue/i, "Florida Blue"],
+    [/horizon/i, "Horizon BCBS"],
+  ];
+  for (const [pattern, name] of insurerPatterns) {
+    if (pattern.test(text)) {
+      plan.insurer_name = name;
+      break;
+    }
+  }
+
+  // Network name — same as plan name for most insurers
+  if (plan.plan_name) {
+    plan.network_name = plan.plan_name;
   }
 
   // Coverage period
@@ -309,53 +337,137 @@ export function parseSBCText(text: string, documentId?: string): SBCParseResult 
     }
   }
 
-  // Combined medical/Rx OOP
-  if (/combined\s+medical.*(?:pharmacy|rx)\s+out[- ]of[- ]pocket/i.test(text)) {
+  // ── Combined medical/Rx OOP ─────────────────────────────────────────────
+
+  if (/combined\s+medical/i.test(text) && /pharmacy\s+out[- ]of[- ]pocket/i.test(text)) {
+    plan.combined_medical_rx_oop = true;
+  } else if (/combined\s+medical.*(?:pharmacy|rx)/i.test(text)) {
     plan.combined_medical_rx_oop = true;
   }
 
   // ── Referral required ───────────────────────────────────────────────────
+  // In Document AI text, question and answer may be separated by other text
+  // Look for "referral" near "No" or "you can see the specialist you choose"
 
-  if (/do\s+you\s+need\s+a\s+referral.*?(?:no\.?|you\s+can\s+see)/im.test(text)) {
-    plan.referral_required = false;
-  } else if (/do\s+you\s+need\s+a\s+referral.*?(?:yes)/im.test(text)) {
-    plan.referral_required = true;
+  if (/referral/i.test(text)) {
+    if (/you\s+can\s+see\s+the\s+specialist\s+you\s+choose/i.test(text)
+      || /without\s+a\s+referral/i.test(text)) {
+      plan.referral_required = false;
+    } else if (/referral[\s\S]{0,200}?yes/im.test(text)) {
+      plan.referral_required = true;
+    } else {
+      // Default: check if "No" appears near "referral"
+      const refIdx = text.search(/referral/i);
+      const nearby = text.slice(refIdx, refIdx + 300);
+      if (/\bNo\b/.test(nearby)) {
+        plan.referral_required = false;
+      }
+    }
+  }
+
+  // ── Default coinsurance ───────────────────────────────────────────────
+  // Try to extract the most common coinsurance from the service table
+  // SBC typically shows "10% coinsurance" or "30% coinsurance" repeatedly
+
+  const coinsMatches = text.match(/(\d+)%\s*coinsurance/gi) || [];
+  if (coinsMatches.length > 0) {
+    // Count frequency of each coinsurance value
+    const freq = new Map<number, number>();
+    for (const m of coinsMatches) {
+      const val = parseInt(m.match(/(\d+)/)?.[1] || "0", 10);
+      if (val > 0 && val < 100) freq.set(val, (freq.get(val) || 0) + 1);
+    }
+    // Most common in-network coinsurance (typically the lower one)
+    const sorted = [...freq.entries()].sort((a, b) => b[1] - a[1]);
+    if (sorted.length >= 1) {
+      const lowest = Math.min(...sorted.map(([v]) => v));
+      const highest = Math.max(...sorted.map(([v]) => v));
+      plan.in_coinsurance_default = lowest / 100;  // e.g., 0.10 for 10%
+      if (highest !== lowest) {
+        plan.out_coinsurance_default = highest / 100;  // e.g., 0.30 for 30%
+      }
+    }
+  }
+
+  // ── State ─────────────────────────────────────────────────────────────
+  // Try to extract from regulatory body mention or address
+  const stateRegulator = text.match(/(?:department\s+of\s+(?:managed\s+health|insurance)|commissioner)[^\n]*?(Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New\s+Hampshire|New\s+Jersey|New\s+Mexico|New\s+York|North\s+Carolina|North\s+Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode\s+Island|South\s+Carolina|South\s+Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West\s+Virginia|Wisconsin|Wyoming)/i);
+  if (stateRegulator) {
+    plan.state = stateRegulator[1].trim();
   }
 
   // ── Minimum Essential Coverage / Minimum Value ──────────────────────────
 
-  if (/minimum\s+essential\s+coverage\??\s*yes/i.test(text)) {
+  if (/minimum\s+essential\s+coverage/i.test(text) && /yes/i.test(text.slice(text.search(/minimum\s+essential/i), text.search(/minimum\s+essential/i) + 200))) {
     plan.minimum_essential_coverage = true;
   }
-  if (/minimum\s+value\s+standard[s]?\??\s*yes/i.test(text)) {
+  if (/minimum\s+value\s+standard/i.test(text) && /yes/i.test(text.slice(text.search(/minimum\s+value/i), text.search(/minimum\s+value/i) + 200))) {
     plan.minimum_value_standard = true;
   }
 
   // ── OOP exclusions ──────────────────────────────────────────────────────
-
-  const oopExclMatch = text.match(/what\s+is\s+not\s+included\s+in\s+the\s+out[- ]of[- ]pocket\s+limit\??\s*(.+?)(?=will\s+you|do\s+you|$)/im);
-  if (oopExclMatch) {
-    const excls = oopExclMatch[1].trim();
+  // Scan a wider range around "not included in the out-of-pocket"
+  const oopExclIdx = text.search(/not\s+included\s+in\s+the\s+out/i);
+  if (oopExclIdx >= 0) {
+    const excls = text.slice(oopExclIdx, oopExclIdx + 500);
     const items: string[] = [];
     if (/penalt/i.test(excls)) items.push("precert_penalties");
     if (/premium/i.test(excls)) items.push("premiums");
     if (/balance[- ]bill/i.test(excls)) items.push("balance_billing");
-    if (/doesn.*cover/i.test(excls)) items.push("non_covered_services");
-    if (items.length > 0) plan.oop_exclusions = items;
+    if (/doesn.*cover|plan\s+doesn/i.test(excls)) items.push("non_covered_services");
+    if (/health\s+care\s+this\s+plan\s+doesn/i.test(excls)) items.push("non_covered_services");
+    // Deduplicate
+    plan.oop_exclusions = [...new Set(items)];
   }
 
   // ── Other specific deductibles ──────────────────────────────────────────
 
-  const otherDedMatch = text.match(/other\s+deductibles.*?\$([\d,]+)\s+for\s+(.+?)(?:\.|there\s+are)/im);
+  const otherDedMatch = text.match(/\$([\d,]+)\s+for\s+(in[- ]network[^\n.]*)/i);
   if (otherDedMatch) {
     plan.other_deductibles = { [otherDedMatch[2].trim().toLowerCase()]: parseInt(otherDedMatch[1].replace(/,/g, ""), 10) };
   }
 
-  // ── Contact info ────────────────────────────────────────────────────────
+  // ── Deductible calculation method ─────────────────────────────────────
+  // SBC: "each family member must meet their own individual deductible" = embedded
+  if (/each\s+family\s+member\s+must\s+meet\s+their\s+own/i.test(text)) {
+    plan.deductible_calc_method = "embedded";
+  } else if (/overall\s+family\s+deductible/i.test(text) && !/individual\s+deductible/i.test(text)) {
+    plan.deductible_calc_method = "aggregate";
+  }
 
-  const phoneMatch = text.match(/(?:call|phone)[:\s]*(1?[-.]?\d{3}[-.]?\d{3}[-.]?\d{4})/i);
-  if (phoneMatch) {
-    plan.contact_info = { phone: phoneMatch[1] };
+  // ── Contact info (expanded) ───────────────────────────────────────────
+
+  const contactInfo: Record<string, string> = {};
+
+  // Phone numbers
+  const phoneMatches = text.match(/1[-.]?\d{3}[-.]?\d{3}[-.]?\d{4}/g);
+  if (phoneMatches && phoneMatches.length > 0) {
+    contactInfo.phone = phoneMatches[0]!;
+  }
+
+  // Website
+  const websiteMatch = text.match(/(?:www\.\w+\.com(?:\/\S*)?)/i);
+  if (websiteMatch) contactInfo.website = websiteMatch[0];
+
+  // Insurer portal
+  if (plan.insurer_name === "Cigna") contactInfo.portal_url = "www.myCigna.com";
+
+  // Grievance email
+  const emailMatch = text.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+  if (emailMatch) contactInfo.grievance_email = emailMatch[1];
+
+  // Nondiscrimination address
+  const nonDiscAddr = text.match(/(?:nondiscrimination|complaint)[^\n]*\n([^\n]*(?:P\.?O\.?\s*Box|[0-9]+\s+\w+)[^\n]*)/i);
+  if (nonDiscAddr) contactInfo.nondiscrimination_address = nonDiscAddr[1].trim();
+
+  // State regulator
+  const regulatorMatch = text.match(/(department\s+of\s+(?:managed\s+health|insurance)[^\n]*)/i);
+  if (regulatorMatch) contactInfo.state_regulator_name = regulatorMatch[1].trim();
+  const regulatorPhone = text.match(/(?:department|commissioner)[^\n]*?(\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})/i);
+  if (regulatorPhone) contactInfo.state_regulator_phone = regulatorPhone[1];
+
+  if (Object.keys(contactInfo).length > 0) {
+    plan.contact_info = contactInfo;
   }
 
   // ── Extract per-service cost sharing ────────────────────────────────────
