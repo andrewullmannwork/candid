@@ -51,6 +51,27 @@ export const metadata: Metadata = {
       "max-snippet": -1,
     },
   },
+  other: {
+    "theme-color": "#2563eb",
+    "apple-mobile-web-app-title": "Candid",
+    "apple-mobile-web-app-capable": "yes",
+    "apple-mobile-web-app-status-bar-style": "black-translucent",
+  },
+  keywords: [
+    "medical bill audit",
+    "healthcare overcharges",
+    "insurance benefits",
+    "dispute medical bills",
+    "medical billing errors",
+    "health insurance plan analysis",
+    "EOB review",
+    "medical debt",
+    "healthcare costs",
+  ],
+  authors: [{ name: "Candid", url: "https://candidclaim.com" }],
+  creator: "Airgetlam Labs LLC",
+  publisher: "Airgetlam Labs LLC",
+  category: "Health",
 };
 
 export default function RootLayout({
@@ -64,6 +85,30 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify({
+              "@context": "https://schema.org",
+              "@type": "Organization",
+              name: "Candid",
+              legalName: "Airgetlam Labs LLC",
+              url: "https://candidclaim.com",
+              description:
+                "Audit medical bills, discover unused insurance benefits, and generate dispute letters.",
+              foundingDate: "2026",
+              sameAs: [],
+              offers: {
+                "@type": "Offer",
+                name: "Free Medical Bill Audit",
+                price: "0",
+                priceCurrency: "USD",
+                description:
+                  "Upload your medical bill and get a free audit to identify overcharges and billing errors.",
+              },
+            }),
+          }}
+        />
         <AuthProvider>{children}</AuthProvider>
         <Analytics />
       </body>

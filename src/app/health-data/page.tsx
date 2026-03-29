@@ -1,5 +1,12 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { CONSENT_DOCUMENTS } from "@/lib/consent/consent-documents";
+
+export const metadata: Metadata = {
+  title: "Health Data Authorization",
+  description: "Candid Health Data Upload Authorization. Understand how your medical documents are processed, stored, and protected.",
+  alternates: { canonical: "/health-data" },
+};
 
 export default function HealthDataPage() {
   const healthDoc = CONSENT_DOCUMENTS.health_data_upload;

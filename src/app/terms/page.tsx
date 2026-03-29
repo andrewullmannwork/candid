@@ -1,5 +1,12 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { CONSENT_DOCUMENTS } from "@/lib/consent/consent-documents";
+
+export const metadata: Metadata = {
+  title: "Terms of Service",
+  description: "Candid Terms of Service. Read the terms governing your use of Candid medical bill auditing and insurance plan analysis services.",
+  alternates: { canonical: "/terms" },
+};
 
 export default function TermsPage() {
   const tosDoc = CONSENT_DOCUMENTS.tos;

@@ -1,5 +1,12 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { CONSENT_DOCUMENTS } from "@/lib/consent/consent-documents";
+
+export const metadata: Metadata = {
+  title: "Privacy Policy",
+  description: "Candid Privacy Policy. Learn how we protect your health data, comply with HIPAA, and handle your personal information.",
+  alternates: { canonical: "/privacy" },
+};
 
 export default function PrivacyPage() {
   const privacyDoc = CONSENT_DOCUMENTS.privacy_policy;

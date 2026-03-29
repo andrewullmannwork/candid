@@ -286,55 +286,88 @@ export default function SignUpPage() {
             </div>
 
             <form onSubmit={handleCreateAccount} className="space-y-4">
-              <input
-                type="text"
-                required
-                placeholder="Full legal name"
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-                className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
-              <input
-                type="email"
-                required
-                placeholder="Email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
-              <input
-                type="tel"
-                required
-                placeholder="Phone number (xxx) xxx-xxxx"
-                value={phone}
-                onChange={(e) => setPhone(formatPhone(e.target.value))}
-                className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
               <div>
-                <label className="text-xs text-gray-500 mb-1 block">Date of birth</label>
+                <label htmlFor="signup-name" className="text-xs font-medium text-gray-600 mb-1 block">
+                  Full legal name <span className="text-red-400">*</span>
+                </label>
                 <input
-                  type="date"
+                  id="signup-name"
+                  type="text"
                   required
-                  value={dateOfBirth}
-                  max={new Date(new Date().setFullYear(new Date().getFullYear() - 18)).toISOString().split("T")[0]}
-                  onChange={(e) => setDateOfBirth(e.target.value)}
-                  placeholder="MM/DD/YYYY"
+                  autoComplete="name"
+                  placeholder="First and last name"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
                   className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
               </div>
-              <input
-                type="password"
-                required
-                minLength={10}
-                placeholder="Password (10+ characters)"
-                value={password}
-                onChange={(e) => handlePasswordChange(e.target.value)}
-                className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                  password.length > 0 && passwordErrors.length > 0
-                    ? "border-red-300"
-                    : "border-gray-200"
-                }`}
-              />
+              <div>
+                <label htmlFor="signup-email" className="text-xs font-medium text-gray-600 mb-1 block">
+                  Email <span className="text-red-400">*</span>
+                </label>
+                <input
+                  id="signup-email"
+                  type="email"
+                  required
+                  autoComplete="email"
+                  placeholder="you@example.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+              <div>
+                <label htmlFor="signup-phone" className="text-xs font-medium text-gray-600 mb-1 block">
+                  Phone number <span className="text-red-400">*</span>
+                </label>
+                <input
+                  id="signup-phone"
+                  type="tel"
+                  required
+                  autoComplete="tel-national"
+                  placeholder="(555) 123-4567"
+                  value={phone}
+                  onChange={(e) => setPhone(formatPhone(e.target.value))}
+                  className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+              <div>
+                <label htmlFor="signup-dob" className="text-xs font-medium text-gray-600 mb-1 block">
+                  Date of birth <span className="text-red-400">*</span>
+                </label>
+                <input
+                  id="signup-dob"
+                  type="date"
+                  required
+                  autoComplete="bday"
+                  value={dateOfBirth}
+                  max={new Date(new Date().setFullYear(new Date().getFullYear() - 18)).toISOString().split("T")[0]}
+                  min="1920-01-01"
+                  onChange={(e) => setDateOfBirth(e.target.value)}
+                  className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
+                />
+                <p className="text-xs text-gray-400 mt-1">Must be 18 or older</p>
+              </div>
+              <div>
+                <label htmlFor="signup-password" className="text-xs font-medium text-gray-600 mb-1 block">
+                  Password <span className="text-red-400">*</span>
+                </label>
+                <input
+                  id="signup-password"
+                  type="password"
+                  required
+                  minLength={10}
+                  autoComplete="new-password"
+                  placeholder="10+ characters"
+                  value={password}
+                  onChange={(e) => handlePasswordChange(e.target.value)}
+                  className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                    password.length > 0 && passwordErrors.length > 0
+                      ? "border-red-300"
+                      : "border-gray-200"
+                  }`}
+                />
+              </div>
               {password.length > 0 && (
                 <ul className="mt-2 space-y-1 text-xs">
                   {[
@@ -408,7 +441,7 @@ export default function SignUpPage() {
         </div>
 
         <p className="text-xs text-gray-400 text-center">
-          You must be 18 or older to use Candid.
+          Candid is an Airgetlam Labs LLC company.
         </p>
       </div>
 
