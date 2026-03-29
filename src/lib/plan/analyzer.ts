@@ -176,6 +176,11 @@ function computeRelevanceScore(
     matchCount++;
   }
 
+  // Maternity deprioritization: male with no dependents → push to bottom
+  if (benefit.category === "maternity" && input.sex === "male" && !input.hasDependents) {
+    score -= 30;
+  }
+
   // Bonus for multiple matches
   if (matchCount >= 2) score += 10;
 

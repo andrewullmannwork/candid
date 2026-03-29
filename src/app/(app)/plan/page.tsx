@@ -51,8 +51,31 @@ const CATEGORY_ICONS: Record<BenefitCategory, { path: string; color: string }> =
   },
 };
 
-function CategoryIcon({ category }: { category: BenefitCategory }) {
-  const icon = CATEGORY_ICONS[category];
+// Fallback icon for categories not in the map (e.g. service_catalog categories)
+const DEFAULT_ICON = {
+  path: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2",
+  color: "text-gray-600 bg-gray-50",
+};
+
+// Extended icons for service_catalog categories
+const EXTENDED_CATEGORY_ICONS: Record<string, { path: string; color: string }> = {
+  office_visit: { path: "M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4", color: "text-blue-600 bg-blue-50" },
+  hospital: { path: "M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4", color: "text-red-600 bg-red-50" },
+  emergency: { path: "M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z", color: "text-red-600 bg-red-50" },
+  imaging: { path: "M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z M15 13a3 3 0 11-6 0 3 3 0 016 0z", color: "text-violet-600 bg-violet-50" },
+  lab: { path: "M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z", color: "text-teal-600 bg-teal-50" },
+  rx: { path: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01", color: "text-emerald-600 bg-emerald-50" },
+  therapy: { path: "M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z", color: "text-orange-600 bg-orange-50" },
+  dme: { path: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z", color: "text-amber-600 bg-amber-50" },
+  preventive: { path: "M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z", color: "text-blue-600 bg-blue-50" },
+  other: DEFAULT_ICON,
+  general: DEFAULT_ICON,
+};
+
+function CategoryIcon({ category }: { category: string }) {
+  const icon = CATEGORY_ICONS[category as BenefitCategory]
+    || EXTENDED_CATEGORY_ICONS[category]
+    || DEFAULT_ICON;
   return (
     <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${icon.color}`}>
       <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
@@ -148,7 +171,7 @@ export default function CandidPlanPage() {
   if (!result) return null;
 
   // Group benefits by category
-  const grouped = new Map<BenefitCategory, AnalyzedBenefit[]>();
+  const grouped = new Map<string, AnalyzedBenefit[]>();
   for (const item of result.benefits) {
     const cat = item.benefit.category;
     if (!grouped.has(cat)) grouped.set(cat, []);
@@ -263,7 +286,7 @@ export default function CandidPlanPage() {
                 <div className="flex items-center gap-3">
                   <CategoryIcon category={category} />
                   <span className="font-semibold text-gray-900">
-                    {BENEFIT_CATEGORY_LABELS[category]}
+                    {BENEFIT_CATEGORY_LABELS[category as BenefitCategory] || category.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">

@@ -51,7 +51,7 @@ export const BENEFIT_CATEGORY_LABELS: Record<BenefitCategory, string> = {
 };
 
 // All plan types from the profile form
-const ALL_COMMERCIAL = ["HMO", "PPO", "EPO", "HDHP"];
+const ALL_COMMERCIAL = ["HMO", "PPO", "EPO", "HDHP", "OAP", "POS"];
 const ALL_PLANS = [...ALL_COMMERCIAL, "Medicare", "Medicare Advantage", "Medicaid"];
 
 export const BENEFITS_CATALOG: Benefit[] = [

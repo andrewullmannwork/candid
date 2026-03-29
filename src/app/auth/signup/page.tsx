@@ -96,10 +96,15 @@ export default function SignUpPage() {
       setAccountError("Date of birth is required.");
       return;
     }
-    const dob = new Date(dateOfBirth);
-    const eighteenYearsAgo = new Date();
-    eighteenYearsAgo.setFullYear(eighteenYearsAgo.getFullYear() - 18);
-    if (dob > eighteenYearsAgo) {
+    // Parse date parts to avoid timezone issues (input is YYYY-MM-DD)
+    const [dobYear, dobMonth, dobDay] = dateOfBirth.split("-").map(Number);
+    if (!dobYear || !dobMonth || !dobDay || dobYear < 1900 || dobYear > new Date().getFullYear()) {
+      setAccountError("Please enter a valid date of birth.");
+      return;
+    }
+    const now = new Date();
+    const age = now.getFullYear() - dobYear - (now.getMonth() + 1 < dobMonth || (now.getMonth() + 1 === dobMonth && now.getDate() < dobDay) ? 1 : 0);
+    if (age < 18) {
       setAccountError("You must be at least 18 years old to use Candid.");
       return;
     }
@@ -339,12 +344,12 @@ export default function SignUpPage() {
                   id="signup-dob"
                   type="date"
                   required
-                  autoComplete="bday"
+                  autoComplete="off"
                   value={dateOfBirth}
                   max={new Date(new Date().setFullYear(new Date().getFullYear() - 18)).toISOString().split("T")[0]}
                   min="1920-01-01"
                   onChange={(e) => setDateOfBirth(e.target.value)}
-                  className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
+                  className={`w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${dateOfBirth ? "text-gray-900" : "text-gray-400"}`}
                 />
                 <p className="text-xs text-gray-400 mt-1">Must be 18 or older</p>
               </div>
