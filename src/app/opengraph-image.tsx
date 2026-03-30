@@ -1,7 +1,7 @@
 import { ImageResponse } from "next/og";
 
 export const runtime = "edge";
-export const alt = "Candid — Stop Overpaying for Healthcare";
+export const alt = "Candid Claim — Free Medical Bill Audit & Insurance Benefits Tool";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -36,7 +36,7 @@ export default async function OGImage() {
               letterSpacing: "-2px",
             }}
           >
-            Candid
+            Candid Claim
           </div>
           <div
             style={{
@@ -48,7 +48,7 @@ export default async function OGImage() {
               lineHeight: 1.3,
             }}
           >
-            Stop Overpaying for Healthcare
+            Free Medical Bill Audit
           </div>
           <div
             style={{
@@ -60,7 +60,7 @@ export default async function OGImage() {
               marginTop: "8px",
             }}
           >
-            Audit medical bills. Discover unused benefits. Generate dispute letters.
+            Find overcharges. Discover unused benefits. Draft dispute letters.
           </div>
           <div
             style={{

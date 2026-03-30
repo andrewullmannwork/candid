@@ -130,6 +130,13 @@ export default function CandidClaimPage() {
         {/* Candid Case — legal marketplace */}
         <div>
           <h2 className="text-base font-semibold text-gray-900 mb-3">Candid Case — Legal Marketplace</h2>
+          <div className="mb-3 p-3 bg-gray-50 border border-gray-100 rounded-xl">
+            <p className="text-[10px] text-gray-400 leading-relaxed">
+              <span className="font-semibold text-gray-500">Disclaimer:</span>{" "}
+              Candid does not provide legal advice or referrals. Attorney listings are for informational purposes only.
+              No attorney-client relationship is formed through this platform.
+            </p>
+          </div>
           <div className="space-y-2">
             {[
               { name: "Sarah Chen, Esq.", firm: "Chen Health Law Group", specialty: "Medical billing disputes", rating: 4.9, cases: 234, fee: "$150/mo" },

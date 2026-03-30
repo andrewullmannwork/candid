@@ -56,8 +56,7 @@ export default function LandingPage() {
             </h1>
 
             <p className="mt-6 sm:mt-7 text-lg sm:text-xl text-gray-500 leading-relaxed max-w-xl">
-              Candid helps you get the most out of your health insurance.
-              Audit your bills and discover untapped benefits.
+              Find out if you were overcharged. Find out what your insurance actually covers.
             </p>
 
             <div className="mt-9 flex flex-col sm:flex-row gap-3">
@@ -126,12 +125,12 @@ export default function LandingPage() {
             </div>
             <h3 className="text-xl font-bold text-gray-900 mb-2">Audit your bills</h3>
             <p className="text-[15px] text-gray-500 leading-relaxed mb-6">
-              Upload an EOB or itemized bill. We flag overcharges, duplicate codes,
+              Upload your bill. We flag overcharges, duplicate codes,
               unbundled procedures, and balance billing — each with a severity rating
               and dollar estimate. Then we draft the dispute letter for you.
             </p>
             <ul className="space-y-2.5">
-              <CheckItem>Compare every charge against Medicare benchmarks</CheckItem>
+              <CheckItem>Compare every charge against Candid benchmarks</CheckItem>
               <CheckItem>Catch duplicate, unbundled, and upcoded charges</CheckItem>
               <CheckItem>Generate ready-to-send dispute letters</CheckItem>
               <CheckItem>Build a full case file with evidence</CheckItem>
@@ -150,15 +149,15 @@ export default function LandingPage() {
             </div>
             <h3 className="text-xl font-bold text-gray-900 mb-2">Discover your benefits</h3>
             <p className="text-[15px] text-gray-500 leading-relaxed mb-6">
-              Your insurance already covers more than you think. We analyze your specific
-              plan and surface every covered benefit you&apos;re not using — from free therapy
-              visits to gym reimbursements to HSA-eligible services.
+              Your plan covers more than you think. Candid reads your policy and shows
+              covered benefits you&apos;re leaving on the table — from preventive screenings
+              to physical therapy.
             </p>
             <ul className="space-y-2.5">
               <CheckItem>35+ commonly missed benefits analyzed</CheckItem>
-              <CheckItem>Personalized to your insurer, plan type, and state</CheckItem>
+              <CheckItem>Copays, in-network providers, and coverage details in plain English</CheckItem>
               <CheckItem>HSA/FSA eligibility flagged automatically</CheckItem>
-              <CheckItem>Plain-English guidance on how to access each benefit</CheckItem>
+              <CheckItem>Personalized to your insurer, state, and demographics</CheckItem>
             </ul>
             <div className="mt-6 pt-5 border-t border-gray-100">
               <span className="text-xs font-semibold text-green-700 bg-green-50 px-2.5 py-1 rounded-full">Free</span>
@@ -180,18 +179,18 @@ export default function LandingPage() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 sm:gap-8">
             <ProcessStep
               num="01"
-              title="Upload your insurance & bill"
-              desc="Snap a photo of your insurance card and upload your EOB or itemized bill. We read your card automatically and fill in your plan details."
+              title="Upload your documents"
+              desc="Snap a photo of your insurance card and upload your bills. We scan everything automatically to fill in your plan details."
             />
             <ProcessStep
               num="02"
-              title="Get your audit + discover hidden benefits"
-              desc="We compare every charge to benchmarks, flag errors, and surface covered benefits you're leaving on the table. Takes seconds, not days."
+              title="Get your audit + benefit information"
+              desc="We compare every charge to benchmarks, flag errors, and surface covered benefits you're leaving on the table — in seconds."
             />
             <ProcessStep
               num="03"
               title="Take action"
-              desc="Dispute letters, case files, benefit guides — everything you need to fight overcharges and start using what you're paying for. You stay in control."
+              desc="Dispute letters, case files, benefit guides — everything you need to fight overcharges and get the most out of your plan. You stay in control."
             />
           </div>
         </div>
@@ -210,14 +209,14 @@ export default function LandingPage() {
           <ProductCard
             title="Candid Claim"
             tagline="Find overcharges on your bills."
-            desc="Upload any EOB or itemized bill. We flag overcharges, duplicates, unbundled codes, and balance billing — with severity ratings and estimated dollar amounts."
+            desc="Upload any bill. We flag overcharges, duplicates, unbundled codes, and balance billing — with severity ratings and estimated dollar amounts."
             tag="Free"
             tagColor="green"
           />
           <ProductCard
             title="Candid Plan"
             tagline="Use what you're already paying for."
-            desc="We analyze your insurance plan and surface 35+ commonly covered benefits you may not be using — therapy, dietitians, gym reimbursements, HSA-eligible services, and more."
+            desc="See every benefit your insurance covers that you're not using — therapy, acupuncture, chiropractic, nutritionists, gym reimbursements, HSA-eligible services, and more."
             tag="Free"
             tagColor="green"
           />
@@ -230,8 +229,8 @@ export default function LandingPage() {
           />
           <ProductCard
             title="Candid Care"
-            tagline="See what healthcare actually costs."
-            desc="Compare what you paid against what others paid for the same procedure. Find providers who bill fairly. Built on real, anonymized billing data from users like you."
+            tagline="Compare costs. Find fair providers."
+            desc="Compare your procedure costs with other Candid users. Find providers who bill fairly. Built on real, anonymized billing data from users like you."
             tag="Coming Soon"
             tagColor="gray"
           />

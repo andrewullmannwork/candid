@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 export const metadata: Metadata = {
   title: "Sign In",
   description:
-    "Sign in to your Candid account to audit medical bills, review insurance benefits, and manage dispute letters.",
+    "Sign in to your Candid Claim account to audit medical bills, review insurance benefits, and manage dispute letters.",
   alternates: { canonical: "/auth/signin" },
 };
 
