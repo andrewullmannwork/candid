@@ -6,7 +6,8 @@ export default function CandidClaimPage() {
   return (
     <div className="relative min-h-[80vh]">
       {/* ── Locked overlay ──────────────────────────────────────────────── */}
-      <div className="sticky top-[25vh] z-20 flex items-center justify-center" style={{ marginBottom: "-200px" }}>
+      <div className="sticky top-[25vh] z-20 h-0">
+        <div className="flex items-center justify-center">
         <div className="flex flex-col items-center bg-white/95 backdrop-blur-sm border border-gray-200 rounded-2xl shadow-xl px-10 py-8 max-w-md">
           <div className="w-12 h-12 rounded-xl bg-amber-50 border border-amber-100 flex items-center justify-center mb-4">
             <svg className="w-6 h-6 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -29,6 +30,7 @@ export default function CandidClaimPage() {
               Dashboard
             </Link>
           </div>
+        </div>
         </div>
       </div>
 

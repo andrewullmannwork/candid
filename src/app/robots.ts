@@ -6,7 +6,7 @@ export default function robots(): MetadataRoute.Robots {
       {
         userAgent: "*",
         allow: "/",
-        disallow: ["/admin/", "/api/", "/dashboard", "/profile", "/settings", "/upload", "/audit", "/disputes", "/billing", "/plan", "/care", "/support"],
+        disallow: ["/admin/", "/api/", "/dashboard", "/profile", "/settings", "/upload", "/audit", "/disputes", "/billing", "/plan", "/care", "/claim", "/case", "/support"],
       },
     ],
     sitemap: "https://candidclaim.com/sitemap.xml",

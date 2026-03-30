@@ -108,6 +108,14 @@ export const metadata: Metadata = {
   creator: "Airgetlam Labs LLC",
   publisher: "Airgetlam Labs LLC",
   category: "Health",
+  icons: {
+    icon: [
+      { url: "/favicon-32x32.png", sizes: "32x32", type: "image/png" },
+      { url: "/favicon-16x16.png", sizes: "16x16", type: "image/png" },
+    ],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180" }],
+    shortcut: "/favicon.ico",
+  },
 };
 
 export default function RootLayout({
@@ -138,38 +146,115 @@ export default function RootLayout({
           dangerouslySetInnerHTML={{
             __html: JSON.stringify({
               "@context": "https://schema.org",
-              "@type": "Organization",
-              name: "Candid Claim",
-              alternateName: "Candid",
-              legalName: "Airgetlam Labs LLC",
-              url: "https://candidclaim.com",
-              description:
-                "Consumer medical bill audit and insurance benefits analysis tool. Upload bills to find overcharges, discover unused benefits, and draft dispute letters.",
-              foundingDate: "2026",
-              sameAs: [],
-              knowsAbout: [
-                "Medical billing errors",
-                "Insurance benefits analysis",
-                "Healthcare overcharges",
-                "Medical bill dispute letters",
-                "EOB review",
-              ],
-              offers: [
+              "@graph": [
                 {
-                  "@type": "Offer",
-                  name: "Free Medical Bill Audit",
-                  price: "0",
-                  priceCurrency: "USD",
+                  "@type": "Organization",
+                  name: "Candid Claim",
+                  alternateName: "Candid",
+                  legalName: "Airgetlam Labs LLC",
+                  url: "https://candidclaim.com",
+                  logo: "https://candidclaim.com/logo.png",
                   description:
-                    "Upload your medical bill or EOB and get a free audit to identify overcharges, duplicate charges, and billing errors.",
+                    "Consumer medical bill audit and insurance benefits analysis tool. Upload bills to find overcharges, discover unused benefits, and draft dispute letters.",
+                  foundingDate: "2026",
+                  sameAs: [],
+                  knowsAbout: [
+                    "Medical billing errors",
+                    "Insurance benefits analysis",
+                    "Healthcare overcharges",
+                    "Medical bill dispute letters",
+                    "EOB review",
+                  ],
                 },
                 {
-                  "@type": "Offer",
-                  name: "Free Insurance Benefits Analysis",
-                  price: "0",
-                  priceCurrency: "USD",
+                  "@type": "WebApplication",
+                  name: "Candid Claim",
+                  url: "https://candidclaim.com",
+                  applicationCategory: "HealthApplication",
+                  operatingSystem: "Web",
                   description:
-                    "Discover 35+ commonly covered insurance benefits you may not be using, personalized to your plan, state, and demographics.",
+                    "Free medical bill audit and insurance benefits tool. Upload your bill to find overcharges and discover benefits you're not using.",
+                  offers: {
+                    "@type": "Offer",
+                    price: "0",
+                    priceCurrency: "USD",
+                  },
+                  featureList: [
+                    "Medical bill line-by-line audit",
+                    "Overcharge and duplicate code detection",
+                    "Dispute letter generation",
+                    "Insurance benefits discovery",
+                    "In-network provider lookup",
+                    "HSA/FSA eligibility flagging",
+                  ],
+                },
+                {
+                  "@type": "HowTo",
+                  name: "How to audit your medical bill with Candid Claim",
+                  description:
+                    "Three steps to find overcharges and discover unused insurance benefits.",
+                  step: [
+                    {
+                      "@type": "HowToStep",
+                      name: "Upload your documents",
+                      text: "Snap a photo of your insurance card and upload your bills. We scan everything automatically to fill in your plan details.",
+                    },
+                    {
+                      "@type": "HowToStep",
+                      name: "Get your audit and benefit information",
+                      text: "We compare every charge to benchmarks, flag errors, and surface covered benefits you're leaving on the table — in seconds.",
+                    },
+                    {
+                      "@type": "HowToStep",
+                      name: "Take action",
+                      text: "Dispute letters, case files, benefit guides — everything you need to fight overcharges and get the most out of your plan. You stay in control.",
+                    },
+                  ],
+                },
+                {
+                  "@type": "FAQPage",
+                  mainEntity: [
+                    {
+                      "@type": "Question",
+                      name: "How do I know if my medical bill has errors?",
+                      acceptedAnswer: {
+                        "@type": "Answer",
+                        text: "Upload your bill to Candid Claim. We compare every charge against benchmarks and flag overcharges, duplicate codes, unbundled procedures, and balance billing — each with a severity rating and dollar estimate.",
+                      },
+                    },
+                    {
+                      "@type": "Question",
+                      name: "How do I dispute a medical bill?",
+                      acceptedAnswer: {
+                        "@type": "Answer",
+                        text: "Candid generates ready-to-send dispute letters based on the errors found in your audit. You review the letter, customize it if needed, and send it yourself. You stay in control.",
+                      },
+                    },
+                    {
+                      "@type": "Question",
+                      name: "Does my insurance cover therapy, acupuncture, or chiropractic?",
+                      acceptedAnswer: {
+                        "@type": "Answer",
+                        text: "It depends on your plan. Candid reads your policy and shows you covered benefits in plain English — including therapy, acupuncture, chiropractic, preventive screenings, and more.",
+                      },
+                    },
+                    {
+                      "@type": "Question",
+                      name: "Is Candid Claim free?",
+                      acceptedAnswer: {
+                        "@type": "Answer",
+                        text: "Yes. Candid Claim's bill audit and benefits discovery tools are free. No credit card required.",
+                      },
+                    },
+                    {
+                      "@type": "Question",
+                      name: "Is my medical data safe with Candid?",
+                      acceptedAnswer: {
+                        "@type": "Answer",
+                        text: "Candid is HIPAA-aware by design. Your documents are encrypted at rest and in transit. We never sell your personal health information. Every consent event is logged and you can revoke access anytime.",
+                      },
+                    },
+                  ],
                 },
               ],
             }),

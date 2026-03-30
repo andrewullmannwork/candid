@@ -209,7 +209,7 @@ export default function LandingPage() {
           <ProductCard
             title="Candid Claim"
             tagline="Find overcharges on your bills."
-            desc="Upload any bill. We flag overcharges, duplicates, unbundled codes, and balance billing — with severity ratings and estimated dollar amounts."
+            desc="Upload a bill or EOB. We flag overcharges, duplicates, unbundled codes, and balance billing - showing you the severity and estimated dollar amounts."
             tag="Free"
             tagColor="green"
           />
