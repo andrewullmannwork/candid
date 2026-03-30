@@ -1517,7 +1517,7 @@ function ProfileSection({ title, children }: { title: string; children: React.Re
   return (
     <div className="p-5 bg-white border border-gray-100 rounded-2xl">
       <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-3">{title}</h3>
-      <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
         {children}
       </div>
     </div>
@@ -1526,10 +1526,10 @@ function ProfileSection({ title, children }: { title: string; children: React.Re
 
 function ProfileField({ label, value, prefix, suffix }: { label: string; value: string; prefix?: string; suffix?: string }) {
   return (
-    <div>
+    <div className="min-w-0">
       <p className="text-xs text-gray-400">{label}</p>
       {value ? (
-        <p className="text-sm font-medium text-gray-900">{prefix}{value}{suffix}</p>
+        <p className="text-sm font-medium text-gray-900 break-words">{prefix}{value}{suffix}</p>
       ) : (
         <p className="text-sm text-gray-300 italic">Not set</p>
       )}

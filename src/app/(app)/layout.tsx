@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
-import type { ReactNode } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 
 const navItems = [
   {
@@ -91,6 +91,12 @@ const navItems = [
 export default function AppLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { user, loading, signOut } = useAuth();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Close sidebar on route change
+  useEffect(() => {
+    setSidebarOpen(false);
+  }, [pathname]);
 
   if (loading) {
     return (
@@ -116,67 +122,108 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     );
   }
 
+  const sidebarContent = (
+    <>
+      {/* Logo */}
+      <div className="px-5 h-16 flex items-center border-b border-gray-100">
+        <Link href="/" className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-[9px] bg-gradient-to-br from-blue-600 to-blue-700 flex items-center justify-center">
+            <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4" />
+            </svg>
+          </div>
+          <span className="text-[15px] font-bold tracking-tight text-gray-900">Candid</span>
+        </Link>
+      </div>
+
+      {/* Nav */}
+      <nav className="flex-1 px-3 py-4 space-y-0.5">
+        {navItems.map((item) => {
+          const isActive = pathname === item.href;
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-[13px] font-medium transition-colors ${
+                isActive
+                  ? "bg-blue-50 text-blue-700"
+                  : "text-gray-500 hover:text-gray-900 hover:bg-gray-50"
+              }`}
+            >
+              <span className={isActive ? "text-blue-600" : "text-gray-400"}>{item.icon}</span>
+              {item.label}
+            </Link>
+          );
+        })}
+      </nav>
+
+      {/* User */}
+      <div className="px-3 py-3 border-t border-gray-100">
+        <div className="px-3 py-2">
+          <div className="text-xs font-medium text-gray-700 truncate">
+            {user.firebaseUser.displayName || user.email}
+          </div>
+          <div className="text-[11px] text-gray-400 truncate">{user.email}</div>
+        </div>
+        <button
+          onClick={signOut}
+          className="w-full flex items-center gap-2 px-3 py-2 text-xs text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded-lg transition-colors"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+          </svg>
+          Sign out
+        </button>
+      </div>
+    </>
+  );
+
   return (
     <div className="flex min-h-screen bg-gray-50/50">
-      {/* Sidebar */}
-      <aside className="w-[220px] bg-white border-r border-gray-100 flex flex-col shrink-0 sticky top-0 h-screen overflow-y-auto">
-        {/* Logo */}
-        <div className="px-5 h-16 flex items-center border-b border-gray-100">
-          <Link href="/" className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-[9px] bg-gradient-to-br from-blue-600 to-blue-700 flex items-center justify-center">
-              <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4" />
-              </svg>
-            </div>
-            <span className="text-[15px] font-bold tracking-tight text-gray-900">Candid</span>
-          </Link>
-        </div>
-
-        {/* Nav */}
-        <nav className="flex-1 px-3 py-4 space-y-0.5">
-          {navItems.map((item) => {
-            const isActive = pathname === item.href;
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-[13px] font-medium transition-colors ${
-                  isActive
-                    ? "bg-blue-50 text-blue-700"
-                    : "text-gray-500 hover:text-gray-900 hover:bg-gray-50"
-                }`}
-              >
-                <span className={isActive ? "text-blue-600" : "text-gray-400"}>{item.icon}</span>
-                {item.label}
-              </Link>
-            );
-          })}
-        </nav>
-
-        {/* User */}
-        <div className="px-3 py-3 border-t border-gray-100">
-          <div className="px-3 py-2">
-            <div className="text-xs font-medium text-gray-700 truncate">
-              {user.firebaseUser.displayName || user.email}
-            </div>
-            <div className="text-[11px] text-gray-400 truncate">{user.email}</div>
-          </div>
-          <button
-            onClick={signOut}
-            className="w-full flex items-center gap-2 px-3 py-2 text-xs text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded-lg transition-colors"
-          >
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+      {/* Mobile top bar */}
+      <div className="fixed top-0 left-0 right-0 z-40 md:hidden bg-white border-b border-gray-100 h-14 flex items-center px-4">
+        <button
+          onClick={() => setSidebarOpen(true)}
+          className="p-1.5 -ml-1.5 rounded-lg text-gray-500 hover:text-gray-900 hover:bg-gray-50"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </button>
+        <Link href="/" className="flex items-center gap-2 ml-3">
+          <div className="w-6 h-6 rounded-[7px] bg-gradient-to-br from-blue-600 to-blue-700 flex items-center justify-center">
+            <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4" />
             </svg>
-            Sign out
-          </button>
+          </div>
+          <span className="text-[14px] font-bold tracking-tight text-gray-900">Candid</span>
+        </Link>
+      </div>
+
+      {/* Mobile sidebar overlay */}
+      {sidebarOpen && (
+        <div className="fixed inset-0 z-50 md:hidden">
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/30"
+            onClick={() => setSidebarOpen(false)}
+          />
+          {/* Sidebar panel */}
+          <aside className="relative w-[220px] h-full bg-white flex flex-col shadow-xl">
+            {sidebarContent}
+          </aside>
         </div>
+      )}
+
+      {/* Desktop sidebar */}
+      <aside className="hidden md:flex w-[220px] bg-white border-r border-gray-100 flex-col shrink-0 sticky top-0 h-screen overflow-y-auto">
+        {sidebarContent}
       </aside>
 
       {/* Main content */}
       <main className="flex-1 min-w-0">
-        <div className="max-w-5xl mx-auto px-6 sm:px-8 py-8">
+        <div className="max-w-5xl mx-auto px-6 sm:px-8 py-8 pt-20 md:pt-8">
           {children}
         </div>
       </main>
