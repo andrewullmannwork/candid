@@ -344,8 +344,25 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "File too large (max 10MB)" }, { status: 400 });
     }
 
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const ocrResult = await extractTextFromDocument(buffer, file.type);
+    let buffer = Buffer.from(await file.arrayBuffer());
+    let ocrMimeType = file.type;
+
+    // HEIC is not supported by Google Document AI — convert to JPEG first
+    if (isHeic || file.type === "image/heic" || file.type === "image/heif") {
+      try {
+        const sharp = (await import("sharp")).default;
+        buffer = Buffer.from(await sharp(buffer).jpeg({ quality: 90 }).toBuffer());
+        ocrMimeType = "image/jpeg";
+      } catch (convErr) {
+        console.error("[scan-card] HEIC conversion failed:", convErr);
+        return NextResponse.json(
+          { error: "Could not process HEIC image. Try converting to JPEG first." },
+          { status: 400 }
+        );
+      }
+    }
+
+    const ocrResult = await extractTextFromDocument(buffer, ocrMimeType);
     const fields = parseInsuranceCard(ocrResult.text);
 
     // Log raw OCR text for debugging (helps diagnose future card scan failures)
