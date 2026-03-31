@@ -7,7 +7,26 @@ import type { PlanAnalysisResult, AnalyzedBenefit } from "@/lib/plan/analyzer";
 import type { BenefitCategory } from "@/lib/plan/benefits-catalog";
 import { BENEFIT_CATEGORY_LABELS } from "@/lib/plan/benefits-catalog";
 
-// SVG icon paths for each benefit category (professional, no emojis)
+// ── Extended API response type ─────────────────────────────────────────────────
+
+interface AnalyzeResponse extends PlanAnalysisResult {
+  dataSource: "user_plan" | "matched_plan" | "cms_api" | "verified_plan" | "static_catalog";
+  planName?: string;
+  insurer?: string;
+  planType?: string;
+  planSummary?: {
+    inDeductible?: number;
+    outDeductible?: number;
+    inOopMax?: number;
+    outOopMax?: number;
+    planType?: string;
+    metalLevel?: string;
+    verificationStatus?: string;
+  };
+}
+
+// ── SVG icon paths for each benefit category ───────────────────────────────────
+
 const CATEGORY_ICONS: Record<BenefitCategory, { path: string; color: string }> = {
   preventive_care: {
     path: "M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z",
@@ -51,7 +70,7 @@ const CATEGORY_ICONS: Record<BenefitCategory, { path: string; color: string }> =
   },
 };
 
-// Fallback icon for categories not in the map (e.g. service_catalog categories)
+// Fallback icon for categories not in the map
 const DEFAULT_ICON = {
   path: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2",
   color: "text-gray-600 bg-gray-50",
@@ -85,9 +104,177 @@ function CategoryIcon({ category }: { category: string }) {
   );
 }
 
+// ── Data Source Banner ──────────────────────────────────────────────────────────
+
+function DataSourceBanner({ dataSource, planName, planType, insurer }: {
+  dataSource: string;
+  planName?: string;
+  planType?: string;
+  insurer?: string;
+}) {
+  if (dataSource === "user_plan") {
+    return (
+      <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-xl flex items-start gap-3">
+        <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center shrink-0 mt-0.5">
+          <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-green-900">
+            Based on your uploaded {planName || "plan"} documents
+          </p>
+          <p className="text-xs text-green-700 mt-0.5">
+            These benefits reflect the actual coverage details extracted from your plan documents.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (dataSource === "matched_plan" || dataSource === "cms_api") {
+    return (
+      <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-xl flex items-start gap-3">
+        <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center shrink-0 mt-0.5">
+          <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-blue-900">
+            Based on your {planName || "matched plan"} plan data
+          </p>
+          <p className="text-xs text-blue-700 mt-0.5">
+            Matched from marketplace plan data. Upload your SBC for the most accurate results.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (dataSource === "verified_plan") {
+    return (
+      <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3">
+        <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0 mt-0.5">
+          <svg className="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
+          </svg>
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-amber-900">
+            Based on a similar {insurer || "insurer"} plan
+          </p>
+          <p className="text-xs text-amber-700 mt-0.5">
+            We matched you to a similar plan from your insurer, but your specific coverage may differ.{" "}
+            <Link href="/upload" className="font-semibold text-amber-800 hover:text-amber-900 underline">
+              Upload your SBC
+            </Link>{" "}
+            for exact coverage details.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // static_catalog — most prominent warning
+  return (
+    <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+      <div className="flex items-start gap-3">
+        <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0 mt-0.5">
+          <svg className="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
+          </svg>
+        </div>
+        <div className="flex-1">
+          <p className="text-sm font-semibold text-amber-900">
+            We don&apos;t have your specific plan on file
+          </p>
+          <p className="text-xs text-amber-700 mt-0.5">
+            These are general benefits typical of {planType || "most"} plans.
+            Your actual coverage may be different. For results specific to your plan, upload your Summary of Benefits and Coverage (SBC).
+          </p>
+          <Link
+            href="/upload"
+            className="inline-flex items-center gap-1.5 mt-3 px-4 py-2 text-sm font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-xl transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+            </svg>
+            Upload your SBC
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Plan Summary Card ──────────────────────────────────────────────────────────
+
+function PlanSummaryCard({ planName, planSummary, dataSource }: {
+  planName?: string;
+  planSummary?: AnalyzeResponse["planSummary"];
+  dataSource: string;
+}) {
+  if (!planSummary || dataSource === "static_catalog") return null;
+
+  const verificationLabels: Record<string, string> = {
+    unverified: "Unverified",
+    user_confirmed: "User confirmed",
+    cms_matched: "CMS matched",
+    multi_user_verified: "Verified",
+  };
+
+  return (
+    <div className="mt-4 p-4 bg-white border border-gray-200 rounded-xl">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-gray-900">
+          {planName || "Your Plan"}
+          {planSummary.planType && (
+            <span className="ml-2 text-xs font-medium text-gray-500">
+              {planSummary.planType}
+              {planSummary.metalLevel && ` / ${planSummary.metalLevel}`}
+            </span>
+          )}
+        </h3>
+        {planSummary.verificationStatus && (
+          <span className="text-[10px] font-semibold bg-green-50 text-green-700 px-2 py-0.5 rounded-full">
+            {verificationLabels[planSummary.verificationStatus] || planSummary.verificationStatus}
+          </span>
+        )}
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-3">
+        {planSummary.inDeductible != null && (
+          <div>
+            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Deductible</p>
+            <p className="text-sm font-medium text-gray-900">
+              ${planSummary.inDeductible.toLocaleString()} in
+              {planSummary.outDeductible != null && (
+                <span className="text-gray-500"> / ${planSummary.outDeductible.toLocaleString()} out</span>
+              )}
+            </p>
+          </div>
+        )}
+        {planSummary.inOopMax != null && (
+          <div>
+            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">OOP Max</p>
+            <p className="text-sm font-medium text-gray-900">
+              ${planSummary.inOopMax.toLocaleString()} in
+              {planSummary.outOopMax != null && (
+                <span className="text-gray-500"> / ${planSummary.outOopMax.toLocaleString()} out</span>
+              )}
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Main Page ──────────────────────────────────────────────────────────────────
+
 export default function CandidPlanPage() {
   const { user } = useAuth();
-  const [result, setResult] = useState<PlanAnalysisResult | null>(null);
+  const [result, setResult] = useState<AnalyzeResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   // Auto-expand benefit from URL hash (e.g. /plan#benefit-id)
@@ -130,7 +317,7 @@ export default function CandidPlanPage() {
           throw new Error(data.error || "Failed to analyze plan");
         }
 
-        const data: PlanAnalysisResult = await res.json();
+        const data: AnalyzeResponse = await res.json();
         setResult(data);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Something went wrong");
@@ -170,6 +357,8 @@ export default function CandidPlanPage() {
 
   if (!result) return null;
 
+  const isGeneric = result.dataSource === "static_catalog";
+
   // Group benefits by category
   const grouped = new Map<string, AnalyzedBenefit[]>();
   for (const item of result.benefits) {
@@ -184,21 +373,28 @@ export default function CandidPlanPage() {
     <div className="max-w-3xl">
       <h1 className="text-2xl font-bold text-gray-900">Your Benefits</h1>
       <p className="mt-2 text-gray-600">
-        Benefits your insurance plan likely covers. Check off what you&apos;re using to track your progress.
+        {isGeneric
+          ? `General benefits available with most ${result.planType || ""} plans \u2014 not specific to your plan.`
+          : result.planName
+            ? `Benefits your ${result.planName} plan covers. Check off what you\u2019re using.`
+            : "Benefits your insurance plan covers. Check off what you\u2019re using to track your progress."
+        }
       </p>
 
-      {/* Important Notice — at the top for transparency */}
-      <div className="mt-4 p-4 bg-gray-50 border border-gray-100 rounded-xl">
-        <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Important Notice</h3>
-        <p className="mt-1 text-xs text-gray-500 leading-relaxed">
-          Candid provides general information about benefits commonly available with your
-          type of insurance plan. This is not a guarantee of coverage. Actual benefits vary by
-          specific plan, employer, and state. Always contact your insurance company to verify
-          your specific benefits before seeking services. Candid does not provide insurance
-          advice, and this information does not constitute a recommendation to obtain any
-          particular service or treatment. Candid is an Airgetlam Labs LLC company.
-        </p>
-      </div>
+      {/* Data source transparency banner */}
+      <DataSourceBanner
+        dataSource={result.dataSource}
+        planName={result.planName}
+        planType={result.planType}
+        insurer={result.insurer}
+      />
+
+      {/* Plan summary card (only for matched/uploaded plans) */}
+      <PlanSummaryCard
+        planName={result.planName}
+        planSummary={result.planSummary}
+        dataSource={result.dataSource}
+      />
 
       {/* Profile completeness — contextual, non-blocking */}
       {!result.profileComplete && result.missingFields.length > 0 && (
@@ -253,10 +449,10 @@ export default function CandidPlanPage() {
               {totalUsed === 0
                 ? "Start checking off benefits you use"
                 : totalUsed < result.totalBenefits / 2
-                  ? "Good start — keep discovering"
+                  ? "Good start \u2014 keep discovering"
                   : totalUsed < result.totalBenefits
-                    ? "You're getting great value"
-                    : "You're maximizing your plan!"}
+                    ? "You\u2019re getting great value"
+                    : "You\u2019re maximizing your plan!"}
             </p>
             <p className="text-xs text-gray-500 mt-0.5">
               Check off benefits as you use them to track how much value you&apos;re getting from your plan.
@@ -333,6 +529,11 @@ export default function CandidPlanPage() {
                             <div>
                               <h4 className={`font-medium ${isUsed ? "text-green-800" : "text-gray-900"}`}>
                                 {item.benefit.title}
+                                {isGeneric && (
+                                  <span className="ml-2 text-[10px] font-medium text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
+                                    estimated
+                                  </span>
+                                )}
                               </h4>
                               <p className="mt-0.5 text-sm text-gray-500 line-clamp-2">
                                 {item.benefit.description}
@@ -387,7 +588,10 @@ export default function CandidPlanPage() {
 
                           <div className="pt-1">
                             <p className="text-xs text-gray-400">
-                              Contact your insurer or check your plan documents to confirm this benefit is included in your specific plan.
+                              {isGeneric
+                                ? "This is a general benefit estimate. Upload your plan documents to see if your specific plan covers this."
+                                : "Contact your insurer or check your plan documents to confirm this benefit is included in your specific plan."
+                              }
                             </p>
                           </div>
                         </div>

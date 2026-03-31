@@ -215,6 +215,13 @@ export async function POST(request: Request) {
           isRecommended: true,
         }));
 
+        // Fetch plan name for display
+        const { data: matchedPlanInfo } = await supabase
+          .from("plan_catalog")
+          .select("plan_name, plan_type, raw_data, metal_level")
+          .eq("id", profile.matched_plan_id)
+          .single();
+
         return NextResponse.json({
           benefits,
           categoryCounts: {},
@@ -222,6 +229,16 @@ export async function POST(request: Request) {
           profileComplete: true,
           missingFields: [],
           dataSource: "matched_plan",
+          planName: matchedPlanInfo?.plan_name || null,
+          planSummary: matchedPlanInfo ? {
+            inDeductible: (matchedPlanInfo.raw_data as Record<string, unknown>)?.deductible_individual,
+            outDeductible: (matchedPlanInfo.raw_data as Record<string, unknown>)?.deductible_individual_oon,
+            inOopMax: (matchedPlanInfo.raw_data as Record<string, unknown>)?.oop_max_individual,
+            outOopMax: (matchedPlanInfo.raw_data as Record<string, unknown>)?.oop_max_individual_oon,
+            planType: matchedPlanInfo.plan_type,
+            metalLevel: matchedPlanInfo.metal_level,
+            verificationStatus: "cms_matched",
+          } : null,
         });
       }
 
@@ -262,6 +279,14 @@ export async function POST(request: Request) {
           missingFields: [],
           dataSource: "cms_api",
           planName: matchedPlan.plan_name,
+          planSummary: {
+            inDeductible: (matchedPlan.raw_data as Record<string, unknown>)?.deductible_individual,
+            outDeductible: (matchedPlan.raw_data as Record<string, unknown>)?.deductible_individual_oon,
+            inOopMax: (matchedPlan.raw_data as Record<string, unknown>)?.oop_max_individual,
+            outOopMax: (matchedPlan.raw_data as Record<string, unknown>)?.oop_max_individual_oon,
+            planType: matchedPlan.plan_type,
+            verificationStatus: "cms_matched",
+          },
         });
       }
     }
@@ -338,6 +363,8 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ...result,
       dataSource: hasRealPlanData ? "verified_plan" : "static_catalog",
+      insurer: profile.insurer || null,
+      planType: profile.plan_type || null,
     });
   } catch {
     return NextResponse.json(
