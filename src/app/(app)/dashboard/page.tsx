@@ -132,6 +132,68 @@ export default function DashboardPage() {
         </p>
       </div>
 
+      {/* ── Plan verification banner ──────────────────────────────────────── */}
+      {planResult && (() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const pr = planResult as any;
+        const ds = pr.dataSource;
+        const vs = pr.planSummary?.verificationStatus;
+        const pn = pr.planName;
+
+        if (ds === "user_plan" && vs === "unverified") {
+          return (
+            <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3">
+              <svg className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
+              </svg>
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-amber-900">
+                  {pn || "Your plan"} &mdash; Unverified
+                </p>
+                <p className="text-xs text-amber-700 mt-0.5">
+                  Upload your plan document (SBC) for accurate, verified benefits and audit results.
+                </p>
+                <Link href="/upload" className="inline-flex items-center gap-1 mt-2 text-xs font-semibold text-amber-700 hover:text-amber-900">
+                  Upload plan document &rarr;
+                </Link>
+              </div>
+            </div>
+          );
+        }
+
+        if (ds === "user_plan" && vs !== "unverified") {
+          return (
+            <div className="p-4 bg-green-50 border border-green-200 rounded-2xl flex items-start gap-3">
+              <svg className="w-5 h-5 text-green-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <p className="text-sm font-semibold text-green-900">
+                {pn || "Your plan"} &mdash; Verified
+              </p>
+            </div>
+          );
+        }
+
+        if (ds === "static_catalog") {
+          return (
+            <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3">
+              <svg className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
+              </svg>
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-amber-900">No plan on file</p>
+                <p className="text-xs text-amber-700 mt-0.5">Upload your insurance card or plan document for personalized results.</p>
+                <Link href="/profile" className="inline-flex items-center gap-1 mt-2 text-xs font-semibold text-amber-700 hover:text-amber-900">
+                  Set up your profile &rarr;
+                </Link>
+              </div>
+            </div>
+          );
+        }
+
+        return null;
+      })()}
+
       {/* ── Profile completeness ────────────────────────────────────────────── */}
       {!profileComplete && (
         <div className="p-5 bg-blue-50 border border-blue-100 rounded-2xl flex items-start gap-4">

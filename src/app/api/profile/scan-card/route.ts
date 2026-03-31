@@ -27,7 +27,9 @@ export interface InsuranceCardFields {
   copayUrgentCare?: number;
   copayRx?: number;
   deductibleIndividual?: number;
+  deductibleFamily?: number;
   oopMaxIndividual?: number;
+  oopMaxFamily?: number;
   coinsurancePct?: number;
   rxBin?: string;
   rxPcn?: string;
@@ -277,15 +279,37 @@ function parseInsuranceCard(rawText: string): InsuranceCardFields {
     /(?:generic|tier\s*1)[:\s]*/i,
   ]);
 
-  result.deductibleIndividual = extractDollarAmounts(text, [
-    /(?:individual\s*)?deductible[:\s]*/i,
-    /ded(?:uctible)?[:\s]*/i,
-  ]);
+  // ── Deductible — try IND/FAM dual-value format first ──────────────────
+  // Matches: "Ded IND/FAM $3500/$7000", "Deductible $3,500/$7,000", "Ded: $500 / $1000"
+  const dedDualMatch = text.match(
+    /ded(?:uctible)?\s*(?:ind(?:ividual)?)?(?:\s*[:/]?\s*fam(?:ily)?)?\s*\$?\s*([\d,]+)\s*\/\s*\$?\s*([\d,]+)/i
+  );
+  if (dedDualMatch) {
+    result.deductibleIndividual = parseFloat(dedDualMatch[1].replace(/,/g, ""));
+    result.deductibleFamily = parseFloat(dedDualMatch[2].replace(/,/g, ""));
+  } else {
+    // Fallback: single deductible value
+    result.deductibleIndividual = extractDollarAmounts(text, [
+      /(?:individual\s*)?deductible[:\s]*/i,
+      /ded(?:uctible)?[:\s]*/i,
+    ]);
+  }
 
-  result.oopMaxIndividual = extractDollarAmounts(text, [
-    /(?:out[\s-]*of[\s-]*pocket|oop)\s*(?:max(?:imum)?)?[:\s]*/i,
-    /(?:max(?:imum)?\s*out[\s-]*of[\s-]*pocket)[:\s]*/i,
-  ]);
+  // ── OOP Max — try IND/FAM dual-value format first ───────────────────
+  // Matches: "OOPM IND/FAM $6250/$12500", "Out-of-Pocket Max $6,250/$12,500"
+  const oopDualMatch = text.match(
+    /(?:oopm?|out[\s-]*of[\s-]*pocket)\s*(?:max(?:imum)?)?\s*(?:ind(?:ividual)?)?(?:\s*[:/]?\s*fam(?:ily)?)?\s*\$?\s*([\d,]+)\s*\/\s*\$?\s*([\d,]+)/i
+  );
+  if (oopDualMatch) {
+    result.oopMaxIndividual = parseFloat(oopDualMatch[1].replace(/,/g, ""));
+    result.oopMaxFamily = parseFloat(oopDualMatch[2].replace(/,/g, ""));
+  } else {
+    // Fallback: single OOP value
+    result.oopMaxIndividual = extractDollarAmounts(text, [
+      /(?:out[\s-]*of[\s-]*pocket|oop)\s*(?:max(?:imum)?)?[:\s]*/i,
+      /(?:max(?:imum)?\s*out[\s-]*of[\s-]*pocket)[:\s]*/i,
+    ]);
+  }
 
   // ── Coinsurance ──────────────────────────────────────────────────────────
   const coinsuranceMatch = text.match(/coinsurance[:\s]*(\d{1,3})\s*%/i);

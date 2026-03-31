@@ -154,11 +154,22 @@ interface ProfileData {
   state: string;
   group_number: string;
   member_id: string;
-  deductible_individual: string;
-  oop_max_individual: string;
+  // In-network costs
+  in_deductible_individual: string;
+  in_deductible_family: string;
+  in_oop_max_individual: string;
+  in_oop_max_family: string;
+  // Out-of-network costs
+  out_deductible_individual: string;
+  out_deductible_family: string;
+  out_oop_max_individual: string;
+  out_oop_max_family: string;
+  // Copays
   copay_primary: string;
   copay_specialist: string;
   copay_er: string;
+  copay_urgent_care: string;
+  copay_rx: string;
   coinsurance_pct: string;
   primary_concern: string;
   // Demographics
@@ -202,11 +213,19 @@ const EMPTY_PROFILE: ProfileData = {
   state: "",
   group_number: "",
   member_id: "",
-  deductible_individual: "",
-  oop_max_individual: "",
+  in_deductible_individual: "",
+  in_deductible_family: "",
+  in_oop_max_individual: "",
+  in_oop_max_family: "",
+  out_deductible_individual: "",
+  out_deductible_family: "",
+  out_oop_max_individual: "",
+  out_oop_max_family: "",
   copay_primary: "",
   copay_specialist: "",
   copay_er: "",
+  copay_urgent_care: "",
+  copay_rx: "",
   coinsurance_pct: "",
   primary_concern: "",
   date_of_birth: "",
@@ -284,11 +303,19 @@ function ProfileContent() {
               state: p.state || "",
               group_number: p.group_number || "",
               member_id: p.member_id || "",
-              deductible_individual: p.deductible_individual != null ? String(p.deductible_individual) : "",
-              oop_max_individual: p.oop_max_individual != null ? String(p.oop_max_individual) : "",
+              in_deductible_individual: p.deductible_individual != null ? String(p.deductible_individual) : "",
+              in_deductible_family: p.in_deductible_family != null ? String(p.in_deductible_family) : "",
+              in_oop_max_individual: p.oop_max_individual != null ? String(p.oop_max_individual) : "",
+              in_oop_max_family: p.in_oop_max_family != null ? String(p.in_oop_max_family) : "",
+              out_deductible_individual: p.out_deductible_individual != null ? String(p.out_deductible_individual) : "",
+              out_deductible_family: p.out_deductible_family != null ? String(p.out_deductible_family) : "",
+              out_oop_max_individual: p.out_oop_max_individual != null ? String(p.out_oop_max_individual) : "",
+              out_oop_max_family: p.out_oop_max_family != null ? String(p.out_oop_max_family) : "",
               copay_primary: p.copay_primary != null ? String(p.copay_primary) : "",
               copay_specialist: p.copay_specialist != null ? String(p.copay_specialist) : "",
               copay_er: p.copay_er != null ? String(p.copay_er) : "",
+              copay_urgent_care: p.copay_urgent_care != null ? String(p.copay_urgent_care) : "",
+              copay_rx: p.copay_rx != null ? String(p.copay_rx) : "",
               coinsurance_pct: p.coinsurance_pct != null ? String(p.coinsurance_pct) : "",
               primary_concern: p.primary_concern || "",
               date_of_birth: p.date_of_birth || "",
@@ -328,8 +355,9 @@ function ProfileContent() {
       }
       // Convert numeric fields
       const numericFields = [
-        "deductible_individual","oop_max_individual","copay_primary",
-        "copay_specialist","copay_er","coinsurance_pct",
+        "in_deductible_individual","in_deductible_family","in_oop_max_individual","in_oop_max_family",
+        "out_deductible_individual","out_deductible_family","out_oop_max_individual","out_oop_max_family",
+        "copay_primary","copay_specialist","copay_er","copay_urgent_care","copay_rx","coinsurance_pct",
       ];
       for (const field of numericFields) {
         if (field in body && body[field] != null) {
@@ -366,7 +394,7 @@ function ProfileContent() {
     } else {
       // Done
       if (isOnboarding) {
-        router.push("/upload");
+        router.push("/dashboard");
       } else {
         setEditMode(false);
         setHasExistingProfile(true);
@@ -382,10 +410,10 @@ function ProfileContent() {
     } else {
       // Last step — exit wizard
       if (isOnboarding) {
-        router.push("/upload");
+        router.push("/dashboard");
       } else {
         // Check if any data was entered during this session
-        const hasSomeData = !!(profile.insurer || profile.plan_type || profile.state || profile.group_number || profile.member_id || profile.primary_concern || profile.deductible_individual || profile.copay_primary || profile.date_of_birth);
+        const hasSomeData = !!(profile.insurer || profile.plan_type || profile.state || profile.group_number || profile.member_id || profile.primary_concern || profile.in_deductible_individual || profile.copay_primary || profile.date_of_birth);
         setHasExistingProfile(hasSomeData);
         setEditMode(false);
       }
@@ -431,20 +459,47 @@ function ProfileContent() {
         plan_name: fields.planName || prev.plan_name,
         group_number: fields.groupNumber || prev.group_number,
         member_id: fields.memberId || prev.member_id,
-        deductible_individual: fields.deductibleIndividual != null
-          ? String(fields.deductibleIndividual) : prev.deductible_individual,
-        oop_max_individual: fields.oopMaxIndividual != null
-          ? String(fields.oopMaxIndividual) : prev.oop_max_individual,
+        in_deductible_individual: fields.deductibleIndividual != null
+          ? String(fields.deductibleIndividual) : prev.in_deductible_individual,
+        in_deductible_family: fields.deductibleFamily != null
+          ? String(fields.deductibleFamily) : prev.in_deductible_family,
+        in_oop_max_individual: fields.oopMaxIndividual != null
+          ? String(fields.oopMaxIndividual) : prev.in_oop_max_individual,
+        in_oop_max_family: fields.oopMaxFamily != null
+          ? String(fields.oopMaxFamily) : prev.in_oop_max_family,
         copay_primary: fields.copayPrimary != null
           ? String(fields.copayPrimary) : prev.copay_primary,
         copay_specialist: fields.copaySpecialist != null
           ? String(fields.copaySpecialist) : prev.copay_specialist,
         copay_er: fields.copayEr != null
           ? String(fields.copayEr) : prev.copay_er,
+        copay_urgent_care: fields.copayUrgentCare != null
+          ? String(fields.copayUrgentCare) : prev.copay_urgent_care,
+        copay_rx: fields.copayRx != null
+          ? String(fields.copayRx) : prev.copay_rx,
         coinsurance_pct: fields.coinsurancePct != null
           ? String(fields.coinsurancePct) : prev.coinsurance_pct,
       }));
       setCardScanned(true);
+
+      // Auto-save extracted fields to backend immediately so data persists on navigate
+      await saveStep({
+        insurer: fields.insurer || undefined,
+        plan_type: fields.planType || undefined,
+        plan_name: fields.planName || undefined,
+        group_number: fields.groupNumber || undefined,
+        member_id: fields.memberId || undefined,
+        in_deductible_individual: fields.deductibleIndividual != null ? String(fields.deductibleIndividual) : undefined,
+        in_deductible_family: fields.deductibleFamily != null ? String(fields.deductibleFamily) : undefined,
+        in_oop_max_individual: fields.oopMaxIndividual != null ? String(fields.oopMaxIndividual) : undefined,
+        in_oop_max_family: fields.oopMaxFamily != null ? String(fields.oopMaxFamily) : undefined,
+        copay_primary: fields.copayPrimary != null ? String(fields.copayPrimary) : undefined,
+        copay_specialist: fields.copaySpecialist != null ? String(fields.copaySpecialist) : undefined,
+        copay_er: fields.copayEr != null ? String(fields.copayEr) : undefined,
+        copay_urgent_care: fields.copayUrgentCare != null ? String(fields.copayUrgentCare) : undefined,
+        copay_rx: fields.copayRx != null ? String(fields.copayRx) : undefined,
+        coinsurance_pct: fields.coinsurancePct != null ? String(fields.coinsurancePct) : undefined,
+      } as Partial<Record<keyof ProfileData, string>>);
     } catch (err) {
       const attempts = cardScanAttempts + 1;
       setCardScanAttempts(attempts);
@@ -496,7 +551,7 @@ function ProfileContent() {
     // Profile is "functional" if we have enough to identify the plan:
     // insurer + plan_type, OR group_number + plan_type, OR insurer + group_number
     const identifiers = [profile.insurer, profile.plan_type, profile.group_number, profile.state].filter(Boolean).length;
-    const allFields = [profile.insurer, profile.plan_type, profile.plan_name, profile.state, profile.group_number, profile.deductible_individual, profile.copay_primary];
+    const allFields = [profile.insurer, profile.plan_type, profile.plan_name, profile.state, profile.group_number, profile.in_deductible_individual, profile.copay_primary];
     const filledCount = allFields.filter(Boolean).length;
     const totalCount = allFields.length;
     const allFilled = identifiers >= 2; // any 2 of insurer/plan_type/group_number/state is enough
@@ -559,8 +614,10 @@ function ProfileContent() {
             <ProfileField label="Member ID" value={profile.member_id} />
           </ProfileSection>
           <ProfileSection title="Cost Structure">
-            <ProfileField label="Deductible" value={profile.deductible_individual} prefix="$" />
-            <ProfileField label="OOP max" value={profile.oop_max_individual} prefix="$" />
+            <ProfileField label="Deductible (in-network)" value={profile.in_deductible_individual} prefix="$" />
+            <ProfileField label="Deductible family" value={profile.in_deductible_family} prefix="$" />
+            <ProfileField label="OOP max (in-network)" value={profile.in_oop_max_individual} prefix="$" />
+            <ProfileField label="OOP max family" value={profile.in_oop_max_family} prefix="$" />
             <ProfileField label="PCP copay" value={profile.copay_primary} prefix="$" />
             <ProfileField label="Specialist" value={profile.copay_specialist} prefix="$" />
             <ProfileField label="ER copay" value={profile.copay_er} prefix="$" />
@@ -1074,14 +1131,29 @@ function CostsStep({
   onContinue: (data: Partial<ProfileData>) => void;
   onSkip: () => void;
 }) {
-  const [deductible, setDeductible] = useState(profile.deductible_individual);
-  const [oopMax, setOopMax] = useState(profile.oop_max_individual);
+  const [inDedInd, setInDedInd] = useState(profile.in_deductible_individual);
+  const [inDedFam, setInDedFam] = useState(profile.in_deductible_family);
+  const [inOopInd, setInOopInd] = useState(profile.in_oop_max_individual);
+  const [inOopFam, setInOopFam] = useState(profile.in_oop_max_family);
+  const [outDedInd, setOutDedInd] = useState(profile.out_deductible_individual);
+  const [outOopInd, setOutOopInd] = useState(profile.out_oop_max_individual);
   const [copayPrimary, setCopayPrimary] = useState(profile.copay_primary);
   const [copaySpecialist, setCopaySpecialist] = useState(profile.copay_specialist);
   const [copayEr, setCopayEr] = useState(profile.copay_er);
+  const [copayUrgent, setCopayUrgent] = useState(profile.copay_urgent_care);
+  const [copayRx, setCopayRx] = useState(profile.copay_rx);
   const [coinsurance, setCoinsurance] = useState(profile.coinsurance_pct);
 
-  const hasAny = deductible || oopMax || copayPrimary || copaySpecialist || copayEr || coinsurance;
+  const hasAny = inDedInd || inOopInd || copayPrimary || copaySpecialist || copayEr || coinsurance;
+
+  function DollarInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) {
+    return (
+      <div className="relative">
+        <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">$</span>
+        <input type="number" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className={`${inputClass} pl-7`} />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5">
@@ -1089,106 +1161,86 @@ function CostsStep({
         <h2 className="text-lg font-semibold text-gray-900 mb-1">Your cost structure</h2>
         <p className="text-sm text-gray-500">
           These numbers let us calculate exactly how much you were actually owed.
-          Find them on your Summary of Benefits or any EOB.
+          Find them on your Summary of Benefits, insurance card, or any EOB.
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Individual deductible">
-          <div className="relative">
-            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">$</span>
-            <input
-              type="number"
-              value={deductible}
-              onChange={(e) => setDeductible(e.target.value)}
-              placeholder="1,500"
-              className={`${inputClass} pl-7`}
-            />
-          </div>
-          <Tip>What you pay out-of-pocket before insurance starts covering costs. Resets annually.</Tip>
-        </Field>
-        <Field label="Out-of-pocket max">
-          <div className="relative">
-            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">$</span>
-            <input
-              type="number"
-              value={oopMax}
-              onChange={(e) => setOopMax(e.target.value)}
-              placeholder="5,000"
-              className={`${inputClass} pl-7`}
-            />
-          </div>
-          <Tip>After this, insurance covers 100% for the year.</Tip>
-        </Field>
-      </div>
-
-      <div className="grid grid-cols-3 gap-3">
-        <Field label="PCP copay">
-          <div className="relative">
-            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">$</span>
-            <input
-              type="number"
-              value={copayPrimary}
-              onChange={(e) => setCopayPrimary(e.target.value)}
-              placeholder="25"
-              className={`${inputClass} pl-7`}
-            />
-          </div>
-          <Tip>Primary care visit</Tip>
-        </Field>
-        <Field label="Specialist">
-          <div className="relative">
-            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">$</span>
-            <input
-              type="number"
-              value={copaySpecialist}
-              onChange={(e) => setCopaySpecialist(e.target.value)}
-              placeholder="50"
-              className={`${inputClass} pl-7`}
-            />
-          </div>
-          <Tip>Specialist copay</Tip>
-        </Field>
-        <Field label="ER visit">
-          <div className="relative">
-            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">$</span>
-            <input
-              type="number"
-              value={copayEr}
-              onChange={(e) => setCopayEr(e.target.value)}
-              placeholder="300"
-              className={`${inputClass} pl-7`}
-            />
-          </div>
-          <Tip>Emergency room</Tip>
-        </Field>
-      </div>
-
-      <Field label="Coinsurance">
-        <div className="relative">
-          <input
-            type="number"
-            value={coinsurance}
-            onChange={(e) => setCoinsurance(e.target.value)}
-            placeholder="20"
-            min="0"
-            max="100"
-            className={`${inputClass} pr-7`}
-          />
-          <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">%</span>
+      {/* In-Network */}
+      <div>
+        <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">In-Network</h3>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Deductible (individual)">
+            <DollarInput value={inDedInd} onChange={setInDedInd} placeholder="3,500" />
+          </Field>
+          <Field label="Deductible (family)">
+            <DollarInput value={inDedFam} onChange={setInDedFam} placeholder="7,000" />
+          </Field>
+          <Field label="OOP max (individual)">
+            <DollarInput value={inOopInd} onChange={setInOopInd} placeholder="6,250" />
+          </Field>
+          <Field label="OOP max (family)">
+            <DollarInput value={inOopFam} onChange={setInOopFam} placeholder="12,500" />
+          </Field>
         </div>
-        <Tip>Your share of costs after the deductible. Example: 20% means you pay 20%, insurance pays 80%.</Tip>
-      </Field>
+      </div>
+
+      {/* Out-of-Network (collapsed by default) */}
+      <div>
+        <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Out-of-Network</h3>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Deductible (individual)">
+            <DollarInput value={outDedInd} onChange={setOutDedInd} placeholder="—" />
+          </Field>
+          <Field label="OOP max (individual)">
+            <DollarInput value={outOopInd} onChange={setOutOopInd} placeholder="—" />
+          </Field>
+        </div>
+        <Tip>Often 2x the in-network amount. Check your SBC if unsure.</Tip>
+      </div>
+
+      {/* Copays */}
+      <div>
+        <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Copays</h3>
+        <div className="grid grid-cols-3 gap-3">
+          <Field label="PCP">
+            <DollarInput value={copayPrimary} onChange={setCopayPrimary} placeholder="30" />
+          </Field>
+          <Field label="Specialist">
+            <DollarInput value={copaySpecialist} onChange={setCopaySpecialist} placeholder="60" />
+          </Field>
+          <Field label="ER">
+            <DollarInput value={copayEr} onChange={setCopayEr} placeholder="500" />
+          </Field>
+          <Field label="Urgent care">
+            <DollarInput value={copayUrgent} onChange={setCopayUrgent} placeholder="75" />
+          </Field>
+          <Field label="Rx (generic)">
+            <DollarInput value={copayRx} onChange={setCopayRx} placeholder="15" />
+          </Field>
+          <Field label="Coinsurance">
+            <div className="relative">
+              <input type="number" value={coinsurance} onChange={(e) => setCoinsurance(e.target.value)} placeholder="20" min="0" max="100" className={`${inputClass} pr-7`} />
+              <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">%</span>
+            </div>
+          </Field>
+        </div>
+      </div>
 
       <div className="flex flex-col gap-2 pt-2">
         <button
           onClick={() =>
             onContinue({
-              deductible_individual: deductible,
-              oop_max_individual: oopMax,
+              in_deductible_individual: inDedInd,
+              in_deductible_family: inDedFam,
+              in_oop_max_individual: inOopInd,
+              in_oop_max_family: inOopFam,
+              out_deductible_individual: outDedInd,
+              out_oop_max_individual: outOopInd,
               copay_primary: copayPrimary,
               copay_specialist: copaySpecialist,
               copay_er: copayEr,
+              copay_urgent_care: copayUrgent,
+              copay_rx: copayRx,
               coinsurance_pct: coinsurance,
             })
           }

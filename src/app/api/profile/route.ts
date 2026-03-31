@@ -84,11 +84,23 @@ export async function POST(req: NextRequest) {
     state,
     group_number,
     member_id,
+    // Legacy field names (backward compat with old frontend)
     deductible_individual,
     oop_max_individual,
+    // New expanded field names
+    in_deductible_individual,
+    in_deductible_family,
+    in_oop_max_individual,
+    in_oop_max_family,
+    out_deductible_individual,
+    out_deductible_family,
+    out_oop_max_individual,
+    out_oop_max_family,
     copay_primary,
     copay_specialist,
     copay_er,
+    copay_urgent_care,
+    copay_rx,
     coinsurance_pct,
     primary_concern,
     insurance_card_path,
@@ -120,8 +132,11 @@ export async function POST(req: NextRequest) {
   if (state !== undefined) update.state = state || null;
   if (group_number !== undefined) update.group_number = group_number || null;
   if (member_id !== undefined) update.member_id = member_id || null;
-  if (deductible_individual !== undefined) update.deductible_individual = deductible_individual || null;
-  if (oop_max_individual !== undefined) update.oop_max_individual = oop_max_individual || null;
+  // Map expanded cost fields to legacy profile columns (until schema consolidation)
+  const dedInd = in_deductible_individual ?? deductible_individual;
+  const oopInd = in_oop_max_individual ?? oop_max_individual;
+  if (dedInd !== undefined) update.deductible_individual = dedInd || null;
+  if (oopInd !== undefined) update.oop_max_individual = oopInd || null;
   if (copay_primary !== undefined) update.copay_primary = copay_primary || null;
   if (copay_specialist !== undefined) update.copay_specialist = copay_specialist || null;
   if (copay_er !== undefined) update.copay_er = copay_er || null;
@@ -177,8 +192,15 @@ export async function POST(req: NextRequest) {
       if (state !== undefined) planUpdate.state = state || null;
       if (group_number !== undefined) planUpdate.group_number = group_number || null;
       if (member_id !== undefined) planUpdate.member_id = member_id || null;
-      if (deductible_individual !== undefined) planUpdate.in_deductible_individual = deductible_individual || null;
-      if (oop_max_individual !== undefined) planUpdate.in_oop_max_individual = oop_max_individual || null;
+      // Map expanded cost fields to insurance_plans columns
+      if (dedInd !== undefined) planUpdate.in_deductible_individual = dedInd || null;
+      if (in_deductible_family !== undefined) planUpdate.in_deductible_family = in_deductible_family || null;
+      if (oopInd !== undefined) planUpdate.in_oop_max_individual = oopInd || null;
+      if (in_oop_max_family !== undefined) planUpdate.in_oop_max_family = in_oop_max_family || null;
+      if (out_deductible_individual !== undefined) planUpdate.out_deductible_individual = out_deductible_individual || null;
+      if (out_deductible_family !== undefined) planUpdate.out_deductible_family = out_deductible_family || null;
+      if (out_oop_max_individual !== undefined) planUpdate.out_oop_max_individual = out_oop_max_individual || null;
+      if (out_oop_max_family !== undefined) planUpdate.out_oop_max_family = out_oop_max_family || null;
       if (coinsurance_pct !== undefined) planUpdate.in_coinsurance_default = coinsurance_pct ? coinsurance_pct / 100 : null;
       if (matched_plan_id !== undefined) planUpdate.matched_catalog_plan_id = matched_plan_id || null;
       if (plan_source !== undefined) {
@@ -211,13 +233,13 @@ export async function POST(req: NextRequest) {
             .eq("user_id", user.id);
 
           // Create plan_covered_services rows for copays
-          await syncCopayServices(supabase, newPlan.id, { copay_primary, copay_specialist, copay_er });
+          await syncCopayServices(supabase, newPlan.id, { copay_primary, copay_specialist, copay_er, copay_urgent_care, copay_rx });
         }
       }
 
       // If updating existing plan, also sync copays
-      if (existingProfile?.active_insurance_plan_id && (copay_primary !== undefined || copay_specialist !== undefined || copay_er !== undefined)) {
-        await syncCopayServices(supabase, existingProfile.active_insurance_plan_id, { copay_primary, copay_specialist, copay_er });
+      if (existingProfile?.active_insurance_plan_id && (copay_primary !== undefined || copay_specialist !== undefined || copay_er !== undefined || copay_urgent_care !== undefined || copay_rx !== undefined)) {
+        await syncCopayServices(supabase, existingProfile.active_insurance_plan_id, { copay_primary, copay_specialist, copay_er, copay_urgent_care, copay_rx });
       }
     } catch (err) {
       // Non-critical — don't fail the profile save
@@ -277,12 +299,14 @@ type SupabaseClient = ReturnType<typeof createServerClient>;
 async function syncCopayServices(
   supabase: SupabaseClient,
   insurancePlanId: string,
-  copays: { copay_primary?: number; copay_specialist?: number; copay_er?: number }
+  copays: { copay_primary?: number; copay_specialist?: number; copay_er?: number; copay_urgent_care?: number; copay_rx?: number }
 ) {
   const copayMap: Record<string, number | undefined> = {
     pcp_visit: copays.copay_primary,
     specialist_visit: copays.copay_specialist,
     er_visit: copays.copay_er,
+    urgent_care: copays.copay_urgent_care,
+    generic_rx_tier1: copays.copay_rx,
   };
 
   for (const [slug, copay] of Object.entries(copayMap)) {
