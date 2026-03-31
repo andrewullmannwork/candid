@@ -411,6 +411,18 @@ function ProfileContent() {
       }
       const { fields }: { fields: InsuranceCardFields } = await res.json();
 
+      // Quality check: did we extract enough meaningful data?
+      // At minimum we need insurer OR (member ID with digits)
+      const hasInsurer = !!fields.insurer;
+      const hasMemberId = !!fields.memberId && /\d/.test(fields.memberId);
+      const hasGroupNumber = !!fields.groupNumber;
+      const keyFieldCount = [hasInsurer, hasMemberId, hasGroupNumber].filter(Boolean).length;
+
+      if (keyFieldCount < 2) {
+        // Not enough data extracted — count as a failed scan
+        throw new Error("Could not read enough details from the card. Try a clearer photo or enter details manually.");
+      }
+
       // Pre-fill profile fields with extracted values
       setProfile((prev) => ({
         ...prev,

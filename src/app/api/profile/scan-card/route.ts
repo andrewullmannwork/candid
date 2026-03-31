@@ -199,21 +199,30 @@ function parseInsuranceCard(rawText: string): InsuranceCardFields {
   }
 
   // ── Member ID ────────────────────────────────────────────────────────────
+  // IMPORTANT: patterns with explicit "ID"/"number"/"#" MUST come first.
+  // "Member: GLENN ULLMANN" is the member NAME — "Member ID: 70091259100" is the ID.
   const memberPatterns = [
-    /(?:member\s*(?:id|no?\.?|number|#)?[:\s]+)([A-Z0-9\-]+)/i,
-    /(?:subscriber\s*(?:id|no?\.?|number|#)?[:\s]+)([A-Z0-9\-]+)/i,
-    /(?:id\s*(?:no?\.?|#)?[:\s]+)([A-Z0-9\-]{5,})/i,
-    /(?:identification\s*(?:no?\.?|number|#)?[:\s]+)([A-Z0-9\-]+)/i,
-    // UHC-style: U followed by 9 digits
-    /\b(U\d{9})\b/,
-    // Generic: long alphanumeric string near "member" or "id" on card
-    /(?:member|subscriber)\s*\n?\s*([A-Z0-9\-]{6,20})/i,
+    // Explicit "Member ID" / "Subscriber ID" — highest priority
+    /(?:member\s*id|member\s*#|member\s*no\.?)[:\s]+([A-Z0-9\-]+)/i,
+    /(?:subscriber\s*id|subscriber\s*#|subscriber\s*no\.?)[:\s]+([A-Z0-9\-]+)/i,
+    /(?:identification\s*(?:no?\.?|number|#)?)[:\s]+([A-Z0-9\-]+)/i,
+    // Standalone "ID:" or "ID #:" with a long value (5+ chars to avoid short labels)
+    /(?:^|\n)\s*id\s*(?:#|no\.?)?[:\s]+([A-Z0-9\-]{5,})/im,
+    // UHC-style: long numeric ID (9+ digits) anywhere on the card
+    /\b(\d{9,15})\b/,
+    // Generic: "Member" followed by a line break then an alphanumeric ID (not a name)
+    /member\s*\n\s*([A-Z0-9\-]{6,20})/i,
   ];
 
   for (const pattern of memberPatterns) {
     const match = text.match(pattern);
     if (match) {
-      result.memberId = match[1].trim();
+      const candidate = match[1].trim();
+      // Reject if it looks like a name (all letters, no digits) — that's the member NAME, not ID
+      if (/^[A-Za-z\s]+$/.test(candidate)) continue;
+      // Reject if it matches the group number we already found
+      if (result.groupNumber && candidate === result.groupNumber) continue;
+      result.memberId = candidate;
       break;
     }
   }
