@@ -140,6 +140,16 @@ function matchServiceSlug(serviceName: string): { slug: string; place: string } 
   if (/surg/i.test(lower)) return { slug: "outpatient_surgery", place: "any" };
   if (/pregnan|matern|deliver|birth/i.test(lower)) return { slug: "maternity_delivery", place: "inpatient_facility" };
 
+  // No known mapping — generate a slug from the service name
+  const generatedSlug = lower
+    .replace(/[^a-z0-9\s]/g, "")
+    .trim()
+    .replace(/\s+/g, "_")
+    .slice(0, 50);
+
+  if (generatedSlug.length >= 3) {
+    return { slug: generatedSlug, place: "any" };
+  }
   return null;
 }
 

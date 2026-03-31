@@ -288,6 +288,34 @@ async function handleSBCDocument(
 
       const slugToId = new Map(serviceCatalog?.map((s) => [s.slug, s.id]) || []);
 
+      // Auto-create service_catalog entries for slugs not yet in the catalog
+      const knownSlugs = new Set(slugToId.keys());
+      const newSlugs = [...new Set(
+        parseResult.services
+          .map((s) => s.serviceSlug)
+          .filter((slug) => !knownSlugs.has(slug))
+      )];
+
+      if (newSlugs.length > 0) {
+        const newEntries = newSlugs.map((slug) => ({
+          slug,
+          name: slug.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase()),
+          category: inferServiceCategory(slug),
+          description: "",
+          is_preventive_eligible: false,
+        }));
+
+        const { data: created } = await supabase
+          .from("service_catalog")
+          .upsert(newEntries, { onConflict: "slug" })
+          .select("id, slug");
+
+        for (const entry of created || []) {
+          slugToId.set(entry.slug, entry.id);
+        }
+        console.log(`[process] Auto-created ${created?.length || 0} service_catalog entries: ${newSlugs.slice(0, 5).join(", ")}${newSlugs.length > 5 ? "..." : ""}`);
+      }
+
       // Deduplicate: keep highest-confidence entry per (slug, place_of_service)
       const deduped = new Map<string, typeof parseResult.services[0]>();
       for (const s of parseResult.services) {
@@ -386,4 +414,23 @@ async function handleSBCDocument(
       error: "SBC processing failed. Please try again.",
     }, { status: 500 });
   }
+}
+
+// ── Helper: infer service category from slug ─────────────────────────────────
+
+function inferServiceCategory(slug: string): string {
+  if (/rx|drug|pharm|medication|prescription/.test(slug)) return "rx";
+  if (/mental|psych|behavioral|substance|counseling/.test(slug)) return "mental_health";
+  if (/therapy|rehab|pt_|ot_|speech|habilitation/.test(slug)) return "therapy";
+  if (/hospital|inpatient|surgical|surgery/.test(slug)) return "hospital";
+  if (/emergency|er_|urgent/.test(slug)) return "emergency";
+  if (/imaging|mri|ct_|xray|ultrasound|radiol/.test(slug)) return "imaging";
+  if (/lab|test|blood|pathol/.test(slug)) return "lab";
+  if (/maternity|prenatal|delivery|pregnancy|birth/.test(slug)) return "maternity";
+  if (/prevent|screen|immuniz|vaccine|wellness|physical/.test(slug)) return "preventive";
+  if (/dme|equipment|prosthetic|diabetic/.test(slug)) return "dme";
+  if (/visit|office|pcp|specialist|physician/.test(slug)) return "office_visit";
+  if (/dental|vision|eye|hearing|glasses/.test(slug)) return "other";
+  if (/hospice|home_health|skilled_nursing/.test(slug)) return "other";
+  return "other";
 }

@@ -52,29 +52,38 @@ export async function POST(request: Request) {
           .select("*, service_catalog(slug, name, category)")
           .eq("insurance_plan_id", userPlan.id);
 
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        function formatCost(s: any): string {
+          const parts: string[] = [];
+          const copay = s.in_copay as number | null;
+          const coinsurance = s.in_coinsurance as number | null;
+          if (copay != null) parts.push(`$${copay} copay`);
+          if (coinsurance != null && coinsurance > 0) parts.push(`${Math.round(coinsurance * 100)}% coinsurance`);
+          if (s.in_deductible_applies) parts.push("after deductible");
+          if (parts.length === 0 && copay === null && coinsurance === 0) return "No charge";
+          if (parts.length === 0) return "Covered";
+          return parts.join(", ").replace(/^./, (c: string) => c.toUpperCase());
+        }
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        function buildServiceDescription(s: any): string {
+          const parts: string[] = [];
+          if (s.in_cost_description) {
+            parts.push(`In-network: ${s.in_cost_description}`);
+          } else {
+            const cost = formatCost(s);
+            if (cost !== "Covered") parts.push(`In-network: ${cost}`);
+            else parts.push("Covered in-network");
+          }
+          if (s.annual_limit) parts.push(`Limit: ${s.annual_limit}`);
+          if (s.prior_auth_required) parts.push("Prior authorization required");
+          if (s.covered === false) parts.push("Not covered under this plan");
+          return parts.join(". ") + ".";
+        }
+
         if (coveredServices && coveredServices.length > 0) {
-          // Build a lookup from service slug → cost sharing data
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const costDataBySlug = new Map<string, any>();
-          for (const s of coveredServices) {
-            const slug = s.service_catalog?.slug;
-            if (slug) costDataBySlug.set(slug, s);
-          }
-
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          function formatCost(s: any): string {
-            const parts: string[] = [];
-            const copay = s.in_copay as number | null;
-            const coinsurance = s.in_coinsurance as number | null;
-            if (copay != null) parts.push(`$${copay} copay`);
-            if (coinsurance != null && coinsurance > 0) parts.push(`${Math.round(coinsurance * 100)}% coinsurance`);
-            if (s.in_deductible_applies) parts.push("after deductible");
-            if (parts.length === 0 && copay === null && coinsurance === 0) return "No charge";
-            if (parts.length === 0) return "Covered";
-            return parts.join(", ").replace(/^./, (c: string) => c.toUpperCase());
-          }
-
-          // Start with the catalog benefits (rich content) and enrich with plan data
+          // Build benefits directly from the actual plan services
+          // Reverse slug map: service slug → catalog benefit educational content
           const catalogResult = analyzePlan({
             insurer: userPlan.insurer_name || profile.insurer || "",
             planType: userPlan.plan_type || profile.plan_type || "",
@@ -85,82 +94,76 @@ export async function POST(request: Request) {
             hasChildren,
           });
 
-          // Slug mapping: catalog benefit IDs → service_catalog slugs
-          const BENEFIT_SLUG_MAP: Record<string, string[]> = {
-            "annual-physical": ["pcp_visit", "preventive_care"],
-            "cancer-screenings": ["mammogram", "preventive_care"],
-            "vaccinations": ["immunizations"],
-            "diabetes-screening": ["lab_work", "preventive_care"],
-            "therapy-sessions": ["mental_health_outpatient"],
-            "substance-abuse": ["substance_abuse_outpatient"],
-            "telehealth-mental": ["telehealth", "mental_health_outpatient"],
-            "crisis-services": ["mental_health_outpatient"],
-            "dietitian-visits": ["pcp_visit"],
-            "diabetes-management": ["pcp_visit"],
-            "pt-sessions": ["physical_therapy"],
-            "ot-sessions": ["occupational_therapy"],
-            "speech-therapy": ["speech_therapy"],
-            "chiro-visits": ["chiropractic"],
-            "acupuncture": ["acupuncture"],
-            "hsa-preventive": ["preventive_care"],
-            "fsa-dependent": ["pcp_visit"],
-            "telehealth-primary": ["telehealth"],
-            "telehealth-specialist": ["telehealth_specialist"],
-            "telehealth-urgent": ["urgent_care", "telehealth"],
-            "chronic-care-mgmt": ["pcp_visit"],
-            "remote-monitoring": ["telehealth"],
-            "diabetes-program": ["pcp_visit"],
-            "gym-fitness": ["preventive_care"],
-            "weight-management": ["preventive_care"],
-            "smoking-cessation": ["preventive_care"],
-            "prenatal-care": ["maternity_prenatal"],
-            "breast-pump": ["dme"],
-            "contraception": ["preventive_care"],
-            "fertility-assessment": ["specialist_visit"],
-            "vision-exam": ["vision_exam"],
-            "dental-cleaning": ["dental_cleaning"],
-            "hearing-screening": ["hearing_aids"],
+          // Build reverse lookup: service slug → catalog benefit (for educational content)
+          const SLUG_TO_CATALOG: Record<string, string> = {
+            pcp_visit: "annual-physical",
+            preventive_care: "annual-physical",
+            mental_health_outpatient: "therapy-sessions",
+            substance_abuse_outpatient: "substance-abuse",
+            physical_therapy: "pt-sessions",
+            pt_rehab: "pt-sessions",
+            occupational_therapy: "ot-sessions",
+            speech_therapy: "speech-therapy",
+            chiropractic: "chiro-visits",
+            acupuncture: "acupuncture",
+            telehealth: "telehealth-primary",
+            specialist_visit: "cancer-screenings",
+            maternity_prenatal: "prenatal-care",
+            durable_medical_equipment: "breast-pump",
           };
 
-          // Enrich catalog benefits with actual cost data
-          const enrichedBenefits = catalogResult.benefits.map((ab) => {
-            const slugs = BENEFIT_SLUG_MAP[ab.benefit.id] || [];
-            let costData = null;
-            for (const slug of slugs) {
-              if (costDataBySlug.has(slug)) {
-                costData = costDataBySlug.get(slug);
-                break;
-              }
-            }
+          const catalogBenefitMap = new Map(
+            catalogResult.benefits.map((b) => [b.benefit.id, b.benefit])
+          );
 
-            const costSharing = costData ? {
-              inNetwork: {
-                copay: costData.in_copay,
-                coinsurance: costData.in_coinsurance,
-                deductibleApplies: costData.in_deductible_applies,
-                costDescription: formatCost(costData),
-              },
-              outOfNetwork: {
-                copay: costData.out_copay,
-                coinsurance: costData.out_coinsurance,
-                deductibleApplies: costData.out_deductible_applies,
-                costDescription: costData.out_cost_description || "",
-              },
-              annualLimit: costData.annual_limit,
-              priorAuthRequired: costData.prior_auth_required,
-              penaltyNoPrecert: costData.penalty_no_precert,
-            } : undefined;
+          // Build a benefit per covered service
+          const benefits = coveredServices.map((s) => {
+            const slug = s.service_catalog?.slug || "unknown";
+            const name = s.service_catalog?.name || slug.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+            const category = s.service_catalog?.category || "other";
+
+            // Find catalog educational content if available
+            const catalogId = SLUG_TO_CATALOG[slug];
+            const catalogBenefit = catalogId ? catalogBenefitMap.get(catalogId) : undefined;
 
             return {
-              ...ab,
-              relevanceNote: costData
-                ? `Your ${userPlan.plan_name || "plan"}: ${formatCost(costData)}`
-                : ab.relevanceNote,
-              costSharing,
+              benefit: {
+                id: slug,
+                category,
+                title: name,
+                description: buildServiceDescription(s),
+                whyUnderutilized: catalogBenefit?.whyUnderutilized || "",
+                howToAccess: catalogBenefit?.howToAccess || "Contact your insurer for details.",
+                hsaFsaEligible: catalogBenefit?.hsaFsaEligible || false,
+                planTypes: [userPlan.plan_type || ""],
+              },
+              categoryLabel: category,
+              relevanceNote: `Your ${userPlan.plan_name || "plan"}: ${formatCost(s)}`,
+              relevanceScore: 90,
+              isRecommended: true,
+              costSharing: {
+                inNetwork: {
+                  copay: s.in_copay,
+                  coinsurance: s.in_coinsurance,
+                  deductibleApplies: s.in_deductible_applies,
+                  costDescription: s.in_cost_description || formatCost(s),
+                },
+                outOfNetwork: {
+                  copay: s.out_copay,
+                  coinsurance: s.out_coinsurance,
+                  deductibleApplies: s.out_deductible_applies,
+                  costDescription: s.out_cost_description || "",
+                },
+                annualLimit: s.annual_limit,
+                priorAuthRequired: s.prior_auth_required,
+                penaltyNoPrecert: s.penalty_no_precert,
+              },
+              visitLimit: s.annual_limit,
+              priorAuthRequired: s.prior_auth_required,
+              covered: s.covered,
+              coverageConditions: s.coverage_conditions,
             };
           });
-
-          const benefits = enrichedBenefits;
 
           return NextResponse.json({
             benefits,

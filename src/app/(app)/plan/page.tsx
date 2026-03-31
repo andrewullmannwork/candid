@@ -548,7 +548,9 @@ export default function CandidPlanPage() {
 
               {/* Benefits list */}
               <div className="divide-y divide-gray-50">
-                {benefits.map((item) => {
+                {benefits.map((rawItem) => {
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  const item = rawItem as any; // Extended fields: costSharing, visitLimit, priorAuthRequired, covered
                   const isUsed = usedBenefits.has(item.benefit.id);
                   const isExpanded = expandedBenefit === item.benefit.id;
                   return (
@@ -604,10 +606,54 @@ export default function CandidPlanPage() {
                         </button>
                       </div>
 
-                      {/* Expanded: how to get this benefit */}
+                      {/* Expanded: rich benefit details */}
                       {isExpanded && (
                         <div className="px-4 pb-4 pl-12 space-y-3">
-                          {item.relevanceNote && (
+                          {/* Cost details grid — show when we have real cost data */}
+                          {item.costSharing && (
+                            <div className="grid grid-cols-2 gap-3 p-3 bg-gray-50 rounded-xl">
+                              <div>
+                                <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">In-Network</p>
+                                <p className="text-sm font-medium text-gray-900 mt-0.5">
+                                  {item.costSharing.inNetwork?.costDescription || "Covered"}
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Out-of-Network</p>
+                                <p className="text-sm font-medium text-gray-900 mt-0.5">
+                                  {item.costSharing.outOfNetwork?.costDescription || <span className="text-gray-300">&mdash;</span>}
+                                </p>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Badges — visit limits, prior auth, coverage status */}
+                          <div className="flex flex-wrap gap-2">
+                            {item.visitLimit && (
+                              <span className="inline-flex items-center gap-1 text-xs font-medium bg-blue-50 text-blue-700 px-2 py-1 rounded-lg">
+                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                {item.visitLimit}
+                              </span>
+                            )}
+                            {item.priorAuthRequired && (
+                              <span className="inline-flex items-center gap-1 text-xs font-medium bg-amber-50 text-amber-700 px-2 py-1 rounded-lg">
+                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                                </svg>
+                                Prior auth required
+                              </span>
+                            )}
+                            {item.covered === false && (
+                              <span className="inline-flex items-center gap-1 text-xs font-medium bg-red-50 text-red-700 px-2 py-1 rounded-lg">
+                                Not covered
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Relevance note (when no cost grid — for generic benefits) */}
+                          {!item.costSharing && item.relevanceNote && (
                             <div className="p-3 bg-blue-50 rounded-xl">
                               <p className="text-sm text-blue-800">
                                 <span className="font-medium">For your plan:</span>{" "}
@@ -616,23 +662,27 @@ export default function CandidPlanPage() {
                             </div>
                           )}
 
-                          <div>
-                            <h5 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                              How to access this benefit
-                            </h5>
-                            <p className="mt-1 text-sm text-gray-600">
-                              {item.benefit.howToAccess}
-                            </p>
-                          </div>
+                          {item.benefit.howToAccess && (
+                            <div>
+                              <h5 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                                How to access this benefit
+                              </h5>
+                              <p className="mt-1 text-sm text-gray-600">
+                                {item.benefit.howToAccess}
+                              </p>
+                            </div>
+                          )}
 
-                          <div>
-                            <h5 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                              Why people miss this
-                            </h5>
-                            <p className="mt-1 text-sm text-gray-600">
-                              {item.benefit.whyUnderutilized}
-                            </p>
-                          </div>
+                          {item.benefit.whyUnderutilized && (
+                            <div>
+                              <h5 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                                Why people miss this
+                              </h5>
+                              <p className="mt-1 text-sm text-gray-600">
+                                {item.benefit.whyUnderutilized}
+                              </p>
+                            </div>
+                          )}
 
                           <div className="pt-1">
                             <p className="text-xs text-gray-400">
