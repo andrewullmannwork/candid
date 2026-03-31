@@ -348,15 +348,22 @@ export async function POST(req: NextRequest) {
     let ocrMimeType = file.type;
 
     // HEIC is not supported by Google Document AI — convert to JPEG first
+    // Uses heic-convert (pure JS, works on Vercel serverless — no native deps)
     if (isHeic || file.type === "image/heic" || file.type === "image/heif") {
       try {
-        const sharp = (await import("sharp")).default;
-        buffer = Buffer.from(await sharp(buffer).jpeg({ quality: 90 }).toBuffer());
+        const heicConvert = (await import("heic-convert")).default;
+        const jpegBuffer = await heicConvert({
+          buffer: new Uint8Array(buffer),
+          format: "JPEG",
+          quality: 0.9,
+        });
+        buffer = Buffer.from(jpegBuffer);
         ocrMimeType = "image/jpeg";
+        console.log("[scan-card] HEIC→JPEG conversion OK, size:", buffer.length);
       } catch (convErr) {
         console.error("[scan-card] HEIC conversion failed:", convErr);
         return NextResponse.json(
-          { error: "Could not process HEIC image. Try converting to JPEG first." },
+          { error: "Could not process HEIC image. Try taking a screenshot or converting to JPEG first." },
           { status: 400 }
         );
       }
