@@ -314,6 +314,17 @@ async function handleSBCDocument(
           slugToId.set(entry.slug, entry.id);
         }
         console.log(`[process] Auto-created ${created?.length || 0} service_catalog entries: ${newSlugs.slice(0, 5).join(", ")}${newSlugs.length > 5 ? "..." : ""}`);
+
+        // Flag services that landed in "other" category for admin review
+        const otherSlugs = newEntries.filter(e => e.category === "other").map(e => e.slug);
+        if (otherSlugs.length > 0) {
+          try {
+            const { notifyUncategorizedServices } = await import("@/lib/notifications");
+            await notifyUncategorizedServices(otherSlugs);
+          } catch (notifyErr) {
+            console.warn("[process] Failed to notify about uncategorized services:", notifyErr);
+          }
+        }
       }
 
       // Deduplicate: keep highest-confidence entry per (slug, place_of_service)

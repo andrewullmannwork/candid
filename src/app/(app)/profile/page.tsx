@@ -328,6 +328,8 @@ function ProfileContent() {
             setProfile(loaded);
             const hasSomeData = Object.entries(loaded).some(([k, v]) => k !== "dependents" && v && v !== "[]");
             setHasExistingProfile(hasSomeData);
+            // If returning to profile with existing data, skip card upload step
+            if (hasSomeData && isOnboarding && step === 0) setStep(1);
             // If no existing data and not onboarding, go straight to edit
             if (!hasSomeData && !isOnboarding) setEditMode(true);
           } else if (!isOnboarding) {
@@ -500,6 +502,7 @@ function ProfileContent() {
         copay_rx: fields.copayRx != null ? String(fields.copayRx) : undefined,
         coinsurance_pct: fields.coinsurancePct != null ? String(fields.coinsurancePct) : undefined,
       } as Partial<Record<keyof ProfileData, string>>);
+      setHasExistingProfile(true);
     } catch (err) {
       const attempts = cardScanAttempts + 1;
       setCardScanAttempts(attempts);

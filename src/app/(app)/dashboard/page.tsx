@@ -8,6 +8,23 @@ import type { PlanAnalysisResult, AnalyzedBenefit } from "@/lib/plan/analyzer";
 import { BENEFIT_CATEGORY_LABELS } from "@/lib/plan/benefits-catalog";
 import type { BenefitCategory } from "@/lib/plan/benefits-catalog";
 
+// Labels for service_catalog categories (different from benefits-catalog categories)
+const SERVICE_CATEGORY_LABELS: Record<string, string> = {
+  office_visit: "Office Visits",
+  emergency: "Emergency",
+  hospital: "Hospital",
+  imaging: "Imaging",
+  lab: "Lab & Testing",
+  rx: "Prescriptions",
+  therapy: "Therapy & Rehab",
+  mental_health: "Mental Health",
+  maternity: "Maternity",
+  dme: "Equipment & Supplies",
+  preventive: "Preventive Care",
+  other: "Other Services",
+  general: "General",
+};
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 interface ProfileData {
@@ -149,7 +166,7 @@ export default function DashboardPage() {
               </svg>
               <div className="flex-1">
                 <p className="text-sm font-semibold text-amber-900">
-                  {pn || "Your plan"} &mdash; Unverified
+                  Your plan{pn ? `: ${pn}` : ""} &mdash; Unverified
                 </p>
                 <p className="text-xs text-amber-700 mt-0.5">
                   Upload your plan document (SBC) for accurate, verified benefits and audit results.
@@ -169,7 +186,7 @@ export default function DashboardPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               <p className="text-sm font-semibold text-green-900">
-                {pn || "Your plan"} &mdash; Verified
+                Your plan{pn ? `: ${pn}` : ""} &mdash; Verified
               </p>
             </div>
           );
@@ -344,6 +361,36 @@ export default function DashboardPage() {
           )}
         </div>
 
+        {/* Benefits data source context */}
+        {planResult && (() => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const pr = planResult as any;
+          const ds = pr.dataSource;
+          const vs = pr.planSummary?.verificationStatus;
+          if (ds === "user_plan" && vs === "unverified") {
+            return (
+              <p className="text-xs text-amber-700 mb-3 -mt-2">
+                Based on your insurance card. <Link href="/upload" className="font-semibold underline">Upload your plan document</Link> to see your full list of benefits.
+              </p>
+            );
+          }
+          if (ds === "static_catalog") {
+            return (
+              <p className="text-xs text-gray-500 mb-3 -mt-2">
+                General benefits for your plan type. <Link href="/upload" className="font-semibold text-blue-600 underline">Upload your plan document</Link> for personalized results.
+              </p>
+            );
+          }
+          if (ds === "user_plan" && vs !== "unverified") {
+            return (
+              <p className="text-xs text-green-700 mb-3 -mt-2">
+                From your uploaded plan documents.
+              </p>
+            );
+          }
+          return null;
+        })()}
+
         {planResult && planResult.totalBenefits > 0 ? (
           <>
             {/* Progress + summary row */}
@@ -386,7 +433,7 @@ export default function DashboardPage() {
             {(() => {
               const catMap = new Map<string, { total: number; used: number; topBenefit: string }>();
               for (const item of planResult.benefits) {
-                const cat = item.categoryLabel || (BENEFIT_CATEGORY_LABELS[item.benefit.category as BenefitCategory]) || item.benefit.category.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+                const cat = BENEFIT_CATEGORY_LABELS[item.benefit.category as BenefitCategory] || SERVICE_CATEGORY_LABELS[item.benefit.category] || item.benefit.category.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
                 const prev = catMap.get(cat) || { total: 0, used: 0, topBenefit: item.benefit.title };
                 prev.total++;
                 if (usedBenefits.has(item.benefit.id)) prev.used++;
@@ -602,7 +649,7 @@ function BenefitRow({ item, onToggle, isUsed }: { item: AnalyzedBenefit; onToggl
         </button>
         <Link href={`/plan#${item.benefit.id}`} className="min-w-0 group">
           <p className={`text-sm font-medium truncate group-hover:text-blue-600 transition-colors ${isUsed ? "text-green-800" : "text-gray-900"}`}>{item.benefit.title}</p>
-          <p className="text-xs text-gray-400 truncate">{BENEFIT_CATEGORY_LABELS[item.benefit.category as BenefitCategory]}</p>
+          <p className="text-xs text-gray-400 truncate">{BENEFIT_CATEGORY_LABELS[item.benefit.category as BenefitCategory] || SERVICE_CATEGORY_LABELS[item.benefit.category] || item.benefit.category.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())}</p>
         </Link>
       </div>
       <div className="flex items-center gap-2 shrink-0 ml-3">

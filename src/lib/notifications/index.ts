@@ -155,6 +155,48 @@ export async function notifyUserPendingReview(
   }
 }
 
+/** Notify admin that new services landed in "other" category and need review */
+export async function notifyUncategorizedServices(
+  slugs: string[]
+): Promise<void> {
+  if (slugs.length === 0) return;
+
+  const webhookUrl = process.env.SLACK_WEBHOOK_URL;
+  if (!webhookUrl) return;
+
+  try {
+    await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: `New uncategorized services need review`,
+        blocks: [
+          { type: "header", text: { type: "plain_text", text: "New Uncategorized Services" } },
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `${slugs.length} service(s) were auto-created with category "other" and need re-categorization:\n${slugs.map(s => `• \`${s}\` — ${s.replace(/_/g, " ")}`).join("\n")}`,
+            },
+          },
+          {
+            type: "actions",
+            elements: [
+              {
+                type: "button",
+                text: { type: "plain_text", text: "Review in Admin" },
+                url: `${APP_URL}/admin/pipeline`,
+              },
+            ],
+          },
+        ],
+      }),
+    });
+  } catch (err) {
+    console.error("[notifications] Uncategorized services Slack failed:", err);
+  }
+}
+
 export async function notifyUserDocumentApproved(
   userEmail: string,
   fileName: string

@@ -7,6 +7,22 @@ import type { PlanAnalysisResult, AnalyzedBenefit } from "@/lib/plan/analyzer";
 import type { BenefitCategory } from "@/lib/plan/benefits-catalog";
 import { BENEFIT_CATEGORY_LABELS } from "@/lib/plan/benefits-catalog";
 
+const SERVICE_CATEGORY_LABELS: Record<string, string> = {
+  office_visit: "Office Visits",
+  emergency: "Emergency",
+  hospital: "Hospital",
+  imaging: "Imaging",
+  lab: "Lab & Testing",
+  rx: "Prescriptions",
+  therapy: "Therapy & Rehab",
+  mental_health: "Mental Health",
+  maternity: "Maternity",
+  dme: "Equipment & Supplies",
+  preventive: "Preventive Care",
+  other: "Other Services",
+  general: "General",
+};
+
 // ── Extended API response type ─────────────────────────────────────────────────
 
 interface AnalyzeResponse extends PlanAnalysisResult {
@@ -530,7 +546,7 @@ export default function CandidPlanPage() {
                 <div className="flex items-center gap-3">
                   <CategoryIcon category={category} />
                   <span className="font-semibold text-gray-900">
-                    {BENEFIT_CATEGORY_LABELS[category as BenefitCategory] || category.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}
+                    {BENEFIT_CATEGORY_LABELS[category as BenefitCategory] || SERVICE_CATEGORY_LABELS[category] || category.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
