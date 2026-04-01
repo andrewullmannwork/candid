@@ -116,6 +116,7 @@ export default function DashboardPage() {
   const totalFields = 6;
   const profileComplete = filledFields >= 2; // any 2 identifiers is enough
   const hasDocuments = documents.length > 0;
+  const pendingReviewDocs = documents.filter((d) => d.status === "pending_review");
 
   const firstName = user?.firebaseUser.displayName?.split(" ")[0] || "";
 
@@ -193,6 +194,25 @@ export default function DashboardPage() {
 
         return null;
       })()}
+
+      {/* ── Pending review document banner ─────────────────────────────────── */}
+      {pendingReviewDocs.length > 0 && (
+        <div className="p-4 bg-amber-50 border border-amber-100 rounded-2xl flex items-start gap-3">
+          <div className="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center shrink-0 mt-0.5">
+            <svg className="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-amber-900">
+              {pendingReviewDocs.length === 1 ? "Your document is being reviewed" : `${pendingReviewDocs.length} documents being reviewed`}
+            </p>
+            <p className="text-xs text-amber-700 mt-0.5">
+              We&apos;ll email you when your results are ready &mdash; usually within 24 hours.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* ── Profile completeness ────────────────────────────────────────────── */}
       {!profileComplete && (

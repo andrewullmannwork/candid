@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { FLAGS } from "@/lib/config/feature-flags";
+import { quickClassify } from "@/lib/classifier/quick-classify";
+import { notifyAdminForReview, notifyUserPendingReview } from "@/lib/notifications";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -121,25 +123,119 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Failed to save document record." }, { status: 500 });
   }
 
-  // If SBC upload, auto-queue for pipeline extraction
-  if (docType === "sbc") {
-    // Get user's insurer name for the discovery queue
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("insurer")
-      .eq("user_id", user.id)
-      .single();
+  // ── Confidence-gated processing ─────────────────────────────────────────
+  // Quick-classify using first 2 pages only (saves OCR budget on rejected docs)
+  const CONFIDENCE_HIGH = parseFloat(process.env.CONFIDENCE_THRESHOLD_HIGH || "0.8");
+  const CONFIDENCE_LOW = parseFloat(process.env.CONFIDENCE_THRESHOLD_LOW || "0.4");
 
-    const insurerName = profile?.insurer || "Unknown";
+  let classification = null;
+  try {
+    classification = await quickClassify(buffer, contentType);
 
-    await supabase.from("insurer_discovery_queue").insert({
-      insurer_name_raw: insurerName,
-      requested_by: user.id,
-      source: "user_submitted",
-      source_document_id: documentId,
-      status: "pending",
+    // Store classification results
+    await supabase.from("documents").update({
+      classified_type: classification.classifiedType,
+      classification_confidence: classification.confidence,
+      type_mismatch: classification.classifiedType !== docType,
+    }).eq("id", documentId);
+
+    console.log(`[upload] Quick classify: ${classification.classifiedType} (${Math.round(classification.confidence * 100)}%) | ${classification.pageCount} pages | file: ${file.name}`);
+  } catch (classifyErr) {
+    console.error("[upload] Quick classification failed:", classifyErr);
+    // Fall through to return uploaded state — don't block the upload
+    return NextResponse.json({ documentId, storagePath, status: "uploaded" });
+  }
+
+  const userEmail = decoded.email || "";
+
+  // HIGH confidence — auto-process immediately
+  if (classification.confidence >= CONFIDENCE_HIGH) {
+    // Trigger full processing in the background (non-blocking)
+    // The frontend will poll or the user navigates to see results
+    try {
+      await supabase.from("documents").update({ status: "processing" }).eq("id", documentId);
+
+      // Call the process endpoint internally
+      const processUrl = new URL("/api/documents/process", req.url);
+      fetch(processUrl.toString(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: req.headers.get("authorization") || "",
+        },
+        body: JSON.stringify({ documentId, billType: docType }),
+      }).catch((err) => {
+        console.error("[upload] Auto-process trigger failed:", err);
+      });
+
+      return NextResponse.json({
+        documentId,
+        storagePath,
+        autoProcessed: true,
+        classification: {
+          classifiedType: classification.classifiedType,
+          confidence: classification.confidence,
+          pageCount: classification.pageCount,
+        },
+      });
+    } catch (err) {
+      console.error("[upload] Auto-process error:", err);
+      // Fall through — at least the document is stored
+    }
+  }
+
+  // MEDIUM confidence — queue for admin review + notify
+  if (classification.confidence >= CONFIDENCE_LOW) {
+    await supabase.from("documents").update({ status: "pending_review" }).eq("id", documentId);
+
+    // Notify admin (email + Slack) and user (email) — non-blocking
+    Promise.allSettled([
+      notifyAdminForReview(documentId, classification.classifiedType, classification.confidence, file.name, userEmail),
+      notifyUserPendingReview(userEmail, file.name),
+    ]).catch(() => {});
+
+    // Also queue for pipeline discovery if it looks like an SBC
+    if (classification.classifiedType === "sbc" || classification.classifiedType === "plan_document") {
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("insurer")
+        .eq("user_id", user.id)
+        .single();
+
+      const { error: queueErr } = await supabase.from("insurer_discovery_queue").insert({
+        insurer_name_raw: profile?.insurer || "Unknown",
+        requested_by: user.id,
+        source: "user_submitted",
+        source_document_id: documentId,
+        status: "pending",
+      });
+      if (queueErr) console.warn("[upload] Discovery queue insert failed:", queueErr.message);
+    }
+
+    return NextResponse.json({
+      documentId,
+      storagePath,
+      status: "pending_review",
+      classification: {
+        classifiedType: classification.classifiedType,
+        confidence: classification.confidence,
+        pageCount: classification.pageCount,
+      },
     });
   }
 
-  return NextResponse.json({ documentId, storagePath });
+  // LOW confidence — auto-decline
+  await supabase.from("documents").update({ status: "rejected" }).eq("id", documentId);
+  console.log(`[upload] Auto-rejected: ${file.name} (${Math.round(classification.confidence * 100)}% as ${classification.classifiedType})`);
+
+  return NextResponse.json({
+    documentId,
+    storagePath,
+    status: "rejected",
+    classification: {
+      classifiedType: classification.classifiedType,
+      confidence: classification.confidence,
+    },
+    message: "This doesn't appear to be a healthcare document. Please upload an insurance card, Summary of Benefits (SBC), Explanation of Benefits (EOB), or medical bill.",
+  });
 }

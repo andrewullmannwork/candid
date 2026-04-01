@@ -9,6 +9,7 @@ const adminNav = [
   { href: "/admin/waitlist", label: "Waitlist" },
   { href: "/admin/users", label: "Users" },
   { href: "/admin/documents", label: "Documents" },
+  { href: "/admin/documents/review", label: "Document Review" },
   { href: "/admin/consent", label: "Consent Audit" },
   { href: "/admin/tickets", label: "Support Tickets" },
   { href: "/admin/copy", label: "Site Copy" },

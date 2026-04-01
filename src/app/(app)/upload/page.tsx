@@ -59,6 +59,7 @@ function UploadForm() {
   const [docType, setDocType] = useState<"eob" | "itemized_bill" | "sbc" | "plan_document">("eob");
   const [uploading, setUploading] = useState(false);
   const [uploaded, setUploaded] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<"uploaded" | "auto_processed" | "pending_review" | "rejected" | null>(null);
   const [error, setError] = useState("");
   const [fileName, setFileName] = useState("");
   const [showTips, setShowTips] = useState<"eob" | "itemized_bill" | "sbc" | "plan_document" | null>(null);
@@ -140,34 +141,34 @@ function UploadForm() {
           return;
         }
 
-        const { documentId } = await res.json();
+        const uploadResult = await res.json();
 
-        // For SBC and plan documents, auto-process to extract plan data
-        if (docType === "sbc" || docType === "plan_document") {
-          try {
-            const processRes = await fetch("/api/documents/process", {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${idToken}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({ documentId, billType: "sbc" }),
-            });
-            const processData = await processRes.json();
-            if (processData.classification) {
-              setClassificationResult(processData.classification);
-            }
-            if (processData.sbcParsed && processData.planData) {
-              setSbcParsed(processData.planData);
-            }
-          } catch {
-            // Non-critical: upload succeeded even if processing failed
-          }
+        // Backend now handles confidence-gated processing automatically
+        if (uploadResult.classification) {
+          setClassificationResult(uploadResult.classification);
+        }
+
+        // Handle different processing outcomes
+        if (uploadResult.autoProcessed) {
+          // High confidence — processing triggered automatically
+          // The process route will handle SBC parsing in the background
+          setUploadStatus("auto_processed");
+        } else if (uploadResult.status === "pending_review") {
+          // Medium confidence — queued for admin review
+          setUploadStatus("pending_review");
+        } else if (uploadResult.status === "rejected") {
+          // Low confidence — auto-declined
+          setUploadStatus("rejected");
+          setError(uploadResult.message || "This document could not be identified as a healthcare document.");
+          setUploading(false);
+          return;
         } else {
+          // For EOB/bills that bypass classification, store for manual audit
           sessionStorage.setItem(
             "pendingAudit",
-            JSON.stringify({ documentId, billType: docType, fileName: file.name })
+            JSON.stringify({ documentId: uploadResult.documentId, billType: docType, fileName: file.name })
           );
+          setUploadStatus("uploaded");
         }
 
         setUploaded(true);
@@ -252,16 +253,54 @@ function UploadForm() {
 
   // ── Success state ───────────────────────────────────────────────────────
   if (uploaded) {
+    const isPendingReview = uploadStatus === "pending_review";
+    const isAutoProcessed = uploadStatus === "auto_processed";
+    const bgColor = isPendingReview ? "bg-amber-50 border-amber-100" : "bg-green-50 border-green-100";
+    const iconBg = isPendingReview ? "bg-amber-100" : "bg-green-100";
+    const iconColor = isPendingReview ? "text-amber-600" : "text-green-600";
+    const headingColor = isPendingReview ? "text-amber-800" : "text-green-800";
+
     return (
       <div className="max-w-lg mx-auto">
-        <div className="p-6 bg-green-50 border border-green-100 rounded-2xl text-center">
-          <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-4">
-            <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
-            </svg>
+        <div className={`p-6 ${bgColor} border rounded-2xl text-center`}>
+          <div className={`w-12 h-12 rounded-full ${iconBg} flex items-center justify-center mx-auto mb-4`}>
+            {isPendingReview ? (
+              <svg className={`w-6 h-6 ${iconColor}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            ) : (
+              <svg className={`w-6 h-6 ${iconColor}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+              </svg>
+            )}
           </div>
-          <h3 className="text-lg font-semibold text-green-800">Document uploaded</h3>
-          <p className="mt-1 text-sm text-green-700">{fileName}</p>
+          <h3 className={`text-lg font-semibold ${headingColor}`}>
+            {isPendingReview ? "We need a little more time" : "Document uploaded"}
+          </h3>
+          <p className={`mt-1 text-sm ${isPendingReview ? "text-amber-700" : "text-green-700"}`}>{fileName}</p>
+
+          {/* Pending review message */}
+          {isPendingReview && (
+            <div className="mt-3 text-left bg-amber-100/50 rounded-xl p-4">
+              <p className="text-sm text-amber-800 leading-relaxed">
+                Our team will review your document and have your results ready within 24 hours.
+                We&apos;ll send you an email when it&apos;s done.
+              </p>
+              <p className="mt-2 text-xs text-amber-600">
+                For faster results, try uploading a clearer version or your Summary of Benefits and Coverage (SBC) as a PDF.
+              </p>
+            </div>
+          )}
+
+          {/* Auto-processed success message */}
+          {isAutoProcessed && (
+            <div className="mt-3 text-left bg-green-100 rounded-xl p-3">
+              <p className="text-xs font-semibold text-green-800">Your document is being processed now</p>
+              <p className="text-xs text-green-700 mt-1">
+                Your benefits will be updated in a moment. Head to your dashboard to see the results.
+              </p>
+            </div>
+          )}
 
           {/* Classification result */}
           {classificationResult && (
@@ -322,6 +361,7 @@ function UploadForm() {
             <button
               onClick={() => {
                 setUploaded(false);
+                setUploadStatus(null);
                 setFileName("");
                 setClassificationResult(null);
                 setSbcParsed(null);
