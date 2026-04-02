@@ -367,27 +367,75 @@ export default function DashboardPage() {
           const pr = planResult as any;
           const ds = pr.dataSource;
           const vs = pr.planSummary?.verificationStatus;
-          if (ds === "user_plan" && vs === "unverified") {
-            return (
-              <p className="text-xs text-amber-700 mb-3 -mt-2">
-                Based on your insurance card. <Link href="/upload" className="font-semibold underline">Upload your plan document</Link> to see your full list of benefits.
-              </p>
-            );
-          }
-          if (ds === "static_catalog") {
-            return (
-              <p className="text-xs text-gray-500 mb-3 -mt-2">
-                General benefits for your plan type. <Link href="/upload" className="font-semibold text-blue-600 underline">Upload your plan document</Link> for personalized results.
-              </p>
-            );
-          }
-          if (ds === "user_plan" && vs !== "unverified") {
+          const ps = pr.planSource; // "insurance_card" | "manual" | "sbc_upload" | "plan_doc_upload" | "catalog_match"
+          const pt = pr.planType; // "PPO", "HMO", etc.
+
+          // user_plan — differentiate by source
+          if (ds === "user_plan") {
+            if (ps === "sbc_upload" || ps === "plan_doc_upload") {
+              return (
+                <p className="text-xs text-green-700 mb-3 -mt-2">
+                  Results based on your uploaded document.
+                </p>
+              );
+            }
+            if (ps === "manual") {
+              return (
+                <p className="text-xs text-amber-700 mb-3 -mt-2">
+                  Results based on the insurance details you provided. <Link href="/upload" className="font-semibold underline">Upload your plan document</Link> for more complete results.
+                </p>
+              );
+            }
+            // insurance_card or other unverified source
+            if (vs === "unverified") {
+              return (
+                <p className="text-xs text-amber-700 mb-3 -mt-2">
+                  Results based on your insurance card. <Link href="/upload" className="font-semibold underline">Upload your plan document</Link> for more complete results.
+                </p>
+              );
+            }
+            // verified user_plan (fallback)
             return (
               <p className="text-xs text-green-700 mb-3 -mt-2">
-                From your uploaded plan documents.
+                Results based on your uploaded document.
               </p>
             );
           }
+
+          // matched_plan or cms_api — exact catalog match
+          if (ds === "matched_plan" || ds === "cms_api") {
+            return (
+              <p className="text-xs text-blue-700 mb-3 -mt-2">
+                Results based on a Candid verified plan matching your insurance card.
+              </p>
+            );
+          }
+
+          // verified_plan — similar plan type match
+          if (ds === "verified_plan") {
+            return (
+              <p className="text-xs text-amber-700 mb-3 -mt-2">
+                Results based on a plan similar to yours. <Link href="/upload" className="font-semibold underline">Upload your plan document</Link> for more complete results.
+              </p>
+            );
+          }
+
+          // static_catalog — no match
+          if (ds === "static_catalog") {
+            if (pt) {
+              return (
+                <p className="text-xs text-gray-500 mb-3 -mt-2">
+                  Results based on your {pt} plan type. <Link href="/upload" className="font-semibold text-blue-600 underline">Upload your plan document</Link> for more complete results.
+                </p>
+              );
+            }
+            return (
+              <p className="text-xs text-gray-500 mb-3 -mt-2">
+                No insurance information on file. Results based on the typical user. <Link href="/profile" className="font-semibold text-blue-600 underline">Upload your insurance card</Link> and <Link href="/upload" className="font-semibold text-blue-600 underline">plan document</Link> for more complete results.
+              </p>
+            );
+          }
+
           return null;
         })()}
 

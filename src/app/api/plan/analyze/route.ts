@@ -173,6 +173,7 @@ export async function POST(request: Request) {
             missingFields: [],
             dataSource: "user_plan",
             planName: userPlan.plan_name,
+            planSource: userPlan.source,
             planSummary: {
               inDeductible: userPlan.in_deductible_individual,
               outDeductible: userPlan.out_deductible_individual,

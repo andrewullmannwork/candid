@@ -122,63 +122,70 @@ function CategoryIcon({ category }: { category: string }) {
 
 // ── Data Source Banner ──────────────────────────────────────────────────────────
 
-function DataSourceBanner({ dataSource, planName, planType, insurer, verificationStatus }: {
+function DataSourceBanner({ dataSource, planName, planType, insurer, verificationStatus, planSource }: {
   dataSource: string;
   planName?: string;
   planType?: string;
   insurer?: string;
   verificationStatus?: string;
+  planSource?: string;
 }) {
+  // Helper: amber banner with upload CTA
+  function AmberBanner({ title, subtitle }: { title: string; subtitle: string }) {
+    return (
+      <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3">
+        <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0 mt-0.5">
+          <svg className="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
+          </svg>
+        </div>
+        <div className="flex-1">
+          <p className="text-sm font-semibold text-amber-900">{title}</p>
+          <p className="text-xs text-amber-700 mt-0.5">{subtitle}</p>
+          <Link href="/upload" className="inline-flex items-center gap-1.5 mt-3 px-4 py-2 text-sm font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-xl transition-colors">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+            </svg>
+            Upload your plan document
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   if (dataSource === "user_plan") {
-    // Unverified (from card scan or manual entry) → amber with SBC upload CTA
-    if (verificationStatus === "unverified") {
+    // SBC or plan document upload → green
+    if (planSource === "sbc_upload" || planSource === "plan_doc_upload") {
       return (
-        <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3">
-          <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0 mt-0.5">
-            <svg className="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
+        <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-xl flex items-start gap-3">
+          <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center shrink-0 mt-0.5">
+            <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
-          <div className="flex-1">
-            <p className="text-sm font-semibold text-amber-900">
-              Based on your insurance card
+          <div>
+            <p className="text-sm font-semibold text-green-900">Results based on your uploaded document</p>
+            <p className="text-xs text-green-700 mt-0.5">
+              These benefits reflect the coverage details extracted from your plan documents.
             </p>
-            <p className="text-xs text-amber-700 mt-0.5">
-              We extracted what we could from your card, but coverage details may be incomplete.
-              Upload your Summary of Benefits (SBC) for verified, plan-specific coverage.
-            </p>
-            <Link
-              href="/upload"
-              className="inline-flex items-center gap-1.5 mt-3 px-4 py-2 text-sm font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-xl transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-              </svg>
-              Upload your SBC
-            </Link>
           </div>
         </div>
       );
     }
 
-    // Verified (from uploaded SBC/plan doc) → green
-    return (
-      <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-xl flex items-start gap-3">
-        <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center shrink-0 mt-0.5">
-          <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-        </div>
-        <div>
-          <p className="text-sm font-semibold text-green-900">
-            Based on your uploaded {planName || "plan"} documents
-          </p>
-          <p className="text-xs text-green-700 mt-0.5">
-            These benefits reflect the actual coverage details extracted from your plan documents.
-          </p>
-        </div>
-      </div>
-    );
+    // Manual entry → amber
+    if (planSource === "manual") {
+      return <AmberBanner
+        title="Results based on the insurance details you provided"
+        subtitle="Upload your plan document for more complete results."
+      />;
+    }
+
+    // Insurance card scan or other unverified → amber
+    return <AmberBanner
+      title="Results based on your insurance card"
+      subtitle="Upload your plan document for more complete results."
+    />;
   }
 
   if (dataSource === "matched_plan" || dataSource === "cms_api") {
@@ -191,10 +198,10 @@ function DataSourceBanner({ dataSource, planName, planType, insurer, verificatio
         </div>
         <div>
           <p className="text-sm font-semibold text-blue-900">
-            Based on your {planName || "matched plan"} plan data
+            Results based on a Candid verified plan matching your insurance card
           </p>
           <p className="text-xs text-blue-700 mt-0.5">
-            Matched from marketplace plan data. Upload your SBC for the most accurate results.
+            We matched your information to {planName || "a verified plan"} in our database.
           </p>
         </div>
       </div>
@@ -202,30 +209,21 @@ function DataSourceBanner({ dataSource, planName, planType, insurer, verificatio
   }
 
   if (dataSource === "verified_plan") {
-    return (
-      <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3">
-        <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0 mt-0.5">
-          <svg className="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
-          </svg>
-        </div>
-        <div>
-          <p className="text-sm font-semibold text-amber-900">
-            Based on a similar {insurer || "insurer"} plan
-          </p>
-          <p className="text-xs text-amber-700 mt-0.5">
-            We matched you to a similar plan from your insurer, but your specific coverage may differ.{" "}
-            <Link href="/upload" className="font-semibold text-amber-800 hover:text-amber-900 underline">
-              Upload your SBC
-            </Link>{" "}
-            for exact coverage details.
-          </p>
-        </div>
-      </div>
-    );
+    return <AmberBanner
+      title="Results based on a plan similar to yours"
+      subtitle="Upload your plan document for more complete results."
+    />;
   }
 
-  // static_catalog — most prominent warning
+  // static_catalog — dynamic based on plan type
+  if (planType) {
+    return <AmberBanner
+      title={`Results based on your ${planType} plan type`}
+      subtitle="Upload your plan document for more complete results."
+    />;
+  }
+
+  // No plan type at all
   return (
     <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
       <div className="flex items-start gap-3">
@@ -236,11 +234,10 @@ function DataSourceBanner({ dataSource, planName, planType, insurer, verificatio
         </div>
         <div className="flex-1">
           <p className="text-sm font-semibold text-amber-900">
-            We don&apos;t have your specific plan on file
+            No insurance information on file
           </p>
           <p className="text-xs text-amber-700 mt-0.5">
-            These are general benefits typical of {planType || "most"} plans.
-            Your actual coverage may be different. For results specific to your plan, upload your Summary of Benefits and Coverage (SBC).
+            Results based on the typical user. Upload your insurance card and plan document for more complete results.
           </p>
           <Link
             href="/upload"
@@ -451,6 +448,7 @@ export default function CandidPlanPage() {
         planType={result.planType}
         insurer={result.insurer}
         verificationStatus={result.planSummary?.verificationStatus}
+        planSource={(result as unknown as Record<string, unknown>).planSource as string | undefined}
       />
 
       {/* Plan summary card (only for matched/uploaded plans) */}
