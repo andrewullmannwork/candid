@@ -15,7 +15,7 @@ export async function POST(request: Request) {
     // Fetch user profile with demographics + plan match
     const { data: profile, error } = await supabase
       .from("profiles")
-      .select("insurer, plan_type, state, date_of_birth, sex, dependents, matched_plan_id, plan_source, active_insurance_plan_id, deductible_individual, oop_max_individual, in_deductible_individual, in_oop_max_individual, out_deductible_individual, out_oop_max_individual")
+      .select("insurer, plan_type, state, date_of_birth, sex, dependents, matched_plan_id, plan_source, active_insurance_plan_id, deductible_individual, oop_max_individual")
       .eq("user_id", userId)
       .single();
 
@@ -175,10 +175,10 @@ export async function POST(request: Request) {
             planName: userPlan.plan_name,
             planSource: userPlan.source,
             planSummary: {
-              inDeductible: userPlan.in_deductible_individual ?? profile.in_deductible_individual ?? profile.deductible_individual,
-              outDeductible: userPlan.out_deductible_individual ?? profile.out_deductible_individual,
-              inOopMax: userPlan.in_oop_max_individual ?? profile.in_oop_max_individual ?? profile.oop_max_individual,
-              outOopMax: userPlan.out_oop_max_individual ?? profile.out_oop_max_individual,
+              inDeductible: userPlan.in_deductible_individual ?? profile.deductible_individual,
+              outDeductible: userPlan.out_deductible_individual,
+              inOopMax: userPlan.in_oop_max_individual ?? profile.oop_max_individual,
+              outOopMax: userPlan.out_oop_max_individual,
               planType: userPlan.plan_type,
               verificationStatus: userPlan.verification_status,
             },
