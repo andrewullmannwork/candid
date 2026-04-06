@@ -607,21 +607,44 @@ export default function DashboardPage() {
           </>
         ) : (
           <div className="p-5 bg-white border border-gray-100 rounded-2xl text-center">
-            <p className="text-sm text-gray-500">
-              {profile?.insurer
-                ? "Analyzing your plan..."
-                : "Add your insurance details to discover covered benefits you may not be using."}
-            </p>
-            {!profile?.insurer && (
-              <Link
-                href="/profile"
-                className="inline-flex items-center gap-1 mt-3 text-sm font-semibold text-blue-600 hover:text-blue-700"
-              >
-                Complete your profile
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
-                </svg>
-              </Link>
+            {documents.some(d => d.status === "processing" || d.status === "queued") ? (
+              <>
+                <div className="flex items-center justify-center gap-2 mb-2">
+                  <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                  <p className="text-sm font-medium text-blue-700">Processing your plan document...</p>
+                </div>
+                <p className="text-xs text-gray-500">This takes about a minute. Your benefits will appear automatically when done.</p>
+              </>
+            ) : profile?.insurer ? (
+              <>
+                <p className="text-sm text-gray-500">
+                  Upload a plan document to see your specific covered benefits.
+                </p>
+                <Link
+                  href="/upload"
+                  className="inline-flex items-center gap-1 mt-3 text-sm font-semibold text-blue-600 hover:text-blue-700"
+                >
+                  Upload plan document
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                  </svg>
+                </Link>
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-gray-500">
+                  Add your insurance details to discover covered benefits you may not be using.
+                </p>
+                <Link
+                  href="/profile"
+                  className="inline-flex items-center gap-1 mt-3 text-sm font-semibold text-blue-600 hover:text-blue-700"
+                >
+                  Complete your profile
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                  </svg>
+                </Link>
+              </>
             )}
           </div>
         )}
