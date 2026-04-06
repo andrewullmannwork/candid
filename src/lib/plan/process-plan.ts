@@ -71,6 +71,20 @@ export async function processPlanDocumentData(
       verification_status: "unverified" as const,
     };
 
+    // Backfill nulls from profile (user may have manually entered deductible/OOP)
+    const { data: userProfile } = await supabase
+      .from("profiles")
+      .select("deductible_individual, oop_max_individual, in_deductible_individual, in_oop_max_individual, out_deductible_individual, out_oop_max_individual")
+      .eq("id", doc.user_id)
+      .single();
+
+    if (userProfile) {
+      planInsert.in_deductible_individual ??= userProfile.in_deductible_individual ?? userProfile.deductible_individual;
+      planInsert.in_oop_max_individual ??= userProfile.in_oop_max_individual ?? userProfile.oop_max_individual;
+      planInsert.out_deductible_individual ??= userProfile.out_deductible_individual;
+      planInsert.out_oop_max_individual ??= userProfile.out_oop_max_individual;
+    }
+
     // Deactivate existing active plans
     await supabase
       .from("insurance_plans")
