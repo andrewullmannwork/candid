@@ -4,6 +4,45 @@ import { useState, useEffect } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useAdminQuery } from "@/lib/admin/use-admin-query";
 
+interface ServiceCatalogItem {
+  id: string;
+  slug: string;
+  name: string;
+  category: string;
+  is_preventive_eligible: boolean;
+  created_at: string;
+}
+
+const SERVICE_CATEGORIES = [
+  "office_visit",
+  "emergency",
+  "hospital",
+  "preventive",
+  "mental_health",
+  "therapy",
+  "rx",
+  "imaging",
+  "lab",
+  "maternity",
+  "dme",
+  "other",
+] as const;
+
+const CATEGORY_LABELS: Record<string, string> = {
+  office_visit: "Office Visit",
+  emergency: "Emergency",
+  hospital: "Hospital",
+  preventive: "Preventive",
+  mental_health: "Mental Health",
+  therapy: "Therapy",
+  rx: "Rx / Pharmacy",
+  imaging: "Imaging",
+  lab: "Lab",
+  maternity: "Maternity",
+  dme: "DME",
+  other: "Other / Uncategorized",
+};
+
 interface DiscoveryQueueItem {
   id: string;
   insurer_name_raw: string;
@@ -54,27 +93,34 @@ interface ProcessingStats {
 
 export default function PipelinePage() {
   const { user } = useAuth();
-  const [tab, setTab] = useState<"queue" | "catalog">("queue");
+  const [tab, setTab] = useState<"queue" | "catalog" | "services">("queue");
   const [queue, setQueue] = useState<DiscoveryQueueItem[]>([]);
   const [catalog, setCatalog] = useState<InsurerCatalogEntry[]>([]);
+  const [services, setServices] = useState<ServiceCatalogItem[]>([]);
+  const [serviceFilter, setServiceFilter] = useState<"all" | "other">("other");
   const [loading, setLoading] = useState(true);
   const { query, update } = useAdminQuery();
   const [processingStats, setProcessingStats] = useState<ProcessingStats | null>(null);
   const [processingAction, setProcessingAction] = useState(false);
 
   useEffect(() => {
+    if (typeof window !== "undefined" && window.location.hash === "#services") {
+      setTab("services");
+    }
     loadData();
   }, []);
 
   async function loadData() {
     setLoading(true);
     try {
-      const [queueData, catalogData] = await Promise.all([
+      const [queueData, catalogData, serviceData] = await Promise.all([
         query({ table: "insurer_discovery_queue", order: { column: "created_at", ascending: false }, limit: 100 }),
         query({ table: "insurer_catalog", order: { column: "name", ascending: true } }),
+        query({ table: "service_catalog", order: { column: "category", ascending: true } }),
       ]);
       setQueue(queueData || []);
       setCatalog(catalogData || []);
+      setServices(serviceData || []);
 
       // Load processing stats
       if (user) {
@@ -303,6 +349,18 @@ export default function PipelinePage() {
         >
           Insurer Catalog ({catalog.length})
         </button>
+        <button
+          onClick={() => setTab("services")}
+          className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+            tab === "services" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          Service Catalog {services.filter((s) => s.category === "other").length > 0 && (
+            <span className="ml-1.5 px-1.5 py-0.5 bg-red-200 text-red-800 text-[10px] font-bold rounded-full">
+              {services.filter((s) => s.category === "other").length}
+            </span>
+          )}
+        </button>
       </div>
 
       {/* Extract result banner */}
@@ -385,6 +443,98 @@ export default function PipelinePage() {
               </tbody>
             </table>
           )}
+        </div>
+      )}
+
+      {/* Services Tab */}
+      {tab === "services" && (
+        <div>
+          <div className="flex items-center gap-2 mb-4">
+            <button
+              onClick={() => setServiceFilter("other")}
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg ${
+                serviceFilter === "other" ? "bg-red-100 text-red-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}
+            >
+              Needs Categorization ({services.filter((s) => s.category === "other").length})
+            </button>
+            <button
+              onClick={() => setServiceFilter("all")}
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg ${
+                serviceFilter === "all" ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}
+            >
+              All Services ({services.length})
+            </button>
+          </div>
+          <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-b">
+                <tr>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">Service Name</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">Slug</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">Category</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">Preventive</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">Added</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {services
+                  .filter((s) => serviceFilter === "all" || s.category === "other")
+                  .map((svc) => (
+                    <tr key={svc.id} className={`hover:bg-gray-50 ${svc.category === "other" ? "bg-red-50/40" : ""}`}>
+                      <td className="px-4 py-3 font-medium text-gray-900">{svc.name}</td>
+                      <td className="px-4 py-3 text-xs text-gray-500 font-mono">{svc.slug}</td>
+                      <td className="px-4 py-3">
+                        <select
+                          value={svc.category}
+                          onChange={async (e) => {
+                            const newCategory = e.target.value;
+                            await update("service_catalog", svc.id, { category: newCategory });
+                            setServices((prev) =>
+                              prev.map((s) => (s.id === svc.id ? { ...s, category: newCategory } : s))
+                            );
+                          }}
+                          className={`px-2 py-1 text-xs font-medium rounded border ${
+                            svc.category === "other"
+                              ? "border-red-300 bg-red-50 text-red-700"
+                              : "border-gray-200 bg-white text-gray-700"
+                          } focus:outline-none focus:ring-1 focus:ring-blue-500`}
+                        >
+                          {SERVICE_CATEGORIES.map((cat) => (
+                            <option key={cat} value={cat}>
+                              {CATEGORY_LABELS[cat] || cat}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-4 py-3">
+                        <input
+                          type="checkbox"
+                          checked={svc.is_preventive_eligible}
+                          onChange={async (e) => {
+                            const val = e.target.checked;
+                            await update("service_catalog", svc.id, { is_preventive_eligible: val });
+                            setServices((prev) =>
+                              prev.map((s) => (s.id === svc.id ? { ...s, is_preventive_eligible: val } : s))
+                            );
+                          }}
+                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-500">
+                        {new Date(svc.created_at).toLocaleDateString()}
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+            {services.filter((s) => serviceFilter === "all" || s.category === "other").length === 0 && (
+              <div className="p-8 text-center text-gray-500">
+                {serviceFilter === "other" ? "All services are categorized" : "No services in catalog yet"}
+              </div>
+            )}
+          </div>
         </div>
       )}
 

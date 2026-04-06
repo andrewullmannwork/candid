@@ -18,14 +18,14 @@ export async function GET(req: NextRequest) {
 
   const supabase = createServerClient();
 
-  // Find stuck documents (processing/queued for >30 minutes)
-  const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+  // Find stuck documents (processing/queued for >5 minutes)
+  const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
 
   const { data: stuckDocs } = await supabase
     .from("documents")
     .select("id, status, processing_step, processing_started_at")
     .in("status", ["queued", "processing"])
-    .or(`processing_started_at.lt.${thirtyMinAgo},processing_started_at.is.null`)
+    .or(`processing_started_at.lt.${fiveMinAgo},processing_started_at.is.null`)
     .limit(5);
 
   if (!stuckDocs || stuckDocs.length === 0) {

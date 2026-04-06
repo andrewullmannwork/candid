@@ -66,50 +66,164 @@ function parseCostDescription(desc: string): {
 // ── Service mapping ─────────────────────────────────────────────────────────
 // Maps plan doc service names to service_catalog slugs
 const SERVICE_NAME_MAP: Record<string, { slug: string; place: string }[]> = {
+  // ── Office visits ───────────────────────────────────────────────────────
   "primary care physician's office visit": [{ slug: "pcp_visit", place: "pcp_office" }],
   "primary care physician's office": [{ slug: "pcp_visit", place: "pcp_office" }],
   "primary care physician": [{ slug: "pcp_visit", place: "pcp_office" }],
   "physician's services": [{ slug: "pcp_visit", place: "pcp_office" }],
+  "office visit": [{ slug: "pcp_visit", place: "pcp_office" }],
   "primary care physician virtual office visit": [{ slug: "telehealth", place: "virtual" }],
   "specialty care physician's office visit": [{ slug: "specialist_visit", place: "specialist_office" }],
   "specialty care physician's office": [{ slug: "specialist_visit", place: "specialist_office" }],
   "specialty care physician virtual office visit": [{ slug: "telehealth_specialist", place: "virtual" }],
   "consultant and referral physician's services": [{ slug: "specialist_visit", place: "specialist_office" }],
+  "second opinion": [{ slug: "second_opinion", place: "specialist_office" }],
+  "annual physical": [{ slug: "annual_physical", place: "pcp_office" }],
+  "well child visit": [{ slug: "well_child_visit", place: "pcp_office" }],
+  "well-child visit": [{ slug: "well_child_visit", place: "pcp_office" }],
+  "well child care": [{ slug: "well_child_visit", place: "pcp_office" }],
+  // ── Emergency / Urgent ──────────────────────────────────────────────────
   "hospital emergency room": [{ slug: "er_visit", place: "emergency" }],
   "emergency services": [{ slug: "er_visit", place: "emergency" }],
+  "emergency room": [{ slug: "er_visit", place: "emergency" }],
   "urgent care facility": [{ slug: "urgent_care", place: "outpatient_facility" }],
   "urgent care": [{ slug: "urgent_care", place: "outpatient_facility" }],
   "convenience care clinic": [{ slug: "urgent_care", place: "pcp_office" }],
   "air ambulance": [{ slug: "air_ambulance", place: "any" }],
   "ambulance": [{ slug: "ambulance", place: "any" }],
+  "ground ambulance": [{ slug: "ambulance", place: "any" }],
+  // ── Hospital / Facility ─────────────────────────────────────────────────
   "inpatient hospital": [{ slug: "inpatient_hospital", place: "inpatient_facility" }],
   "inpatient facility": [{ slug: "inpatient_hospital", place: "inpatient_facility" }],
   "semi-private room and board": [{ slug: "inpatient_hospital", place: "inpatient_facility" }],
+  "inpatient physician": [{ slug: "inpatient_physician", place: "inpatient_facility" }],
   "outpatient facility services": [{ slug: "outpatient_surgery", place: "outpatient_facility" }],
   "outpatient hospital facility": [{ slug: "outpatient_surgery", place: "outpatient_facility" }],
+  "outpatient surgery": [{ slug: "outpatient_surgery", place: "outpatient_facility" }],
+  "ambulatory surgical center": [{ slug: "outpatient_surgery", place: "outpatient_facility" }],
   "skilled nursing facility": [{ slug: "skilled_nursing", place: "inpatient_facility" }],
+  "skilled nursing": [{ slug: "skilled_nursing", place: "inpatient_facility" }],
+  // ── Preventive ──────────────────────────────────────────────────────────
   "routine preventive care": [{ slug: "preventive_care", place: "any" }],
+  "preventive care": [{ slug: "preventive_care", place: "any" }],
+  "preventive services": [{ slug: "preventive_care", place: "any" }],
   "immunizations": [{ slug: "immunizations", place: "any" }],
+  "vaccinations": [{ slug: "immunizations", place: "any" }],
   "mammograms": [{ slug: "mammogram", place: "any" }],
+  "mammography": [{ slug: "mammogram", place: "any" }],
+  "cancer screening": [{ slug: "cancer_screening", place: "any" }],
+  "colorectal cancer screening": [{ slug: "cancer_screening", place: "any" }],
+  "cervical cancer screening": [{ slug: "cancer_screening", place: "any" }],
+  "pap smear": [{ slug: "cancer_screening", place: "any" }],
+  "prostate screening": [{ slug: "cancer_screening", place: "any" }],
+  // ── Therapy / Rehab ─────────────────────────────────────────────────────
   "physical therapy": [{ slug: "physical_therapy", place: "any" }],
   "speech therapy": [{ slug: "speech_therapy", place: "any" }],
   "occupational therapy": [{ slug: "occupational_therapy", place: "any" }],
   "chiropractic": [{ slug: "chiropractic", place: "specialist_office" }],
+  "chiropractic care": [{ slug: "chiropractic", place: "specialist_office" }],
+  "cardiac rehabilitation": [{ slug: "cardiac_rehab", place: "any" }],
+  "outpatient cardiac rehabilitation": [{ slug: "cardiac_rehab", place: "any" }],
+  "pulmonary rehabilitation": [{ slug: "pulmonary_rehab", place: "any" }],
+  "pulmonary therapy": [{ slug: "pulmonary_rehab", place: "any" }],
+  "cognitive therapy": [{ slug: "cognitive_therapy", place: "any" }],
+  "cognitive behavioral therapy": [{ slug: "cognitive_therapy", place: "any" }],
+  "habilitation": [{ slug: "habilitation", place: "any" }],
+  "habilitative services": [{ slug: "habilitation", place: "any" }],
+  "acupuncture": [{ slug: "acupuncture", place: "specialist_office" }],
+  "applied behavior analysis": [{ slug: "aba_therapy", place: "any" }],
+  "aba therapy": [{ slug: "aba_therapy", place: "any" }],
+  // ── Mental Health ───────────────────────────────────────────────────────
   "mental health": [{ slug: "mental_health_outpatient", place: "any" }],
+  "mental health outpatient": [{ slug: "mental_health_outpatient", place: "any" }],
+  "mental health inpatient": [{ slug: "mental_health_inpatient", place: "inpatient_facility" }],
+  "inpatient mental health": [{ slug: "mental_health_inpatient", place: "inpatient_facility" }],
+  "partial hospitalization": [{ slug: "mental_health_partial", place: "outpatient_facility" }],
+  "intensive outpatient": [{ slug: "mental_health_iop", place: "outpatient_facility" }],
   "substance use disorder": [{ slug: "substance_abuse_outpatient", place: "any" }],
+  "substance abuse": [{ slug: "substance_abuse_outpatient", place: "any" }],
+  "substance abuse inpatient": [{ slug: "substance_abuse_inpatient", place: "inpatient_facility" }],
+  "chemical dependency": [{ slug: "substance_abuse_outpatient", place: "any" }],
+  "behavioral health": [{ slug: "mental_health_outpatient", place: "any" }],
+  // ── Maternity ───────────────────────────────────────────────────────────
   "maternity": [{ slug: "maternity_delivery", place: "inpatient_facility" }],
   "prenatal care": [{ slug: "maternity_prenatal", place: "any" }],
+  "prenatal visit": [{ slug: "maternity_prenatal", place: "any" }],
   "postnatal care": [{ slug: "maternity_postnatal", place: "any" }],
+  "delivery": [{ slug: "maternity_delivery", place: "inpatient_facility" }],
+  "delivery and newborn": [{ slug: "maternity_delivery", place: "inpatient_facility" }],
+  "newborn care": [{ slug: "newborn_care", place: "inpatient_facility" }],
+  // ── Lab / Imaging ───────────────────────────────────────────────────────
+  "laboratory services": [{ slug: "lab_work", place: "any" }],
+  "laboratory": [{ slug: "lab_work", place: "any" }],
+  "lab services": [{ slug: "lab_work", place: "any" }],
+  "diagnostic lab": [{ slug: "lab_work", place: "any" }],
+  "pathology": [{ slug: "lab_work", place: "any" }],
+  "blood work": [{ slug: "lab_work", place: "any" }],
+  "radiology services": [{ slug: "imaging_xray", place: "any" }],
+  "radiology": [{ slug: "imaging_xray", place: "any" }],
+  "x-ray": [{ slug: "imaging_xray", place: "any" }],
+  "diagnostic x-ray": [{ slug: "imaging_xray", place: "any" }],
+  "advanced radiological imaging": [{ slug: "imaging_advanced", place: "any" }],
+  "advanced imaging": [{ slug: "imaging_advanced", place: "any" }],
+  "mri": [{ slug: "imaging_advanced", place: "any" }],
+  "cat scan": [{ slug: "imaging_advanced", place: "any" }],
+  "ct scan": [{ slug: "imaging_advanced", place: "any" }],
+  "pet scan": [{ slug: "imaging_advanced", place: "any" }],
+  "diagnostic testing": [{ slug: "diagnostic_test", place: "any" }],
+  "diagnostic test": [{ slug: "diagnostic_test", place: "any" }],
+  // ── DME / Prosthetics ───────────────────────────────────────────────────
   "durable medical equipment": [{ slug: "dme", place: "home" }],
   "prosthetic devices": [{ slug: "prosthetics", place: "any" }],
+  "prosthetics": [{ slug: "prosthetics", place: "any" }],
+  "orthotic devices": [{ slug: "orthotics", place: "any" }],
   "hearing aids": [{ slug: "hearing_aids", place: "any" }],
+  "cochlear implant": [{ slug: "hearing_aids", place: "any" }],
+  // ── Other Services ──────────────────────────────────────────────────────
   "hospice": [{ slug: "hospice", place: "any" }],
+  "hospice care": [{ slug: "hospice", place: "any" }],
   "home health care": [{ slug: "home_health", place: "home" }],
-  "laboratory services": [{ slug: "lab_work", place: "any" }],
-  "radiology services": [{ slug: "imaging_xray", place: "any" }],
-  "advanced radiological imaging": [{ slug: "imaging_advanced", place: "any" }],
-  "outpatient cardiac rehabilitation": [{ slug: "cardiac_rehab", place: "any" }],
+  "home health": [{ slug: "home_health", place: "home" }],
   "organ transplant": [{ slug: "organ_transplant", place: "inpatient_facility" }],
+  "transplant": [{ slug: "organ_transplant", place: "inpatient_facility" }],
+  "allergy testing": [{ slug: "allergy_treatment", place: "specialist_office" }],
+  "allergy treatment": [{ slug: "allergy_treatment", place: "specialist_office" }],
+  "allergy serum": [{ slug: "allergy_treatment", place: "specialist_office" }],
+  "allergy injections": [{ slug: "allergy_treatment", place: "specialist_office" }],
+  "nutritional counseling": [{ slug: "nutritional_counseling", place: "any" }],
+  "nutrition counseling": [{ slug: "nutritional_counseling", place: "any" }],
+  "dietitian": [{ slug: "nutritional_counseling", place: "any" }],
+  "genetic counseling": [{ slug: "genetic_counseling", place: "any" }],
+  "genetic testing": [{ slug: "genetic_testing", place: "any" }],
+  "dialysis": [{ slug: "dialysis", place: "outpatient_facility" }],
+  "kidney dialysis": [{ slug: "dialysis", place: "outpatient_facility" }],
+  "bariatric surgery": [{ slug: "bariatric_surgery", place: "inpatient_facility" }],
+  "weight loss surgery": [{ slug: "bariatric_surgery", place: "inpatient_facility" }],
+  "infertility": [{ slug: "infertility_treatment", place: "specialist_office" }],
+  "fertility treatment": [{ slug: "infertility_treatment", place: "specialist_office" }],
+  "sterilization": [{ slug: "sterilization", place: "outpatient_facility" }],
+  "temporomandibular joint": [{ slug: "tmj_treatment", place: "specialist_office" }],
+  "tmj": [{ slug: "tmj_treatment", place: "specialist_office" }],
+  "sleep study": [{ slug: "sleep_study", place: "outpatient_facility" }],
+  "sleep disorder": [{ slug: "sleep_study", place: "outpatient_facility" }],
+  "dental accident": [{ slug: "dental_injury", place: "any" }],
+  "dental injury": [{ slug: "dental_injury", place: "any" }],
+  "children's dental": [{ slug: "childrens_dental", place: "any" }],
+  "pediatric dental": [{ slug: "childrens_dental", place: "any" }],
+  "children's eye exam": [{ slug: "childrens_eye_exam", place: "any" }],
+  "pediatric vision": [{ slug: "childrens_eye_exam", place: "any" }],
+  "children's glasses": [{ slug: "childrens_glasses", place: "any" }],
+  "vision exam": [{ slug: "vision_exam", place: "specialist_office" }],
+  "eye exam": [{ slug: "vision_exam", place: "specialist_office" }],
+  "bereavement counseling": [{ slug: "bereavement_counseling", place: "any" }],
+  "medical pharmaceuticals": [{ slug: "medical_pharmaceuticals", place: "any" }],
+  "infusion therapy": [{ slug: "infusion_therapy", place: "outpatient_facility" }],
+  "chemotherapy": [{ slug: "chemotherapy", place: "outpatient_facility" }],
+  "radiation therapy": [{ slug: "radiation_therapy", place: "outpatient_facility" }],
+  // ── Telehealth ──────────────────────────────────────────────────────────
+  "telehealth": [{ slug: "telehealth", place: "virtual" }],
+  "virtual visit": [{ slug: "telehealth", place: "virtual" }],
+  "telemedicine": [{ slug: "telehealth", place: "virtual" }],
   "mdlive urgent care": [{ slug: "telehealth", place: "virtual" }],
   "mdlive primary care": [{ slug: "telehealth", place: "virtual" }],
   "mdlive specialty care": [{ slug: "telehealth_specialist", place: "virtual" }],
@@ -133,12 +247,22 @@ function matchServiceSlug(serviceName: string): { slug: string; place: string } 
     return { slug: "generic_rx", place: "any" };
   }
 
-  if (/lab/i.test(lower)) return { slug: "lab_work", place: "any" };
+  if (/lab/i.test(lower) && !/collab|labor /i.test(lower)) return { slug: "lab_work", place: "any" };
   if (/x.?ray|radiol/i.test(lower)) return { slug: "imaging_xray", place: "any" };
-  if (/mri|mra|cat\s*scan|pet\s*scan|ct/i.test(lower)) return { slug: "imaging_advanced", place: "any" };
+  if (/mri|mra|cat\s*scan|pet\s*scan|ct\s*scan/i.test(lower)) return { slug: "imaging_advanced", place: "any" };
+  if (/physical\s*therap/i.test(lower)) return { slug: "physical_therapy", place: "any" };
+  if (/speech\s*therap/i.test(lower)) return { slug: "speech_therapy", place: "any" };
+  if (/occupational\s*therap/i.test(lower)) return { slug: "occupational_therapy", place: "any" };
   if (/therap/i.test(lower)) return { slug: "physical_therapy", place: "any" };
   if (/surg/i.test(lower)) return { slug: "outpatient_surgery", place: "any" };
   if (/pregnan|matern|deliver|birth/i.test(lower)) return { slug: "maternity_delivery", place: "inpatient_facility" };
+  if (/dialysis/i.test(lower)) return { slug: "dialysis", place: "outpatient_facility" };
+  if (/hospice/i.test(lower)) return { slug: "hospice", place: "any" };
+  if (/home\s*health/i.test(lower)) return { slug: "home_health", place: "home" };
+  if (/allergy/i.test(lower)) return { slug: "allergy_treatment", place: "specialist_office" };
+  if (/infusion/i.test(lower)) return { slug: "infusion_therapy", place: "outpatient_facility" };
+  if (/chemo/i.test(lower)) return { slug: "chemotherapy", place: "outpatient_facility" };
+  if (/radiation\s*therap/i.test(lower)) return { slug: "radiation_therapy", place: "outpatient_facility" };
 
   // No known mapping — generate a slug from the service name
   const generatedSlug = lower
@@ -429,9 +553,16 @@ export function parsePlanDocument(text: string): PlanDocParseResult {
     if (!line) continue;
 
     // Check if this line contains a cost description
-    // Exclude standalone "100%" — too ambiguous (matches preventive, allergy serum, etc.)
-    // Those are handled by matching "$X copay, then 100%" or "Plan deductible, then 90%"
-    const isCostLine = /^\$\d+.*copay|^Plan\s+deductible|^No\s+charge\s+after/i.test(line);
+    const isCostLine =
+      /^\$\d+.*copay/i.test(line) ||
+      /^Plan\s+deductible/i.test(line) ||
+      /^No\s+charge\s+after/i.test(line) ||
+      /^\$\d+.*per\s+(?:day|visit|admission|session)/i.test(line) ||
+      /^(?:Covered|Included)\s+in\s+full/i.test(line) ||
+      /^No\s+charge/i.test(line) ||
+      /^\d+%\s+(?:after|of)/i.test(line) ||
+      /^Deductible,?\s+then\s+\d+/i.test(line) ||
+      /^(?:In-Network|IN-NETWORK)[:\s]+\$\d/i.test(line);
     if (!isCostLine) continue;
 
     // Look backward for the service name (typically 1-5 lines before)
@@ -522,6 +653,64 @@ export function parsePlanDocument(text: string): PlanDocParseResult {
       stepTherapyRequired: null,
       notes: null,
       confidence: 0.7,
+    });
+  }
+
+  // ── Second pass: section-based service discovery ────────────────────────
+  // Catches services mentioned in benefit sections that weren't found by
+  // the cost-line scanner (e.g., bullet lists, tables, coverage summaries).
+  // We look for known service names anywhere in the text and create entries
+  // with reduced confidence if we can't extract cost details.
+  const textLower = text.toLowerCase();
+  for (const [name, mappings] of Object.entries(SERVICE_NAME_MAP)) {
+    const mapping = mappings[0];
+    const key = `${mapping.slug}:${mapping.place}`;
+    if (seenKeys.has(key)) continue;
+
+    // Check if this service name appears in the document
+    if (!textLower.includes(name)) continue;
+
+    // Find the context around the mention to try to extract cost info
+    const idx = textLower.indexOf(name);
+    const contextStart = Math.max(0, idx - 200);
+    const contextEnd = Math.min(text.length, idx + name.length + 300);
+    const context = text.slice(contextStart, contextEnd);
+
+    // Try to extract cost from context
+    const costMatch = context.match(/\$\s*([\d,]+(?:\.\d{2})?)\s*(?:per|copay)/i)
+      || context.match(/(?:plan\s+deductible|deductible),?\s+then\s+(\d+)\s*%/i)
+      || context.match(/(\d+)\s*%\s+(?:coinsurance|after)/i);
+
+    const parsed = costMatch ? parseCostDescription(costMatch[0]) : null;
+
+    // Check for coverage indicators
+    const isCovered = !/not\s+covered|excluded/i.test(context);
+
+    seenKeys.add(key);
+    services.push({
+      serviceSlug: mapping.slug,
+      placeOfService: mapping.place,
+      inCopay: parsed?.copay ?? null,
+      inCoinsurance: parsed?.coinsurance ?? null,
+      inDeductibleApplies: parsed?.deductibleApplies ?? null,
+      inCopayWaiverCondition: parsed?.copayWaiverCondition ?? null,
+      inCostDescription: costMatch ? costMatch[0].trim() : (isCovered ? "See plan document" : "Not covered"),
+      outCopay: null,
+      outCoinsurance: null,
+      outDeductibleApplies: null,
+      outCostDescription: "",
+      oonPaidAtInNetwork: false,
+      annualLimit: null,
+      annualLimitValue: null,
+      priorAuthRequired: /prior\s+auth|pre-?cert/i.test(context) ? true : null,
+      penaltyNoPrecert: null,
+      covered: isCovered,
+      coverageConditions: null,
+      supplyLimitDays: null,
+      homeDeliveryCopay: null,
+      stepTherapyRequired: null,
+      notes: parsed ? null : "Cost details not extracted — refer to plan document",
+      confidence: parsed ? 0.6 : 0.4,
     });
   }
 

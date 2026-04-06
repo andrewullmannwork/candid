@@ -110,7 +110,7 @@ async function sendSlackWebhook(
               {
                 type: "button",
                 text: { type: "plain_text", text: "Review in Admin Panel" },
-                url: `${APP_URL}/admin/documents?review=${documentId}`,
+                url: `${APP_URL}/admin/documents/review`,
                 style: "primary",
               },
             ],
@@ -185,7 +185,7 @@ export async function notifyUncategorizedServices(
               {
                 type: "button",
                 text: { type: "plain_text", text: "Review in Admin" },
-                url: `${APP_URL}/admin/pipeline`,
+                url: `${APP_URL}/admin/pipeline#services`,
               },
             ],
           },

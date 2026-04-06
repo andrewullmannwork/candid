@@ -44,6 +44,7 @@ interface DocumentRow {
   created_at: string;
   processing_completed_pages?: number | null;
   processing_total_pages?: number | null;
+  processing_step?: string | null;
 }
 
 // ─── Main Dashboard ─────────────────────────────────────────────────────────
@@ -120,26 +121,39 @@ export default function DashboardPage() {
     loadDashboard();
 
     // Poll for updates while documents are processing
+    // Also triggers the next processing step if the chain stalled
     const pollInterval = setInterval(async () => {
       if (!user) return;
       const supabase = createBrowserClient();
       const { data } = await supabase
         .from("documents")
-        .select("id, file_name, doc_type, status, created_at, processing_completed_pages, processing_total_pages")
+        .select("id, file_name, doc_type, status, created_at, processing_completed_pages, processing_total_pages, processing_step")
         .eq("user_id", user.userId)
         .order("created_at", { ascending: false });
       if (data) {
         setDocuments(data);
-        const hasProcessing = data.some(
+        const processingDocs = data.filter(
           (d) => (d.status === "processing" || d.status === "queued")
             && (d.doc_type === "sbc" || d.doc_type === "plan_document")
         );
-        // If processing just completed, reload the full dashboard to refresh plan data
-        if (!hasProcessing && data.some(d => d.status === "processed")) {
+        if (processingDocs.length > 0) {
+          // Re-trigger processing for docs that have a pending step (not a "working_" step)
+          for (const doc of processingDocs) {
+            const step = (doc as { processing_step?: string }).processing_step;
+            if (!step || !step.startsWith("working_")) {
+              fetch("/api/documents/process-chunk", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ documentId: doc.id }),
+              }).catch(() => {});
+            }
+          }
+        } else if (data.some(d => d.status === "processed")) {
+          // Processing completed — reload full dashboard to refresh plan data
           loadDashboard();
         }
       }
-    }, 15000);
+    }, 10000);
 
     return () => clearInterval(pollInterval);
   }, [user]);

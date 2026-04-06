@@ -2,8 +2,8 @@
  * POST /api/documents/process-chunk
  *
  * Chunked document processing for large PDFs that exceed Vercel's 10s timeout.
- * Each invocation does ONE unit of work (~5-8s), saves progress, then chains
- * to itself for the next step via non-blocking fetch.
+ * Each invocation does ONE unit of work (~5-8s), saves progress to DB, and returns.
+ * The next step is triggered by dashboard polling or the daily safety-net cron.
  *
  * State machine:
  *   queued/null      → download, count pages, OCR chunk 0    → ocr_chunk_1
@@ -96,8 +96,7 @@ export async function POST(req: NextRequest) {
         processing_ocr_text: ocrResult.text,
       }).eq("id", documentId);
 
-      chainNext(req, documentId);
-      return NextResponse.json({ step: nextStep, totalPages, completedPages: Math.min(CHUNK_SIZE, totalPages) });
+      return NextResponse.json({ step: nextStep, totalPages, completedPages: Math.min(CHUNK_SIZE, totalPages), continue: true });
     }
 
     // ── STEP: OCR_CHUNK_N — OCR the Nth chunk ─────────────────────────────
@@ -128,10 +127,8 @@ export async function POST(req: NextRequest) {
       const chunks = await splitPDF(buffer, CHUNK_SIZE);
 
       if (chunkIndex >= chunks.length) {
-        // All chunks done, move to classification
         await supabase.from("documents").update({ processing_step: "classifying" }).eq("id", documentId);
-        chainNext(req, documentId);
-        return NextResponse.json({ step: "classifying" });
+        return NextResponse.json({ step: "classifying", continue: true });
       }
 
       // OCR this chunk
@@ -150,8 +147,7 @@ export async function POST(req: NextRequest) {
         processing_ocr_text: (doc.processing_ocr_text || "") + ocrResult.text,
       }).eq("id", documentId);
 
-      chainNext(req, documentId);
-      return NextResponse.json({ step: nextStep, completedPages });
+      return NextResponse.json({ step: nextStep, completedPages, continue: true });
     }
 
     // ── STEP: CLASSIFYING — run classifier on full text ───────────────────
@@ -182,8 +178,7 @@ export async function POST(req: NextRequest) {
         type_mismatch: classification.mismatch,
       }).eq("id", documentId);
 
-      chainNext(req, documentId);
-      return NextResponse.json({ step: "parsing", classification: classification.classifiedType });
+      return NextResponse.json({ step: "parsing", classification: classification.classifiedType, continue: true });
     }
 
     // ── STEP: PARSING — parse plan data and write to DB ───────────────────
@@ -218,27 +213,29 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: result.error }, { status: 500 });
       }
 
-      // processPlanDocumentData already sets status to "processed" and cleans up processing columns
-      return NextResponse.json({ step: "done", ...result });
+      return NextResponse.json({ step: "done", continue: false, ...result });
     }
 
-    // Unknown or working state — might be a duplicate invocation
+    // Working state — a step is in progress, check if it's stale
+    if (step.startsWith("working_")) {
+      const startedAt = doc.processing_started_at ? new Date(doc.processing_started_at).getTime() : 0;
+      const staleMins = (Date.now() - startedAt) / 60000;
+      if (staleMins > 2) {
+        // Stale working state — reset to the step it was working on
+        const originalStep = step.replace("working_", "");
+        await supabase.from("documents").update({
+          processing_step: originalStep === "init" ? null : originalStep,
+          status: originalStep === "init" ? "queued" : "processing",
+        }).eq("id", documentId);
+        return NextResponse.json({ recovered: true, step: originalStep });
+      }
+      return NextResponse.json({ skip: true, reason: `Step ${step} in progress` });
+    }
+
     return NextResponse.json({ skip: true, reason: `Unknown step: ${step}` });
 
   } catch (error) {
     console.error("[process-chunk] Error:", error);
     return NextResponse.json({ error: "Processing chunk failed" }, { status: 500 });
   }
-}
-
-/** Fire non-blocking self-chain to process the next step */
-function chainNext(req: NextRequest, documentId: string) {
-  const url = new URL("/api/documents/process-chunk", req.url);
-  fetch(url.toString(), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ documentId }),
-  }).catch((err) => {
-    console.error("[process-chunk] Chain failed:", err);
-  });
 }
