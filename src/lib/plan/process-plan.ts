@@ -108,24 +108,34 @@ export async function processPlanDocumentData(
       };
     }
 
+    // Link new plan to user's profile
+    await supabase
+      .from("profiles")
+      .update({ active_insurance_plan_id: newPlan.id })
+      .eq("user_id", doc.user_id);
+
     // Create plan_covered_services rows
     let servicesCreated = 0;
     if (parseResult.services.length > 0) {
-      const slugs = [...new Set(parseResult.services.map((s) => s.serviceSlug))];
-      const { data: serviceCatalog } = await supabase
-        .from("service_catalog")
-        .select("id, slug")
-        .in("slug", slugs);
+      const allSlugs = [...new Set(parseResult.services.map((s) => s.serviceSlug))];
 
-      const slugToId = new Map(serviceCatalog?.map((s) => [s.slug, s.id]) || []);
+      // Auto-create any service_catalog entries that don't exist yet
+      // Query in batches to avoid Supabase URL length limits
+      const BATCH_SIZE = 50;
+      const slugToId = new Map<string, string>();
 
-      // Auto-create missing service_catalog entries
-      const knownSlugs = new Set(slugToId.keys());
-      const newSlugs = [...new Set(
-        parseResult.services
-          .map((s) => s.serviceSlug)
-          .filter((slug) => !knownSlugs.has(slug))
-      )];
+      for (let i = 0; i < allSlugs.length; i += BATCH_SIZE) {
+        const batch = allSlugs.slice(i, i + BATCH_SIZE);
+        const { data: existing } = await supabase
+          .from("service_catalog")
+          .select("id, slug")
+          .in("slug", batch);
+        for (const s of existing || []) {
+          slugToId.set(s.slug, s.id);
+        }
+      }
+
+      const newSlugs = allSlugs.filter((slug) => !slugToId.has(slug));
 
       if (newSlugs.length > 0) {
         const newEntries = newSlugs.map((slug) => ({
@@ -136,15 +146,19 @@ export async function processPlanDocumentData(
           is_preventive_eligible: false,
         }));
 
-        const { data: created } = await supabase
-          .from("service_catalog")
-          .upsert(newEntries, { onConflict: "slug" })
-          .select("id, slug");
-
-        for (const entry of created || []) {
-          slugToId.set(entry.slug, entry.id);
+        // Insert in batches
+        for (let i = 0; i < newEntries.length; i += BATCH_SIZE) {
+          const batch = newEntries.slice(i, i + BATCH_SIZE);
+          const { data: created } = await supabase
+            .from("service_catalog")
+            .upsert(batch, { onConflict: "slug" })
+            .select("id, slug");
+          for (const entry of created || []) {
+            slugToId.set(entry.slug, entry.id);
+          }
         }
-        console.log(`[process-plan] Auto-created ${created?.length || 0} service_catalog entries: ${newSlugs.slice(0, 5).join(", ")}${newSlugs.length > 5 ? "..." : ""}`);
+
+        console.log(`[process-plan] Auto-created ${newSlugs.length} service_catalog entries: ${newSlugs.slice(0, 5).join(", ")}${newSlugs.length > 5 ? "..." : ""}`);
 
         const otherSlugs = newEntries.filter(e => e.category === "other").map(e => e.slug);
         if (otherSlugs.length > 0) {
@@ -156,6 +170,8 @@ export async function processPlanDocumentData(
           }
         }
       }
+
+      console.log(`[process-plan] slugToId has ${slugToId.size} entries for ${allSlugs.length} service slugs`);
 
       // Deduplicate: keep highest-confidence per (slug, place_of_service)
       const deduped = new Map<string, typeof parseResult.services[0]>();
