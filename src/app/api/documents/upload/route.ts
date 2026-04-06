@@ -184,8 +184,9 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // MEDIUM confidence — queue for admin review + notify
-  if (classification.confidence >= CONFIDENCE_LOW) {
+  // MEDIUM confidence OR any recognized healthcare type — queue for admin review
+  // Only auto-reject documents classified as "other" (no healthcare signals at all)
+  if (classification.confidence >= CONFIDENCE_LOW || classification.classifiedType !== "other") {
     await supabase.from("documents").update({ status: "pending_review" }).eq("id", documentId);
 
     // Notify admin (email + Slack) and user (email) — non-blocking
@@ -224,7 +225,7 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // LOW confidence — auto-decline
+  // No healthcare signals at all — auto-decline
   await supabase.from("documents").update({ status: "rejected" }).eq("id", documentId);
   console.log(`[upload] Auto-rejected: ${file.name} (${Math.round(classification.confidence * 100)}% as ${classification.classifiedType})`);
 
