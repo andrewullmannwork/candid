@@ -63,13 +63,38 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const { table, select = "*", filters, order, limit = 100 } = body;
+  const { table, select = "*", filters, order, limit = 100, insert } = body;
 
   if (!ALLOWED_TABLES.includes(table as AllowedTable)) {
     return NextResponse.json({ error: "Table not allowed" }, { status: 400 });
   }
 
   const supabase = createServerClient();
+
+  // INSERT mode
+  if (insert) {
+    const { data: insertedData, error: insertError } = await supabase
+      .from(table)
+      .insert(insert)
+      .select("*")
+      .single();
+
+    if (insertError) {
+      return NextResponse.json({ error: insertError.message }, { status: 500 });
+    }
+
+    await logAdminAction({
+      adminUserId: admin.adminUserId,
+      adminEmail: admin.adminEmail,
+      action: "insert_record",
+      targetTable: table,
+      details: `Inserted row into ${table}`,
+      ipAddress: req.headers.get("x-forwarded-for") || req.headers.get("x-real-ip"),
+    });
+
+    return NextResponse.json({ data: insertedData });
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let q: any = supabase.from(table).select(select);
 
@@ -143,6 +168,43 @@ export async function PATCH(req: NextRequest) {
     action: "update_record",
     targetTable: table,
     details: `Updated row ${id} in ${table}`,
+    ipAddress: req.headers.get("x-forwarded-for") || req.headers.get("x-real-ip"),
+  });
+
+  return NextResponse.json({ success: true });
+}
+
+/**
+ * DELETE /api/admin/query
+ * Body: { table, id }
+ * Deletes a row by id using service role.
+ */
+export async function DELETE(req: NextRequest) {
+  const admin = await verifyAdmin(req);
+  if (!admin.authorized) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+  }
+
+  const body = await req.json();
+  const { table, id } = body;
+
+  if (!ALLOWED_TABLES.includes(table as AllowedTable)) {
+    return NextResponse.json({ error: "Table not allowed" }, { status: 400 });
+  }
+
+  const supabase = createServerClient();
+  const { error } = await supabase.from(table).delete().eq("id", id);
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  await logAdminAction({
+    adminUserId: admin.adminUserId,
+    adminEmail: admin.adminEmail,
+    action: "delete_record",
+    targetTable: table,
+    details: `Deleted row ${id} from ${table}`,
     ipAddress: req.headers.get("x-forwarded-for") || req.headers.get("x-real-ip"),
   });
 

@@ -99,7 +99,10 @@ export default function PipelinePage() {
   const [services, setServices] = useState<ServiceCatalogItem[]>([]);
   const [serviceFilter, setServiceFilter] = useState<"all" | "other">("other");
   const [loading, setLoading] = useState(true);
-  const { query, update } = useAdminQuery();
+  const { query, update, insert, deleteRecord } = useAdminQuery();
+  const [addingService, setAddingService] = useState(false);
+  const [newServiceName, setNewServiceName] = useState("");
+  const [newServiceCategory, setNewServiceCategory] = useState("other");
   const [processingStats, setProcessingStats] = useState<ProcessingStats | null>(null);
   const [processingAction, setProcessingAction] = useState(false);
 
@@ -467,6 +470,74 @@ export default function PipelinePage() {
               All Services ({services.length})
             </button>
           </div>
+          {/* Add Service */}
+          {addingService ? (
+            <div className="mb-4 p-4 bg-white border border-gray-200 rounded-xl flex items-end gap-3">
+              <div className="flex-1">
+                <label className="text-xs font-medium text-gray-500 mb-1 block">Service Name</label>
+                <input
+                  type="text"
+                  value={newServiceName}
+                  onChange={(e) => setNewServiceName(e.target.value)}
+                  placeholder="e.g. Chiropractic Care"
+                  className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-500 mb-1 block">Category</label>
+                <select
+                  value={newServiceCategory}
+                  onChange={(e) => setNewServiceCategory(e.target.value)}
+                  className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  {SERVICE_CATEGORIES.map((cat) => (
+                    <option key={cat} value={cat}>{CATEGORY_LABELS[cat]}</option>
+                  ))}
+                </select>
+              </div>
+              <button
+                onClick={async () => {
+                  if (!newServiceName.trim()) return;
+                  const slug = newServiceName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+                  const entry = { slug, name: newServiceName.trim(), category: newServiceCategory, description: "", is_preventive_eligible: false };
+                  const existing = await query({ table: "service_catalog", filters: [{ column: "slug", op: "eq", value: slug }] });
+                  if (existing && existing.length > 0) {
+                    alert(`Service "${slug}" already exists`);
+                    return;
+                  }
+                  const created = await insert("service_catalog", entry);
+                  if (created) {
+                    setServices((prev) => [...prev, created]);
+                  } else {
+                    loadData();
+                  }
+                  setNewServiceName("");
+                  setNewServiceCategory("other");
+                  setAddingService(false);
+                }}
+                className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+              >
+                Add
+              </button>
+              <button
+                onClick={() => { setAddingService(false); setNewServiceName(""); }}
+                className="px-4 py-2 text-sm text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <div className="mb-4">
+              <button
+                onClick={() => setAddingService(true)}
+                className="px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+              >
+                + Add Service
+              </button>
+            </div>
+          )}
+
           <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 border-b">
@@ -476,6 +547,7 @@ export default function PipelinePage() {
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Category</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Preventive</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Added</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-500">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -524,6 +596,18 @@ export default function PipelinePage() {
                       </td>
                       <td className="px-4 py-3 text-xs text-gray-500">
                         {new Date(svc.created_at).toLocaleDateString()}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          onClick={async () => {
+                            if (!confirm(`Delete "${svc.name}"? This cannot be undone.`)) return;
+                            await deleteRecord("service_catalog", svc.id);
+                            setServices((prev) => prev.filter((s) => s.id !== svc.id));
+                          }}
+                          className="px-2 py-1 text-xs text-red-600 border border-red-200 rounded hover:bg-red-50"
+                        >
+                          Delete
+                        </button>
                       </td>
                     </tr>
                   ))}
