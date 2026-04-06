@@ -77,6 +77,13 @@ function UploadForm() {
     outOopMax?: number;
     servicesExtracted?: number;
   } | null>(null);
+  const [documentId, setDocumentId] = useState<string | null>(null);
+  const [processingProgress, setProcessingProgress] = useState<{
+    status: string;
+    step: string | null;
+    completedPages: number;
+    totalPages: number;
+  } | null>(null);
 
   // Consent state — inline, not blocking
   const { hasConsented, loading: consentLoading, grantConsent } = useConsent("health_data_upload");
@@ -85,6 +92,49 @@ function UploadForm() {
   const [consentSubmitting, setConsentSubmitting] = useState(false);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const consentDoc = getConsentDocument("health_data_upload");
+
+  // Poll processing status and trigger chunks for large documents
+  useEffect(() => {
+    if (!documentId || uploadStatus !== "auto_processed") return;
+
+    let active = true;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/documents/status?id=${documentId}`);
+        if (!res.ok || !active) return;
+        const data = await res.json();
+        setProcessingProgress(data);
+
+        if (data.status === "processed") {
+          // Done! Redirect to plan page after a brief delay
+          active = false;
+          setTimeout(() => { window.location.href = "/plan"; }, 1500);
+          return;
+        }
+
+        if (data.status === "error") {
+          active = false;
+          return;
+        }
+
+        // If needs triggering, call the trigger endpoint
+        if (data.needsTrigger) {
+          await fetch("/api/documents/status", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ documentId }),
+          });
+        }
+      } catch {
+        // Silently retry on next interval
+      }
+    };
+
+    // Start immediately, then poll every 4 seconds
+    poll();
+    const interval = setInterval(poll, 4000);
+    return () => { active = false; clearInterval(interval); };
+  }, [documentId, uploadStatus]);
 
   // Check if insurance profile is filled
   useEffect(() => {
@@ -143,6 +193,11 @@ function UploadForm() {
 
         const uploadResult = await res.json();
 
+        // Save document ID for processing status polling
+        if (uploadResult.documentId) {
+          setDocumentId(uploadResult.documentId);
+        }
+
         // Backend now handles confidence-gated processing automatically
         if (uploadResult.classification) {
           setClassificationResult(uploadResult.classification);
@@ -151,7 +206,7 @@ function UploadForm() {
         // Handle different processing outcomes
         if (uploadResult.autoProcessed) {
           // High confidence — processing triggered automatically
-          // The process route will handle SBC parsing in the background
+          // Client-side polling will drive chunk processing and redirect when done
           setUploadStatus("auto_processed");
         } else if (uploadResult.status === "pending_review") {
           // Medium confidence — queued for admin review
@@ -293,13 +348,52 @@ function UploadForm() {
             </div>
           )}
 
-          {/* Auto-processed success message */}
+          {/* Auto-processed — live progress */}
           {isAutoProcessed && (
             <div className="mt-3 text-left bg-green-100 rounded-xl p-3">
-              <p className="text-xs font-semibold text-green-800">Your document is being processed now</p>
-              <p className="text-xs text-green-700 mt-1">
-                Your benefits will be updated in a moment. Head to your dashboard to see the results.
-              </p>
+              {processingProgress?.status === "processed" ? (
+                <>
+                  <p className="text-xs font-semibold text-green-800">Processing complete</p>
+                  <p className="text-xs text-green-700 mt-1">Redirecting to your benefits...</p>
+                </>
+              ) : processingProgress?.status === "error" ? (
+                <>
+                  <p className="text-xs font-semibold text-red-800">Processing encountered an error</p>
+                  <p className="text-xs text-red-700 mt-1">Our team has been notified. Please try again or contact support.</p>
+                </>
+              ) : (
+                <>
+                  <p className="text-xs font-semibold text-green-800">Analyzing your document...</p>
+                  {processingProgress && processingProgress.totalPages > 0 && (
+                    <div className="mt-2">
+                      <div className="flex justify-between text-[10px] text-green-700 mb-1">
+                        <span>
+                          {processingProgress.step?.startsWith("ocr_chunk") || processingProgress.step?.startsWith("working_ocr")
+                            ? "Reading pages..."
+                            : processingProgress.step === "classifying" || processingProgress.step === "working_classifying"
+                            ? "Classifying document..."
+                            : processingProgress.step === "parsing" || processingProgress.step === "working_parsing"
+                            ? "Extracting benefits..."
+                            : "Starting..."}
+                        </span>
+                        <span>{processingProgress.completedPages} / {processingProgress.totalPages} pages</span>
+                      </div>
+                      <div className="w-full h-1.5 bg-green-200 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-green-600 rounded-full transition-all duration-500"
+                          style={{ width: `${Math.max(5, (processingProgress.completedPages / processingProgress.totalPages) * 100)}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                  {!processingProgress && (
+                    <div className="mt-2 flex items-center gap-2">
+                      <div className="w-3 h-3 border-2 border-green-600 border-t-transparent rounded-full animate-spin" />
+                      <span className="text-xs text-green-700">Starting analysis...</span>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
 
