@@ -19,6 +19,7 @@ import { splitPDF, estimatePageCount } from "@/lib/ocr/document-ai";
 import { classifyDocument } from "@/lib/classifier";
 import { processPlanDocumentData } from "@/lib/plan/process-plan";
 import { recordProcessingUsage } from "@/lib/config/processing-usage";
+import { enqueueChunk } from "@/lib/queue/qstash";
 
 const CHUNK_SIZE = 15; // pages per OCR chunk
 
@@ -96,6 +97,10 @@ export async function POST(req: NextRequest) {
         processing_ocr_text: ocrResult.text,
       }).eq("id", documentId);
 
+      // Chain next step via QStash (guaranteed delivery with retries)
+      const baseUrl = new URL(req.url).origin;
+      await enqueueChunk(documentId, baseUrl);
+
       return NextResponse.json({ step: nextStep, totalPages, completedPages: Math.min(CHUNK_SIZE, totalPages), continue: true });
     }
 
@@ -147,6 +152,9 @@ export async function POST(req: NextRequest) {
         processing_ocr_text: (doc.processing_ocr_text || "") + ocrResult.text,
       }).eq("id", documentId);
 
+      const baseUrl = new URL(req.url).origin;
+      await enqueueChunk(documentId, baseUrl);
+
       return NextResponse.json({ step: nextStep, completedPages, continue: true });
     }
 
@@ -177,6 +185,9 @@ export async function POST(req: NextRequest) {
         classification_signals: classification.signals,
         type_mismatch: classification.mismatch,
       }).eq("id", documentId);
+
+      const baseUrl = new URL(req.url).origin;
+      await enqueueChunk(documentId, baseUrl);
 
       return NextResponse.json({ step: "parsing", classification: classification.classifiedType, continue: true });
     }
@@ -227,6 +238,9 @@ export async function POST(req: NextRequest) {
           processing_step: originalStep === "init" ? null : originalStep,
           status: originalStep === "init" ? "queued" : "processing",
         }).eq("id", documentId);
+        // Re-enqueue recovered step
+        const baseUrl = new URL(req.url).origin;
+        await enqueueChunk(documentId, baseUrl);
         return NextResponse.json({ recovered: true, step: originalStep });
       }
       return NextResponse.json({ skip: true, reason: `Step ${step} in progress` });

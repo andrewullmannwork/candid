@@ -4,6 +4,7 @@ import { createServerClient } from "@/lib/supabase/server";
 import { FLAGS } from "@/lib/config/feature-flags";
 import { quickClassify } from "@/lib/classifier/quick-classify";
 import { notifyAdminForReview, notifyUserPendingReview } from "@/lib/notifications";
+import { enqueueChunk } from "@/lib/queue/qstash";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -155,12 +156,16 @@ export async function POST(req: NextRequest) {
 
       if (isLargeDoc) {
         // Large documents: use chunked processing to stay within Vercel 10s timeout.
-        // We return the documentId immediately — the client polls /api/documents/status
-        // and triggers /api/documents/process-chunk as needed.
+        // QStash guarantees delivery with retries — no client polling dependency.
         await supabase.from("documents").update({
           status: "queued",
           processing_total_pages: classification.pageCount,
         }).eq("id", documentId);
+
+        const baseUrl = req.headers.get("x-forwarded-proto") && req.headers.get("x-forwarded-host")
+          ? `${req.headers.get("x-forwarded-proto")}://${req.headers.get("x-forwarded-host")}`
+          : new URL(req.url).origin;
+        await enqueueChunk(documentId, baseUrl);
       } else {
         // Small documents: process directly in a single call
         await supabase.from("documents").update({ status: "processing" }).eq("id", documentId);
