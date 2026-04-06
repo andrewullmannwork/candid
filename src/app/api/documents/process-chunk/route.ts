@@ -60,7 +60,7 @@ export async function POST(req: NextRequest) {
           processing_started_at: new Date().toISOString(),
         })
         .eq("id", documentId)
-        .in("processing_step", [null])
+        .is("processing_step", null)
         .eq("status", "queued")
         .select("id");
 
