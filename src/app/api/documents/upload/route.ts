@@ -150,23 +150,40 @@ export async function POST(req: NextRequest) {
 
   // HIGH confidence — auto-process immediately
   if (classification.confidence >= CONFIDENCE_HIGH) {
-    // Trigger full processing in the background (non-blocking)
-    // The frontend will poll or the user navigates to see results
     try {
-      await supabase.from("documents").update({ status: "processing" }).eq("id", documentId);
+      const isLargeDoc = classification.pageCount > 15;
 
-      // Call the process endpoint internally
-      const processUrl = new URL("/api/documents/process", req.url);
-      fetch(processUrl.toString(), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: req.headers.get("authorization") || "",
-        },
-        body: JSON.stringify({ documentId, billType: docType }),
-      }).catch((err) => {
-        console.error("[upload] Auto-process trigger failed:", err);
-      });
+      if (isLargeDoc) {
+        // Large documents: use chunked processing to stay within Vercel 10s timeout
+        await supabase.from("documents").update({
+          status: "queued",
+          processing_total_pages: classification.pageCount,
+        }).eq("id", documentId);
+
+        const chunkUrl = new URL("/api/documents/process-chunk", req.url);
+        fetch(chunkUrl.toString(), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ documentId }),
+        }).catch((err) => {
+          console.error("[upload] Chunked process trigger failed:", err);
+        });
+      } else {
+        // Small documents: process directly in a single call
+        await supabase.from("documents").update({ status: "processing" }).eq("id", documentId);
+
+        const processUrl = new URL("/api/documents/process", req.url);
+        fetch(processUrl.toString(), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: req.headers.get("authorization") || "",
+          },
+          body: JSON.stringify({ documentId, billType: docType }),
+        }).catch((err) => {
+          console.error("[upload] Auto-process trigger failed:", err);
+        });
+      }
 
       return NextResponse.json({
         documentId,

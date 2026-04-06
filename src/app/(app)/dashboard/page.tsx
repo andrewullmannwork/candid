@@ -42,6 +42,8 @@ interface DocumentRow {
   doc_type: string;
   status: string;
   created_at: string;
+  processing_completed_pages?: number | null;
+  processing_total_pages?: number | null;
 }
 
 // ─── Main Dashboard ─────────────────────────────────────────────────────────
@@ -85,7 +87,7 @@ export default function DashboardPage() {
         }),
         supabase
           .from("documents")
-          .select("id, file_name, doc_type, status, created_at")
+          .select("id, file_name, doc_type, status, created_at, processing_completed_pages, processing_total_pages")
           .eq("user_id", user!.userId)
           .order("created_at", { ascending: false }),
         fetch("/api/plan/analyze", {
@@ -116,6 +118,30 @@ export default function DashboardPage() {
     }
 
     loadDashboard();
+
+    // Poll for updates while documents are processing
+    const pollInterval = setInterval(async () => {
+      if (!user) return;
+      const supabase = createBrowserClient();
+      const { data } = await supabase
+        .from("documents")
+        .select("id, file_name, doc_type, status, created_at, processing_completed_pages, processing_total_pages")
+        .eq("user_id", user.userId)
+        .order("created_at", { ascending: false });
+      if (data) {
+        setDocuments(data);
+        const hasProcessing = data.some(
+          (d) => (d.status === "processing" || d.status === "queued")
+            && (d.doc_type === "sbc" || d.doc_type === "plan_document")
+        );
+        // If processing just completed, reload the full dashboard to refresh plan data
+        if (!hasProcessing && data.some(d => d.status === "processed")) {
+          loadDashboard();
+        }
+      }
+    }, 15000);
+
+    return () => clearInterval(pollInterval);
   }, [user]);
 
   if (loading) {
@@ -134,6 +160,10 @@ export default function DashboardPage() {
   const profileComplete = filledFields >= 2; // any 2 identifiers is enough
   const hasDocuments = documents.length > 0;
   const pendingReviewDocs = documents.filter((d) => d.status === "pending_review");
+  const processingPlanDocs = documents.filter(
+    (d) => (d.status === "processing" || d.status === "queued")
+      && (d.doc_type === "sbc" || d.doc_type === "plan_document")
+  );
 
   const firstName = user?.firebaseUser.displayName?.split(" ")[0] || "";
 
@@ -159,6 +189,31 @@ export default function DashboardPage() {
         const pn = pr.planName;
 
         if (ds === "user_plan" && vs === "unverified") {
+          // If a plan document is actively processing, show processing banner instead
+          if (processingPlanDocs.length > 0) {
+            const ppd = processingPlanDocs[0];
+            const completed = ppd.processing_completed_pages || 0;
+            const total = ppd.processing_total_pages || 0;
+            return (
+              <div className="p-4 bg-blue-50 border border-blue-200 rounded-2xl flex items-start gap-3">
+                <svg className="w-5 h-5 text-blue-600 shrink-0 mt-0.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                <div className="flex-1">
+                  <p className="text-sm font-semibold text-blue-900">
+                    Your plan document is being processed
+                  </p>
+                  <p className="text-xs text-blue-700 mt-0.5">
+                    {total > 0
+                      ? `Processing page ${completed} of ${total} — this usually takes a few minutes for large documents.`
+                      : "This usually takes a few minutes. Your benefits will update automatically."}
+                  </p>
+                </div>
+              </div>
+            );
+          }
+
           return (
             <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3">
               <svg className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -641,15 +696,19 @@ export default function DashboardPage() {
 function StatusBadge({ status }: { status: string }) {
   const styles = {
     uploaded: "bg-amber-50 text-amber-700 border-amber-100",
+    queued: "bg-blue-50 text-blue-700 border-blue-100",
     processing: "bg-blue-50 text-blue-700 border-blue-100",
     processed: "bg-green-50 text-green-700 border-green-100",
+    pending_review: "bg-amber-50 text-amber-700 border-amber-100",
     error: "bg-red-50 text-red-700 border-red-100",
   }[status] || "bg-gray-50 text-gray-500 border-gray-200";
 
   const labels: Record<string, string> = {
     uploaded: "Pending",
+    queued: "Queued",
     processing: "Processing",
     processed: "Audited",
+    pending_review: "Under Review",
     error: "Error",
   };
 

@@ -45,7 +45,7 @@ async function getClient() {
 }
 
 /** Count pages in a PDF buffer without fully parsing it */
-function estimatePageCount(buffer: Buffer): number {
+export function estimatePageCount(buffer: Buffer): number {
   const pdfStr = buffer.toString("latin1");
   const pageMatches = pdfStr.match(/\/Type\s*\/Page\b/g);
   const pagesTreeMatches = pdfStr.match(/\/Type\s*\/Pages\b/g);
@@ -55,7 +55,7 @@ function estimatePageCount(buffer: Buffer): number {
 }
 
 /** Split a PDF into chunks of maxPages using pdf-lib */
-async function splitPDF(buffer: Buffer, maxPages: number): Promise<Buffer[]> {
+export async function splitPDF(buffer: Buffer, maxPages: number): Promise<Buffer[]> {
   const { PDFDocument } = await import("pdf-lib");
   const srcDoc = await PDFDocument.load(buffer);
   const totalPages = srcDoc.getPageCount();
