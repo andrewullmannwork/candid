@@ -184,9 +184,11 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // MEDIUM confidence OR any recognized healthcare type — queue for admin review
-  // Only auto-reject documents classified as "other" (no healthcare signals at all)
-  if (classification.confidence >= CONFIDENCE_LOW || classification.classifiedType !== "other") {
+  // MEDIUM confidence, any recognized healthcare type, OR user explicitly selected a
+  // healthcare document type — queue for admin review. Only auto-reject when the
+  // classifier finds zero signals AND the user didn't select a specific type.
+  const userSelectedHealthcareType = ["eob", "itemized_bill", "sbc", "plan_document"].includes(docType);
+  if (classification.confidence >= CONFIDENCE_LOW || classification.classifiedType !== "other" || userSelectedHealthcareType) {
     await supabase.from("documents").update({ status: "pending_review" }).eq("id", documentId);
 
     // Notify admin (email + Slack) and user (email) — non-blocking
