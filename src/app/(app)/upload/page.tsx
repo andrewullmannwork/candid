@@ -255,6 +255,7 @@ function UploadForm() {
   if (uploaded) {
     const isPendingReview = uploadStatus === "pending_review";
     const isAutoProcessed = uploadStatus === "auto_processed";
+    const isPlanType = docType === "sbc" || docType === "plan_document";
     const bgColor = isPendingReview ? "bg-amber-50 border-amber-100" : "bg-green-50 border-green-100";
     const iconBg = isPendingReview ? "bg-amber-100" : "bg-green-100";
     const iconColor = isPendingReview ? "text-amber-600" : "text-green-600";
@@ -314,8 +315,8 @@ function UploadForm() {
                   : classificationResult.classifiedType === "eob" ? "Explanation of Benefits"
                   : classificationResult.classifiedType === "itemized_bill" ? "Itemized Bill"
                   : classificationResult.classifiedType === "insurance_card" ? "Insurance Card"
+                  : classificationResult.classifiedType === "plan_document" ? "Plan Document"
                   : classificationResult.classifiedType}
-                {classificationResult.confidence > 0 && ` (${Math.round(classificationResult.confidence * 100)}%)`}
               </span>
               {classificationResult.mismatch && (
                 <p className="mt-2 text-xs text-amber-700 bg-amber-50 rounded-lg p-2">
@@ -352,7 +353,7 @@ function UploadForm() {
             </div>
           )}
 
-          {!sbcParsed && (
+          {!isPlanType && !sbcParsed && (
             <p className="mt-3 text-xs text-green-600 bg-green-100 rounded-xl p-3 leading-relaxed">
               Upload more bills for a more complete picture — the more documents we analyze, the better your audit.
             </p>
@@ -370,13 +371,22 @@ function UploadForm() {
             >
               Upload another document
             </button>
-            {sbcParsed ? (
-              <Link
-                href="/plan"
-                className="w-full py-2.5 border border-green-200 text-green-700 rounded-xl text-sm font-medium hover:bg-green-50 transition-colors text-center"
-              >
-                View your plan benefits
-              </Link>
+            {sbcParsed || isPlanType ? (
+              <>
+                <Link
+                  href="/plan"
+                  className="w-full py-2.5 border border-green-200 text-green-700 rounded-xl text-sm font-medium hover:bg-green-50 transition-colors text-center"
+                >
+                  View your benefits
+                </Link>
+                <Link
+                  href="/upload"
+                  onClick={(e) => { e.preventDefault(); setUploaded(false); setUploadStatus(null); setFileName(""); setClassificationResult(null); setSbcParsed(null); setDocType("eob"); }}
+                  className="w-full py-2.5 border border-green-200 text-green-700 rounded-xl text-sm font-medium hover:bg-green-50 transition-colors text-center"
+                >
+                  Upload a bill to audit
+                </Link>
+              </>
             ) : (
               <Link
                 href="/audit"
