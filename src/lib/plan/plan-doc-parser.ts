@@ -681,15 +681,18 @@ export function parsePlanDocument(text: string): PlanDocParseResult {
       if (!prevLine) continue;
       // Skip page headers, numbers, "myCigna.com", "IN-NETWORK", "BENEFIT HIGHLIGHTS"
       if (/^\d+$/.test(prevLine)) continue;
-      if (/^myCigna|^IN-NETWORK|^BENEFIT HIGHLIGHTS|^OUT-OF-NETWORK|^Note:/i.test(prevLine)) continue;
+      if (/^myCigna|^IN-NETWORK|^BENEFIT HIGHLIGHTS|^OUT-OF-NETWORK|^Note:|^Page\s+\d|^\d+\s*$|^\.\s*$|^www\.|^http/i.test(prevLine)) continue;
+      // Skip form feed characters and page breaks
+      if (prevLine === '\f' || prevLine === '.') continue;
       // If this looks like a previous cost line, stop
       if (/^\$\d+.*copay|^Plan\s+deductible|^No\s+charge|^100\s*%$/i.test(prevLine)) break;
       serviceName = prevLine + (serviceName ? " " + serviceName : "");
       // Break if this looks like a complete service name header — starts with capital,
       // long enough to not be a continuation word (like "Visit", "Services", "Facility")
       // and not a known continuation fragment
-      const isContinuation = /^(?:Visit|Services?|Facility|Provider|Benefits?|Room|Charges?|Care)$/i.test(prevLine)
-        || prevLine.length <= 15;
+      // Multi-line service names are common — don't break too early
+      const isContinuation = /^(?:Visit|Services?|Facility|Provider|Benefits?|Room|Charges?|Care|Office|Hospital|Inpatient|Outpatient|Center|Program|Treatment|Therapy|Physician'?s?|Primary|Specialty|Imaging|Laboratory|Diagnostic|Emergency|Urgent|Ambulance|Surgical|Mental|Behavioral|Substance|Maternity|Prenatal|Newborn|Rehabilitation|Equipment|Prosthetic|Hearing|Durable|Speech|Occupational|Physical|Cardiac|Chiropractic|Acupuncture|Virtual|Telehealth|Preventive|Immunization|Screening|Radiology|Advanced|Professional|Surgeon|Pathologist|Anesthesiologist|Semi-Private|Private|Special|Operating|Recovery|Procedures?|Observation|Lab|X-ray|MRI|CT|PET|CAT)s?$/i.test(prevLine)
+        || prevLine.length <= 20; // Longer threshold — most service name fragments are under 20 chars
       if (/^[A-Z]/.test(prevLine) && prevLine.length > 3 && !isContinuation) break;
     }
 
