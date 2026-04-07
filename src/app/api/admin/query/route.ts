@@ -107,6 +107,7 @@ export async function POST(req: NextRequest) {
       else if (f.op === "lt") q = q.lt(f.column, f.value);
       else if (f.op === "like") q = q.like(f.column, f.value);
       else if (f.op === "ilike") q = q.ilike(f.column, f.value);
+      else if (f.op === "in") q = q.in(f.column, f.value);
     }
   }
 

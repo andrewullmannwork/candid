@@ -62,6 +62,15 @@ export async function POST(req: NextRequest) {
   const { action, documentId } = await req.json();
 
   if (action === "process_document" && documentId) {
+    // Look up the document's actual type
+    const supabase = createServerClient();
+    const { data: docRecord } = await supabase
+      .from("documents")
+      .select("doc_type")
+      .eq("id", documentId)
+      .single();
+    const billType = docRecord?.doc_type || "eob";
+
     // Trigger processing with admin override
     const processRes = await fetch(
       new URL("/api/documents/process", req.url).toString(),
@@ -71,7 +80,7 @@ export async function POST(req: NextRequest) {
           "Content-Type": "application/json",
           "x-admin-override": "true",
         },
-        body: JSON.stringify({ documentId, billType: "eob" }),
+        body: JSON.stringify({ documentId, billType }),
       }
     );
     const result = await processRes.json();
@@ -95,7 +104,7 @@ export async function POST(req: NextRequest) {
     let errors = 0;
     for (const doc of queued) {
       try {
-        const billType = doc.doc_type === "sbc" ? "sbc" : doc.doc_type === "itemized_bill" ? "itemized_bill" : "eob";
+        const billType = ["sbc", "plan_document", "itemized_bill"].includes(doc.doc_type) ? doc.doc_type : "eob";
         const res = await fetch(
           new URL("/api/documents/process", req.url).toString(),
           {

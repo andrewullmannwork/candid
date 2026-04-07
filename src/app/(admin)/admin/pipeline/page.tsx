@@ -152,6 +152,25 @@ export default function PipelinePage() {
         });
       }
 
+      // Load document statuses for discovery queue items
+      if (queueData) {
+        const docIds = (queueData as DiscoveryQueueItem[])
+          .map((q) => q.source_document_id)
+          .filter((id): id is string => !!id);
+        if (docIds.length > 0) {
+          const docs = await query({
+            table: "documents",
+            select: "id, status, classified_type",
+            filters: [{ column: "id", op: "in", value: docIds }],
+          });
+          if (docs) {
+            const statusMap = new Map<string, { status: string; classified_type?: string }>();
+            for (const d of docs) statusMap.set(d.id, { status: d.status, classified_type: d.classified_type });
+            setDocStatuses(statusMap);
+          }
+        }
+      }
+
       // Load processing stats
       if (user) {
         const token = await user.firebaseUser.getIdToken();
@@ -182,10 +201,10 @@ export default function PipelinePage() {
         body: JSON.stringify({ action: "process_all_queued" }),
       });
       const result = await res.json();
-      setExtractResult(result.message);
+      setReprocessResult(result.message);
       loadData();
     } catch (err) {
-      setExtractResult("Failed to process queued documents");
+      setReprocessResult("Failed to process queued documents");
     }
     setProcessingAction(false);
   }
@@ -206,42 +225,44 @@ export default function PipelinePage() {
     loadData();
   }
 
-  const [extracting, setExtracting] = useState<string | null>(null);
-  const [extractResult, setExtractResult] = useState<string | null>(null);
+  const [reprocessing, setReprocessing] = useState<string | null>(null);
+  const [reprocessResult, setReprocessResult] = useState<string | null>(null);
   const [scraping, setScraping] = useState<string | null>(null);
+  const [docStatuses, setDocStatuses] = useState<Map<string, { status: string; classified_type?: string }>>(new Map());
 
-  async function extractSBC(documentId: string, queueId: string) {
+  async function reprocessDocument(documentId: string, queueId: string) {
     if (!user) return;
-    setExtracting(queueId);
-    setExtractResult(null);
+    setReprocessing(queueId);
+    setReprocessResult(null);
     try {
       const idToken = await user.firebaseUser.getIdToken();
-      const res = await fetch("/api/admin/pipeline/extract", {
+      const res = await fetch("/api/admin/processing", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${idToken}`,
         },
-        body: JSON.stringify({ documentId }),
+        body: JSON.stringify({ action: "process_document", documentId }),
       });
       const data = await res.json();
       if (res.ok) {
-        setExtractResult(`Extracted ${data.benefitsExtracted} benefits from "${data.planName || "Unknown Plan"}". Confidence: ${Math.round(data.confidence * 100)}%`);
+        setReprocessResult(`Reprocessed document — ${data.servicesCreated ? `${data.servicesCreated} services extracted` : "processing started"}`);
         await updateQueueStatus(queueId, "completed");
+        loadData();
       } else {
-        setExtractResult(`Error: ${data.error}`);
+        setReprocessResult(`Error: ${data.error}`);
       }
     } catch (err) {
-      setExtractResult(`Extraction failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+      setReprocessResult(`Reprocess failed: ${err instanceof Error ? err.message : "Unknown error"}`);
     } finally {
-      setExtracting(null);
+      setReprocessing(null);
     }
   }
 
   async function scrapeInsurer(insurerId: string) {
     if (!user) return;
     setScraping(insurerId);
-    setExtractResult(null);
+    setReprocessResult(null);
     try {
       const idToken = await user.firebaseUser.getIdToken();
       const res = await fetch("/api/admin/pipeline/scrape", {
@@ -254,13 +275,13 @@ export default function PipelinePage() {
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        setExtractResult(`Scraped ${data.planName}: ${data.benefitsExtracted} benefits extracted (${data.method}). Confidence: ${Math.round(data.confidence * 100)}%`);
+        setReprocessResult(`Scraped ${data.planName}: ${data.benefitsExtracted} benefits extracted (${data.method}). Confidence: ${Math.round(data.confidence * 100)}%`);
       } else {
-        setExtractResult(`Scrape: ${data.error || "Failed"}${data.suggestion ? ` — ${data.suggestion}` : ""}`);
+        setReprocessResult(`Scrape: ${data.error || "Failed"}${data.suggestion ? ` — ${data.suggestion}` : ""}`);
       }
       loadData();
     } catch (err) {
-      setExtractResult(`Scrape failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+      setReprocessResult(`Scrape failed: ${err instanceof Error ? err.message : "Unknown error"}`);
     } finally {
       setScraping(null);
     }
@@ -394,10 +415,10 @@ export default function PipelinePage() {
       </div>
 
       {/* Extract result banner */}
-      {extractResult && (
-        <div className={`mb-4 p-3 rounded-xl text-sm ${extractResult.startsWith("Error") || extractResult.startsWith("Extraction failed") ? "bg-red-50 text-red-700" : "bg-green-50 text-green-700"}`}>
-          {extractResult}
-          <button onClick={() => setExtractResult(null)} className="ml-2 underline text-xs">Dismiss</button>
+      {reprocessResult && (
+        <div className={`mb-4 p-3 rounded-xl text-sm ${reprocessResult.startsWith("Error") || reprocessResult.startsWith("Reprocess failed") || reprocessResult.startsWith("Scrape failed") ? "bg-red-50 text-red-700" : "bg-green-50 text-green-700"}`}>
+          {reprocessResult}
+          <button onClick={() => setReprocessResult(null)} className="ml-2 underline text-xs">Dismiss</button>
         </div>
       )}
 
@@ -415,6 +436,7 @@ export default function PipelinePage() {
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Insurer (raw)</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Source</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Status</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">Doc Status</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Requested</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">Actions</th>
                 </tr>
@@ -431,6 +453,25 @@ export default function PipelinePage() {
                         {item.status}
                       </span>
                     </td>
+                    <td className="px-4 py-3">
+                      {(() => {
+                        const ds = item.source_document_id ? docStatuses.get(item.source_document_id) : null;
+                        if (!ds) return <span className="text-xs text-gray-400">—</span>;
+                        const colors: Record<string, string> = {
+                          processed: "bg-green-100 text-green-700",
+                          processing: "bg-blue-100 text-blue-700",
+                          queued: "bg-blue-100 text-blue-700",
+                          pending_review: "bg-amber-100 text-amber-700",
+                          error: "bg-red-100 text-red-700",
+                          uploaded: "bg-gray-100 text-gray-600",
+                        };
+                        return (
+                          <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${colors[ds.status] || "bg-gray-100"}`}>
+                            {ds.status}
+                          </span>
+                        );
+                      })()}
+                    </td>
                     <td className="px-4 py-3 text-gray-500">
                       {new Date(item.created_at).toLocaleDateString()}
                     </td>
@@ -439,10 +480,15 @@ export default function PipelinePage() {
                         <div className="flex gap-1 justify-end">
                           {item.source_document_id && (
                             <button
-                              onClick={() => extractSBC(item.source_document_id!, item.id)}
-                              className="px-2 py-1 text-xs bg-purple-600 text-white rounded hover:bg-purple-700"
+                              onClick={() => reprocessDocument(item.source_document_id!, item.id)}
+                              disabled={reprocessing === item.id || docStatuses.get(item.source_document_id!)?.status === "processed"}
+                              className={`px-2 py-1 text-xs rounded ${
+                                docStatuses.get(item.source_document_id!)?.status === "processed"
+                                  ? "bg-gray-200 text-gray-400 cursor-not-allowed"
+                                  : "bg-purple-600 text-white hover:bg-purple-700"
+                              }`}
                             >
-                              Extract
+                              {reprocessing === item.id ? "Processing..." : docStatuses.get(item.source_document_id!)?.status === "processed" ? "Processed" : "Reprocess"}
                             </button>
                           )}
                           <button

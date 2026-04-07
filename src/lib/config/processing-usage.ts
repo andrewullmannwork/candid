@@ -6,6 +6,16 @@
 import { createServerClient } from "@/lib/supabase/server";
 import { getFlags } from "./feature-flags";
 
+/** Get today's date string in Pacific time (YYYY-MM-DD) */
+function getLocalDateStr(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+}
+
+/** Get current month string in Pacific time (YYYY-MM) */
+function getLocalMonthStr(): string {
+  return getLocalDateStr().slice(0, 7);
+}
+
 interface UsageCheck {
   allowed: boolean;
   reason?: string;
@@ -30,9 +40,8 @@ export async function checkProcessingBudget(pages: number = 1): Promise<UsageChe
   }
 
   const supabase = createServerClient();
-  const now = new Date();
-  const todayStr = now.toISOString().slice(0, 10); // YYYY-MM-DD
-  const monthStr = now.toISOString().slice(0, 7); // YYYY-MM
+  const todayStr = getLocalDateStr();
+  const monthStr = getLocalMonthStr();
 
   // Get today's usage
   const { data: todayData } = await supabase
@@ -92,7 +101,7 @@ export async function checkProcessingBudget(pages: number = 1): Promise<UsageChe
 /** Record pages processed for usage tracking */
 export async function recordProcessingUsage(pages: number): Promise<void> {
   const supabase = createServerClient();
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = getLocalDateStr();
 
   // Upsert today's usage
   const { data: existing } = await supabase
@@ -125,9 +134,8 @@ export async function getUsageStats(): Promise<{
 }> {
   const flags = await getFlags();
   const supabase = createServerClient();
-  const now = new Date();
-  const todayStr = now.toISOString().slice(0, 10);
-  const monthStr = now.toISOString().slice(0, 7);
+  const todayStr = getLocalDateStr();
+  const monthStr = getLocalMonthStr();
 
   const { data: todayData } = await supabase
     .from("processing_usage")

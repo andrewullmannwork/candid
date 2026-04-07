@@ -86,7 +86,10 @@ export async function POST(req: NextRequest) {
       // OCR first chunk
       const chunks = await splitPDF(buffer, CHUNK_SIZE);
       const ocrResult = await extractTextFromDocument(chunks[0], "application/pdf");
-      await recordProcessingUsage(Math.min(CHUNK_SIZE, totalPages));
+      // Only record truly new pages (prevents double-counting on QStash retries)
+      const prevCompleted = doc.processing_completed_pages || 0;
+      const newPages = Math.max(0, Math.min(CHUNK_SIZE, totalPages) - prevCompleted);
+      if (newPages > 0) await recordProcessingUsage(newPages);
 
       const nextStep = totalChunks > 1 ? "ocr_chunk_1" : "classifying";
 
@@ -139,7 +142,11 @@ export async function POST(req: NextRequest) {
       // OCR this chunk
       const ocrResult = await extractTextFromDocument(chunks[chunkIndex], "application/pdf");
       const pagesInChunk = Math.min(CHUNK_SIZE, (doc.processing_total_pages || 0) - chunkIndex * CHUNK_SIZE);
-      await recordProcessingUsage(pagesInChunk);
+      // Only record truly new pages (prevents double-counting on QStash retries)
+      const chunkPrevCompleted = doc.processing_completed_pages || 0;
+      const expectedAfter = (chunkIndex + 1) * CHUNK_SIZE;
+      const chunkNewPages = Math.max(0, Math.min(pagesInChunk, expectedAfter - chunkPrevCompleted));
+      if (chunkNewPages > 0) await recordProcessingUsage(chunkNewPages);
 
       const completedPages = (chunkIndex + 1) * CHUNK_SIZE;
       const isLastChunk = chunkIndex + 1 >= chunks.length;
