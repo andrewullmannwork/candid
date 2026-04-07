@@ -160,12 +160,12 @@ export default function PipelinePage() {
         if (docIds.length > 0) {
           const docs = await query({
             table: "documents",
-            select: "id, status, classified_type",
+            select: "id, status, classified_type, doc_type",
             filters: [{ column: "id", op: "in", value: docIds }],
           });
           if (docs) {
-            const statusMap = new Map<string, { status: string; classified_type?: string }>();
-            for (const d of docs) statusMap.set(d.id, { status: d.status, classified_type: d.classified_type });
+            const statusMap = new Map<string, { status: string; classified_type?: string; doc_type?: string }>();
+            for (const d of docs) statusMap.set(d.id, { status: d.status, classified_type: d.classified_type, doc_type: d.doc_type });
             setDocStatuses(statusMap);
           }
         }
@@ -228,7 +228,7 @@ export default function PipelinePage() {
   const [reprocessing, setReprocessing] = useState<string | null>(null);
   const [reprocessResult, setReprocessResult] = useState<string | null>(null);
   const [scraping, setScraping] = useState<string | null>(null);
-  const [docStatuses, setDocStatuses] = useState<Map<string, { status: string; classified_type?: string }>>(new Map());
+  const [docStatuses, setDocStatuses] = useState<Map<string, { status: string; classified_type?: string; doc_type?: string }>>(new Map());
 
   async function reprocessDocument(documentId: string, queueId: string) {
     if (!user) return;
@@ -437,6 +437,7 @@ export default function PipelinePage() {
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Source</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Status</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Doc Status</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">Doc Type</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Requested</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">Actions</th>
                 </tr>
@@ -470,6 +471,14 @@ export default function PipelinePage() {
                             {ds.status}
                           </span>
                         );
+                      })()}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-gray-500">
+                      {(() => {
+                        const dt = item.source_document_id ? docStatuses.get(item.source_document_id)?.doc_type : null;
+                        if (!dt) return "—";
+                        const labels: Record<string, string> = { eob: "EOB", sbc: "SBC", plan_document: "Plan Doc", itemized_bill: "Itemized Bill" };
+                        return labels[dt] || dt;
                       })()}
                     </td>
                     <td className="px-4 py-3 text-gray-500">
