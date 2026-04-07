@@ -55,6 +55,11 @@ const NON_SERVICE_TERMS = new Set([
   "maximum benefit",
   "benefit maximum",
   "replacement due to regular wear",
+  "each qualified beneficiary",
+  "your employer may charge",
+  "the amount you pay",
+  "total premium",
+  "the cost to the group health plan",
 ]);
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -264,6 +269,39 @@ const SERVICE_NAME_MAP: Record<string, { slug: string; place: string }[]> = {
   "eye exam": [{ slug: "vision_exam", place: "specialist_office" }],
   "bereavement counseling": [{ slug: "bereavement_counseling", place: "any" }],
   "medical pharmaceuticals": [{ slug: "medical_pharmaceuticals", place: "any" }],
+  "other medical pharmaceuticals": [{ slug: "medical_pharmaceuticals", place: "any" }],
+  "cigna pathwell specialty": [{ slug: "specialty_rx", place: "any" }],
+  "dedicated virtual": [{ slug: "telehealth", place: "virtual" }],
+  // ── Additional mappings for Cigna format ───────────────────────────────
+  "spinal manipulation": [{ slug: "chiropractic", place: "specialist_office" }],
+  "subluxation": [{ slug: "chiropractic", place: "specialist_office" }],
+  "external prosthetic": [{ slug: "prosthetics", place: "any" }],
+  "diabetic equipment": [{ slug: "dme", place: "home" }],
+  "rehabilitation hospital": [{ slug: "skilled_nursing", place: "inpatient_facility" }],
+  "sub-acute": [{ slug: "skilled_nursing", place: "inpatient_facility" }],
+  "inpatient services at other health care facilities": [{ slug: "skilled_nursing", place: "inpatient_facility" }],
+  "substance use disorder inpatient": [{ slug: "substance_abuse_inpatient", place: "inpatient_facility" }],
+  "substance use disorder outpatient": [{ slug: "substance_abuse_outpatient", place: "any" }],
+  "outpatient therapy services": [{ slug: "physical_therapy", place: "any" }],
+  "women's surgical sterilization": [{ slug: "sterilization", place: "outpatient_facility" }],
+  "advanced cellular therapy": [{ slug: "organ_transplant", place: "inpatient_facility" }],
+  "independent lab": [{ slug: "lab_work", place: "outpatient_facility" }],
+  "inpatient hospital physician": [{ slug: "inpatient_physician", place: "inpatient_facility" }],
+  "preventive care related": [{ slug: "preventive_care", place: "any" }],
+  "home setting": [{ slug: "home_health", place: "home" }],
+  "inpatient services": [{ slug: "inpatient_hospital", place: "inpatient_facility" }],
+  "outpatient hospital": [{ slug: "outpatient_surgery", place: "outpatient_facility" }],
+  "outpatient - office visits": [{ slug: "mental_health_outpatient", place: "specialist_office" }],
+  "outpatient - all other services": [{ slug: "mental_health_outpatient", place: "outpatient_facility" }],
+  // ── Prescription Drug (explicit text matches) ──────────────────────────
+  "generic drugs": [{ slug: "generic_rx", place: "any" }],
+  "generic drugs on the prescription drug list": [{ slug: "generic_rx", place: "any" }],
+  "preferred brand": [{ slug: "preferred_brand_rx", place: "any" }],
+  "preferred brand name drugs": [{ slug: "preferred_brand_rx", place: "any" }],
+  "non-preferred brand": [{ slug: "non_preferred_brand_rx", place: "any" }],
+  "non-preferred brand name drugs": [{ slug: "non_preferred_brand_rx", place: "any" }],
+  "specialty drugs": [{ slug: "specialty_rx", place: "any" }],
+  "specialty medication": [{ slug: "specialty_rx", place: "any" }],
   "infusion therapy": [{ slug: "infusion_therapy", place: "outpatient_facility" }],
   "chemotherapy": [{ slug: "chemotherapy", place: "outpatient_facility" }],
   "radiation therapy": [{ slug: "radiation_therapy", place: "outpatient_facility" }],
@@ -280,8 +318,11 @@ const SERVICE_NAME_MAP: Record<string, { slug: string; place: string }[]> = {
 function matchServiceSlug(serviceName: string): { slug: string; place: string; fallback?: boolean } | null {
   const lower = serviceName.toLowerCase().trim();
 
-  // Skip known non-service terms
+  // Skip known non-service terms (exact match or substring match)
   if (NON_SERVICE_TERMS.has(lower)) return null;
+  for (const term of NON_SERVICE_TERMS) {
+    if (lower.startsWith(term)) return null;
+  }
   // Skip all-caps strings > 30 chars (section headers)
   if (serviceName === serviceName.toUpperCase() && serviceName.length > 30) return null;
   // Skip strings with dollar amounts (cost lines, not service names)
@@ -671,7 +712,9 @@ export function parsePlanDocument(text: string): PlanDocParseResult {
       /^No\s+charge/i.test(line) ||
       /^\d+%\s+(?:after|of)/i.test(line) ||
       /^Deductible,?\s+then\s+\d+/i.test(line) ||
-      /^(?:In-Network|IN-NETWORK)[:\s]+\$\d/i.test(line);
+      /^(?:In-Network|IN-NETWORK)[:\s]+\$\d/i.test(line) ||
+      /^100\s*%$/i.test(line) || // Standalone "100%" for preventive/fully covered
+      /^100%\s+at\s+/i.test(line); // "100% at LifeSOURCE center..."
     if (!isCostLine) continue;
 
     // Look backward for the service name (typically 1-5 lines before)
