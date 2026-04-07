@@ -78,11 +78,13 @@ function UploadForm() {
     servicesExtracted?: number;
   } | null>(null);
   const [documentId, setDocumentId] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [processingProgress, setProcessingProgress] = useState<{
     status: string;
     step: string | null;
     completedPages: number;
     totalPages: number;
+    insurerMismatch?: { mismatch: boolean; existingInsurer?: string; parsedInsurer?: string } | null;
   } | null>(null);
 
   // Consent state — inline, not blocking
@@ -106,9 +108,14 @@ function UploadForm() {
         setProcessingProgress(data);
 
         if (data.status === "processed") {
-          // Done! Redirect to plan page after a brief delay
           active = false;
-          setTimeout(() => { window.location.href = "/plan"; }, 1500);
+          if (data.insurerMismatch?.mismatch) {
+            // Mismatch detected — show prompt instead of redirecting
+            setProcessingProgress(data);
+          } else {
+            // No mismatch — redirect to plan page
+            setTimeout(() => { window.location.href = "/plan"; }, 1500);
+          }
           return;
         }
 
@@ -174,10 +181,20 @@ function UploadForm() {
         formData.append("file", file);
         formData.append("docType", docType);
 
-        const res = await fetch("/api/documents/upload", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${idToken}` },
-          body: formData,
+        // Use XHR for upload progress tracking
+        setUploadProgress(0);
+        const res = await new Promise<Response>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.upload.addEventListener("progress", (e) => {
+            if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
+          });
+          xhr.addEventListener("load", () => {
+            resolve(new Response(xhr.responseText, { status: xhr.status, headers: { "content-type": "application/json" } }));
+          });
+          xhr.addEventListener("error", () => reject(new Error("Upload failed")));
+          xhr.open("POST", "/api/documents/upload");
+          xhr.setRequestHeader("Authorization", `Bearer ${idToken}`);
+          xhr.send(formData);
         });
 
         if (!res.ok) {
@@ -351,7 +368,50 @@ function UploadForm() {
           {/* Auto-processed — live progress */}
           {isAutoProcessed && (
             <div className="mt-3 text-left bg-green-100 rounded-xl p-3">
-              {processingProgress?.status === "processed" ? (
+              {processingProgress?.status === "processed" && processingProgress?.insurerMismatch?.mismatch ? (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+                  <p className="text-sm font-semibold text-amber-800">This plan doesn&apos;t match your insurance card</p>
+                  <p className="text-xs text-amber-700 mt-1">
+                    Your card says <strong>{processingProgress.insurerMismatch.existingInsurer}</strong>, but this document is from <strong>{processingProgress.insurerMismatch.parsedInsurer}</strong>.
+                  </p>
+                  <div className="mt-3 flex flex-col gap-2">
+                    <button
+                      onClick={async () => {
+                        // User wants to use the new insurer — update profile and activate new plan
+                        if (!user) return;
+                        const idToken = await user.firebaseUser.getIdToken();
+                        await fetch("/api/profile", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+                          body: JSON.stringify({ insurer: processingProgress.insurerMismatch?.parsedInsurer }),
+                        });
+                        // Activate the new plan via admin endpoint
+                        await fetch("/api/documents/status", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ documentId, action: "activate_plan" }),
+                        });
+                        window.location.href = "/plan";
+                      }}
+                      className="w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700"
+                    >
+                      Use {processingProgress.insurerMismatch.parsedInsurer}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setUploaded(false);
+                        setUploadStatus(null);
+                        setFileName("");
+                        setProcessingProgress(null);
+                        setDocumentId(null);
+                      }}
+                      className="w-full py-2 border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50"
+                    >
+                      Keep {processingProgress.insurerMismatch.existingInsurer} — upload a matching document
+                    </button>
+                  </div>
+                </div>
+              ) : processingProgress?.status === "processed" ? (
                 <>
                   <p className="text-xs font-semibold text-green-800">Processing complete</p>
                   <p className="text-xs text-green-700 mt-1">Redirecting to your benefits...</p>
@@ -606,10 +666,16 @@ function UploadForm() {
         >
           <input {...getInputProps()} />
           {uploading ? (
-            <>
-              <div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-              <p className="text-sm text-gray-600 font-medium">Uploading...</p>
-            </>
+            <div className="w-full max-w-[240px] text-center">
+              <p className="text-sm text-gray-600 font-medium mb-2">Uploading{uploadProgress < 100 ? "..." : " complete"}</p>
+              <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-blue-600 rounded-full transition-all duration-300"
+                  style={{ width: `${uploadProgress}%` }}
+                />
+              </div>
+              <p className="text-xs text-gray-400 mt-1.5">{fileName} — {uploadProgress}%</p>
+            </div>
           ) : isDragActive ? (
             <>
               <div className="w-12 h-12 rounded-2xl bg-blue-100 flex items-center justify-center">

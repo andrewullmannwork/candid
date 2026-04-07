@@ -10,6 +10,53 @@ import type { SBCParseResult, SBCParsedService } from "./sbc-parser";
 // Re-export the same result type for consistency
 export type PlanDocParseResult = SBCParseResult;
 
+// ── Non-service terms blocklist ────────────────────────────────────────────
+// These are section headers, column labels, and plan structure terms that the
+// backward service-name scanner incorrectly picks up as service names.
+const NON_SERVICE_TERMS = new Set([
+  "calendar year maximum",
+  "calendar year deductible",
+  "benefit highlights",
+  "the schedule",
+  "plan deductible",
+  "out-of-pocket",
+  "out of pocket",
+  "out-of-pocket maximum",
+  "family maximum",
+  "individual calculation",
+  "aggregate calculation",
+  "lifetime maximum",
+  "benefit period",
+  "plan year",
+  "effective date",
+  "coverage period",
+  "in-network",
+  "out-of-network",
+  "participating provider",
+  "non-participating provider",
+  "preferred provider",
+  "annual maximum",
+  "unlimited",
+  "not applicable",
+  "combined medical",
+  "precertification",
+  "preauthorization",
+  "coordination of benefits",
+  "covered expenses",
+  "benefit highlights",
+  "how the plan works",
+  "important notice",
+  "general provisions",
+  "plan administration",
+  "summary of benefits",
+  "table of contents",
+  "your cost sharing",
+  "cost sharing",
+  "maximum benefit",
+  "benefit maximum",
+  "replacement due to regular wear",
+]);
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function parseDollar(text: string): number | null {
@@ -230,8 +277,17 @@ const SERVICE_NAME_MAP: Record<string, { slug: string; place: string }[]> = {
   "mdlive behavioral": [{ slug: "mental_health_outpatient", place: "virtual" }],
 };
 
-function matchServiceSlug(serviceName: string): { slug: string; place: string } | null {
+function matchServiceSlug(serviceName: string): { slug: string; place: string; fallback?: boolean } | null {
   const lower = serviceName.toLowerCase().trim();
+
+  // Skip known non-service terms
+  if (NON_SERVICE_TERMS.has(lower)) return null;
+  // Skip all-caps strings > 30 chars (section headers)
+  if (serviceName === serviceName.toUpperCase() && serviceName.length > 30) return null;
+  // Skip strings with dollar amounts (cost lines, not service names)
+  if (/\$\d/.test(serviceName)) return null;
+  // Skip pure numbers/punctuation
+  if (/^[\d\s.,;:%-]+$/.test(serviceName)) return null;
 
   // Direct match
   for (const [key, mappings] of Object.entries(SERVICE_NAME_MAP)) {
@@ -264,7 +320,7 @@ function matchServiceSlug(serviceName: string): { slug: string; place: string } 
   if (/chemo/i.test(lower)) return { slug: "chemotherapy", place: "outpatient_facility" };
   if (/radiation\s*therap/i.test(lower)) return { slug: "radiation_therapy", place: "outpatient_facility" };
 
-  // No known mapping — generate a slug from the service name
+  // No known mapping — generate a fallback slug (goes to admin for review, not user benefits)
   const generatedSlug = lower
     .replace(/[^a-z0-9\s]/g, "")
     .trim()
@@ -272,7 +328,7 @@ function matchServiceSlug(serviceName: string): { slug: string; place: string } 
     .slice(0, 50);
 
   if (generatedSlug.length >= 3) {
-    return { slug: generatedSlug, place: "any" };
+    return { slug: generatedSlug, place: "any", fallback: true };
   }
   return null;
 }
@@ -372,22 +428,51 @@ export function parsePlanDocument(text: string): PlanDocParseResult {
 
   // ── Cost structure ──────────────────────────────────────────────────────
 
-  // Calendar Year Deductible — plan docs use "$500 per person" / "$1,000 per family"
-  const deductibleSection = text.match(
-    /Calendar\s+Year\s+Deductible[\s\S]{0,500}/i
-  )?.[0] || "";
+  // ── Deductible extraction — multi-pattern for different insurers ─────────
+  const deductibleSectionPatterns = [
+    /Calendar\s+Year\s+Deductible[\s\S]{0,500}/i,
+    /Annual\s+Deductible[\s\S]{0,500}/i,
+    /Your\s+Deductible[\s\S]{0,500}/i,
+    /Plan\s+Deductible[\s\S]{0,500}/i,
+    /In-Network\s+Deductible[\s\S]{0,500}/i,
+    /Deductible\s*\(In-Network\)[\s\S]{0,500}/i,
+    /The\s+Schedule[\s\S]{0,2000}Deductible[\s\S]{0,500}/i,
+  ];
 
-  if (deductibleSection) {
-    const indivMatch = deductibleSection.match(
-      /Individual[\s\S]{0,60}?\$\s*([\d,]+)\s*(?:per\s*person)?/i
-    );
-    const familyMatch = deductibleSection.match(
-      /Family\s+Maximum[\s\S]{0,60}?\$\s*([\d,]+)\s*(?:per\s*family)?/i
-    );
-    if (indivMatch) plan.in_deductible_individual = parseFloat(indivMatch[1].replace(/,/g, ""));
-    if (familyMatch) plan.in_deductible_family = parseFloat(familyMatch[1].replace(/,/g, ""));
+  const individualAmountPatterns = [
+    /Individual[\s\S]{0,80}?\$\s*([\d,]+)\s*(?:per\s*(?:covered\s+)?person)?/i,
+    /\$\s*([\d,]+)\s*(?:\/\s*Individual|per\s*(?:covered\s+)?person)/i,
+    /Individual[:\s]+\$\s*([\d,]+)/i,
+    /per\s+(?:covered\s+)?person[:\s]*\$\s*([\d,]+)/i,
+    /Deductible[:\s]*\$\s*([\d,]+)\s*(?:individual|per\s*person)/i,
+  ];
 
-    // Deductible calc method: "Individual Calculation" = embedded
+  const familyAmountPatterns = [
+    /Family[\s\S]{0,80}?\$\s*([\d,]+)\s*(?:per\s*family)?/i,
+    /\$\s*([\d,]+)\s*(?:\/\s*Family|per\s*family)/i,
+    /Family[:\s]+\$\s*([\d,]+)/i,
+  ];
+
+  for (const sectionPattern of deductibleSectionPatterns) {
+    if (plan.in_deductible_individual != null) break;
+    const deductibleSection = text.match(sectionPattern)?.[0] || "";
+    if (!deductibleSection) continue;
+
+    for (const amtPattern of individualAmountPatterns) {
+      const indivMatch = deductibleSection.match(amtPattern);
+      if (indivMatch) {
+        plan.in_deductible_individual = parseFloat(indivMatch[1].replace(/,/g, ""));
+        break;
+      }
+    }
+    for (const amtPattern of familyAmountPatterns) {
+      const familyMatch = deductibleSection.match(amtPattern);
+      if (familyMatch) {
+        plan.in_deductible_family = parseFloat(familyMatch[1].replace(/,/g, ""));
+        break;
+      }
+    }
+
     if (/Individual\s+Calculation/i.test(deductibleSection)) {
       plan.deductible_calc_method = "embedded";
     } else if (/Aggregate/i.test(deductibleSection)) {
@@ -396,25 +481,49 @@ export function parsePlanDocument(text: string): PlanDocParseResult {
   }
   if (plan.in_deductible_individual == null) warnings.push("Could not extract in-network deductible");
 
-  // Out-of-Pocket Maximum — look for the one in The Schedule section (near deductible)
-  // Multiple occurrences exist; the one with dollar amounts is in The Schedule
-  const oopMatches = [...text.matchAll(/Out-of-Pocket\s+(?:Maximum|Limit)[\s\S]{0,500}/gi)];
-  for (const oopM of oopMatches) {
-    const oopSection = oopM[0];
-    const indivMatch = oopSection.match(
-      /Individual[\s\S]{0,80}?\$\s*([\d,]+)\s*(?:per\s*person)?/i
-    );
-    const familyMatch = oopSection.match(
-      /Family\s+Maximum[\s\S]{0,80}?\$\s*([\d,]+)\s*(?:per\s*family)?/i
-    );
-    if (indivMatch && !plan.in_oop_max_individual) {
-      plan.in_oop_max_individual = parseFloat(indivMatch[1].replace(/,/g, ""));
+  // ── OOP Max extraction — multi-pattern ─────────────────────────────────
+  const oopSectionPatterns = [
+    /Out-of-Pocket\s+(?:Maximum|Limit)[\s\S]{0,500}/gi,
+    /Maximum\s+Out-of-Pocket[\s\S]{0,500}/gi,
+    /MOOP[\s\S]{0,500}/gi,
+    /Annual\s+Out-of-Pocket[\s\S]{0,500}/gi,
+    /Your\s+Out-of-Pocket[\s\S]{0,500}/gi,
+  ];
+
+  for (const oopPattern of oopSectionPatterns) {
+    if (plan.in_oop_max_individual != null) break;
+    const oopMatches = [...text.matchAll(oopPattern)];
+    for (const oopM of oopMatches) {
+      const oopSection = oopM[0];
+      for (const amtPattern of individualAmountPatterns) {
+        const indivMatch = oopSection.match(amtPattern);
+        if (indivMatch && !plan.in_oop_max_individual) {
+          plan.in_oop_max_individual = parseFloat(indivMatch[1].replace(/,/g, ""));
+          break;
+        }
+      }
+      for (const amtPattern of familyAmountPatterns) {
+        const familyMatch = oopSection.match(amtPattern);
+        if (familyMatch && !plan.in_oop_max_family) {
+          plan.in_oop_max_family = parseFloat(familyMatch[1].replace(/,/g, ""));
+          break;
+        }
+      }
+      if (plan.in_oop_max_individual) break;
     }
-    if (familyMatch && !plan.in_oop_max_family) {
-      plan.in_oop_max_family = parseFloat(familyMatch[1].replace(/,/g, ""));
-    }
-    if (plan.in_oop_max_individual) break; // Got what we need
   }
+
+  // Cross-validation: deductible must be less than OOP max
+  if (plan.in_deductible_individual != null && plan.in_oop_max_individual != null) {
+    if (plan.in_deductible_individual > plan.in_oop_max_individual) {
+      // Swap — the parser got them backwards
+      const temp = plan.in_deductible_individual;
+      plan.in_deductible_individual = plan.in_oop_max_individual;
+      plan.in_oop_max_individual = temp;
+      warnings.push("Swapped deductible/OOP max (deductible was larger)");
+    }
+  }
+
   if (plan.in_oop_max_individual == null) warnings.push("Could not extract in-network OOP max");
 
   // Default coinsurance: "The Percentage of Covered Expenses the Plan Pays: 90%"
@@ -652,7 +761,7 @@ export function parsePlanDocument(text: string): PlanDocParseResult {
       homeDeliveryCopay,
       stepTherapyRequired: null,
       notes: null,
-      confidence: 0.7,
+      confidence: mapping.fallback ? 0.3 : 0.7,
     });
   }
 

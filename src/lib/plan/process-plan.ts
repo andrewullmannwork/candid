@@ -25,6 +25,7 @@ export interface ProcessPlanResult {
   };
   parseWarnings?: string[];
   error?: string;
+  insurerMismatch?: { mismatch: boolean; existingInsurer: string; parsedInsurer: string } | null;
 }
 
 function inferServiceCategory(slug: string): string {
@@ -68,13 +69,13 @@ export async function processPlanDocumentData(
       source: (isFullPlanDoc ? "plan_doc_upload" : "sbc_upload") as string,
       source_document_id: documentId,
       is_active: true,
-      verification_status: "unverified" as const,
+      verification_status: "document_verified" as const,
     };
 
-    // Backfill nulls from profile (user may have manually entered deductible/OOP)
+    // Backfill nulls from profile and detect insurer mismatch
     const { data: userProfile } = await supabase
       .from("profiles")
-      .select("deductible_individual, oop_max_individual")
+      .select("deductible_individual, oop_max_individual, insurer")
       .eq("user_id", doc.user_id)
       .single();
 
@@ -83,12 +84,34 @@ export async function processPlanDocumentData(
       planInsert.in_oop_max_individual ??= userProfile.oop_max_individual;
     }
 
-    // Deactivate existing active plans
-    await supabase
-      .from("insurance_plans")
-      .update({ is_active: false })
-      .eq("user_id", doc.user_id)
-      .eq("is_active", true);
+    // Detect insurer mismatch (card says X, document says Y)
+    const normalizeInsurer = (s: string | null | undefined) =>
+      (s || "").toLowerCase().replace(/\s*(insurance|company|inc|corp|health\s*plan)\s*/gi, "").trim();
+    const profileInsurer = normalizeInsurer(userProfile?.insurer);
+    const parsedInsurer = normalizeInsurer(parseResult.plan.insurer_name);
+    const insurerMismatch = profileInsurer && parsedInsurer
+      && profileInsurer !== parsedInsurer
+      && !profileInsurer.includes(parsedInsurer)
+      && !parsedInsurer.includes(profileInsurer)
+      ? { mismatch: true, existingInsurer: userProfile?.insurer || "", parsedInsurer: parseResult.plan.insurer_name || "" }
+      : null;
+
+    if (insurerMismatch) {
+      console.log(`[process-plan] Insurer mismatch: card="${userProfile?.insurer}" doc="${parseResult.plan.insurer_name}"`);
+      // Save mismatch info on document for frontend to detect
+      await supabase.from("documents").update({ insurer_mismatch: insurerMismatch }).eq("id", documentId);
+      // Don't auto-activate this plan — user must choose
+      planInsert.is_active = false;
+    }
+
+    // Deactivate existing active plans (only if no mismatch — matching insurer replaces)
+    if (!insurerMismatch) {
+      await supabase
+        .from("insurance_plans")
+        .update({ is_active: false })
+        .eq("user_id", doc.user_id)
+        .eq("is_active", true);
+    }
 
     const { data: newPlan, error: planError } = await supabase
       .from("insurance_plans")
@@ -106,11 +129,13 @@ export async function processPlanDocumentData(
       };
     }
 
-    // Link new plan to user's profile
-    await supabase
-      .from("profiles")
-      .update({ active_insurance_plan_id: newPlan.id })
-      .eq("user_id", doc.user_id);
+    // Link new plan to user's profile (only if no insurer mismatch)
+    if (!insurerMismatch) {
+      await supabase
+        .from("profiles")
+        .update({ active_insurance_plan_id: newPlan.id })
+        .eq("user_id", doc.user_id);
+    }
 
     // Create plan_covered_services rows
     let servicesCreated = 0;
@@ -182,7 +207,18 @@ export async function processPlanDocumentData(
         }
       }
 
-      const serviceInserts = [...deduped.values()]
+      // Only add high-confidence services (>= 0.5) to user's plan benefits.
+      // Low-confidence (fallback-generated) services exist in service_catalog
+      // for admin review but don't auto-populate into user benefits.
+      const CONFIDENCE_THRESHOLD = 0.5;
+      const confident = [...deduped.values()].filter(s => s.confidence >= CONFIDENCE_THRESHOLD);
+      const uncertain = [...deduped.values()].filter(s => s.confidence < CONFIDENCE_THRESHOLD);
+
+      if (uncertain.length > 0) {
+        console.log(`[process-plan] ${uncertain.length} low-confidence services sent to admin review: ${uncertain.slice(0, 5).map(s => s.serviceSlug).join(", ")}${uncertain.length > 5 ? "..." : ""}`);
+      }
+
+      const serviceInserts = confident
         .map((s) => ({
           insurance_plan_id: newPlan.id,
           service_id: slugToId.get(s.serviceSlug)!,
@@ -235,11 +271,13 @@ export async function processPlanDocumentData(
       })
       .eq("id", documentId);
 
-    // Set as active plan on profile
-    await supabase
-      .from("profiles")
-      .update({ active_insurance_plan_id: newPlan.id })
-      .eq("user_id", doc.user_id);
+    // Set as active plan on profile (only if no mismatch)
+    if (!insurerMismatch) {
+      await supabase
+        .from("profiles")
+        .update({ active_insurance_plan_id: newPlan.id })
+        .eq("user_id", doc.user_id);
+    }
 
     return {
       success: true,
@@ -255,6 +293,7 @@ export async function processPlanDocumentData(
         servicesExtracted: servicesCreated,
       },
       parseWarnings: parseResult.parseWarnings,
+      insurerMismatch,
     };
   } catch (err) {
     console.error("Plan processing error:", err);

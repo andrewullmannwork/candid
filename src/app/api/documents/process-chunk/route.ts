@@ -145,11 +145,17 @@ export async function POST(req: NextRequest) {
       const isLastChunk = chunkIndex + 1 >= chunks.length;
       const nextStep = isLastChunk ? "classifying" : `ocr_chunk_${chunkIndex + 1}`;
 
-      // Append OCR text
+      // Re-read latest OCR text to avoid clobbering concurrent writes
+      const { data: latestDoc } = await supabase
+        .from("documents")
+        .select("processing_ocr_text")
+        .eq("id", documentId)
+        .single();
+
       await supabase.from("documents").update({
         processing_step: nextStep,
         processing_completed_pages: Math.min(completedPages, doc.processing_total_pages || completedPages),
-        processing_ocr_text: (doc.processing_ocr_text || "") + ocrResult.text,
+        processing_ocr_text: (latestDoc?.processing_ocr_text || "") + ocrResult.text,
       }).eq("id", documentId);
 
       const baseUrl = new URL(req.url).origin;
@@ -171,7 +177,15 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ skip: true, reason: "Already being processed" });
       }
 
-      const ocrText = doc.processing_ocr_text || "";
+      // Fresh read — doc.processing_ocr_text may be stale from request start
+      const { data: freshClassifyDoc } = await supabase
+        .from("documents")
+        .select("processing_ocr_text")
+        .eq("id", documentId)
+        .single();
+      const ocrText = freshClassifyDoc?.processing_ocr_text || "";
+      console.log(`[process-chunk] Classifying: ocrText length=${ocrText.length}`);
+
       const classification = classifyDocument({
         text: ocrText,
         fileName: doc.file_name,
@@ -205,12 +219,20 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ skip: true, reason: "Already being processed" });
       }
 
-      const ocrText = doc.processing_ocr_text || "";
+      // Fresh read — get latest OCR text and classification from DB
+      const { data: freshParseDoc } = await supabase
+        .from("documents")
+        .select("processing_ocr_text, classified_type, classification_confidence, type_mismatch")
+        .eq("id", documentId)
+        .single();
+
+      const ocrText = freshParseDoc?.processing_ocr_text || "";
       const classification = {
-        classifiedType: doc.classified_type || doc.doc_type,
-        confidence: doc.classification_confidence || 0,
-        mismatch: doc.type_mismatch || false,
+        classifiedType: freshParseDoc?.classified_type || doc.doc_type,
+        confidence: freshParseDoc?.classification_confidence || 0,
+        mismatch: freshParseDoc?.type_mismatch || false,
       };
+      console.log(`[process-chunk] Parsing: ocrText length=${ocrText.length}, type=${classification.classifiedType}`);
 
       const result = await processPlanDocumentData(
         supabase,
@@ -219,6 +241,8 @@ export async function POST(req: NextRequest) {
         documentId,
         classification
       );
+
+      console.log(`[process-chunk] Parse result: success=${result.success}, services=${result.servicesCreated}, plan=${result.planData?.planName || "?"}`);
 
       if (!result.success) {
         return NextResponse.json({ error: result.error }, { status: 500 });

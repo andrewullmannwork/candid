@@ -265,6 +265,7 @@ function PlanSummaryCard({ planName, planSummary, dataSource }: {
 
   const verificationLabels: Record<string, string> = {
     unverified: "Unverified",
+    document_verified: "Document verified",
     user_confirmed: "User confirmed",
     cms_matched: "CMS matched",
     multi_user_verified: "Verified",

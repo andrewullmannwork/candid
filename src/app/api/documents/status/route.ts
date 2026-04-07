@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
   const supabase = createServerClient();
   const { data: doc } = await supabase
     .from("documents")
-    .select("status, processing_step, processing_completed_pages, processing_total_pages")
+    .select("status, processing_step, processing_completed_pages, processing_total_pages, insurer_mismatch")
     .eq("id", documentId)
     .single();
 
@@ -38,16 +38,53 @@ export async function GET(req: NextRequest) {
     completedPages: doc.processing_completed_pages || 0,
     totalPages: doc.processing_total_pages || 0,
     needsTrigger,
+    insurerMismatch: doc.insurer_mismatch || null,
   });
 }
 
 export async function POST(req: NextRequest) {
-  const { documentId } = await req.json();
+  const { documentId, action } = await req.json();
   if (!documentId) {
     return NextResponse.json({ error: "documentId required" }, { status: 400 });
   }
 
-  // Trigger the next chunk by calling process-chunk internally
+  const supabase = createServerClient();
+
+  // Activate a mismatched plan (user chose to use the new insurer)
+  if (action === "activate_plan") {
+    const { data: doc } = await supabase
+      .from("documents")
+      .select("user_id, linked_insurance_plan_id")
+      .eq("id", documentId)
+      .single();
+
+    if (!doc?.linked_insurance_plan_id) {
+      return NextResponse.json({ error: "No plan linked to this document" }, { status: 400 });
+    }
+
+    // Deactivate old plans
+    await supabase
+      .from("insurance_plans")
+      .update({ is_active: false })
+      .eq("user_id", doc.user_id)
+      .eq("is_active", true);
+
+    // Activate the new plan
+    await supabase
+      .from("insurance_plans")
+      .update({ is_active: true })
+      .eq("id", doc.linked_insurance_plan_id);
+
+    // Update profile
+    await supabase
+      .from("profiles")
+      .update({ active_insurance_plan_id: doc.linked_insurance_plan_id })
+      .eq("user_id", doc.user_id);
+
+    return NextResponse.json({ success: true });
+  }
+
+  // Default: trigger the next processing chunk
   const chunkUrl = new URL("/api/documents/process-chunk", req.url);
   try {
     const res = await fetch(chunkUrl.toString(), {
@@ -57,7 +94,7 @@ export async function POST(req: NextRequest) {
     });
     const result = await res.json();
     return NextResponse.json(result);
-  } catch (err) {
+  } catch {
     return NextResponse.json({ error: "Trigger failed" }, { status: 500 });
   }
 }
