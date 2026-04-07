@@ -5,6 +5,7 @@ import { FLAGS } from "@/lib/config/feature-flags";
 import { quickClassify } from "@/lib/classifier/quick-classify";
 import { notifyAdminForReview, notifyUserPendingReview } from "@/lib/notifications";
 import { enqueueChunk } from "@/lib/queue/qstash";
+import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -220,12 +221,16 @@ export async function POST(req: NextRequest) {
         .eq("user_id", user.id)
         .single();
 
+      const insurerRaw = profile?.insurer || "Unknown";
+      const insurerMatch = await matchInsurerCatalog(supabase, insurerRaw);
+
       const { error: queueErr } = await supabase.from("insurer_discovery_queue").insert({
-        insurer_name_raw: profile?.insurer || "Unknown",
+        insurer_name_raw: insurerRaw,
         requested_by: user.id,
         source: "user_submitted",
         source_document_id: documentId,
         status: "pending",
+        matched_insurer_id: insurerMatch?.id || null,
       });
       if (queueErr) console.warn("[upload] Discovery queue insert failed:", queueErr.message);
     }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useAdminQuery } from "@/lib/admin/use-admin-query";
 
@@ -435,7 +436,7 @@ export default function PipelinePage() {
                 <tr>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Insurer (raw)</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Source</th>
-                  <th className="px-4 py-3 text-left font-medium text-gray-500">Status</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">Review</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Doc Status</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Doc Type</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Requested</th>
@@ -445,14 +446,29 @@ export default function PipelinePage() {
               <tbody className="divide-y divide-gray-100">
                 {queue.map((item) => (
                   <tr key={item.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 font-medium text-gray-900">{item.insurer_name_raw}</td>
+                    <td className="px-4 py-3 font-medium text-gray-900">
+                      {item.insurer_name_raw}
+                      {item.matched_insurer_id ? (
+                        <span className="ml-1.5 text-[10px] font-medium text-green-600 bg-green-50 px-1.5 py-0.5 rounded">
+                          {catalog.find((c) => c.id === item.matched_insurer_id)?.name || "Matched"}
+                        </span>
+                      ) : (
+                        <span className="ml-1.5 text-[10px] font-medium text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
+                          Not in catalog
+                        </span>
+                      )}
+                    </td>
                     <td className="px-4 py-3">
                       <span className="text-xs text-gray-500 capitalize">{item.source}</span>
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[item.status] || "bg-gray-100"}`}>
-                        {item.status}
-                      </span>
+                      {item.status === "completed" ? (
+                        <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">Reviewed</span>
+                      ) : (
+                        <Link href="/admin/documents/review" className="px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors cursor-pointer">
+                          Needs Review
+                        </Link>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       {(() => {
@@ -501,16 +517,10 @@ export default function PipelinePage() {
                             </button>
                           )}
                           <button
-                            onClick={() => updateQueueStatus(item.id, "processing")}
-                            className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
-                          >
-                            Start
-                          </button>
-                          <button
                             onClick={() => updateQueueStatus(item.id, "completed")}
                             className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700"
                           >
-                            Resolve
+                            Mark Reviewed
                           </button>
                         </div>
                       )}
@@ -519,7 +529,7 @@ export default function PipelinePage() {
                           onClick={() => updateQueueStatus(item.id, "completed")}
                           className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700"
                         >
-                          Complete
+                          Mark Reviewed
                         </button>
                       )}
                     </td>
