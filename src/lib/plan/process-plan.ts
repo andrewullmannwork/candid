@@ -121,10 +121,11 @@ export async function processPlanDocumentData(
 
     if (planError || !newPlan) {
       console.error("Failed to create insurance plan:", planError);
-      await supabase.from("documents").update({ status: "error" }).eq("id", documentId);
+      console.error("Plan insert data:", JSON.stringify(planInsert).slice(0, 500));
+      await supabase.from("documents").update({ status: "error", processing_error: planError?.message || "Plan insert failed" }).eq("id", documentId);
       return {
         success: false,
-        error: "Failed to save parsed plan data",
+        error: `Failed to save parsed plan data: ${planError?.message || "unknown"}`,
         parseWarnings: parseResult.parseWarnings,
       };
     }
