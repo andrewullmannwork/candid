@@ -59,7 +59,7 @@ function UploadForm() {
   const [docType, setDocType] = useState<"eob" | "itemized_bill" | "sbc" | "plan_document">("eob");
   const [uploading, setUploading] = useState(false);
   const [uploaded, setUploaded] = useState(false);
-  const [uploadStatus, setUploadStatus] = useState<"uploaded" | "auto_processed" | "pending_review" | "rejected" | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<"uploading" | "uploaded" | "auto_processed" | "pending_review" | "rejected" | null>(null);
   const [error, setError] = useState("");
   const [fileName, setFileName] = useState("");
   const [showTips, setShowTips] = useState<"eob" | "itemized_bill" | "sbc" | "plan_document" | null>(null);
@@ -170,6 +170,8 @@ function UploadForm() {
     async (file: File) => {
       if (!user) return;
       setUploading(true);
+      setUploaded(true); // Immediately show progress page
+      setUploadStatus("uploading");
       setError("");
       setFileName(file.name);
 
@@ -323,231 +325,173 @@ function UploadForm() {
 
   const typeInfo = DOC_TYPES[docType];
 
-  // ── Success state ───────────────────────────────────────────────────────
+  // ── Progress / Success state — unified flow ─────────────────────────────
+  // Shows immediately when upload starts. Combined progress bar for upload + analysis.
   if (uploaded) {
     const isPendingReview = uploadStatus === "pending_review";
-    const isAutoProcessed = uploadStatus === "auto_processed";
+    const isUploading = uploadStatus === "uploading";
+    const isProcessing = uploadStatus === "auto_processed" && processingProgress?.status !== "processed" && processingProgress?.status !== "error";
+    const isComplete = processingProgress?.status === "processed" && !processingProgress?.insurerMismatch?.mismatch;
+    const isError = processingProgress?.status === "error";
+    const hasMismatch = processingProgress?.status === "processed" && processingProgress?.insurerMismatch?.mismatch;
     const isPlanType = docType === "sbc" || docType === "plan_document";
-    const bgColor = isPendingReview ? "bg-amber-50 border-amber-100" : "bg-green-50 border-green-100";
-    const iconBg = isPendingReview ? "bg-amber-100" : "bg-green-100";
-    const iconColor = isPendingReview ? "text-amber-600" : "text-green-600";
-    const headingColor = isPendingReview ? "text-amber-800" : "text-green-800";
+
+    // Calculate unified progress: upload (0-30%), analysis (30-100%)
+    const getOverallProgress = () => {
+      if (isUploading) return Math.round(uploadProgress * 0.3); // 0-30%
+      if (!processingProgress || !processingProgress.totalPages) return 35; // Classifying
+      if (processingProgress.step === "classifying" || processingProgress.step === "working_classifying") return 85;
+      if (processingProgress.step === "parsing" || processingProgress.step === "working_parsing") return 92;
+      if (isComplete) return 100;
+      // OCR chunks: 30-80%
+      return 30 + Math.round((processingProgress.completedPages / processingProgress.totalPages) * 50);
+    };
+
+    const getStepLabel = () => {
+      if (isUploading) return "Uploading document...";
+      if (isComplete) return "Analysis complete";
+      if (isError) return "Processing error";
+      if (hasMismatch) return "Review needed";
+      if (isPendingReview) return "Under review";
+      if (!processingProgress) return "Starting analysis...";
+      if (processingProgress.step?.startsWith("ocr_chunk") || processingProgress.step?.startsWith("working_ocr")) return "Reading pages...";
+      if (processingProgress.step === "classifying" || processingProgress.step === "working_classifying") return "Classifying document...";
+      if (processingProgress.step === "parsing" || processingProgress.step === "working_parsing") return "Extracting benefits...";
+      return "Processing...";
+    };
+
+    const overallProgress = getOverallProgress();
 
     return (
       <div className="max-w-lg mx-auto">
-        <div className={`p-6 ${bgColor} border rounded-2xl text-center`}>
-          <div className={`w-12 h-12 rounded-full ${iconBg} flex items-center justify-center mx-auto mb-4`}>
-            {isPendingReview ? (
-              <svg className={`w-6 h-6 ${iconColor}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
+        <div className="p-6 bg-white border border-gray-200 rounded-2xl">
+          {/* Header */}
+          <div className="text-center mb-5">
+            {isComplete ? (
+              <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-3">
+                <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+            ) : isError ? (
+              <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center mx-auto mb-3">
+                <svg className="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+              </div>
             ) : (
-              <svg className={`w-6 h-6 ${iconColor}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
-              </svg>
+              <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center mx-auto mb-3">
+                <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+              </div>
             )}
+            <h3 className="text-lg font-semibold text-gray-900">{getStepLabel()}</h3>
+            <p className="text-sm text-gray-500 mt-0.5">{fileName}</p>
           </div>
-          <h3 className={`text-lg font-semibold ${headingColor}`}>
-            {isPendingReview ? "We need a little more time" : "Document uploaded"}
-          </h3>
-          <p className={`mt-1 text-sm ${isPendingReview ? "text-amber-700" : "text-green-700"}`}>{fileName}</p>
 
-          {/* Pending review message */}
+          {/* Combined progress bar (uploading + analyzing) */}
+          {!isComplete && !isError && !hasMismatch && !isPendingReview && (
+            <div className="mb-5">
+              <div className="flex justify-between text-xs text-gray-500 mb-1.5">
+                <span>{isUploading ? "Uploading" : processingProgress?.totalPages ? `${processingProgress.completedPages}/${processingProgress.totalPages} pages` : "Analyzing"}</span>
+                <span>{overallProgress}%</span>
+              </div>
+              <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-blue-600 rounded-full transition-all duration-500"
+                  style={{ width: `${Math.max(3, overallProgress)}%` }}
+                />
+              </div>
+              {/* Step indicators */}
+              <div className="flex justify-between mt-2 text-[10px] text-gray-400">
+                <span className={overallProgress >= 0 ? "text-blue-600 font-medium" : ""}>Upload</span>
+                <span className={overallProgress >= 30 ? "text-blue-600 font-medium" : ""}>Read</span>
+                <span className={overallProgress >= 85 ? "text-blue-600 font-medium" : ""}>Classify</span>
+                <span className={overallProgress >= 92 ? "text-blue-600 font-medium" : ""}>Extract</span>
+              </div>
+            </div>
+          )}
+
+          {/* Pending review */}
           {isPendingReview && (
-            <div className="mt-3 text-left bg-amber-100/50 rounded-xl p-4">
+            <div className="mb-5 p-4 bg-amber-50 border border-amber-100 rounded-xl">
               <p className="text-sm text-amber-800 leading-relaxed">
                 Our team will review your document and have your results ready within 24 hours.
                 We&apos;ll send you an email when it&apos;s done.
               </p>
-              <p className="mt-2 text-xs text-amber-600">
-                For faster results, try uploading a clearer version or your Summary of Benefits and Coverage (SBC) as a PDF.
+            </div>
+          )}
+
+          {/* Error state */}
+          {isError && (
+            <div className="mb-5 p-4 bg-red-50 border border-red-100 rounded-xl">
+              <p className="text-sm text-red-800">Something went wrong during analysis. Our team has been notified.</p>
+              <p className="text-xs text-red-600 mt-1">Please try uploading again or contact support.</p>
+            </div>
+          )}
+
+          {/* Insurer mismatch prompt */}
+          {hasMismatch && processingProgress?.insurerMismatch && (
+            <div className="mb-5 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+              <p className="text-sm font-semibold text-amber-800">This plan doesn&apos;t match your insurance card</p>
+              <p className="text-xs text-amber-700 mt-1">
+                Your card says <strong>{processingProgress.insurerMismatch.existingInsurer}</strong>, but this document is from <strong>{processingProgress.insurerMismatch.parsedInsurer}</strong>.
               </p>
-            </div>
-          )}
-
-          {/* Auto-processed — live progress */}
-          {isAutoProcessed && (
-            <div className="mt-3 text-left bg-green-100 rounded-xl p-3">
-              {processingProgress?.status === "processed" && processingProgress?.insurerMismatch?.mismatch ? (
-                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-                  <p className="text-sm font-semibold text-amber-800">This plan doesn&apos;t match your insurance card</p>
-                  <p className="text-xs text-amber-700 mt-1">
-                    Your card says <strong>{processingProgress.insurerMismatch.existingInsurer}</strong>, but this document is from <strong>{processingProgress.insurerMismatch.parsedInsurer}</strong>.
-                  </p>
-                  <div className="mt-3 flex flex-col gap-2">
-                    <button
-                      onClick={async () => {
-                        // User wants to use the new insurer — update profile and activate new plan
-                        if (!user) return;
-                        const idToken = await user.firebaseUser.getIdToken();
-                        await fetch("/api/profile", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
-                          body: JSON.stringify({ insurer: processingProgress.insurerMismatch?.parsedInsurer }),
-                        });
-                        // Activate the new plan via admin endpoint
-                        await fetch("/api/documents/status", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ documentId, action: "activate_plan" }),
-                        });
-                        window.location.href = "/plan";
-                      }}
-                      className="w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700"
-                    >
-                      Use {processingProgress.insurerMismatch.parsedInsurer}
-                    </button>
-                    <button
-                      onClick={() => {
-                        setUploaded(false);
-                        setUploadStatus(null);
-                        setFileName("");
-                        setProcessingProgress(null);
-                        setDocumentId(null);
-                      }}
-                      className="w-full py-2 border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50"
-                    >
-                      Keep {processingProgress.insurerMismatch.existingInsurer} — upload a matching document
-                    </button>
-                  </div>
-                </div>
-              ) : processingProgress?.status === "processed" ? (
-                <>
-                  <p className="text-xs font-semibold text-green-800">Processing complete</p>
-                  <p className="text-xs text-green-700 mt-1">Redirecting to your benefits...</p>
-                </>
-              ) : processingProgress?.status === "error" ? (
-                <>
-                  <p className="text-xs font-semibold text-red-800">Processing encountered an error</p>
-                  <p className="text-xs text-red-700 mt-1">Our team has been notified. Please try again or contact support.</p>
-                </>
-              ) : (
-                <>
-                  <p className="text-xs font-semibold text-green-800">Analyzing your document...</p>
-                  {processingProgress && processingProgress.totalPages > 0 && (
-                    <div className="mt-2">
-                      <div className="flex justify-between text-[10px] text-green-700 mb-1">
-                        <span>
-                          {processingProgress.step?.startsWith("ocr_chunk") || processingProgress.step?.startsWith("working_ocr")
-                            ? "Reading pages..."
-                            : processingProgress.step === "classifying" || processingProgress.step === "working_classifying"
-                            ? "Classifying document..."
-                            : processingProgress.step === "parsing" || processingProgress.step === "working_parsing"
-                            ? "Extracting benefits..."
-                            : "Starting..."}
-                        </span>
-                        <span>{processingProgress.completedPages} / {processingProgress.totalPages} pages</span>
-                      </div>
-                      <div className="w-full h-1.5 bg-green-200 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-green-600 rounded-full transition-all duration-500"
-                          style={{ width: `${Math.max(5, (processingProgress.completedPages / processingProgress.totalPages) * 100)}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
-                  {!processingProgress && (
-                    <div className="mt-2 flex items-center gap-2">
-                      <div className="w-3 h-3 border-2 border-green-600 border-t-transparent rounded-full animate-spin" />
-                      <span className="text-xs text-green-700">Starting analysis...</span>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-
-          {/* Classification result */}
-          {classificationResult && (
-            <div className="mt-3">
-              <span className={`inline-block px-2.5 py-1 rounded-full text-xs font-medium ${
-                classificationResult.mismatch
-                  ? "bg-amber-100 text-amber-800"
-                  : "bg-blue-100 text-blue-700"
-              }`}>
-                Detected as: {classificationResult.classifiedType === "sbc" ? "Plan Document (SBC)"
-                  : classificationResult.classifiedType === "eob" ? "Explanation of Benefits"
-                  : classificationResult.classifiedType === "itemized_bill" ? "Itemized Bill"
-                  : classificationResult.classifiedType === "insurance_card" ? "Insurance Card"
-                  : classificationResult.classifiedType === "plan_document" ? "Plan Document"
-                  : classificationResult.classifiedType}
-              </span>
-              {classificationResult.mismatch && (
-                <p className="mt-2 text-xs text-amber-700 bg-amber-50 rounded-lg p-2">
-                  This document looks different from what you selected. We processed it as your selected type, but results may be more accurate if the type matches.
-                </p>
-              )}
-            </div>
-          )}
-
-          {/* SBC parse results */}
-          {sbcParsed && (
-            <div className="mt-3 text-left bg-green-100 rounded-xl p-3 space-y-1.5">
-              <p className="text-xs font-semibold text-green-800">Plan details extracted and saved to your profile</p>
-              {sbcParsed.planName && (
-                <p className="text-xs text-green-700">Plan: {sbcParsed.planName}</p>
-              )}
-              <div className="grid grid-cols-2 gap-1 text-xs text-green-700">
-                {sbcParsed.inDeductible != null && (
-                  <p>In-network deductible: ${sbcParsed.inDeductible.toLocaleString()}</p>
-                )}
-                {sbcParsed.outDeductible != null && (
-                  <p>Out-of-network deductible: ${sbcParsed.outDeductible.toLocaleString()}</p>
-                )}
-                {sbcParsed.inOopMax != null && (
-                  <p>In-network OOP max: ${sbcParsed.inOopMax.toLocaleString()}</p>
-                )}
-                {sbcParsed.outOopMax != null && (
-                  <p>Out-of-network OOP max: ${sbcParsed.outOopMax.toLocaleString()}</p>
-                )}
+              <div className="mt-3 flex flex-col gap-2">
+                <button
+                  onClick={async () => {
+                    if (!user) return;
+                    const idToken = await user.firebaseUser.getIdToken();
+                    await fetch("/api/profile", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+                      body: JSON.stringify({ insurer: processingProgress.insurerMismatch?.parsedInsurer }),
+                    });
+                    await fetch("/api/documents/status", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ documentId, action: "activate_plan" }),
+                    });
+                    window.location.href = "/plan";
+                  }}
+                  className="w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700"
+                >
+                  Use {processingProgress.insurerMismatch.parsedInsurer}
+                </button>
+                <button
+                  onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setProcessingProgress(null); setDocumentId(null); }}
+                  className="w-full py-2 border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50"
+                >
+                  Keep {processingProgress.insurerMismatch.existingInsurer} — upload matching document
+                </button>
               </div>
-              {sbcParsed.servicesExtracted != null && sbcParsed.servicesExtracted > 0 && (
-                <p className="text-xs text-green-700">{sbcParsed.servicesExtracted} covered services parsed</p>
-              )}
             </div>
           )}
 
-          {!isPlanType && !sbcParsed && (
-            <p className="mt-3 text-xs text-green-600 bg-green-100 rounded-xl p-3 leading-relaxed">
-              Upload more bills for a more complete picture — the more documents we analyze, the better your audit.
-            </p>
-          )}
-          <div className="mt-5 flex flex-col gap-2">
-            <button
-              onClick={() => {
-                setUploaded(false);
-                setUploadStatus(null);
-                setFileName("");
-                setClassificationResult(null);
-                setSbcParsed(null);
-              }}
-              className="w-full py-2.5 bg-green-600 text-white rounded-xl text-sm font-semibold hover:bg-green-700 transition-colors"
-            >
-              Upload another document
-            </button>
-            {sbcParsed || isPlanType ? (
-              <>
-                <Link
-                  href="/plan"
-                  className="w-full py-2.5 border border-green-200 text-green-700 rounded-xl text-sm font-medium hover:bg-green-50 transition-colors text-center"
-                >
-                  View your benefits
-                </Link>
-                <Link
-                  href="/upload"
-                  onClick={(e) => { e.preventDefault(); setUploaded(false); setUploadStatus(null); setFileName(""); setClassificationResult(null); setSbcParsed(null); setDocType("eob"); }}
-                  className="w-full py-2.5 border border-green-200 text-green-700 rounded-xl text-sm font-medium hover:bg-green-50 transition-colors text-center"
-                >
-                  Upload a bill to audit
-                </Link>
-              </>
-            ) : (
+          {/* Action buttons */}
+          <div className="flex flex-col gap-2">
+            {isComplete && isPlanType && (
+              <Link
+                href="/plan"
+                className="w-full py-2.5 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 transition-colors text-center"
+              >
+                View your benefits
+              </Link>
+            )}
+            {isComplete && !isPlanType && (
               <Link
                 href="/audit"
-                className="w-full py-2.5 border border-green-200 text-green-700 rounded-xl text-sm font-medium hover:bg-green-50 transition-colors text-center"
+                className="w-full py-2.5 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 transition-colors text-center"
               >
-                Done uploading — run audit
+                Run audit
               </Link>
+            )}
+            {(isComplete || isError || isPendingReview) && (
+              <button
+                onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setClassificationResult(null); setSbcParsed(null); setProcessingProgress(null); setDocumentId(null); setUploadProgress(0); }}
+                className="w-full py-2.5 border border-gray-200 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
+              >
+                Upload another document
+              </button>
             )}
           </div>
         </div>
