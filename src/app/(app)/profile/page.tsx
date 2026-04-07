@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
 import type { InsuranceCardFields } from "@/app/api/profile/scan-card/route";
+import { createBrowserClient } from "@/lib/supabase/client";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -273,6 +274,20 @@ function ProfileContent() {
   const [savedGlobal, setSavedGlobal] = useState(false);
   const [editMode, setEditMode] = useState(isOnboarding);
   const [hasExistingProfile, setHasExistingProfile] = useState(false);
+
+  // User documents
+  const [userDocs, setUserDocs] = useState<{ id: string; file_name: string; doc_type: string; status: string; created_at: string }[]>([]);
+
+  useEffect(() => {
+    if (!user) return;
+    const supabase = createBrowserClient();
+    supabase
+      .from("documents")
+      .select("id, file_name, doc_type, status, created_at")
+      .eq("user_id", user.userId)
+      .order("created_at", { ascending: false })
+      .then(({ data }) => { if (data) setUserDocs(data); });
+  }, [user]);
 
   // Card upload state
   const [cardFile, setCardFile] = useState<File | null>(null);
@@ -652,6 +667,49 @@ function ProfileContent() {
           {profile.primary_concern && (
             <ProfileSection title="Your Situation">
               <p className="text-sm text-gray-700 leading-relaxed">{profile.primary_concern}</p>
+            </ProfileSection>
+          )}
+
+          {/* Uploaded documents */}
+          {userDocs.length > 0 && (
+            <ProfileSection title="Your Documents">
+              <div className="col-span-2 space-y-2">
+                {userDocs.map((doc) => (
+                  <div key={doc.id} className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-gray-900 truncate">{doc.file_name}</p>
+                      <p className="text-xs text-gray-400">
+                        {doc.doc_type === "eob" ? "EOB" : doc.doc_type === "itemized_bill" ? "Itemized Bill" : doc.doc_type === "sbc" ? "SBC" : doc.doc_type === "plan_document" ? "Plan Doc" : doc.doc_type}
+                        {" · "}
+                        {new Date(doc.created_at).toLocaleDateString()}
+                      </p>
+                    </div>
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
+                      doc.status === "processed" ? "bg-green-50 text-green-600" :
+                      doc.status === "processing" || doc.status === "queued" ? "bg-blue-50 text-blue-600" :
+                      doc.status === "pending_review" ? "bg-amber-50 text-amber-600" :
+                      doc.status === "error" ? "bg-red-50 text-red-600" :
+                      "bg-gray-100 text-gray-500"
+                    }`}>
+                      {doc.status === "processed" ? "Processed" :
+                       doc.status === "processing" ? "Processing" :
+                       doc.status === "queued" ? "Queued" :
+                       doc.status === "pending_review" ? "Under review" :
+                       doc.status === "error" ? "Error" :
+                       "Uploaded"}
+                    </span>
+                  </div>
+                ))}
+                <Link
+                  href="/upload"
+                  className="inline-flex items-center gap-1 mt-1 text-xs font-semibold text-blue-600 hover:text-blue-800"
+                >
+                  Upload more documents
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                  </svg>
+                </Link>
+              </div>
             </ProfileSection>
           )}
 

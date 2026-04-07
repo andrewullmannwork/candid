@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useConsent } from "@/lib/consent/use-consent";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
+import { createBrowserClient } from "@/lib/supabase/client";
 
 // ─── Document type info ─────────────────────────────────────────────────────
 
@@ -86,6 +87,20 @@ function UploadForm() {
     totalPages: number;
     insurerMismatch?: { mismatch: boolean; existingInsurer?: string; parsedInsurer?: string } | null;
   } | null>(null);
+
+  // Previously uploaded documents
+  const [userDocs, setUserDocs] = useState<{ id: string; file_name: string; doc_type: string; status: string; created_at: string }[]>([]);
+
+  useEffect(() => {
+    if (!user) return;
+    const supabase = createBrowserClient();
+    supabase
+      .from("documents")
+      .select("id, file_name, doc_type, status, created_at")
+      .eq("user_id", user.userId)
+      .order("created_at", { ascending: false })
+      .then(({ data }) => { if (data) setUserDocs(data); });
+  }, [user, uploaded]);
 
   // Consent state — inline, not blocking
   const { hasConsented, loading: consentLoading, grantConsent } = useConsent("health_data_upload");
@@ -654,6 +669,49 @@ function UploadForm() {
           </div>
         )}
       </div>
+
+      {/* ── Previously uploaded documents ──────────────────────────────────── */}
+      {userDocs.length > 0 && (
+        <div className="mt-8">
+          <h2 className="text-sm font-semibold text-gray-900 mb-3">Your uploaded documents</h2>
+          <div className="space-y-2">
+            {userDocs.map((doc) => (
+              <div key={doc.id} className="flex items-center justify-between p-3 bg-white border border-gray-100 rounded-xl">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-8 h-8 rounded-lg bg-gray-50 flex items-center justify-center shrink-0">
+                    <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-gray-900 truncate">{doc.file_name}</p>
+                    <p className="text-xs text-gray-400">
+                      {DOC_TYPES[doc.doc_type as keyof typeof DOC_TYPES]?.short || doc.doc_type}
+                      {" · "}
+                      {new Date(doc.created_at).toLocaleDateString()}
+                    </p>
+                  </div>
+                </div>
+                <span className={`text-xs font-medium px-2 py-1 rounded-full ${
+                  doc.status === "processed" ? "bg-green-50 text-green-700" :
+                  doc.status === "processing" || doc.status === "queued" ? "bg-blue-50 text-blue-700" :
+                  doc.status === "pending_review" ? "bg-amber-50 text-amber-700" :
+                  doc.status === "error" ? "bg-red-50 text-red-700" :
+                  "bg-gray-50 text-gray-500"
+                }`}>
+                  {doc.status === "processed" ? "Processed" :
+                   doc.status === "processing" ? "Processing" :
+                   doc.status === "queued" ? "Queued" :
+                   doc.status === "pending_review" ? "Under review" :
+                   doc.status === "error" ? "Error" :
+                   "Uploaded"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── Inline consent modal — shown on first upload attempt ─────────── */}
       {showConsentModal && (

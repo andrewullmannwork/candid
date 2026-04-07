@@ -13,7 +13,7 @@ interface ServiceCatalogItem {
   created_at: string;
 }
 
-const SERVICE_CATEGORIES = [
+const DEFAULT_SERVICE_CATEGORIES = [
   "office_visit",
   "emergency",
   "hospital",
@@ -25,10 +25,11 @@ const SERVICE_CATEGORIES = [
   "lab",
   "maternity",
   "dme",
+  "long_term_care",
   "other",
-] as const;
+];
 
-const CATEGORY_LABELS: Record<string, string> = {
+const DEFAULT_CATEGORY_LABELS: Record<string, string> = {
   office_visit: "Office Visit",
   emergency: "Emergency",
   hospital: "Hospital",
@@ -40,6 +41,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   lab: "Lab",
   maternity: "Maternity",
   dme: "DME",
+  long_term_care: "Long-Term Care",
   other: "Other / Uncategorized",
 };
 
@@ -103,6 +105,10 @@ export default function PipelinePage() {
   const [addingService, setAddingService] = useState(false);
   const [newServiceName, setNewServiceName] = useState("");
   const [newServiceCategory, setNewServiceCategory] = useState("other");
+  const [categories, setCategories] = useState<string[]>(DEFAULT_SERVICE_CATEGORIES);
+  const [categoryLabels, setCategoryLabels] = useState<Record<string, string>>(DEFAULT_CATEGORY_LABELS);
+  const [addingCategory, setAddingCategory] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
   const [processingStats, setProcessingStats] = useState<ProcessingStats | null>(null);
   const [processingAction, setProcessingAction] = useState(false);
 
@@ -124,6 +130,27 @@ export default function PipelinePage() {
       setQueue(queueData || []);
       setCatalog(catalogData || []);
       setServices(serviceData || []);
+
+      // Merge any categories from existing services that aren't in defaults
+      if (serviceData) {
+        const existingCats = new Set((serviceData as ServiceCatalogItem[]).map((s) => s.category));
+        setCategories((prev) => {
+          const merged = [...prev];
+          for (const cat of existingCats) {
+            if (!merged.includes(cat)) merged.splice(merged.length - 1, 0, cat); // insert before "other"
+          }
+          return merged;
+        });
+        setCategoryLabels((prev) => {
+          const updated = { ...prev };
+          for (const cat of existingCats) {
+            if (!updated[cat]) {
+              updated[cat] = cat.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+            }
+          }
+          return updated;
+        });
+      }
 
       // Load processing stats
       if (user) {
@@ -491,8 +518,8 @@ export default function PipelinePage() {
                   onChange={(e) => setNewServiceCategory(e.target.value)}
                   className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
                 >
-                  {SERVICE_CATEGORIES.map((cat) => (
-                    <option key={cat} value={cat}>{CATEGORY_LABELS[cat]}</option>
+                  {categories.map((cat) => (
+                    <option key={cat} value={cat}>{categoryLabels[cat]}</option>
                   ))}
                 </select>
               </div>
@@ -528,13 +555,64 @@ export default function PipelinePage() {
               </button>
             </div>
           ) : (
-            <div className="mb-4">
+            <div className="mb-4 flex items-center gap-2">
               <button
                 onClick={() => setAddingService(true)}
                 className="px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700"
               >
                 + Add Service
               </button>
+              {addingCategory ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={newCategoryName}
+                    onChange={(e) => setNewCategoryName(e.target.value)}
+                    placeholder="e.g. Long-Term Care"
+                    className="px-3 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    autoFocus
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && newCategoryName.trim()) {
+                        const slug = newCategoryName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+                        if (!categories.includes(slug)) {
+                          setCategories((prev) => [...prev.slice(0, -1), slug, prev[prev.length - 1]]);
+                          setCategoryLabels((prev) => ({ ...prev, [slug]: newCategoryName.trim() }));
+                        }
+                        setNewCategoryName("");
+                        setAddingCategory(false);
+                      }
+                    }}
+                  />
+                  <button
+                    onClick={() => {
+                      const slug = newCategoryName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+                      if (newCategoryName.trim() && !categories.includes(slug)) {
+                        setCategories((prev) => [...prev.slice(0, -1), slug, prev[prev.length - 1]]);
+                        setCategoryLabels((prev) => ({ ...prev, [slug]: newCategoryName.trim() }));
+                      }
+                      setNewCategoryName("");
+                      setAddingCategory(false);
+                    }}
+                    disabled={!newCategoryName.trim()}
+                    className="px-3 py-1.5 text-xs font-medium bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
+                  >
+                    Add
+                  </button>
+                  <button
+                    onClick={() => { setAddingCategory(false); setNewCategoryName(""); }}
+                    className="px-3 py-1.5 text-xs text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setAddingCategory(true)}
+                  className="px-3 py-1.5 text-xs font-medium bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+                >
+                  + Add Category
+                </button>
+              )}
             </div>
           )}
 
@@ -573,9 +651,9 @@ export default function PipelinePage() {
                               : "border-gray-200 bg-white text-gray-700"
                           } focus:outline-none focus:ring-1 focus:ring-blue-500`}
                         >
-                          {SERVICE_CATEGORIES.map((cat) => (
+                          {categories.map((cat) => (
                             <option key={cat} value={cat}>
-                              {CATEGORY_LABELS[cat] || cat}
+                              {categoryLabels[cat] || cat}
                             </option>
                           ))}
                         </select>

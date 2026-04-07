@@ -236,19 +236,18 @@ export default function SignUpPage() {
             </div>
 
             <div className="p-5 bg-blue-50 border border-blue-200 rounded-xl">
-              <h3 className="font-semibold text-blue-900 text-center">Want a head start?</h3>
+              <h3 className="font-semibold text-blue-900 text-center">Explore Benefits Now</h3>
               <p className="mt-2 text-sm text-blue-700 text-center leading-relaxed">
-                Create your account now, fill out your profile, and upload your medical bills so
-                everything is ready when you get access.
+                Create a profile, upload your insurance documents and get immediate access to the Candid Benefits Finder.
               </p>
               <p className="mt-3 text-xs text-blue-600 text-center font-medium">
-                Completed profiles may be approved more quickly.
+                Completed profiles may be approved for Audit Tool access more quickly.
               </p>
               <button
                 onClick={() => setStep("create-account")}
                 className="w-full mt-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-semibold shadow-lg shadow-blue-600/20"
               >
-                Get a Head Start
+                Get Early Access
               </button>
             </div>
           </>

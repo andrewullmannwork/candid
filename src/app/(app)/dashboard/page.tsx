@@ -122,6 +122,7 @@ export default function DashboardPage() {
 
     // Poll for updates while documents are processing
     // Also triggers the next processing step if the chain stalled
+    let prevProcessingIds = new Set<string>();
     const pollInterval = setInterval(async () => {
       if (!user) return;
       const supabase = createBrowserClient();
@@ -136,7 +137,10 @@ export default function DashboardPage() {
           (d) => (d.status === "processing" || d.status === "queued")
             && (d.doc_type === "sbc" || d.doc_type === "plan_document")
         );
+        const currentProcessingIds = new Set(processingDocs.map((d) => d.id));
+
         if (processingDocs.length > 0) {
+          prevProcessingIds = currentProcessingIds;
           // Re-trigger processing for docs that have a pending step (not a "working_" step)
           for (const doc of processingDocs) {
             const step = (doc as { processing_step?: string }).processing_step;
@@ -148,8 +152,9 @@ export default function DashboardPage() {
               }).catch(() => {});
             }
           }
-        } else if (data.some(d => d.status === "processed")) {
-          // Processing completed — reload full dashboard to refresh plan data
+        } else if (prevProcessingIds.size > 0) {
+          // A document just finished processing — reload plan data
+          prevProcessingIds = new Set();
           loadDashboard();
         }
       }
@@ -380,7 +385,7 @@ export default function DashboardPage() {
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-gray-900 truncate">{doc.file_name}</p>
                     <p className="text-xs text-gray-400">
-                      {doc.doc_type === "eob" ? "EOB" : "Itemized Bill"}
+                      {doc.doc_type === "eob" ? "EOB" : doc.doc_type === "sbc" ? "SBC" : doc.doc_type === "plan_document" ? "Plan Doc" : "Itemized Bill"}
                       {" · "}
                       {new Date(doc.created_at).toLocaleDateString()}
                     </p>
@@ -575,13 +580,6 @@ export default function DashboardPage() {
               );
             })()}
 
-            <Link
-              href="/plan"
-              className="block text-center text-xs font-medium text-blue-600 hover:text-blue-700 py-2"
-            >
-              See all {planResult.totalBenefits} benefits →
-            </Link>
-
             {/* Important Notice */}
             <div className="mt-3 p-3 bg-gray-50 border border-gray-100 rounded-xl">
               <p className="text-[10px] text-gray-400 leading-relaxed">
@@ -594,6 +592,13 @@ export default function DashboardPage() {
                 Airgetlam Labs LLC company.
               </p>
             </div>
+
+            <Link
+              href="/plan"
+              className="block text-center text-xs font-medium text-blue-600 hover:text-blue-700 py-2 mt-3"
+            >
+              See all {planResult.totalBenefits} benefits →
+            </Link>
 
             {!planResult.profileComplete && (
               <div className="mt-3 p-3 bg-blue-50 border border-blue-100 rounded-xl">

@@ -19,6 +19,7 @@ const SERVICE_CATEGORY_LABELS: Record<string, string> = {
   maternity: "Maternity",
   dme: "Equipment & Supplies",
   preventive: "Preventive Care",
+  long_term_care: "Long-Term Care",
   other: "Other Services",
   general: "General",
 };
