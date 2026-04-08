@@ -64,7 +64,7 @@ function Field({
   children,
   optional = true,
 }: {
-  label: string;
+  label: React.ReactNode;
   tip?: string;
   children: React.ReactNode;
   optional?: boolean;
@@ -333,9 +333,9 @@ function ProfileContent() {
               copay_rx: p.copay_rx != null ? String(p.copay_rx) : "",
               coinsurance_pct: p.coinsurance_pct != null ? String(p.coinsurance_pct) : "",
               primary_concern: p.primary_concern || "",
-              date_of_birth: p.date_of_birth || "",
+              date_of_birth: p.date_of_birth || prefillDob || "",
               sex: p.sex || "",
-              phone: p.phone || "",
+              phone: p.phone || prefillPhone || "",
               dependents: p.dependents ? JSON.stringify(p.dependents) : "[]",
               matched_plan_id: p.matched_plan_id || "",
               plan_source: p.plan_source || "",
@@ -1056,8 +1056,8 @@ function PlanDetailsStep({
         </div>
       )}
 
-      <Field label="How do you get your insurance?">
-        <div className="grid grid-cols-2 gap-2">
+      <Field label={<>How do you get your insurance?{!planSource && <span className="ml-1 text-amber-500 text-[10px] font-medium">(please select)</span>}</>}>
+        <div className={`grid grid-cols-2 gap-2 ${!planSource ? "ring-1 ring-amber-300 rounded-xl p-1" : ""}`}>
           {PLAN_SOURCES.map((opt) => (
             <button
               key={opt.value}
@@ -1132,9 +1132,9 @@ function PlanDetailsStep({
             {PLAN_TYPES.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </Field>
-        <Field label="State">
-          <select value={state} onChange={(e) => setState(e.target.value)} className={selectClass}>
-            <option value="">State</option>
+        <Field label={<>State{!state && <span className="ml-1 text-amber-500 text-[10px] font-medium">(required)</span>}</>}>
+          <select value={state} onChange={(e) => setState(e.target.value)} className={`${selectClass} ${!state ? "border-amber-300 bg-amber-50/50" : ""}`}>
+            <option value="">Select state</option>
             {US_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </Field>
@@ -1211,7 +1211,7 @@ function CostsStep({
     return (
       <div className="relative">
         <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">$</span>
-        <input type="number" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className={`${inputClass} pl-7`} />
+        <input type="text" inputMode="decimal" value={value} onChange={(e) => onChange(e.target.value.replace(/[^0-9.,]/g, ""))} placeholder={placeholder} className={`${inputClass} pl-7`} />
       </div>
     );
   }
@@ -1280,7 +1280,7 @@ function CostsStep({
           </Field>
           <Field label="Coinsurance">
             <div className="relative">
-              <input type="number" value={coinsurance} onChange={(e) => setCoinsurance(e.target.value)} placeholder="20" min="0" max="100" className={`${inputClass} pr-7`} />
+              <input type="text" inputMode="decimal" value={coinsurance} onChange={(e) => setCoinsurance(e.target.value.replace(/[^0-9.]/g, ""))} placeholder="20" className={`${inputClass} pr-7`} />
               <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">%</span>
             </div>
           </Field>
@@ -1362,9 +1362,10 @@ function AboutYouStep({
           type="date"
           value={dob}
           onChange={(e) => setDob(e.target.value)}
+          max={new Date(new Date().setFullYear(new Date().getFullYear() - 18)).toISOString().split("T")[0]}
           className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
         />
-        <Tip>Used to recommend age-appropriate screenings (e.g. colonoscopy at 45+, mammogram at 40+).</Tip>
+        <Tip>Used to recommend age-appropriate screenings (e.g. colonoscopy at 45+, mammogram at 40+). Must be 18 or older.</Tip>
       </Field>
 
       <Field label="Sex assigned at birth">
@@ -1508,6 +1509,7 @@ function DependentsStep({
                     type="date"
                     value={dep.date_of_birth}
                     onChange={(e) => updateDep(idx, "date_of_birth", e.target.value)}
+                    max={new Date().toISOString().split("T")[0]}
                     className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>

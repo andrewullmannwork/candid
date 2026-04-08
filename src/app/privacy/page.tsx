@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { CONSENT_DOCUMENTS } from "@/lib/consent/consent-documents";
+import { LegalText } from "@/components/legal-text";
 
 export const metadata: Metadata = {
   title: "Privacy Policy",
@@ -21,9 +22,7 @@ export default function PrivacyPage() {
         Version {privacyDoc.version} &middot; Effective {privacyDoc.effectiveDate}
       </p>
       <div className="mt-8 prose prose-gray max-w-none">
-        <pre className="whitespace-pre-wrap font-sans text-base text-gray-700 leading-relaxed">
-          {privacyDoc.fullText}
-        </pre>
+        <LegalText text={privacyDoc.fullText} />
       </div>
       <div className="mt-12 border-t pt-8 text-sm text-gray-500 space-y-2">
         <p>
