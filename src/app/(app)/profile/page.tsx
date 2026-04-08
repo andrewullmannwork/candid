@@ -577,7 +577,12 @@ function ProfileContent() {
     return (
       <div className="max-w-lg mx-auto">
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-bold text-gray-900">Your Profile</h1>
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Your Profile</h1>
+            {allFilled && (
+              <p className="text-xs text-green-600 font-medium mt-0.5">Profile 100% complete</p>
+            )}
+          </div>
           <button
             onClick={() => { setEditMode(true); setStep(1); }}
             className="px-4 py-2 text-sm font-semibold text-blue-600 border border-blue-200 rounded-xl hover:bg-blue-50 transition-colors"

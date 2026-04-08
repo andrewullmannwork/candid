@@ -3,8 +3,6 @@
 import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { sendPasswordResetEmail } from "firebase/auth";
-import { getFirebaseAuth } from "@/lib/firebase/client";
 import { useAuth } from "@/lib/auth/auth-context";
 
 export default function SignInPage() {
@@ -56,9 +54,17 @@ function SignInContent() {
       return;
     }
     try {
-      await sendPasswordResetEmail(getFirebaseAuth(), email);
-      setResetSent(true);
-      setError("");
+      const res = await fetch("/api/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      if (res.ok) {
+        setResetSent(true);
+        setError("");
+      } else {
+        setError("Could not send reset email. Please check the address and try again.");
+      }
     } catch {
       setError("Could not send reset email. Please check the address and try again.");
     }
