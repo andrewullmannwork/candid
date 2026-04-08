@@ -17,19 +17,27 @@ export async function POST(req: NextRequest) {
     // Resend webhook only includes metadata — fetch full email content via API
     let html = "";
     let text = "";
+    console.log("[email-forward] Webhook payload:", JSON.stringify(body).slice(0, 500));
     if (email_id && process.env.RESEND_API_KEY) {
       try {
-        const emailRes = await fetch(`${RESEND_API_BASE}/emails/receiving/${email_id}`, {
+        const url = `${RESEND_API_BASE}/emails/receiving/${email_id}`;
+        console.log("[email-forward] Fetching email content from:", url);
+        const emailRes = await fetch(url, {
           headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}` },
         });
+        const emailData = await emailRes.json();
+        console.log("[email-forward] API response status:", emailRes.status, "keys:", Object.keys(emailData));
         if (emailRes.ok) {
-          const emailData = await emailRes.json();
           html = emailData.html || "";
           text = emailData.text || "";
+        } else {
+          console.error("[email-forward] API error:", JSON.stringify(emailData).slice(0, 300));
         }
       } catch (fetchErr) {
         console.error("[email-forward] Failed to fetch email content:", fetchErr);
       }
+    } else {
+      console.error("[email-forward] Missing email_id or API key. email_id:", email_id, "hasKey:", !!process.env.RESEND_API_KEY);
     }
 
     await resend.emails.send({
