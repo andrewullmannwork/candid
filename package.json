@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.86.1",
     "@google-cloud/documentai": "^9.6.0",
     "@supabase/supabase-js": "^2.99.3",
     "@upstash/qstash": "^2.10.1",

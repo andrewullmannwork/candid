@@ -7,6 +7,8 @@
 import { createServerClient } from "@/lib/supabase/server";
 import { parseSBCText } from "@/lib/plan/sbc-parser";
 import { parsePlanDocument } from "@/lib/plan/plan-doc-parser";
+import { enrichServicesWithClaude } from "@/lib/plan/claude-extractor";
+import { FLAGS } from "@/lib/config/feature-flags";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
@@ -62,6 +64,21 @@ export async function processPlanDocumentData(
     const parseResult = isFullPlanDoc
       ? parsePlanDocument(ocrText)
       : parseSBCText(ocrText, documentId);
+
+    // Enrich services with Claude Haiku if enabled (~$0.01/doc)
+    if (FLAGS.CLAUDE_EXTRACTION_ENABLED && parseResult.services.length > 0) {
+      try {
+        const enriched = await enrichServicesWithClaude(
+          parseResult.services,
+          ocrText,
+          parseResult.plan.plan_name || null
+        );
+        parseResult.services = enriched;
+        console.log(`[process-plan] Claude enriched ${enriched.length} services`);
+      } catch (err) {
+        console.warn("[process-plan] Claude enrichment failed, using regex results:", err);
+      }
+    }
 
     const planInsert = {
       ...parseResult.plan,
