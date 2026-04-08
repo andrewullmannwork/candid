@@ -201,6 +201,37 @@ export async function processPlanDocumentData(
 
         console.log(`[process-plan] Auto-created ${newSlugs.length} service_catalog entries: ${newSlugs.slice(0, 5).join(", ")}${newSlugs.length > 5 ? "..." : ""}`);
 
+        // Create matching CANDID concepts for new services
+        const conceptInserts = newEntries.map((entry) => ({
+          vocabulary_id: "CANDID",
+          concept_code: entry.slug,
+          concept_name: entry.name,
+          concept_class: "service",
+          domain: "service",
+        }));
+        for (let i = 0; i < conceptInserts.length; i += BATCH_SIZE) {
+          const batch = conceptInserts.slice(i, i + BATCH_SIZE);
+          await supabase.from("concepts").upsert(batch, { onConflict: "vocabulary_id,concept_code" });
+        }
+
+        // Backfill concept_id on new service_catalog rows
+        const { data: newConcepts } = await supabase
+          .from("concepts")
+          .select("id, concept_code")
+          .eq("vocabulary_id", "CANDID")
+          .eq("concept_class", "service")
+          .in("concept_code", newSlugs);
+        if (newConcepts) {
+          for (const concept of newConcepts) {
+            await supabase
+              .from("service_catalog")
+              .update({ concept_id: concept.id })
+              .eq("slug", concept.concept_code)
+              .is("concept_id", null);
+          }
+          console.log(`[process-plan] Created ${newConcepts.length} CANDID concepts + backfilled concept_id`);
+        }
+
         const otherSlugs = newEntries.filter(e => e.category === "other").map(e => e.slug);
         if (otherSlugs.length > 0) {
           try {
@@ -213,6 +244,20 @@ export async function processPlanDocumentData(
       }
 
       console.log(`[process-plan] slugToId has ${slugToId.size} entries for ${allSlugs.length} service slugs`);
+
+      // Build concept_id map: slug → concept UUID
+      const conceptIdMap = new Map<string, string>();
+      for (let i = 0; i < allSlugs.length; i += BATCH_SIZE) {
+        const batch = allSlugs.slice(i, i + BATCH_SIZE);
+        const { data: svcWithConcepts } = await supabase
+          .from("service_catalog")
+          .select("slug, concept_id")
+          .in("slug", batch);
+        for (const svc of svcWithConcepts || []) {
+          if (svc.concept_id) conceptIdMap.set(svc.slug, svc.concept_id);
+        }
+      }
+      console.log(`[process-plan] conceptIdMap has ${conceptIdMap.size} entries for ${allSlugs.length} slugs`);
 
       // Deduplicate: keep highest-confidence per (slug, place_of_service)
       const deduped = new Map<string, typeof parseResult.services[0]>();
@@ -240,6 +285,7 @@ export async function processPlanDocumentData(
         .map((s) => ({
           insurance_plan_id: newPlan.id,
           service_id: slugToId.get(s.serviceSlug)!,
+          concept_id: conceptIdMap.get(s.serviceSlug) || null,
           place_of_service: s.placeOfService || "any",
           in_copay: s.inCopay,
           in_coinsurance: s.inCoinsurance,
