@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
     let text = "";
     if (email_id && process.env.RESEND_API_KEY) {
       try {
-        const emailRes = await fetch(`${RESEND_API_BASE}/emails/${email_id}`, {
+        const emailRes = await fetch(`${RESEND_API_BASE}/emails/receiving/${email_id}`, {
           headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}` },
         });
         if (emailRes.ok) {
