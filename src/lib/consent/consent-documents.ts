@@ -35,18 +35,18 @@ function defineConsent(
 
 export const CONSENT_DOCUMENTS: Record<ConsentType, ConsentDocument> = {
   // ===========================================================================
-  // #5 — TERMS OF SERVICE (v1.2)
+  // #5 — TERMS OF SERVICE (v1.4)
   // Covers: service scope, document prep disclaimer, subscriptions,
   //         IP, liability, indemnification, arbitration, governing law.
   // ===========================================================================
   tos: defineConsent(
     "tos",
-    "1.3",
-    "2026-03-26",
+    "1.4",
+    "2026-04-08",
     "Terms of Service",
     "By creating an account, you agree to our Terms of Service governing your use of Candid.",
     `CANDID TERMS OF SERVICE
-Version 1.3 — Effective March 26, 2026
+Version 1.4 — Effective April 8, 2026
 Operated by Airgetlam Labs LLC
 
 1. ACCEPTANCE OF TERMS
@@ -62,6 +62,12 @@ Candid is a consumer financial technology platform that provides the following s
 (c) Candid Claim (Paid Tier) — Factual inquiry template generation, documentation aggregation, and educational dispute workflows to help you contest identified billing errors.
 (d) Candid Case — A directory of attorneys who specialize in healthcare billing disputes, medical debt, and insurance coverage issues.
 (e) Candid Care — Price transparency estimates comparing procedure costs across providers in your area, powered by aggregated public and user-contributed data.
+(f) Insurance card scanning — upload your insurance card for automatic extraction of plan details.
+(g) Email document intake — forward healthcare documents to your Candid email address for processing.
+
+Candid matches you with relevant insurance plan data from public sources (CMS Marketplace API) and our canonical plan database built from de-identified user-contributed plan documents.
+
+Marketplace listings on Candid (attorneys, providers, health services) are for informational purposes only and do not constitute an endorsement, referral, or recommendation by Candid or Airgetlam Labs LLC.
 
 4. DOCUMENT PREPARATION — NOT LEGAL ADVICE OR LEGAL DETERMINATIONS
 IMPORTANT: Candid is a factual inquiry template tool and educational resource. Candid does NOT:
@@ -129,18 +135,18 @@ Contact us via your account Settings page or by submitting a support ticket at c
   ),
 
   // ===========================================================================
-  // #6 — PRIVACY POLICY (v1.2)
+  // #6 — PRIVACY POLICY (v1.4)
   // Covers: data categories, purposes, processors, retention, no sale,
   //         CCPA/CPRA rights (incl. GPC), WA MHMD Act rights, cookies, security, children.
   // ===========================================================================
   privacy_policy: defineConsent(
     "privacy_policy",
-    "1.3",
-    "2026-03-26",
+    "1.4",
+    "2026-04-08",
     "Privacy Policy",
     "Our privacy policy explains how we collect, use, and protect your personal information.",
     `CANDID PRIVACY POLICY
-Version 1.3 — Effective March 26, 2026
+Version 1.4 — Effective April 8, 2026
 Operated by Airgetlam Labs LLC
 
 1. SCOPE
@@ -169,6 +175,8 @@ This Privacy Policy describes how Airgetlam Labs LLC ("Candid," "we," "us") coll
 
 (e) Payment Information — Subscription payment details are collected and processed directly by Stripe, Inc. We do not store your credit card number, bank account number, or other payment instrument details on our servers. We receive from Stripe only: subscription status, billing period, and a truncated card identifier for display purposes.
 
+(f) Email-Forwarded Documents — If you forward documents to us via email (e.g., to support@candidclaim.com), we collect: the sender's email address, email subject and body text, and any attachments. Email-forwarded documents are processed the same way as directly uploaded documents.
+
 3. INFORMATION WE DO NOT COLLECT UNDER THIS POLICY
 Health data (medical bills, EOBs, insurance documents, audit results, billing codes) is NOT covered by this Privacy Policy. Collection and use of health data requires separate, informed consent under our Health Data Consent document. This separation is required by the Washington My Health My Data Act and recommended under CCPA/CPRA for sensitive data categories.
 
@@ -195,8 +203,11 @@ We share limited personal data with the following service providers, each operat
 | Supabase (Supabase Inc.) | Database hosting | Account info, profile, usage records |
 | Firebase / Google Cloud Platform | Authentication, file storage | Email, auth tokens, uploaded files |
 | Stripe, Inc. | Payment processing | Email, subscription events |
-| Resend (Resend Inc.) | Transactional email | Email address, name |
+| Resend (Resend Inc.) | Transactional email (outbound and inbound) | Email address, name, inbound email content |
 | Vercel Inc. | Application hosting | IP address (server logs, auto-deleted) |
+| Upstash (QStash) | Asynchronous document processing queue | Document processing job references |
+| Slack (Salesforce) | Admin operational alerts | System-level alerts (no user-identifiable data) |
+| Google Cloud Document AI | Document OCR and parsing | Uploaded document images (processed in-memory, not stored by Google) |
 
 We do not share your data with advertising networks, social media platforms, or data brokers.
 
@@ -271,19 +282,19 @@ Contact us via your account Settings page or by submitting a support ticket at c
   ),
 
   // ===========================================================================
-  // #7 — HEALTH DATA CONSENT (v1.2)
+  // #7 — HEALTH DATA CONSENT (v1.4)
   // WA My Health My Data Act compliant: separate consent, specific categories,
   // specific purposes, named processors, retention period, revocation, deletion.
   // Also addresses CCPA/CPRA sensitive data and HIPAA non-applicability.
   // ===========================================================================
   health_data_upload: defineConsent(
     "health_data_upload",
-    "1.3",
-    "2026-03-26",
+    "1.4",
+    "2026-04-08",
     "Health Data Consent",
     "Separate consent required before uploading medical bills, EOBs, or other health-related documents.",
     `CANDID HEALTH DATA CONSENT
-Version 1.3 — Effective March 26, 2026
+Version 1.4 — Effective April 8, 2026
 Operated by Airgetlam Labs LLC
 
 IMPORTANT: This is a SEPARATE consent from the Terms of Service and Privacy Policy. Under the Washington My Health My Data Act (RCW 19.373) and the California Consumer Privacy Act (CCPA/CPRA), your medical billing data is classified as sensitive consumer health data requiring specific, informed consent before collection. You must accept this consent before uploading any health-related documents to Candid.
@@ -293,10 +304,13 @@ When you upload documents to Candid, we may collect and process the following ca
 - Medical bills and itemized hospital bills (provider names, dates of service, charge amounts)
 - Explanation of Benefits (EOB) documents (insurer determinations, allowed amounts, patient responsibility)
 - Insurance statements and Summary of Benefits and Coverage (SBC) documents
+- Insurance card images (member ID, group number, plan identifiers, insurer contact information)
+- Claims data and billing line items (claim numbers, adjudication details, per-charge amounts, adjustment reason codes)
 - Procedure codes (CPT, HCPCS) and diagnosis codes (ICD-10) extracted from your documents
 - Provider names, facility names, and National Provider Identifiers (NPIs) from your documents
 - Charge amounts, payment amounts, adjustment amounts, and balance-due amounts
-We do NOT collect or store: Social Security numbers, medical record numbers, clinical notes, lab results, prescription information, or diagnostic images. If such information appears in uploaded documents, we do not extract or retain it.
+- Dispute records (generated letter drafts, dispute status, correspondence tracking)
+We do NOT collect or store: Social Security numbers, medical record numbers, clinical notes, lab results, or diagnostic images. We do NOT collect individual prescription fill records or pharmacy history. We DO extract plan formulary information (which drug categories your plan covers and at what tier) from plan documents — this describes your plan's drug coverage structure, not your personal prescriptions. If such information appears in uploaded documents, we do not extract or retain it.
 
 2. SPECIFIC PURPOSES FOR WHICH YOUR HEALTH DATA IS USED
 Your uploaded health documents will be used exclusively for:
@@ -305,6 +319,7 @@ Your uploaded health documents will be used exclusively for:
 (c) Benefit Matching — Comparing procedures on your bills against your insurance plan's covered benefits to identify coverage gaps or missed in-network savings.
 (d) Dispute Letter Generation — Populating dispute letter templates with facts extracted from your documents, including provider names, dates, codes, and charge amounts. You review and send all letters yourself.
 (e) Cost Estimation — Displaying price comparison estimates for your specific procedures across providers in your area.
+(f) Plan Catalog Improvement — Contributing extracted plan structure data (benefits, cost-sharing terms, formulary tiers) to a de-identified canonical plan database. This improves benefit matching accuracy for all users with similar plans. Individual user identity is never associated with canonical plan records.
 Your health data will NOT be used for any purpose not listed above without obtaining separate, additional consent.
 
 3. THIRD-PARTY PROCESSORS WHO ACCESS YOUR HEALTH DATA
@@ -315,6 +330,7 @@ The following service providers may process your health data under strict data p
 | Google Cloud Platform (Document AI) | OCR and document parsing | Uploaded document images (processed, not stored by Google beyond processing) |
 | Supabase (Supabase Inc.) | Encrypted database storage | Extracted billing data, audit results |
 | Firebase / Google Cloud Storage | Encrypted file storage | Original uploaded document files |
+| Upstash (QStash) | Asynchronous document processing queue | Document processing job references (not document content) |
 
 No other third party receives, accesses, or processes your identifiable health data. We do not share your health documents with advertisers, data brokers, insurers, providers, employers, or any other party.
 
@@ -375,18 +391,18 @@ Contact us via your account Settings page or by submitting a support ticket at c
   ),
 
   // ===========================================================================
-  // MARKETPLACE DATA SHARING CONSENT (v1.2)
+  // MARKETPLACE DATA SHARING CONSENT (v1.4)
   // Replaces placeholder with real consent for when marketplace features launch.
   // Includes CCPA/MHMDA "sale" disclosure per legal review.
   // ===========================================================================
   marketplace_data_sharing: defineConsent(
     "marketplace_data_sharing",
-    "1.3",
-    "2026-03-26",
+    "1.4",
+    "2026-04-08",
     "Marketplace Data Sharing",
     "Consent to share limited profile data with marketplace service providers when using Candid Case or Candid Care.",
     `CANDID MARKETPLACE DATA SHARING CONSENT
-Version 1.3 — Effective March 26, 2026
+Version 1.4 — Effective April 8, 2026
 Operated by Airgetlam Labs LLC
 
 This consent is required before using Candid's marketplace features (Candid Case attorney directory and Candid Care provider listings). This is a SEPARATE consent from the Terms of Service, Privacy Policy, and Health Data Consent.
@@ -431,18 +447,18 @@ Contact us via your account Settings page or by submitting a support ticket at c
   ),
 
   // ===========================================================================
-  // #9 — AGGREGATE DATA RESEARCH CONSENT (v1.2)
+  // #9 — AGGREGATE DATA RESEARCH CONSENT (v1.4)
   // Replaces placeholder. Covers de-identification methodology, what's included
   // and excluded, right to opt out, no impact on features.
   // ===========================================================================
   aggregate_data_monetization: defineConsent(
     "aggregate_data_monetization",
-    "1.3",
-    "2026-03-26",
+    "1.4",
+    "2026-04-08",
     "Aggregate Data Research",
     "Consent to include your anonymized, de-identified data in aggregate research datasets.",
     `CANDID AGGREGATE DATA RESEARCH CONSENT
-Version 1.3 — Effective March 26, 2026
+Version 1.4 — Effective April 8, 2026
 Operated by Airgetlam Labs LLC
 
 This consent is SEPARATE from all other Candid consents (Terms of Service, Privacy Policy, Health Data Consent, and Marketplace Data Sharing). Declining this consent will NOT affect your access to any Candid feature.
@@ -482,21 +498,24 @@ Your individual identity, documents, and personal information are NEVER included
 Aggregate datasets may be used for:
 (a) Powering the Candid Care price transparency tool for all users
 (b) Published research reports on healthcare pricing trends
-(c) Licensed access by researchers, journalists, and advocacy organizations
+(c) Licensed access by researchers, journalists, and advocacy organizations. Licensed access may involve fees paid to Candid by research institutions. Revenue from aggregate data licensing is used to improve the platform and is never tied to individual user data.
 (d) Public policy analysis and regulatory submissions
 Aggregate data is NEVER used for: targeted advertising, individual credit or insurance decisions, employer screening, or law enforcement purposes.
 
-6. YOUR RIGHT TO OPT OUT
+6. SAFEGUARDS
+Minimum aggregation threshold: No statistic or data point is displayed unless it represents data from at least 5 distinct users. This k-anonymity floor prevents individual identification through small-sample inference.
+
+7. YOUR RIGHT TO OPT OUT
 You may revoke this consent at any time. Revoking consent will:
 - Exclude your data from future aggregate dataset updates
 - Not remove your previously contributed data from datasets already published or distributed (because it is de-identified and cannot be traced back to you)
 - Not affect your access to any Candid feature
 To revoke, visit your account Settings page or submit a support ticket.
 
-7. COMPENSATION
+8. COMPENSATION
 You will not receive financial compensation for data included in aggregate datasets. The benefit to you is improved price transparency data within the Candid Care tool, which all users share.
 
-8. CONTACT
+9. CONTACT
 Airgetlam Labs LLC
 Contact us via your account Settings page or by submitting a support ticket at candidclaim.com.`
   ),
