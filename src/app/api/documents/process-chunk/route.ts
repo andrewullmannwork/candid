@@ -161,16 +161,54 @@ export async function POST(req: NextRequest) {
         .eq("id", documentId)
         .single();
 
+      const fullOcrText = (latestDoc?.processing_ocr_text || "") + ocrResult.text;
+
       await supabase.from("documents").update({
         processing_step: nextStep,
         processing_completed_pages: Math.min(completedPages, doc.processing_total_pages || completedPages),
-        processing_ocr_text: (latestDoc?.processing_ocr_text || "") + ocrResult.text,
+        processing_ocr_text: fullOcrText,
       }).eq("id", documentId);
 
-      const baseUrl = new URL(req.url).origin;
-      await enqueueChunk(documentId, baseUrl);
+      if (!isLastChunk) {
+        // More OCR chunks needed — enqueue via QStash
+        const baseUrl = new URL(req.url).origin;
+        await enqueueChunk(documentId, baseUrl);
+        return NextResponse.json({ step: nextStep, completedPages, continue: true });
+      }
 
-      return NextResponse.json({ step: nextStep, completedPages, continue: true });
+      // Last OCR chunk — run classify + extract + save INLINE (no QStash handoff).
+      // This avoids QStash response timeout issues on long Haiku calls.
+      console.log(`[process-chunk] Last OCR chunk done. Running inline classify+extract+save...`);
+
+      const { classifyWithHaiku } = await import("@/lib/classifier/haiku-classify");
+      const classification = await classifyWithHaiku(fullOcrText, doc.file_name, doc.doc_type);
+
+      if (!classification.isHealthcareDocument) {
+        await supabase.from("documents").update({
+          status: "error",
+          processing_error: "This does not appear to be a healthcare document.",
+          classified_type: classification.classifiedType,
+          classification_confidence: classification.confidence,
+        }).eq("id", documentId);
+        return NextResponse.json({ step: "rejected", continue: false });
+      }
+
+      await supabase.from("documents").update({
+        classified_type: classification.classifiedType,
+        classification_confidence: classification.confidence,
+        type_mismatch: classification.classifiedType !== doc.doc_type,
+      }).eq("id", documentId);
+
+      const result = await processPlanDocumentData(
+        supabase,
+        { id: doc.id, user_id: doc.user_id, file_name: doc.file_name },
+        fullOcrText,
+        documentId,
+        { classifiedType: classification.classifiedType, confidence: classification.confidence, mismatch: classification.classifiedType !== doc.doc_type }
+      );
+
+      console.log(`[process-chunk] Inline result: success=${result.success}, services=${result.servicesCreated}`);
+      return NextResponse.json({ step: "done", continue: false, ...result });
     }
 
     // ── STEP: CLASSIFYING + EXTRACTING + SAVING (all inline) ──────────────
