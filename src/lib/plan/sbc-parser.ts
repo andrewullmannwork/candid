@@ -556,8 +556,9 @@ export function parseSBCText(text: string, documentId?: string): SBCParseResult 
     const match = matchServiceSlug(line);
     if (!match) continue;
 
-    // Gather context: the next several lines likely contain cost sharing info
-    const context = lines.slice(i, Math.min(i + 8, lines.length)).join(" ");
+    // Gather context: the next few lines contain cost sharing info
+    // Reduced from 8 to 4 to prevent bleeding into adjacent services
+    const context = lines.slice(i, Math.min(i + 4, lines.length)).join(" ");
 
     // Look for in-network and out-of-network patterns in context
     // SBC format: in-network column first, then out-of-network

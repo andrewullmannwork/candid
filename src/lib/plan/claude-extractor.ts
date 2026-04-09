@@ -1,156 +1,169 @@
 /**
- * Claude Haiku post-processing for plan document parsing.
- * Takes regex-extracted services + raw OCR text, returns enriched services
- * with accurate names, full descriptions, visit limits, and coverage conditions.
+ * Claude Haiku primary extractor for SBC/plan documents.
+ * Sends the full OCR text to Haiku for structured service extraction.
+ * This replaces the regex parser as the primary extractor when enabled.
  *
- * Cost: ~$0.01/document (Haiku is $0.25/1M input tokens, typical doc ~3K tokens)
+ * Cost: ~$0.01/document (Haiku at $1/MTok input, typical SBC ~8K tokens)
  */
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { SBCParsedService } from "./sbc-parser";
 
-const client = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY || "",
-});
-
-interface EnrichedService {
-  serviceSlug: string;
-  serviceName: string;
-  fullDescription: string;
-  visitLimit: string | null;
-  priorAuthRequired: boolean | null;
-  referralRequired: boolean | null;
-  coverageConditions: string | null;
-  inCostDescription: string;
-  outCostDescription: string;
-  confidence: number;
+function getClient(): Anthropic | null {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    console.warn("[claude-extractor] ANTHROPIC_API_KEY not set — Haiku extraction unavailable");
+    return null;
+  }
+  return new Anthropic({ apiKey });
 }
 
 /**
- * Extract surrounding context (up to 600 chars) for a service from the OCR text.
+ * Primary SBC/plan document service extractor using Claude Haiku.
+ * Sends the full OCR text and extracts structured service data directly.
+ * Returns a complete SBCParsedService[] — no regex parser needed.
  */
-function getServiceContext(ocrText: string, serviceSlug: string, serviceName: string): string {
-  const normalized = ocrText.toLowerCase();
-  const searchTerms = [
-    serviceName.toLowerCase(),
-    serviceSlug.replace(/_/g, " "),
-    // Try shorter versions
-    serviceName.toLowerCase().split(/\s+/).slice(0, 2).join(" "),
-  ];
-
-  for (const term of searchTerms) {
-    const idx = normalized.indexOf(term);
-    if (idx >= 0) {
-      const start = Math.max(0, idx - 100);
-      const end = Math.min(ocrText.length, idx + 500);
-      return ocrText.slice(start, end);
-    }
+export async function extractServicesWithClaude(
+  ocrText: string,
+  planName: string | null,
+  isFullPlanDoc: boolean
+): Promise<{ services: SBCParsedService[]; fromClaude: boolean }> {
+  const client = getClient();
+  if (!client) {
+    console.log("[claude-extractor] No API key — returning empty (will fall back to regex)");
+    return { services: [], fromClaude: false };
   }
 
-  return "";
+  console.log("[claude-extractor] Starting Haiku extraction for:", planName || "unknown plan", "| text length:", ocrText.length);
+
+  // Truncate very long documents to stay within token limits (~100K chars ≈ 25K tokens)
+  const truncated = ocrText.length > 100000 ? ocrText.slice(0, 100000) : ocrText;
+
+  const prompt = `You are parsing ${isFullPlanDoc ? "a full insurance plan benefits document" : "a Summary of Benefits and Coverage (SBC) document"}.
+
+Plan name: ${planName || "Unknown"}
+
+Extract EVERY actual healthcare service covered by this plan. For each service, return a JSON object with these exact fields:
+
+{
+  "serviceSlug": "lowercase_underscore_identifier",
+  "serviceName": "Clean Human-Readable Service Name",
+  "inCopay": number or null,
+  "inCoinsurance": decimal (0.10 for 10%) or null,
+  "inDeductibleApplies": true/false/null,
+  "inCostDescription": "Concise: e.g., '$30 copay per visit' or '10% coinsurance after deductible'",
+  "outCopay": number or null,
+  "outCoinsurance": decimal or null,
+  "outDeductibleApplies": true/false/null,
+  "outCostDescription": "Concise out-of-network cost or empty string",
+  "priorAuthRequired": true/false/null,
+  "annualLimit": "e.g., '60 visits per year' or null",
+  "stepTherapyRequired": true/false/null,
+  "covered": true/false,
+  "coverageConditions": "Special conditions or null",
+  "confidence": 0.5-1.0
+}
+
+Use these standard slugs when they match:
+pcp_visit, specialist_visit, preventive_care, diagnostic_test, advanced_imaging, generic_rx_tier1, preferred_brand_rx, non_preferred_rx, specialty_rx, outpatient_surgery_facility, outpatient_surgery_physician, er_visit, emergency_transport, urgent_care, inpatient_facility, inpatient_physician, mental_health_outpatient, mental_health_inpatient, substance_abuse_outpatient, substance_abuse_inpatient, prenatal_visit, delivery_facility, delivery_professional, home_health, pt_rehab, habilitation, skilled_nursing, durable_medical_equipment, hospice_inpatient, hospice_outpatient, chiropractic, acupuncture, speech_therapy, occupational_therapy, telehealth, nutritional_counseling, childrens_eye_exam, childrens_glasses, childrens_dental
+
+For any service not in the list above, create a descriptive slug (e.g., "bariatric_surgery", "allergy_testing").
+
+CRITICAL RULES:
+- Extract ONLY actual healthcare services (things a patient can receive)
+- DO NOT extract section headers like "What You Will Pay", "Common Medical Event", "In-Network Provider"
+- DO NOT extract cost structure labels like "Deductibles", "Copayments", "Coinsurance"
+- DO NOT extract page numbers, disclaimers, legal notices, language assistance text
+- Keep inCostDescription to ONE clean sentence (e.g., "$50 copay per office visit, 10% coinsurance for other services")
+- If a service has both copay AND coinsurance, include BOTH in the description
+- Separate office visit costs from facility/other costs when the document distinguishes them
+
+Return ONLY a JSON array. No markdown fencing, no explanation.
+
+Document text:
+${truncated}`;
+
+  try {
+    const response = await client.messages.create({
+      model: "claude-haiku-4-20250414",
+      max_tokens: 8192,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    const text = response.content[0].type === "text" ? response.content[0].text : "";
+    console.log("[claude-extractor] Haiku response length:", text.length, "| usage:", JSON.stringify(response.usage));
+
+    // Parse JSON — handle potential markdown fencing
+    const jsonStr = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+    const extracted: Array<{
+      serviceSlug: string;
+      serviceName?: string;
+      inCopay?: number | null;
+      inCoinsurance?: number | null;
+      inDeductibleApplies?: boolean | null;
+      inCostDescription?: string;
+      outCopay?: number | null;
+      outCoinsurance?: number | null;
+      outDeductibleApplies?: boolean | null;
+      outCostDescription?: string;
+      priorAuthRequired?: boolean | null;
+      annualLimit?: string | null;
+      stepTherapyRequired?: boolean | null;
+      covered?: boolean;
+      coverageConditions?: string | null;
+      confidence?: number;
+    }> = JSON.parse(jsonStr);
+
+    console.log("[claude-extractor] Extracted", extracted.length, "services from Haiku");
+
+    // Convert to SBCParsedService format
+    const services: SBCParsedService[] = extracted.map((e) => ({
+      serviceSlug: e.serviceSlug,
+      placeOfService: "any",
+      inCopay: e.inCopay ?? null,
+      inCoinsurance: e.inCoinsurance ?? null,
+      inDeductibleApplies: e.inDeductibleApplies ?? null,
+      inCopayWaiverCondition: null,
+      inCostDescription: e.inCostDescription || "",
+      outCopay: e.outCopay ?? null,
+      outCoinsurance: e.outCoinsurance ?? null,
+      outDeductibleApplies: e.outDeductibleApplies ?? null,
+      outCostDescription: e.outCostDescription || "",
+      oonPaidAtInNetwork: false,
+      annualLimit: e.annualLimit || null,
+      annualLimitValue: e.annualLimit ? parseInt(e.annualLimit.match(/\d+/)?.[0] || "0", 10) || null : null,
+      priorAuthRequired: e.priorAuthRequired ?? null,
+      penaltyNoPrecert: null,
+      covered: e.covered ?? true,
+      coverageConditions: e.coverageConditions || null,
+      supplyLimitDays: null,
+      homeDeliveryCopay: null,
+      stepTherapyRequired: e.stepTherapyRequired ?? null,
+      notes: null,
+      confidence: e.confidence ?? 0.85,
+    }));
+
+    return { services, fromClaude: true };
+  } catch (err) {
+    console.error("[claude-extractor] Haiku extraction failed:", err instanceof Error ? err.message : err);
+    return { services: [], fromClaude: false };
+  }
 }
 
 /**
- * Enrich regex-extracted services using Claude Haiku.
- * Sends all services in a single batch to minimize API calls.
+ * Legacy enrichment function — kept for backward compatibility but
+ * extractServicesWithClaude is now the preferred approach.
  */
 export async function enrichServicesWithClaude(
   services: SBCParsedService[],
   ocrText: string,
   planName: string | null
 ): Promise<SBCParsedService[]> {
-  if (!process.env.ANTHROPIC_API_KEY || services.length === 0) {
-    return services;
+  // Delegate to the primary extractor — if it returns results, use those instead
+  const result = await extractServicesWithClaude(ocrText, planName, false);
+  if (result.fromClaude && result.services.length > 0) {
+    return result.services;
   }
-
-  // Build context snippets for each service
-  const serviceContexts = services.map((s) => {
-    const slugName = s.serviceSlug.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-    const context = getServiceContext(ocrText, slugName, slugName);
-    return {
-      slug: s.serviceSlug,
-      currentDescription: s.inCostDescription,
-      currentOutDescription: s.outCostDescription,
-      context: context || "(no context found in document)",
-      currentLimit: s.annualLimit,
-      currentPriorAuth: s.priorAuthRequired,
-    };
-  });
-
-  const prompt = `You are a health insurance document parser. Given extracted services from a plan document, improve the accuracy of each service's description using the surrounding document context.
-
-Plan: ${planName || "Unknown"}
-
-For each service below, I'll provide:
-- The service slug (identifier)
-- The current extracted cost description (may be incomplete or out of context)
-- The surrounding text from the plan document
-
-Return a JSON array with one object per service:
-{
-  "serviceSlug": "the_service_slug",
-  "name": "Clean, human-readable service name",
-  "inCostDescription": "Full in-network cost description with copay, coinsurance, deductible info",
-  "outCostDescription": "Full out-of-network cost description (or empty string if not found)",
-  "visitLimit": "Annual/per-occurrence limit if mentioned (e.g., '60 visits per year'), or null",
-  "priorAuthRequired": true/false/null,
-  "referralRequired": true/false/null,
-  "coverageConditions": "Any special conditions (e.g., 'requires referral from PCP', 'limited to in-network facilities'), or null",
-  "confidence": 0.0-1.0 confidence in the extraction accuracy
-}
-
-Rules:
-- Keep descriptions concise but complete (include copay AND coinsurance AND deductible info when present)
-- If the context mentions a visit limit, ALWAYS include it
-- If prior auth or referral is mentioned, set the boolean
-- If you can't improve on the current description, return it unchanged
-- Confidence should be 0.9+ if the context clearly confirms the service, 0.5-0.8 if partial, <0.5 if uncertain
-
-Services to enrich:
-${serviceContexts.map((s, i) => `
---- Service ${i + 1}: ${s.slug} ---
-Current description: ${s.currentDescription || "(none)"}
-Current out-of-network: ${s.currentOutDescription || "(none)"}
-Current limit: ${s.currentLimit || "(none)"}
-Current prior auth: ${s.currentPriorAuth}
-Document context:
-${s.context}
-`).join("\n")}
-
-Return ONLY the JSON array, no markdown fencing, no explanation.`;
-
-  try {
-    const response = await client.messages.create({
-      model: "claude-haiku-4-20250414",
-      max_tokens: 4096,
-      messages: [{ role: "user", content: prompt }],
-    });
-
-    const text = response.content[0].type === "text" ? response.content[0].text : "";
-    // Parse JSON — handle potential markdown fencing
-    const jsonStr = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-    const enriched: EnrichedService[] = JSON.parse(jsonStr);
-
-    // Merge enriched data back into original services
-    const enrichedMap = new Map(enriched.map((e) => [e.serviceSlug, e]));
-
-    return services.map((s) => {
-      const e = enrichedMap.get(s.serviceSlug);
-      if (!e) return s;
-
-      return {
-        ...s,
-        inCostDescription: e.inCostDescription || s.inCostDescription,
-        outCostDescription: e.outCostDescription || s.outCostDescription,
-        annualLimit: e.visitLimit || s.annualLimit,
-        priorAuthRequired: e.priorAuthRequired ?? s.priorAuthRequired,
-        coverageConditions: e.coverageConditions || s.coverageConditions,
-        confidence: Math.max(s.confidence, e.confidence),
-      };
-    });
-  } catch (err) {
-    console.error("[claude-extractor] Failed to enrich services:", err);
-    // Fall back to original regex-extracted services
-    return services;
-  }
+  // Fall back to returning the original services unchanged
+  return services;
 }

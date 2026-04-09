@@ -7,7 +7,7 @@
 import { createServerClient } from "@/lib/supabase/server";
 import { parseSBCText } from "@/lib/plan/sbc-parser";
 import { parsePlanDocument } from "@/lib/plan/plan-doc-parser";
-import { enrichServicesWithClaude } from "@/lib/plan/claude-extractor";
+import { extractServicesWithClaude } from "@/lib/plan/claude-extractor";
 import { FLAGS } from "@/lib/config/feature-flags";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
@@ -61,25 +61,33 @@ export async function processPlanDocumentData(
   try {
     const isFullPlanDoc = classification.classifiedType === "plan_document"
       || (classification.classifiedType !== "sbc" && ocrText.length > 50000);
+
+    // Parse plan metadata (insurer, deductibles, OOP) with regex — always needed
     const parseResult = isFullPlanDoc
       ? parsePlanDocument(ocrText)
       : parseSBCText(ocrText, documentId);
 
-    // Enrich services with Claude Haiku if enabled (~$0.01/doc)
-    // Check both env var directly and FLAGS (env var takes precedence at runtime)
+    // Extract services: Haiku primary, regex fallback
     const claudeEnabled = process.env.CLAUDE_EXTRACTION_ENABLED === "true" || FLAGS.CLAUDE_EXTRACTION_ENABLED;
-    if (claudeEnabled && parseResult.services.length > 0) {
+    if (claudeEnabled) {
       try {
-        const enriched = await enrichServicesWithClaude(
-          parseResult.services,
+        console.log("[process-plan] Attempting Haiku primary extraction...");
+        const claudeResult = await extractServicesWithClaude(
           ocrText,
-          parseResult.plan.plan_name || null
+          parseResult.plan.plan_name || null,
+          isFullPlanDoc
         );
-        parseResult.services = enriched;
-        console.log(`[process-plan] Claude enriched ${enriched.length} services`);
+        if (claudeResult.fromClaude && claudeResult.services.length > 0) {
+          parseResult.services = claudeResult.services;
+          console.log(`[process-plan] Haiku extracted ${claudeResult.services.length} services (primary)`);
+        } else {
+          console.log(`[process-plan] Haiku returned no results — using regex fallback (${parseResult.services.length} services)`);
+        }
       } catch (err) {
-        console.warn("[process-plan] Claude enrichment failed, using regex results:", err);
+        console.warn("[process-plan] Haiku extraction failed — using regex fallback:", err);
       }
+    } else {
+      console.log(`[process-plan] Claude disabled — using regex parser (${parseResult.services.length} services)`);
     }
 
     const planInsert = {
