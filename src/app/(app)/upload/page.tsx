@@ -386,9 +386,10 @@ function UploadForm() {
     };
 
     const getStepSubtitle = () => {
-      if (isUploading || isComplete || isError || hasMismatch || isPendingReview) return null;
-      if (!processingProgress) return null;
-      if (processingProgress.step?.startsWith("ocr_chunk") || processingProgress.step?.startsWith("working_ocr")) return "This usually takes about 30 seconds";
+      if (isComplete || isError || hasMismatch || isPendingReview) return null;
+      if (isUploading) return "This usually takes about 60 seconds";
+      if (!processingProgress) return "This usually takes about 60 seconds";
+      if (processingProgress.step?.startsWith("ocr_chunk") || processingProgress.step?.startsWith("working_ocr")) return "This usually takes about 60 seconds";
       if (processingProgress.step === "classifying" || processingProgress.step === "working_classifying") return "Almost there...";
       if (processingProgress.step === "extracting" || processingProgress.step === "working_extracting"
         || processingProgress.step === "parsing" || processingProgress.step === "working_parsing") return "This is the exciting part";
