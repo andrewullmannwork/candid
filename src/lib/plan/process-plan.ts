@@ -8,7 +8,6 @@ import { createServerClient } from "@/lib/supabase/server";
 import { parseSBCText } from "@/lib/plan/sbc-parser";
 import { parsePlanDocument } from "@/lib/plan/plan-doc-parser";
 import { extractServicesWithClaude } from "@/lib/plan/claude-extractor";
-import { FLAGS } from "@/lib/config/feature-flags";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
@@ -67,27 +66,70 @@ export async function processPlanDocumentData(
       ? parsePlanDocument(ocrText)
       : parseSBCText(ocrText, documentId);
 
-    // Extract services: Haiku primary, regex fallback
-    const claudeEnabled = process.env.CLAUDE_EXTRACTION_ENABLED === "true" || FLAGS.CLAUDE_EXTRACTION_ENABLED;
-    if (claudeEnabled) {
-      try {
-        console.log("[process-plan] Attempting Haiku primary extraction...");
-        const claudeResult = await extractServicesWithClaude(
-          ocrText,
-          parseResult.plan.plan_name || null,
-          isFullPlanDoc
-        );
-        if (claudeResult.fromClaude && claudeResult.services.length > 0) {
-          parseResult.services = claudeResult.services;
-          console.log(`[process-plan] Haiku extracted ${claudeResult.services.length} services (primary)`);
-        } else {
-          console.log(`[process-plan] Haiku returned no results — using regex fallback (${parseResult.services.length} services)`);
-        }
-      } catch (err) {
-        console.warn("[process-plan] Haiku extraction failed — using regex fallback:", err);
+    // Extract services: Haiku only — no regex fallback (regex produces garbage like section headers)
+    let extractionFailed = false;
+    console.log("[process-plan] Attempting Haiku extraction...");
+    try {
+      const claudeResult = await extractServicesWithClaude(
+        ocrText,
+        parseResult.plan.plan_name || null,
+        isFullPlanDoc
+      );
+      if (claudeResult.fromClaude && claudeResult.services.length > 0) {
+        parseResult.services = claudeResult.services;
+        console.log(`[process-plan] Haiku extracted ${claudeResult.services.length} services`);
+      } else {
+        // Haiku returned nothing — flag for admin review
+        extractionFailed = true;
+        parseResult.services = [];
+        console.warn(`[process-plan] Haiku returned no results — flagging for admin review`);
       }
-    } else {
-      console.log(`[process-plan] Claude disabled — using regex parser (${parseResult.services.length} services)`);
+    } catch (err) {
+      extractionFailed = true;
+      parseResult.services = [];
+      console.error("[process-plan] Haiku extraction failed — flagging for admin review:", err);
+    }
+
+    // If extraction failed, notify admin and mark document for review
+    if (extractionFailed) {
+      try {
+        const { notifyAdminForReview } = await import("@/lib/notifications");
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("email")
+          .eq("user_id", doc.user_id)
+          .single();
+        await notifyAdminForReview(
+          documentId,
+          classification.classifiedType,
+          classification.confidence,
+          doc.file_name,
+          profile?.email || "unknown"
+        );
+      } catch (notifyErr) {
+        console.warn("[process-plan] Failed to send extraction failure notification:", notifyErr);
+      }
+      // Mark document as needing review instead of processed
+      await supabase.from("documents").update({
+        status: "pending_review",
+        processing_error: "Haiku extraction failed or returned no services",
+      }).eq("id", documentId);
+
+      return {
+        success: true,
+        planId: undefined,
+        servicesCreated: 0,
+        planData: {
+          planName: parseResult.plan.plan_name,
+          planType: parseResult.plan.plan_type,
+          inDeductible: parseResult.plan.in_deductible_individual,
+          outDeductible: parseResult.plan.out_deductible_individual,
+          inOopMax: parseResult.plan.in_oop_max_individual,
+          outOopMax: parseResult.plan.out_oop_max_individual,
+          servicesExtracted: 0,
+        },
+        parseWarnings: [...(parseResult.parseWarnings || []), "Service extraction requires admin review"],
+      };
     }
 
     const planInsert = {

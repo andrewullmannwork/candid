@@ -296,10 +296,10 @@ export default function DashboardPage() {
           </div>
           <div>
             <p className="text-sm font-semibold text-amber-900">
-              {pendingReviewDocs.length === 1 ? "Your document is being reviewed" : `${pendingReviewDocs.length} documents being reviewed`}
+              Our document reader is having a little trouble with your document
             </p>
             <p className="text-xs text-amber-700 mt-0.5">
-              We&apos;ll email you when your results are ready &mdash; usually within 24 hours.
+              Our team has been notified and will fix it while Candid takes a quick nap. We&apos;ll email you when your results are ready.
             </p>
           </div>
         </div>
