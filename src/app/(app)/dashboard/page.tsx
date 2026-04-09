@@ -296,10 +296,10 @@ export default function DashboardPage() {
           </div>
           <div>
             <p className="text-sm font-semibold text-amber-900">
-              Our document reader is having a little trouble with your document
+              We need a little more time with your document
             </p>
             <p className="text-xs text-amber-700 mt-0.5">
-              Our team has been notified and will fix it while Candid takes a quick nap. We&apos;ll email you when your results are ready.
+              Our document reader is working on your plan but needs a bit longer than usual. We&apos;ll email you when your results are ready.
             </p>
           </div>
         </div>

@@ -361,8 +361,10 @@ function UploadForm() {
     const getOverallProgress = () => {
       if (isUploading) return Math.round(uploadProgress * 0.3); // 0-30%
       if (!processingProgress || !processingProgress.totalPages) return 35; // Classifying
-      if (processingProgress.step === "classifying" || processingProgress.step === "working_classifying") return 85;
-      if (processingProgress.step === "parsing" || processingProgress.step === "working_parsing") return 92;
+      if (processingProgress.step === "classifying" || processingProgress.step === "working_classifying") return 82;
+      if (processingProgress.step === "extracting" || processingProgress.step === "working_extracting"
+        || processingProgress.step === "parsing" || processingProgress.step === "working_parsing") return 88;
+      if (processingProgress.step === "saving" || processingProgress.step === "working_saving") return 95;
       if (isComplete) return 100;
       // OCR chunks: 30-80%
       return 30 + Math.round((processingProgress.completedPages / processingProgress.totalPages) * 50);
@@ -377,7 +379,9 @@ function UploadForm() {
       if (!processingProgress) return "Getting on my reading glasses...";
       if (processingProgress.step?.startsWith("ocr_chunk") || processingProgress.step?.startsWith("working_ocr")) return "Reading every line...";
       if (processingProgress.step === "classifying" || processingProgress.step === "working_classifying") return "Figuring out what this is...";
-      if (processingProgress.step === "parsing" || processingProgress.step === "working_parsing") return "Pulling out the good stuff...";
+      if (processingProgress.step === "extracting" || processingProgress.step === "working_extracting"
+        || processingProgress.step === "parsing" || processingProgress.step === "working_parsing") return "Pulling out the good stuff...";
+      if (processingProgress.step === "saving" || processingProgress.step === "working_saving") return "Saving your benefits...";
       return "Processing...";
     };
 
@@ -386,7 +390,9 @@ function UploadForm() {
       if (!processingProgress) return null;
       if (processingProgress.step?.startsWith("ocr_chunk") || processingProgress.step?.startsWith("working_ocr")) return "This usually takes about 30 seconds";
       if (processingProgress.step === "classifying" || processingProgress.step === "working_classifying") return "Almost there...";
-      if (processingProgress.step === "parsing" || processingProgress.step === "working_parsing") return "This is the exciting part";
+      if (processingProgress.step === "extracting" || processingProgress.step === "working_extracting"
+        || processingProgress.step === "parsing" || processingProgress.step === "working_parsing") return "This is the exciting part";
+      if (processingProgress.step === "saving" || processingProgress.step === "working_saving") return "Just a moment more...";
       return null;
     };
 
@@ -394,8 +400,8 @@ function UploadForm() {
     const steps = [
       { label: "Upload", threshold: 0 },
       { label: "Read", threshold: 30 },
-      { label: "Classify", threshold: 85 },
-      { label: "Extract", threshold: 92 },
+      { label: "Extract", threshold: 82 },
+      { label: "Save", threshold: 95 },
     ];
 
     const overallProgress = getOverallProgress();
@@ -476,12 +482,18 @@ function UploadForm() {
           {isPendingReview && (
             <div className="mb-5 p-4 bg-amber-50 border border-amber-100 rounded-xl">
               <p className="text-sm font-medium text-amber-900">
-                Our document reader is having a little trouble with your document.
+                We need a little more time
               </p>
               <p className="text-sm text-amber-800 mt-1.5 leading-relaxed">
-                Our team has been notified and will fix it while Candid takes a quick nap.
-                We&apos;ll email you when your results are ready.
+                Our document reader is working on your plan but needs a bit longer than usual.
+                We&apos;ll email you when your results are ready, or you can try uploading again.
               </p>
+              <button
+                onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setProcessingProgress(null); setDocumentId(null); }}
+                className="mt-3 w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
+              >
+                Try again
+              </button>
             </div>
           )}
 
