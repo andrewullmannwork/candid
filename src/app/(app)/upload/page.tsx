@@ -85,7 +85,7 @@ function UploadForm() {
     step: string | null;
     completedPages: number;
     totalPages: number;
-    insurerMismatch?: { mismatch: boolean; existingInsurer?: string; parsedInsurer?: string } | null;
+    insurerMismatch?: { mismatch: boolean; type?: "insurer" | "plan_name"; existingInsurer?: string; parsedInsurer?: string; existingPlanName?: string; parsedPlanName?: string } | null;
   } | null>(null);
 
   // Previously uploaded documents
@@ -493,43 +493,58 @@ function UploadForm() {
             </div>
           )}
 
-          {/* Insurer mismatch prompt */}
-          {hasMismatch && processingProgress?.insurerMismatch && (
-            <div className="mb-5 p-4 bg-amber-50 border border-amber-200 rounded-xl">
-              <p className="text-sm font-semibold text-amber-800">This plan doesn&apos;t match your insurance card</p>
-              <p className="text-xs text-amber-700 mt-1">
-                Your card says <strong>{processingProgress.insurerMismatch.existingInsurer}</strong>, but this document is from <strong>{processingProgress.insurerMismatch.parsedInsurer}</strong>.
-              </p>
-              <div className="mt-3 flex flex-col gap-2">
-                <button
-                  onClick={async () => {
-                    if (!user) return;
-                    const idToken = await user.firebaseUser.getIdToken();
-                    await fetch("/api/profile", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
-                      body: JSON.stringify({ insurer: processingProgress.insurerMismatch?.parsedInsurer }),
-                    });
-                    await fetch("/api/documents/status", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ documentId, action: "activate_plan" }),
-                    });
-                    window.location.href = "/plan";
-                  }}
-                  className="w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700"
-                >
-                  Use {processingProgress.insurerMismatch.parsedInsurer}
-                </button>
-                <button
-                  onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setProcessingProgress(null); setDocumentId(null); }}
-                  className="w-full py-2 border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50"
-                >
-                  Keep {processingProgress.insurerMismatch.existingInsurer} — upload matching document
-                </button>
+          {/* Insurer or plan name mismatch prompt */}
+          {hasMismatch && processingProgress?.insurerMismatch && (() => {
+            const mm = processingProgress.insurerMismatch;
+            const isPlanMismatch = mm.type === "plan_name";
+            const existingLabel = isPlanMismatch ? mm.existingPlanName : mm.existingInsurer;
+            const newLabel = isPlanMismatch ? mm.parsedPlanName : mm.parsedInsurer;
+            return (
+              <div className="mb-5 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+                <p className="text-sm font-semibold text-amber-800">This plan doesn&apos;t match your insurance card</p>
+                <p className="text-xs text-amber-700 mt-1">
+                  {isPlanMismatch
+                    ? <>Your card says <strong>{existingLabel}</strong>, but this document is for <strong>{newLabel}</strong>.</>
+                    : <>Your card says <strong>{existingLabel}</strong>, but this document is from <strong>{newLabel}</strong>.</>
+                  }
+                </p>
+                <div className="mt-3 flex flex-col gap-2">
+                  <button
+                    onClick={async () => {
+                      if (!user) return;
+                      const idToken = await user.firebaseUser.getIdToken();
+                      const profileUpdate: Record<string, string> = {};
+                      if (isPlanMismatch) {
+                        profileUpdate.plan_name = mm.parsedPlanName || "";
+                      } else {
+                        profileUpdate.insurer = mm.parsedInsurer || "";
+                      }
+                      await fetch("/api/profile", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+                        body: JSON.stringify(profileUpdate),
+                      });
+                      await fetch("/api/documents/status", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ documentId, action: "activate_plan" }),
+                      });
+                      window.location.href = "/plan";
+                    }}
+                    className="w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700"
+                  >
+                    Use {newLabel}
+                  </button>
+                  <button
+                    onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setProcessingProgress(null); setDocumentId(null); }}
+                    className="w-full py-2 border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50"
+                  >
+                    Keep {existingLabel} — upload matching document
+                  </button>
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* Action buttons */}
           <div className="flex flex-col gap-2">

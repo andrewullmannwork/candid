@@ -141,10 +141,10 @@ export async function processPlanDocumentData(
       verification_status: "document_verified" as const,
     };
 
-    // Backfill nulls from profile and detect insurer mismatch
+    // Backfill nulls from profile and detect insurer/plan mismatch
     const { data: userProfile } = await supabase
       .from("profiles")
-      .select("deductible_individual, oop_max_individual, insurer")
+      .select("deductible_individual, oop_max_individual, insurer, plan_name")
       .eq("user_id", doc.user_id)
       .single();
 
@@ -153,28 +153,55 @@ export async function processPlanDocumentData(
       planInsert.in_oop_max_individual ??= userProfile.oop_max_individual;
     }
 
-    // Detect insurer mismatch (card says X, document says Y)
-    const normalizeInsurer = (s: string | null | undefined) =>
+    // Detect insurer or plan name mismatch (card/profile vs document)
+    const normalize = (s: string | null | undefined) =>
       (s || "").toLowerCase().replace(/\s*(insurance|company|inc|corp|health\s*plan)\s*/gi, "").trim();
-    const profileInsurer = normalizeInsurer(userProfile?.insurer);
-    const parsedInsurer = normalizeInsurer(parseResult.plan.insurer_name);
-    const insurerMismatch = profileInsurer && parsedInsurer
+    const profileInsurer = normalize(userProfile?.insurer);
+    const parsedInsurer = normalize(parseResult.plan.insurer_name);
+
+    let mismatchData: {
+      mismatch: boolean;
+      type: "insurer" | "plan_name";
+      existingInsurer: string;
+      parsedInsurer: string;
+      existingPlanName?: string;
+      parsedPlanName?: string;
+    } | null = null;
+
+    if (profileInsurer && parsedInsurer
       && profileInsurer !== parsedInsurer
       && !profileInsurer.includes(parsedInsurer)
-      && !parsedInsurer.includes(profileInsurer)
-      ? { mismatch: true, existingInsurer: userProfile?.insurer || "", parsedInsurer: parseResult.plan.insurer_name || "" }
-      : null;
+      && !parsedInsurer.includes(profileInsurer)) {
+      // Different insurer
+      mismatchData = {
+        mismatch: true,
+        type: "insurer",
+        existingInsurer: userProfile?.insurer || "",
+        parsedInsurer: parseResult.plan.insurer_name || "",
+      };
+    } else if (userProfile?.plan_name && parseResult.plan.plan_name
+      && normalize(userProfile.plan_name) !== normalize(parseResult.plan.plan_name)
+      && !normalize(userProfile.plan_name).includes(normalize(parseResult.plan.plan_name))
+      && !normalize(parseResult.plan.plan_name).includes(normalize(userProfile.plan_name))) {
+      // Same insurer but different plan name
+      mismatchData = {
+        mismatch: true,
+        type: "plan_name",
+        existingInsurer: userProfile?.insurer || "",
+        parsedInsurer: parseResult.plan.insurer_name || "",
+        existingPlanName: userProfile.plan_name,
+        parsedPlanName: parseResult.plan.plan_name,
+      };
+    }
 
-    if (insurerMismatch) {
-      console.log(`[process-plan] Insurer mismatch: card="${userProfile?.insurer}" doc="${parseResult.plan.insurer_name}"`);
-      // Save mismatch info on document for frontend to detect
-      await supabase.from("documents").update({ insurer_mismatch: insurerMismatch }).eq("id", documentId);
-      // Don't auto-activate this plan — user must choose
+    if (mismatchData) {
+      console.log(`[process-plan] Mismatch (${mismatchData.type}): profile="${mismatchData.type === "insurer" ? mismatchData.existingInsurer : mismatchData.existingPlanName}" doc="${mismatchData.type === "insurer" ? mismatchData.parsedInsurer : mismatchData.parsedPlanName}"`);
+      await supabase.from("documents").update({ insurer_mismatch: mismatchData }).eq("id", documentId);
       planInsert.is_active = false;
     }
 
     // Deactivate existing active plans (only if no mismatch — matching insurer replaces)
-    if (!insurerMismatch) {
+    if (!mismatchData) {
       await supabase
         .from("insurance_plans")
         .update({ is_active: false })
@@ -200,7 +227,7 @@ export async function processPlanDocumentData(
     }
 
     // Link new plan to user's profile (only if no insurer mismatch)
-    if (!insurerMismatch) {
+    if (!mismatchData) {
       await supabase
         .from("profiles")
         .update({ active_insurance_plan_id: newPlan.id })
@@ -388,7 +415,7 @@ export async function processPlanDocumentData(
       .eq("id", documentId);
 
     // Set as active plan on profile (only if no mismatch)
-    if (!insurerMismatch) {
+    if (!mismatchData) {
       await supabase
         .from("profiles")
         .update({ active_insurance_plan_id: newPlan.id })
@@ -409,7 +436,7 @@ export async function processPlanDocumentData(
         servicesExtracted: servicesCreated,
       },
       parseWarnings: parseResult.parseWarnings,
-      insurerMismatch,
+      insurerMismatch: mismatchData,
     };
   } catch (err) {
     console.error("Plan processing error:", err);
