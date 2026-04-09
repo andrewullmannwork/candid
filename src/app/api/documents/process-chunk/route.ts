@@ -23,6 +23,10 @@ import { enqueueChunk } from "@/lib/queue/qstash";
 
 const CHUNK_SIZE = 15; // pages per OCR chunk
 
+// Haiku extraction on large documents can take 15-30s.
+// Vercel Hobby allows up to 60s with explicit maxDuration.
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   try {
     const { documentId } = await req.json();

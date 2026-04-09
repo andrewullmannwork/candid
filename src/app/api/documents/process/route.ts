@@ -15,6 +15,8 @@ import { checkProcessingBudget, recordProcessingUsage } from "@/lib/config/proce
 import { classifyDocument } from "@/lib/classifier";
 import { processPlanDocumentData } from "@/lib/plan/process-plan";
 
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   try {
     const { documentId, billType } = await req.json();
