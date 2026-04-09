@@ -12,6 +12,7 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
+import { jsonrepair } from "jsonrepair";
 import type { SBCParsedService } from "./sbc-parser";
 
 const MODEL = "claude-haiku-4-5-20251001";
@@ -27,9 +28,24 @@ function getClient(): Anthropic | null {
 
 const STANDARD_SLUGS = `pcp_visit, specialist_visit, preventive_care, diagnostic_test, advanced_imaging, generic_rx_tier1, preferred_brand_rx, non_preferred_rx, specialty_rx, outpatient_surgery_facility, outpatient_surgery_physician, er_visit, emergency_transport, urgent_care, inpatient_facility, inpatient_physician, mental_health_outpatient, mental_health_inpatient, substance_abuse_outpatient, substance_abuse_inpatient, prenatal_visit, delivery_facility, delivery_professional, home_health, pt_rehab, habilitation, skilled_nursing, durable_medical_equipment, hospice_inpatient, hospice_outpatient, chiropractic, acupuncture, speech_therapy, occupational_therapy, telehealth, nutritional_counseling, childrens_eye_exam, childrens_glasses, childrens_dental`;
 
+/**
+ * Parse JSON from Haiku output, handling:
+ * - Markdown code fencing
+ * - Single quotes instead of double quotes
+ * - Trailing commas
+ * - Truncated JSON (incomplete arrays/objects)
+ * - Unquoted property names
+ */
 function parseJSON(text: string): unknown {
   const cleaned = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-  return JSON.parse(cleaned);
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // Haiku sometimes produces slightly malformed JSON — repair it
+    console.log("[claude-extractor] JSON.parse failed, attempting repair...");
+    const repaired = jsonrepair(cleaned);
+    return JSON.parse(repaired);
+  }
 }
 
 async function callHaiku(client: Anthropic, prompt: string, maxTokens: number): Promise<string> {
