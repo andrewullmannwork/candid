@@ -27,6 +27,7 @@ const FLAG_LABELS: Record<string, string> = {
   UPLOAD_MAX_PAGES: "Max Pages per PDF",
   UPLOAD_MAX_PER_USER: "Max Docs per User",
   ON_DEMAND_EXTRACTION_ENABLED: "On-Demand Plan Extraction",
+  MAX_EXTRACTED_SERVICES: "Max Services per Document",
 };
 
 const FLAG_GROUPS: Record<string, string[]> = {
@@ -39,6 +40,7 @@ const FLAG_GROUPS: Record<string, string[]> = {
   "AI Features": [
     "CLAUDE_EXTRACTION_ENABLED",
     "ON_DEMAND_EXTRACTION_ENABLED",
+    "MAX_EXTRACTED_SERVICES",
   ],
   "Upload Limits": [
     "UPLOAD_MAX_FILE_SIZE",

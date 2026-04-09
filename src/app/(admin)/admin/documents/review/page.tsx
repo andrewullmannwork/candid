@@ -28,23 +28,39 @@ export default function DocumentReviewPage() {
   }, [user]);
 
   async function loadPendingDocuments() {
-    const supabase = createBrowserClient();
-    const { data } = await supabase
-      .from("documents")
-      .select("id, file_name, doc_type, classified_type, classification_confidence, status, created_at, user_id")
-      .in("status", ["pending_review", "queued"])
-      .order("created_at", { ascending: false });
+    if (!user) return;
+    try {
+      const idToken = await user.firebaseUser.getIdToken();
+      // Use admin API (service role) to see ALL pending documents across all users
+      const res = await fetch("/api/admin/query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify({
+          table: "documents",
+          select: "id, file_name, doc_type, classified_type, classification_confidence, status, created_at, user_id, processing_error",
+          filters: { status: ["pending_review", "queued"] },
+          order: { column: "created_at", ascending: false },
+        }),
+      });
+      if (!res.ok) { setLoading(false); return; }
+      const { data } = await res.json();
 
-    if (data) {
-      // Fetch user emails
-      const userIds = [...new Set(data.map((d) => d.user_id))];
-      const { data: users } = await supabase
-        .from("users")
-        .select("id, email")
-        .in("id", userIds);
-
-      const emailMap = new Map(users?.map((u) => [u.id, u.email]) || []);
-      setDocuments(data.map((d) => ({ ...d, user_email: emailMap.get(d.user_id) })));
+      if (data && data.length > 0) {
+        // Fetch user emails via admin API
+        const userIds = [...new Set(data.map((d: PendingDocument) => d.user_id))];
+        const emailRes = await fetch("/api/admin/query", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+          body: JSON.stringify({ table: "users", select: "id, email", filters: { id: userIds } }),
+        });
+        const { data: users } = emailRes.ok ? await emailRes.json() : { data: [] };
+        const emailMap = new Map(users?.map((u: { id: string; email: string }) => [u.id, u.email]) || []);
+        setDocuments(data.map((d: PendingDocument) => ({ ...d, user_email: emailMap.get(d.user_id) })));
+      } else {
+        setDocuments([]);
+      }
+    } catch (err) {
+      console.error("[admin/review] Failed to load documents:", err);
     }
     setLoading(false);
   }

@@ -39,27 +39,52 @@ export async function POST(req: NextRequest) {
 
     const supabase = createServerClient();
 
-    // 2. Upsert user in Supabase (atomic — handles races and retries)
+    // 2. Upsert user in Supabase — link accounts by email
+    // If a user signed up with email/password and later signs in with Google (or vice versa),
+    // they have different Firebase UIDs but the same email. We find by email first to avoid
+    // creating duplicate accounts.
     console.log("[auth/sync] Step 2: Upserting user in Supabase...");
-    const { data: upsertedUser, error: upsertError } = await supabase
+
+    // Check if a user with this email already exists (possibly from a different auth method)
+    const { data: existingByEmail } = await supabase
       .from("users")
-      .upsert(
-        { firebase_uid: uid, email, display_name: name || null },
-        { onConflict: "firebase_uid" }
-      )
-      .select("id")
+      .select("id, firebase_uid")
+      .eq("email", email)
       .single();
 
-    if (upsertError || !upsertedUser) {
-      console.error("[auth/sync] Failed to upsert user:", upsertError);
-      return NextResponse.json(
-        { error: `Failed to upsert user: ${upsertError?.message || "unknown"}` },
-        { status: 500 }
-      );
-    }
+    let userId: string;
 
-    const userId = upsertedUser.id;
-    console.log("[auth/sync] Step 2 OK — user:", userId);
+    if (existingByEmail && existingByEmail.firebase_uid !== uid) {
+      // Same email, different Firebase UID — link the account by updating the UID
+      console.log(`[auth/sync] Account linking: email ${email} exists with UID ${existingByEmail.firebase_uid}, updating to ${uid}`);
+      const { error: linkError } = await supabase
+        .from("users")
+        .update({ firebase_uid: uid, display_name: name || undefined })
+        .eq("id", existingByEmail.id);
+      if (linkError) {
+        console.error("[auth/sync] Account linking failed:", linkError);
+        return NextResponse.json({ error: `Account linking failed: ${linkError.message}` }, { status: 500 });
+      }
+      userId = existingByEmail.id;
+      console.log("[auth/sync] Step 2 OK — linked to existing user:", userId);
+    } else {
+      // Normal upsert — new user or same UID
+      const { data: upsertedUser, error: upsertError } = await supabase
+        .from("users")
+        .upsert(
+          { firebase_uid: uid, email, display_name: name || null },
+          { onConflict: "firebase_uid" }
+        )
+        .select("id")
+        .single();
+
+      if (upsertError || !upsertedUser) {
+        console.error("[auth/sync] Failed to upsert user:", upsertError);
+        return NextResponse.json({ error: `Failed to upsert user: ${upsertError?.message || "unknown"}` }, { status: 500 });
+      }
+      userId = upsertedUser.id;
+      console.log("[auth/sync] Step 2 OK — user:", userId);
+    }
 
     // 3. Record consent events (server-side, service role bypasses RLS)
     if (consents && consents.length > 0) {

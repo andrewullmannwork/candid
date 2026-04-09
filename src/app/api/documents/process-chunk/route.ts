@@ -16,7 +16,7 @@ import { createServerClient } from "@/lib/supabase/server";
 import { extractTextFromDocument } from "@/lib/ocr";
 import { splitPDF, estimatePageCount } from "@/lib/ocr/document-ai";
 import { processPlanDocumentData } from "@/lib/plan/process-plan";
-import { recordProcessingUsage } from "@/lib/config/processing-usage";
+import { checkProcessingBudget, recordProcessingUsage } from "@/lib/config/processing-usage";
 import { enqueueChunk } from "@/lib/queue/qstash";
 
 const CHUNK_SIZE = 15; // pages per OCR chunk
@@ -84,6 +84,18 @@ export async function POST(req: NextRequest) {
       const buffer = Buffer.from(await fileData.arrayBuffer());
       const totalPages = estimatePageCount(buffer);
       const totalChunks = Math.ceil(totalPages / CHUNK_SIZE);
+
+      // Check processing budget before OCR
+      const budget = await checkProcessingBudget(totalPages);
+      if (!budget.allowed) {
+        console.log(`[process-chunk] Budget exceeded: ${budget.reason}`);
+        await supabase.from("documents").update({
+          status: "error",
+          processing_error: budget.reason || "Processing limit reached",
+          processing_step: null,
+        }).eq("id", documentId);
+        return NextResponse.json({ error: budget.reason }, { status: 429 });
+      }
 
       // OCR first chunk
       const chunks = await splitPDF(buffer, CHUNK_SIZE);
@@ -186,17 +198,27 @@ export async function POST(req: NextRequest) {
       if (!classification.isHealthcareDocument) {
         await supabase.from("documents").update({
           status: "error",
-          processing_error: "This does not appear to be a healthcare document.",
+          processing_error: "This does not appear to be a healthcare document. Please upload an insurance plan, SBC, EOB, or medical bill.",
           classified_type: classification.classifiedType,
           classification_confidence: classification.confidence,
         }).eq("id", documentId);
         return NextResponse.json({ step: "rejected", continue: false });
       }
 
+      // Trust the user's selected type. Use Haiku classification only as a flag.
+      const userType = doc.doc_type;
+      const haikuType = classification.classifiedType;
+      const finalType = userType || haikuType;
+      const typeMismatch = userType && haikuType !== userType;
+
+      if (typeMismatch) {
+        console.log(`[process-chunk] Type flag: user selected "${userType}" but Haiku thinks "${haikuType}" (${Math.round(classification.confidence * 100)}%)`);
+      }
+
       await supabase.from("documents").update({
-        classified_type: classification.classifiedType,
+        classified_type: finalType,
         classification_confidence: classification.confidence,
-        type_mismatch: classification.classifiedType !== doc.doc_type,
+        type_mismatch: typeMismatch || false,
       }).eq("id", documentId);
 
       const result = await processPlanDocumentData(
@@ -204,7 +226,7 @@ export async function POST(req: NextRequest) {
         { id: doc.id, user_id: doc.user_id, file_name: doc.file_name },
         fullOcrText,
         documentId,
-        { classifiedType: classification.classifiedType, confidence: classification.confidence, mismatch: classification.classifiedType !== doc.doc_type }
+        { classifiedType: finalType, confidence: classification.confidence, mismatch: typeMismatch || false }
       );
 
       console.log(`[process-chunk] Inline result: success=${result.success}, services=${result.servicesCreated}`);
@@ -250,21 +272,26 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ step: "rejected", continue: false, error: "Not a healthcare document" });
       }
 
+      // Trust user's selected type, use Haiku as flag only
+      const fallbackUserType = doc.doc_type;
+      const fallbackHaikuType = classification.classifiedType;
+      const fallbackFinalType = fallbackUserType || fallbackHaikuType;
+      const fallbackMismatch = fallbackUserType && fallbackHaikuType !== fallbackUserType;
+
       await supabase.from("documents").update({
         processing_step: "working_extracting",
-        classified_type: classification.classifiedType,
+        classified_type: fallbackFinalType,
         classification_confidence: classification.confidence,
-        type_mismatch: classification.classifiedType !== doc.doc_type,
+        type_mismatch: fallbackMismatch || false,
       }).eq("id", documentId);
 
-      // 2. Extract services with Haiku + 3. Save to DB (all in processPlanDocumentData)
-      console.log(`[process-chunk] Processing: type=${classification.classifiedType}, confidence=${classification.confidence}`);
+      console.log(`[process-chunk] Processing: type=${fallbackFinalType}, confidence=${classification.confidence}`);
       const result = await processPlanDocumentData(
         supabase,
         { id: doc.id, user_id: doc.user_id, file_name: doc.file_name },
         ocrText,
         documentId,
-        { classifiedType: classification.classifiedType, confidence: classification.confidence, mismatch: classification.classifiedType !== doc.doc_type }
+        { classifiedType: fallbackFinalType, confidence: classification.confidence, mismatch: fallbackMismatch || false }
       );
 
       console.log(`[process-chunk] Result: success=${result.success}, services=${result.servicesCreated}, plan=${result.planData?.planName || "?"}`);

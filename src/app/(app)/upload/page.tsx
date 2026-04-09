@@ -365,7 +365,7 @@ function UploadForm() {
       if (!processingProgress || !processingProgress.totalPages) return 35; // Classifying
       if (processingProgress.step === "classifying" || processingProgress.step === "working_classifying") return 82;
       if (processingProgress.step === "extracting" || processingProgress.step === "working_extracting"
-        || processingProgress.step === "parsing" || processingProgress.step === "working_parsing") return 88;
+) return 88;
       if (processingProgress.step === "saving" || processingProgress.step === "working_saving") return 95;
       if (isComplete) return 100;
       // OCR chunks: 30-80%
@@ -382,7 +382,7 @@ function UploadForm() {
       if (processingProgress.step?.startsWith("ocr_chunk") || processingProgress.step?.startsWith("working_ocr")) return "Reading every line...";
       if (processingProgress.step === "classifying" || processingProgress.step === "working_classifying") return "Figuring out what this is...";
       if (processingProgress.step === "extracting" || processingProgress.step === "working_extracting"
-        || processingProgress.step === "parsing" || processingProgress.step === "working_parsing") return "Pulling out the good stuff...";
+) return "Pulling out the good stuff...";
       if (processingProgress.step === "saving" || processingProgress.step === "working_saving") return "Saving your benefits...";
       return "Processing...";
     };
@@ -394,7 +394,7 @@ function UploadForm() {
       if (processingProgress.step?.startsWith("ocr_chunk") || processingProgress.step?.startsWith("working_ocr")) return "This usually takes about 60 seconds";
       if (processingProgress.step === "classifying" || processingProgress.step === "working_classifying") return "Almost there...";
       if (processingProgress.step === "extracting" || processingProgress.step === "working_extracting"
-        || processingProgress.step === "parsing" || processingProgress.step === "working_parsing") return "This is the exciting part";
+) return "This is the exciting part";
       if (processingProgress.step === "saving" || processingProgress.step === "working_saving") return "Just a moment more...";
       return null;
     };

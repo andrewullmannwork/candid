@@ -82,6 +82,7 @@ export async function getFlags() {
     UPLOAD_MAX_PAGES: await getFlagInt("UPLOAD_MAX_PAGES", 90),
     UPLOAD_MAX_PER_USER: await getFlagInt("UPLOAD_MAX_PER_USER", 10),
     ON_DEMAND_EXTRACTION_ENABLED: await getFlagBool("ON_DEMAND_EXTRACTION_ENABLED", true),
+    MAX_EXTRACTED_SERVICES: await getFlagInt("MAX_EXTRACTED_SERVICES", 125),
   };
 }
 
@@ -99,6 +100,7 @@ export const FLAGS = {
   UPLOAD_MAX_PAGES: envInt("UPLOAD_MAX_PAGES", 90),
   UPLOAD_MAX_PER_USER: envInt("UPLOAD_MAX_PER_USER", 10),
   ON_DEMAND_EXTRACTION_ENABLED: envBool("ON_DEMAND_EXTRACTION_ENABLED", true),
+  MAX_EXTRACTED_SERVICES: envInt("MAX_EXTRACTED_SERVICES", 125),
 } as const;
 
 function envBool(key: string, defaultValue: boolean): boolean {
