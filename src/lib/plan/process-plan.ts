@@ -79,8 +79,9 @@ export async function processPlanDocumentData(
         parseResult.services = claudeResult.services;
         console.log(`[process-plan] Haiku extracted ${claudeResult.services.length} services`);
       } else {
-        console.warn("[process-plan] Haiku returned no results — flagging for review");
-        await notifyAndFlagForReview(supabase, documentId, classification, doc);
+        const reason = `Haiku returned fromClaude=${claudeResult.fromClaude}, services=${claudeResult.services.length}`;
+        console.warn("[process-plan]", reason);
+        await notifyAndFlagForReview(supabase, documentId, classification, doc, reason);
         return {
           success: true,
           servicesCreated: 0,
@@ -97,8 +98,9 @@ export async function processPlanDocumentData(
         };
       }
     } catch (err) {
-      console.error("[process-plan] Haiku extraction failed:", err);
-      await notifyAndFlagForReview(supabase, documentId, classification, doc);
+      const reason = `Haiku exception: ${err instanceof Error ? err.message : String(err)}`;
+      console.error("[process-plan]", reason);
+      await notifyAndFlagForReview(supabase, documentId, classification, doc, reason);
       return {
         success: true,
         servicesCreated: 0,
@@ -343,7 +345,8 @@ async function notifyAndFlagForReview(
   supabase: SupabaseClient,
   documentId: string,
   classification: { classifiedType: string; confidence: number },
-  doc: { id: string; user_id: string; file_name: string }
+  doc: { id: string; user_id: string; file_name: string },
+  reason?: string
 ) {
   try {
     const { notifyAdminForReview } = await import("@/lib/notifications");
@@ -352,6 +355,6 @@ async function notifyAndFlagForReview(
   } catch { /* non-critical */ }
   await supabase.from("documents").update({
     status: "pending_review",
-    processing_error: "Haiku extraction failed or returned no services",
+    processing_error: reason || "Haiku extraction failed or returned no services",
   }).eq("id", documentId);
 }

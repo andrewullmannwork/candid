@@ -15,7 +15,7 @@ function getClient(): Anthropic | null {
     console.warn("[claude-extractor] ANTHROPIC_API_KEY not set — Haiku extraction unavailable");
     return null;
   }
-  return new Anthropic({ apiKey });
+  return new Anthropic({ apiKey, timeout: 55000 }); // 55s — leave 5s headroom for DB writes
 }
 
 /**
