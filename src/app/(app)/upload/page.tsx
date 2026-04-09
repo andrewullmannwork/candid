@@ -369,65 +369,105 @@ function UploadForm() {
     };
 
     const getStepLabel = () => {
-      if (isUploading) return "Uploading document...";
-      if (isComplete) return "Analysis complete";
+      if (isUploading) return "Getting your document ready...";
+      if (isComplete) return "All done!";
       if (isError) return "Processing error";
       if (hasMismatch) return "Review needed";
       if (isPendingReview) return "Needs a human touch";
-      if (!processingProgress) return "Starting analysis...";
-      if (processingProgress.step?.startsWith("ocr_chunk") || processingProgress.step?.startsWith("working_ocr")) return "Reading pages...";
-      if (processingProgress.step === "classifying" || processingProgress.step === "working_classifying") return "Classifying document...";
-      if (processingProgress.step === "parsing" || processingProgress.step === "working_parsing") return "Extracting benefits...";
+      if (!processingProgress) return "Getting on my reading glasses...";
+      if (processingProgress.step?.startsWith("ocr_chunk") || processingProgress.step?.startsWith("working_ocr")) return "Reading every line...";
+      if (processingProgress.step === "classifying" || processingProgress.step === "working_classifying") return "Figuring out what this is...";
+      if (processingProgress.step === "parsing" || processingProgress.step === "working_parsing") return "Pulling out the good stuff...";
       return "Processing...";
     };
+
+    const getStepSubtitle = () => {
+      if (isUploading || isComplete || isError || hasMismatch || isPendingReview) return null;
+      if (!processingProgress) return null;
+      if (processingProgress.step?.startsWith("ocr_chunk") || processingProgress.step?.startsWith("working_ocr")) return "This usually takes about 30 seconds";
+      if (processingProgress.step === "classifying" || processingProgress.step === "working_classifying") return "Almost there...";
+      if (processingProgress.step === "parsing" || processingProgress.step === "working_parsing") return "This is the exciting part";
+      return null;
+    };
+
+    // Step progress thresholds
+    const steps = [
+      { label: "Upload", threshold: 0 },
+      { label: "Read", threshold: 30 },
+      { label: "Classify", threshold: 85 },
+      { label: "Extract", threshold: 92 },
+    ];
 
     const overallProgress = getOverallProgress();
 
     return (
       <div className="max-w-lg mx-auto">
-        <div className="p-6 bg-white border border-gray-200 rounded-2xl">
+        <div className="p-8 bg-white border border-gray-200 rounded-2xl glow-blue">
           {/* Header */}
-          <div className="text-center mb-5">
+          <div className="text-center mb-6">
             {isComplete ? (
-              <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-3">
-                <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+              <div className="w-16 h-16 rounded-full bg-green-50 flex items-center justify-center mx-auto mb-4">
+                <svg className="w-8 h-8 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
               </div>
             ) : isError ? (
-              <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center mx-auto mb-3">
-                <svg className="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <div className="w-16 h-16 rounded-full bg-red-50 flex items-center justify-center mx-auto mb-4">
+                <svg className="w-8 h-8 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
                 </svg>
               </div>
             ) : (
-              <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center mx-auto mb-3">
-                <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+              <div className="w-16 h-16 rounded-full bg-blue-50 flex items-center justify-center mx-auto mb-4 relative">
+                <div className="absolute inset-0 rounded-full border-2 border-blue-200 animate-ping opacity-30" />
+                <div className="w-6 h-6 border-[2.5px] border-blue-500 border-t-transparent rounded-full animate-spin" />
               </div>
             )}
-            <h3 className="text-lg font-semibold text-gray-900">{getStepLabel()}</h3>
-            <p className="text-sm text-gray-500 mt-0.5">{fileName}</p>
+            <h3 className="text-xl font-semibold text-gray-900">{getStepLabel()}</h3>
+            {getStepSubtitle() && (
+              <p className="text-sm text-gray-400 mt-1">{getStepSubtitle()}</p>
+            )}
+            <p className="text-sm text-gray-500 mt-1">{fileName}</p>
           </div>
 
           {/* Combined progress bar (uploading + analyzing) */}
           {!isComplete && !isError && !hasMismatch && !isPendingReview && (
-            <div className="mb-5">
-              <div className="flex justify-between text-xs text-gray-500 mb-1.5">
-                <span>{isUploading ? "Uploading" : processingProgress?.totalPages ? `${processingProgress.completedPages}/${processingProgress.totalPages} pages` : "Analyzing"}</span>
-                <span>{overallProgress}%</span>
-              </div>
-              <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+            <div className="mb-6">
+              <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-blue-600 rounded-full transition-all duration-500"
+                  className="h-full bg-gradient-to-r from-blue-500 to-blue-600 rounded-full transition-all duration-700 ease-out"
                   style={{ width: `${Math.max(3, overallProgress)}%` }}
                 />
               </div>
-              {/* Step indicators */}
-              <div className="flex justify-between mt-2 text-[10px] text-gray-400">
-                <span className={overallProgress >= 0 ? "text-blue-600 font-medium" : ""}>Upload</span>
-                <span className={overallProgress >= 30 ? "text-blue-600 font-medium" : ""}>Read</span>
-                <span className={overallProgress >= 85 ? "text-blue-600 font-medium" : ""}>Classify</span>
-                <span className={overallProgress >= 92 ? "text-blue-600 font-medium" : ""}>Extract</span>
+              {/* Step indicators — pill style */}
+              <div className="flex justify-between mt-4">
+                {steps.map((step, i) => {
+                  const isStepComplete = overallProgress > step.threshold || (i === 0 && overallProgress >= 0 && !isUploading);
+                  const isActive = i === 0
+                    ? isUploading
+                    : overallProgress >= step.threshold && (i === steps.length - 1 || overallProgress < steps[i + 1].threshold);
+                  return (
+                    <div key={step.label} className="flex items-center gap-1.5">
+                      {isStepComplete && !isActive ? (
+                        <svg className="w-3.5 h-3.5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                        </svg>
+                      ) : isActive ? (
+                        <span className="relative flex h-2.5 w-2.5">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500" />
+                        </span>
+                      ) : (
+                        <span className="h-2 w-2 rounded-full bg-gray-200" />
+                      )}
+                      <span className={`text-xs font-medium ${
+                        isActive ? "text-blue-600" : isStepComplete ? "text-green-600" : "text-gray-400"
+                      }`}>
+                        {step.label}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

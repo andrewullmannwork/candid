@@ -630,15 +630,22 @@ export default function CandidPlanPage() {
                             <div className="grid grid-cols-2 gap-3 p-3 bg-gray-50 rounded-xl">
                               <div>
                                 <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">In-Network</p>
-                                <p className="text-sm font-medium text-gray-900 mt-0.5">
-                                  {item.costSharing.inNetwork?.costDescription || "Covered"}
-                                </p>
+                                <div className="mt-0.5 space-y-0.5">
+                                  {(item.costSharing.inNetwork?.costDescription || "Covered").split("; ").map((line: string, i: number) => (
+                                    <p key={i} className="text-sm font-medium text-gray-900">{line}</p>
+                                  ))}
+                                </div>
                               </div>
                               <div>
                                 <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Out-of-Network</p>
-                                <p className="text-sm font-medium text-gray-900 mt-0.5">
-                                  {item.costSharing.outOfNetwork?.costDescription || <span className="text-gray-300">&mdash;</span>}
-                                </p>
+                                <div className="mt-0.5 space-y-0.5">
+                                  {item.costSharing.outOfNetwork?.costDescription
+                                    ? item.costSharing.outOfNetwork.costDescription.split("; ").map((line: string, i: number) => (
+                                        <p key={i} className="text-sm font-medium text-gray-900">{line}</p>
+                                      ))
+                                    : <p className="text-sm text-gray-300">&mdash;</p>
+                                  }
+                                </div>
                               </div>
                             </div>
                           )}
