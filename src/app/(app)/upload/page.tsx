@@ -228,6 +228,8 @@ function UploadForm() {
             setError(errBody.error || "Upload failed. Please try again.");
           }
           setUploading(false);
+          setUploaded(false);
+          setUploadStatus(null);
           return;
         }
 
