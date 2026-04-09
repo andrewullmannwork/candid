@@ -134,6 +134,12 @@ function UploadForm() {
           return;
         }
 
+        if (data.status === "pending_review") {
+          active = false;
+          setUploadStatus("pending_review");
+          return;
+        }
+
         if (data.status === "error") {
           active = false;
           return;
@@ -367,7 +373,7 @@ function UploadForm() {
       if (isComplete) return "Analysis complete";
       if (isError) return "Processing error";
       if (hasMismatch) return "Review needed";
-      if (isPendingReview) return "Under review";
+      if (isPendingReview) return "Needs a human touch";
       if (!processingProgress) return "Starting analysis...";
       if (processingProgress.step?.startsWith("ocr_chunk") || processingProgress.step?.startsWith("working_ocr")) return "Reading pages...";
       if (processingProgress.step === "classifying" || processingProgress.step === "working_classifying") return "Classifying document...";
@@ -429,9 +435,12 @@ function UploadForm() {
           {/* Pending review */}
           {isPendingReview && (
             <div className="mb-5 p-4 bg-amber-50 border border-amber-100 rounded-xl">
-              <p className="text-sm text-amber-800 leading-relaxed">
-                Our team will review your document and have your results ready within 24 hours.
-                We&apos;ll send you an email when it&apos;s done.
+              <p className="text-sm font-medium text-amber-900">
+                Our document reader is having a little trouble with your document.
+              </p>
+              <p className="text-sm text-amber-800 mt-1.5 leading-relaxed">
+                Our team has been notified and will fix it while Candid takes a quick nap.
+                We&apos;ll email you when your results are ready.
               </p>
             </div>
           )}
