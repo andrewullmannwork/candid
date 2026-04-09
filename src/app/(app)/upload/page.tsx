@@ -409,7 +409,17 @@ function UploadForm() {
 
     return (
       <div className="max-w-lg mx-auto">
-        <div className="p-8 bg-white border border-gray-200 rounded-2xl glow-blue">
+        <div className="p-8 bg-white border border-gray-200 rounded-2xl glow-blue relative">
+          {/* Close button */}
+          <button
+            onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setProcessingProgress(null); setDocumentId(null); }}
+            className="absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 transition-colors text-gray-400 hover:text-gray-600"
+            aria-label="Close"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
           {/* Header */}
           <div className="text-center mb-6">
             {isComplete ? (

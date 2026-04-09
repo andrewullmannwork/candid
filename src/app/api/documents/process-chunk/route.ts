@@ -8,16 +8,14 @@
  * State machine:
  *   queued/null      → download, count pages, OCR chunk 0    → ocr_chunk_1
  *   ocr_chunk_N      → OCR chunk N, append text               → ocr_chunk_{N+1} or classifying
- *   classifying       → classify with Haiku, reject non-health → extracting
- *   extracting        → Haiku service extraction, save JSON    → saving
- *   saving            → write plan + services to DB            → processed
+ *   classifying       → Haiku classify + extract + save (all inline, maxDuration=60) → processed
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
 import { extractTextFromDocument } from "@/lib/ocr";
 import { splitPDF, estimatePageCount } from "@/lib/ocr/document-ai";
-import { extractPlanData, savePlanData } from "@/lib/plan/process-plan";
+import { processPlanDocumentData } from "@/lib/plan/process-plan";
 import { recordProcessingUsage } from "@/lib/config/processing-usage";
 import { enqueueChunk } from "@/lib/queue/qstash";
 
@@ -175,27 +173,31 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ step: nextStep, completedPages, continue: true });
     }
 
-    // ── STEP: CLASSIFYING — classify document with Haiku ──────────────────
-    if (step === "classifying") {
+    // ── STEP: CLASSIFYING + EXTRACTING + SAVING (all inline) ──────────────
+    // With Vercel Pro (maxDuration=60), we can run classify → extract → save
+    // in a single invocation. No more QStash handoffs for these stages.
+    if (step === "classifying" || step === "extracting" || step === "saving" || step === "parsing") {
       const { data: claimed } = await supabase
         .from("documents")
         .update({ processing_step: "working_classifying" })
         .eq("id", documentId)
-        .eq("processing_step", "classifying")
+        .eq("processing_step", step)
         .select("id");
 
       if (!claimed || claimed.length === 0) {
         return NextResponse.json({ skip: true, reason: "Already being processed" });
       }
 
-      const { data: freshClassifyDoc } = await supabase
+      // Fresh read of OCR text
+      const { data: freshDoc } = await supabase
         .from("documents")
         .select("processing_ocr_text")
         .eq("id", documentId)
         .single();
-      const ocrText = freshClassifyDoc?.processing_ocr_text || "";
-      console.log(`[process-chunk] Classifying with Haiku: ocrText length=${ocrText.length}`);
+      const ocrText = freshDoc?.processing_ocr_text || "";
 
+      // 1. Classify with Haiku
+      console.log(`[process-chunk] Classifying with Haiku: ocrText length=${ocrText.length}`);
       const { classifyWithHaiku } = await import("@/lib/classifier/haiku-classify");
       const classification = await classifyWithHaiku(ocrText, doc.file_name, doc.doc_type);
 
@@ -211,101 +213,29 @@ export async function POST(req: NextRequest) {
       }
 
       await supabase.from("documents").update({
-        processing_step: "extracting",
+        processing_step: "working_extracting",
         classified_type: classification.classifiedType,
         classification_confidence: classification.confidence,
         type_mismatch: classification.classifiedType !== doc.doc_type,
       }).eq("id", documentId);
 
-      const baseUrl = new URL(req.url).origin;
-      await enqueueChunk(documentId, baseUrl);
-
-      return NextResponse.json({ step: "extracting", classification: classification.classifiedType, continue: true });
-    }
-
-    // ── STEP: EXTRACTING — Haiku service extraction (saves JSON to staging) ──
-    if (step === "extracting") {
-      const { data: claimed } = await supabase
-        .from("documents")
-        .update({ processing_step: "working_extracting" })
-        .eq("id", documentId)
-        .eq("processing_step", "extracting")
-        .select("id");
-
-      if (!claimed || claimed.length === 0) {
-        return NextResponse.json({ skip: true, reason: "Already being processed" });
-      }
-
-      const { data: freshDoc } = await supabase
-        .from("documents")
-        .select("processing_ocr_text, classified_type, classification_confidence, type_mismatch")
-        .eq("id", documentId)
-        .single();
-
-      const ocrText = freshDoc?.processing_ocr_text || "";
-      const classification = {
-        classifiedType: freshDoc?.classified_type || doc.doc_type,
-        confidence: freshDoc?.classification_confidence || 0,
-        mismatch: freshDoc?.type_mismatch || false,
-      };
-      console.log(`[process-chunk] Extracting: ocrText length=${ocrText.length}, type=${classification.classifiedType}`);
-
-      const extractResult = await extractPlanData(
-        supabase,
-        ocrText,
-        documentId,
-        classification,
-        { id: doc.id, user_id: doc.user_id, file_name: doc.file_name }
-      );
-
-      if (!extractResult.success) {
-        console.log(`[process-chunk] Extraction failed: ${extractResult.error}`);
-        return NextResponse.json({ step: "pending_review", continue: false });
-      }
-
-      // Extraction succeeded — enqueue save stage
-      const baseUrl = new URL(req.url).origin;
-      await enqueueChunk(documentId, baseUrl);
-
-      return NextResponse.json({ step: "saving", continue: true });
-    }
-
-    // ── STEP: SAVING — write plan + services to DB ──────────────────────────
-    if (step === "saving") {
-      const { data: claimed } = await supabase
-        .from("documents")
-        .update({ processing_step: "working_saving" })
-        .eq("id", documentId)
-        .eq("processing_step", "saving")
-        .select("id");
-
-      if (!claimed || claimed.length === 0) {
-        return NextResponse.json({ skip: true, reason: "Already being processed" });
-      }
-
-      console.log(`[process-chunk] Saving plan data for document ${documentId}`);
-
-      const result = await savePlanData(
+      // 2. Extract services with Haiku + 3. Save to DB (all in processPlanDocumentData)
+      console.log(`[process-chunk] Processing: type=${classification.classifiedType}, confidence=${classification.confidence}`);
+      const result = await processPlanDocumentData(
         supabase,
         { id: doc.id, user_id: doc.user_id, file_name: doc.file_name },
-        documentId
+        ocrText,
+        documentId,
+        { classifiedType: classification.classifiedType, confidence: classification.confidence, mismatch: classification.classifiedType !== doc.doc_type }
       );
 
-      console.log(`[process-chunk] Save result: success=${result.success}, services=${result.servicesCreated}, plan=${result.planData?.planName || "?"}`);
+      console.log(`[process-chunk] Result: success=${result.success}, services=${result.servicesCreated}, plan=${result.planData?.planName || "?"}`);
 
       if (!result.success) {
         return NextResponse.json({ error: result.error }, { status: 500 });
       }
 
       return NextResponse.json({ step: "done", continue: false, ...result });
-    }
-
-    // ── LEGACY: parsing step — redirect to extracting for backwards compat ──
-    if (step === "parsing") {
-      await supabase.from("documents").update({ processing_step: "extracting" }).eq("id", documentId);
-      const baseUrl = new URL(req.url).origin;
-      await enqueueChunk(documentId, baseUrl);
-      return NextResponse.json({ step: "extracting", continue: true });
     }
 
     // Working state — a step is in progress, check if it's stale
