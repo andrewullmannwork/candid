@@ -11,11 +11,12 @@ import type { SBCParsedService } from "./sbc-parser";
 
 function getClient(): Anthropic | null {
   const apiKey = process.env.ANTHROPIC_API_KEY;
+  console.log("[claude-extractor] API key check:", apiKey ? `set (${apiKey.slice(0, 8)}...)` : "NOT SET");
   if (!apiKey) {
     console.warn("[claude-extractor] ANTHROPIC_API_KEY not set — Haiku extraction unavailable");
     return null;
   }
-  return new Anthropic({ apiKey, timeout: 55000 }); // 55s — leave 5s headroom for DB writes
+  return new Anthropic({ apiKey, timeout: 55000 });
 }
 
 /**
@@ -146,8 +147,10 @@ ${truncated}`;
 
     return { services, fromClaude: true };
   } catch (err) {
-    console.error("[claude-extractor] Haiku extraction failed:", err instanceof Error ? err.message : err);
-    return { services: [], fromClaude: false };
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[claude-extractor] Haiku extraction error:", errMsg);
+    // Return the error message so callers can log it
+    return { services: [], fromClaude: false, error: errMsg };
   }
 }
 

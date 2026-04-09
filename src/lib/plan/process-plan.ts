@@ -79,7 +79,9 @@ export async function processPlanDocumentData(
         parseResult.services = claudeResult.services;
         console.log(`[process-plan] Haiku extracted ${claudeResult.services.length} services`);
       } else {
-        const reason = `Haiku returned fromClaude=${claudeResult.fromClaude}, services=${claudeResult.services.length}`;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const extractorError = (claudeResult as any).error;
+        const reason = `Haiku returned fromClaude=${claudeResult.fromClaude}, services=${claudeResult.services.length}${extractorError ? `, error: ${extractorError}` : ""}`;
         console.warn("[process-plan]", reason);
         await notifyAndFlagForReview(supabase, documentId, classification, doc, reason);
         return {
