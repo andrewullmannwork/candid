@@ -36,9 +36,9 @@ export async function extractServicesWithClaude(
 
   console.log("[claude-extractor] Starting Haiku extraction for:", planName || "unknown plan", "| text length:", ocrText.length);
 
-  // Truncate to ~10K tokens to stay within Vercel's 10s function timeout.
-  // Benefits/services info is concentrated in the first ~40K chars for most plans.
-  const truncated = ocrText.length > 40000 ? ocrText.slice(0, 40000) : ocrText;
+  // Truncate very long documents to stay within token limits (~100K chars ≈ 25K tokens).
+  // Vercel Pro + maxDuration=60 gives enough time for Haiku to process the full document.
+  const truncated = ocrText.length > 100000 ? ocrText.slice(0, 100000) : ocrText;
 
   const prompt = `You are parsing ${isFullPlanDoc ? "a full insurance plan benefits document" : "a Summary of Benefits and Coverage (SBC) document"}.
 
