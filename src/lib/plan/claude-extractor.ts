@@ -28,7 +28,7 @@ export async function extractServicesWithClaude(
   ocrText: string,
   planName: string | null,
   isFullPlanDoc: boolean
-): Promise<{ services: SBCParsedService[]; fromClaude: boolean }> {
+): Promise<{ services: SBCParsedService[]; fromClaude: boolean; error?: string }> {
   const client = getClient();
   if (!client) {
     console.log("[claude-extractor] No API key — returning empty (will fall back to regex)");
