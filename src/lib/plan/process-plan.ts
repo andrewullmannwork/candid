@@ -66,7 +66,9 @@ export async function processPlanDocumentData(
       : parseSBCText(ocrText, documentId);
 
     // Enrich services with Claude Haiku if enabled (~$0.01/doc)
-    if (FLAGS.CLAUDE_EXTRACTION_ENABLED && parseResult.services.length > 0) {
+    // Check both env var directly and FLAGS (env var takes precedence at runtime)
+    const claudeEnabled = process.env.CLAUDE_EXTRACTION_ENABLED === "true" || FLAGS.CLAUDE_EXTRACTION_ENABLED;
+    if (claudeEnabled && parseResult.services.length > 0) {
       try {
         const enriched = await enrichServicesWithClaude(
           parseResult.services,
