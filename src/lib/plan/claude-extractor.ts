@@ -55,7 +55,11 @@ async function callHaiku(client: Anthropic, prompt: string, maxTokens: number): 
     messages: [{ role: "user", content: prompt }],
   });
   const text = response.content[0].type === "text" ? response.content[0].text : "";
-  console.log(`[claude-extractor] Haiku response: ${text.length} chars | usage: ${JSON.stringify(response.usage)}`);
+  const stopReason = response.stop_reason;
+  console.log(`[claude-extractor] Haiku response: ${text.length} chars | stop: ${stopReason} | usage: ${JSON.stringify(response.usage)}`);
+  if (stopReason === "max_tokens") {
+    console.warn(`[claude-extractor] WARNING: Output truncated at ${maxTokens} tokens — jsonrepair will attempt to fix`);
+  }
   return text;
 }
 
