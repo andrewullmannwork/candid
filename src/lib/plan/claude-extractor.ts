@@ -11,7 +11,6 @@ import type { SBCParsedService } from "./sbc-parser";
 
 function getClient(): Anthropic | null {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  console.log("[claude-extractor] API key check:", apiKey ? `set (${apiKey.slice(0, 8)}...)` : "NOT SET");
   if (!apiKey) {
     console.warn("[claude-extractor] ANTHROPIC_API_KEY not set — Haiku extraction unavailable");
     return null;
@@ -88,7 +87,7 @@ ${truncated}`;
   try {
     const response = await client.messages.create({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 8192,
+      max_tokens: 16384,
       messages: [{ role: "user", content: prompt }],
     });
 
