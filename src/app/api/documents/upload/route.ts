@@ -76,11 +76,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `File must be under ${Math.round(FLAGS.UPLOAD_MAX_FILE_SIZE / 1024 / 1024)}MB.` }, { status: 400 });
   }
 
-  // Check per-user document limit
+  // Recover stuck documents — reset any "processing" docs older than 5 minutes to "error"
+  await supabase
+    .from("documents")
+    .update({ status: "error", processing_error: "Processing timed out. Please try uploading again." })
+    .eq("user_id", user.id)
+    .eq("status", "processing")
+    .lt("created_at", new Date(Date.now() - 5 * 60 * 1000).toISOString());
+
+  // Check per-user document limit (exclude errored/failed docs)
   const { count: userDocCount } = await supabase
     .from("documents")
     .select("id", { count: "exact", head: true })
-    .eq("user_id", user.id);
+    .eq("user_id", user.id)
+    .in("status", ["uploaded", "queued", "processing", "processed"]);
 
   if (userDocCount != null && userDocCount >= FLAGS.UPLOAD_MAX_PER_USER) {
     return NextResponse.json(
@@ -150,39 +159,19 @@ export async function POST(req: NextRequest) {
 
   const userEmail = decoded.email || "";
 
-  // HIGH confidence — auto-process immediately
+  // HIGH confidence — queue for processing via QStash (guaranteed delivery)
+  // ALL documents go through the same chunked pipeline — no fire-and-forget fetch.
   if (classification.confidence >= CONFIDENCE_HIGH) {
     try {
-      const isLargeDoc = classification.pageCount > 15;
+      await supabase.from("documents").update({
+        status: "queued",
+        processing_total_pages: classification.pageCount,
+      }).eq("id", documentId);
 
-      if (isLargeDoc) {
-        // Large documents: use chunked processing to stay within Vercel 10s timeout.
-        // QStash guarantees delivery with retries — no client polling dependency.
-        await supabase.from("documents").update({
-          status: "queued",
-          processing_total_pages: classification.pageCount,
-        }).eq("id", documentId);
-
-        const baseUrl = req.headers.get("x-forwarded-proto") && req.headers.get("x-forwarded-host")
-          ? `${req.headers.get("x-forwarded-proto")}://${req.headers.get("x-forwarded-host")}`
-          : new URL(req.url).origin;
-        await enqueueChunk(documentId, baseUrl);
-      } else {
-        // Small documents: process directly in a single call
-        await supabase.from("documents").update({ status: "processing" }).eq("id", documentId);
-
-        const processUrl = new URL("/api/documents/process", req.url);
-        fetch(processUrl.toString(), {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: req.headers.get("authorization") || "",
-          },
-          body: JSON.stringify({ documentId, billType: docType }),
-        }).catch((err) => {
-          console.error("[upload] Auto-process trigger failed:", err);
-        });
-      }
+      const baseUrl = req.headers.get("x-forwarded-proto") && req.headers.get("x-forwarded-host")
+        ? `${req.headers.get("x-forwarded-proto")}://${req.headers.get("x-forwarded-host")}`
+        : new URL(req.url).origin;
+      await enqueueChunk(documentId, baseUrl);
 
       return NextResponse.json({
         documentId,

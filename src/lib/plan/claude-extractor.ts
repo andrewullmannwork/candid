@@ -1,14 +1,11 @@
 /**
- * Claude Haiku three-pass extractor for SBC/plan documents.
+ * Claude Haiku service extractor for SBC/plan documents.
  *
- * Pass 1: Extract raw service list (slug + name only — fast, bounded output)
- * Pass 2: Deduplicate and consolidate (no document text — tiny output)
- * Pass 3: Extract cost details for each consolidated service
+ * Single-pass extraction with comprehensive category checklist.
+ * If output is truncated (stop_reason: max_tokens), makes ONE follow-up
+ * call for remaining services. jsonrepair handles any malformed JSON.
  *
- * This approach prevents output token overflow on large (72+ page) documents
- * where a single-pass extraction produces 1000+ entries and truncates.
- *
- * Cost: ~$0.15/document (three Haiku calls × ~25K input tokens each)
+ * Cost: ~$0.03-0.08/document depending on size.
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -26,59 +23,20 @@ function getClient(): Anthropic | null {
   return new Anthropic({ apiKey, timeout: 120000, maxRetries: 3 });
 }
 
-const STANDARD_SLUGS = `pcp_visit, specialist_visit, preventive_care, diagnostic_test, advanced_imaging, generic_rx_tier1, preferred_brand_rx, non_preferred_rx, specialty_rx, outpatient_surgery_facility, outpatient_surgery_physician, er_visit, emergency_transport, urgent_care, inpatient_facility, inpatient_physician, mental_health_outpatient, mental_health_inpatient, substance_abuse_outpatient, substance_abuse_inpatient, prenatal_visit, delivery_facility, delivery_professional, home_health, pt_rehab, habilitation, skilled_nursing, durable_medical_equipment, hospice_inpatient, hospice_outpatient, chiropractic, acupuncture, speech_therapy, occupational_therapy, telehealth, nutritional_counseling, childrens_eye_exam, childrens_glasses, childrens_dental`;
-
-/**
- * Parse JSON from Haiku output, handling:
- * - Markdown code fencing
- * - Single quotes instead of double quotes
- * - Trailing commas
- * - Truncated JSON (incomplete arrays/objects)
- * - Unquoted property names
- */
 function parseJSON(text: string): unknown {
   const cleaned = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
   try {
     return JSON.parse(cleaned);
   } catch {
-    // Haiku sometimes produces slightly malformed JSON — repair it
     console.log("[claude-extractor] JSON.parse failed, attempting repair...");
     const repaired = jsonrepair(cleaned);
     return JSON.parse(repaired);
   }
 }
 
-async function callHaiku(client: Anthropic, prompt: string, maxTokens: number): Promise<string> {
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: maxTokens,
-    messages: [{ role: "user", content: prompt }],
-  });
-  const text = response.content[0].type === "text" ? response.content[0].text : "";
-  const stopReason = response.stop_reason;
-  console.log(`[claude-extractor] Haiku response: ${text.length} chars | stop: ${stopReason} | usage: ${JSON.stringify(response.usage)}`);
-  if (stopReason === "max_tokens") {
-    console.warn(`[claude-extractor] WARNING: Output truncated at ${maxTokens} tokens — jsonrepair will attempt to fix`);
-  }
-  return text;
-}
+const STANDARD_SLUGS = `pcp_visit, specialist_visit, preventive_care, diagnostic_test, advanced_imaging, generic_rx_tier1, preferred_brand_rx, non_preferred_rx, specialty_rx, outpatient_surgery_facility, outpatient_surgery_physician, er_visit, emergency_transport, urgent_care, inpatient_facility, inpatient_physician, mental_health_outpatient, mental_health_inpatient, substance_abuse_outpatient, substance_abuse_inpatient, prenatal_visit, delivery_facility, delivery_professional, home_health, pt_rehab, habilitation, skilled_nursing, durable_medical_equipment, hospice_inpatient, hospice_outpatient, chiropractic, acupuncture, speech_therapy, occupational_therapy, telehealth, nutritional_counseling, childrens_eye_exam, childrens_glasses, childrens_dental`;
 
-// ── Pass 1: Raw service extraction ──────────────────────────────────────────
-
-async function pass1_extractServiceList(
-  client: Anthropic,
-  ocrText: string,
-  planName: string | null,
-  isFullPlanDoc: boolean
-): Promise<Array<{ serviceSlug: string; serviceName: string }>> {
-  const truncated = ocrText.length > 100000 ? ocrText.slice(0, 100000) : ocrText;
-
-  const prompt = `You are parsing ${isFullPlanDoc ? "a full insurance plan benefits document" : "an SBC document"}.
-Plan name: ${planName || "Unknown"}
-
-List every unique healthcare service in this plan. Be THOROUGH — scan the entire document.
-
-Look for services in ALL of these categories:
+const CATEGORY_CHECKLIST = `Look for services in ALL of these categories:
 - Physician visits (PCP, specialist, second opinion, consultant, OB/GYN)
 - Virtual/telehealth care (MDLIVE, virtual visits, dedicated virtual providers)
 - Preventive care and screenings (mammograms, PSA, PAP, immunizations, wellness exams)
@@ -89,108 +47,67 @@ Look for services in ALL of these categories:
 - Lab and diagnostic services
 - Radiology services
 - Advanced imaging (MRI, MRA, CT, CAT, PET scans)
-- Therapy services (physical therapy, occupational therapy, speech therapy, cardiac rehab, pulmonary rehab, cognitive therapy)
+- Therapy services (physical therapy, occupational therapy, speech therapy, cardiac rehab, pulmonary rehab)
 - Chiropractic and spinal manipulation
 - Acupuncture
-- Mental health (inpatient, outpatient, partial hospitalization)
+- Mental health (inpatient, outpatient)
 - Substance use disorder (inpatient, outpatient, detox)
 - Maternity care (initial visit, prenatal visits, delivery facility, delivery professional, abortion)
-- Prescription drugs (list EACH tier separately: generic/Tier 1, preferred brand/Tier 2, non-preferred/Tier 3, specialty)
-- Home health care services
+- Prescription drugs (EACH tier separately: generic/Tier 1, preferred brand/Tier 2, non-preferred/Tier 3, specialty)
+- Home health care
 - Hospice (inpatient, outpatient)
 - Bereavement counseling
 - Skilled nursing facility
 - DME (durable medical equipment)
-- External prosthetic appliances
-- Diabetic equipment
+- External prosthetic appliances and diabetic equipment
 - Transplant services
 - Dialysis (outpatient, home)
-- Infertility treatment (even if not covered)
+- Infertility treatment (include even if not covered)
 - Dental care (injury-related)
-- Nutritional counseling
-- Genetic counseling
-- Gene therapy
-- Advanced cellular therapy
-- Medical pharmaceuticals
+- Nutritional and genetic counseling
+- Gene therapy and advanced cellular therapy
+- Medical pharmaceuticals and chemotherapy medication
 - Ambulance (ground and air)
 - Women's surgical sterilization
-- Chemotherapy medication
-- Allergy treatment/injections and allergy serum
-- Also include any other healthcare service covered by this plan not listed above (e.g., massage therapy, vision services, hearing aids, weight management, etc.)
+- Allergy treatment/injections
+- Any other healthcare service in the document not listed above`;
 
-If a service is listed as "Not Covered", still include it with the slug and name.
+function buildPrompt(
+  ocrText: string,
+  planName: string | null,
+  isFullPlanDoc: boolean,
+  existingSlugs?: string[]
+): string {
+  const truncated = ocrText.length > 100000 ? ocrText.slice(0, 100000) : ocrText;
+  const docType = isFullPlanDoc ? "a full insurance plan benefits document" : "an SBC document";
 
-DO NOT include: section headers, cost structure labels, legal terms, disclaimers, page numbers, or table of contents entries.
+  if (existingSlugs && existingSlugs.length > 0) {
+    // Continuation call — extract remaining services not already found
+    return `You are parsing ${docType}. Plan name: ${planName || "Unknown"}
 
-Return ONLY a JSON array of: [{ "serviceSlug": "lowercase_underscore", "serviceName": "Clean Name" }]
+These services have ALREADY been extracted: ${existingSlugs.join(", ")}
 
-Use these standard slugs when they match:
-${STANDARD_SLUGS}
+Extract any REMAINING healthcare services NOT in the list above. Use the same JSON format.
+If a service is listed as "Not Covered", still include it with covered: false.
+Each service appears ONCE. Return ONLY a JSON array. No markdown, no explanation.
+If no additional services are found, return an empty array: []
 
-For services not in the standard list, create a descriptive slug (e.g., "bariatric_surgery", "gene_therapy", "allergy_injections").
-
-Each unique service should appear ONCE.
-
-Return ONLY the JSON array. No markdown, no explanation.
+For each service return: { "serviceSlug", "serviceName", "inCopay", "inCoinsurance", "inDeductibleApplies", "inCostDescription", "outCopay", "outCoinsurance", "outDeductibleApplies", "outCostDescription", "priorAuthRequired", "annualLimit", "stepTherapyRequired", "covered", "coverageConditions", "confidence" }
 
 Document text:
 ${truncated}`;
+  }
 
-  const text = await callHaiku(client, prompt, 4096);
-  const result = parseJSON(text) as Array<{ serviceSlug: string; serviceName: string }>;
-  console.log(`[claude-extractor] Pass 1: ${result.length} raw services`);
-  return result;
-}
+  return `You are parsing ${docType}. Plan name: ${planName || "Unknown"}
 
-// ── Pass 2: Deduplicate and consolidate ─────────────────────────────────────
+Extract every unique healthcare service covered by this plan. Be THOROUGH.
 
-async function pass2_deduplicateServices(
-  client: Anthropic,
-  rawServices: Array<{ serviceSlug: string; serviceName: string }>
-): Promise<Array<{ serviceSlug: string; serviceName: string; covered: boolean }>> {
-  const prompt = `Deduplicate and consolidate this list of healthcare services. Many entries refer to the same service with slightly different names.
+${CATEGORY_CHECKLIST}
 
-Rules:
-1. Merge duplicates — keep the clearest name
-2. Use standard slugs where they match: ${STANDARD_SLUGS}
-3. Remove anything that isn't an actual patient-receivable service
-4. Mark all as covered: true (these came from a covered services document)
-5. Maximum 125 unique services
-
-Input services:
-${JSON.stringify(rawServices, null, 0)}
-
-Return ONLY a JSON array of: [{ "serviceSlug": "...", "serviceName": "...", "covered": true }]
-No markdown, no explanation.`;
-
-  const text = await callHaiku(client, prompt, 4096);
-  const result = parseJSON(text) as Array<{ serviceSlug: string; serviceName: string; covered: boolean }>;
-  console.log(`[claude-extractor] Pass 2: ${result.length} deduplicated services (from ${rawServices.length} raw)`);
-  return result;
-}
-
-// ── Pass 3: Extract cost details ────────────────────────────────────────────
-
-async function pass3_extractCostDetails(
-  client: Anthropic,
-  services: Array<{ serviceSlug: string; serviceName: string }>,
-  ocrText: string,
-  planName: string | null,
-  isFullPlanDoc: boolean
-): Promise<SBCParsedService[]> {
-  const truncated = ocrText.length > 100000 ? ocrText.slice(0, 100000) : ocrText;
-
-  const prompt = `You are extracting cost details from ${isFullPlanDoc ? "a full insurance plan benefits document" : "an SBC document"}.
-Plan name: ${planName || "Unknown"}
-
-For EACH of these services, find the in-network and out-of-network cost details in the document below.
-
-Services to extract costs for:
-${JSON.stringify(services.map(s => ({ slug: s.serviceSlug, name: s.serviceName })), null, 0)}
-
-For each service, return:
+For each service, return a JSON object:
 {
-  "serviceSlug": "matching slug from list above",
+  "serviceSlug": "lowercase_underscore_identifier",
+  "serviceName": "Clean Human-Readable Name",
   "inCopay": number or null,
   "inCoinsurance": decimal (0.10 for 10%) or null,
   "inDeductibleApplies": true/false/null,
@@ -202,43 +119,49 @@ For each service, return:
   "priorAuthRequired": true/false/null,
   "annualLimit": "e.g., '60 visits per year' or null",
   "stepTherapyRequired": true/false/null,
-  "covered": true,
+  "covered": true/false,
   "coverageConditions": "Special conditions or null",
   "confidence": 0.5-1.0
 }
 
-Rules:
+Standard slugs (use when they match): ${STANDARD_SLUGS}
+For others, create descriptive slugs (e.g., "bariatric_surgery", "gene_therapy").
+
+CRITICAL RULES:
+- Each unique service appears ONCE — deduplicate across sections
+- Extract ONLY patient-receivable services, not section headers or labels
 - Keep inCostDescription to ONE concise sentence
-- If cost info is not found for a service, set confidence to 0.5 and descriptions to empty
-- If a service has both copay AND coinsurance, include BOTH in the description
+- If a service has both copay AND coinsurance, include BOTH
+- If listed as "Not Covered", include with covered: false
+- For Rx, list each tier as a separate service with retail AND home delivery costs
 
 Return ONLY a JSON array. No markdown, no explanation.
 
 Document text:
 ${truncated}`;
+}
 
-  const text = await callHaiku(client, prompt, 8192);
-  const extracted = parseJSON(text) as Array<{
-    serviceSlug: string;
-    inCopay?: number | null;
-    inCoinsurance?: number | null;
-    inDeductibleApplies?: boolean | null;
-    inCostDescription?: string;
-    outCopay?: number | null;
-    outCoinsurance?: number | null;
-    outDeductibleApplies?: boolean | null;
-    outCostDescription?: string;
-    priorAuthRequired?: boolean | null;
-    annualLimit?: string | null;
-    stepTherapyRequired?: boolean | null;
-    covered?: boolean;
-    coverageConditions?: string | null;
-    confidence?: number;
-  }>;
+interface RawExtracted {
+  serviceSlug: string;
+  serviceName?: string;
+  inCopay?: number | null;
+  inCoinsurance?: number | null;
+  inDeductibleApplies?: boolean | null;
+  inCostDescription?: string;
+  outCopay?: number | null;
+  outCoinsurance?: number | null;
+  outDeductibleApplies?: boolean | null;
+  outCostDescription?: string;
+  priorAuthRequired?: boolean | null;
+  annualLimit?: string | null;
+  stepTherapyRequired?: boolean | null;
+  covered?: boolean;
+  coverageConditions?: string | null;
+  confidence?: number;
+}
 
-  console.log(`[claude-extractor] Pass 3: ${extracted.length} services with cost details`);
-
-  return extracted.map((e) => ({
+function toSBCParsedService(e: RawExtracted): SBCParsedService {
+  return {
     serviceSlug: e.serviceSlug,
     placeOfService: "any",
     inCopay: e.inCopay ?? null,
@@ -262,10 +185,8 @@ ${truncated}`;
     stepTherapyRequired: e.stepTherapyRequired ?? null,
     notes: null,
     confidence: e.confidence ?? 0.85,
-  }));
+  };
 }
-
-// ── Main entry point ────────────────────────────────────────────────────────
 
 export async function extractServicesWithClaude(
   ocrText: string,
@@ -277,35 +198,55 @@ export async function extractServicesWithClaude(
     return { services: [], fromClaude: false, error: "ANTHROPIC_API_KEY not set" };
   }
 
-  console.log("[claude-extractor] Starting three-pass extraction for:", planName || "unknown plan", "| text length:", ocrText.length);
+  console.log("[claude-extractor] Starting extraction for:", planName || "unknown plan", "| text length:", ocrText.length);
 
   try {
-    // Pass 1: Extract raw service list
-    const rawServices = await pass1_extractServiceList(client, ocrText, planName, isFullPlanDoc);
-    if (rawServices.length === 0) {
-      return { services: [], fromClaude: false, error: "Pass 1 returned 0 services" };
+    // Primary extraction call
+    const prompt = buildPrompt(ocrText, planName, isFullPlanDoc);
+    const response = await client.messages.create({
+      model: MODEL,
+      max_tokens: 8192,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    const text = response.content[0].type === "text" ? response.content[0].text : "";
+    console.log(`[claude-extractor] Response: ${text.length} chars | stop: ${response.stop_reason} | usage: ${JSON.stringify(response.usage)}`);
+
+    const extracted = parseJSON(text) as RawExtracted[];
+    let allServices = extracted;
+    console.log(`[claude-extractor] Extracted ${allServices.length} services`);
+
+    // If truncated, make ONE continuation call for remaining services
+    if (response.stop_reason === "max_tokens" || (response.stop_reason === "end_turn" && allServices.length === 0)) {
+      if (response.stop_reason === "max_tokens") {
+        console.log("[claude-extractor] Output truncated — making continuation call...");
+        const existingSlugs = allServices.map(s => s.serviceSlug);
+        const contPrompt = buildPrompt(ocrText, planName, isFullPlanDoc, existingSlugs);
+        const contResponse = await client.messages.create({
+          model: MODEL,
+          max_tokens: 8192,
+          messages: [{ role: "user", content: contPrompt }],
+        });
+        const contText = contResponse.content[0].type === "text" ? contResponse.content[0].text : "";
+        console.log(`[claude-extractor] Continuation: ${contText.length} chars | stop: ${contResponse.stop_reason}`);
+
+        try {
+          const contExtracted = parseJSON(contText) as RawExtracted[];
+          if (contExtracted.length > 0) {
+            allServices = [...allServices, ...contExtracted];
+            console.log(`[claude-extractor] Total after continuation: ${allServices.length} services`);
+          }
+        } catch {
+          console.warn("[claude-extractor] Continuation JSON parse failed — using initial results");
+        }
+      }
     }
 
-    // Pass 2: Deduplicate
-    const consolidated = await pass2_deduplicateServices(client, rawServices);
-    if (consolidated.length === 0) {
-      return { services: [], fromClaude: false, error: "Pass 2 returned 0 services after dedup" };
+    if (allServices.length === 0) {
+      return { services: [], fromClaude: false, error: "Haiku returned 0 services" };
     }
 
-    // Check against configurable max
-    const maxServices = parseInt(process.env.MAX_EXTRACTED_SERVICES || "125", 10);
-    if (consolidated.length > maxServices) {
-      return {
-        services: [],
-        fromClaude: false,
-        error: `Pass 2 returned ${consolidated.length} services (max ${maxServices}) — flagging for review`,
-      };
-    }
-
-    // Pass 3: Extract cost details
-    const services = await pass3_extractCostDetails(client, consolidated, ocrText, planName, isFullPlanDoc);
-
-    console.log(`[claude-extractor] Three-pass complete: ${rawServices.length} raw → ${consolidated.length} deduped → ${services.length} with costs`);
+    const services = allServices.map(toSBCParsedService);
     return { services, fromClaude: true };
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
