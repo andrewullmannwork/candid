@@ -110,6 +110,11 @@ export default function PipelinePage() {
   const [categoryLabels, setCategoryLabels] = useState<Record<string, string>>(DEFAULT_CATEGORY_LABELS);
   const [addingCategory, setAddingCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
+  // Bulk selection for service catalog
+  const [selectedServices, setSelectedServices] = useState<Set<string>>(new Set());
+  const [bulkCategory, setBulkCategory] = useState("other");
+  const [showBulkDelete, setShowBulkDelete] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [processingStats, setProcessingStats] = useState<ProcessingStats | null>(null);
   const [processingAction, setProcessingAction] = useState(false);
 
@@ -672,10 +677,110 @@ export default function PipelinePage() {
             </div>
           )}
 
+          {/* Bulk actions bar */}
+          {selectedServices.size > 0 && (
+            <div className="mb-3 p-3 bg-blue-50 border border-blue-100 rounded-xl">
+              {showBulkDelete ? (
+                <div className="space-y-2">
+                  <p className="text-sm font-semibold text-red-800">
+                    Delete {selectedServices.size} service{selectedServices.size !== 1 ? "s" : ""}? This cannot be undone.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={deleteConfirmText}
+                      onChange={(e) => setDeleteConfirmText(e.target.value)}
+                      placeholder='Type "DELETE" to confirm'
+                      className="px-3 py-1.5 text-sm border border-red-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-red-500 w-48"
+                    />
+                    <button
+                      onClick={async () => {
+                        for (const id of selectedServices) {
+                          await deleteRecord("service_catalog", id);
+                        }
+                        setServices((prev) => prev.filter((s) => !selectedServices.has(s.id)));
+                        setSelectedServices(new Set());
+                        setShowBulkDelete(false);
+                        setDeleteConfirmText("");
+                      }}
+                      disabled={deleteConfirmText !== "DELETE"}
+                      className="px-3 py-1.5 text-xs font-semibold text-white bg-red-600 rounded-lg hover:bg-red-700 disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      Confirm Delete
+                    </button>
+                    <button
+                      onClick={() => { setShowBulkDelete(false); setDeleteConfirmText(""); }}
+                      className="px-3 py-1.5 text-xs font-semibold text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-medium text-blue-800">{selectedServices.size} selected</span>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={bulkCategory}
+                      onChange={(e) => setBulkCategory(e.target.value)}
+                      className="px-2 py-1.5 text-xs border border-blue-200 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    >
+                      {categories.map((cat) => (
+                        <option key={cat} value={cat}>{categoryLabels[cat] || cat}</option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={async () => {
+                        for (const id of selectedServices) {
+                          await update("service_catalog", id, { category: bulkCategory });
+                        }
+                        setServices((prev) =>
+                          prev.map((s) => selectedServices.has(s.id) ? { ...s, category: bulkCategory } : s)
+                        );
+                        setSelectedServices(new Set());
+                      }}
+                      className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+                    >
+                      Assign Category
+                    </button>
+                  </div>
+                  <div className="flex-1" />
+                  <button
+                    onClick={() => setShowBulkDelete(true)}
+                    className="px-3 py-1.5 text-xs font-semibold text-red-600 border border-red-200 rounded-lg hover:bg-red-50"
+                  >
+                    Delete Selected
+                  </button>
+                  <button
+                    onClick={() => setSelectedServices(new Set())}
+                    className="px-3 py-1.5 text-xs text-gray-500 hover:text-gray-700"
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 border-b">
                 <tr>
+                  <th className="px-3 py-3 text-left">
+                    <input
+                      type="checkbox"
+                      checked={selectedServices.size > 0 && services.filter((s) => serviceFilter === "all" || s.category === "other").every((s) => selectedServices.has(s.id))}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          const visible = services.filter((s) => serviceFilter === "all" || s.category === "other");
+                          setSelectedServices(new Set(visible.map((s) => s.id)));
+                        } else {
+                          setSelectedServices(new Set());
+                        }
+                      }}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                  </th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Service Name</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Slug</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Category</th>
@@ -688,7 +793,22 @@ export default function PipelinePage() {
                 {services
                   .filter((s) => serviceFilter === "all" || s.category === "other")
                   .map((svc) => (
-                    <tr key={svc.id} className={`hover:bg-gray-50 ${svc.category === "other" ? "bg-red-50/40" : ""}`}>
+                    <tr key={svc.id} className={`hover:bg-gray-50 ${selectedServices.has(svc.id) ? "bg-blue-50/40" : svc.category === "other" ? "bg-red-50/40" : ""}`}>
+                      <td className="px-3 py-3">
+                        <input
+                          type="checkbox"
+                          checked={selectedServices.has(svc.id)}
+                          onChange={(e) => {
+                            setSelectedServices((prev) => {
+                              const next = new Set(prev);
+                              if (e.target.checked) next.add(svc.id);
+                              else next.delete(svc.id);
+                              return next;
+                            });
+                          }}
+                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                      </td>
                       <td className="px-4 py-3 font-medium text-gray-900">{svc.name}</td>
                       <td className="px-4 py-3 text-xs text-gray-500 font-mono">{svc.slug}</td>
                       <td className="px-4 py-3">
