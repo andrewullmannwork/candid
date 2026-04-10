@@ -2,81 +2,181 @@
 
 import { useState, useEffect } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
-import { createBrowserClient } from "@/lib/supabase/client";
 
-interface PendingDocument {
+// ─── Types ──────────────────────────────────────────────────────────────────
+
+interface DocRecord {
   id: string;
   file_name: string;
+  file_size: number | null;
   doc_type: string;
   classified_type: string | null;
   classification_confidence: number | null;
+  type_mismatch: boolean | null;
   status: string;
+  processing_step: string | null;
+  processing_total_pages: number | null;
+  processing_completed_pages: number | null;
+  processing_error: string | null;
+  linked_insurance_plan_id: string | null;
+  insurer_mismatch: { mismatch: boolean; type?: string; existingInsurer?: string; parsedInsurer?: string; existingPlanName?: string; parsedPlanName?: string } | null;
   created_at: string;
   user_id: string;
   user_email?: string;
 }
 
+interface PlanDetail {
+  plan_name: string | null;
+  insurer_name: string | null;
+  plan_type: string | null;
+  in_deductible_individual: number | null;
+  out_deductible_individual: number | null;
+  in_oop_max_individual: number | null;
+  out_oop_max_individual: number | null;
+  servicesCount: number;
+}
+
+type StatusFilter = "all" | "pending_review" | "processed" | "error" | "rejected" | "queued";
+
+const STATUS_COLORS: Record<string, string> = {
+  processed: "bg-green-100 text-green-700",
+  queued: "bg-blue-100 text-blue-700",
+  processing: "bg-blue-100 text-blue-700",
+  pending_review: "bg-amber-100 text-amber-700",
+  error: "bg-red-100 text-red-700",
+  rejected: "bg-gray-100 text-gray-500",
+  uploaded: "bg-gray-100 text-gray-500",
+};
+
+const STATUS_LABELS: Record<string, string> = {
+  pending_review: "Pending Review",
+  processed: "Processed",
+  error: "Error",
+  rejected: "Rejected",
+  queued: "Queued",
+  processing: "Processing",
+  uploaded: "Uploaded",
+};
+
+// ─── Component ──────────────────────────────────────────────────────────────
+
 export default function DocumentReviewPage() {
   const { user } = useAuth();
-  const [documents, setDocuments] = useState<PendingDocument[]>([]);
+  const [documents, setDocuments] = useState<DocRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState<StatusFilter>("pending_review");
+  const [expandedDoc, setExpandedDoc] = useState<string | null>(null);
+  const [planDetails, setPlanDetails] = useState<Map<string, PlanDetail>>(new Map());
   const [processing, setProcessing] = useState<string | null>(null);
+  const [bulkAction, setBulkAction] = useState<"approve" | "reject" | null>(null);
+  const [showRejectConfirm, setShowRejectConfirm] = useState(false);
+  const [bulkResult, setBulkResult] = useState<string | null>(null);
+
+  // ─── Data Loading ───────────────────────────────────────────────────────
 
   useEffect(() => {
     if (!user) return;
-    loadPendingDocuments();
+    loadDocuments();
   }, [user]);
 
-  async function loadPendingDocuments() {
-    if (!user) return;
+  async function getToken() {
+    return user!.firebaseUser.getIdToken();
+  }
+
+  async function adminQuery(body: Record<string, unknown>) {
+    const idToken = await getToken();
+    const res = await fetch("/api/admin/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) return null;
+    const { data } = await res.json();
+    return data;
+  }
+
+  async function adminPatch(table: string, id: string, updates: Record<string, unknown>) {
+    const idToken = await getToken();
+    await fetch("/api/admin/query", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+      body: JSON.stringify({ table, id, updates }),
+    });
+  }
+
+  async function loadDocuments() {
     try {
-      const idToken = await user.firebaseUser.getIdToken();
-      // Use admin API (service role) to see ALL pending documents across all users
-      const res = await fetch("/api/admin/query", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
-        body: JSON.stringify({
-          table: "documents",
-          select: "id, file_name, doc_type, classified_type, classification_confidence, status, created_at, user_id, processing_error",
-          filters: { status: ["pending_review", "queued"] },
-          order: { column: "created_at", ascending: false },
-        }),
+      const data = await adminQuery({
+        table: "documents",
+        select: "id, file_name, file_size, doc_type, classified_type, classification_confidence, type_mismatch, status, processing_step, processing_total_pages, processing_completed_pages, processing_error, linked_insurance_plan_id, insurer_mismatch, created_at, user_id",
+        order: { column: "created_at", ascending: false },
+        limit: 200,
       });
-      if (!res.ok) { setLoading(false); return; }
-      const { data } = await res.json();
 
       if (data && data.length > 0) {
-        // Fetch user emails via admin API
-        const userIds = [...new Set(data.map((d: PendingDocument) => d.user_id))];
-        const emailRes = await fetch("/api/admin/query", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
-          body: JSON.stringify({ table: "users", select: "id, email", filters: { id: userIds } }),
+        // Batch fetch user emails
+        const userIds = [...new Set(data.map((d: DocRecord) => d.user_id))];
+        const users = await adminQuery({
+          table: "users",
+          select: "id, email",
+          filters: [{ op: "in", column: "id", value: userIds }],
         });
-        const { data: users } = emailRes.ok ? await emailRes.json() : { data: [] };
         const emailMap = new Map(users?.map((u: { id: string; email: string }) => [u.id, u.email]) || []);
-        setDocuments(data.map((d: PendingDocument) => ({ ...d, user_email: emailMap.get(d.user_id) })));
+        setDocuments(data.map((d: DocRecord) => ({ ...d, user_email: emailMap.get(d.user_id) })));
       } else {
         setDocuments([]);
       }
     } catch (err) {
-      console.error("[admin/review] Failed to load documents:", err);
+      console.error("[admin/review] Failed to load:", err);
     }
     setLoading(false);
   }
 
+  async function loadPlanDetail(doc: DocRecord) {
+    if (!doc.linked_insurance_plan_id || planDetails.has(doc.id)) return;
+    try {
+      const plans = await adminQuery({
+        table: "insurance_plans",
+        select: "plan_name, insurer_name, plan_type, in_deductible_individual, out_deductible_individual, in_oop_max_individual, out_oop_max_individual",
+        filters: [{ op: "eq", column: "id", value: doc.linked_insurance_plan_id }],
+      });
+      const plan = plans?.[0];
+
+      // Count extracted services
+      const services = await adminQuery({
+        table: "plan_covered_services",
+        select: "id",
+        filters: [{ op: "eq", column: "insurance_plan_id", value: doc.linked_insurance_plan_id }],
+      });
+
+      setPlanDetails((prev) => new Map(prev).set(doc.id, {
+        plan_name: plan?.plan_name || null,
+        insurer_name: plan?.insurer_name || null,
+        plan_type: plan?.plan_type || null,
+        in_deductible_individual: plan?.in_deductible_individual || null,
+        out_deductible_individual: plan?.out_deductible_individual || null,
+        in_oop_max_individual: plan?.in_oop_max_individual || null,
+        out_oop_max_individual: plan?.out_oop_max_individual || null,
+        servicesCount: services?.length || 0,
+      }));
+    } catch {
+      // Non-critical
+    }
+  }
+
+  // ─── Actions ────────────────────────────────────────────────────────────
+
   async function approveDocument(docId: string) {
-    if (!user) return;
     setProcessing(docId);
     try {
-      const idToken = await user.firebaseUser.getIdToken();
+      const idToken = await getToken();
       const res = await fetch("/api/admin/processing", {
         method: "POST",
         headers: { Authorization: `Bearer ${idToken}`, "Content-Type": "application/json" },
         body: JSON.stringify({ action: "process_document", documentId: docId }),
       });
       if (res.ok) {
-        setDocuments((prev) => prev.filter((d) => d.id !== docId));
+        setDocuments((prev) => prev.map((d) => d.id === docId ? { ...d, status: "queued" } : d));
       } else {
         const data = await res.json();
         alert(`Processing failed: ${data.error || "Unknown error"}`);
@@ -88,10 +188,108 @@ export default function DocumentReviewPage() {
   }
 
   async function rejectDocument(docId: string) {
-    const supabase = createBrowserClient();
-    await supabase.from("documents").update({ status: "rejected" }).eq("id", docId);
-    setDocuments((prev) => prev.filter((d) => d.id !== docId));
+    setProcessing(docId);
+    await adminPatch("documents", docId, { status: "rejected" });
+    setDocuments((prev) => prev.map((d) => d.id === docId ? { ...d, status: "rejected" } : d));
+    setProcessing(null);
   }
+
+  async function reprocessDocument(docId: string) {
+    setProcessing(docId);
+    try {
+      const idToken = await getToken();
+      const res = await fetch("/api/admin/processing", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${idToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "process_document", documentId: docId }),
+      });
+      if (res.ok) {
+        setDocuments((prev) => prev.map((d) => d.id === docId ? { ...d, status: "queued", processing_error: null } : d));
+      } else {
+        const data = await res.json();
+        alert(`Reprocess failed: ${data.error || "Unknown error"}`);
+      }
+    } catch {
+      alert("Reprocess request failed");
+    }
+    setProcessing(null);
+  }
+
+  async function bulkApprove() {
+    setBulkAction("approve");
+    setBulkResult(null);
+    const pending = documents.filter((d) => d.status === "pending_review");
+    let processed = 0;
+    let errors = 0;
+    for (const doc of pending) {
+      try {
+        const idToken = await getToken();
+        const res = await fetch("/api/admin/processing", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${idToken}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "process_document", documentId: doc.id }),
+        });
+        if (res.ok) {
+          processed++;
+          setDocuments((prev) => prev.map((d) => d.id === doc.id ? { ...d, status: "queued" } : d));
+        } else {
+          errors++;
+        }
+      } catch {
+        errors++;
+      }
+    }
+    setBulkResult(`Approved ${processed} document${processed !== 1 ? "s" : ""}${errors > 0 ? `, ${errors} failed` : ""}`);
+    setBulkAction(null);
+  }
+
+  async function bulkReject() {
+    setBulkAction("reject");
+    setBulkResult(null);
+    const pending = documents.filter((d) => d.status === "pending_review");
+    for (const doc of pending) {
+      await adminPatch("documents", doc.id, { status: "rejected" });
+    }
+    setDocuments((prev) => prev.map((d) => d.status === "pending_review" ? { ...d, status: "rejected" } : d));
+    setBulkResult(`Rejected ${pending.length} document${pending.length !== 1 ? "s" : ""}`);
+    setBulkAction(null);
+    setShowRejectConfirm(false);
+  }
+
+  // ─── Helpers ────────────────────────────────────────────────────────────
+
+  function toggleExpand(doc: DocRecord) {
+    if (expandedDoc === doc.id) {
+      setExpandedDoc(null);
+    } else {
+      setExpandedDoc(doc.id);
+      if (doc.linked_insurance_plan_id) loadPlanDetail(doc);
+    }
+  }
+
+  const filtered = filter === "all" ? documents : documents.filter((d) => d.status === filter);
+  const pendingCount = documents.filter((d) => d.status === "pending_review").length;
+  const statusCounts: Record<string, number> = {};
+  for (const d of documents) statusCounts[d.status] = (statusCounts[d.status] || 0) + 1;
+
+  function formatSize(bytes: number | null): string {
+    if (!bytes) return "—";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1048576) return `${Math.round(bytes / 1024)} KB`;
+    return `${(bytes / 1048576).toFixed(1)} MB`;
+  }
+
+  function formatDuration(createdAt: string): string {
+    const ms = Date.now() - new Date(createdAt).getTime();
+    const mins = Math.floor(ms / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    return `${Math.floor(hrs / 24)}d ago`;
+  }
+
+  // ─── Render ─────────────────────────────────────────────────────────────
 
   if (loading) {
     return (
@@ -103,77 +301,302 @@ export default function DocumentReviewPage() {
 
   return (
     <div>
+      {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-xl font-bold text-gray-900">Document Review</h1>
           <p className="text-sm text-gray-500 mt-1">
-            {documents.length} document{documents.length !== 1 ? "s" : ""} pending review
+            {documents.length} total document{documents.length !== 1 ? "s" : ""}
+            {pendingCount > 0 && ` · ${pendingCount} pending review`}
           </p>
         </div>
         <button
-          onClick={loadPendingDocuments}
+          onClick={() => { setLoading(true); loadDocuments(); }}
           className="px-3 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50"
         >
           Refresh
         </button>
       </div>
 
-      {documents.length === 0 ? (
-        <div className="p-8 text-center text-gray-400 border border-dashed border-gray-200 rounded-xl">
-          No documents pending review
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {documents.map((doc) => (
-            <div key={doc.id} className="p-4 bg-white border border-gray-200 rounded-xl">
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    <p className="text-sm font-semibold text-gray-900">{doc.file_name}</p>
-                    <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
-                      doc.status === "pending_review"
-                        ? "bg-amber-50 text-amber-700"
-                        : "bg-gray-100 text-gray-600"
-                    }`}>
-                      {doc.status === "pending_review" ? "Pending review" : doc.status}
-                    </span>
-                  </div>
-                  <div className="mt-1 flex items-center gap-3 text-xs text-gray-500">
-                    <span>Selected: {doc.doc_type}</span>
-                    {doc.classified_type && (
-                      <span>Classified: {doc.classified_type}</span>
-                    )}
-                    {doc.classification_confidence != null && (
-                      <span className={`font-semibold ${
-                        doc.classification_confidence >= 0.6 ? "text-amber-600" : "text-red-600"
-                      }`}>
-                        {Math.round(doc.classification_confidence * 100)}% confidence
-                      </span>
-                    )}
-                    {doc.user_email && <span>{doc.user_email}</span>}
-                    <span>{new Date(doc.created_at).toLocaleDateString()}</span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 ml-4">
-                  <button
-                    onClick={() => approveDocument(doc.id)}
-                    disabled={processing === doc.id}
-                    className="px-3 py-1.5 text-xs font-semibold text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50"
-                  >
-                    {processing === doc.id ? "Processing..." : "Approve"}
-                  </button>
-                  <button
-                    onClick={() => rejectDocument(doc.id)}
-                    className="px-3 py-1.5 text-xs font-semibold text-red-600 border border-red-200 rounded-lg hover:bg-red-50"
-                  >
-                    Reject
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
+      {/* Status filter tabs */}
+      <div className="flex gap-1 mb-4 overflow-x-auto">
+        {(["pending_review", "all", "processed", "error", "queued", "rejected"] as StatusFilter[]).map((tab) => {
+          const count = tab === "all" ? documents.length : (statusCounts[tab] || 0);
+          if (tab !== "all" && tab !== "pending_review" && count === 0) return null;
+          return (
+            <button
+              key={tab}
+              onClick={() => setFilter(tab)}
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap transition-colors ${
+                filter === tab
+                  ? "bg-gray-900 text-white"
+                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}
+            >
+              {tab === "all" ? "All" : STATUS_LABELS[tab] || tab} ({count})
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Bulk actions (when viewing pending_review and there are items) */}
+      {pendingCount > 0 && filter === "pending_review" && (
+        <div className="flex items-center gap-3 mb-4 p-3 bg-amber-50 border border-amber-100 rounded-xl">
+          <span className="text-sm font-medium text-amber-800">{pendingCount} document{pendingCount !== 1 ? "s" : ""} awaiting review</span>
+          <div className="flex-1" />
+          <button
+            onClick={bulkApprove}
+            disabled={bulkAction !== null}
+            className="px-3 py-1.5 text-xs font-semibold text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50"
+          >
+            {bulkAction === "approve" ? "Approving..." : `Approve All (${pendingCount})`}
+          </button>
+          <button
+            onClick={() => setShowRejectConfirm(true)}
+            disabled={bulkAction !== null}
+            className="px-3 py-1.5 text-xs font-semibold text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50"
+          >
+            Reject All ({pendingCount})
+          </button>
         </div>
       )}
+
+      {/* Reject All confirmation dialog */}
+      {showRejectConfirm && (
+        <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-xl">
+          <p className="text-sm font-semibold text-red-800">
+            Are you sure you want to reject {pendingCount} document{pendingCount !== 1 ? "s" : ""}?
+          </p>
+          <p className="text-xs text-red-600 mt-1">This cannot be undone. Rejected documents will need to be re-uploaded by users.</p>
+          <div className="flex gap-2 mt-3">
+            <button
+              onClick={bulkReject}
+              disabled={bulkAction !== null}
+              className="px-3 py-1.5 text-xs font-semibold text-white bg-red-600 rounded-lg hover:bg-red-700 disabled:opacity-50"
+            >
+              {bulkAction === "reject" ? "Rejecting..." : "Yes, Reject All"}
+            </button>
+            <button
+              onClick={() => setShowRejectConfirm(false)}
+              className="px-3 py-1.5 text-xs font-semibold text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk result banner */}
+      {bulkResult && (
+        <div className="mb-4 p-3 bg-blue-50 border border-blue-100 rounded-xl flex items-center justify-between">
+          <span className="text-sm text-blue-800">{bulkResult}</span>
+          <button onClick={() => setBulkResult(null)} className="text-xs text-blue-500 hover:text-blue-700">Dismiss</button>
+        </div>
+      )}
+
+      {/* Document list */}
+      {filtered.length === 0 ? (
+        <div className="p-8 text-center text-gray-400 border border-dashed border-gray-200 rounded-xl">
+          {filter === "pending_review" ? "No documents pending review" : "No documents found"}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {filtered.map((doc) => {
+            const isExpanded = expandedDoc === doc.id;
+            const plan = planDetails.get(doc.id);
+            const isPending = doc.status === "pending_review";
+            const isError = doc.status === "error";
+
+            return (
+              <div key={doc.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+                {/* Card header — clickable div (not button, so nested buttons work) */}
+                <div
+                  onClick={() => toggleExpand(doc)}
+                  className="w-full text-left p-4 hover:bg-gray-50/50 transition-colors cursor-pointer"
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-semibold text-gray-900 truncate">{doc.file_name}</p>
+                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0 ${STATUS_COLORS[doc.status] || "bg-gray-100 text-gray-600"}`}>
+                          {STATUS_LABELS[doc.status] || doc.status}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-gray-500">
+                        <span>Selected: {doc.doc_type}</span>
+                        {doc.classified_type && <span>Classified: {doc.classified_type}</span>}
+                        {doc.classification_confidence != null && (
+                          <span className={`font-semibold ${
+                            doc.classification_confidence >= 0.8 ? "text-green-600"
+                              : doc.classification_confidence >= 0.6 ? "text-amber-600"
+                                : "text-red-600"
+                          }`}>
+                            {Math.round(doc.classification_confidence * 100)}% confidence
+                          </span>
+                        )}
+                        {doc.file_size && <span>{formatSize(doc.file_size)}</span>}
+                        {doc.user_email && <span>{doc.user_email}</span>}
+                        <span>{new Date(doc.created_at).toLocaleDateString()}</span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 ml-4 shrink-0">
+                      {/* Inline actions for pending_review */}
+                      {isPending && (
+                        <>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); approveDocument(doc.id); }}
+                            disabled={processing === doc.id}
+                            className="px-3 py-1.5 text-xs font-semibold text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50"
+                          >
+                            {processing === doc.id ? "..." : "Approve"}
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); rejectDocument(doc.id); }}
+                            disabled={processing === doc.id}
+                            className="px-3 py-1.5 text-xs font-semibold text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50"
+                          >
+                            Reject
+                          </button>
+                        </>
+                      )}
+                      {isError && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); reprocessDocument(doc.id); }}
+                          disabled={processing === doc.id}
+                          className="px-3 py-1.5 text-xs font-semibold text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50 disabled:opacity-50"
+                        >
+                          {processing === doc.id ? "..." : "Reprocess"}
+                        </button>
+                      )}
+                      <svg
+                        className={`w-4 h-4 text-gray-400 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                        fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Expanded detail panel */}
+                {isExpanded && (
+                  <div className="border-t border-gray-100 p-4 bg-gray-50/50 space-y-4">
+                    {/* Document Info */}
+                    <div>
+                      <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Document Info</h4>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <DetailItem label="File Size" value={formatSize(doc.file_size)} />
+                        <DetailItem label="User Selected" value={doc.doc_type} />
+                        <DetailItem label="AI Classified" value={doc.classified_type || "—"} />
+                        <DetailItem label="Confidence" value={doc.classification_confidence != null ? `${Math.round(doc.classification_confidence * 100)}%` : "—"} />
+                        <DetailItem label="Type Mismatch" value={doc.type_mismatch ? "Yes" : "No"} />
+                        <DetailItem label="Uploaded" value={`${new Date(doc.created_at).toLocaleString()} (${formatDuration(doc.created_at)})`} />
+                        <DetailItem label="User" value={doc.user_email || doc.user_id.slice(0, 8) + "..."} />
+                        <DetailItem label="Document ID" value={doc.id.slice(0, 8) + "..."} />
+                      </div>
+                    </div>
+
+                    {/* Processing Info */}
+                    {(doc.processing_step || doc.processing_error || doc.processing_total_pages) && (
+                      <div>
+                        <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Processing</h4>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                          {doc.processing_step && <DetailItem label="Current Step" value={doc.processing_step} />}
+                          {doc.processing_total_pages && (
+                            <DetailItem label="Pages" value={`${doc.processing_completed_pages || 0} / ${doc.processing_total_pages}`} />
+                          )}
+                          {doc.processing_error && (
+                            <div className="col-span-2 md:col-span-4 p-2 bg-red-50 rounded-lg">
+                              <p className="text-xs font-medium text-red-700">Error: {doc.processing_error}</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Insurer Mismatch */}
+                    {doc.insurer_mismatch?.mismatch && (
+                      <div className="p-3 bg-amber-50 border border-amber-100 rounded-lg">
+                        <p className="text-xs font-semibold text-amber-800">Insurer Mismatch Detected</p>
+                        <p className="text-xs text-amber-700 mt-1">
+                          {doc.insurer_mismatch.type === "insurer"
+                            ? `Profile: ${doc.insurer_mismatch.existingInsurer} → Document: ${doc.insurer_mismatch.parsedInsurer}`
+                            : `Profile: ${doc.insurer_mismatch.existingPlanName} → Document: ${doc.insurer_mismatch.parsedPlanName}`
+                          }
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Plan Data (lazy-loaded) */}
+                    {doc.linked_insurance_plan_id && (
+                      <div>
+                        <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Linked Plan</h4>
+                        {plan ? (
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                            <DetailItem label="Plan Name" value={plan.plan_name || "—"} />
+                            <DetailItem label="Insurer" value={plan.insurer_name || "—"} />
+                            <DetailItem label="Plan Type" value={plan.plan_type || "—"} />
+                            <DetailItem label="Services Extracted" value={String(plan.servicesCount)} highlight={plan.servicesCount > 0} />
+                            <DetailItem label="In-Network Deductible" value={plan.in_deductible_individual != null ? `$${plan.in_deductible_individual}` : "—"} />
+                            <DetailItem label="Out-of-Network Deductible" value={plan.out_deductible_individual != null ? `$${plan.out_deductible_individual}` : "—"} />
+                            <DetailItem label="In-Network OOP Max" value={plan.in_oop_max_individual != null ? `$${plan.in_oop_max_individual}` : "—"} />
+                            <DetailItem label="Out-of-Network OOP Max" value={plan.out_oop_max_individual != null ? `$${plan.out_oop_max_individual}` : "—"} />
+                          </div>
+                        ) : (
+                          <p className="text-xs text-gray-400">Loading plan details...</p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Actions row */}
+                    <div className="flex gap-2 pt-2 border-t border-gray-200">
+                      {isPending && (
+                        <>
+                          <button
+                            onClick={() => approveDocument(doc.id)}
+                            disabled={processing === doc.id}
+                            className="px-4 py-2 text-xs font-semibold text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50"
+                          >
+                            {processing === doc.id ? "Processing..." : "Approve & Process"}
+                          </button>
+                          <button
+                            onClick={() => rejectDocument(doc.id)}
+                            disabled={processing === doc.id}
+                            className="px-4 py-2 text-xs font-semibold text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50"
+                          >
+                            Reject
+                          </button>
+                        </>
+                      )}
+                      {isError && (
+                        <button
+                          onClick={() => reprocessDocument(doc.id)}
+                          disabled={processing === doc.id}
+                          className="px-4 py-2 text-xs font-semibold text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50 disabled:opacity-50"
+                        >
+                          {processing === doc.id ? "Reprocessing..." : "Reprocess"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Detail Item ────────────────────────────────────────────────────────────
+
+function DetailItem({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
+  return (
+    <div>
+      <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">{label}</p>
+      <p className={`text-sm font-medium mt-0.5 ${highlight ? "text-green-700" : "text-gray-900"}`}>{value}</p>
     </div>
   );
 }

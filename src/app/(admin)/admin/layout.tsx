@@ -6,17 +6,16 @@ import { useAuth } from "@/lib/auth/auth-context";
 import { useEffect, useState, type ReactNode } from "react";
 
 const adminNav = [
-  { href: "/admin/waitlist", label: "Waitlist" },
-  { href: "/admin/users", label: "Users" },
-  { href: "/admin/documents", label: "Documents" },
-  { href: "/admin/documents/review", label: "Document Review" },
-  { href: "/admin/consent", label: "Consent Audit" },
-  { href: "/admin/tickets", label: "Support Tickets" },
-  { href: "/admin/copy", label: "Site Copy" },
-  { href: "/admin/subscriptions", label: "Subscriptions" },
   { href: "/admin/pipeline", label: "Benefit Pipeline" },
+  { href: "/admin/consent", label: "Consent Audit" },
+  { href: "/admin/documents/review", label: "Document Review" },
   { href: "/admin/sbc-tickets", label: "SBC Tickets" },
   { href: "/admin/settings", label: "Settings" },
+  { href: "/admin/copy", label: "Site Copy" },
+  { href: "/admin/subscriptions", label: "Subscriptions" },
+  { href: "/admin/tickets", label: "Support Tickets" },
+  { href: "/admin/users", label: "Users" },
+  { href: "/admin/waitlist", label: "Waitlist" },
 ];
 
 export default function AdminLayout({ children }: { children: ReactNode }) {

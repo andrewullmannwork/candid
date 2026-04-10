@@ -197,36 +197,3 @@ export async function notifyUncategorizedServices(
   }
 }
 
-export async function notifyUserDocumentApproved(
-  userEmail: string,
-  fileName: string
-): Promise<void> {
-  const resend = getResend();
-  if (!resend) return;
-
-  try {
-    await resend.emails.send({
-      from: FROM_EMAIL,
-      to: userEmail,
-      subject: "Your document has been processed",
-      html: `
-        <div style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 480px;">
-          <p>Hi,</p>
-          <p>Great news &mdash; <strong>${fileName}</strong> has been reviewed and processed. Your benefits are now updated with the details from your plan.</p>
-          <p>
-            <a href="${APP_URL}/plan"
-               style="display: inline-block; margin-top: 8px; padding: 10px 20px; background: #2563eb; color: white; border-radius: 8px; text-decoration: none; font-size: 14px; font-weight: 600;">
-              View Your Benefits
-            </a>
-          </p>
-          <p style="color: #6b7280; font-size: 14px; margin-top: 24px;">
-            &mdash; The Candid Team<br/>
-            <a href="${APP_URL}" style="color: #2563eb;">candidclaim.com</a>
-          </p>
-        </div>
-      `,
-    });
-  } catch (err) {
-    console.error("[notifications] User approval email failed:", err);
-  }
-}

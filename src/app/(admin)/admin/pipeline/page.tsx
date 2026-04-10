@@ -125,8 +125,8 @@ export default function PipelinePage() {
     try {
       const [queueData, catalogData, serviceData] = await Promise.all([
         query({ table: "insurer_discovery_queue", order: { column: "created_at", ascending: false }, limit: 100 }),
-        query({ table: "insurer_catalog", order: { column: "name", ascending: true } }),
-        query({ table: "service_catalog", order: { column: "category", ascending: true } }),
+        query({ table: "insurer_catalog", order: { column: "name", ascending: true }, limit: 1000 }),
+        query({ table: "service_catalog", order: { column: "category", ascending: true }, limit: 1000 }),
       ]);
       setQueue(queueData || []);
       setCatalog(catalogData || []);
@@ -321,15 +321,6 @@ export default function PipelinePage() {
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-semibold text-gray-700">Document AI Processing</h3>
             <div className="flex items-center gap-2">
-              {processingStats.queuedDocuments > 0 && (
-                <button
-                  onClick={processAllQueued}
-                  disabled={processingAction}
-                  className="px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {processingAction ? "Processing..." : `Process ${processingStats.queuedDocuments} queued`}
-                </button>
-              )}
               <span className={`px-2 py-0.5 text-xs font-medium rounded ${processingStats.usage.ocrEnabled ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
                 OCR {processingStats.usage.ocrEnabled ? "ON" : "OFF"}
               </span>
