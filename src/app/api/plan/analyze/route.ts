@@ -49,8 +49,9 @@ export async function POST(request: Request) {
       if (userPlan) {
         const { data: coveredServices } = await supabase
           .from("plan_covered_services")
-          .select("*, service_catalog(slug, name, category)")
-          .eq("insurance_plan_id", userPlan.id);
+          .select("*, service_catalog!inner(slug, name, category, merged_into_id)")
+          .eq("insurance_plan_id", userPlan.id)
+          .is("service_catalog.merged_into_id", null);
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         function formatCost(s: any): string {

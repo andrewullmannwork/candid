@@ -19,8 +19,11 @@ const ALLOWED_TABLES = [
   "sbc_tickets",
   "admin_audit_log",
   "service_catalog",
+  "service_categories",
   "plan_covered_services",
   "insurance_plans",
+  "concepts",
+  "concept_relationships",
 ] as const;
 
 type AllowedTable = (typeof ALLOWED_TABLES)[number];

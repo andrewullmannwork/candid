@@ -109,12 +109,20 @@ export default function PipelinePage() {
   const [categories, setCategories] = useState<string[]>(DEFAULT_SERVICE_CATEGORIES);
   const [categoryLabels, setCategoryLabels] = useState<Record<string, string>>(DEFAULT_CATEGORY_LABELS);
   const [addingCategory, setAddingCategory] = useState(false);
-  const [newCategoryName, setNewCategoryName] = useState("");
+  const [newCategorySlug, setNewCategorySlug] = useState("");
+  const [newCategoryLabel, setNewCategoryLabel] = useState("");
+  const [deletingCategory, setDeletingCategory] = useState<string | null>(null);
+  const [deleteCategoryReassign, setDeleteCategoryReassign] = useState("other");
   // Bulk selection for service catalog
   const [selectedServices, setSelectedServices] = useState<Set<string>>(new Set());
   const [bulkCategory, setBulkCategory] = useState("other");
   const [showBulkDelete, setShowBulkDelete] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  // Merge state
+  const [showMerge, setShowMerge] = useState(false);
+  const [mergeCanonicalId, setMergeCanonicalId] = useState<string>("");
+  const [merging, setMerging] = useState(false);
+  const [mergeResult, setMergeResult] = useState<string | null>(null);
   const [processingStats, setProcessingStats] = useState<ProcessingStats | null>(null);
   const [processingAction, setProcessingAction] = useState(false);
 
@@ -135,27 +143,29 @@ export default function PipelinePage() {
       ]);
       setQueue(queueData || []);
       setCatalog(catalogData || []);
-      setServices(serviceData || []);
+      // Filter out merged services
+      const activeServices = (serviceData || []).filter((s: ServiceCatalogItem & { merged_into_id?: string | null }) => !s.merged_into_id);
+      setServices(activeServices);
 
-      // Merge any categories from existing services that aren't in defaults
-      if (serviceData) {
-        const existingCats = new Set((serviceData as ServiceCatalogItem[]).map((s) => s.category));
-        setCategories((prev) => {
-          const merged = [...prev];
-          for (const cat of existingCats) {
-            if (!merged.includes(cat)) merged.splice(merged.length - 1, 0, cat); // insert before "other"
-          }
-          return merged;
-        });
-        setCategoryLabels((prev) => {
-          const updated = { ...prev };
-          for (const cat of existingCats) {
-            if (!updated[cat]) {
-              updated[cat] = cat.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+      // Load categories from DB (service_categories table)
+      try {
+        const token = await user?.firebaseUser.getIdToken();
+        if (token) {
+          const catRes = await fetch("/api/admin/services/categories", {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (catRes.ok) {
+            const { data: dbCategories } = await catRes.json();
+            if (dbCategories && dbCategories.length > 0) {
+              setCategories(dbCategories.map((c: { id: string }) => c.id));
+              const labels: Record<string, string> = {};
+              for (const c of dbCategories) labels[c.id] = c.label;
+              setCategoryLabels(labels);
             }
           }
-          return updated;
-        });
+        }
+      } catch {
+        // Fall back to defaults if DB categories not available (migration not run yet)
       }
 
       // Load document statuses for discovery queue items
@@ -627,53 +637,123 @@ export default function PipelinePage() {
                 <div className="flex items-center gap-2">
                   <input
                     type="text"
-                    value={newCategoryName}
-                    onChange={(e) => setNewCategoryName(e.target.value)}
-                    placeholder="e.g. Long-Term Care"
-                    className="px-3 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    value={newCategorySlug}
+                    onChange={(e) => setNewCategorySlug(e.target.value)}
+                    placeholder="slug (e.g. vision)"
+                    className="px-3 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 w-32"
                     autoFocus
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && newCategoryName.trim()) {
-                        const slug = newCategoryName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
-                        if (!categories.includes(slug)) {
-                          setCategories((prev) => [...prev.slice(0, -1), slug, prev[prev.length - 1]]);
-                          setCategoryLabels((prev) => ({ ...prev, [slug]: newCategoryName.trim() }));
-                        }
-                        setNewCategoryName("");
-                        setAddingCategory(false);
-                      }
-                    }}
+                  />
+                  <input
+                    type="text"
+                    value={newCategoryLabel}
+                    onChange={(e) => setNewCategoryLabel(e.target.value)}
+                    placeholder="Label (e.g. Vision & Dental)"
+                    className="px-3 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 w-48"
                   />
                   <button
-                    onClick={() => {
-                      const slug = newCategoryName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
-                      if (newCategoryName.trim() && !categories.includes(slug)) {
-                        setCategories((prev) => [...prev.slice(0, -1), slug, prev[prev.length - 1]]);
-                        setCategoryLabels((prev) => ({ ...prev, [slug]: newCategoryName.trim() }));
+                    onClick={async () => {
+                      if (!newCategorySlug.trim() || !newCategoryLabel.trim() || !user) return;
+                      const token = await user.firebaseUser.getIdToken();
+                      const res = await fetch("/api/admin/services/categories", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                        body: JSON.stringify({ id: newCategorySlug.trim(), label: newCategoryLabel.trim() }),
+                      });
+                      if (res.ok) {
+                        const { id, label } = await res.json();
+                        setCategories((prev) => [...prev.filter((c) => c !== "other"), id, "other"]);
+                        setCategoryLabels((prev) => ({ ...prev, [id]: label }));
+                      } else {
+                        const data = await res.json();
+                        alert(`Failed: ${data.error}`);
                       }
-                      setNewCategoryName("");
+                      setNewCategorySlug("");
+                      setNewCategoryLabel("");
                       setAddingCategory(false);
                     }}
-                    disabled={!newCategoryName.trim()}
+                    disabled={!newCategorySlug.trim() || !newCategoryLabel.trim()}
                     className="px-3 py-1.5 text-xs font-medium bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
                   >
                     Add
                   </button>
                   <button
-                    onClick={() => { setAddingCategory(false); setNewCategoryName(""); }}
+                    onClick={() => { setAddingCategory(false); setNewCategorySlug(""); setNewCategoryLabel(""); }}
+                    className="px-3 py-1.5 text-xs text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : deletingCategory ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-red-700 font-medium">Delete &quot;{categoryLabels[deletingCategory] || deletingCategory}&quot;</span>
+                  <span className="text-xs text-gray-500">Reassign services to:</span>
+                  <select
+                    value={deleteCategoryReassign}
+                    onChange={(e) => setDeleteCategoryReassign(e.target.value)}
+                    className="px-2 py-1 text-xs border border-gray-200 rounded-lg"
+                  >
+                    {categories.filter((c) => c !== deletingCategory).map((cat) => (
+                      <option key={cat} value={cat}>{categoryLabels[cat] || cat}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={async () => {
+                      if (!user) return;
+                      const token = await user.firebaseUser.getIdToken();
+                      const res = await fetch("/api/admin/services/categories", {
+                        method: "DELETE",
+                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                        body: JSON.stringify({ categoryId: deletingCategory, reassignTo: deleteCategoryReassign }),
+                      });
+                      if (res.ok) {
+                        setCategories((prev) => prev.filter((c) => c !== deletingCategory));
+                        setCategoryLabels((prev) => { const next = { ...prev }; delete next[deletingCategory!]; return next; });
+                        setServices((prev) => prev.map((s) => s.category === deletingCategory ? { ...s, category: deleteCategoryReassign } : s));
+                      } else {
+                        const data = await res.json();
+                        alert(`Failed: ${data.error}`);
+                      }
+                      setDeletingCategory(null);
+                    }}
+                    className="px-3 py-1.5 text-xs font-medium bg-red-600 text-white rounded-lg hover:bg-red-700"
+                  >
+                    Delete
+                  </button>
+                  <button
+                    onClick={() => setDeletingCategory(null)}
                     className="px-3 py-1.5 text-xs text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50"
                   >
                     Cancel
                   </button>
                 </div>
               ) : (
-                <button
-                  onClick={() => setAddingCategory(true)}
-                  className="px-3 py-1.5 text-xs font-medium bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
-                >
-                  + Add Category
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setAddingCategory(true)}
+                    className="px-3 py-1.5 text-xs font-medium bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+                  >
+                    + Add Category
+                  </button>
+                  <select
+                    onChange={(e) => { if (e.target.value) setDeletingCategory(e.target.value); e.target.value = ""; }}
+                    className="px-2 py-1.5 text-xs border border-gray-200 rounded-lg text-gray-500"
+                    defaultValue=""
+                  >
+                    <option value="" disabled>Delete category...</option>
+                    {categories.filter((c) => c !== "other").map((cat) => (
+                      <option key={cat} value={cat}>{categoryLabels[cat] || cat}</option>
+                    ))}
+                  </select>
+                </div>
               )}
+            </div>
+          )}
+
+          {/* Merge result banner */}
+          {mergeResult && (
+            <div className="mb-3 p-3 bg-green-50 border border-green-100 rounded-xl flex items-center justify-between">
+              <span className="text-sm text-green-800">{mergeResult}</span>
+              <button onClick={() => setMergeResult(null)} className="text-xs text-green-500 hover:text-green-700">Dismiss</button>
             </div>
           )}
 
@@ -716,8 +796,66 @@ export default function PipelinePage() {
                     </button>
                   </div>
                 </div>
+              ) : showMerge ? (
+                <div className="space-y-2">
+                  <p className="text-sm font-semibold text-blue-800">
+                    Merge {selectedServices.size} services — select the canonical (keep) service:
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={mergeCanonicalId}
+                      onChange={(e) => setMergeCanonicalId(e.target.value)}
+                      className="px-2 py-1.5 text-xs border border-blue-200 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-xs"
+                    >
+                      <option value="">Select canonical service...</option>
+                      {services.filter((s) => selectedServices.has(s.id)).map((s) => (
+                        <option key={s.id} value={s.id}>{s.name} ({s.slug})</option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={async () => {
+                        if (!mergeCanonicalId || !user) return;
+                        setMerging(true);
+                        try {
+                          const token = await user.firebaseUser.getIdToken();
+                          const mergeIds = [...selectedServices].filter((id) => id !== mergeCanonicalId);
+                          const res = await fetch("/api/admin/services/merge", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                            body: JSON.stringify({ canonicalServiceId: mergeCanonicalId, mergeServiceIds: mergeIds }),
+                          });
+                          const data = await res.json();
+                          if (res.ok && data.success) {
+                            const mergedIds = new Set(data.merged.map((m: { serviceId: string }) => m.serviceId));
+                            setServices((prev) => prev.filter((s) => !mergedIds.has(s.id)));
+                            setMergeResult(`Merged ${data.merged.length} service(s) into ${data.canonicalSlug}. Moved ${data.merged.reduce((a: number, m: { movedRows: number }) => a + m.movedRows, 0)} rows, deduped ${data.merged.reduce((a: number, m: { deletedDupes: number }) => a + m.deletedDupes, 0)}.`);
+                          } else {
+                            alert(`Merge failed: ${data.error || "Unknown error"}`);
+                          }
+                        } catch {
+                          alert("Merge request failed");
+                        }
+                        setMerging(false);
+                        setShowMerge(false);
+                        setMergeCanonicalId("");
+                        setSelectedServices(new Set());
+                      }}
+                      disabled={!mergeCanonicalId || merging}
+                      className="px-3 py-1.5 text-xs font-semibold text-white bg-purple-600 rounded-lg hover:bg-purple-700 disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      {merging ? "Merging..." : "Confirm Merge"}
+                    </button>
+                    <button
+                      onClick={() => { setShowMerge(false); setMergeCanonicalId(""); }}
+                      className="px-3 py-1.5 text-xs font-semibold text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  <p className="text-xs text-blue-600">All coverage data from merged services will be migrated to the canonical service.</p>
+                </div>
               ) : (
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 flex-wrap">
                   <span className="text-sm font-medium text-blue-800">{selectedServices.size} selected</span>
                   <div className="flex items-center gap-2">
                     <select
@@ -744,6 +882,14 @@ export default function PipelinePage() {
                       Assign Category
                     </button>
                   </div>
+                  {selectedServices.size >= 2 && (
+                    <button
+                      onClick={() => setShowMerge(true)}
+                      className="px-3 py-1.5 text-xs font-semibold text-purple-600 border border-purple-200 rounded-lg hover:bg-purple-50"
+                    >
+                      Merge Selected
+                    </button>
+                  )}
                   <div className="flex-1" />
                   <button
                     onClick={() => setShowBulkDelete(true)}
