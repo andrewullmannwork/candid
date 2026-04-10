@@ -202,11 +202,17 @@ export async function processPlanDocumentData(
       // Update the existing plan with any new metadata (deductibles, OOP, etc.)
       await supabase.from("insurance_plans").update({
         source_document_id: documentId,
+        is_active: true,
         in_deductible_individual: planInsert.in_deductible_individual,
         in_oop_max_individual: planInsert.in_oop_max_individual,
         out_deductible_individual: planInsert.out_deductible_individual,
         out_oop_max_individual: planInsert.out_oop_max_individual,
       }).eq("id", targetPlanId);
+      // Ensure profile points to this plan and back-populate plan info
+      const profileUpdate: Record<string, unknown> = { active_insurance_plan_id: targetPlanId };
+      if (planInsert.insurer_name) profileUpdate.insurer = planInsert.insurer_name;
+      if (planInsert.plan_name) profileUpdate.plan_name = planInsert.plan_name;
+      await supabase.from("profiles").update(profileUpdate).eq("user_id", doc.user_id);
     } else {
       if (!mismatchData) {
         // Deactivate old plans (but don't delete — data stays for platform)
@@ -232,10 +238,11 @@ export async function processPlanDocumentData(
       targetPlanId = newPlan.id;
 
       if (!mismatchData) {
-        await supabase
-          .from("profiles")
-          .update({ active_insurance_plan_id: newPlan.id })
-          .eq("user_id", doc.user_id);
+        // Back-populate profile with plan info from document
+        const profileUpdate: Record<string, unknown> = { active_insurance_plan_id: newPlan.id };
+        if (planInsert.insurer_name) profileUpdate.insurer = planInsert.insurer_name;
+        if (planInsert.plan_name) profileUpdate.plan_name = planInsert.plan_name;
+        await supabase.from("profiles").update(profileUpdate).eq("user_id", doc.user_id);
       }
     } // end else (create new plan)
 
