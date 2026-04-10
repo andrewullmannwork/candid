@@ -177,32 +177,67 @@ export async function processPlanDocumentData(
       planInsert.is_active = false;
     }
 
+    // If no mismatch and an active plan exists, MERGE services into it
+    // (SBC + plan document are complementary sources for the same plan)
+    let mergeIntoExistingPlan: string | null = null;
     if (!mismatchData) {
-      await supabase
+      const { data: existingActivePlan } = await supabase
         .from("insurance_plans")
-        .update({ is_active: false })
+        .select("id")
         .eq("user_id", doc.user_id)
-        .eq("is_active", true);
+        .eq("is_active", true)
+        .single();
+      if (existingActivePlan) {
+        mergeIntoExistingPlan = existingActivePlan.id;
+        console.log(`[process-plan] Merging into existing active plan: ${mergeIntoExistingPlan}`);
+      }
     }
 
-    const { data: newPlan, error: planError } = await supabase
-      .from("insurance_plans")
-      .insert(planInsert)
-      .select("id")
-      .single();
+    // If merging, skip creating a new plan — use the existing one
+    // If not merging (mismatch or no existing plan), create a new plan
+    let targetPlanId: string;
 
-    if (planError || !newPlan) {
-      console.error("Failed to create insurance plan:", planError);
-      await supabase.from("documents").update({ status: "error", processing_error: planError?.message || "Plan insert failed" }).eq("id", documentId);
-      return { success: false, error: `Failed to save plan: ${planError?.message || "unknown"}`, parseWarnings: parseResult.parseWarnings };
-    }
+    if (mergeIntoExistingPlan) {
+      targetPlanId = mergeIntoExistingPlan;
+      // Update the existing plan with any new metadata (deductibles, OOP, etc.)
+      await supabase.from("insurance_plans").update({
+        source_document_id: documentId,
+        in_deductible_individual: planInsert.in_deductible_individual,
+        in_oop_max_individual: planInsert.in_oop_max_individual,
+        out_deductible_individual: planInsert.out_deductible_individual,
+        out_oop_max_individual: planInsert.out_oop_max_individual,
+      }).eq("id", targetPlanId);
+    } else {
+      if (!mismatchData) {
+        // Deactivate old plans (but don't delete — data stays for platform)
+        await supabase
+          .from("insurance_plans")
+          .update({ is_active: false })
+          .eq("user_id", doc.user_id)
+          .eq("is_active", true);
+      }
 
-    if (!mismatchData) {
-      await supabase
-        .from("profiles")
-        .update({ active_insurance_plan_id: newPlan.id })
-        .eq("user_id", doc.user_id);
-    }
+      const { data: newPlan, error: planError } = await supabase
+        .from("insurance_plans")
+        .insert(planInsert)
+        .select("id")
+        .single();
+
+      if (planError || !newPlan) {
+        console.error("Failed to create insurance plan:", planError);
+        await supabase.from("documents").update({ status: "error", processing_error: planError?.message || "Plan insert failed" }).eq("id", documentId);
+        return { success: false, error: `Failed to save plan: ${planError?.message || "unknown"}`, parseWarnings: parseResult.parseWarnings };
+      }
+
+      targetPlanId = newPlan.id;
+
+      if (!mismatchData) {
+        await supabase
+          .from("profiles")
+          .update({ active_insurance_plan_id: newPlan.id })
+          .eq("user_id", doc.user_id);
+      }
+    } // end else (create new plan)
 
     // ── Service catalog + plan_covered_services ─────────────────────────────
     let servicesCreated = 0;
@@ -282,7 +317,7 @@ export async function processPlanDocumentData(
       const confident = [...deduped.values()].filter(s => s.confidence >= 0.5);
 
       const serviceInserts = confident.map((s) => ({
-        insurance_plan_id: newPlan.id,
+        insurance_plan_id: targetPlanId,
         service_id: slugToId.get(s.serviceSlug)!,
         concept_id: conceptIdMap.get(s.serviceSlug) || null,
         place_of_service: s.placeOfService || "any",
@@ -312,17 +347,17 @@ export async function processPlanDocumentData(
     // ── Finalize document ───────────────────────────────────────────────────
     await supabase.from("documents").update({
       status: "processed",
-      linked_insurance_plan_id: newPlan.id,
+      linked_insurance_plan_id: targetPlanId,
       processing_step: null,
       processing_ocr_text: null,
       processing_extracted_services: null,
     }).eq("id", documentId);
 
-    console.log(`[process-plan] Done. Plan=${newPlan.id}, services=${servicesCreated}, mismatch=${mismatchData?.type || "none"}`);
+    console.log(`[process-plan] Done. Plan=${targetPlanId}, services=${servicesCreated}, mismatch=${mismatchData?.type || "none"}, merged=${!!mergeIntoExistingPlan}`);
 
     return {
       success: true,
-      planId: newPlan.id,
+      planId: targetPlanId,
       servicesCreated,
       planData: {
         planName: planInsert.plan_name,

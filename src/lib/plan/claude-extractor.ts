@@ -23,7 +23,7 @@ function getClient(): Anthropic | null {
     console.warn("[claude-extractor] ANTHROPIC_API_KEY not set");
     return null;
   }
-  return new Anthropic({ apiKey, timeout: 120000 });
+  return new Anthropic({ apiKey, timeout: 120000, maxRetries: 3 });
 }
 
 const STANDARD_SLUGS = `pcp_visit, specialist_visit, preventive_care, diagnostic_test, advanced_imaging, generic_rx_tier1, preferred_brand_rx, non_preferred_rx, specialty_rx, outpatient_surgery_facility, outpatient_surgery_physician, er_visit, emergency_transport, urgent_care, inpatient_facility, inpatient_physician, mental_health_outpatient, mental_health_inpatient, substance_abuse_outpatient, substance_abuse_inpatient, prenatal_visit, delivery_facility, delivery_professional, home_health, pt_rehab, habilitation, skilled_nursing, durable_medical_equipment, hospice_inpatient, hospice_outpatient, chiropractic, acupuncture, speech_therapy, occupational_therapy, telehealth, nutritional_counseling, childrens_eye_exam, childrens_glasses, childrens_dental`;
@@ -76,21 +76,60 @@ async function pass1_extractServiceList(
   const prompt = `You are parsing ${isFullPlanDoc ? "a full insurance plan benefits document" : "an SBC document"}.
 Plan name: ${planName || "Unknown"}
 
-List every unique healthcare service covered by this plan. A "service" is something a patient can receive (e.g., "Primary Care Visit", "Generic Drugs Tier 1", "MRI").
+List every unique healthcare service in this plan. Be THOROUGH — scan the entire document.
 
-DO NOT include:
-- Section headers, cost structure labels, legal terms, disclaimers
-- Deductibles, copayments, coinsurance as standalone items
-- Page numbers, table of contents entries, or formatting artifacts
+Look for services in ALL of these categories:
+- Physician visits (PCP, specialist, second opinion, consultant, OB/GYN)
+- Virtual/telehealth care (MDLIVE, virtual visits, dedicated virtual providers)
+- Preventive care and screenings (mammograms, PSA, PAP, immunizations, wellness exams)
+- Convenience care clinic
+- Emergency services (ER, urgent care)
+- Hospital services (inpatient facility, outpatient facility, inpatient physician, outpatient professional)
+- Surgery (inpatient, outpatient, bariatric/obesity surgery)
+- Lab and diagnostic services
+- Radiology services
+- Advanced imaging (MRI, MRA, CT, CAT, PET scans)
+- Therapy services (physical therapy, occupational therapy, speech therapy, cardiac rehab, pulmonary rehab, cognitive therapy)
+- Chiropractic and spinal manipulation
+- Acupuncture
+- Mental health (inpatient, outpatient, partial hospitalization)
+- Substance use disorder (inpatient, outpatient, detox)
+- Maternity care (initial visit, prenatal visits, delivery facility, delivery professional, abortion)
+- Prescription drugs (list EACH tier separately: generic/Tier 1, preferred brand/Tier 2, non-preferred/Tier 3, specialty)
+- Home health care services
+- Hospice (inpatient, outpatient)
+- Bereavement counseling
+- Skilled nursing facility
+- DME (durable medical equipment)
+- External prosthetic appliances
+- Diabetic equipment
+- Transplant services
+- Dialysis (outpatient, home)
+- Infertility treatment (even if not covered)
+- Dental care (injury-related)
+- Nutritional counseling
+- Genetic counseling
+- Gene therapy
+- Advanced cellular therapy
+- Medical pharmaceuticals
+- Ambulance (ground and air)
+- Women's surgical sterilization
+- Chemotherapy medication
+- Allergy treatment/injections and allergy serum
+- Also include any other healthcare service covered by this plan not listed above (e.g., massage therapy, vision services, hearing aids, weight management, etc.)
+
+If a service is listed as "Not Covered", still include it with the slug and name.
+
+DO NOT include: section headers, cost structure labels, legal terms, disclaimers, page numbers, or table of contents entries.
 
 Return ONLY a JSON array of: [{ "serviceSlug": "lowercase_underscore", "serviceName": "Clean Name" }]
 
 Use these standard slugs when they match:
 ${STANDARD_SLUGS}
 
-For services not in the list, create a descriptive slug (e.g., "bariatric_surgery").
+For services not in the standard list, create a descriptive slug (e.g., "bariatric_surgery", "gene_therapy", "allergy_injections").
 
-IMPORTANT: Each unique service should appear ONCE. If a service is mentioned multiple times across different sections, include it only once.
+Each unique service should appear ONCE.
 
 Return ONLY the JSON array. No markdown, no explanation.
 

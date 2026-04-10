@@ -525,46 +525,67 @@ function UploadForm() {
             const existingLabel = isPlanMismatch ? mm.existingPlanName : mm.existingInsurer;
             const newLabel = isPlanMismatch ? mm.parsedPlanName : mm.parsedInsurer;
             return (
-              <div className="mb-5 p-4 bg-amber-50 border border-amber-200 rounded-xl">
-                <p className="text-sm font-semibold text-amber-800">This plan doesn&apos;t match your insurance card</p>
-                <p className="text-xs text-amber-700 mt-1">
+              <div className="mb-5 p-5 bg-amber-50 border border-amber-200 rounded-2xl">
+                <p className="text-sm font-semibold text-gray-900 mb-3">
                   {isPlanMismatch
-                    ? <>Your card says <strong>{existingLabel}</strong>, but this document is for <strong>{newLabel}</strong>.</>
-                    : <>Your card says <strong>{existingLabel}</strong>, but this document is from <strong>{newLabel}</strong>.</>
+                    ? "This document is for a different plan"
+                    : "This document is from a different insurer"
                   }
                 </p>
-                <div className="mt-3 flex flex-col gap-2">
+
+                {/* Current plan card */}
+                <div className="p-3 bg-white border border-gray-200 rounded-xl mb-2">
+                  <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">On your card</p>
+                  <p className="text-sm font-medium text-gray-900 mt-0.5">{existingLabel}</p>
+                </div>
+
+                {/* New plan card */}
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl mb-4">
+                  <p className="text-[10px] font-semibold text-blue-500 uppercase tracking-wide">In this document</p>
+                  <p className="text-sm font-medium text-gray-900 mt-0.5">{newLabel}</p>
+                </div>
+
+                <div className="flex flex-col gap-2">
                   <button
                     onClick={async () => {
                       if (!user) return;
-                      const idToken = await user.firebaseUser.getIdToken();
-                      const profileUpdate: Record<string, string> = {};
-                      if (isPlanMismatch) {
-                        profileUpdate.plan_name = mm.parsedPlanName || "";
-                      } else {
-                        profileUpdate.insurer = mm.parsedInsurer || "";
+                      try {
+                        const idToken = await user.firebaseUser.getIdToken();
+                        const profileUpdate: Record<string, string> = {};
+                        if (isPlanMismatch) {
+                          profileUpdate.plan_name = mm.parsedPlanName || "";
+                        } else {
+                          profileUpdate.insurer = mm.parsedInsurer || "";
+                        }
+                        const profileRes = await fetch("/api/profile", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+                          body: JSON.stringify(profileUpdate),
+                        });
+                        if (!profileRes.ok) console.error("Profile update failed:", await profileRes.text());
+
+                        const activateRes = await fetch("/api/documents/status", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ documentId, action: "activate_plan" }),
+                        });
+                        if (!activateRes.ok) console.error("Plan activation failed:", await activateRes.text());
+
+                        window.location.href = "/plan";
+                      } catch (err) {
+                        console.error("Activation error:", err);
+                        setError("Failed to activate plan. Please try again.");
                       }
-                      await fetch("/api/profile", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
-                        body: JSON.stringify(profileUpdate),
-                      });
-                      await fetch("/api/documents/status", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ documentId, action: "activate_plan" }),
-                      });
-                      window.location.href = "/plan";
                     }}
-                    className="w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700"
+                    className="w-full py-2.5 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 transition-colors"
                   >
-                    Use {newLabel}
+                    Use this plan
                   </button>
                   <button
                     onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setProcessingProgress(null); setDocumentId(null); }}
-                    className="w-full py-2 border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50"
+                    className="w-full py-2.5 border border-gray-200 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
                   >
-                    Keep {existingLabel} — upload matching document
+                    Keep my current plan
                   </button>
                 </div>
               </div>
