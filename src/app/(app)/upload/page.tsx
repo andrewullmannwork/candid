@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useDropzone } from "react-dropzone";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
@@ -87,6 +87,21 @@ function UploadForm() {
     totalPages: number;
     insurerMismatch?: { mismatch: boolean; type?: "insurer" | "plan_name"; existingInsurer?: string; parsedInsurer?: string; existingPlanName?: string; parsedPlanName?: string } | null;
   } | null>(null);
+
+  // Rotating status message index — increments every 15s during processing
+  const [messageIndex, setMessageIndex] = useState(0);
+  const messageTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    const isProcessing = uploaded && uploadStatus === "auto_processed" && !processingProgress?.step?.includes("saving") && processingProgress?.status !== "processed";
+    if (isProcessing) {
+      messageTimerRef.current = setInterval(() => setMessageIndex((i) => i + 1), 15000);
+      return () => { if (messageTimerRef.current) clearInterval(messageTimerRef.current); };
+    } else {
+      if (messageTimerRef.current) clearInterval(messageTimerRef.current);
+      messageTimerRef.current = null;
+    }
+  }, [uploaded, uploadStatus, processingProgress?.step, processingProgress?.status]);
 
   // Previously uploaded documents
   const [userDocs, setUserDocs] = useState<{ id: string; file_name: string; doc_type: string; status: string; created_at: string }[]>([]);
@@ -372,30 +387,59 @@ function UploadForm() {
       return 30 + Math.round((processingProgress.completedPages / processingProgress.totalPages) * 50);
     };
 
+    // Playful rotating messages per processing phase
+    const READING_MESSAGES = [
+      "Picking up your document...",
+      "Getting my reading glasses...",
+      "Turning on the bedside light...",
+      "Reading every page carefully...",
+      "Still reading \u2014 this is a long one...",
+      "Highlighting the important parts...",
+      "Taking notes in the margins...",
+      "Almost done reading...",
+    ];
+    const EXTRACTING_MESSAGES = [
+      "Pulling out the good stuff...",
+      "Cross-referencing your benefits...",
+      "Checking the fine print...",
+      "Organizing what we found...",
+    ];
+    const INIT_MESSAGES = [
+      "Getting your document ready...",
+      "Getting on my reading glasses...",
+      "Warming up the scanner...",
+    ];
+
     const getStepLabel = () => {
-      if (isUploading) return "Getting your document ready...";
+      if (isUploading) return "Uploading your document...";
       if (isComplete) return "All done!";
       if (isError) return "Processing error";
       if (hasMismatch) return "Review needed";
       if (isPendingReview) return "Needs a human touch";
-      if (!processingProgress) return "Getting on my reading glasses...";
-      if (processingProgress.step?.startsWith("ocr_chunk") || processingProgress.step?.startsWith("working_ocr")) return "Reading every line...";
-      if (processingProgress.step === "classifying" || processingProgress.step === "working_classifying") return "Figuring out what this is...";
-      if (processingProgress.step === "extracting" || processingProgress.step === "working_extracting"
-) return "Pulling out the good stuff...";
-      if (processingProgress.step === "saving" || processingProgress.step === "working_saving") return "Saving your benefits...";
+      if (!processingProgress) return INIT_MESSAGES[messageIndex % INIT_MESSAGES.length];
+      if (processingProgress.step?.startsWith("ocr_chunk") || processingProgress.step?.startsWith("working_ocr"))
+        return READING_MESSAGES[messageIndex % READING_MESSAGES.length];
+      if (processingProgress.step === "classifying" || processingProgress.step === "working_classifying")
+        return "Figuring out what this is...";
+      if (processingProgress.step === "extracting" || processingProgress.step === "working_extracting")
+        return EXTRACTING_MESSAGES[messageIndex % EXTRACTING_MESSAGES.length];
+      if (processingProgress.step === "saving" || processingProgress.step === "working_saving")
+        return "Saving your benefits...";
       return "Processing...";
     };
 
     const getStepSubtitle = () => {
       if (isComplete || isError || hasMismatch || isPendingReview) return null;
       if (isUploading) return "This usually takes about 60 seconds";
-      if (!processingProgress) return "This usually takes about 60 seconds";
-      if (processingProgress.step?.startsWith("ocr_chunk") || processingProgress.step?.startsWith("working_ocr")) return "This usually takes about 60 seconds";
-      if (processingProgress.step === "classifying" || processingProgress.step === "working_classifying") return "Almost there...";
-      if (processingProgress.step === "extracting" || processingProgress.step === "working_extracting"
-) return "This is the exciting part";
-      if (processingProgress.step === "saving" || processingProgress.step === "working_saving") return "Just a moment more...";
+      if (!processingProgress) return "This can take a couple minutes for large documents";
+      if (processingProgress.step?.startsWith("ocr_chunk") || processingProgress.step?.startsWith("working_ocr"))
+        return "This can take a couple minutes for large documents";
+      if (processingProgress.step === "classifying" || processingProgress.step === "working_classifying")
+        return "Almost there...";
+      if (processingProgress.step === "extracting" || processingProgress.step === "working_extracting")
+        return "This is the exciting part";
+      if (processingProgress.step === "saving" || processingProgress.step === "working_saving")
+        return "Just a moment more...";
       return null;
     };
 
@@ -442,7 +486,7 @@ function UploadForm() {
                 <div className="w-6 h-6 border-[2.5px] border-blue-500 border-t-transparent rounded-full animate-spin" />
               </div>
             )}
-            <h3 className="text-xl font-semibold text-gray-900">{getStepLabel()}</h3>
+            <h3 key={getStepLabel()} className="text-xl font-semibold text-gray-900 animate-fade-in">{getStepLabel()}</h3>
             {getStepSubtitle() && (
               <p className="text-sm text-gray-400 mt-1">{getStepSubtitle()}</p>
             )}
@@ -467,18 +511,20 @@ function UploadForm() {
                     : overallProgress >= step.threshold && (i === steps.length - 1 || overallProgress < steps[i + 1].threshold);
                   return (
                     <div key={step.label} className="flex items-center gap-1.5">
-                      {isStepComplete && !isActive ? (
-                        <svg className="w-3.5 h-3.5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                        </svg>
-                      ) : isActive ? (
-                        <span className="relative flex h-2.5 w-2.5">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500" />
-                        </span>
-                      ) : (
-                        <span className="h-2 w-2 rounded-full bg-gray-200" />
-                      )}
+                      <span className="w-4 h-4 flex items-center justify-center">
+                        {isStepComplete && !isActive ? (
+                          <svg className="w-3.5 h-3.5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                          </svg>
+                        ) : isActive ? (
+                          <span className="relative flex h-2.5 w-2.5">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500" />
+                          </span>
+                        ) : (
+                          <span className="h-2.5 w-2.5 rounded-full bg-gray-200" />
+                        )}
+                      </span>
                       <span className={`text-xs font-medium ${
                         isActive ? "text-blue-600" : isStepComplete ? "text-green-600" : "text-gray-400"
                       }`}>

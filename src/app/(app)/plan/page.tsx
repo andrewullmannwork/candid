@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
 import type { PlanAnalysisResult, AnalyzedBenefit } from "@/lib/plan/analyzer";
@@ -363,8 +363,18 @@ export default function CandidPlanPage() {
     });
   }
 
+  // Cache result to avoid re-fetching on navigation
+  const cachedResult = useRef<AnalyzeResponse | null>(null);
+
   useEffect(() => {
     if (!user) return;
+
+    // Use cached result if available (avoids re-fetch on back-navigation)
+    if (cachedResult.current) {
+      setResult(cachedResult.current);
+      setLoading(false);
+      return;
+    }
 
     async function analyze() {
       try {
@@ -380,6 +390,7 @@ export default function CandidPlanPage() {
         }
 
         const data: AnalyzeResponse = await res.json();
+        cachedResult.current = data;
         setResult(data);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Something went wrong");
@@ -421,15 +432,23 @@ export default function CandidPlanPage() {
 
   const isGeneric = result.dataSource === "static_catalog";
 
-  // Group benefits by category
+  // Separate covered vs not-covered benefits, then group covered by category
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const notCoveredItems: AnalyzedBenefit[] = [];
   const grouped = new Map<string, AnalyzedBenefit[]>();
   for (const item of result.benefits) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if ((item as any).covered === false) {
+      notCoveredItems.push(item);
+      continue;
+    }
     const cat = item.benefit.category;
     if (!grouped.has(cat)) grouped.set(cat, []);
     grouped.get(cat)!.push(item);
   }
 
-  const totalUsed = result.benefits.filter((b) => usedBenefits.has(b.benefit.id)).length;
+  const coveredBenefits = result.benefits.filter((b) => (b as any).covered !== false);
+  const totalUsed = coveredBenefits.filter((b) => usedBenefits.has(b.benefit.id)).length;
 
   return (
     <div className="max-w-3xl">
@@ -501,20 +520,20 @@ export default function CandidPlanPage() {
               <circle
                 cx="40" cy="40" r="34" fill="none" stroke="#22c55e" strokeWidth="6"
                 strokeLinecap="round"
-                strokeDasharray={`${Math.round((totalUsed / Math.max(result.totalBenefits, 1)) * 213.6)} 213.6`}
+                strokeDasharray={`${Math.round((totalUsed / Math.max(coveredBenefits.length, 1)) * 213.6)} 213.6`}
               />
             </svg>
             <div className="absolute inset-0 flex items-center justify-center">
-              <span className="text-lg font-bold text-gray-900">{totalUsed}/{result.totalBenefits}</span>
+              <span className="text-lg font-bold text-gray-900">{totalUsed}/{coveredBenefits.length}</span>
             </div>
           </div>
           <div>
             <p className="text-sm font-semibold text-gray-900">
               {totalUsed === 0
                 ? "Start checking off benefits you use"
-                : totalUsed < result.totalBenefits / 2
+                : totalUsed < coveredBenefits.length / 2
                   ? "Good start \u2014 keep discovering"
-                  : totalUsed < result.totalBenefits
+                  : totalUsed < coveredBenefits.length
                     ? "You\u2019re getting great value"
                     : "You\u2019re maximizing your plan!"}
             </p>
@@ -724,6 +743,57 @@ export default function CandidPlanPage() {
             </div>
           );
         })}
+
+        {/* Not Covered section — collapsed by default */}
+        {notCoveredItems.length > 0 && (
+          <div className="border border-gray-200 rounded-2xl overflow-hidden">
+            <button
+              onClick={() => setExpandedBenefit(expandedBenefit === "__not_covered_section__" ? null : "__not_covered_section__")}
+              className="w-full flex items-center justify-between p-4 bg-gray-50 hover:bg-gray-100 transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-red-50 flex items-center justify-center">
+                  <svg className="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                  </svg>
+                </div>
+                <div className="text-left">
+                  <span className="font-semibold text-gray-700">Not Covered</span>
+                  <span className="ml-2 text-xs text-gray-400">{notCoveredItems.length} {notCoveredItems.length === 1 ? "service" : "services"} not covered by your plan</span>
+                </div>
+              </div>
+              <svg
+                className={`w-4 h-4 text-gray-400 transition-transform ${expandedBenefit === "__not_covered_section__" ? "rotate-180" : ""}`}
+                fill="none" stroke="currentColor" viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {expandedBenefit === "__not_covered_section__" && (
+              <div className="divide-y divide-gray-100">
+                {notCoveredItems.map((rawItem) => {
+                  const item = rawItem as any;
+                  return (
+                    <div key={item.benefit.id} className="flex items-start gap-3 p-4 bg-gray-50/30">
+                      <div className="mt-0.5 w-5 h-5 rounded-md border-2 border-gray-200 flex items-center justify-center shrink-0">
+                        <svg className="w-3 h-3 text-red-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-medium text-gray-500">{item.benefit.title}</h4>
+                        {item.coverageConditions && (
+                          <p className="mt-0.5 text-sm text-gray-400">{item.coverageConditions}</p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
     </div>

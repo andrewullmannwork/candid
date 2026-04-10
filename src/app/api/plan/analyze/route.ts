@@ -67,6 +67,7 @@ export async function POST(request: Request) {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         function buildServiceDescription(s: any): string {
+          if (s.covered === false) return "Not covered under this plan.";
           const parts: string[] = [];
           if (s.in_cost_description) {
             parts.push(`In-network: ${s.in_cost_description}`);
@@ -77,24 +78,11 @@ export async function POST(request: Request) {
           }
           if (s.annual_limit) parts.push(`Limit: ${s.annual_limit}`);
           if (s.prior_auth_required) parts.push("Prior authorization required");
-          if (s.covered === false) parts.push("Not covered under this plan");
           return parts.join(". ") + ".";
         }
 
         if (coveredServices && coveredServices.length > 0) {
-          // Build benefits directly from the actual plan services
           // Reverse slug map: service slug → catalog benefit educational content
-          const catalogResult = analyzePlan({
-            insurer: userPlan.insurer_name || profile.insurer || "",
-            planType: userPlan.plan_type || profile.plan_type || "",
-            state: profile.state || "",
-            dateOfBirth: profile.date_of_birth || undefined,
-            sex: undefined,
-            hasDependents,
-            hasChildren,
-          });
-
-          // Build reverse lookup: service slug → catalog benefit (for educational content)
           const SLUG_TO_CATALOG: Record<string, string> = {
             pcp_visit: "annual-physical",
             preventive_care: "annual-physical",
@@ -112,9 +100,24 @@ export async function POST(request: Request) {
             durable_medical_equipment: "breast-pump",
           };
 
-          const catalogBenefitMap = new Map(
-            catalogResult.benefits.map((b) => [b.benefit.id, b.benefit])
-          );
+          // Only build static catalog if we have services that map to it
+          const needsCatalog = coveredServices.some((s) => SLUG_TO_CATALOG[s.service_catalog?.slug || ""]);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let catalogBenefitMap = new Map<string, any>();
+          if (needsCatalog) {
+            const catalogResult = analyzePlan({
+              insurer: userPlan.insurer_name || profile.insurer || "",
+              planType: userPlan.plan_type || profile.plan_type || "",
+              state: profile.state || "",
+              dateOfBirth: profile.date_of_birth || undefined,
+              sex: undefined,
+              hasDependents,
+              hasChildren,
+            });
+            catalogBenefitMap = new Map(
+              catalogResult.benefits.map((b) => [b.benefit.id, b.benefit])
+            );
+          }
 
           // Build a benefit per covered service
           const benefits = coveredServices.map((s) => {
@@ -126,6 +129,7 @@ export async function POST(request: Request) {
             const catalogId = SLUG_TO_CATALOG[slug];
             const catalogBenefit = catalogId ? catalogBenefitMap.get(catalogId) : undefined;
 
+            const isNotCovered = s.covered === false;
             return {
               benefit: {
                 id: slug,
@@ -133,26 +137,26 @@ export async function POST(request: Request) {
                 title: name,
                 description: buildServiceDescription(s),
                 whyUnderutilized: catalogBenefit?.whyUnderutilized || "",
-                howToAccess: catalogBenefit?.howToAccess || "Contact your insurer for details.",
-                hsaFsaEligible: catalogBenefit?.hsaFsaEligible || false,
+                howToAccess: isNotCovered ? "" : (catalogBenefit?.howToAccess || "Contact your insurer for details."),
+                hsaFsaEligible: isNotCovered ? false : (catalogBenefit?.hsaFsaEligible || false),
                 planTypes: [userPlan.plan_type || ""],
               },
               categoryLabel: category,
-              relevanceNote: `Your ${userPlan.plan_name || "plan"}: ${formatCost(s)}`,
-              relevanceScore: 90,
-              isRecommended: true,
+              relevanceNote: `Your ${userPlan.plan_name || "plan"}: ${isNotCovered ? "Not covered" : formatCost(s)}`,
+              relevanceScore: isNotCovered ? 0 : 90,
+              isRecommended: !isNotCovered,
               costSharing: {
                 inNetwork: {
-                  copay: s.in_copay,
-                  coinsurance: s.in_coinsurance,
-                  deductibleApplies: s.in_deductible_applies,
-                  costDescription: s.in_cost_description || formatCost(s),
+                  copay: isNotCovered ? null : s.in_copay,
+                  coinsurance: isNotCovered ? null : s.in_coinsurance,
+                  deductibleApplies: isNotCovered ? false : s.in_deductible_applies,
+                  costDescription: isNotCovered ? "Not covered" : (s.in_cost_description || formatCost(s)),
                 },
                 outOfNetwork: {
-                  copay: s.out_copay,
-                  coinsurance: s.out_coinsurance,
-                  deductibleApplies: s.out_deductible_applies,
-                  costDescription: s.out_cost_description || "",
+                  copay: isNotCovered ? null : s.out_copay,
+                  coinsurance: isNotCovered ? null : s.out_coinsurance,
+                  deductibleApplies: isNotCovered ? false : s.out_deductible_applies,
+                  costDescription: isNotCovered ? "Not covered" : (s.out_cost_description || ""),
                 },
                 annualLimit: s.annual_limit,
                 priorAuthRequired: s.prior_auth_required,

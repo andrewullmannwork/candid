@@ -134,6 +134,7 @@ CRITICAL RULES:
 - If a service has both copay AND coinsurance, include BOTH
 - If listed as "Not Covered", include with covered: false
 - For Rx, list each tier as a separate service with retail AND home delivery costs
+- For supply limits, always format as "90-day supply", "30-day supply" (hyphenated, space before "supply")
 
 Return ONLY a JSON array. No markdown, no explanation.
 
@@ -160,6 +161,12 @@ interface RawExtracted {
   confidence?: number;
 }
 
+// Fix "90day" → "90-day", "30day" → "30-day" etc. in extracted text fields
+function fixDayFormatting(text: string | null | undefined): string {
+  if (!text) return text || "";
+  return text.replace(/(\d+)(day|days)\b/gi, "$1-$2");
+}
+
 function toSBCParsedService(e: RawExtracted): SBCParsedService {
   return {
     serviceSlug: e.serviceSlug,
@@ -168,18 +175,18 @@ function toSBCParsedService(e: RawExtracted): SBCParsedService {
     inCoinsurance: e.inCoinsurance ?? null,
     inDeductibleApplies: e.inDeductibleApplies ?? null,
     inCopayWaiverCondition: null,
-    inCostDescription: e.inCostDescription || "",
+    inCostDescription: fixDayFormatting(e.inCostDescription),
     outCopay: e.outCopay ?? null,
     outCoinsurance: e.outCoinsurance ?? null,
     outDeductibleApplies: e.outDeductibleApplies ?? null,
-    outCostDescription: e.outCostDescription || "",
+    outCostDescription: fixDayFormatting(e.outCostDescription),
     oonPaidAtInNetwork: false,
-    annualLimit: e.annualLimit || null,
+    annualLimit: fixDayFormatting(e.annualLimit),
     annualLimitValue: e.annualLimit ? parseInt(e.annualLimit.match(/\d+/)?.[0] || "0", 10) || null : null,
     priorAuthRequired: e.priorAuthRequired ?? null,
     penaltyNoPrecert: null,
     covered: e.covered ?? true,
-    coverageConditions: e.coverageConditions || null,
+    coverageConditions: fixDayFormatting(e.coverageConditions),
     supplyLimitDays: null,
     homeDeliveryCopay: null,
     stepTherapyRequired: e.stepTherapyRequired ?? null,

@@ -43,3 +43,12 @@ html {
 .glow-blue:hover {
   box-shadow: 0 0 24px hsla(217, 91%, 60%, 0.25), 0 12px 40px hsla(217, 91%, 60%, 0.15);
 }
+
+/* Fade-in for rotating status messages */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in {
+  animation: fade-in 0.4s ease-out;
+}
