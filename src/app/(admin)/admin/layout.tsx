@@ -9,6 +9,7 @@ const adminNav = [
   { href: "/admin/pipeline", label: "Benefit Pipeline" },
   { href: "/admin/consent", label: "Consent Audit" },
   { href: "/admin/documents/review", label: "Document Review" },
+  { href: "/admin/flags", label: "Feature Flags" },
   { href: "/admin/sbc-tickets", label: "SBC Tickets" },
   { href: "/admin/settings", label: "Settings" },
   { href: "/admin/copy", label: "Site Copy" },

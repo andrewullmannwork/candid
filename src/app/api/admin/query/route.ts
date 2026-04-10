@@ -24,6 +24,7 @@ const ALLOWED_TABLES = [
   "insurance_plans",
   "concepts",
   "concept_relationships",
+  "feature_flag_rules",
 ] as const;
 
 type AllowedTable = (typeof ALLOWED_TABLES)[number];
