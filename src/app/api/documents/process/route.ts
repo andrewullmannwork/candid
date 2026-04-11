@@ -198,9 +198,14 @@ export async function POST(req: NextRequest) {
 
     const auditReport = await runAudit(parsedBill);
 
-    // Persist audit results to claims + claim_line_items tables
+    // Persist audit results to claims + claim_line_items tables (feature-flagged)
     let claimId: string | null = null;
     try {
+      const { isFeatureEnabled } = await import("@/lib/config/product-flags");
+      const { data: userForFlag } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
+      const claimsEnabled = await isFeatureEnabled("claims_persistence", userForFlag?.email || undefined);
+      if (!claimsEnabled) throw new Error("feature_disabled");
+
       const { persistAuditResults } = await import("@/lib/claims/persist");
 
       // Get user's active insurance plan for linking
@@ -219,7 +224,9 @@ export async function POST(req: NextRequest) {
       });
       claimId = persistResult?.claimId || null;
     } catch (err) {
-      console.error("[claims-persist] Failed to persist audit results (non-fatal):", err);
+      if (err instanceof Error && err.message !== "feature_disabled") {
+        console.error("[claims-persist] Failed to persist audit results (non-fatal):", err);
+      }
     }
 
     // Collect anonymized pricing data for Candid Care (non-blocking)

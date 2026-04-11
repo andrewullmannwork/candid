@@ -248,11 +248,18 @@ export async function processPlanDocumentData(
       }
     } // end else (create new plan)
 
-    // ── Canonical plan matching ──────────────────────────────────────────────
+    // ── Canonical plan matching (feature-flagged) ─────────────────────────────
     let canonicalPlanId: string | null = null;
     let canonicalNeedsConfirmation = false;
 
-    try {
+    // Check feature flag — get user email for targeting
+    const { data: userForFlag } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
+    const { isFeatureEnabled } = await import("@/lib/config/product-flags");
+    const canonicalEnabled = await isFeatureEnabled("canonical_plans", userForFlag?.email || undefined);
+
+    if (!canonicalEnabled) {
+      console.log("[canonical-plan] Feature flag disabled for this user, skipping");
+    } else try {
       const insurerMatch = await matchInsurerCatalog(supabase, planInsert.insurer_name || "");
       if (insurerMatch && planInsert.plan_name) {
         // Get user profile for state and group_number
