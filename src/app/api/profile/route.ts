@@ -135,15 +135,31 @@ export async function POST(req: NextRequest) {
   // Map expanded cost fields to legacy profile columns (until schema consolidation)
   const dedInd = in_deductible_individual ?? deductible_individual;
   const oopInd = in_oop_max_individual ?? oop_max_individual;
-  if (dedInd !== undefined) update.deductible_individual = dedInd || null;
-  if (oopInd !== undefined) update.oop_max_individual = oopInd || null;
-  if (copay_primary !== undefined) update.copay_primary = copay_primary || null;
-  if (copay_specialist !== undefined) update.copay_specialist = copay_specialist || null;
-  if (copay_er !== undefined) update.copay_er = copay_er || null;
-  if (coinsurance_pct !== undefined) update.coinsurance_pct = coinsurance_pct || null;
+  // Numeric fields: preserve 0, only null-ify undefined/empty-string
+  const toNum = (v: unknown) => (v === "" || v == null ? null : v);
+  if (dedInd !== undefined) update.deductible_individual = toNum(dedInd);
+  if (oopInd !== undefined) update.oop_max_individual = toNum(oopInd);
+  if (copay_primary !== undefined) update.copay_primary = toNum(copay_primary);
+  if (copay_specialist !== undefined) update.copay_specialist = toNum(copay_specialist);
+  if (copay_er !== undefined) update.copay_er = toNum(copay_er);
+  if (coinsurance_pct !== undefined) update.coinsurance_pct = toNum(coinsurance_pct);
   if (primary_concern !== undefined) update.primary_concern = primary_concern || null;
   if (insurance_card_path !== undefined) update.insurance_card_path = insurance_card_path || null;
-  if (date_of_birth !== undefined) update.date_of_birth = date_of_birth || null;
+  if (date_of_birth !== undefined) {
+    if (date_of_birth) {
+      const dob = new Date(date_of_birth + "T00:00:00");
+      const now = new Date();
+      if (isNaN(dob.getTime()) || dob > now) {
+        return NextResponse.json({ error: "Invalid date of birth" }, { status: 400 });
+      }
+      const age = now.getFullYear() - dob.getFullYear() -
+        (now.getMonth() < dob.getMonth() || (now.getMonth() === dob.getMonth() && now.getDate() < dob.getDate()) ? 1 : 0);
+      if (age < 18) {
+        return NextResponse.json({ error: "Must be at least 18 years old" }, { status: 400 });
+      }
+    }
+    update.date_of_birth = date_of_birth || null;
+  }
   if (sex !== undefined) update.sex = sex || null;
   if (phone !== undefined) update.phone = phone || null;
   if (matched_plan_id !== undefined) update.matched_plan_id = matched_plan_id || null;
@@ -193,14 +209,14 @@ export async function POST(req: NextRequest) {
       if (group_number !== undefined) planUpdate.group_number = group_number || null;
       if (member_id !== undefined) planUpdate.member_id = member_id || null;
       // Map expanded cost fields to insurance_plans columns
-      if (dedInd !== undefined) planUpdate.in_deductible_individual = dedInd || null;
-      if (in_deductible_family !== undefined) planUpdate.in_deductible_family = in_deductible_family || null;
-      if (oopInd !== undefined) planUpdate.in_oop_max_individual = oopInd || null;
-      if (in_oop_max_family !== undefined) planUpdate.in_oop_max_family = in_oop_max_family || null;
-      if (out_deductible_individual !== undefined) planUpdate.out_deductible_individual = out_deductible_individual || null;
-      if (out_deductible_family !== undefined) planUpdate.out_deductible_family = out_deductible_family || null;
-      if (out_oop_max_individual !== undefined) planUpdate.out_oop_max_individual = out_oop_max_individual || null;
-      if (out_oop_max_family !== undefined) planUpdate.out_oop_max_family = out_oop_max_family || null;
+      if (dedInd !== undefined) planUpdate.in_deductible_individual = toNum(dedInd);
+      if (in_deductible_family !== undefined) planUpdate.in_deductible_family = toNum(in_deductible_family);
+      if (oopInd !== undefined) planUpdate.in_oop_max_individual = toNum(oopInd);
+      if (in_oop_max_family !== undefined) planUpdate.in_oop_max_family = toNum(in_oop_max_family);
+      if (out_deductible_individual !== undefined) planUpdate.out_deductible_individual = toNum(out_deductible_individual);
+      if (out_deductible_family !== undefined) planUpdate.out_deductible_family = toNum(out_deductible_family);
+      if (out_oop_max_individual !== undefined) planUpdate.out_oop_max_individual = toNum(out_oop_max_individual);
+      if (out_oop_max_family !== undefined) planUpdate.out_oop_max_family = toNum(out_oop_max_family);
       if (coinsurance_pct !== undefined) planUpdate.in_coinsurance_default = coinsurance_pct ? coinsurance_pct / 100 : null;
       if (matched_plan_id !== undefined) planUpdate.matched_catalog_plan_id = matched_plan_id || null;
       if (plan_source !== undefined) {

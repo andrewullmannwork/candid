@@ -28,6 +28,7 @@ export type InsurancePlanSource =
 
 export type VerificationStatus =
   | "unverified"
+  | "document_verified"
   | "user_confirmed"
   | "cms_matched"
   | "multi_user_verified";

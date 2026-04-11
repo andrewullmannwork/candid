@@ -66,12 +66,24 @@ export async function POST(request: Request) {
           return parts.join(", ").replace(/^./, (c: string) => c.toUpperCase());
         }
 
+        function cleanDescription(raw: string): string {
+          return raw
+            .replace(/\s+/g, " ").trim()
+            .replace(/\bTier\s*(\d)/gi, "Tier $1")
+            .replace(/\b(\d+)\s*day\b/gi, "$1-day")
+            .replace(/\bnon\s*emergency\b/gi, "non-emergency")
+            .replace(/\bEmergent\b/g, "Emergency")
+            .replace(/\bfollowed by\b/gi, "and")
+            .replace(/\bRx\b/g, "Rx")
+            .replace(/^[a-z]/, (c) => c.toUpperCase());
+        }
+
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         function buildServiceDescription(s: any): string {
           if (s.covered === false) return "Not covered under this plan.";
           const parts: string[] = [];
           if (s.in_cost_description) {
-            parts.push(`In-network: ${s.in_cost_description}`);
+            parts.push(`In-network: ${cleanDescription(s.in_cost_description)}`);
           } else {
             const cost = formatCost(s);
             if (cost !== "Covered") parts.push(`In-network: ${cost}`);
@@ -123,7 +135,8 @@ export async function POST(request: Request) {
           // Build a benefit per covered service
           const benefits = coveredServices.map((s) => {
             const slug = s.service_catalog?.slug || "unknown";
-            const name = s.service_catalog?.name || slug.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+            const rawName = s.service_catalog?.name || slug.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+            const name = cleanDescription(rawName);
             const category = s.service_catalog?.category || "other";
 
             // Find catalog educational content if available
@@ -193,7 +206,7 @@ export async function POST(request: Request) {
                 benefit: {
                   id: cs.service_slug || cs.id,
                   category: "other",
-                  title: (cs.service_slug || "").replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase()),
+                  title: cleanDescription((cs.service_slug || "").replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())),
                   description: cs.is_covered === false
                     ? "Not covered under this plan."
                     : [
