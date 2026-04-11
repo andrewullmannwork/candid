@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { Resend } from "resend";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 /**
  * POST /api/auth/reset-password
@@ -23,6 +23,9 @@ export async function POST(req: NextRequest) {
     });
 
     // Send branded email via Resend
+    if (!resend) {
+      return NextResponse.json({ error: "Email service not configured" }, { status: 503 });
+    }
     await resend.emails.send({
       from: "Candid <noreply@candidclaim.com>",
       to: email,
