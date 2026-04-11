@@ -203,8 +203,10 @@ export async function processPlanDocumentData(
       targetPlanId = mergeIntoExistingPlan;
       // Update the existing plan with any new metadata (deductibles, OOP, etc.)
       await supabase.from("insurance_plans").update({
+        source: (isFullPlanDoc ? "plan_doc_upload" : "sbc_upload") as string,
         source_document_id: documentId,
         is_active: true,
+        verification_status: "document_verified" as const,
         in_deductible_individual: planInsert.in_deductible_individual,
         in_oop_max_individual: planInsert.in_oop_max_individual,
         out_deductible_individual: planInsert.out_deductible_individual,

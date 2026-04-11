@@ -1,11 +1,20 @@
 "use client";
 
-import { Suspense, useState, useEffect, useRef } from "react";
+import { Suspense, useState, useEffect, useRef, memo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
 import type { InsuranceCardFields } from "@/app/api/profile/scan-card/route";
 import { createBrowserClient } from "@/lib/supabase/client";
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function formatPhone(value: string): string {
+  const digits = value.replace(/\D/g, "").slice(0, 10);
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
+  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -266,7 +275,7 @@ function ProfileContent() {
   const [step, setStep] = useState(0);
   const [profile, setProfile] = useState<ProfileData>({
     ...EMPTY_PROFILE,
-    phone: prefillPhone,
+    phone: prefillPhone ? formatPhone(prefillPhone) : "",
     date_of_birth: prefillDob,
   });
   const [loading, setLoading] = useState(true);
@@ -309,8 +318,13 @@ function ProfileContent() {
           headers: { Authorization: `Bearer ${idToken}` },
         });
         if (res.ok) {
-          const { profile: p } = await res.json();
+          const { profile: p, insurancePlan: ip } = await res.json();
           if (p) {
+            // Helper: pick first non-null value and stringify
+            const num = (...vals: unknown[]) => {
+              for (const v of vals) { if (v != null) return String(v); }
+              return "";
+            };
             const loaded: ProfileData = {
               insurer: p.insurer || "",
               plan_type: p.plan_type || "",
@@ -318,24 +332,24 @@ function ProfileContent() {
               state: p.state || "",
               group_number: p.group_number || "",
               member_id: p.member_id || "",
-              in_deductible_individual: p.deductible_individual != null ? String(p.deductible_individual) : "",
-              in_deductible_family: p.in_deductible_family != null ? String(p.in_deductible_family) : "",
-              in_oop_max_individual: p.oop_max_individual != null ? String(p.oop_max_individual) : "",
-              in_oop_max_family: p.in_oop_max_family != null ? String(p.in_oop_max_family) : "",
-              out_deductible_individual: p.out_deductible_individual != null ? String(p.out_deductible_individual) : "",
-              out_deductible_family: p.out_deductible_family != null ? String(p.out_deductible_family) : "",
-              out_oop_max_individual: p.out_oop_max_individual != null ? String(p.out_oop_max_individual) : "",
-              out_oop_max_family: p.out_oop_max_family != null ? String(p.out_oop_max_family) : "",
-              copay_primary: p.copay_primary != null ? String(p.copay_primary) : "",
-              copay_specialist: p.copay_specialist != null ? String(p.copay_specialist) : "",
-              copay_er: p.copay_er != null ? String(p.copay_er) : "",
-              copay_urgent_care: p.copay_urgent_care != null ? String(p.copay_urgent_care) : "",
-              copay_rx: p.copay_rx != null ? String(p.copay_rx) : "",
-              coinsurance_pct: p.coinsurance_pct != null ? String(p.coinsurance_pct) : "",
+              in_deductible_individual: num(p.deductible_individual, ip?.in_deductible_individual),
+              in_deductible_family: num(p.in_deductible_family, ip?.in_deductible_family),
+              in_oop_max_individual: num(p.oop_max_individual, ip?.in_oop_max_individual),
+              in_oop_max_family: num(p.in_oop_max_family, ip?.in_oop_max_family),
+              out_deductible_individual: num(p.out_deductible_individual, ip?.out_deductible_individual),
+              out_deductible_family: num(p.out_deductible_family, ip?.out_deductible_family),
+              out_oop_max_individual: num(p.out_oop_max_individual, ip?.out_oop_max_individual),
+              out_oop_max_family: num(p.out_oop_max_family, ip?.out_oop_max_family),
+              copay_primary: num(p.copay_primary, ip?.copay_primary),
+              copay_specialist: num(p.copay_specialist, ip?.copay_specialist),
+              copay_er: num(p.copay_er, ip?.copay_er),
+              copay_urgent_care: num(p.copay_urgent_care, ip?.copay_urgent_care),
+              copay_rx: num(p.copay_rx, ip?.copay_rx),
+              coinsurance_pct: num(p.coinsurance_pct, ip?.coinsurance_pct),
               primary_concern: p.primary_concern || "",
               date_of_birth: p.date_of_birth || prefillDob || "",
               sex: p.sex || "",
-              phone: p.phone || prefillPhone || "",
+              phone: p.phone || (prefillPhone ? formatPhone(prefillPhone) : ""),
               dependents: p.dependents ? JSON.stringify(p.dependents) : "[]",
               matched_plan_id: p.matched_plan_id || "",
               plan_source: p.plan_source || "",
@@ -343,6 +357,15 @@ function ProfileContent() {
             setProfile(loaded);
             const hasSomeData = Object.entries(loaded).some(([k, v]) => k !== "dependents" && v && v !== "[]");
             setHasExistingProfile(hasSomeData);
+            // Auto-save prefill values from signup so they survive navigation
+            if (isOnboarding) {
+              const prefillSave: Partial<Record<keyof ProfileData, string>> = {};
+              if (prefillDob && !p.date_of_birth) prefillSave.date_of_birth = prefillDob;
+              if (prefillPhone && !p.phone) prefillSave.phone = prefillPhone;
+              if (Object.keys(prefillSave).length > 0) {
+                saveStep(prefillSave);
+              }
+            }
             // If returning to profile with existing data, skip card upload step
             if (hasSomeData && isOnboarding && step === 0) setStep(1);
             // If no existing data and not onboarding, go straight to edit
@@ -378,7 +401,9 @@ function ProfileContent() {
       ];
       for (const field of numericFields) {
         if (field in body && body[field] != null) {
-          body[field] = parseFloat(body[field] as string) || null;
+          const raw = (body[field] as string).replace(/,/g, "");
+          const num = parseFloat(raw);
+          body[field] = isNaN(num) ? null : num;
         }
       }
       const res = await fetch("/api/profile", {
@@ -569,10 +594,10 @@ function ProfileContent() {
     // Profile is "functional" if we have enough to identify the plan:
     // insurer + plan_type, OR group_number + plan_type, OR insurer + group_number
     const identifiers = [profile.insurer, profile.plan_type, profile.group_number, profile.state].filter(Boolean).length;
-    const allFields = [profile.insurer, profile.plan_type, profile.plan_name, profile.state, profile.group_number, profile.in_deductible_individual, profile.copay_primary];
+    const allFields = [profile.insurer, profile.plan_type, profile.plan_name, profile.state, profile.group_number, profile.in_deductible_individual, profile.copay_primary, profile.phone, profile.date_of_birth];
     const filledCount = allFields.filter(Boolean).length;
     const totalCount = allFields.length;
-    const allFilled = identifiers >= 2; // any 2 of insurer/plan_type/group_number/state is enough
+    const allFilled = identifiers >= 2 && !!profile.phone && !!profile.date_of_birth;
 
     return (
       <div className="max-w-lg mx-auto">
@@ -1186,14 +1211,34 @@ function PlanDetailsStep({
   );
 }
 
-function DollarInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) {
+const DollarInput = memo(function DollarInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) {
+  const [local, setLocal] = useState(value);
+  const ref = useRef<HTMLInputElement>(null);
+
+  // Sync from parent when value changes externally (e.g. card scan auto-fill)
+  useEffect(() => { setLocal(value); }, [value]);
+
   return (
     <div className="relative">
       <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">$</span>
-      <input type="text" inputMode="decimal" value={value} onChange={(e) => onChange(e.target.value.replace(/[^0-9.,]/g, ""))} placeholder={placeholder} className={`${inputClass} pl-7`} />
+      <input
+        ref={ref}
+        type="text"
+        inputMode="decimal"
+        value={local}
+        onChange={(e) => setLocal(e.target.value.replace(/[^0-9.,]/g, ""))}
+        onBlur={() => {
+          // Normalize: strip leading zeros, remove trailing dots/commas
+          const normalized = local.replace(/,/g, "").replace(/^0+(\d)/, "$1").replace(/[.,]+$/, "");
+          setLocal(normalized);
+          onChange(normalized);
+        }}
+        placeholder={placeholder}
+        className={`${inputClass} pl-7`}
+      />
     </div>
   );
-}
+});
 
 function CostsStep({
   profile,
@@ -1355,7 +1400,7 @@ function AboutYouStep({
         <input
           type="tel"
           value={phoneNum}
-          onChange={(e) => setPhoneNum(e.target.value)}
+          onChange={(e) => setPhoneNum(formatPhone(e.target.value))}
           placeholder="(555) 123-4567"
           className={inputClass}
         />
@@ -1367,6 +1412,7 @@ function AboutYouStep({
           type="date"
           value={dob}
           onChange={(e) => setDob(e.target.value)}
+          min="1900-01-01"
           max={new Date(new Date().setFullYear(new Date().getFullYear() - 18)).toISOString().split("T")[0]}
           className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
         />

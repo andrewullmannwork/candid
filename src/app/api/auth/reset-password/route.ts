@@ -71,9 +71,17 @@ export async function POST(req: NextRequest) {
     });
 
     return NextResponse.json({ success: true });
-  } catch (err) {
+  } catch (err: unknown) {
+    const fbErr = err as { code?: string };
+    // Firebase "user not found" — return success to prevent email enumeration
+    if (fbErr.code === "auth/user-not-found" || fbErr.code === "auth/invalid-email") {
+      return NextResponse.json({ success: true });
+    }
+    // Actual send failure — surface it so user knows to retry
     console.error("[reset-password] Error:", err);
-    // Don't reveal whether email exists — always return success
-    return NextResponse.json({ success: true });
+    return NextResponse.json(
+      { error: "Failed to send reset email. Please try again." },
+      { status: 500 },
+    );
   }
 }

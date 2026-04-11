@@ -207,7 +207,8 @@ export default function DashboardPage() {
         const vs = pr.planSummary?.verificationStatus;
         const pn = pr.planName;
 
-        if (ds === "user_plan" && vs === "unverified") {
+        const isUserPlan = ds === "user_plan" || ds === "user_plan_with_canonical";
+        if (isUserPlan && vs === "unverified") {
           // If a plan document is actively processing, show processing banner instead
           if (processingPlanDocs.length > 0) {
             const ppd = processingPlanDocs[0];
@@ -253,7 +254,7 @@ export default function DashboardPage() {
           );
         }
 
-        if (ds === "user_plan" && vs !== "unverified") {
+        if (isUserPlan && vs !== "unverified") {
           return (
             <div className="p-4 bg-green-50 border border-green-200 rounded-2xl flex items-start gap-3">
               <svg className="w-5 h-5 text-green-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -445,8 +446,8 @@ export default function DashboardPage() {
           const pt = pr.planType; // "PPO", "HMO", etc.
 
           // user_plan — differentiate by source
-          if (ds === "user_plan") {
-            if (ps === "sbc_upload" || ps === "plan_doc_upload") {
+          if (ds === "user_plan" || ds === "user_plan_with_canonical") {
+            if (ps === "sbc_upload" || ps === "plan_doc_upload" || (vs && vs !== "unverified")) {
               return (
                 <p className="text-xs text-green-700 mb-3 -mt-2">
                   Results based on your uploaded document.
@@ -461,17 +462,9 @@ export default function DashboardPage() {
               );
             }
             // insurance_card or other unverified source
-            if (vs === "unverified") {
-              return (
-                <p className="text-xs text-amber-700 mb-3 -mt-2">
-                  Results based on your insurance card. <Link href="/upload" className="font-semibold underline">Upload your plan document</Link> for more complete results.
-                </p>
-              );
-            }
-            // verified user_plan (fallback)
             return (
-              <p className="text-xs text-green-700 mb-3 -mt-2">
-                Results based on your uploaded document.
+              <p className="text-xs text-amber-700 mb-3 -mt-2">
+                Results based on your insurance card. <Link href="/upload" className="font-semibold underline">Upload your plan document</Link> for more complete results.
               </p>
             );
           }

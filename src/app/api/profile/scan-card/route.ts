@@ -35,6 +35,7 @@ export interface InsuranceCardFields {
   rxPcn?: string;
   rxGroup?: string;
   networkName?: string;
+  insurerPhone?: string;
   rawText: string;
 }
 
@@ -242,6 +243,21 @@ function parseInsuranceCard(rawText: string): InsuranceCardFields {
   // ── Network name ─────────────────────────────────────────────────────────
   const networkMatch = text.match(/(?:network[:\s]+)([A-Za-z0-9 \-]+?)(?:\n|$)/i);
   if (networkMatch) result.networkName = networkMatch[1].trim();
+
+  // ── Insurer phone number ────────────────────────────────────────────────
+  // Match US phone formats near labels like "Member Services", "Customer Service", "Phone"
+  const phoneContextMatch = text.match(
+    /(?:member\s*services?|customer\s*service|phone|tel|call)[:\s]*(?:1[-.]?)?\(?(\d{3})\)?[-.\s]?(\d{3})[-.\s]?(\d{4})/i
+  );
+  if (phoneContextMatch) {
+    result.insurerPhone = `(${phoneContextMatch[1]}) ${phoneContextMatch[2]}-${phoneContextMatch[3]}`;
+  } else {
+    // Fallback: match any standalone US phone number (800/888/877/866 toll-free)
+    const tollFreeMatch = text.match(/(?:1[-.]?)?(?:\(?(8(?:00|88|77|66|55|44|33))\)?[-.\s]?(\d{3})[-.\s]?(\d{4}))/);
+    if (tollFreeMatch) {
+      result.insurerPhone = `(${tollFreeMatch[1]}) ${tollFreeMatch[2]}-${tollFreeMatch[3]}`;
+    }
+  }
 
   // ── Copay amounts ────────────────────────────────────────────────────────
 
