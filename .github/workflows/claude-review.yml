@@ -1,0 +1,30 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          prompt: |
+            Review this pull request for the Candid medical billing platform.
+            Focus on:
+            - Security vulnerabilities (HIPAA, data exposure, injection)
+            - Logic errors in plan matching, claims processing, or billing audit
+            - Database query correctness (Supabase/PostgREST patterns)
+            - React hooks correctness (dependency arrays, state management)
+            - Error handling gaps in async operations
+            Do NOT flag style issues or unused variables — ESLint handles those.
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
