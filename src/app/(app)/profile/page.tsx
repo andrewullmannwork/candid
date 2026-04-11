@@ -1186,6 +1186,15 @@ function PlanDetailsStep({
   );
 }
 
+function DollarInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) {
+  return (
+    <div className="relative">
+      <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">$</span>
+      <input type="text" inputMode="decimal" value={value} onChange={(e) => onChange(e.target.value.replace(/[^0-9.,]/g, ""))} placeholder={placeholder} className={`${inputClass} pl-7`} />
+    </div>
+  );
+}
+
 function CostsStep({
   profile,
   saving,
@@ -1211,15 +1220,6 @@ function CostsStep({
   const [coinsurance, setCoinsurance] = useState(profile.coinsurance_pct);
 
   const hasAny = inDedInd || inOopInd || copayPrimary || copaySpecialist || copayEr || coinsurance;
-
-  function DollarInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) {
-    return (
-      <div className="relative">
-        <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">$</span>
-        <input type="text" inputMode="decimal" value={value} onChange={(e) => onChange(e.target.value.replace(/[^0-9.,]/g, ""))} placeholder={placeholder} className={`${inputClass} pl-7`} />
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-5">

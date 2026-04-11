@@ -33,11 +33,10 @@ export function useSubscription(): SubscriptionState {
   const { user } = useAuth();
   const [tier, setTier] = useState<SubscriptionTier>("free");
   const [status, setStatus] = useState<SubscriptionStatus>("none");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !!user);
 
   useEffect(() => {
     if (!user) {
-      setLoading(false);
       return;
     }
 

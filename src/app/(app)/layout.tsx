@@ -94,9 +94,11 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Close sidebar on route change
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     setSidebarOpen(false);
   }, [pathname]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   if (loading) {
     return (

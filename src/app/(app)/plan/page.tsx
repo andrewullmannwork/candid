@@ -123,6 +123,28 @@ function CategoryIcon({ category }: { category: string }) {
 
 // ── Data Source Banner ──────────────────────────────────────────────────────────
 
+function AmberBanner({ title, subtitle }: { title: string; subtitle: string }) {
+  return (
+    <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3">
+      <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0 mt-0.5">
+        <svg className="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
+        </svg>
+      </div>
+      <div className="flex-1">
+        <p className="text-sm font-semibold text-amber-900">{title}</p>
+        <p className="text-xs text-amber-700 mt-0.5">{subtitle}</p>
+        <Link href="/upload" className="inline-flex items-center gap-1.5 mt-3 px-4 py-2 text-sm font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-xl transition-colors">
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+          </svg>
+          Upload your plan document
+        </Link>
+      </div>
+    </div>
+  );
+}
+
 function DataSourceBanner({ dataSource, planName, planType, insurer, verificationStatus, planSource }: {
   dataSource: string;
   planName?: string;
@@ -131,28 +153,6 @@ function DataSourceBanner({ dataSource, planName, planType, insurer, verificatio
   verificationStatus?: string;
   planSource?: string;
 }) {
-  // Helper: amber banner with upload CTA
-  function AmberBanner({ title, subtitle }: { title: string; subtitle: string }) {
-    return (
-      <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3">
-        <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0 mt-0.5">
-          <svg className="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
-          </svg>
-        </div>
-        <div className="flex-1">
-          <p className="text-sm font-semibold text-amber-900">{title}</p>
-          <p className="text-xs text-amber-700 mt-0.5">{subtitle}</p>
-          <Link href="/upload" className="inline-flex items-center gap-1.5 mt-3 px-4 py-2 text-sm font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-xl transition-colors">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-            </svg>
-            Upload your plan document
-          </Link>
-        </div>
-      </div>
-    );
-  }
 
   if (dataSource === "user_plan") {
     // SBC or plan document upload → green
@@ -451,7 +451,6 @@ export default function CandidPlanPage() {
   const isGeneric = result.dataSource === "static_catalog";
 
   // Separate covered vs not-covered benefits, then group covered by category
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const notCoveredItems: AnalyzedBenefit[] = [];
   const grouped = new Map<string, AnalyzedBenefit[]>();
   for (const item of result.benefits) {
@@ -465,6 +464,7 @@ export default function CandidPlanPage() {
     grouped.get(cat)!.push(item);
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const coveredBenefits = result.benefits.filter((b) => (b as any).covered !== false);
   const totalUsed = coveredBenefits.filter((b) => usedBenefits.has(b.benefit.id)).length;
 
@@ -791,6 +791,7 @@ export default function CandidPlanPage() {
             {expandedBenefit === "__not_covered_section__" && (
               <div className="divide-y divide-gray-100">
                 {notCoveredItems.map((rawItem) => {
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   const item = rawItem as any;
                   return (
                     <div key={item.benefit.id} className="flex items-start gap-3 p-4 bg-gray-50/30">

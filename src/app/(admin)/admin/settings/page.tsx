@@ -57,10 +57,6 @@ export default function AdminSettingsPage() {
   const [editingFlag, setEditingFlag] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
 
-  useEffect(() => {
-    if (user) loadFlags();
-  }, [user]);
-
   async function loadFlags() {
     if (!user) return;
     setLoading(true);
@@ -74,6 +70,12 @@ export default function AdminSettingsPage() {
     }
     setLoading(false);
   }
+
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (user) loadFlags();
+  }, [user]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   async function updateFlag(key: string, value: string) {
     if (!user) return;

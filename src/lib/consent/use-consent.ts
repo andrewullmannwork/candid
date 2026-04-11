@@ -30,6 +30,7 @@ export function useConsent(type: ConsentType): UseConsentReturn {
   const currentVersion = consentDoc.version;
 
   // Check if user has consented to the current version (via API)
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!user) {
       setLoading(false);
@@ -72,6 +73,7 @@ export function useConsent(type: ConsentType): UseConsentReturn {
 
     checkConsent();
   }, [user, type, currentVersion, consentDoc.hash]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const grantConsent = useCallback(async () => {
     if (!user) throw new Error("Must be authenticated to grant consent");

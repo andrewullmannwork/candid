@@ -26,11 +26,6 @@ export default function FeatureFlagsPage() {
   const [editingUsers, setEditingUsers] = useState<string | null>(null);
   const [userInput, setUserInput] = useState("");
 
-  useEffect(() => {
-    if (!user) return;
-    loadFlags();
-  }, [user]);
-
   async function loadFlags() {
     try {
       const data = await query({
@@ -44,6 +39,13 @@ export default function FeatureFlagsPage() {
     }
     setLoading(false);
   }
+
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (!user) return;
+    loadFlags();
+  }, [user]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   async function toggleFlag(flag: FlagRule) {
     const newEnabled = !flag.enabled;

@@ -657,7 +657,7 @@ export function parseSBCText(text: string, documentId?: string): SBCParseResult 
   // ── Calculate overall confidence ────────────────────────────────────────
 
   let parsedFields = 0;
-  let totalFields = 10; // key fields we try to extract
+  const totalFields = 10; // key fields we try to extract
   if (plan.plan_name) parsedFields++;
   if (plan.plan_year) parsedFields++;
   if (plan.plan_type) parsedFields++;
