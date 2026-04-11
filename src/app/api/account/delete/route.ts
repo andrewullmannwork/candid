@@ -74,6 +74,7 @@ export async function POST(req: NextRequest) {
     try {
       await getAdminAuth().deleteUser(user.firebase_uid);
       deletionLog.push("Firebase Auth account deleted");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (fbErr: any) {
       // User may already be deleted from Firebase
       if (fbErr?.code !== "auth/user-not-found") {

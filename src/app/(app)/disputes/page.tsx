@@ -18,24 +18,32 @@ export default function DisputesPage() {
 
 function DisputesContent() {
   const searchParams = useSearchParams();
-  const [letter, setLetter] = useState<DisputeLetter | null>(null);
-  const [editedBody, setEditedBody] = useState("");
-  const [isEditing, setIsEditing] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const textRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
+  const [letter, setLetter] = useState<DisputeLetter | null>(() => {
     const letterParam = searchParams.get("letter");
     if (letterParam) {
       try {
-        const parsed = JSON.parse(decodeURIComponent(letterParam));
-        setLetter(parsed);
-        setEditedBody(parsed.body);
+        return JSON.parse(decodeURIComponent(letterParam));
       } catch {
         // Invalid letter data
       }
     }
-  }, [searchParams]);
+    return null;
+  });
+  const [editedBody, setEditedBody] = useState(() => {
+    const letterParam = searchParams.get("letter");
+    if (letterParam) {
+      try {
+        const parsed = JSON.parse(decodeURIComponent(letterParam));
+        return parsed.body || "";
+      } catch {
+        // Invalid letter data
+      }
+    }
+    return "";
+  });
+  const [isEditing, setIsEditing] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const textRef = useRef<HTMLTextAreaElement>(null);
 
   const handleCopy = async () => {
     try {
@@ -234,6 +242,16 @@ function DisputesContent() {
             consulting a healthcare attorney.
           </li>
         </ol>
+      </div>
+
+      {/* Dispute tracking */}
+      <div className="bg-white rounded-lg shadow p-5 mt-4">
+        <h3 className="font-semibold mb-2">Track This Dispute</h3>
+        <p className="text-sm text-gray-500 mb-3">
+          Track the outcome of this dispute on the{" "}
+          <a href="/claim" className="text-blue-600 hover:underline">Claims page</a>.
+          Recording outcomes helps Candid calculate success rates and helps other users with similar disputes.
+        </p>
       </div>
     </div>
   );

@@ -102,6 +102,7 @@ interface County {
 
 // ── CMS API Helpers ──────────────────────────────────────────────────────────
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function fetchJSON(url: string, body?: object): Promise<any> {
   const options: RequestInit = {
     headers: { "Content-Type": "application/json" },
@@ -172,6 +173,7 @@ async function getCountiesForState(state: string): Promise<County[]> {
     try {
       const url = `${CMS_API_BASE}/counties/by/zip/${zip}?apikey=${CMS_API_KEY}`;
       const data = await fetchJSON(url);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (data.counties || []).map((c: any) => ({
         fips: c.fips,
         name: c.name,
@@ -453,7 +455,7 @@ async function main() {
       const county = countiesToProcess[i];
       try {
         // Get a valid zipcode for this county
-        let zip = fipsZipMap.get(county.fips) || county.zipcode || STATE_ZIPS[state];
+        const zip = fipsZipMap.get(county.fips) || county.zipcode || STATE_ZIPS[state];
         if (!zip) {
           countiesSkipped++;
           continue;

@@ -94,6 +94,7 @@ export function generateItemizedBillRequest(
     bill: {
       provider: { name: bill.providerName },
       patient: { name: bill.patientName },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
   });
 

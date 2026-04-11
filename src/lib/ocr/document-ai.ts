@@ -6,7 +6,9 @@ import type { OCRProvider, OCRResult, OCRPage, OCRBlock } from "./types";
 
 const MAX_PAGES_PER_REQUEST = 15;
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _client: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _sdk: any = null;
 
 async function loadSDK() {
@@ -15,6 +17,7 @@ async function loadSDK() {
   return _sdk;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getCredentials(): { projectId: string; credentials: any } {
   const encoded = process.env.FIREBASE_ADMIN_SERVICE_ACCOUNT;
   if (!encoded) {
@@ -221,9 +224,11 @@ export const documentAIProvider: OCRProvider = {
 };
 
 // Extract text from a layout using the document's full text + text anchors
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function extractTextFromLayout(layout: any, fullText: string): string {
   if (!layout?.textAnchor?.textSegments?.length) return "";
   return layout.textAnchor.textSegments
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     .map((seg: any) => {
       const start = Number(seg.startIndex || 0);
       const end = Number(seg.endIndex || 0);
@@ -234,6 +239,7 @@ function extractTextFromLayout(layout: any, fullText: string): string {
 }
 
 function extractBoundingBox(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   layout: any
 ): OCRBlock["boundingBox"] | undefined {
   const vertices = layout?.boundingPoly?.normalizedVertices;

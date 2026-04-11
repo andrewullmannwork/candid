@@ -389,7 +389,7 @@ export function parsePlanDocument(text: string): PlanDocParseResult {
   ];
   const insurerMatch = firstMatch(text, insurerPatterns);
   if (insurerMatch) {
-    let name = insurerMatch[0].trim().replace(/\s+/g, " ");
+    const name = insurerMatch[0].trim().replace(/\s+/g, " ");
     // Normalize common names
     if (/cigna/i.test(name)) plan.insurer_name = "Cigna";
     else if (/aetna/i.test(name)) plan.insurer_name = "Aetna";

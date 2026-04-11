@@ -8,6 +8,8 @@ import { createServerClient } from "@/lib/supabase/server";
 import { parseSBCText } from "@/lib/plan/sbc-parser";
 import { parsePlanDocument } from "@/lib/plan/plan-doc-parser";
 import { extractServicesWithClaude } from "@/lib/plan/claude-extractor";
+import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
+import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
 import type { SBCParsedService } from "@/lib/plan/sbc-parser";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
@@ -246,6 +248,62 @@ export async function processPlanDocumentData(
       }
     } // end else (create new plan)
 
+    // ── Canonical plan matching ──────────────────────────────────────────────
+    let canonicalPlanId: string | null = null;
+    let canonicalNeedsConfirmation = false;
+
+    try {
+      const insurerMatch = await matchInsurerCatalog(supabase, planInsert.insurer_name || "");
+      if (insurerMatch && planInsert.plan_name) {
+        // Get user profile for state and group_number
+        const { data: profileForCanonical } = await supabase
+          .from("profiles")
+          .select("state, group_number")
+          .eq("user_id", doc.user_id)
+          .single();
+
+        const canonicalResult = await findOrCreateCanonicalPlan(supabase, {
+          insurerId: insurerMatch.id,
+          planName: planInsert.plan_name,
+          planType: planInsert.plan_type || undefined,
+          state: profileForCanonical?.state || undefined,
+          planYear: new Date().getFullYear(),
+          groupNumber: profileForCanonical?.group_number || undefined,
+          deductible: planInsert.in_deductible_individual || undefined,
+          oopMax: planInsert.in_oop_max_individual || undefined,
+        });
+
+        if (canonicalResult.needsConfirmation) {
+          // Store pending match for user confirmation — don't link yet
+          canonicalNeedsConfirmation = true;
+          await supabase.from("documents").update({
+            insurer_mismatch: {
+              ...(mismatchData || {}),
+              pending_canonical_match: {
+                canonicalPlanId: canonicalResult.canonicalPlanId,
+                matchedPlanName: canonicalResult.matchedPlanName,
+                confidence: canonicalResult.confidence,
+                sourceCount: canonicalResult.sourceCount,
+                insurerName: insurerMatch.name,
+              },
+            },
+          }).eq("id", documentId);
+          console.log(`[canonical-plan] Pending confirmation for canonical plan ${canonicalResult.canonicalPlanId} (confidence=${canonicalResult.confidence.toFixed(2)})`);
+        } else {
+          // Auto-link (high confidence or new plan)
+          canonicalPlanId = canonicalResult.canonicalPlanId;
+          await supabase.from("insurance_plans")
+            .update({ canonical_plan_id: canonicalPlanId })
+            .eq("id", targetPlanId);
+          console.log(`[canonical-plan] Auto-linked insurance_plan=${targetPlanId} → canonical=${canonicalPlanId} (confidence=${canonicalResult.confidence.toFixed(2)}, new=${canonicalResult.isNew})`);
+        }
+      } else {
+        console.log("[canonical-plan] Skipped — could not resolve insurer or missing plan name");
+      }
+    } catch (err) {
+      console.error("[canonical-plan] Error during canonical matching (non-fatal):", err);
+    }
+
     // ── Service catalog + plan_covered_services ─────────────────────────────
     let servicesCreated = 0;
     if (parseResult.services.length > 0) {
@@ -348,6 +406,44 @@ export async function processPlanDocumentData(
           .upsert(serviceInserts, { onConflict: "insurance_plan_id,service_id,place_of_service" });
         if (svcError) console.error("Failed to insert services:", svcError);
         else servicesCreated = serviceInserts.length;
+      }
+
+      // ── Canonical plan services upsert ──────────────────────────────────────
+      if (canonicalPlanId && !canonicalNeedsConfirmation) {
+        try {
+          const canonicalServiceInserts = confident
+            .filter((s) => slugToId.has(s.serviceSlug))
+            .map((s) => ({
+              canonical_plan_id: canonicalPlanId!,
+              concept_id: conceptIdMap.get(s.serviceSlug) || null,
+              service_slug: s.serviceSlug,
+              copay: s.inCopay,
+              coinsurance: s.inCoinsurance,
+              is_covered: s.covered !== false,
+              requires_prior_auth: s.priorAuthRequired || false,
+              requires_referral: false,
+              deductible_applies: s.inDeductibleApplies !== false,
+              annual_limit: s.annualLimitValue || null,
+              visit_limit: null,
+              coverage_rules: {},
+              confidence: s.confidence,
+              source: (classification.classifiedType === "sbc" ? "sbc_parser" : "user_upload") as string,
+            }));
+
+          if (canonicalServiceInserts.length > 0) {
+            const { error: canonicalSvcError } = await supabase
+              .from("canonical_plan_services")
+              .upsert(canonicalServiceInserts, { onConflict: "canonical_plan_id,service_slug" });
+
+            if (canonicalSvcError) {
+              console.error("[canonical-plan] Failed to upsert canonical services:", canonicalSvcError);
+            } else {
+              console.log(`[canonical-plan] Upserted ${canonicalServiceInserts.length} services to canonical plan ${canonicalPlanId}`);
+            }
+          }
+        } catch (err) {
+          console.error("[canonical-plan] Canonical service upsert error (non-fatal):", err);
+        }
       }
     }
 

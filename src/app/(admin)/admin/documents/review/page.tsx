@@ -74,11 +74,6 @@ export default function DocumentReviewPage() {
 
   // ─── Data Loading ───────────────────────────────────────────────────────
 
-  useEffect(() => {
-    if (!user) return;
-    loadDocuments();
-  }, [user]);
-
   async function getToken() {
     return user!.firebaseUser.getIdToken();
   }
@@ -131,6 +126,11 @@ export default function DocumentReviewPage() {
     }
     setLoading(false);
   }
+
+  useEffect(() => {
+    if (!user) return;
+    loadDocuments();
+  }, [user]);
 
   async function loadPlanDetail(doc: DocRecord) {
     if (!doc.linked_insurance_plan_id || planDetails.has(doc.id)) return;
@@ -279,6 +279,7 @@ export default function DocumentReviewPage() {
     return `${(bytes / 1048576).toFixed(1)} MB`;
   }
 
+  /* eslint-disable react-hooks/purity */
   function formatDuration(createdAt: string): string {
     const ms = Date.now() - new Date(createdAt).getTime();
     const mins = Math.floor(ms / 60000);
@@ -288,6 +289,7 @@ export default function DocumentReviewPage() {
     if (hrs < 24) return `${hrs}h ago`;
     return `${Math.floor(hrs / 24)}d ago`;
   }
+  /* eslint-enable react-hooks/purity */
 
   // ─── Render ─────────────────────────────────────────────────────────────
 

@@ -198,6 +198,30 @@ export async function POST(req: NextRequest) {
 
     const auditReport = await runAudit(parsedBill);
 
+    // Persist audit results to claims + claim_line_items tables
+    let claimId: string | null = null;
+    try {
+      const { persistAuditResults } = await import("@/lib/claims/persist");
+
+      // Get user's active insurance plan for linking
+      const { data: profileForClaim } = await supabase
+        .from("profiles")
+        .select("active_insurance_plan_id")
+        .eq("user_id", doc.user_id)
+        .single();
+
+      const persistResult = await persistAuditResults(supabase, {
+        userId: doc.user_id,
+        insurancePlanId: profileForClaim?.active_insurance_plan_id || undefined,
+        documentId,
+        parsedBill,
+        auditReport,
+      });
+      claimId = persistResult?.claimId || null;
+    } catch (err) {
+      console.error("[claims-persist] Failed to persist audit results (non-fatal):", err);
+    }
+
     // Collect anonymized pricing data for Candid Care (non-blocking)
     let pricingCollected = 0;
     try {
@@ -225,6 +249,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       report: auditReport,
+      claimId,
       pricingDataCollected: pricingCollected,
       classification: {
         classifiedType: classification.classifiedType,

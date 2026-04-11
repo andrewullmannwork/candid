@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Resend } from "resend";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 const RESEND_API_BASE = "https://api.resend.com";
 
 export async function POST(req: NextRequest) {
@@ -40,6 +40,9 @@ export async function POST(req: NextRequest) {
       console.error("[email-forward] Missing email_id or API key. email_id:", email_id, "hasKey:", !!process.env.RESEND_API_KEY);
     }
 
+    if (!resend) {
+      return NextResponse.json({ error: "Email service not configured" }, { status: 503 });
+    }
     await resend.emails.send({
       from: "forward@candidclaim.com",
       to: "andrew.david.ullmann@gmail.com",

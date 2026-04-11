@@ -51,10 +51,6 @@ export default function AdminSbcTicketsPage() {
   const [newNote, setNewNote] = useState("");
   const { query, update } = useAdminQuery();
 
-  useEffect(() => {
-    loadTickets();
-  }, []);
-
   async function loadTickets() {
     try {
       const data = await query({
@@ -67,6 +63,12 @@ export default function AdminSbcTicketsPage() {
     }
     setLoading(false);
   }
+
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    loadTickets();
+  }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   async function updateStatus(id: string, newStatus: string) {
     try {
