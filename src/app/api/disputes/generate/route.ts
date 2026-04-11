@@ -28,9 +28,13 @@ export async function POST(req: NextRequest) {
 
       const letter = generateDisputeLetter(auditReport, findingIds, letterType);
 
-      // Persist dispute to database
+      // Persist dispute to database (feature-flagged)
       let disputeId: string | null = null;
       try {
+        const { isFeatureEnabled } = await import("@/lib/config/product-flags");
+        const disputeTrackingEnabled = await isFeatureEnabled("dispute_tracking");
+        if (!disputeTrackingEnabled) throw new Error("feature_disabled");
+
         const supabase = createServerClient();
         const selectedFindings = auditReport.findings.filter((f) => findingIds.includes(f.id));
         const totalDisputed = selectedFindings.reduce((sum, f) => sum + f.estimatedOvercharge, 0);
@@ -44,7 +48,9 @@ export async function POST(req: NextRequest) {
         });
         disputeId = result?.disputeId || null;
       } catch (err) {
-        console.error("[disputes] Failed to persist dispute (non-fatal):", err);
+        if (err instanceof Error && err.message !== "feature_disabled") {
+          console.error("[disputes] Failed to persist dispute (non-fatal):", err);
+        }
       }
 
       return NextResponse.json({ success: true, letter, disputeId });
