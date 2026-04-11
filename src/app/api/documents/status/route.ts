@@ -84,6 +84,72 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true });
   }
 
+  // Confirm canonical plan match (user verified the matched plan is correct)
+  if (action === "confirm_canonical_match") {
+    const { data: doc } = await supabase
+      .from("documents")
+      .select("linked_insurance_plan_id, insurer_mismatch")
+      .eq("id", documentId)
+      .single();
+
+    const pendingMatch = doc?.insurer_mismatch?.pending_canonical_match;
+    if (!doc?.linked_insurance_plan_id || !pendingMatch) {
+      return NextResponse.json({ error: "No pending canonical match" }, { status: 400 });
+    }
+
+    try {
+      const { confirmCanonicalMatch } = await import("@/lib/plan/canonical-match");
+      await confirmCanonicalMatch(supabase, doc.linked_insurance_plan_id, pendingMatch.canonicalPlanId);
+
+      // Clear the pending match from document metadata
+      const updatedMismatch = { ...(doc.insurer_mismatch || {}) };
+      delete updatedMismatch.pending_canonical_match;
+      await supabase.from("documents").update({
+        insurer_mismatch: Object.keys(updatedMismatch).length > 0 ? updatedMismatch : null,
+      }).eq("id", documentId);
+
+      return NextResponse.json({ success: true, canonicalPlanId: pendingMatch.canonicalPlanId });
+    } catch (err) {
+      console.error("[canonical-plan] Confirm failed:", err);
+      return NextResponse.json({ error: "Failed to confirm canonical match" }, { status: 500 });
+    }
+  }
+
+  // Reject canonical plan match (user says this isn't their plan)
+  if (action === "reject_canonical_match") {
+    const { data: doc } = await supabase
+      .from("documents")
+      .select("linked_insurance_plan_id, insurer_mismatch")
+      .eq("id", documentId)
+      .single();
+
+    const pendingMatch = doc?.insurer_mismatch?.pending_canonical_match;
+    if (!doc?.linked_insurance_plan_id || !pendingMatch) {
+      return NextResponse.json({ error: "No pending canonical match" }, { status: 400 });
+    }
+
+    try {
+      const { rejectCanonicalMatch } = await import("@/lib/plan/canonical-match");
+      const newCanonicalId = await rejectCanonicalMatch(
+        supabase,
+        doc.linked_insurance_plan_id,
+        pendingMatch.canonicalPlanId
+      );
+
+      // Clear the pending match from document metadata
+      const updatedMismatch = { ...(doc.insurer_mismatch || {}) };
+      delete updatedMismatch.pending_canonical_match;
+      await supabase.from("documents").update({
+        insurer_mismatch: Object.keys(updatedMismatch).length > 0 ? updatedMismatch : null,
+      }).eq("id", documentId);
+
+      return NextResponse.json({ success: true, canonicalPlanId: newCanonicalId });
+    } catch (err) {
+      console.error("[canonical-plan] Reject failed:", err);
+      return NextResponse.json({ error: "Failed to reject canonical match" }, { status: 500 });
+    }
+  }
+
   // Default: trigger the next processing chunk
   const chunkUrl = new URL("/api/documents/process-chunk", req.url);
   try {

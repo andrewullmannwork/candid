@@ -85,7 +85,7 @@ function UploadForm() {
     step: string | null;
     completedPages: number;
     totalPages: number;
-    insurerMismatch?: { mismatch: boolean; type?: "insurer" | "plan_name"; existingInsurer?: string; parsedInsurer?: string; existingPlanName?: string; parsedPlanName?: string } | null;
+    insurerMismatch?: { mismatch: boolean; type?: "insurer" | "plan_name"; existingInsurer?: string; parsedInsurer?: string; existingPlanName?: string; parsedPlanName?: string; pending_canonical_match?: { canonicalPlanId: string; matchedPlanName: string; confidence: number; sourceCount: number; insurerName: string } } | null;
   } | null>(null);
 
   // Rotating status message index — increments every 15s during processing
@@ -139,8 +139,8 @@ function UploadForm() {
 
         if (data.status === "processed") {
           active = false;
-          if (data.insurerMismatch?.mismatch) {
-            // Mismatch detected — show prompt instead of redirecting
+          if (data.insurerMismatch?.mismatch || data.insurerMismatch?.pending_canonical_match) {
+            // Mismatch or canonical match confirmation needed — show prompt
             setProcessingProgress(data);
           } else {
             // No mismatch — redirect to plan page
@@ -369,9 +369,10 @@ function UploadForm() {
     const isPendingReview = uploadStatus === "pending_review";
     const isUploading = uploadStatus === "uploading";
     const isProcessing = uploadStatus === "auto_processed" && processingProgress?.status !== "processed" && processingProgress?.status !== "error";
-    const isComplete = processingProgress?.status === "processed" && !processingProgress?.insurerMismatch?.mismatch;
+    const isComplete = processingProgress?.status === "processed" && !processingProgress?.insurerMismatch?.mismatch && !processingProgress?.insurerMismatch?.pending_canonical_match;
     const isError = processingProgress?.status === "error";
     const hasMismatch = processingProgress?.status === "processed" && processingProgress?.insurerMismatch?.mismatch;
+    const hasCanonicalMatch = processingProgress?.status === "processed" && !processingProgress?.insurerMismatch?.mismatch && !!processingProgress?.insurerMismatch?.pending_canonical_match;
     const isPlanType = docType === "sbc" || docType === "plan_document";
 
     // Calculate unified progress: upload (0-30%), analysis (30-100%)
@@ -632,6 +633,68 @@ function UploadForm() {
                     className="w-full py-2.5 border border-gray-200 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
                   >
                     Keep my current plan
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Canonical plan match confirmation */}
+          {hasCanonicalMatch && processingProgress?.insurerMismatch?.pending_canonical_match && (() => {
+            const cm = processingProgress.insurerMismatch!.pending_canonical_match!;
+            return (
+              <div className="mb-5 p-5 bg-indigo-50 border border-indigo-200 rounded-2xl">
+                <p className="text-sm font-semibold text-gray-900 mb-3">
+                  We found a matching plan record
+                </p>
+
+                <div className="p-3 bg-white border border-indigo-200 rounded-xl mb-4">
+                  <p className="text-[10px] font-semibold text-indigo-500 uppercase tracking-wide">Matched plan</p>
+                  <p className="text-sm font-medium text-gray-900 mt-0.5">{cm.matchedPlanName}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">{cm.insurerName}</p>
+                  {cm.sourceCount > 1 && (
+                    <p className="text-xs text-indigo-600 mt-1">{cm.sourceCount} other member{cm.sourceCount === 1 ? "" : "s"} uploaded this plan</p>
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <button
+                    onClick={async () => {
+                      try {
+                        const res = await fetch("/api/documents/status", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ documentId, action: "confirm_canonical_match" }),
+                        });
+                        if (!res.ok) console.error("Canonical confirm failed:", await res.text());
+                        window.location.href = "/plan";
+                      } catch (err) {
+                        console.error("Canonical confirm error:", err);
+                        setError("Failed to confirm plan match. Please try again.");
+                      }
+                    }}
+                    className="w-full py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-colors"
+                  >
+                    Yes, this is my plan
+                  </button>
+                  <button
+                    onClick={async () => {
+                      try {
+                        const res = await fetch("/api/documents/status", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ documentId, action: "reject_canonical_match" }),
+                        });
+                        if (!res.ok) console.error("Canonical reject failed:", await res.text());
+                        window.location.href = "/plan";
+                      } catch (err) {
+                        console.error("Canonical reject error:", err);
+                        setError("Failed to process. Please try again.");
+                      }
+                    }}
+                    className="w-full py-2.5 border border-gray-200 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
+                  >
+                    No, different plan
                   </button>
                 </div>
               </div>

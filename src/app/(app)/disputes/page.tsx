@@ -235,6 +235,16 @@ function DisputesContent() {
           </li>
         </ol>
       </div>
+
+      {/* Dispute tracking */}
+      <div className="bg-white rounded-lg shadow p-5 mt-4">
+        <h3 className="font-semibold mb-2">Track This Dispute</h3>
+        <p className="text-sm text-gray-500 mb-3">
+          Track the outcome of this dispute on the{" "}
+          <a href="/claim" className="text-blue-600 hover:underline">Claims page</a>.
+          Recording outcomes helps Candid calculate success rates and helps other users with similar disputes.
+        </p>
+      </div>
     </div>
   );
 }

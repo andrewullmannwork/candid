@@ -27,7 +27,7 @@ const SERVICE_CATEGORY_LABELS: Record<string, string> = {
 // ── Extended API response type ─────────────────────────────────────────────────
 
 interface AnalyzeResponse extends PlanAnalysisResult {
-  dataSource: "user_plan" | "matched_plan" | "cms_api" | "verified_plan" | "static_catalog";
+  dataSource: "user_plan" | "user_plan_with_canonical" | "matched_plan" | "cms_api" | "verified_plan" | "static_catalog";
   planName?: string;
   insurer?: string;
   planType?: string;
@@ -187,6 +187,24 @@ function DataSourceBanner({ dataSource, planName, planType, insurer, verificatio
       title="Results based on your insurance card"
       subtitle="Upload your plan document for more complete results."
     />;
+  }
+
+  if (dataSource === "user_plan_with_canonical") {
+    return (
+      <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-xl flex items-start gap-3">
+        <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center shrink-0 mt-0.5">
+          <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-green-900">Results based on your uploaded document</p>
+          <p className="text-xs text-green-700 mt-0.5">
+            Some benefits include coverage details from other members on the same plan.
+          </p>
+        </div>
+      </div>
+    );
   }
 
   if (dataSource === "matched_plan" || dataSource === "cms_api") {

@@ -170,13 +170,73 @@ export async function POST(request: Request) {
             };
           });
 
+          // ── Canonical plan gap-fill ─────────────────────────────────────
+          // If this user's plan is linked to a canonical plan, fetch services
+          // from the canonical plan that the user doesn't have yet (from
+          // other users' uploads of the same plan).
+          const userSlugs = new Set(coveredServices.map((s) => s.service_catalog?.slug).filter(Boolean));
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let canonicalGapBenefits: any[] = [];
+
+          if (userPlan.canonical_plan_id) {
+            const { data: canonicalServices } = await supabase
+              .from("canonical_plan_services")
+              .select("*")
+              .eq("canonical_plan_id", userPlan.canonical_plan_id);
+
+            if (canonicalServices) {
+              const gapServices = canonicalServices.filter(
+                (cs) => cs.service_slug && !userSlugs.has(cs.service_slug)
+              );
+
+              canonicalGapBenefits = gapServices.map((cs) => ({
+                benefit: {
+                  id: cs.service_slug || cs.id,
+                  category: "other",
+                  title: (cs.service_slug || "").replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase()),
+                  description: cs.is_covered === false
+                    ? "Not covered under this plan."
+                    : [
+                        cs.copay != null ? `$${cs.copay} copay` : null,
+                        cs.coinsurance != null && cs.coinsurance > 0 ? `${Math.round(cs.coinsurance * 100)}% coinsurance` : null,
+                        cs.deductible_applies ? "after deductible" : null,
+                      ].filter(Boolean).join(", ") || "Covered",
+                  whyUnderutilized: "",
+                  howToAccess: cs.is_covered === false ? "" : "Contact your insurer for details.",
+                  hsaFsaEligible: false,
+                  planTypes: [userPlan.plan_type || ""],
+                },
+                categoryLabel: "other",
+                relevanceNote: "Coverage details from other plan members",
+                relevanceScore: 70,
+                isRecommended: cs.is_covered !== false,
+                costSharing: {
+                  inNetwork: {
+                    copay: cs.is_covered === false ? null : cs.copay,
+                    coinsurance: cs.is_covered === false ? null : cs.coinsurance,
+                    deductibleApplies: cs.is_covered === false ? false : cs.deductible_applies,
+                    costDescription: cs.is_covered === false ? "Not covered" : "",
+                  },
+                  outOfNetwork: { copay: null, coinsurance: null, deductibleApplies: false, costDescription: "" },
+                  annualLimit: cs.annual_limit ? String(cs.annual_limit) : null,
+                  priorAuthRequired: cs.requires_prior_auth,
+                  penaltyNoPrecert: null,
+                },
+                covered: cs.is_covered,
+                dataSource: "canonical_plan",
+              }));
+            }
+          }
+
+          const allBenefits = [...benefits, ...canonicalGapBenefits];
+
           return NextResponse.json({
-            benefits,
+            benefits: allBenefits,
             categoryCounts: {},
-            totalBenefits: benefits.length,
+            totalBenefits: allBenefits.length,
             profileComplete: true,
             missingFields: [],
-            dataSource: "user_plan",
+            dataSource: canonicalGapBenefits.length > 0 ? "user_plan_with_canonical" : "user_plan",
             planName: userPlan.plan_name,
             planSource: userPlan.source,
             planSummary: {

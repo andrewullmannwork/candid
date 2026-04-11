@@ -3,6 +3,8 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { generateDisputeLetter, generateItemizedBillRequest } from "@/lib/disputes";
+import { persistDisputeLetter } from "@/lib/disputes/persist";
+import { createServerClient } from "@/lib/supabase/server";
 import type { AuditReport, DisputeLetterType } from "@/lib/billing/types";
 
 export async function POST(req: NextRequest) {
@@ -25,7 +27,27 @@ export async function POST(req: NextRequest) {
       }
 
       const letter = generateDisputeLetter(auditReport, findingIds, letterType);
-      return NextResponse.json({ success: true, letter });
+
+      // Persist dispute to database
+      let disputeId: string | null = null;
+      try {
+        const supabase = createServerClient();
+        const selectedFindings = auditReport.findings.filter((f) => findingIds.includes(f.id));
+        const totalDisputed = selectedFindings.reduce((sum, f) => sum + f.estimatedOvercharge, 0);
+
+        const result = await persistDisputeLetter(supabase, {
+          userId: auditReport.userId,
+          claimId: body.claimId || undefined,
+          claimLineItemIds: body.claimLineItemIds || undefined,
+          letterType: letterType || "overcharge",
+          amountDisputed: totalDisputed,
+        });
+        disputeId = result?.disputeId || null;
+      } catch (err) {
+        console.error("[disputes] Failed to persist dispute (non-fatal):", err);
+      }
+
+      return NextResponse.json({ success: true, letter, disputeId });
     }
 
     // Case 2: Generate itemized bill request (no audit needed)
