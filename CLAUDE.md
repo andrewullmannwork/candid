@@ -1,5 +1,16 @@
 @AGENTS.md
 
+# Platform Context
+
+Before starting any work, review the platform context to understand WHY we're building:
+- **Full context:** `/Users/andrewullmann/Desktop/du_weldenvarden/04_Professional/Airgetlam Labs LLC/Candid/Candid_Context.md`
+- **Initiative tracker:** `/Users/andrewullmann/Desktop/du_weldenvarden/04_Professional/Airgetlam Labs LLC/Candid/Candid_Todos.md`
+- **Detailed plans:** `/Users/andrewullmann/Desktop/du_weldenvarden/04_Professional/Airgetlam Labs LLC/Candid/plans/`
+
+Candid is "RocketMoney for medical debt" — audits overpayments, reveals hidden benefits, drafts dispute letters, connects to lawyers, surfaces where care is cheapest. Every implementation decision must serve one of the 17 platform flows defined in Candid_Context.md. If a feature doesn't map to a user need in that document, question whether it belongs.
+
+Key principles: upload-first not form-first, show value before paywall, every interaction enriches the data flywheel, the user always sends their own letters (CROA), old plan data is never deleted (claims reference it).
+
 # Candid Development Rules
 
 ## Mandatory Local Verification (Before Every PR)
