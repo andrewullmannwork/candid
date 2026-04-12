@@ -155,8 +155,9 @@ function DataSourceBanner({ dataSource, planName, planType, insurer, verificatio
 }) {
 
   if (dataSource === "user_plan") {
-    // SBC or plan document upload → green
-    if (planSource === "sbc_upload" || planSource === "plan_doc_upload") {
+    // SBC or plan document upload, or verified plan → green
+    const isVerified = verificationStatus && verificationStatus !== "unverified";
+    if (planSource === "sbc_upload" || planSource === "plan_doc_upload" || isVerified) {
       return (
         <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-xl flex items-start gap-3">
           <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center shrink-0 mt-0.5">

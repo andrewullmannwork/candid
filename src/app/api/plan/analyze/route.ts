@@ -242,11 +242,13 @@ export async function POST(request: Request) {
           }
 
           const allBenefits = [...benefits, ...canonicalGapBenefits];
+          const coveredCount = allBenefits.filter((b) => b.covered !== false).length;
 
           return NextResponse.json({
             benefits: allBenefits,
             categoryCounts: {},
-            totalBenefits: allBenefits.length,
+            totalBenefits: coveredCount,
+            totalNotCovered: allBenefits.length - coveredCount,
             profileComplete: true,
             missingFields: [],
             dataSource: canonicalGapBenefits.length > 0 ? "user_plan_with_canonical" : "user_plan",
