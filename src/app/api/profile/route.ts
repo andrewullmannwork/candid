@@ -110,6 +110,13 @@ export async function POST(req: NextRequest) {
     dependents,
     matched_plan_id,
     plan_source,
+    // Address / county (migration 026)
+    address_line1,
+    address_line2,
+    city,
+    zip_code,
+    county_fips,
+    county_name,
   } = body;
 
   const supabase = createServerClient();
@@ -164,6 +171,13 @@ export async function POST(req: NextRequest) {
   if (phone !== undefined) update.phone = phone || null;
   if (matched_plan_id !== undefined) update.matched_plan_id = matched_plan_id || null;
   if (plan_source !== undefined) update.plan_source = plan_source || null;
+  // Address / county fields
+  if (address_line1 !== undefined) update.address_line1 = address_line1 || null;
+  if (address_line2 !== undefined) update.address_line2 = address_line2 || null;
+  if (city !== undefined) update.city = city || null;
+  if (zip_code !== undefined) update.zip_code = zip_code || null;
+  if (county_fips !== undefined) update.county_fips = county_fips || null;
+  if (county_name !== undefined) update.county_name = county_name || null;
   if (dependents !== undefined) {
     try {
       update.dependents = typeof dependents === "string" ? JSON.parse(dependents) : dependents;
@@ -218,7 +232,22 @@ export async function POST(req: NextRequest) {
       if (out_oop_max_individual !== undefined) planUpdate.out_oop_max_individual = toNum(out_oop_max_individual);
       if (out_oop_max_family !== undefined) planUpdate.out_oop_max_family = toNum(out_oop_max_family);
       if (coinsurance_pct !== undefined) planUpdate.in_coinsurance_default = coinsurance_pct ? coinsurance_pct / 100 : null;
-      if (matched_plan_id !== undefined) planUpdate.matched_catalog_plan_id = matched_plan_id || null;
+      if (matched_plan_id !== undefined) {
+        planUpdate.matched_catalog_plan_id = matched_plan_id || null;
+        // Look up hios_id from plan_catalog for county-aware resolution
+        if (matched_plan_id) {
+          try {
+            const { data: catalogPlan } = await supabase
+              .from("plan_catalog")
+              .select("hios_id")
+              .eq("id", matched_plan_id)
+              .single();
+            if (catalogPlan?.hios_id) {
+              planUpdate.hios_id = catalogPlan.hios_id;
+            }
+          } catch { /* non-critical */ }
+        }
+      }
       if (plan_source !== undefined) {
         // Map plan_source to a valid source if it's a recognized value
         const validSources = ["sbc_upload", "plan_doc_upload", "catalog_match", "manual", "insurance_card"];

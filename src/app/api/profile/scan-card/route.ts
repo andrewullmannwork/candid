@@ -36,6 +36,7 @@ export interface InsuranceCardFields {
   rxGroup?: string;
   networkName?: string;
   insurerPhone?: string;
+  zipCode?: string;
   rawText: string;
 }
 
@@ -331,6 +332,28 @@ function parseInsuranceCard(rawText: string): InsuranceCardFields {
   const coinsuranceMatch = text.match(/coinsurance[:\s]*(\d{1,3})\s*%/i);
   if (coinsuranceMatch) {
     result.coinsurancePct = parseInt(coinsuranceMatch[1], 10);
+  }
+
+  // ── Zip code ─────────────────────────────────────────────────────────────
+  // Extract 5-digit zip codes — look for address-context patterns first,
+  // then fall back to any standalone 5-digit number
+  const zipCtx = text.match(/(?:,\s*[A-Z]{2}\s+)(\d{5})(?:\b|-\d{4})/);
+  if (zipCtx) {
+    result.zipCode = zipCtx[1];
+  } else {
+    const zipAll = text.match(/\b(\d{5})\b/g);
+    if (zipAll) {
+      // Filter out amounts and known numeric fields
+      const knownNums = new Set([
+        result.rxBin, result.rxPcn,
+      ].filter(Boolean));
+      for (const z of zipAll) {
+        if (!knownNums.has(z) && parseInt(z) >= 501 && parseInt(z) <= 99950) {
+          result.zipCode = z;
+          break;
+        }
+      }
+    }
   }
 
   // ── Second pass: loose patterns for missing critical fields ──────────────

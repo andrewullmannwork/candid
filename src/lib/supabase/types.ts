@@ -98,6 +98,13 @@ export interface ProfileRow {
   sex: "male" | "female" | "prefer_not_to_say" | null;
   phone: string | null;
   dependents: unknown; // JSONB: [{ name, relationship, date_of_birth, sex, on_same_plan }]
+  // Address / county (migration 026)
+  address_line1: string | null;
+  address_line2: string | null;
+  city: string | null;
+  zip_code: string | null;
+  county_fips: string | null;
+  county_name: string | null;
   // Plan matching (deprecated — use insurance_plans)
   matched_plan_id: string | null;
   plan_source: string | null;
@@ -205,6 +212,7 @@ export interface InsurancePlanRow {
   source: InsurancePlanSource;
   source_document_id: string | null;
   matched_catalog_plan_id: string | null;
+  hios_id: string | null; // migration 026 — links to plan_catalog county variant
   confidence: number;
   // Verification
   verification_status: VerificationStatus;

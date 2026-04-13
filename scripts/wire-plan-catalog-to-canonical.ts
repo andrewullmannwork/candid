@@ -343,6 +343,14 @@ async function main() {
       }
     }
 
+    // Step 1b: Record plan_catalog → canonical_plan mapping
+    await supabase
+      .from("plan_catalog_canonical_map")
+      .upsert(
+        { plan_catalog_id: plan.id, canonical_plan_id: canonicalPlanId },
+        { onConflict: "plan_catalog_id,canonical_plan_id" }
+      );
+
     // Step 2: Map CMS benefits → canonical_plan_services
     const serviceInserts = [];
 
@@ -421,6 +429,7 @@ async function main() {
 
   console.log(`\n\n✅ Wiring complete`);
   console.log(`   Canonical plans: ${canonicalCreated} created, ${canonicalExisting} existing`);
+  console.log(`   Catalog→canonical mappings: ${plans.length} (plan_catalog_canonical_map)`);
   console.log(`   Services wired: ${servicesCreated}`);
   console.log(`   Services skipped: ${servicesSkipped}`);
 
