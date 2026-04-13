@@ -33,16 +33,15 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 // CMS API config
 const CMS_API_BASE = "https://marketplace.api.healthcare.gov/api/v1";
 const CMS_API_KEY = process.env.CMS_API_KEY || "d687412e7b53146b2631dc01974ad0a4";
-const PLAN_YEAR = 2025; // Current plan year
+const PLAN_YEAR = new Date().getFullYear(); // Derives from current year
 
-// FFM states (use the federal marketplace, not state-based exchanges)
+// FFM states — verified to return data from the CMS Marketplace API (2026).
+// States with their own exchanges (GA, IL, ME, KY, NM, NV) are NOT served by this API.
 const FFM_STATES = [
-  "AL", "AK", "AR", "AZ", "DE", "FL", "GA", "HI", "IL", "IN",
-  "IA", "KS", "LA", "ME", "MI", "MS", "MO", "MT", "NE", "NH",
+  "AL", "AK", "AR", "AZ", "DE", "FL", "HI", "IN",
+  "IA", "KS", "LA", "MI", "MS", "MO", "MT", "NE", "NH",
   "NC", "ND", "OH", "OK", "OR", "SC", "SD", "TN", "TX", "UT",
   "WI", "WV", "WY",
-  // These states use healthcare.gov for plan search but have their own exchanges:
-  "AR", "KY", "NM", "NV",
 ];
 
 // Deduplicate
@@ -131,111 +130,73 @@ const STATE_FIPS: Record<string, string> = {
   WY: "56",
 };
 
-// Fallback zip codes for CMS API calls (one per state, major city)
-const STATE_ZIPS: Record<string, string> = {
-  AL: "35203", AK: "99501", AR: "72201", AZ: "85001", DE: "19901",
-  FL: "33101", GA: "30301", HI: "96801", IL: "60601", IN: "46201",
-  IA: "50301", KS: "66601", KY: "40201", LA: "70112", ME: "04101",
-  MI: "48201", MN: "55401", MS: "39201", MO: "63101", MT: "59601",
-  NE: "68501", NH: "03301", NC: "27601", ND: "58501", NM: "87101",
-  NV: "89101", OH: "43201", OK: "73101", OR: "97201", SC: "29201",
-  SD: "57501", TN: "37201", TX: "77001", UT: "84101", WI: "53201",
-  WV: "25301", WY: "82001",
-};
-
-/** Get all counties for a state via US Census Bureau API */
-async function getCountiesForState(state: string): Promise<County[]> {
-  const stateFips = STATE_FIPS[state];
-  if (!stateFips) {
-    console.warn(`  No FIPS code for state ${state}`);
-    return [];
-  }
-
-  try {
-    const url = `https://api.census.gov/data/2020/dec/pl?get=NAME&for=county:*&in=state:${stateFips}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Census API ${res.status}`);
-    const data: string[][] = await res.json();
-
-    // data[0] is header: ["NAME", "state", "county"]
-    // data[1+] are rows: ["Harris County, Texas", "48", "201"]
-    return data.slice(1).map((row) => ({
-      fips: row[1] + row[2], // state FIPS + county FIPS = 5-digit FIPS
-      name: row[0].split(",")[0], // "Harris County, Texas" → "Harris County"
-      state,
-      zipcode: STATE_ZIPS[state] || "", // fallback zip for API calls
-    }));
-  } catch (err) {
-    console.warn(`  Census API failed for ${state}: ${err}`);
-    // Fallback to single-zip lookup
-    const zip = STATE_ZIPS[state];
-    if (!zip) return [];
-    try {
-      const url = `${CMS_API_BASE}/counties/by/zip/${zip}?apikey=${CMS_API_KEY}`;
-      const data = await fetchJSON(url);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (data.counties || []).map((c: any) => ({
-        fips: c.fips,
-        name: c.name,
-        state: c.state,
-        zipcode: zip,
-      }));
-    } catch {
-      return [];
-    }
-  }
-}
+// Reverse lookup: FIPS state code → state abbreviation
+const FIPS_TO_STATE: Record<string, string> = Object.fromEntries(
+  Object.entries(STATE_FIPS).map(([k, v]) => [v, k])
+);
 
 /**
- * Build a FIPS→zipcode map for a state by probing zip codes.
- * The CMS counties/by/zip endpoint returns county FIPS for each zip.
- * We generate candidate zips from the state's zip prefix ranges.
+ * Load Census ZCTA-to-County crosswalk file.
+ * Returns a map: county FIPS → zip code (one zip per county).
+ * Source: https://www2.census.gov/geo/docs/maps-data/data/rel2020/zcta520/
  */
-const STATE_ZIP_RANGES: Record<string, number[][]> = {
-  AL: [[350,369]], AK: [[995,999]], AZ: [[850,865]], AR: [[716,729]],
-  DE: [[197,199]], FL: [[320,349]], GA: [[300,319],[398,399]],
-  HI: [[967,968]], IL: [[600,629]], IN: [[460,479]],
-  IA: [[500,528]], KS: [[660,679]], KY: [[400,427]],
-  LA: [[700,714]], ME: [[39,49]], MI: [[480,499]],
-  MS: [[386,397]], MO: [[630,658]], MT: [[590,599]],
-  NE: [[680,693]], NH: [[30,38]], NC: [[270,289]],
-  ND: [[580,588]], NM: [[870,884]], NV: [[889,898]],
-  OH: [[430,459]], OK: [[730,749]], OR: [[970,979]],
-  SC: [[290,299]], SD: [[570,577]], TN: [[370,385]],
-  TX: [[750,799],[885,885]], UT: [[840,847]], WI: [[530,549]],
-  WV: [[247,268]], WY: [[820,831]],
-};
+import { readFileSync } from "fs";
 
-async function buildFipsZipMap(state: string): Promise<Map<string, string>> {
-  const fipsToZip = new Map<string, string>();
-  const ranges = STATE_ZIP_RANGES[state];
-  if (!ranges) return fipsToZip;
+let _crosswalkCache: Map<string, { zip: string; name: string; state: string }> | null = null;
 
-  // Sample every 3rd zip prefix to cover the state efficiently
-  const prefixes: number[] = [];
-  for (const [lo, hi] of ranges) {
-    for (let p = lo; p <= hi; p += 3) prefixes.push(p);
-    // Always include the last prefix
-    if (!prefixes.includes(hi)) prefixes.push(hi);
-  }
+function loadCrosswalk(): Map<string, { zip: string; name: string; state: string }> {
+  if (_crosswalkCache) return _crosswalkCache;
 
-  for (const prefix of prefixes) {
-    const zip = String(prefix).padStart(3, "0") + "01";
-    try {
-      const url = `${CMS_API_BASE}/counties/by/zip/${zip}?apikey=${CMS_API_KEY}`;
-      const data = await fetchJSON(url);
-      for (const c of data.counties || []) {
-        if (!fipsToZip.has(c.fips)) {
-          fipsToZip.set(c.fips, zip);
-        }
-      }
-      await sleep(100);
-    } catch {
-      // Skip invalid zips
+  const filePath = resolve(__dirname, "data/zcta_county_crosswalk.txt");
+  const raw = readFileSync(filePath, "utf-8");
+  const lines = raw.split("\n");
+
+  // county FIPS → { zip, name, state }
+  const fipsMap = new Map<string, { zip: string; name: string; state: string }>();
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split("|");
+    const zcta = cols[1]?.trim(); // GEOID_ZCTA5_20 (zip code)
+    const countyFips = cols[9]?.trim(); // GEOID_COUNTY_20 (5-digit FIPS)
+    const countyName = cols[10]?.trim(); // NAMELSAD_COUNTY_20
+
+    if (!zcta || !countyFips || zcta.length !== 5 || countyFips.length !== 5) continue;
+
+    // Only store the first (largest area) zip per county
+    if (!fipsMap.has(countyFips)) {
+      const stateFips = countyFips.slice(0, 2);
+      const stateAbbr = FIPS_TO_STATE[stateFips] || "";
+      fipsMap.set(countyFips, {
+        zip: zcta,
+        name: countyName || "",
+        state: stateAbbr,
+      });
     }
   }
 
-  return fipsToZip;
+  _crosswalkCache = fipsMap;
+  return fipsMap;
+}
+
+/** Get all counties for a state from the Census crosswalk file */
+function getCountiesForState(state: string): County[] {
+  const crosswalk = loadCrosswalk();
+  const stateFips = STATE_FIPS[state];
+  if (!stateFips) return [];
+
+  const counties: County[] = [];
+  for (const [fips, data] of crosswalk) {
+    if (fips.startsWith(stateFips)) {
+      counties.push({
+        fips,
+        name: data.name,
+        state,
+        zipcode: data.zip,
+      });
+    }
+  }
+
+  return counties;
 }
 
 /** Fetch all plans for a given county */
@@ -365,12 +326,17 @@ async function upsertPlan(plan: CMSPlan, insurerId: string, county: string, fips
       oop_max_individual: oopMax,
       hsa_eligible: plan.hsa_eligible,
       quality_rating: plan.quality_rating?.global_rating,
-      benefits_summary: plan.benefits?.map((b) => ({
-        type: b.type,
-        name: b.name,
-        covered: b.covered,
-        in_network: b.cost_sharings?.find((cs) => cs.network_tier === "In-Network")?.display_string,
-      })),
+      benefits_summary: plan.benefits?.map((b) => {
+        const inNetwork = b.cost_sharings?.find((cs) => cs.network_tier === "In-Network");
+        return {
+          type: b.type,
+          name: b.name,
+          covered: b.covered,
+          in_network: inNetwork?.display_string || null,
+          copay_amount: inNetwork?.copay_amount ?? null,
+          coinsurance_rate: inNetwork?.coinsurance_rate ?? null,
+        };
+      }),
     },
   };
 
@@ -437,13 +403,7 @@ async function main() {
 
     console.log(`  ${counties.length} county(ies) found`);
 
-    // Build FIPS→zip mapping unless in test mode
-    let fipsZipMap = new Map<string, string>();
-    if (!testMode) {
-      console.log(`  Building zip code map for ${state}...`);
-      fipsZipMap = await buildFipsZipMap(state);
-      console.log(`  Mapped ${fipsZipMap.size} counties to zip codes`);
-    }
+    // Crosswalk already provides zip per county — no probing needed
 
     // In test mode, only process first county
     const countiesToProcess = testMode ? [counties[0]] : counties;
@@ -454,8 +414,8 @@ async function main() {
     for (let i = 0; i < countiesToProcess.length; i++) {
       const county = countiesToProcess[i];
       try {
-        // Get a valid zipcode for this county
-        const zip = fipsZipMap.get(county.fips) || county.zipcode || STATE_ZIPS[state];
+        // Zip comes from Census crosswalk — already validated per county
+        const zip = county.zipcode;
         if (!zip) {
           countiesSkipped++;
           continue;

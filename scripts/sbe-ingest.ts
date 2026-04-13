@@ -31,7 +31,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const CMS_API_BASE = "https://marketplace.api.healthcare.gov/api/v1";
 const CMS_API_KEY = process.env.CMS_API_KEY || "d687412e7b53146b2631dc01974ad0a4";
-const PLAN_YEAR = 2025;
+const PLAN_YEAR = new Date().getFullYear();
 
 // States that SHOULD be in plan_catalog but may be missing or incomplete
 // FFM states + SBE-FFM states (use healthcare.gov API for plan search)

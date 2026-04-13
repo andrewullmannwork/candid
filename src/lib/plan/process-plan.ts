@@ -304,6 +304,23 @@ export async function processPlanDocumentData(
           await supabase.from("insurance_plans")
             .update({ canonical_plan_id: canonicalPlanId })
             .eq("id", targetPlanId);
+
+          // Copy premium data from insurance_plans to canonical_plans if available
+          if (planInsert.premium_total || planInsert.premium_employee) {
+            const premiumMonthly = planInsert.premium_frequency === "monthly"
+              ? (planInsert.premium_employee || planInsert.premium_total)
+              : planInsert.premium_frequency === "biweekly"
+                ? ((planInsert.premium_employee || planInsert.premium_total || 0) * 26 / 12)
+                : null;
+
+            if (premiumMonthly) {
+              await supabase.from("canonical_plans")
+                .update({ premium_monthly: premiumMonthly, updated_at: new Date().toISOString() })
+                .eq("id", canonicalPlanId)
+                .is("premium_monthly", null); // Only fill if not already set
+            }
+          }
+
           console.log(`[canonical-plan] Auto-linked insurance_plan=${targetPlanId} → canonical=${canonicalPlanId} (confidence=${canonicalResult.confidence.toFixed(2)}, new=${canonicalResult.isNew})`);
         }
       } else {

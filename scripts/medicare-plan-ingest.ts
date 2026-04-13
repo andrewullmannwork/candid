@@ -125,7 +125,7 @@ async function upsertMedicarePlan(plan: MedicarePlan, insurerId: string) {
     plan_name: plan.plan_name,
     plan_type: typeMap[plan.plan_type] || plan.plan_type,
     state: plan.state,
-    year: 2025,
+    year: new Date().getFullYear(),
     source_type: "cms_api",
     data_status: "extracted",
     metal_level: null,
