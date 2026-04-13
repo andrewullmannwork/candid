@@ -264,12 +264,23 @@ export async function processPlanDocumentData(
     } else try {
       const insurerMatch = await matchInsurerCatalog(supabase, planInsert.insurer_name || "");
       if (insurerMatch && planInsert.plan_name) {
-        // Get user profile for state and group_number
+        // Get user profile for state, group_number, and hios_id from insurance_plans
         const { data: profileForCanonical } = await supabase
           .from("profiles")
-          .select("state, group_number")
+          .select("state, group_number, active_insurance_plan_id")
           .eq("user_id", doc.user_id)
           .single();
+
+        // Check for hios_id on the user's insurance_plan (from card scan → plan_catalog match)
+        let hiosId: string | undefined;
+        if (profileForCanonical?.active_insurance_plan_id) {
+          const { data: userPlan } = await supabase
+            .from("insurance_plans")
+            .select("hios_id")
+            .eq("id", profileForCanonical.active_insurance_plan_id)
+            .single();
+          hiosId = userPlan?.hios_id || undefined;
+        }
 
         const canonicalResult = await findOrCreateCanonicalPlan(supabase, {
           insurerId: insurerMatch.id,
@@ -278,6 +289,7 @@ export async function processPlanDocumentData(
           state: profileForCanonical?.state || undefined,
           planYear: new Date().getFullYear(),
           groupNumber: profileForCanonical?.group_number || undefined,
+          hiosId,
           deductible: planInsert.in_deductible_individual || undefined,
           oopMax: planInsert.in_oop_max_individual || undefined,
         });

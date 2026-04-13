@@ -188,6 +188,13 @@ interface ProfileData {
   phone: string;
   // Dependents (JSON string of array)
   dependents: string;
+  // Address / county
+  zip_code: string;
+  county_fips: string;
+  county_name: string;
+  city: string;
+  address_line1: string;
+  address_line2: string;
   // Plan matching
   matched_plan_id: string;
   plan_source: string; // 'employer', 'marketplace', 'off_exchange', 'medicare', 'medicaid'
@@ -241,6 +248,12 @@ const EMPTY_PROFILE: ProfileData = {
   date_of_birth: "",
   sex: "",
   phone: "",
+  zip_code: "",
+  county_fips: "",
+  county_name: "",
+  city: "",
+  address_line1: "",
+  address_line2: "",
   dependents: "[]",
   matched_plan_id: "",
   plan_source: "",
@@ -350,6 +363,12 @@ function ProfileContent() {
               date_of_birth: p.date_of_birth || prefillDob || "",
               sex: p.sex || "",
               phone: p.phone || (prefillPhone ? formatPhone(prefillPhone) : ""),
+              zip_code: p.zip_code || "",
+              county_fips: p.county_fips || "",
+              county_name: p.county_name || "",
+              city: p.city || "",
+              address_line1: p.address_line1 || "",
+              address_line2: p.address_line2 || "",
               dependents: p.dependents ? JSON.stringify(p.dependents) : "[]",
               matched_plan_id: p.matched_plan_id || "",
               plan_source: p.plan_source || "",
@@ -521,6 +540,7 @@ function ProfileContent() {
           ? String(fields.copayRx) : prev.copay_rx,
         coinsurance_pct: fields.coinsurancePct != null
           ? String(fields.coinsurancePct) : prev.coinsurance_pct,
+        zip_code: fields.zipCode || prev.zip_code,
       }));
       setCardScanned(true);
 
@@ -541,6 +561,7 @@ function ProfileContent() {
         copay_urgent_care: fields.copayUrgentCare != null ? String(fields.copayUrgentCare) : undefined,
         copay_rx: fields.copayRx != null ? String(fields.copayRx) : undefined,
         coinsurance_pct: fields.coinsurancePct != null ? String(fields.coinsurancePct) : undefined,
+        zip_code: fields.zipCode || undefined,
       } as Partial<Record<keyof ProfileData, string>>);
       setHasExistingProfile(true);
     } catch (err) {
@@ -674,6 +695,9 @@ function ProfileContent() {
           <ProfileSection title="About You">
             <ProfileField label="Date of birth" value={profile.date_of_birth} />
             <ProfileField label="Sex" value={profile.sex === "prefer_not_to_say" ? "Prefer not to say" : profile.sex} />
+            <ProfileField label="Address" value={[profile.address_line1, profile.address_line2].filter(Boolean).join(", ")} />
+            <ProfileField label="City / Zip" value={[profile.city, profile.zip_code].filter(Boolean).join(", ")} />
+            <ProfileField label="County" value={profile.county_name} />
           </ProfileSection>
           {(() => {
             let deps: Dependent[] = [];
@@ -1384,7 +1408,40 @@ function AboutYouStep({
   const [dob, setDob] = useState(profile.date_of_birth);
   const [sex, setSex] = useState(profile.sex);
   const [phoneNum, setPhoneNum] = useState(profile.phone);
-  const hasAny = !!(dob || sex || phoneNum);
+  const [zipCode, setZipCode] = useState(profile.zip_code);
+  const [countyFips, setCountyFips] = useState(profile.county_fips);
+  const [countyName, setCountyName] = useState(profile.county_name);
+  const [cityVal, setCityVal] = useState(profile.city);
+  const [addr1, setAddr1] = useState(profile.address_line1);
+  const [addr2, setAddr2] = useState(profile.address_line2);
+  const [countyOptions, setCountyOptions] = useState<{ fips: string; name: string; state: string }[]>([]);
+  const [zipResolving, setZipResolving] = useState(false);
+  const hasAny = !!(dob || sex || phoneNum || zipCode);
+
+  async function resolveZip(zip: string) {
+    if (!/^\d{5}$/.test(zip)) return;
+    setZipResolving(true);
+    try {
+      const res = await fetch(`/api/profile/resolve-county?zip=${zip}`);
+      if (res.ok) {
+        const { counties } = await res.json();
+        if (counties && counties.length === 1) {
+          setCountyFips(counties[0].fips);
+          setCountyName(counties[0].name);
+          setCountyOptions([]);
+        } else if (counties && counties.length > 1) {
+          setCountyOptions(counties);
+          setCountyFips("");
+          setCountyName("");
+        } else {
+          setCountyFips("");
+          setCountyName("");
+          setCountyOptions([]);
+        }
+      }
+    } catch { /* non-critical */ }
+    setZipResolving(false);
+  }
 
   return (
     <div className="space-y-5">
@@ -1443,6 +1500,84 @@ function AboutYouStep({
         <Tip>Helps recommend sex-specific screenings (e.g. prostate, breast cancer, cervical).</Tip>
       </Field>
 
+      {/* Zip code → county auto-resolution */}
+      <Field label={<>Zip code <span className="text-xs text-gray-400 font-normal ml-1">(for accurate rates)</span></>} optional={false}>
+        <div className="flex gap-2 items-start">
+          <input
+            type="text"
+            inputMode="numeric"
+            maxLength={5}
+            value={zipCode}
+            onChange={(e) => {
+              const v = e.target.value.replace(/\D/g, "").slice(0, 5);
+              setZipCode(v);
+              if (v.length === 5) resolveZip(v);
+            }}
+            placeholder="27601"
+            className={inputClass + " max-w-[120px]"}
+          />
+          {zipResolving && (
+            <div className="w-4 h-4 mt-2.5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+          )}
+          {countyName && !zipResolving && (
+            <span className="mt-2.5 text-sm text-green-700 font-medium">{countyName}</span>
+          )}
+        </div>
+        <Tip>Needed for accuracy. Insurance rates and covered services can vary by county.</Tip>
+      </Field>
+
+      {/* County disambiguation — when zip spans multiple counties */}
+      {countyOptions.length > 1 && (
+        <Field label="Which county?" optional={false}>
+          <div className="grid grid-cols-2 gap-2">
+            {countyOptions.map((c) => (
+              <button
+                key={c.fips}
+                type="button"
+                onClick={() => { setCountyFips(c.fips); setCountyName(c.name); setCountyOptions([]); }}
+                className={`px-3 py-2.5 text-sm font-medium rounded-xl border-2 transition-all ${
+                  countyFips === c.fips
+                    ? "border-blue-500 bg-blue-50 text-blue-700"
+                    : "border-gray-200 text-gray-600 hover:border-gray-300"
+                }`}
+              >
+                {c.name}
+              </button>
+            ))}
+          </div>
+        </Field>
+      )}
+
+      <Field label="Street address">
+        <input
+          type="text"
+          value={addr1}
+          onChange={(e) => setAddr1(e.target.value)}
+          placeholder="123 Main St"
+          className={inputClass}
+        />
+      </Field>
+
+      <Field label="Apt / Suite / Unit">
+        <input
+          type="text"
+          value={addr2}
+          onChange={(e) => setAddr2(e.target.value)}
+          placeholder="Apt 4B"
+          className={inputClass}
+        />
+      </Field>
+
+      <Field label="City">
+        <input
+          type="text"
+          value={cityVal}
+          onChange={(e) => setCityVal(e.target.value)}
+          placeholder="Raleigh"
+          className={inputClass}
+        />
+      </Field>
+
       {isOnboarding && (!phoneNum.trim() || phoneNum.replace(/\D/g, "").length < 10 || !dob) && (
         <p className="text-xs text-amber-600 bg-amber-50 p-2.5 rounded-xl">
           Phone number and date of birth are required to create your account.
@@ -1451,7 +1586,17 @@ function AboutYouStep({
 
       <div className="flex flex-col gap-2 pt-2">
         <button
-          onClick={() => onContinue({ date_of_birth: dob, sex, phone: phoneNum })}
+          onClick={() => onContinue({
+            date_of_birth: dob,
+            sex,
+            phone: phoneNum,
+            zip_code: zipCode,
+            county_fips: countyFips,
+            county_name: countyName,
+            city: cityVal,
+            address_line1: addr1,
+            address_line2: addr2,
+          })}
           disabled={saving || (isOnboarding && (!phoneNum.trim() || phoneNum.replace(/\D/g, "").length < 10 || !dob))}
           className="w-full py-3 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors"
         >

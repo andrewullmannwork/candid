@@ -39,6 +39,8 @@ interface AnalyzeResponse extends PlanAnalysisResult {
     planType?: string;
     metalLevel?: string;
     verificationStatus?: string;
+    premiumMonthly?: number | null;
+    premiumSource?: string;
   };
 }
 
@@ -313,6 +315,20 @@ function PlanSummaryCard({ planName, planSummary, dataSource }: {
           </span>
         )}
       </div>
+      {planSummary.premiumMonthly != null && (
+        <div className="mt-3 flex items-baseline gap-1.5">
+          <span className="text-xl font-bold text-gray-900">
+            ${planSummary.premiumMonthly.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </span>
+          <span className="text-xs text-gray-500">/month</span>
+          {planSummary.premiumSource === "county_specific" && (
+            <span className="ml-1.5 text-[10px] font-medium text-green-600 bg-green-50 px-1.5 py-0.5 rounded">Your county</span>
+          )}
+          {planSummary.premiumSource === "canonical_fallback" && (
+            <span className="ml-1.5 text-[10px] font-medium text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">(estimated)</span>
+          )}
+        </div>
+      )}
       <div className="mt-3 grid grid-cols-2 gap-3">
         <div>
           <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Deductible (in-network)</p>

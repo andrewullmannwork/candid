@@ -15,7 +15,7 @@ export async function POST(request: Request) {
     // Fetch user profile with demographics + plan match
     const { data: profile, error } = await supabase
       .from("profiles")
-      .select("insurer, plan_type, state, date_of_birth, sex, dependents, matched_plan_id, plan_source, active_insurance_plan_id, deductible_individual, oop_max_individual")
+      .select("insurer, plan_type, state, date_of_birth, sex, dependents, matched_plan_id, plan_source, active_insurance_plan_id, deductible_individual, oop_max_individual, county_fips")
       .eq("user_id", userId)
       .single();
 
@@ -254,14 +254,37 @@ export async function POST(request: Request) {
             dataSource: canonicalGapBenefits.length > 0 ? "user_plan_with_canonical" : "user_plan",
             planName: userPlan.plan_name,
             planSource: userPlan.source,
-            planSummary: {
-              inDeductible: userPlan.in_deductible_individual ?? profile.deductible_individual,
-              outDeductible: userPlan.out_deductible_individual,
-              inOopMax: userPlan.in_oop_max_individual ?? profile.oop_max_individual,
-              outOopMax: userPlan.out_oop_max_individual,
-              planType: userPlan.plan_type,
-              verificationStatus: userPlan.verification_status,
-            },
+            planSummary: await (async () => {
+              let premiumMonthly: number | null = userPlan.premium_total ?? null;
+              let premiumSource: string | undefined;
+              // County-resolved premium if canonical plan exists
+              if (userPlan.canonical_plan_id && profile.county_fips) {
+                const { getCountyPremium } = await import("@/lib/plan/county-premium");
+                const countyResult = await getCountyPremium(supabase, userPlan.canonical_plan_id, profile.county_fips);
+                if (countyResult.premium != null) {
+                  premiumMonthly = countyResult.premium;
+                  premiumSource = countyResult.source;
+                }
+              } else if (userPlan.canonical_plan_id && !premiumMonthly) {
+                // Fallback: canonical premium without county
+                const { getCountyPremium } = await import("@/lib/plan/county-premium");
+                const fallbackResult = await getCountyPremium(supabase, userPlan.canonical_plan_id, null);
+                if (fallbackResult.premium != null) {
+                  premiumMonthly = fallbackResult.premium;
+                  premiumSource = fallbackResult.source;
+                }
+              }
+              return {
+                inDeductible: userPlan.in_deductible_individual ?? profile.deductible_individual,
+                outDeductible: userPlan.out_deductible_individual,
+                inOopMax: userPlan.in_oop_max_individual ?? profile.oop_max_individual,
+                outOopMax: userPlan.out_oop_max_individual,
+                planType: userPlan.plan_type,
+                verificationStatus: userPlan.verification_status,
+                premiumMonthly,
+                premiumSource,
+              };
+            })(),
           });
         }
       }
