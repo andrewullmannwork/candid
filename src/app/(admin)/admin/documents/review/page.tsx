@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -18,6 +18,7 @@ interface DocRecord {
   processing_total_pages: number | null;
   processing_completed_pages: number | null;
   processing_error: string | null;
+  processing_started_at: string | null;
   linked_insurance_plan_id: string | null;
   insurer_mismatch: { mismatch: boolean; type?: string; existingInsurer?: string; parsedInsurer?: string; existingPlanName?: string; parsedPlanName?: string } | null;
   created_at: string;
@@ -103,7 +104,7 @@ export default function DocumentReviewPage() {
     try {
       const data = await adminQuery({
         table: "documents",
-        select: "id, file_name, file_size, doc_type, classified_type, classification_confidence, type_mismatch, status, processing_step, processing_total_pages, processing_completed_pages, processing_error, linked_insurance_plan_id, insurer_mismatch, created_at, user_id",
+        select: "id, file_name, file_size, doc_type, classified_type, classification_confidence, type_mismatch, status, processing_step, processing_total_pages, processing_completed_pages, processing_error, processing_started_at, linked_insurance_plan_id, insurer_mismatch, created_at, user_id",
         order: { column: "created_at", ascending: false },
         limit: 200,
       });
@@ -269,6 +270,17 @@ export default function DocumentReviewPage() {
 
   const filtered = filter === "all" ? documents : documents.filter((d) => d.status === filter);
   const pendingCount = documents.filter((d) => d.status === "pending_review").length;
+
+  // Precompute stuck document IDs (processing >10min with no progress)
+  // eslint-disable-next-line react-hooks/purity
+  const stuckCutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const stuckDocIds = useMemo(() => {
+    return new Set(
+      documents
+        .filter((d) => d.status === "processing" && d.processing_started_at && d.processing_started_at < stuckCutoff)
+        .map((d) => d.id)
+    );
+  }, [documents, stuckCutoff]);
   const statusCounts: Record<string, number> = {};
   for (const d of documents) statusCounts[d.status] = (statusCounts[d.status] || 0) + 1;
 
@@ -408,6 +420,7 @@ export default function DocumentReviewPage() {
             const plan = planDetails.get(doc.id);
             const isPending = doc.status === "pending_review";
             const isError = doc.status === "error";
+            const isStuck = stuckDocIds.has(doc.id);
 
             return (
               <div key={doc.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
@@ -462,13 +475,13 @@ export default function DocumentReviewPage() {
                           </button>
                         </>
                       )}
-                      {isError && (
+                      {(isError || isStuck) && (
                         <button
                           onClick={(e) => { e.stopPropagation(); reprocessDocument(doc.id); }}
                           disabled={processing === doc.id}
                           className="px-3 py-1.5 text-xs font-semibold text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50 disabled:opacity-50"
                         >
-                          {processing === doc.id ? "..." : "Reprocess"}
+                          {processing === doc.id ? "..." : isStuck ? "Unstick" : "Reprocess"}
                         </button>
                       )}
                       <svg
@@ -571,13 +584,13 @@ export default function DocumentReviewPage() {
                           </button>
                         </>
                       )}
-                      {isError && (
+                      {(isError || isStuck) && (
                         <button
                           onClick={() => reprocessDocument(doc.id)}
                           disabled={processing === doc.id}
                           className="px-4 py-2 text-xs font-semibold text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50 disabled:opacity-50"
                         >
-                          {processing === doc.id ? "Reprocessing..." : "Reprocess"}
+                          {processing === doc.id ? "Reprocessing..." : isStuck ? "Unstick & Reprocess" : "Reprocess"}
                         </button>
                       )}
                     </div>

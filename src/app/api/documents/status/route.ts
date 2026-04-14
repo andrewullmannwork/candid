@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
   const supabase = createServerClient();
   const { data: doc } = await supabase
     .from("documents")
-    .select("status, processing_step, processing_completed_pages, processing_total_pages, insurer_mismatch")
+    .select("status, processing_step, processing_completed_pages, processing_total_pages, insurer_mismatch, processing_error, retry_count, processing_started_at")
     .eq("id", documentId)
     .single();
 
@@ -32,6 +32,13 @@ export async function GET(req: NextRequest) {
     (doc.status === "queued" && !doc.processing_step) || // Never started
     (doc.status === "processing" && doc.processing_step && !doc.processing_step.startsWith("working_")); // Ready for next step
 
+  // Detect stuck documents (processing for >10 min with no progress)
+  const STUCK_THRESHOLD_MS = 10 * 60 * 1000;
+  const isStuck = doc.status === "processing"
+    && doc.processing_started_at
+    && (Date.now() - new Date(doc.processing_started_at).getTime()) > STUCK_THRESHOLD_MS
+    && (!doc.processing_step || doc.processing_step.startsWith("working_"));
+
   return NextResponse.json({
     status: doc.status,
     step: doc.processing_step,
@@ -39,6 +46,9 @@ export async function GET(req: NextRequest) {
     totalPages: doc.processing_total_pages || 0,
     needsTrigger,
     insurerMismatch: doc.insurer_mismatch || null,
+    processingError: doc.processing_error || null,
+    retryCount: doc.retry_count || 0,
+    isStuck: isStuck || false,
   });
 }
 

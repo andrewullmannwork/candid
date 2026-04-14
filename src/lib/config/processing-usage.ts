@@ -5,6 +5,7 @@
 
 import { createServerClient } from "@/lib/supabase/server";
 import { getFlags } from "./feature-flags";
+import { notifyBudgetThreshold } from "@/lib/notifications";
 
 /** Get today's date string in Pacific time (YYYY-MM-DD) */
 function getLocalDateStr(): string {
@@ -120,6 +121,27 @@ export async function recordProcessingUsage(pages: number): Promise<void> {
       date: todayStr,
       pages_processed: pages,
     });
+  }
+
+  // Check budget thresholds and send Slack alerts (non-blocking)
+  try {
+    const flags = await getFlags();
+    const newDailyUsed = (existing?.pages_processed || 0) + pages;
+
+    // Daily threshold check
+    notifyBudgetThreshold(newDailyUsed, flags.OCR_DAILY_PAGE_LIMIT, "daily").catch(() => {});
+
+    // Monthly threshold check
+    const monthStr = getLocalMonthStr();
+    const { data: monthData } = await supabase
+      .from("processing_usage")
+      .select("pages_processed")
+      .gte("date", `${monthStr}-01`)
+      .lte("date", `${monthStr}-31`);
+    const monthlyUsed = (monthData || []).reduce((s, r) => s + (r.pages_processed || 0), 0);
+    notifyBudgetThreshold(monthlyUsed, flags.OCR_MONTHLY_PAGE_LIMIT, "monthly").catch(() => {});
+  } catch {
+    // Budget alerts are best-effort — never block processing
   }
 }
 

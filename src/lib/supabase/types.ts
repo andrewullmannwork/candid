@@ -17,7 +17,7 @@ export type SubscriptionStatus =
   | "past_due";
 
 export type DocType = "eob" | "itemized_bill" | "insurance_card" | "sbc" | "other";
-export type DocStatus = "uploaded" | "processing" | "processed" | "queued" | "error";
+export type DocStatus = "uploaded" | "processing" | "processed" | "queued" | "error" | "pending_review" | "rejected" | "needs_review";
 
 export type InsurancePlanSource =
   | "sbc_upload"
@@ -130,8 +130,19 @@ export interface DocumentRow {
   classification_signals: unknown | null; // JSONB
   type_mismatch: boolean;
   linked_insurance_plan_id: string | null;
+  // Processing state (migration 016)
+  processing_step: string | null;
+  processing_total_pages: number | null;
+  processing_completed_pages: number | null;
+  processing_ocr_text: string | null;
+  processing_started_at: string | null;
+  processing_error: string | null;
+  // Mismatch (migration 017)
+  insurer_mismatch: Record<string, unknown> | null;
   // Dedup (migration 027)
   file_hash: string | null;
+  // Reprocessing (migration 028)
+  retry_count: number;
   created_at: string;
 }
 
