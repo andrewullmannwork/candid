@@ -130,6 +130,8 @@ export interface DocumentRow {
   classification_signals: unknown | null; // JSONB
   type_mismatch: boolean;
   linked_insurance_plan_id: string | null;
+  // Dedup (migration 027)
+  file_hash: string | null;
   created_at: string;
 }
 

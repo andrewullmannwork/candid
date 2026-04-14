@@ -485,6 +485,34 @@ export async function processPlanDocumentData(
       }
     }
 
+    // ── Post-extraction tracking for dedup sampling ─────────────────────────
+    if (canonicalPlanId && !canonicalNeedsConfirmation) {
+      try {
+        const { recordExtractionResult } = await import("@/lib/plan/extraction-dedup");
+        // Get file hash from document record
+        const { data: docForHash } = await supabase
+          .from("documents")
+          .select("file_hash")
+          .eq("id", documentId)
+          .single();
+
+        const extractedSlugs = parseResult.services
+          .filter((s) => s.confidence >= 0.5)
+          .map((s) => s.serviceSlug);
+
+        await recordExtractionResult(
+          supabase,
+          documentId,
+          canonicalPlanId,
+          doc.user_id,
+          docForHash?.file_hash || null,
+          extractedSlugs,
+        );
+      } catch (trackErr) {
+        console.error("[process-plan] Extraction tracking error (non-fatal):", trackErr);
+      }
+    }
+
     // ── Finalize document ───────────────────────────────────────────────────
     await supabase.from("documents").update({
       status: "processed",

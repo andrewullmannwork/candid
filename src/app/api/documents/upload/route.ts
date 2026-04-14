@@ -6,6 +6,13 @@ import { quickClassify } from "@/lib/classifier/quick-classify";
 import { notifyAdminForReview, notifyUserPendingReview } from "@/lib/notifications";
 import { enqueueChunk } from "@/lib/queue/qstash";
 import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
+import {
+  computeFileHash,
+  extractPlanIdentifiers,
+  extractPlanIdentifiersWithHaiku,
+  shouldSkipExtraction,
+  linkDocumentToCanonical,
+} from "@/lib/plan/extraction-dedup";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -158,6 +165,63 @@ export async function POST(req: NextRequest) {
   }
 
   const userEmail = decoded.email || "";
+
+  // ── Smart extraction skip (feature-flagged) ─────────────────────────────
+  // Check if this document matches a known canonical plan with stable data.
+  // If so, skip full OCR + Haiku extraction and link directly to canonical.
+  if (["sbc", "plan_document"].includes(classification.classifiedType)) {
+    try {
+      const { isFeatureEnabled } = await import("@/lib/config/product-flags");
+      const dedupEnabled = await isFeatureEnabled("document_dedup", userEmail);
+
+      if (dedupEnabled) {
+        const fileHash = computeFileHash(buffer);
+
+        // Two-tier identifier extraction: regex first, Haiku fallback
+        let identifiers = extractPlanIdentifiers(classification.ocrTextPreview);
+        if (!identifiers.insurer || !identifiers.planName) {
+          identifiers = await extractPlanIdentifiersWithHaiku(classification.ocrTextPreview);
+        }
+
+        // Save hash to document record
+        await supabase.from("documents").update({ file_hash: fileHash }).eq("id", documentId);
+
+        const dedupResult = await shouldSkipExtraction(supabase, documentId, fileHash, identifiers, user.id);
+        console.log(`[upload] Dedup check: skip=${dedupResult.skip}, reason=${dedupResult.reason}, identifiers=${identifiers.source}`);
+
+        if (dedupResult.skip && dedupResult.canonicalPlanId) {
+          const result = await linkDocumentToCanonical(
+            supabase,
+            { id: documentId, user_id: user.id, file_name: file.name },
+            dedupResult.canonicalPlanId,
+            classification.ocrTextPreview,
+            identifiers
+          );
+
+          if (result.success) {
+            console.log(`[upload] Extraction skipped — linked to canonical ${dedupResult.canonicalPlanId}. Services: ${result.servicesCreated}`);
+            return NextResponse.json({
+              documentId,
+              storagePath,
+              autoProcessed: true,
+              skippedExtraction: true,
+              dedupReason: dedupResult.reason,
+              classification: {
+                classifiedType: classification.classifiedType,
+                confidence: classification.confidence,
+                pageCount: classification.pageCount,
+              },
+            });
+          }
+          // If linkDocumentToCanonical failed, fall through to normal processing
+          console.warn(`[upload] Dedup link failed: ${result.error}. Falling through to normal pipeline.`);
+        }
+      }
+    } catch (dedupErr) {
+      // Non-fatal — fall through to normal processing
+      console.error("[upload] Dedup check failed (non-fatal):", dedupErr);
+    }
+  }
 
   // HIGH confidence — queue for processing via QStash (guaranteed delivery)
   // ALL documents go through the same chunked pipeline — no fire-and-forget fetch.
