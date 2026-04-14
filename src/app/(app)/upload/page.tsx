@@ -86,7 +86,11 @@ function UploadForm() {
     completedPages: number;
     totalPages: number;
     insurerMismatch?: { mismatch: boolean; type?: "insurer" | "plan_name"; existingInsurer?: string; parsedInsurer?: string; existingPlanName?: string; parsedPlanName?: string; pending_canonical_match?: { canonicalPlanId: string; matchedPlanName: string; confidence: number; sourceCount: number; insurerName: string } } | null;
+    processingError?: string | null;
+    retryCount?: number;
+    isStuck?: boolean;
   } | null>(null);
+  const [retrying, setRetrying] = useState(false);
 
   // Rotating status message index — increments every 15s during processing
   const [messageIndex, setMessageIndex] = useState(0);
@@ -104,14 +108,15 @@ function UploadForm() {
   }, [uploaded, uploadStatus, processingProgress?.step, processingProgress?.status]);
 
   // Previously uploaded documents
-  const [userDocs, setUserDocs] = useState<{ id: string; file_name: string; doc_type: string; status: string; created_at: string }[]>([]);
+  const [userDocs, setUserDocs] = useState<{ id: string; file_name: string; doc_type: string; status: string; created_at: string; processing_error?: string | null; retry_count?: number }[]>([]);
+  const [retryingDocId, setRetryingDocId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user) return;
     const supabase = createBrowserClient();
     supabase
       .from("documents")
-      .select("id, file_name, doc_type, status, created_at")
+      .select("id, file_name, doc_type, status, created_at, processing_error, retry_count")
       .eq("user_id", user.userId)
       .order("created_at", { ascending: false })
       .then(({ data }) => { if (data) setUserDocs(data); });
@@ -124,6 +129,42 @@ function UploadForm() {
   const [consentSubmitting, setConsentSubmitting] = useState(false);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const consentDoc = getConsentDocument("health_data_upload");
+
+  // Retry a failed or stuck document
+  const retryDocument = useCallback(async (docId: string) => {
+    if (!user || retrying) return;
+    setRetrying(true);
+    try {
+      const idToken = await user.firebaseUser.getIdToken();
+      const res = await fetch("/api/documents/reprocess", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify({ documentId: docId }),
+      });
+      if (res.ok) {
+        // Resume polling for the retried document
+        setDocumentId(docId);
+        setUploadStatus("auto_processed");
+        setProcessingProgress(null);
+        setUploaded(true);
+        // Refresh doc list
+        const supabase = createBrowserClient();
+        const { data } = await supabase
+          .from("documents")
+          .select("id, file_name, doc_type, status, created_at, processing_error, retry_count")
+          .eq("user_id", user.userId)
+          .order("created_at", { ascending: false });
+        if (data) setUserDocs(data);
+      } else {
+        const errBody = await res.json().catch(() => ({}));
+        setError(errBody.error || "Retry failed. Please try again.");
+      }
+    } catch {
+      setError("Retry failed. Please try again.");
+    } finally {
+      setRetrying(false);
+    }
+  }, [user, retrying]);
 
   // Poll processing status and trigger chunks for large documents
   useEffect(() => {
@@ -155,7 +196,7 @@ function UploadForm() {
           return;
         }
 
-        if (data.status === "error") {
+        if (data.status === "error" || data.isStuck) {
           active = false;
           return;
         }
@@ -368,9 +409,11 @@ function UploadForm() {
   if (uploaded) {
     const isPendingReview = uploadStatus === "pending_review";
     const isUploading = uploadStatus === "uploading";
-    const isProcessing = uploadStatus === "auto_processed" && processingProgress?.status !== "processed" && processingProgress?.status !== "error";
+    const isProcessing = uploadStatus === "auto_processed" && processingProgress?.status !== "processed" && processingProgress?.status !== "error" && !processingProgress?.isStuck;
     const isComplete = processingProgress?.status === "processed" && !processingProgress?.insurerMismatch?.mismatch && !processingProgress?.insurerMismatch?.pending_canonical_match;
     const isError = processingProgress?.status === "error";
+    const isStuck = !!processingProgress?.isStuck;
+    const canRetry = (isError || isStuck) && (processingProgress?.retryCount || 0) < 3;
     const hasMismatch = processingProgress?.status === "processed" && processingProgress?.insurerMismatch?.mismatch;
     const hasCanonicalMatch = processingProgress?.status === "processed" && !processingProgress?.insurerMismatch?.mismatch && !!processingProgress?.insurerMismatch?.pending_canonical_match;
     const isPlanType = docType === "sbc" || docType === "plan_document";
@@ -414,6 +457,7 @@ function UploadForm() {
     const getStepLabel = () => {
       if (isUploading) return "Uploading your document...";
       if (isComplete) return "All done!";
+      if (isStuck) return "Processing stalled";
       if (isError) return "Processing error";
       if (hasMismatch) return "Review needed";
       if (isPendingReview) return "Needs a human touch";
@@ -475,9 +519,9 @@ function UploadForm() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
               </div>
-            ) : isError ? (
-              <div className="w-16 h-16 rounded-full bg-red-50 flex items-center justify-center mx-auto mb-4">
-                <svg className="w-8 h-8 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            ) : isError || isStuck ? (
+              <div className={`w-16 h-16 rounded-full ${isStuck ? "bg-amber-50" : "bg-red-50"} flex items-center justify-center mx-auto mb-4`}>
+                <svg className={`w-8 h-8 ${isStuck ? "text-amber-500" : "text-red-500"}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
                 </svg>
               </div>
@@ -495,7 +539,7 @@ function UploadForm() {
           </div>
 
           {/* Combined progress bar (uploading + analyzing) */}
-          {!isComplete && !isError && !hasMismatch && !isPendingReview && (
+          {!isComplete && !isError && !isStuck && !hasMismatch && !isPendingReview && (
             <div className="mb-6">
               <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
                 <div
@@ -560,8 +604,44 @@ function UploadForm() {
           {/* Error state */}
           {isError && (
             <div className="mb-5 p-4 bg-red-50 border border-red-100 rounded-xl">
-              <p className="text-sm text-red-800">Something went wrong during analysis. Our team has been notified.</p>
-              <p className="text-xs text-red-600 mt-1">Please try uploading again or contact support.</p>
+              <p className="text-sm font-medium text-red-800">
+                {processingProgress?.processingError || "Something went wrong during analysis."}
+              </p>
+              {canRetry ? (
+                <>
+                  <p className="text-xs text-red-600 mt-1">
+                    Retry {processingProgress?.retryCount || 0} of 3
+                  </p>
+                  <button
+                    onClick={() => documentId && retryDocument(documentId)}
+                    disabled={retrying}
+                    className="mt-3 w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50"
+                  >
+                    {retrying ? "Retrying..." : "Try again"}
+                  </button>
+                </>
+              ) : (
+                <p className="text-xs text-red-600 mt-1">Maximum retries reached. Please contact support or try uploading a different document.</p>
+              )}
+            </div>
+          )}
+
+          {/* Stuck state */}
+          {isStuck && (
+            <div className="mb-5 p-4 bg-amber-50 border border-amber-100 rounded-xl">
+              <p className="text-sm font-medium text-amber-900">Processing seems stuck</p>
+              <p className="text-sm text-amber-800 mt-1">Your document has been processing for a while without progress.</p>
+              {canRetry ? (
+                <button
+                  onClick={() => documentId && retryDocument(documentId)}
+                  disabled={retrying}
+                  className="mt-3 w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50"
+                >
+                  {retrying ? "Retrying..." : "Retry processing"}
+                </button>
+              ) : (
+                <p className="text-xs text-amber-700 mt-1">Maximum retries reached. Please contact support.</p>
+              )}
             </div>
           )}
 
@@ -719,7 +799,7 @@ function UploadForm() {
                 Run audit
               </Link>
             )}
-            {(isComplete || isError || isPendingReview) && (
+            {(isComplete || isError || isStuck || isPendingReview) && (
               <button
                 onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setClassificationResult(null); setSbcParsed(null); setProcessingProgress(null); setDocumentId(null); setUploadProgress(0); }}
                 className="w-full py-2.5 border border-gray-200 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
@@ -912,20 +992,36 @@ function UploadForm() {
                     </p>
                   </div>
                 </div>
-                <span className={`text-xs font-medium px-2 py-1 rounded-full ${
-                  doc.status === "processed" ? "bg-green-50 text-green-700" :
-                  doc.status === "processing" || doc.status === "queued" ? "bg-blue-50 text-blue-700" :
-                  doc.status === "pending_review" ? "bg-amber-50 text-amber-700" :
-                  doc.status === "error" ? "bg-red-50 text-red-700" :
-                  "bg-gray-50 text-gray-500"
-                }`}>
-                  {doc.status === "processed" ? "Processed" :
-                   doc.status === "processing" ? "Processing" :
-                   doc.status === "queued" ? "Queued" :
-                   doc.status === "pending_review" ? "Under review" :
-                   doc.status === "error" ? "Error" :
-                   "Uploaded"}
-                </span>
+                <div className="flex items-center gap-2">
+                  {doc.status === "error" && (doc.retry_count || 0) < 3 && (
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        setRetryingDocId(doc.id);
+                        await retryDocument(doc.id);
+                        setRetryingDocId(null);
+                      }}
+                      disabled={retryingDocId === doc.id}
+                      className="text-xs font-semibold text-blue-600 hover:text-blue-700 disabled:opacity-50"
+                    >
+                      {retryingDocId === doc.id ? "..." : "Retry"}
+                    </button>
+                  )}
+                  <span className={`text-xs font-medium px-2 py-1 rounded-full ${
+                    doc.status === "processed" ? "bg-green-50 text-green-700" :
+                    doc.status === "processing" || doc.status === "queued" ? "bg-blue-50 text-blue-700" :
+                    doc.status === "pending_review" ? "bg-amber-50 text-amber-700" :
+                    doc.status === "error" ? "bg-red-50 text-red-700" :
+                    "bg-gray-50 text-gray-500"
+                  }`}>
+                    {doc.status === "processed" ? "Processed" :
+                     doc.status === "processing" ? "Processing" :
+                     doc.status === "queued" ? "Queued" :
+                     doc.status === "pending_review" ? "Under review" :
+                     doc.status === "error" ? "Error" :
+                     "Uploaded"}
+                  </span>
+                </div>
               </div>
             ))}
           </div>
