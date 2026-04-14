@@ -13,13 +13,114 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { extractTextFromDocument } from "@/lib/ocr";
 import { splitPDF, estimatePageCount } from "@/lib/ocr/document-ai";
 import { processPlanDocumentData } from "@/lib/plan/process-plan";
+import { parseBillFromOCR } from "@/lib/billing/parser";
+import { parseBillWithHaiku } from "@/lib/billing/haiku-bill-parser";
+import { runAudit } from "@/lib/audit";
+import { collectPricingData } from "@/lib/care/collector";
 import { checkProcessingBudget, recordProcessingUsage } from "@/lib/config/processing-usage";
 import { enqueueChunk } from "@/lib/queue/qstash";
+import { notifyAdminForReview } from "@/lib/notifications";
 
 const CHUNK_SIZE = 15; // pages per OCR chunk
+
+const BILL_TYPES = new Set(["eob", "itemized_bill"]);
+
+/**
+ * Process a bill/EOB document: parse → audit → persist claims → collect pricing.
+ * Mirrors the logic in /api/documents/process but runs inline in the chunk pipeline.
+ */
+async function processBillDocument(
+  supabase: SupabaseClient,
+  doc: { id: string; user_id: string; file_name: string; doc_type: string },
+  ocrText: string,
+  documentId: string,
+  billType: string,
+): Promise<{ success: boolean; claimId?: string; findings?: number; error?: string }> {
+  // Use Haiku for structured extraction (handles any format), fall back to regex
+  const haikuParsed = await parseBillWithHaiku(ocrText, documentId, doc.user_id, billType as "eob" | "itemized_bill");
+  const parsedBill = haikuParsed || parseBillFromOCR(
+    { text: ocrText, pages: [], confidence: 0.8 },
+    documentId,
+    doc.user_id,
+    billType as "eob" | "itemized_bill",
+  );
+
+  const auditReport = await runAudit(parsedBill);
+
+  // Persist claims (feature-flagged)
+  let claimId: string | null = null;
+  try {
+    const { isFeatureEnabled } = await import("@/lib/config/product-flags");
+    const { data: userForFlag } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
+    const claimsEnabled = await isFeatureEnabled("claims_persistence", userForFlag?.email || undefined);
+    if (claimsEnabled) {
+      const { persistAuditResults } = await import("@/lib/claims/persist");
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("active_insurance_plan_id")
+        .eq("user_id", doc.user_id)
+        .single();
+
+      const persistResult = await persistAuditResults(supabase, {
+        userId: doc.user_id,
+        insurancePlanId: profile?.active_insurance_plan_id || undefined,
+        documentId,
+        parsedBill,
+        auditReport,
+      });
+      claimId = persistResult?.claimId || null;
+    }
+  } catch (err) {
+    console.error("[process-chunk] Claims persist failed (non-fatal):", err);
+  }
+
+  // Collect pricing data (non-blocking)
+  try {
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("state")
+      .eq("user_id", doc.user_id)
+      .single();
+    await collectPricingData(parsedBill, profile?.state || null);
+  } catch { /* best-effort */ }
+
+  // Update document status
+  await supabase.from("documents").update({ status: "processed" }).eq("id", documentId);
+
+  return {
+    success: true,
+    claimId: claimId || undefined,
+    findings: auditReport.findings.length,
+  };
+}
+
+const CONFIDENCE_HIGH = 0.8;
+const CONFIDENCE_LOW = 0.4;
+
+/**
+ * Confidence-tiered type resolution:
+ * - High (≥0.8): Haiku dictates pipeline type
+ * - Medium (0.4-0.8): User's selection dictates type
+ * - Low (<0.4): Halted — reject or queue for admin
+ */
+function resolveDocumentType(
+  userType: string,
+  haikuType: string,
+  confidence: number,
+): { effectiveType: string; skipCanonical: boolean; halt: boolean } {
+  if (confidence < CONFIDENCE_LOW) {
+    return { effectiveType: userType || haikuType, skipCanonical: true, halt: true };
+  }
+  if (confidence >= CONFIDENCE_HIGH) {
+    return { effectiveType: haikuType, skipCanonical: false, halt: false };
+  }
+  // Medium: trust user, but hold canonical writes for plan docs
+  return { effectiveType: userType || haikuType, skipCanonical: true, halt: false };
+}
 
 // Haiku extraction on large documents can take 15-30s.
 // Vercel Hobby allows up to 60s with explicit maxDuration.
@@ -205,31 +306,55 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ step: "rejected", continue: false });
       }
 
-      // Trust the user's selected type. Use Haiku classification only as a flag.
+      // Confidence-tiered type resolution
       const userType = doc.doc_type;
       const haikuType = classification.classifiedType;
-      const finalType = userType || haikuType;
       const typeMismatch = userType && haikuType !== userType;
+      const { effectiveType, skipCanonical, halt } = resolveDocumentType(userType, haikuType, classification.confidence);
 
-      if (typeMismatch) {
-        console.log(`[process-chunk] Type flag: user selected "${userType}" but Haiku thinks "${haikuType}" (${Math.round(classification.confidence * 100)}%)`);
-      }
+      console.log(`[process-chunk] Type resolution: user="${userType}" haiku="${haikuType}" confidence=${classification.confidence.toFixed(2)} → effective="${effectiveType}" skipCanonical=${skipCanonical} halt=${halt}`);
 
       await supabase.from("documents").update({
-        classified_type: finalType,
+        classified_type: effectiveType,
         classification_confidence: classification.confidence,
         type_mismatch: typeMismatch || false,
       }).eq("id", documentId);
+
+      // Low confidence — halt processing, queue for admin review
+      if (halt) {
+        await supabase.from("documents").update({
+          status: "pending_review",
+          processing_error: "Low classification confidence. Queued for admin review.",
+        }).eq("id", documentId);
+        const { data: userForNotify } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
+        notifyAdminForReview(documentId, haikuType, classification.confidence, doc.file_name, userForNotify?.email || "unknown").catch(() => {});
+        return NextResponse.json({ step: "pending_review", continue: false, error: "Low confidence — queued for admin review" });
+      }
+
+      // Medium confidence — notify admin if there's a type mismatch (canonical held)
+      if (skipCanonical && typeMismatch) {
+        const { data: userForNotify } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
+        notifyAdminForReview(documentId, haikuType, classification.confidence, doc.file_name, userForNotify?.email || "unknown").catch(() => {});
+      }
+
+      // Route by document type: bills → audit pipeline, plan docs → extraction pipeline
+      if (BILL_TYPES.has(effectiveType)) {
+        console.log(`[process-chunk] Bill detected (${effectiveType}). Running audit pipeline inline...`);
+        const billResult = await processBillDocument(supabase, doc, fullOcrText, documentId, effectiveType);
+        console.log(`[process-chunk] Bill result: success=${billResult.success}, findings=${billResult.findings}, claimId=${billResult.claimId}`);
+        return NextResponse.json({ step: "done", continue: false, ...billResult });
+      }
 
       const result = await processPlanDocumentData(
         supabase,
         { id: doc.id, user_id: doc.user_id, file_name: doc.file_name },
         fullOcrText,
         documentId,
-        { classifiedType: finalType, confidence: classification.confidence, mismatch: typeMismatch || false }
+        { classifiedType: effectiveType, confidence: classification.confidence, mismatch: typeMismatch || false },
+        { skipCanonical }
       );
 
-      console.log(`[process-chunk] Inline result: success=${result.success}, services=${result.servicesCreated}`);
+      console.log(`[process-chunk] Inline result: success=${result.success}, services=${result.servicesCreated}, skipCanonical=${skipCanonical}`);
       return NextResponse.json({ step: "done", continue: false, ...result });
     }
 
@@ -272,29 +397,56 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ step: "rejected", continue: false, error: "Not a healthcare document" });
       }
 
-      // Trust user's selected type, use Haiku as flag only
+      // Confidence-tiered type resolution
       const fallbackUserType = doc.doc_type;
       const fallbackHaikuType = classification.classifiedType;
-      const fallbackFinalType = fallbackUserType || fallbackHaikuType;
       const fallbackMismatch = fallbackUserType && fallbackHaikuType !== fallbackUserType;
+      const { effectiveType: fbEffectiveType, skipCanonical: fbSkipCanonical, halt: fbHalt } = resolveDocumentType(fallbackUserType, fallbackHaikuType, classification.confidence);
+
+      console.log(`[process-chunk] Type resolution: user="${fallbackUserType}" haiku="${fallbackHaikuType}" confidence=${classification.confidence.toFixed(2)} → effective="${fbEffectiveType}" skipCanonical=${fbSkipCanonical} halt=${fbHalt}`);
 
       await supabase.from("documents").update({
         processing_step: "working_extracting",
-        classified_type: fallbackFinalType,
+        classified_type: fbEffectiveType,
         classification_confidence: classification.confidence,
         type_mismatch: fallbackMismatch || false,
       }).eq("id", documentId);
 
-      console.log(`[process-chunk] Processing: type=${fallbackFinalType}, confidence=${classification.confidence}`);
+      // Low confidence — halt
+      if (fbHalt) {
+        await supabase.from("documents").update({
+          status: "pending_review",
+          processing_error: "Low classification confidence. Queued for admin review.",
+        }).eq("id", documentId);
+        const { data: userForNotify } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
+        notifyAdminForReview(documentId, fallbackHaikuType, classification.confidence, doc.file_name, userForNotify?.email || "unknown").catch(() => {});
+        return NextResponse.json({ step: "pending_review", continue: false, error: "Low confidence — queued for admin review" });
+      }
+
+      // Medium confidence mismatch — notify admin
+      if (fbSkipCanonical && fallbackMismatch) {
+        const { data: userForNotify } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
+        notifyAdminForReview(documentId, fallbackHaikuType, classification.confidence, doc.file_name, userForNotify?.email || "unknown").catch(() => {});
+      }
+
+      // Route by document type
+      if (BILL_TYPES.has(fbEffectiveType)) {
+        console.log(`[process-chunk] Bill detected (${fbEffectiveType}). Running audit pipeline...`);
+        const billResult = await processBillDocument(supabase, doc, ocrText, documentId, fbEffectiveType);
+        console.log(`[process-chunk] Bill result: success=${billResult.success}, findings=${billResult.findings}, claimId=${billResult.claimId}`);
+        return NextResponse.json({ step: "done", continue: false, ...billResult });
+      }
+
       const result = await processPlanDocumentData(
         supabase,
         { id: doc.id, user_id: doc.user_id, file_name: doc.file_name },
         ocrText,
         documentId,
-        { classifiedType: fallbackFinalType, confidence: classification.confidence, mismatch: fallbackMismatch || false }
+        { classifiedType: fbEffectiveType, confidence: classification.confidence, mismatch: fallbackMismatch || false },
+        { skipCanonical: fbSkipCanonical }
       );
 
-      console.log(`[process-chunk] Result: success=${result.success}, services=${result.servicesCreated}, plan=${result.planData?.planName || "?"}`);
+      console.log(`[process-chunk] Result: success=${result.success}, services=${result.servicesCreated}, skipCanonical=${fbSkipCanonical}`);
 
       if (!result.success) {
         return NextResponse.json({ error: result.error }, { status: 500 });

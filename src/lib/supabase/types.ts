@@ -62,6 +62,10 @@ export type ServiceCategory =
 
 export type CoveredServiceSource = "sbc_parsed" | "plan_doc_parsed" | "cms_data" | "manual";
 
+export type BillingCodeType = "CPT" | "HCPCS" | "ICD10" | "REV" | "NDC" | "DRG" | "unknown";
+
+export type ClaimStatus = "pending" | "processed" | "flagged" | "denied" | "appealed";
+
 // ── Table Types ────────────────────────────────────────────────────────────────
 
 // Users
@@ -289,6 +293,51 @@ export type PlanCoveredServiceInsert = Partial<PlanCoveredServiceRow> & {
   insurance_plan_id: string;
   service_id: string;
 };
+
+// Claims (encounter-level records)
+export interface ClaimRow {
+  id: string;
+  user_id: string;
+  insurance_plan_id: string | null;
+  provider_id: string | null;
+  date_of_service: string | null;
+  place_of_service: string | null;
+  total_billed: number | null;
+  total_allowed: number | null;
+  total_insurance_paid: number | null;
+  total_patient_responsibility: number | null;
+  diagnosis_codes: string[];
+  source_document_id: string | null;
+  claim_number: string | null;
+  status: ClaimStatus;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+// Claim Line Items (per-charge billing detail)
+export interface ClaimLineItemRow {
+  id: string;
+  claim_id: string;
+  line_number: number | null;
+  concept_id: string | null;
+  billing_code: string | null;
+  billing_code_type: BillingCodeType | null;
+  service_slug: string | null;
+  description: string | null;
+  units: number;
+  billed_amount: number | null;
+  allowed_amount: number | null;
+  insurance_paid: number | null;
+  patient_owes: number | null;
+  adjustment_reason_code: string | null;
+  adjustment_reason_description: string | null;
+  modifier_codes: string[] | null;
+  place_of_service_code: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
 
 // Claim Insights
 export interface ClaimInsightRow {
