@@ -24,26 +24,24 @@ BEGIN
     RETURN;
   END IF;
 
-  -- Update plan_covered_services references
+  -- Update plan_covered_services: point to canonical slug, skip if would create duplicate
   UPDATE plan_covered_services SET service_id = _new_id
   WHERE service_id = _old_id
     AND NOT EXISTS (
       SELECT 1 FROM plan_covered_services pcs2
-      WHERE pcs2.plan_id = plan_covered_services.plan_id
+      WHERE pcs2.insurance_plan_id = plan_covered_services.insurance_plan_id
         AND pcs2.service_id = _new_id
         AND pcs2.place_of_service = plan_covered_services.place_of_service
     );
-  -- Delete remaining duplicates that couldn't be updated due to uniqueness
   DELETE FROM plan_covered_services WHERE service_id = _old_id;
 
-  -- Update canonical_plan_services references
+  -- Update canonical_plan_services: unique on (canonical_plan_id, service_slug)
   UPDATE canonical_plan_services SET service_slug = 'bariatric_surgery'
   WHERE service_slug = 'bariatric_obesity_surgery'
     AND NOT EXISTS (
       SELECT 1 FROM canonical_plan_services cps2
       WHERE cps2.canonical_plan_id = canonical_plan_services.canonical_plan_id
         AND cps2.service_slug = 'bariatric_surgery'
-        AND cps2.place_of_service = canonical_plan_services.place_of_service
     );
   DELETE FROM canonical_plan_services WHERE service_slug = 'bariatric_obesity_surgery';
 
