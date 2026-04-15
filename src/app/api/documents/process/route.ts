@@ -15,6 +15,7 @@ import { collectPricingData } from "@/lib/care/collector";
 import { checkProcessingBudget, recordProcessingUsage } from "@/lib/config/processing-usage";
 import { classifyDocument } from "@/lib/classifier";
 import { processPlanDocumentData } from "@/lib/plan/process-plan";
+import { getAdminAuth } from "@/lib/firebase/admin";
 
 export const maxDuration = 300;
 
@@ -38,6 +39,23 @@ export async function POST(req: NextRequest) {
 
     const supabase = createServerClient();
 
+    // Auth check: verify the authenticated user owns this document
+    const authHeader = req.headers.get("authorization");
+    const isInternalCall = req.headers.get("x-internal") === "true";
+    let authenticatedUserId: string | null = null;
+    if (!isInternalCall && authHeader?.startsWith("Bearer ")) {
+      try {
+        const decoded = await getAdminAuth().verifyIdToken(authHeader.slice(7));
+        const { data: authUser } = await supabase.from("users").select("id").eq("firebase_uid", decoded.uid).single();
+        if (!authUser) {
+          return NextResponse.json({ error: "User not found" }, { status: 404 });
+        }
+        authenticatedUserId = authUser.id;
+      } catch {
+        return NextResponse.json({ error: "Invalid token" }, { status: 401 });
+      }
+    }
+
     // Verify document exists and get metadata
     const { data: doc, error: docError } = await supabase
       .from("documents")
@@ -50,6 +68,11 @@ export async function POST(req: NextRequest) {
         { error: "Document not found" },
         { status: 404 }
       );
+    }
+
+    // Ownership check: authenticated user must own the document
+    if (authenticatedUserId && doc.user_id !== authenticatedUserId) {
+      return NextResponse.json({ error: "Not authorized for this document" }, { status: 403 });
     }
 
     // Check processing budget (cost protection)
@@ -143,6 +166,15 @@ export async function POST(req: NextRequest) {
     const pageCount = ocrResult.pages?.length || 1;
     await recordProcessingUsage(pageCount);
 
+    // Guard: empty OCR text — document is unreadable
+    if (!ocrResult.text || ocrResult.text.trim().length < 50) {
+      await supabase
+        .from("documents")
+        .update({ status: "error", processing_error: "Could not extract text from document" })
+        .eq("id", documentId);
+      return NextResponse.json({ error: "Could not extract text from document" }, { status: 422 });
+    }
+
     // ── Classify document ────────────────────────────────────────────────────
     const classification = classifyDocument({
       text: ocrResult.text,
@@ -170,7 +202,9 @@ export async function POST(req: NextRequest) {
       || classification.classifiedType === "plan_document";
 
     if (isPlanDoc) {
-      const planResult = await processPlanDocumentData(supabase, doc, ocrResult.text, documentId, classification);
+      // Confidence-tiered routing: skip canonical writes for medium-confidence docs
+      const skipCanonical = classification.confidence < 0.8;
+      const planResult = await processPlanDocumentData(supabase, doc, ocrResult.text, documentId, classification, { skipCanonical });
       if (!planResult.success) {
         return NextResponse.json({ success: false, error: planResult.error, parseWarnings: planResult.parseWarnings }, { status: 500 });
       }

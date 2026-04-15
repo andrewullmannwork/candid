@@ -179,11 +179,19 @@ export async function POST(req: NextRequest) {
     console.log(`[upload] Quick classify: ${classification.classifiedType} (${Math.round(classification.confidence * 100)}%) | ${classification.pageCount} pages | file: ${file.name}`);
   } catch (classifyErr) {
     console.error("[upload] Quick classification failed:", classifyErr);
-    // Fall through to return uploaded state — don't block the upload
-    return NextResponse.json({ documentId, storagePath, status: "uploaded" });
+    // Fix 11: Don't leave doc in "uploaded" limbo — mark as error
+    await supabase.from("documents").update({
+      status: "error",
+      processing_error: "Classification failed — please retry or contact support.",
+    }).eq("id", documentId);
+    try {
+      await notifyAdminForReview(documentId, "unknown", 0, file.name, decoded.email || "");
+    } catch { /* non-critical */ }
+    return NextResponse.json({ documentId, storagePath, status: "error", error: "Classification failed" }, { status: 500 });
   }
 
   const userEmail = decoded.email || "";
+  let fileHashComputed: string | null = null;
 
   // ── Smart extraction skip (feature-flagged) ─────────────────────────────
   // Check if this document matches a known canonical plan with stable data.
@@ -194,7 +202,7 @@ export async function POST(req: NextRequest) {
       const dedupEnabled = await isFeatureEnabled("document_dedup", userEmail);
 
       if (dedupEnabled) {
-        const fileHash = computeFileHash(buffer);
+        fileHashComputed = computeFileHash(buffer);
 
         // Two-tier identifier extraction: regex first, Haiku fallback
         let identifiers = extractPlanIdentifiers(classification.ocrTextPreview);
@@ -203,9 +211,9 @@ export async function POST(req: NextRequest) {
         }
 
         // Save hash to document record
-        await supabase.from("documents").update({ file_hash: fileHash }).eq("id", documentId);
+        await supabase.from("documents").update({ file_hash: fileHashComputed }).eq("id", documentId);
 
-        const dedupResult = await shouldSkipExtraction(supabase, documentId, fileHash, identifiers, user.id);
+        const dedupResult = await shouldSkipExtraction(supabase, documentId, fileHashComputed, identifiers, user.id);
         console.log(`[upload] Dedup check: skip=${dedupResult.skip}, reason=${dedupResult.reason}, identifiers=${identifiers.source}`);
 
         if (dedupResult.skip && dedupResult.canonicalPlanId) {
@@ -243,16 +251,19 @@ export async function POST(req: NextRequest) {
   }
 
   // ── File hash rate limit (same file 3+ times → reject) ──────────────────
-  const fileHash = computeFileHash(buffer);
-  await supabase.from("documents").update({ file_hash: fileHash }).eq("id", documentId);
+  // Hash may already be computed by dedup block above — reuse if so
+  if (!fileHashComputed) {
+    fileHashComputed = computeFileHash(buffer);
+    await supabase.from("documents").update({ file_hash: fileHashComputed }).eq("id", documentId);
+  }
 
   const { count: hashCount } = await supabase
     .from("documents")
     .select("id", { count: "exact", head: true })
     .eq("user_id", user.id)
-    .eq("file_hash", fileHash);
+    .eq("file_hash", fileHashComputed);
 
-  if (hashCount != null && hashCount > 3) {
+  if (hashCount != null && hashCount >= 3) {
     await supabase.from("documents").update({
       status: "error",
       processing_error: "This file has been uploaded too many times.",
@@ -275,7 +286,15 @@ export async function POST(req: NextRequest) {
       const baseUrl = req.headers.get("x-forwarded-proto") && req.headers.get("x-forwarded-host")
         ? `${req.headers.get("x-forwarded-proto")}://${req.headers.get("x-forwarded-host")}`
         : new URL(req.url).origin;
-      await enqueueChunk(documentId, baseUrl);
+      const enqueued = await enqueueChunk(documentId, baseUrl);
+
+      if (!enqueued) {
+        await supabase.from("documents").update({
+          status: "error",
+          processing_error: "Failed to enqueue for processing — please retry.",
+        }).eq("id", documentId);
+        return NextResponse.json({ documentId, storagePath, status: "error", error: "Failed to enqueue" }, { status: 500 });
+      }
 
       return NextResponse.json({
         documentId,
