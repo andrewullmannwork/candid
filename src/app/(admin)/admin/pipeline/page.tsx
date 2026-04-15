@@ -117,8 +117,10 @@ export default function PipelinePage() {
   const [reviewDocs, setReviewDocs] = useState<ReviewDocument[]>([]);
   const [selectedReviewDocs, setSelectedReviewDocs] = useState<Set<string>>(new Set());
   const [reviewFilter, setReviewFilter] = useState<"pending" | "all">("pending");
-  const [reclassifyType, setReclassifyType] = useState("sbc");
   const [reviewActionLoading, setReviewActionLoading] = useState(false);
+  const [bulkReclassifyType, setBulkReclassifyType] = useState("sbc");
+  // Per-document final type overrides — keyed by doc ID, defaults to Haiku's classified_type
+  const [finalDocTypes, setFinalDocTypes] = useState<Record<string, string>>({});
   const [serviceFilter, setServiceFilter] = useState<"all" | "other">("other");
   const [loading, setLoading] = useState(true);
   const { query, update, insert, deleteRecord } = useAdminQuery();
@@ -1151,22 +1153,23 @@ export default function PipelinePage() {
             <div className="flex items-center gap-2 mb-3 p-2 bg-blue-50 border border-blue-200 rounded-lg">
               <span className="text-xs font-medium text-blue-800">{selectedReviewDocs.size} selected</span>
               <button
-                onClick={() => handleReviewAction("approve")}
+                onClick={() => handleReviewAction("reclassify")}
                 disabled={reviewActionLoading}
                 className="px-3 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
               >
-                Approve (Haiku Type)
+                {reviewActionLoading ? "Processing..." : "Approve as Final Doc Type"}
               </button>
-              <button
-                onClick={() => handleReviewAction("reject")}
-                disabled={reviewActionLoading}
-                className="px-3 py-1 text-xs bg-gray-600 text-white rounded hover:bg-gray-700 disabled:opacity-50"
-              >
-                Reject (User Type)
-              </button>
+              <span className="text-xs text-gray-400">|</span>
+              <span className="text-xs text-gray-500">Bulk override:</span>
               <select
-                value={reclassifyType}
-                onChange={(e) => setReclassifyType(e.target.value)}
+                value={bulkReclassifyType}
+                onChange={(e) => {
+                  setBulkReclassifyType(e.target.value);
+                  // Set all selected docs to this type
+                  const updated = { ...finalDocTypes };
+                  for (const id of selectedReviewDocs) updated[id] = e.target.value;
+                  setFinalDocTypes(updated);
+                }}
                 className="px-2 py-1 text-xs border border-gray-300 rounded"
               >
                 <option value="eob">EOB</option>
@@ -1174,13 +1177,6 @@ export default function PipelinePage() {
                 <option value="sbc">SBC</option>
                 <option value="plan_document">Plan Doc</option>
               </select>
-              <button
-                onClick={() => handleReviewAction("reclassify")}
-                disabled={reviewActionLoading}
-                className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
-              >
-                Reclassify
-              </button>
             </div>
           )}
 
@@ -1209,6 +1205,7 @@ export default function PipelinePage() {
                     <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase">User Selected</th>
                     <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase">Haiku Detected</th>
                     <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase">Confidence</th>
+                    <th className="p-3 text-left text-xs font-medium text-green-700 uppercase bg-green-50">Final Doc Type</th>
                     <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                     <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                   </tr>
@@ -1256,6 +1253,18 @@ export default function PipelinePage() {
                           {doc.classification_confidence ? `${Math.round(doc.classification_confidence * 100)}%` : "—"}
                         </span>
                       </td>
+                      <td className="p-3 bg-green-50/30">
+                        <select
+                          value={finalDocTypes[doc.id] || doc.classified_type || doc.doc_type}
+                          onChange={(e) => setFinalDocTypes({ ...finalDocTypes, [doc.id]: e.target.value })}
+                          className="px-2 py-1 text-xs border border-green-300 rounded bg-white font-medium text-green-800 focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                        >
+                          <option value="eob">EOB</option>
+                          <option value="itemized_bill">Itemized Bill</option>
+                          <option value="sbc">SBC</option>
+                          <option value="plan_document">Plan Doc</option>
+                        </select>
+                      </td>
                       <td className="p-3">
                         <span className={`px-2 py-0.5 text-xs rounded-full ${
                           STATUS_COLORS[doc.status] || STATUS_COLORS.unknown
@@ -1274,10 +1283,10 @@ export default function PipelinePage() {
                           <button
                             onClick={() => {
                               setSelectedReviewDocs(new Set([doc.id]));
-                              handleReviewAction("approve");
+                              handleReviewAction("reclassify");
                             }}
                             disabled={reviewActionLoading}
-                            className="px-2 py-1 text-xs bg-green-100 text-green-700 rounded hover:bg-green-200 disabled:opacity-50"
+                            className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
                           >
                             Approve
                           </button>
@@ -1300,19 +1309,36 @@ export default function PipelinePage() {
     try {
       const token = await user?.firebaseUser.getIdToken();
       if (!token) return;
-      const res = await fetch("/api/admin/documents/resolve-type", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          documentIds: Array.from(selectedReviewDocs),
-          action,
-          ...(action === "reclassify" ? { resolvedType: reclassifyType } : {}),
-        }),
-      });
-      if (res.ok) {
-        setSelectedReviewDocs(new Set());
-        loadData();
+
+      if (action === "reclassify") {
+        // Group selected docs by their final type, send one request per group
+        const byType = new Map<string, string[]>();
+        for (const docId of selectedReviewDocs) {
+          const doc = reviewDocs.find((d) => d.id === docId);
+          const finalType = finalDocTypes[docId] || doc?.classified_type || doc?.doc_type || "eob";
+          if (!byType.has(finalType)) byType.set(finalType, []);
+          byType.get(finalType)!.push(docId);
+        }
+        await Promise.all(
+          Array.from(byType.entries()).map(([resolvedType, docIds]) =>
+            fetch("/api/admin/documents/resolve-type", {
+              method: "POST",
+              headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ documentIds: docIds, action: "reclassify", resolvedType }),
+            })
+          )
+        );
+      } else {
+        await fetch("/api/admin/documents/resolve-type", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ documentIds: Array.from(selectedReviewDocs), action }),
+        });
       }
+
+      setSelectedReviewDocs(new Set());
+      setFinalDocTypes({});
+      loadData();
     } catch (err) {
       console.error("[review] Action failed:", err);
     } finally {
