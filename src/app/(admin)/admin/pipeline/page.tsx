@@ -160,7 +160,7 @@ export default function PipelinePage() {
         query({ table: "insurer_catalog", order: { column: "name", ascending: true }, limit: 1000 }),
         query({ table: "service_catalog", order: { column: "category", ascending: true }, limit: 1000 }),
         query({ table: "documents", order: { column: "created_at", ascending: false }, limit: 200,
-          filters: [{ column: "status", op: "in", value: "(pending_review,needs_review)" }] }),
+          filters: [{ column: "status", op: "in", value: ["pending_review", "needs_review"] }] }),
       ]);
       setQueue(queueData || []);
       setCatalog(catalogData || []);
