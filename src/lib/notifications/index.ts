@@ -142,6 +142,50 @@ export async function notifyUncategorizedServices(
   });
 }
 
+// ── Unmapped service slug alerts ────────────────────────────────────────────
+
+/** Notify admin when bill line items couldn't be mapped to a service slug */
+export async function notifyUnmappedLineItems(
+  claimId: string,
+  unmappedDescriptions: string[],
+): Promise<void> {
+  if (unmappedDescriptions.length === 0) return;
+
+  const descList = unmappedDescriptions.slice(0, 10).map(d => `• "${d}"`).join("\n");
+  const moreText = unmappedDescriptions.length > 10 ? `\n...and ${unmappedDescriptions.length - 10} more` : "";
+
+  await sendSlack({
+    text: `Unmapped bill line items: ${unmappedDescriptions.length} item(s) in claim ${claimId.slice(0, 8)}`,
+    blocks: [
+      { type: "header", text: { type: "plain_text", text: "Unmapped Bill Line Items" } },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Claim:* \`${claimId.slice(0, 8)}...\`\n*Unmapped:* ${unmappedDescriptions.length} of line items couldn't be classified to a service.\n\n${descList}${moreText}`,
+        },
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: "_These items have `service_slug: null`. Add new services to the catalog and run the backfill script, or classify manually._",
+        },
+      },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Service Catalog" },
+            url: `${APP_URL}/admin/pipeline#services`,
+          },
+        ],
+      },
+    ],
+  });
+}
+
 // ── Processing budget alerts ────────────────────────────────────────────────
 
 /**

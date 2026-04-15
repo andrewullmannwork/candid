@@ -58,7 +58,8 @@ export async function processPlanDocumentData(
   doc: { id: string; user_id: string; file_name: string },
   ocrText: string,
   documentId: string,
-  classification: { classifiedType: string; confidence: number; mismatch: boolean }
+  classification: { classifiedType: string; confidence: number; mismatch: boolean },
+  options?: { skipCanonical?: boolean }
 ): Promise<ProcessPlanResult> {
   try {
     const isFullPlanDoc = classification.classifiedType === "plan_document"
@@ -251,6 +252,11 @@ export async function processPlanDocumentData(
     } // end else (create new plan)
 
     // ── Canonical plan matching (feature-flagged) ─────────────────────────────
+    // Skip canonical writes when skipCanonical is true (medium-confidence docs held for admin review)
+    const skipCanonical = options?.skipCanonical === true;
+    if (skipCanonical) {
+      console.log("[process-plan] skipCanonical=true — skipping canonical plan matching and service upsert");
+    }
     let canonicalPlanId: string | null = null;
     let canonicalNeedsConfirmation = false;
 
@@ -261,6 +267,8 @@ export async function processPlanDocumentData(
 
     if (!canonicalEnabled) {
       console.log("[canonical-plan] Feature flag disabled for this user, skipping");
+    } else if (skipCanonical) {
+      // Medium-confidence doc — held for admin review, don't touch canonical tables
     } else try {
       const insurerMatch = await matchInsurerCatalog(supabase, planInsert.insurer_name || "");
       if (insurerMatch && planInsert.plan_name) {

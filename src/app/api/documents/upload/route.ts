@@ -105,6 +105,22 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Daily upload cap — 10 uploads per calendar day
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const { count: todayCount } = await supabase
+    .from("documents")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", user.id)
+    .gte("created_at", dayStart.toISOString());
+
+  if (todayCount != null && todayCount >= 10) {
+    return NextResponse.json(
+      { error: "You've reached the daily upload limit of 10 documents. Try again tomorrow." },
+      { status: 429 }
+    );
+  }
+
   const documentId = crypto.randomUUID();
   const ext = file.name.split(".").pop()?.toLowerCase() || "pdf";
   const storagePath = `${user.id}/${documentId}.${ext}`;
@@ -221,6 +237,27 @@ export async function POST(req: NextRequest) {
       // Non-fatal — fall through to normal processing
       console.error("[upload] Dedup check failed (non-fatal):", dedupErr);
     }
+  }
+
+  // ── File hash rate limit (same file 3+ times → reject) ──────────────────
+  const fileHash = computeFileHash(buffer);
+  await supabase.from("documents").update({ file_hash: fileHash }).eq("id", documentId);
+
+  const { count: hashCount } = await supabase
+    .from("documents")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", user.id)
+    .eq("file_hash", fileHash);
+
+  if (hashCount != null && hashCount > 3) {
+    await supabase.from("documents").update({
+      status: "error",
+      processing_error: "This file has been uploaded too many times.",
+    }).eq("id", documentId);
+    return NextResponse.json(
+      { error: "You've already uploaded this file 3 times. Use the retry button on your existing upload if you need to reprocess." },
+      { status: 429 }
+    );
   }
 
   // HIGH confidence — queue for processing via QStash (guaranteed delivery)

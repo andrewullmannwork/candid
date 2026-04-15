@@ -9,6 +9,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
 import { extractTextFromDocument } from "@/lib/ocr";
 import { parseBillFromOCR } from "@/lib/billing/parser";
+import { parseBillWithHaiku } from "@/lib/billing/haiku-bill-parser";
 import { runAudit } from "@/lib/audit";
 import { collectPricingData } from "@/lib/care/collector";
 import { checkProcessingBudget, recordProcessingUsage } from "@/lib/config/processing-usage";
@@ -189,12 +190,9 @@ export async function POST(req: NextRequest) {
     }
 
     // EOB / Itemized Bill: run audit pipeline
-    const parsedBill = parseBillFromOCR(
-      ocrResult,
-      documentId,
-      doc.user_id,
-      billType
-    );
+    // Use Haiku for structured extraction (handles any format), fall back to regex
+    const haikuParsed = await parseBillWithHaiku(ocrResult.text, documentId, doc.user_id, billType as "eob" | "itemized_bill");
+    const parsedBill = haikuParsed || parseBillFromOCR(ocrResult, documentId, doc.user_id, billType);
 
     const auditReport = await runAudit(parsedBill);
 

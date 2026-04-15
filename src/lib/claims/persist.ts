@@ -8,6 +8,9 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ParsedBill, AuditReport, AuditFinding } from "@/lib/billing/types";
+import { mapLineItemsToServices, inferBillingCodeType } from "@/lib/claims/service-mapper";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { notifyUnmappedLineItems } from "@/lib/notifications";
 
 export interface PersistClaimResult {
   claimId: string;
@@ -70,6 +73,32 @@ export async function persistAuditResults(
       }
     }
 
+    // Map line item descriptions → service slugs via Haiku (feature-flagged)
+    const serviceMappingEnabled = await isFeatureEnabled("billing_code_service_mapping");
+    const serviceMappings = new Map<number, { slug: string; confidence: number }>();
+
+    if (serviceMappingEnabled && parsedBill.lineItems.length > 0) {
+      try {
+        const mappings = await mapLineItemsToServices(
+          parsedBill.lineItems.map((item) => ({
+            lineNumber: item.lineNumber,
+            description: item.description || item.category || "",
+            billingCode: item.procedureCode || undefined,
+            billingCodeType: item.procedureCode ? inferBillingCodeType(item.procedureCode) : undefined,
+            category: item.category || undefined,
+          }))
+        );
+        for (const m of mappings) {
+          if (m.confidence >= 0.3) {
+            serviceMappings.set(m.lineNumber, { slug: m.serviceSlug, confidence: m.confidence });
+          }
+        }
+        console.log(`[claims-persist] Mapped ${serviceMappings.size}/${parsedBill.lineItems.length} line items to service slugs`);
+      } catch (err) {
+        console.error("[claims-persist] Service mapping failed (non-blocking):", err);
+      }
+    }
+
     // Insert claim_line_items
     const lineItemInserts = parsedBill.lineItems.map((item) => {
       const findings = findingsByLine.get(item.lineNumber) || [];
@@ -86,12 +115,14 @@ export async function persistAuditResults(
           }
         : {};
 
+      const mapping = serviceMappings.get(item.lineNumber);
+
       return {
         claim_id: claim.id,
         line_number: item.lineNumber,
         billing_code: item.procedureCode || null,
-        billing_code_type: item.procedureCode ? (item.procedureCode.length === 5 ? "CPT" : "HCPCS") : null,
-        service_slug: null, // Will be backfilled when we have code→service mapping
+        billing_code_type: item.procedureCode ? inferBillingCodeType(item.procedureCode) : null,
+        service_slug: mapping?.slug || null,
         description: item.description || item.category || null,
         units: item.quantity || 1,
         billed_amount: item.billedAmount,
@@ -100,7 +131,10 @@ export async function persistAuditResults(
         patient_owes: item.patientResponsibility || null,
         adjustment_reason_code: null,
         modifier_codes: item.modifier ? [item.modifier] : null,
-        metadata: findingMeta,
+        metadata: {
+          ...findingMeta,
+          ...(mapping ? { serviceMapping: { slug: mapping.slug, confidence: mapping.confidence } } : {}),
+        },
       };
     });
 
@@ -119,6 +153,16 @@ export async function persistAuditResults(
     }
 
     console.log(`[claims-persist] Saved claim ${claim.id}: ${lineItemInserts.length} line items, ${auditReport.findings.length} findings`);
+
+    // Notify admin if any line items couldn't be mapped to a service slug (non-blocking)
+    if (serviceMappingEnabled) {
+      const unmapped = lineItemInserts
+        .filter((li) => li.service_slug === null && li.description)
+        .map((li) => li.description as string);
+      if (unmapped.length > 0) {
+        notifyUnmappedLineItems(claim.id, unmapped).catch(() => {});
+      }
+    }
 
     return { claimId: claim.id, lineItemIds };
   } catch (err) {

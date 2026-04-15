@@ -46,6 +46,20 @@ const DEFAULT_CATEGORY_LABELS: Record<string, string> = {
   other: "Other / Uncategorized",
 };
 
+interface ReviewDocument {
+  id: string;
+  user_id: string;
+  file_name: string;
+  doc_type: string;
+  classified_type: string | null;
+  classification_confidence: number | null;
+  type_mismatch: boolean;
+  status: string;
+  processing_error: string | null;
+  storage_path: string;
+  created_at: string;
+}
+
 interface DiscoveryQueueItem {
   id: string;
   insurer_name_raw: string;
@@ -96,10 +110,15 @@ interface ProcessingStats {
 
 export default function PipelinePage() {
   const { user } = useAuth();
-  const [tab, setTab] = useState<"queue" | "catalog" | "services">("queue");
+  const [tab, setTab] = useState<"queue" | "catalog" | "services" | "review">("queue");
   const [queue, setQueue] = useState<DiscoveryQueueItem[]>([]);
   const [catalog, setCatalog] = useState<InsurerCatalogEntry[]>([]);
   const [services, setServices] = useState<ServiceCatalogItem[]>([]);
+  const [reviewDocs, setReviewDocs] = useState<ReviewDocument[]>([]);
+  const [selectedReviewDocs, setSelectedReviewDocs] = useState<Set<string>>(new Set());
+  const [reviewFilter, setReviewFilter] = useState<"pending" | "all">("pending");
+  const [reclassifyType, setReclassifyType] = useState("sbc");
+  const [reviewActionLoading, setReviewActionLoading] = useState(false);
   const [serviceFilter, setServiceFilter] = useState<"all" | "other">("other");
   const [loading, setLoading] = useState(true);
   const { query, update, insert, deleteRecord } = useAdminQuery();
@@ -136,13 +155,16 @@ export default function PipelinePage() {
   async function loadData() {
     setLoading(true);
     try {
-      const [queueData, catalogData, serviceData] = await Promise.all([
+      const [queueData, catalogData, serviceData, reviewData] = await Promise.all([
         query({ table: "insurer_discovery_queue", order: { column: "created_at", ascending: false }, limit: 100 }),
         query({ table: "insurer_catalog", order: { column: "name", ascending: true }, limit: 1000 }),
         query({ table: "service_catalog", order: { column: "category", ascending: true }, limit: 1000 }),
+        query({ table: "documents", order: { column: "created_at", ascending: false }, limit: 200,
+          filters: [{ column: "status", op: "in", value: "(pending_review,needs_review)" }] }),
       ]);
       setQueue(queueData || []);
       setCatalog(catalogData || []);
+      setReviewDocs(reviewData || []);
       // Filter out merged services
       const activeServices = (serviceData || []).filter((s: ServiceCatalogItem & { merged_into_id?: string | null }) => !s.merged_into_id);
       setServices(activeServices);
@@ -416,6 +438,18 @@ export default function PipelinePage() {
           Service Catalog {services.filter((s) => s.category === "other").length > 0 && (
             <span className="ml-1.5 px-1.5 py-0.5 bg-red-200 text-red-800 text-[10px] font-bold rounded-full">
               {services.filter((s) => s.category === "other").length}
+            </span>
+          )}
+        </button>
+        <button
+          onClick={() => setTab("review")}
+          className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+            tab === "review" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          Document Review {reviewDocs.length > 0 && (
+            <span className="ml-1.5 px-1.5 py-0.5 bg-red-200 text-red-800 text-[10px] font-bold rounded-full">
+              {reviewDocs.length}
             </span>
           )}
         </button>
@@ -1084,8 +1118,224 @@ export default function PipelinePage() {
           </table>
         </div>
       )}
+
+      {/* Document Review Tab */}
+      {tab === "review" && (
+        <div>
+          {/* Sub-tabs */}
+          <div className="flex gap-2 mb-3">
+            <button
+              onClick={() => setReviewFilter("pending")}
+              className={`px-3 py-1 text-xs font-medium rounded-full ${
+                reviewFilter === "pending"
+                  ? "bg-red-100 text-red-800"
+                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}
+            >
+              Needs Review ({reviewDocs.length})
+            </button>
+            <button
+              onClick={() => setReviewFilter("all")}
+              className={`px-3 py-1 text-xs font-medium rounded-full ${
+                reviewFilter === "all"
+                  ? "bg-gray-800 text-white"
+                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}
+            >
+              All Documents
+            </button>
+          </div>
+
+          {/* Bulk actions */}
+          {selectedReviewDocs.size > 0 && (
+            <div className="flex items-center gap-2 mb-3 p-2 bg-blue-50 border border-blue-200 rounded-lg">
+              <span className="text-xs font-medium text-blue-800">{selectedReviewDocs.size} selected</span>
+              <button
+                onClick={() => handleReviewAction("approve")}
+                disabled={reviewActionLoading}
+                className="px-3 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
+              >
+                Approve (Haiku Type)
+              </button>
+              <button
+                onClick={() => handleReviewAction("reject")}
+                disabled={reviewActionLoading}
+                className="px-3 py-1 text-xs bg-gray-600 text-white rounded hover:bg-gray-700 disabled:opacity-50"
+              >
+                Reject (User Type)
+              </button>
+              <select
+                value={reclassifyType}
+                onChange={(e) => setReclassifyType(e.target.value)}
+                className="px-2 py-1 text-xs border border-gray-300 rounded"
+              >
+                <option value="eob">EOB</option>
+                <option value="itemized_bill">Itemized Bill</option>
+                <option value="sbc">SBC</option>
+                <option value="plan_document">Plan Doc</option>
+              </select>
+              <button
+                onClick={() => handleReviewAction("reclassify")}
+                disabled={reviewActionLoading}
+                className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+              >
+                Reclassify
+              </button>
+            </div>
+          )}
+
+          <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+            {reviewDocs.length === 0 ? (
+              <div className="p-8 text-center text-gray-500">
+                No documents need type review. Documents appear here when classification confidence is below 80%.
+              </div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-200 bg-gray-50">
+                    <th className="p-3 text-left w-8">
+                      <input
+                        type="checkbox"
+                        checked={selectedReviewDocs.size === reviewDocs.length && reviewDocs.length > 0}
+                        onChange={(e) => {
+                          if (e.target.checked) setSelectedReviewDocs(new Set(reviewDocs.map((d) => d.id)));
+                          else setSelectedReviewDocs(new Set());
+                        }}
+                        className="rounded"
+                      />
+                    </th>
+                    <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase">Document</th>
+                    <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase">Uploaded</th>
+                    <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase">User Selected</th>
+                    <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase">Haiku Detected</th>
+                    <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase">Confidence</th>
+                    <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                    <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {reviewDocs.map((doc) => (
+                    <tr key={doc.id} className="border-b border-gray-100 hover:bg-gray-50">
+                      <td className="p-3">
+                        <input
+                          type="checkbox"
+                          checked={selectedReviewDocs.has(doc.id)}
+                          onChange={(e) => {
+                            const next = new Set(selectedReviewDocs);
+                            if (e.target.checked) next.add(doc.id);
+                            else next.delete(doc.id);
+                            setSelectedReviewDocs(next);
+                          }}
+                          className="rounded"
+                        />
+                      </td>
+                      <td className="p-3">
+                        <div className="font-medium text-gray-900 truncate max-w-[200px]">{doc.file_name}</div>
+                        <div className="text-xs text-gray-400 font-mono">{doc.id.slice(0, 8)}...</div>
+                      </td>
+                      <td className="p-3 text-xs text-gray-500">
+                        {new Date(doc.created_at).toLocaleDateString()}
+                      </td>
+                      <td className="p-3">
+                        <span className="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-700">
+                          {doc.doc_type}
+                        </span>
+                      </td>
+                      <td className="p-3">
+                        <span className={`px-2 py-0.5 text-xs rounded-full ${
+                          doc.type_mismatch ? "bg-amber-100 text-amber-800" : "bg-gray-100 text-gray-700"
+                        }`}>
+                          {doc.classified_type || "unknown"}
+                        </span>
+                      </td>
+                      <td className="p-3">
+                        <span className={`text-xs font-medium ${
+                          (doc.classification_confidence || 0) >= 0.8 ? "text-green-600" :
+                          (doc.classification_confidence || 0) >= 0.4 ? "text-amber-600" : "text-red-600"
+                        }`}>
+                          {doc.classification_confidence ? `${Math.round(doc.classification_confidence * 100)}%` : "—"}
+                        </span>
+                      </td>
+                      <td className="p-3">
+                        <span className={`px-2 py-0.5 text-xs rounded-full ${
+                          STATUS_COLORS[doc.status] || STATUS_COLORS.unknown
+                        }`}>
+                          {doc.status}
+                        </span>
+                      </td>
+                      <td className="p-3">
+                        <div className="flex gap-1">
+                          <button
+                            onClick={() => viewDocument(doc.storage_path)}
+                            className="px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
+                          >
+                            View PDF
+                          </button>
+                          <button
+                            onClick={() => {
+                              setSelectedReviewDocs(new Set([doc.id]));
+                              handleReviewAction("approve");
+                            }}
+                            disabled={reviewActionLoading}
+                            className="px-2 py-1 text-xs bg-green-100 text-green-700 rounded hover:bg-green-200 disabled:opacity-50"
+                          >
+                            Approve
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
+
+  async function handleReviewAction(action: "approve" | "reject" | "reclassify") {
+    if (selectedReviewDocs.size === 0) return;
+    setReviewActionLoading(true);
+    try {
+      const token = await user?.firebaseUser.getIdToken();
+      if (!token) return;
+      const res = await fetch("/api/admin/documents/resolve-type", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          documentIds: Array.from(selectedReviewDocs),
+          action,
+          ...(action === "reclassify" ? { resolvedType: reclassifyType } : {}),
+        }),
+      });
+      if (res.ok) {
+        setSelectedReviewDocs(new Set());
+        loadData();
+      }
+    } catch (err) {
+      console.error("[review] Action failed:", err);
+    } finally {
+      setReviewActionLoading(false);
+    }
+  }
+
+  async function viewDocument(storagePath: string) {
+    try {
+      const token = await user?.firebaseUser.getIdToken();
+      if (!token) return;
+      // Get signed URL from Supabase storage via admin API
+      const res = await fetch(`/api/admin/documents/signed-url?path=${encodeURIComponent(storagePath)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const { url } = await res.json();
+        window.open(url, "_blank");
+      }
+    } catch (err) {
+      console.error("[review] Failed to get document URL:", err);
+    }
+  }
 }
 
 function SbcUrlCell({ entry, onSave }: { entry: InsurerCatalogEntry; onSave: (url: string) => void }) {
