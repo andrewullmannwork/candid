@@ -264,16 +264,34 @@ export function parseSBCText(text: string, documentId?: string): SBCParseResult 
   // ── Extract plan identity ───────────────────────────────────────────────
 
   // Plan name / insurer from header — SBC format: "Employer LLC: Plan Name"
-  // Try the structured header line first
-  const structuredHeader = text.match(/(?:Coverage Period|Coverage for)[^\n]*\n[^\n]*?:\s*(.+?)(?:\n|$)/im);
-  if (structuredHeader) {
-    plan.plan_name = structuredHeader[1].trim();
-  }
-  // Also try "Employer: Plan Name" pattern from the SBC title section
+  // Patterns to reject as plan names (these are metadata, not actual plan names)
+  const isMetadata = (s: string) =>
+    /^(individual|family|employee|individual.*family|plan\s*type)/i.test(s.trim()) ||
+    /coverage\s+(for|period)/i.test(s.trim()) ||
+    s.includes("|") || s.length < 3;
+
+  // Try "Employer: Plan Name" pattern (e.g., "Acme Corp: Open Access Plus")
   const employerPlan = text.match(/([A-Z][^\n:]{3,50}):\s+((?:Open Access|PPO|HMO|EPO|POS|HDHP|OAP)[^\n]*)/im);
-  if (employerPlan) {
+  if (employerPlan && !isMetadata(employerPlan[2])) {
     plan.plan_name = employerPlan[2].trim();
     plan.employer_name = employerPlan[1].trim();
+  }
+
+  // Try structured header — look for a plan name line AFTER "Coverage Period" header
+  // Skip "Coverage for:" lines (those are coverage tier, not plan name)
+  if (!plan.plan_name) {
+    const structuredHeader = text.match(/Coverage Period[^\n]*\n([^\n]*?:\s*)(.+?)(?:\n|$)/im);
+    if (structuredHeader && !isMetadata(structuredHeader[2])) {
+      plan.plan_name = structuredHeader[2].trim();
+    }
+  }
+
+  // Try "Plan Name:" or "Plan:" direct label
+  if (!plan.plan_name) {
+    const directPlanName = text.match(/(?:^|\n)\s*Plan(?:\s+Name)?[:\s]+([A-Z][^\n]{3,60})/im);
+    if (directPlanName && !isMetadata(directPlanName[1])) {
+      plan.plan_name = directPlanName[1].trim();
+    }
   }
 
   // ── Insurer name — detect from domain, branding, or repeated mentions ────

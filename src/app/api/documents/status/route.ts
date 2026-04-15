@@ -85,13 +85,51 @@ export async function POST(req: NextRequest) {
       .update({ is_active: true })
       .eq("id", doc.linked_insurance_plan_id);
 
-    // Update profile
+    // Clear stale plan-specific fields from profile (preserves personal info: name, DOB, phone, etc.)
+    // New plan's extracted values will backfill via process-plan or next card scan
     await supabase
       .from("profiles")
-      .update({ active_insurance_plan_id: doc.linked_insurance_plan_id })
+      .update({
+        active_insurance_plan_id: doc.linked_insurance_plan_id,
+        // Clear cost fields — stale data from old plan
+        insurer: null,
+        plan_name: null,
+        plan_type: null,
+        group_number: null,
+        member_id: null,
+        deductible_individual: null,
+        oop_max_individual: null,
+        copay_primary: null,
+        copay_specialist: null,
+        copay_er: null,
+        coinsurance_pct: null,
+        matched_plan_id: null,
+        plan_source: null,
+      })
       .eq("user_id", doc.user_id);
 
-    return NextResponse.json({ success: true });
+    // Backfill profile with new plan's data so profile stays in sync
+    const { data: newPlan } = await supabase
+      .from("insurance_plans")
+      .select("insurer_name, plan_name, plan_type, state, group_number, member_id, in_deductible_individual, in_oop_max_individual, source")
+      .eq("id", doc.linked_insurance_plan_id)
+      .single();
+
+    if (newPlan) {
+      const backfill: Record<string, unknown> = {};
+      if (newPlan.insurer_name) backfill.insurer = newPlan.insurer_name;
+      if (newPlan.plan_name) backfill.plan_name = newPlan.plan_name;
+      if (newPlan.plan_type) backfill.plan_type = newPlan.plan_type;
+      if (newPlan.state) backfill.state = newPlan.state;
+      if (newPlan.in_deductible_individual != null) backfill.deductible_individual = newPlan.in_deductible_individual;
+      if (newPlan.in_oop_max_individual != null) backfill.oop_max_individual = newPlan.in_oop_max_individual;
+      if (Object.keys(backfill).length > 0) {
+        await supabase.from("profiles").update(backfill).eq("user_id", doc.user_id);
+      }
+    }
+
+    // Card-derived fields (member_id, group_number) were cleared — user needs to re-scan
+    return NextResponse.json({ success: true, needsCardRescan: true });
   }
 
   // Confirm canonical plan match (user verified the matched plan is correct)

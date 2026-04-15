@@ -70,6 +70,39 @@ export async function processPlanDocumentData(
       ? parsePlanDocument(ocrText)
       : parseSBCText(ocrText, documentId);
 
+    // ── Plan identity: Haiku primary, regex fallback ────────────────────────
+    // Haiku reliably extracts plan name from any SBC format; regex is fragile
+    try {
+      const { extractPlanIdentifiersWithHaiku } = await import("@/lib/plan/extraction-dedup");
+      const haikuIds = await extractPlanIdentifiersWithHaiku(ocrText);
+      if (haikuIds.planName) {
+        console.log("[process-plan] Haiku plan identity:", haikuIds.planName, "|", haikuIds.insurer, "|", haikuIds.planType);
+        parseResult.plan.plan_name = haikuIds.planName;
+      }
+      // Haiku is also more reliable for insurer and plan type
+      if (haikuIds.insurer) parseResult.plan.insurer_name = haikuIds.insurer;
+      if (haikuIds.planType) parseResult.plan.plan_type = haikuIds.planType;
+    } catch (haikuErr) {
+      // Haiku failed — regex results from sbc-parser remain as fallback
+      console.warn("[process-plan] Haiku plan identity failed, using regex fallback:", haikuErr);
+    }
+
+    // ── Cross-check against profile plan name for canonical matching ────────
+    // If user already has a plan name on profile (from card scan), it may be more
+    // accurate for matching than the SBC-extracted name
+    let profilePlanNameForCanonical: string | undefined;
+    {
+      const { data: profileCheck } = await supabase
+        .from("profiles")
+        .select("plan_name")
+        .eq("user_id", doc.user_id)
+        .single();
+
+      if (profileCheck?.plan_name && profileCheck.plan_name !== parseResult.plan.plan_name) {
+        profilePlanNameForCanonical = profileCheck.plan_name;
+      }
+    }
+
     // ── Haiku service extraction ────────────────────────────────────────────
     console.log("[process-plan] Attempting Haiku extraction...");
     try {
@@ -259,6 +292,7 @@ export async function processPlanDocumentData(
     }
     let canonicalPlanId: string | null = null;
     let canonicalNeedsConfirmation = false;
+    let canonicalIsNew = false;
 
     // Check feature flag — get user email for targeting
     const { data: userForFlag } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
@@ -293,6 +327,7 @@ export async function processPlanDocumentData(
         const canonicalResult = await findOrCreateCanonicalPlan(supabase, {
           insurerId: insurerMatch.id,
           planName: planInsert.plan_name,
+          altPlanName: profilePlanNameForCanonical,
           planType: planInsert.plan_type || undefined,
           state: profileForCanonical?.state || undefined,
           planYear: new Date().getFullYear(),
@@ -321,6 +356,7 @@ export async function processPlanDocumentData(
         } else {
           // Auto-link (high confidence or new plan)
           canonicalPlanId = canonicalResult.canonicalPlanId;
+          canonicalIsNew = canonicalResult.isNew;
           await supabase.from("insurance_plans")
             .update({ canonical_plan_id: canonicalPlanId })
             .eq("id", targetPlanId);
@@ -490,6 +526,64 @@ export async function processPlanDocumentData(
         } catch (err) {
           console.error("[canonical-plan] Canonical service upsert error (non-fatal):", err);
         }
+      }
+    }
+
+    // ── Canonical service inheritance: fill gaps from community data ────────
+    // When a plan links to a canonical, inherit any services the user doesn't have yet
+    if (canonicalPlanId && !canonicalNeedsConfirmation && !canonicalIsNew) {
+      try {
+        const { data: canonicalServices } = await supabase
+          .from("canonical_plan_services")
+          .select("service_slug, copay, coinsurance, deductible_applies, is_covered, requires_prior_auth, confidence")
+          .eq("canonical_plan_id", canonicalPlanId);
+
+        if (canonicalServices && canonicalServices.length > 0) {
+          // Get user's existing service slugs
+          const { data: userServices } = await supabase
+            .from("plan_covered_services")
+            .select("service_id, service_catalog!inner(slug)")
+            .eq("insurance_plan_id", targetPlanId);
+
+          const existingSlugs = new Set(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            userServices?.map((s: any) => s.service_catalog?.slug ?? s.service_catalog?.[0]?.slug).filter(Boolean) || []
+          );
+
+          const missing = canonicalServices.filter(cs => !existingSlugs.has(cs.service_slug));
+
+          if (missing.length > 0) {
+            let inherited = 0;
+            for (const cs of missing) {
+              const { data: svc } = await supabase
+                .from("service_catalog")
+                .select("id")
+                .eq("slug", cs.service_slug)
+                .single();
+
+              if (svc) {
+                const { error: inhErr } = await supabase.from("plan_covered_services").upsert({
+                  insurance_plan_id: targetPlanId,
+                  service_id: svc.id,
+                  place_of_service: "any",
+                  in_copay: cs.copay,
+                  in_coinsurance: cs.coinsurance,
+                  in_deductible_applies: cs.deductible_applies,
+                  covered: cs.is_covered,
+                  prior_auth_required: cs.requires_prior_auth,
+                  confidence: Math.min(cs.confidence, 0.8), // Inherited data slightly lower confidence
+                  source: "canonical_inherited" as const,
+                }, { onConflict: "insurance_plan_id,service_id,place_of_service" });
+                if (!inhErr) inherited++;
+              }
+            }
+            if (inherited > 0) {
+              console.log(`[canonical-plan] Inherited ${inherited} services from canonical ${canonicalPlanId} to user plan ${targetPlanId}`);
+            }
+          }
+        }
+      } catch (inheritErr) {
+        console.warn("[canonical-plan] Service inheritance failed (non-fatal):", inheritErr);
       }
     }
 

@@ -282,6 +282,7 @@ function ProfileContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const isOnboarding = searchParams.get("onboarding") === "true";
+  const needsCardRescan = searchParams.get("rescan_card") === "1";
   const prefillPhone = searchParams.get("phone") || "";
   const prefillDob = searchParams.get("dob") || "";
 
@@ -318,6 +319,16 @@ function ProfileContent() {
   const [cardScanned, setCardScanned] = useState(false);
   const [cardError, setCardError] = useState("");
   const [cardScanAttempts, setCardScanAttempts] = useState(0);
+  const [cardPlanMismatch, setCardPlanMismatch] = useState<{
+    type: "different_insurer" | "same_insurer_different_plan" | "same_insurer_uncertain";
+    existingInsurer: string;
+    newInsurer: string;
+    existingPlanName?: string;
+    newPlanName?: string;
+    pendingData: Partial<Record<keyof ProfileData, string>>;
+    planMatches: { planId: string; planName: string; insurerName: string; confidence: number }[];
+  } | null>(null);
+  const [pendingCanonicalMatch, setPendingCanonicalMatch] = useState<{ canonicalPlanId: string; matchedPlanName: string; confidence: number; sourceCount: number; insurerName: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Load existing profile ─────────────────────────────────────────────────
@@ -403,8 +414,12 @@ function ProfileContent() {
   }, [user]);
 
   // ── Save current step's data ──────────────────────────────────────────────
-  async function saveStep(data: Partial<Record<keyof ProfileData, string>>) {
-    if (!user) return;
+  async function saveStep(data: Partial<Record<keyof ProfileData, string>>): Promise<{
+    insurerMismatch?: { existingInsurer: string; newInsurer: string };
+    planMismatch?: { type: "different_insurer" | "same_insurer_different_plan" | "same_insurer_uncertain"; existingInsurer: string; newInsurer: string; existingPlanName?: string; newPlanName?: string };
+    pendingCanonicalMatch?: { canonicalPlanId: string; matchedPlanName: string; confidence: number; sourceCount: number; insurerName: string };
+  } | null> {
+    if (!user) return null;
     setSaving(true);
     try {
       const idToken = await user.firebaseUser.getIdToken();
@@ -436,9 +451,12 @@ function ProfileContent() {
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}));
         console.error("Profile save failed:", res.status, errBody);
+        return null;
       }
+      return await res.json();
     } catch (err) {
       console.error("Failed to save:", err);
+      return null;
     } finally {
       setSaving(false);
     }
@@ -498,7 +516,7 @@ function ProfileContent() {
         const { error } = await res.json();
         throw new Error(error || "Scan failed");
       }
-      const { fields }: { fields: InsuranceCardFields } = await res.json();
+      const { fields, planMatches: scanPlanMatches }: { fields: InsuranceCardFields; planMatches?: { planId: string; planName: string; insurerName: string; confidence: number }[] } = await res.json();
 
       // Quality check: did we extract enough meaningful data?
       // At minimum we need insurer OR (member ID with digits)
@@ -545,7 +563,7 @@ function ProfileContent() {
       setCardScanned(true);
 
       // Auto-save extracted fields to backend immediately so data persists on navigate
-      await saveStep({
+      const cardData = {
         insurer: fields.insurer || undefined,
         plan_type: fields.planType || undefined,
         plan_name: fields.planName || undefined,
@@ -562,7 +580,27 @@ function ProfileContent() {
         copay_rx: fields.copayRx != null ? String(fields.copayRx) : undefined,
         coinsurance_pct: fields.coinsurancePct != null ? String(fields.coinsurancePct) : undefined,
         zip_code: fields.zipCode || undefined,
-      } as Partial<Record<keyof ProfileData, string>>);
+        plan_source: "insurance_card",
+      } as Partial<Record<keyof ProfileData, string>>;
+
+      const result = await saveStep(cardData);
+
+      // Check if the backend detected a plan mismatch (different insurer, same insurer different plan, or uncertain)
+      if (result?.planMismatch) {
+        setCardPlanMismatch({
+          ...result.planMismatch,
+          pendingData: cardData,
+          planMatches: scanPlanMatches || [],
+        });
+        // Don't advance — show mismatch prompt instead
+        setCardScanning(false);
+        return;
+      }
+
+      // Check if the backend found a canonical plan match needing confirmation
+      if (result?.pendingCanonicalMatch) {
+        setPendingCanonicalMatch(result.pendingCanonicalMatch);
+      }
       setHasExistingProfile(true);
     } catch (err) {
       const attempts = cardScanAttempts + 1;
@@ -636,6 +674,29 @@ function ProfileContent() {
             {allFilled ? "Update insurance info" : "Complete profile"}
           </button>
         </div>
+
+        {needsCardRescan && (
+          <div className="mb-5 p-4 bg-amber-50 border border-amber-200 rounded-2xl">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0">
+                <svg className="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-amber-900">Scan your new insurance card</p>
+                <p className="text-xs text-amber-700 mt-0.5">You switched plans. Upload your new card so we can update your member ID and group number.</p>
+              </div>
+            </div>
+            <button
+              onClick={() => { setEditMode(true); setStep(0); }}
+              className="mt-3 w-full py-2.5 bg-amber-600 text-white rounded-xl text-xs font-semibold hover:bg-amber-700 transition-colors"
+            >
+              Scan new card
+            </button>
+          </div>
+        )}
 
         {!allFilled && (
           <div className="mb-5 p-4 bg-blue-50 border border-blue-100 rounded-2xl">
@@ -887,6 +948,166 @@ function ProfileContent() {
           {cardError && (
             <div className="p-3 bg-amber-50 border border-amber-100 rounded-xl">
               <p className="text-xs text-amber-700">{cardError}</p>
+            </div>
+          )}
+
+          {/* Plan mismatch prompt — three variants */}
+          {cardPlanMismatch && (() => {
+            const m = cardPlanMismatch;
+            const hasMatches = m.planMatches.length > 0;
+            const isDifferentInsurer = m.type === "different_insurer";
+            const isSameInsurerDifferent = m.type === "same_insurer_different_plan";
+            const isUncertain = m.type === "same_insurer_uncertain";
+
+            // Header + description based on mismatch type
+            const header = isDifferentInsurer
+              ? "Different insurer detected"
+              : isSameInsurerDifferent
+              ? "Different plan detected"
+              : "Plan details changed";
+
+            const description = isDifferentInsurer
+              ? <>Your profile currently shows <strong>{m.existingInsurer}</strong>, but this card is from <strong>{m.newInsurer}</strong>.</>
+              : isSameInsurerDifferent
+              ? <>Same insurer (<strong>{m.existingInsurer}</strong>), but this looks like a different plan. This could mean different benefits, copays, and deductibles.</>
+              : <>Same insurer (<strong>{m.existingInsurer}</strong>), but some plan details differ. Is this a new card for your current plan, or a different plan?</>;
+
+            const switchLabel = isDifferentInsurer
+              ? `Switch to ${m.newInsurer}`
+              : "This is a different plan";
+
+            const keepLabel = isUncertain
+              ? "Same plan, new card"
+              : "Keep current plan";
+
+            async function handleSwitch() {
+              const data = { ...m.pendingData };
+              delete (data as Record<string, unknown>).plan_source;
+              const idToken = await user!.firebaseUser.getIdToken();
+              await fetch("/api/profile", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+                body: JSON.stringify({ ...data, force_plan_switch: true }),
+              });
+              setCardPlanMismatch(null);
+              setCardScanned(true);
+              setHasExistingProfile(true);
+              router.push("/upload?need_sbc=1");
+            }
+
+            function handleKeep() {
+              setCardPlanMismatch(null);
+              if (isUncertain) {
+                // "Same plan, new card" — save identity fields only (card replacement)
+                saveStep({
+                  member_id: m.pendingData.member_id,
+                  group_number: m.pendingData.group_number,
+                  zip_code: m.pendingData.zip_code,
+                } as Partial<Record<keyof ProfileData, string>>);
+                setCardScanned(true);
+              } else {
+                setCardScanned(false);
+                setCardFile(null);
+              }
+            }
+
+            return (
+              <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl space-y-3">
+                <p className="text-sm font-semibold text-amber-900">{header}</p>
+                <p className="text-xs text-amber-700">{description}</p>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="p-3 bg-white rounded-xl border border-gray-200 text-center">
+                    <p className="text-[10px] text-gray-400 uppercase font-semibold">Current</p>
+                    <p className="text-sm font-medium text-gray-900 mt-0.5">{m.existingPlanName || m.existingInsurer}</p>
+                    {m.existingPlanName && <p className="text-[10px] text-gray-400">{m.existingInsurer}</p>}
+                  </div>
+                  <div className="p-3 bg-blue-50 rounded-xl border border-blue-200 text-center">
+                    <p className="text-[10px] text-blue-500 uppercase font-semibold">New card</p>
+                    <p className="text-sm font-medium text-gray-900 mt-0.5">{m.newPlanName || m.newInsurer}</p>
+                    {m.newPlanName && <p className="text-[10px] text-blue-400">{m.newInsurer}</p>}
+                  </div>
+                </div>
+
+                {/* T1.4: Show matched plans from catalog if available */}
+                {hasMatches && (isDifferentInsurer || isSameInsurerDifferent) && (
+                  <div className="p-3 bg-green-50 rounded-xl border border-green-100">
+                    <p className="text-xs font-semibold text-green-800">We found this plan in our database</p>
+                    <p className="text-xs text-green-700 mt-0.5">
+                      Switching will load benefit data from {m.planMatches[0].planName}. You may still want to upload your SBC for the most complete results.
+                    </p>
+                  </div>
+                )}
+
+                {/* T1.5: No matches — plan not in DB */}
+                {!hasMatches && (isDifferentInsurer || isSameInsurerDifferent) && (
+                  <div className="p-3 bg-gray-50 rounded-xl border border-gray-100">
+                    <p className="text-xs text-gray-600">
+                      Candid doesn&apos;t have this plan in our database yet. Upload your SBC after switching for complete benefit results.
+                    </p>
+                  </div>
+                )}
+
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleSwitch}
+                    className="flex-1 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-semibold hover:bg-blue-700 transition-colors"
+                  >
+                    {switchLabel}
+                  </button>
+                  <button
+                    onClick={handleKeep}
+                    className="flex-1 py-2.5 bg-white border border-gray-200 text-gray-700 rounded-xl text-xs font-semibold hover:bg-gray-50 transition-colors"
+                  >
+                    {keepLabel}
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Canonical plan match confirmation */}
+          {pendingCanonicalMatch && (
+            <div className="p-4 bg-blue-50 border border-blue-200 rounded-2xl space-y-3">
+              <p className="text-sm font-semibold text-blue-900">We found a matching plan</p>
+              <p className="text-xs text-blue-700">
+                Your card matches a plan we already have in our database. Linking to it will give you access to community-verified benefit data from {pendingCanonicalMatch.sourceCount} other {pendingCanonicalMatch.sourceCount === 1 ? "member" : "members"}.
+              </p>
+              <div className="p-3 bg-white rounded-xl border border-blue-100">
+                <p className="text-sm font-medium text-gray-900">{pendingCanonicalMatch.matchedPlanName}</p>
+                <p className="text-xs text-gray-500 mt-0.5">{pendingCanonicalMatch.insurerName} · {Math.round(pendingCanonicalMatch.confidence * 100)}% match</p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    try {
+                      const idToken = await user!.firebaseUser.getIdToken();
+                      // Get the active plan ID and link it
+                      const profileRes = await fetch("/api/profile", { headers: { Authorization: `Bearer ${idToken}` } });
+                      const { profile: p } = await profileRes.json();
+                      if (p?.active_insurance_plan_id) {
+                        const supabase = (await import("@/lib/supabase/client")).createBrowserClient();
+                        await supabase
+                          .from("insurance_plans")
+                          .update({ canonical_plan_id: pendingCanonicalMatch!.canonicalPlanId })
+                          .eq("id", p.active_insurance_plan_id);
+                      }
+                    } catch (err) {
+                      console.error("Failed to confirm canonical match:", err);
+                    }
+                    setPendingCanonicalMatch(null);
+                  }}
+                  className="flex-1 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-semibold hover:bg-blue-700 transition-colors"
+                >
+                  Yes, this is my plan
+                </button>
+                <button
+                  onClick={() => setPendingCanonicalMatch(null)}
+                  className="flex-1 py-2.5 bg-white border border-gray-200 text-gray-700 rounded-xl text-xs font-semibold hover:bg-gray-50 transition-colors"
+                >
+                  Not my plan
+                </button>
+              </div>
             </div>
           )}
 

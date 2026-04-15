@@ -91,11 +91,12 @@ export async function POST(req: NextRequest) {
     .eq("status", "processing")
     .lt("created_at", new Date(Date.now() - 5 * 60 * 1000).toISOString());
 
-  // Check per-user document limit (exclude errored/failed docs)
+  // Check per-user document limit (exclude errored/failed docs and card scan audit trail)
   const { count: userDocCount } = await supabase
     .from("documents")
     .select("id", { count: "exact", head: true })
     .eq("user_id", user.id)
+    .neq("doc_type", "insurance_card")
     .in("status", ["uploaded", "queued", "processing", "processed"]);
 
   if (userDocCount != null && userDocCount >= FLAGS.UPLOAD_MAX_PER_USER) {
@@ -105,18 +106,20 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Daily upload cap — 10 uploads per calendar day
+  // Daily upload cap — 10 uploads per calendar day (excludes card scan audit trail)
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);
   const { count: todayCount } = await supabase
     .from("documents")
     .select("id", { count: "exact", head: true })
     .eq("user_id", user.id)
+    .neq("doc_type", "insurance_card")
     .gte("created_at", dayStart.toISOString());
 
-  if (todayCount != null && todayCount >= 10) {
+  const DAILY_UPLOAD_LIMIT = parseInt(process.env.DAILY_UPLOAD_LIMIT || "10", 10);
+  if (todayCount != null && todayCount >= DAILY_UPLOAD_LIMIT) {
     return NextResponse.json(
-      { error: "You've reached the daily upload limit of 10 documents. Try again tomorrow." },
+      { error: `You've reached the daily upload limit of ${DAILY_UPLOAD_LIMIT} documents. Try again tomorrow.` },
       { status: 429 }
     );
   }

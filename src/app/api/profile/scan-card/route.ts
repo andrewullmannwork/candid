@@ -441,6 +441,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const supabase = createServerClient();
     const ocrResult = await extractTextFromDocument(buffer, ocrMimeType);
     const fields = parseInsuranceCard(ocrResult.text);
 
@@ -456,7 +457,6 @@ export async function POST(req: NextRequest) {
     let planMatches: MatchResult[] = [];
     if (fields.insurer || fields.planName) {
       try {
-        const supabase = createServerClient();
         planMatches = await matchPlan(supabase, {
           insurerName: fields.insurer,
           planName: fields.planName,
@@ -468,6 +468,56 @@ export async function POST(req: NextRequest) {
         console.error("[scan-card] Plan matching error:", matchErr);
         // Non-fatal — still return extracted fields
       }
+    }
+
+    // ── Audit trail: persist card scan as a document record ────────────────
+    try {
+      const { data: internalUser } = await supabase
+        .from("users")
+        .select("id")
+        .eq("firebase_uid", decoded.uid)
+        .single();
+
+      if (internalUser) {
+        const { data: consentEvent } = await supabase
+          .from("consent_events")
+          .select("id")
+          .eq("user_id", internalUser.id)
+          .eq("consent_type", "health_data_upload")
+          .eq("granted", true)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .single();
+
+        if (consentEvent) {
+          const documentId = crypto.randomUUID();
+          const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
+          const storagePath = `${internalUser.id}/${documentId}.${ext}`;
+          const contentType = ocrMimeType || "image/jpeg";
+
+          await supabase.storage
+            .from("documents")
+            .upload(storagePath, buffer, { contentType });
+
+          await supabase.from("documents").insert({
+            id: documentId,
+            user_id: internalUser.id,
+            storage_path: storagePath,
+            file_name: file.name,
+            file_size: buffer.length,
+            doc_type: "insurance_card" as const,
+            consent_event_id: consentEvent.id,
+            status: "processed",
+            classified_type: "insurance_card",
+            classification_confidence: extractionConfidence,
+          });
+
+          console.log("[scan-card] Audit trail created:", documentId);
+        }
+      }
+    } catch (auditErr) {
+      // Non-critical — don't fail the scan if audit trail fails
+      console.warn("[scan-card] Audit trail failed:", auditErr);
     }
 
     return NextResponse.json({
