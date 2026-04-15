@@ -21,6 +21,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 export interface CanonicalMatchInput {
   insurerId: string;
   planName: string;
+  altPlanName?: string; // Fallback plan name (e.g., from profile/card scan) for improved matching
   planType?: string;
   state?: string;
   planYear?: number;
@@ -298,17 +299,22 @@ function scoreCandidate(input: CanonicalMatchInput, candidate: CanonicalPlanRow)
   let maxScore = 0;
 
   // Plan name similarity (weight: 40%)
-  if (input.planName && candidate.plan_name) {
+  // Try both primary plan name and altPlanName (from profile/card), take the better score
+  if (candidate.plan_name && (input.planName || input.altPlanName)) {
     maxScore += 40;
-    const inputClean = cleanPlanName(input.planName);
     const candidateClean = cleanPlanName(candidate.plan_name);
+    let bestNameScore = 0;
 
-    if (inputClean === candidateClean) {
-      score += 40;
-    } else {
+    for (const name of [input.planName, input.altPlanName].filter(Boolean) as string[]) {
+      const inputClean = cleanPlanName(name);
+      if (inputClean === candidateClean) {
+        bestNameScore = 40;
+        break;
+      }
       const sim = trigramSimilarity(inputClean, candidateClean);
-      score += sim * 40;
+      bestNameScore = Math.max(bestNameScore, sim * 40);
     }
+    score += bestNameScore;
   }
 
   // State match (weight: 20%)

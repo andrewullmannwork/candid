@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useDropzone } from "react-dropzone";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useConsent } from "@/lib/consent/use-consent";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
@@ -57,7 +58,9 @@ const DOC_TYPES = {
 
 function UploadForm() {
   const { user } = useAuth();
-  const [docType, setDocType] = useState<"eob" | "itemized_bill" | "sbc" | "plan_document">("eob");
+  const searchParams = useSearchParams();
+  const needsSbc = searchParams.get("need_sbc") === "1";
+  const [docType, setDocType] = useState<"eob" | "itemized_bill" | "sbc" | "plan_document">(needsSbc ? "sbc" : "eob");
   const [uploading, setUploading] = useState(false);
   const [uploaded, setUploaded] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<"uploading" | "uploaded" | "auto_processed" | "pending_review" | "rejected" | null>(null);
@@ -696,7 +699,16 @@ function UploadForm() {
                           headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({ documentId, action: "activate_plan" }),
                         });
-                        if (!activateRes.ok) console.error("Plan activation failed:", await activateRes.text());
+                        if (!activateRes.ok) {
+                          console.error("Plan activation failed:", await activateRes.text());
+                        } else {
+                          const activateData = await activateRes.json();
+                          if (activateData.needsCardRescan) {
+                            // Redirect to profile with card re-scan prompt
+                            window.location.href = "/profile?rescan_card=1";
+                            return;
+                          }
+                        }
 
                         window.location.href = "/plan";
                       } catch (err) {
@@ -820,6 +832,21 @@ function UploadForm() {
       <p className="mt-1.5 text-sm text-gray-500">
         Upload your EOB or itemized bill. We&apos;ll extract every line item and run it through our audit engine.
       </p>
+
+      {/* SBC upload prompt after plan switch */}
+      {needsSbc && (
+        <div className="mt-5 p-4 bg-blue-50 border border-blue-100 rounded-2xl flex items-start gap-3">
+          <svg className="w-5 h-5 text-blue-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          <div>
+            <p className="text-sm font-semibold text-blue-800">Upload your plan document</p>
+            <p className="text-xs text-blue-600 mt-0.5">
+              You switched insurance plans. Upload your new Summary of Benefits and Coverage (SBC) so we can populate your benefits.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Profile missing banner */}
       {profileMissing && (
