@@ -230,7 +230,7 @@ export async function POST(req: NextRequest) {
       // Concurrency guard
       const { data: claimed } = await supabase
         .from("documents")
-        .update({ processing_step: `working_ocr_chunk_${chunkIndex}` })
+        .update({ processing_step: `working_ocr_chunk_${chunkIndex}`, processing_started_at: new Date().toISOString() })
         .eq("id", documentId)
         .eq("processing_step", step)
         .select("id");
@@ -364,7 +364,7 @@ export async function POST(req: NextRequest) {
     if (step === "classifying" || step === "extracting" || step === "saving" || step === "parsing") {
       const { data: claimed } = await supabase
         .from("documents")
-        .update({ processing_step: "working_classifying" })
+        .update({ processing_step: "working_classifying", processing_started_at: new Date().toISOString() })
         .eq("id", documentId)
         .eq("processing_step", step)
         .select("id");
@@ -407,6 +407,7 @@ export async function POST(req: NextRequest) {
 
       await supabase.from("documents").update({
         processing_step: "working_extracting",
+        processing_started_at: new Date().toISOString(),
         classified_type: fbEffectiveType,
         classification_confidence: classification.confidence,
         type_mismatch: fallbackMismatch || false,

@@ -60,7 +60,7 @@ export type ServiceCategory =
   | "preventive"
   | "other";
 
-export type CoveredServiceSource = "sbc_parsed" | "plan_doc_parsed" | "cms_data" | "manual";
+export type CoveredServiceSource = "sbc_parsed" | "plan_doc_parsed" | "cms_data" | "manual" | "canonical_inherited";
 
 export type BillingCodeType = "CPT" | "HCPCS" | "ICD10" | "REV" | "NDC" | "DRG" | "unknown";
 

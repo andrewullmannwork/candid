@@ -308,6 +308,7 @@ function ProfileContent() {
       .from("documents")
       .select("id, file_name, doc_type, status, created_at")
       .eq("user_id", user.userId)
+      .neq("doc_type", "insurance_card")
       .order("created_at", { ascending: false })
       .then(({ data }) => { if (data) setUserDocs(data); });
   }, [user]);
@@ -320,7 +321,7 @@ function ProfileContent() {
   const [cardError, setCardError] = useState("");
   const [cardScanAttempts, setCardScanAttempts] = useState(0);
   const [cardPlanMismatch, setCardPlanMismatch] = useState<{
-    type: "different_insurer" | "same_insurer_different_plan" | "same_insurer_uncertain";
+    type: "different_insurer" | "same_insurer_different_plan" | "same_insurer_uncertain" | "missing_insurer";
     existingInsurer: string;
     newInsurer: string;
     existingPlanName?: string;
@@ -958,21 +959,28 @@ function ProfileContent() {
             const isDifferentInsurer = m.type === "different_insurer";
             const isSameInsurerDifferent = m.type === "same_insurer_different_plan";
             const isUncertain = m.type === "same_insurer_uncertain";
+            const isMissingInsurer = m.type === "missing_insurer";
 
             // Header + description based on mismatch type
-            const header = isDifferentInsurer
+            const header = isMissingInsurer
+              ? "Could not read insurer from card"
+              : isDifferentInsurer
               ? "Different insurer detected"
               : isSameInsurerDifferent
               ? "Different plan detected"
               : "Plan details changed";
 
-            const description = isDifferentInsurer
+            const description = isMissingInsurer
+              ? <>We couldn&apos;t read the insurer name from your card. You currently have <strong>{m.existingInsurer}</strong> on file. Is this card for a different plan?</>
+              : isDifferentInsurer
               ? <>Your profile currently shows <strong>{m.existingInsurer}</strong>, but this card is from <strong>{m.newInsurer}</strong>.</>
               : isSameInsurerDifferent
               ? <>Same insurer (<strong>{m.existingInsurer}</strong>), but this looks like a different plan. This could mean different benefits, copays, and deductibles.</>
               : <>Same insurer (<strong>{m.existingInsurer}</strong>), but some plan details differ. Is this a new card for your current plan, or a different plan?</>;
 
-            const switchLabel = isDifferentInsurer
+            const switchLabel = isMissingInsurer
+              ? "This is a different plan"
+              : isDifferentInsurer
               ? `Switch to ${m.newInsurer}`
               : "This is a different plan";
 
@@ -982,7 +990,8 @@ function ProfileContent() {
 
             async function handleSwitch() {
               const data = { ...m.pendingData };
-              delete (data as Record<string, unknown>).plan_source;
+              // Keep plan_source so the new plan gets correct source (e.g. "insurance_card")
+              // Pre-check is already skipped when force_plan_switch is true
               const idToken = await user!.firebaseUser.getIdToken();
               await fetch("/api/profile", {
                 method: "POST",
@@ -999,10 +1008,12 @@ function ProfileContent() {
               setCardPlanMismatch(null);
               if (isUncertain) {
                 // "Same plan, new card" — save identity fields only (card replacement)
+                // Include plan_source so isCardAfterDoc activates and preserves SBC benefit data
                 saveStep({
                   member_id: m.pendingData.member_id,
                   group_number: m.pendingData.group_number,
                   zip_code: m.pendingData.zip_code,
+                  plan_source: "insurance_card",
                 } as Partial<Record<keyof ProfileData, string>>);
                 setCardScanned(true);
               } else {
@@ -1030,11 +1041,13 @@ function ProfileContent() {
                 </div>
 
                 {/* T1.4: Show matched plans from catalog if available */}
-                {hasMatches && (isDifferentInsurer || isSameInsurerDifferent) && (
+                {hasMatches && (isDifferentInsurer || isSameInsurerDifferent || isUncertain) && (
                   <div className="p-3 bg-green-50 rounded-xl border border-green-100">
                     <p className="text-xs font-semibold text-green-800">We found this plan in our database</p>
                     <p className="text-xs text-green-700 mt-0.5">
-                      Switching will load benefit data from {m.planMatches[0].planName}. You may still want to upload your SBC for the most complete results.
+                      {isUncertain
+                        ? `If this is a different plan, we found ${m.planMatches[0].planName} in our database.`
+                        : `Switching will load benefit data from ${m.planMatches[0].planName}. You may still want to upload your SBC for the most complete results.`}
                     </p>
                   </div>
                 )}
@@ -1082,16 +1095,11 @@ function ProfileContent() {
                   onClick={async () => {
                     try {
                       const idToken = await user!.firebaseUser.getIdToken();
-                      // Get the active plan ID and link it
-                      const profileRes = await fetch("/api/profile", { headers: { Authorization: `Bearer ${idToken}` } });
-                      const { profile: p } = await profileRes.json();
-                      if (p?.active_insurance_plan_id) {
-                        const supabase = (await import("@/lib/supabase/client")).createBrowserClient();
-                        await supabase
-                          .from("insurance_plans")
-                          .update({ canonical_plan_id: pendingCanonicalMatch!.canonicalPlanId })
-                          .eq("id", p.active_insurance_plan_id);
-                      }
+                      await fetch("/api/profile", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+                        body: JSON.stringify({ action: "confirm_canonical_match", canonicalPlanId: pendingCanonicalMatch!.canonicalPlanId }),
+                      });
                     } catch (err) {
                       console.error("Failed to confirm canonical match:", err);
                     }

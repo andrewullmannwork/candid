@@ -559,6 +559,7 @@ export async function processPlanDocumentData(
                 .from("service_catalog")
                 .select("id")
                 .eq("slug", cs.service_slug)
+                .is("merged_into_id", null)
                 .single();
 
               if (svc) {

@@ -9,6 +9,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
+import { getAdminAuth } from "@/lib/firebase/admin";
 
 export async function GET(req: NextRequest) {
   const documentId = req.nextUrl.searchParams.get("id");
@@ -60,6 +61,25 @@ export async function POST(req: NextRequest) {
 
   const supabase = createServerClient();
 
+  // Auth check for mutating actions — verify the user owns the document
+  const mutatingActions = ["activate_plan", "confirm_canonical_match", "reject_canonical_match"];
+  if (mutatingActions.includes(action)) {
+    const authHeader = req.headers.get("authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
+      return NextResponse.json({ error: "Authorization required" }, { status: 401 });
+    }
+    try {
+      const decoded = await getAdminAuth().verifyIdToken(authHeader.slice(7));
+      const { data: authUser } = await supabase.from("users").select("id").eq("firebase_uid", decoded.uid).single();
+      const { data: docOwner } = await supabase.from("documents").select("user_id").eq("id", documentId).single();
+      if (!authUser || !docOwner || authUser.id !== docOwner.user_id) {
+        return NextResponse.json({ error: "Not authorized for this document" }, { status: 403 });
+      }
+    } catch {
+      return NextResponse.json({ error: "Invalid token" }, { status: 401 });
+    }
+  }
+
   // Activate a mismatched plan (user chose to use the new insurer)
   if (action === "activate_plan") {
     const { data: doc } = await supabase
@@ -91,20 +111,13 @@ export async function POST(req: NextRequest) {
       .from("profiles")
       .update({
         active_insurance_plan_id: doc.linked_insurance_plan_id,
-        // Clear cost fields — stale data from old plan
-        insurer: null,
-        plan_name: null,
-        plan_type: null,
-        group_number: null,
-        member_id: null,
-        deductible_individual: null,
-        oop_max_individual: null,
-        copay_primary: null,
-        copay_specialist: null,
-        copay_er: null,
-        coinsurance_pct: null,
-        matched_plan_id: null,
-        plan_source: null,
+        // Clear all cost/plan fields — stale data from old plan (personal info preserved)
+        insurer: null, plan_name: null, plan_type: null, state: null,
+        group_number: null, member_id: null,
+        deductible_individual: null, oop_max_individual: null,
+        copay_primary: null, copay_specialist: null, copay_er: null,
+        copay_urgent_care: null, copay_rx: null, coinsurance_pct: null,
+        matched_plan_id: null, plan_source: null,
       })
       .eq("user_id", doc.user_id);
 
@@ -198,16 +211,17 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Default: trigger the next processing chunk
-  const chunkUrl = new URL("/api/documents/process-chunk", req.url);
+  // Default: trigger the next processing chunk via QStash (guaranteed delivery)
   try {
-    const res = await fetch(chunkUrl.toString(), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ documentId }),
-    });
-    const result = await res.json();
-    return NextResponse.json(result);
+    const { enqueueChunk } = await import("@/lib/queue/qstash");
+    const baseUrl = req.headers.get("x-forwarded-proto") && req.headers.get("x-forwarded-host")
+      ? `${req.headers.get("x-forwarded-proto")}://${req.headers.get("x-forwarded-host")}`
+      : new URL(req.url).origin;
+    const enqueued = await enqueueChunk(documentId, baseUrl);
+    if (!enqueued) {
+      return NextResponse.json({ error: "Failed to enqueue chunk" }, { status: 500 });
+    }
+    return NextResponse.json({ success: true, triggered: true });
   } catch {
     return NextResponse.json({ error: "Trigger failed" }, { status: 500 });
   }

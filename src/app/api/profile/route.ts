@@ -80,6 +80,28 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
+
+  // ── Handle canonical match confirmation from card scan UI ────────────────
+  if (body.action === "confirm_canonical_match" && body.canonicalPlanId) {
+    const supabase = createServerClient();
+    const { data: u } = await supabase.from("users").select("id").eq("firebase_uid", decoded.uid).single();
+    if (!u) return NextResponse.json({ error: "User not found" }, { status: 404 });
+
+    const { data: profile } = await supabase.from("profiles").select("active_insurance_plan_id").eq("user_id", u.id).single();
+    if (!profile?.active_insurance_plan_id) {
+      return NextResponse.json({ error: "No active plan" }, { status: 400 });
+    }
+
+    try {
+      const { confirmCanonicalMatch } = await import("@/lib/plan/canonical-match");
+      await confirmCanonicalMatch(supabase, profile.active_insurance_plan_id, body.canonicalPlanId);
+      return NextResponse.json({ success: true, canonicalPlanId: body.canonicalPlanId });
+    } catch (err) {
+      console.error("[canonical-plan] Confirm failed:", err);
+      return NextResponse.json({ error: "Failed to confirm canonical match" }, { status: 500 });
+    }
+  }
+
   const {
     insurer,
     plan_type,
@@ -142,11 +164,33 @@ export async function POST(req: NextRequest) {
   const oopInd = in_oop_max_individual ?? oop_max_individual;
   const isCardScanRequest = plan_source === "insurance_card";
 
-  let insurerMismatch: { existingInsurer: string; newInsurer: string } | null = null;
   let pendingCanonicalMatch: { canonicalPlanId: string; matchedPlanName: string; confidence: number; sourceCount: number; insurerName: string } | null = null;
 
   // ── Pre-check: detect plan changes BEFORE saving to profile ─────────────
   // For card scans, we must check first so "Keep current plan" doesn't pollute the DB
+
+  // Guard: card scan with no insurer extracted — warn user if they already have a plan
+  if (isCardScanRequest && !force_plan_switch && !insurer) {
+    const { data: preProfile } = await supabase
+      .from("profiles").select("active_insurance_plan_id").eq("user_id", user.id).single();
+    if (preProfile?.active_insurance_plan_id) {
+      const { data: existPlan } = await supabase
+        .from("insurance_plans").select("insurer_name").eq("id", preProfile.active_insurance_plan_id).single();
+      if (existPlan?.insurer_name) {
+        return NextResponse.json({
+          success: true,
+          planMismatch: {
+            type: "missing_insurer" as const,
+            existingInsurer: existPlan.insurer_name,
+            newInsurer: "Unknown",
+            existingPlanName: undefined,
+            newPlanName: plan_name || undefined,
+          },
+        });
+      }
+    }
+  }
+
   if (isCardScanRequest && !force_plan_switch && insurer) {
     const { data: preCheckProfile } = await supabase
       .from("profiles")
@@ -301,27 +345,15 @@ export async function POST(req: NextRequest) {
 
       const isCardScan = plan_source === "insurance_card";
 
-      // ── Mismatch detection: check if incoming insurer differs from existing plan ──
-      // Skip if user already confirmed the switch via force_plan_switch
+      // Fetch existing plan source for isCardAfterDoc detection
       let existingPlan: { insurer_name: string | null; source: string | null } | null = null;
-      if (!force_plan_switch && existingProfile?.active_insurance_plan_id && insurer) {
+      if (existingProfile?.active_insurance_plan_id) {
         const { data: plan } = await supabase
           .from("insurance_plans")
           .select("insurer_name, source")
           .eq("id", existingProfile.active_insurance_plan_id)
           .single();
         existingPlan = plan;
-
-        if (plan?.insurer_name && insurer) {
-          const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
-          const existingNorm = normalize(plan.insurer_name);
-          const incomingNorm = normalize(insurer);
-          // Mismatch if neither name contains the other (handles "Cigna" vs "Cigna Healthcare")
-          if (existingNorm && incomingNorm && !existingNorm.includes(incomingNorm) && !incomingNorm.includes(existingNorm)) {
-            insurerMismatch = { existingInsurer: plan.insurer_name, newInsurer: insurer };
-            // Don't overwrite existing plan — return mismatch flag to frontend
-          }
-        }
       }
 
       // If force_plan_switch, deactivate old plan before creating new one
@@ -332,21 +364,22 @@ export async function POST(req: NextRequest) {
           .eq("id", existingProfile.active_insurance_plan_id);
         // Clear the reference so the code below creates a new plan
         existingProfile.active_insurance_plan_id = null;
-        // Clear stale profile plan fields
+        // Clear stale profile plan fields (all cost/plan fields; personal info preserved)
         await supabase
           .from("profiles")
           .update({
             active_insurance_plan_id: null,
+            insurer: null, plan_name: null, plan_type: null, state: null,
             group_number: null, member_id: null,
             deductible_individual: null, oop_max_individual: null,
-            copay_primary: null, copay_specialist: null, copay_er: null, coinsurance_pct: null,
+            copay_primary: null, copay_specialist: null, copay_er: null,
+            copay_urgent_care: null, copay_rx: null, coinsurance_pct: null,
             matched_plan_id: null, plan_source: null,
           })
           .eq("user_id", user.id);
       }
 
-      // If insurer mismatch detected, skip the dual-write — frontend will handle confirmation
-      if (!insurerMismatch) {
+      {
         // ── Card-after-SBC merge: only update identity fields, preserve benefit data ──
         const existingIsFromDoc = existingPlan?.source === "sbc_upload" || existingPlan?.source === "plan_doc_upload";
         const isCardAfterDoc = isCardScan && existingProfile?.active_insurance_plan_id && existingIsFromDoc;
@@ -434,6 +467,9 @@ export async function POST(req: NextRequest) {
               .update({ active_insurance_plan_id: newPlan.id })
               .eq("user_id", user.id);
 
+            // Track the new plan ID for canonical matching below
+            if (existingProfile) existingProfile.active_insurance_plan_id = newPlan.id;
+
             // Create plan_covered_services rows for copays
             await syncCopayServices(supabase, newPlan.id, { copay_primary, copay_specialist, copay_er, copay_urgent_care, copay_rx });
           }
@@ -452,7 +488,7 @@ export async function POST(req: NextRequest) {
             if (canonicalEnabled) {
               const insurerMatch = await matchInsurerCatalog(supabase, insurer);
               if (insurerMatch) {
-                const activePlanId = existingProfile?.active_insurance_plan_id;
+                const activePlanId = existingProfile?.active_insurance_plan_id; // Uses newPlan.id if just created
                 // Only attempt canonical matching if we have a plan ID
                 if (activePlanId) {
                   const { data: currentPlan } = await supabase
@@ -546,7 +582,6 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({
     success: true,
-    ...(insurerMismatch ? { insurerMismatch } : {}),
     ...(pendingCanonicalMatch ? { pendingCanonicalMatch } : {}),
   });
 }

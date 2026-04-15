@@ -364,7 +364,7 @@ export async function linkDocumentToCanonical(
           plan_name: identifiers.planName || canonical.plan_name,
           insurer_name: insurer?.name || identifiers.insurer,
           plan_type: identifiers.planType || canonical.plan_type,
-          plan_year: identifiers.planYear || canonical.state ? undefined : undefined,
+          plan_year: identifiers.planYear || undefined,
           in_deductible_individual: parseResult.plan.in_deductible_individual ?? canonical.deductible_individual,
           in_oop_max_individual: parseResult.plan.in_oop_max_individual ?? canonical.oop_max_individual,
           source: "sbc_upload",
