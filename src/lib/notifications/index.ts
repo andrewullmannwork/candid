@@ -250,3 +250,38 @@ export async function notifyBudgetThreshold(
   });
 }
 
+// ── Benefit correction alerts ─────────────────────────────────────────────
+
+/** Notify admin when a user submits a benefit correction */
+export async function notifyBenefitCorrection(
+  serviceSlug: string,
+  field: string,
+  proposedValue: string,
+  userEmail?: string,
+): Promise<void> {
+  const serviceName = serviceSlug.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+  await sendSlack({
+    text: `Benefit correction: ${field} on ${serviceName}`,
+    blocks: [
+      { type: "header", text: { type: "plain_text", text: "Benefit Correction Submitted" } },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Service:* ${serviceName} (\`${serviceSlug}\`)\n*Field:* ${field}\n*Proposed value:* ${proposedValue}${userEmail ? `\n*Submitted by:* ${userEmail}` : ""}`,
+        },
+      },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Review in Admin" },
+            url: `${APP_URL}/admin/corrections`,
+          },
+        ],
+      },
+    ],
+  });
+}
+

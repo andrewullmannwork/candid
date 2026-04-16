@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
+import { createBrowserClient } from "@/lib/supabase/client";
 import type { PlanAnalysisResult, AnalyzedBenefit } from "@/lib/plan/analyzer";
 import type { BenefitCategory } from "@/lib/plan/benefits-catalog";
 import { BENEFIT_CATEGORY_LABELS } from "@/lib/plan/benefits-catalog";
@@ -29,6 +30,9 @@ const SERVICE_CATEGORY_LABELS: Record<string, string> = {
 interface AnalyzeResponse extends PlanAnalysisResult {
   dataSource: "user_plan" | "user_plan_with_canonical" | "matched_plan" | "cms_api" | "verified_plan" | "static_catalog";
   planName?: string;
+  planYear?: number | null;
+  insurancePlanId?: string;
+  canonicalPlanId?: string | null;
   insurer?: string;
   planType?: string;
   planSummary?: {
@@ -278,8 +282,9 @@ function DataSourceBanner({ dataSource, planName, planType, insurer, verificatio
 
 // ── Plan Summary Card ──────────────────────────────────────────────────────────
 
-function PlanSummaryCard({ planName, planSummary, dataSource }: {
+function PlanSummaryCard({ planName, planYear, planSummary, dataSource }: {
   planName?: string;
+  planYear?: number | null;
   planSummary?: AnalyzeResponse["planSummary"];
   dataSource: string;
 }) {
@@ -298,6 +303,11 @@ function PlanSummaryCard({ planName, planSummary, dataSource }: {
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-gray-900">
           {planName || "Your Plan"}
+          {planYear && (
+            <span className="ml-2 text-xs font-medium text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">
+              {planYear}
+            </span>
+          )}
           {planSummary.planType && (
             <span className="ml-2 text-xs font-medium text-gray-500">
               {planSummary.planType}
@@ -388,6 +398,68 @@ export default function CandidPlanPage() {
     } catch { return new Set(); }
   });
 
+  // Feature flags
+  const [correctionsEnabled, setCorrectionsEnabled] = useState(false);
+  const [yearRolloverEnabled, setYearRolloverEnabled] = useState(false);
+
+  // Historical plans state
+  const [historicalPlans, setHistoricalPlans] = useState<Array<{
+    id: string;
+    plan_name: string | null;
+    insurer_name: string | null;
+    plan_type: string | null;
+    plan_year: number | null;
+    is_active: boolean;
+    created_at: string;
+  }>>([]);
+  const [showHistory, setShowHistory] = useState(false);
+
+  // Correction form state
+  const [correctionTarget, setCorrectionTarget] = useState<{
+    benefitId: string;
+    serviceSlug: string;
+    title: string;
+  } | null>(null);
+  const [correctionField, setCorrectionField] = useState<string>("copay");
+  const [correctionValue, setCorrectionValue] = useState("");
+  const [correctionNotes, setCorrectionNotes] = useState("");
+  const [correctionSubmitting, setCorrectionSubmitting] = useState(false);
+  const [correctionSuccess, setCorrectionSuccess] = useState(false);
+  const [correctionError, setCorrectionError] = useState("");
+
+  async function submitCorrection() {
+    if (!user || !correctionTarget || !correctionValue) return;
+    setCorrectionSubmitting(true);
+    setCorrectionError("");
+    try {
+      const idToken = await user.firebaseUser.getIdToken();
+      const res = await fetch("/api/plan/corrections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify({
+          action: "submit",
+          serviceSlug: correctionTarget.serviceSlug,
+          field: correctionField,
+          proposedValue: correctionValue,
+          notes: correctionNotes || undefined,
+          insurancePlanId: result?.insurancePlanId || undefined,
+          canonicalPlanId: result?.canonicalPlanId || undefined,
+        }),
+      });
+      if (res.ok) {
+        setCorrectionSuccess(true);
+        setTimeout(() => { setCorrectionTarget(null); setCorrectionSuccess(false); setCorrectionValue(""); setCorrectionNotes(""); setCorrectionError(""); }, 2000);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setCorrectionError(errData.error || "Failed to submit correction. Please try again.");
+      }
+    } catch (err) {
+      console.error("Correction submit failed:", err);
+      setCorrectionError("Failed to submit correction. Please try again.");
+    }
+    setCorrectionSubmitting(false);
+  }
+
   function toggleBenefit(id: string) {
     setUsedBenefits((prev) => {
       const next = new Set(prev);
@@ -435,6 +507,35 @@ export default function CandidPlanPage() {
     }
 
     analyze();
+
+    // Load historical plans + check feature flag (non-critical, parallel)
+    (async () => {
+      try {
+        const supabase = createBrowserClient();
+        const [plansRes, flagRes, rolloverFlagRes] = await Promise.all([
+          supabase
+            .from("insurance_plans")
+            .select("id, plan_name, insurer_name, plan_type, plan_year, is_active, created_at")
+            .eq("user_id", user!.userId)
+            .order("created_at", { ascending: false }),
+          supabase
+            .from("feature_flag_rules")
+            .select("enabled")
+            .eq("flag_key", "benefit_corrections")
+            .eq("scope", "global")
+            .single(),
+          supabase
+            .from("feature_flag_rules")
+            .select("enabled")
+            .eq("flag_key", "plan_year_rollover")
+            .eq("scope", "global")
+            .single(),
+        ]);
+        if (plansRes.data) setHistoricalPlans(plansRes.data);
+        if (flagRes.data?.enabled) setCorrectionsEnabled(true);
+        if (rolloverFlagRes.data?.enabled) setYearRolloverEnabled(true);
+      } catch { /* non-critical */ }
+    })();
   }, [user]);
 
   if (loading) {
@@ -510,6 +611,7 @@ export default function CandidPlanPage() {
       {/* Plan summary card (only for matched/uploaded plans) */}
       <PlanSummaryCard
         planName={result.planName}
+        planYear={yearRolloverEnabled ? result.planYear : null}
         planSummary={result.planSummary}
         dataSource={result.dataSource}
       />
@@ -761,14 +863,86 @@ export default function CandidPlanPage() {
                             </div>
                           )}
 
-                          <div className="pt-1">
+                          <div className="pt-1 flex items-center justify-between">
                             <p className="text-xs text-gray-400">
                               {isGeneric
                                 ? "This is a general benefit estimate. Upload your plan documents to see if your specific plan covers this."
                                 : "Contact your insurer or check your plan documents to confirm this benefit is included in your specific plan."
                               }
                             </p>
+                            {correctionsEnabled && !isGeneric && result && (result.dataSource === "user_plan" || result.dataSource === "user_plan_with_canonical") && (
+                              <button
+                                onClick={() => setCorrectionTarget({
+                                  benefitId: item.benefit.id,
+                                  serviceSlug: item.serviceSlug || item.benefit.id,
+                                  title: item.benefit.title,
+                                })}
+                                className="text-xs text-gray-400 hover:text-amber-600 shrink-0 ml-3 transition-colors"
+                              >
+                                Flag issue
+                              </button>
+                            )}
                           </div>
+
+                          {/* Inline correction form */}
+                          {correctionTarget?.benefitId === item.benefit.id && (
+                            <div className="mt-2 p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
+                              {correctionSuccess ? (
+                                <p className="text-sm text-green-700 font-medium">Correction submitted. Thank you!</p>
+                              ) : (
+                                <>
+                                  <p className="text-xs font-semibold text-amber-900">
+                                    Report an issue with &ldquo;{correctionTarget!.title}&rdquo;
+                                  </p>
+                                  <select
+                                    value={correctionField}
+                                    onChange={(e) => setCorrectionField(e.target.value)}
+                                    className="w-full text-xs p-2 border border-amber-200 rounded-lg bg-white"
+                                  >
+                                    <option value="copay">Wrong copay</option>
+                                    <option value="coinsurance">Wrong coinsurance</option>
+                                    <option value="covered">Should be covered / not covered</option>
+                                    <option value="prior_auth">Prior auth incorrect</option>
+                                    <option value="deductible_applies">Deductible info wrong</option>
+                                    <option value="annual_limit">Annual limit incorrect</option>
+                                    <option value="other">Other issue</option>
+                                  </select>
+                                  <input
+                                    type="text"
+                                    placeholder="Correct value (e.g. $30, 20%, Yes, No)"
+                                    value={correctionValue}
+                                    onChange={(e) => setCorrectionValue(e.target.value)}
+                                    className="w-full text-xs p-2 border border-amber-200 rounded-lg"
+                                  />
+                                  <input
+                                    type="text"
+                                    placeholder="Notes (optional)"
+                                    value={correctionNotes}
+                                    onChange={(e) => setCorrectionNotes(e.target.value)}
+                                    className="w-full text-xs p-2 border border-amber-200 rounded-lg"
+                                  />
+                                  {correctionError && (
+                                    <p className="text-xs text-red-600">{correctionError}</p>
+                                  )}
+                                  <div className="flex gap-2">
+                                    <button
+                                      onClick={submitCorrection}
+                                      disabled={!correctionValue || correctionSubmitting}
+                                      className="text-xs px-3 py-1.5 bg-amber-600 text-white rounded-lg font-medium hover:bg-amber-700 disabled:opacity-50"
+                                    >
+                                      {correctionSubmitting ? "Submitting..." : "Submit"}
+                                    </button>
+                                    <button
+                                      onClick={() => { setCorrectionTarget(null); setCorrectionValue(""); setCorrectionNotes(""); setCorrectionError(""); }}
+                                      className="text-xs px-3 py-1.5 text-gray-500 hover:text-gray-700"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -826,6 +1000,48 @@ export default function CandidPlanPage() {
                     </div>
                   );
                 })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Plan History (behind plan_year_rollover flag) ────────────────── */}
+        {yearRolloverEnabled && historicalPlans.filter(p => !p.is_active).length > 0 && (
+          <div className="mt-8">
+            <button
+              onClick={() => setShowHistory(!showHistory)}
+              className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700 transition-colors"
+            >
+              <svg className={`w-4 h-4 transition-transform ${showHistory ? "rotate-180" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+              Plan History ({historicalPlans.filter(p => !p.is_active).length} previous {historicalPlans.filter(p => !p.is_active).length === 1 ? "plan" : "plans"})
+            </button>
+
+            {showHistory && (
+              <div className="mt-3 space-y-2">
+                {historicalPlans
+                  .filter(p => !p.is_active)
+                  .map(p => (
+                    <div key={p.id} className="p-3 bg-gray-50 border border-gray-200 rounded-xl flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-gray-700">
+                          {p.insurer_name || "Unknown insurer"}
+                          {p.plan_name && ` — ${p.plan_name}`}
+                        </p>
+                        <p className="text-xs text-gray-400 mt-0.5">
+                          {p.plan_type && `${p.plan_type} · `}
+                          {p.plan_year ? `${p.plan_year} plan year` : `Added ${new Date(p.created_at).toLocaleDateString()}`}
+                        </p>
+                      </div>
+                      <span className="text-[10px] font-semibold text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">
+                        Inactive
+                      </span>
+                    </div>
+                  ))}
+                <p className="text-xs text-gray-400 mt-1">
+                  Past plans are preserved permanently. Claims and disputes filed under a previous plan still reference that plan&apos;s benefit data.
+                </p>
               </div>
             )}
           </div>

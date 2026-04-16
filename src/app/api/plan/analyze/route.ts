@@ -145,6 +145,7 @@ export async function POST(request: Request) {
 
             const isNotCovered = s.covered === false;
             return {
+              serviceSlug: slug,
               benefit: {
                 id: slug,
                 category,
@@ -253,6 +254,9 @@ export async function POST(request: Request) {
             missingFields: [],
             dataSource: canonicalGapBenefits.length > 0 ? "user_plan_with_canonical" : "user_plan",
             planName: userPlan.plan_name,
+            planYear: userPlan.plan_year || null,
+            insurancePlanId: userPlan.id,
+            canonicalPlanId: userPlan.canonical_plan_id || null,
             planSource: userPlan.source,
             planSummary: await (async () => {
               let premiumMonthly: number | null = userPlan.premium_total ?? null;

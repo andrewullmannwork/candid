@@ -54,6 +54,8 @@ export default function DashboardPage() {
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [planResult, setPlanResult] = useState<PlanAnalysisResult | null>(null);
+  const [currentYear] = useState(() => new Date().getFullYear());
+  const [yearRolloverEnabled, setYearRolloverEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [usedBenefits, setUsedBenefits] = useState<Set<string>>(() => {
     if (typeof window === "undefined") return new Set();
@@ -114,6 +116,15 @@ export default function DashboardPage() {
           // Plan analysis may fail if profile incomplete
         }
       }
+
+      // Check feature flag
+      supabase
+        .from("feature_flag_rules")
+        .select("enabled")
+        .eq("flag_key", "plan_year_rollover")
+        .eq("scope", "global")
+        .single()
+        .then(({ data }) => { if (data?.enabled) setYearRolloverEnabled(true); });
 
       setLoading(false);
     }
@@ -284,6 +295,33 @@ export default function DashboardPage() {
           );
         }
 
+        return null;
+      })()}
+
+      {/* ── Plan year rollover / deductible reset notice ──────────────────── */}
+      {planResult && (() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const planYear = (planResult as any).planYear as number | null;
+        // Show if plan year matches current calendar year and flag is on
+        if (yearRolloverEnabled && planYear && planYear === currentYear) {
+          return (
+            <div className="p-4 bg-blue-50 border border-blue-100 rounded-2xl flex items-start gap-3">
+              <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center shrink-0 mt-0.5">
+                <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-blue-900">
+                  {planYear} plan year active
+                </p>
+                <p className="text-xs text-blue-700 mt-0.5">
+                  Your deductible and out-of-pocket maximums have reset for the new plan year. Benefits and copays may have changed from last year.
+                </p>
+              </div>
+            </div>
+          );
+        }
         return null;
       })()}
 

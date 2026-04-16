@@ -1,0 +1,270 @@
+/**
+ * POST /api/plan/corrections — Submit or manage benefit corrections
+ *
+ * Actions:
+ *   - submit: User flags an incorrect benefit value
+ *   - review: Admin approves/rejects a correction
+ *   - apply: Admin applies an approved correction to the canonical plan
+ *
+ * GET /api/plan/corrections — List corrections (admin: all pending, user: own)
+ */
+
+import { NextRequest, NextResponse } from "next/server";
+import { getAdminAuth } from "@/lib/firebase/admin";
+import { createServerClient } from "@/lib/supabase/server";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
+import type { CorrectionField } from "@/lib/supabase/types";
+
+async function getAuthUser(req: NextRequest) {
+  const authHeader = req.headers.get("authorization");
+  if (!authHeader?.startsWith("Bearer ")) return null;
+  try {
+    return await getAdminAuth().verifyIdToken(authHeader.slice(7));
+  } catch {
+    return null;
+  }
+}
+
+/** GET — list corrections */
+export async function GET(req: NextRequest) {
+  const decoded = await getAuthUser(req);
+  if (!decoded) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const supabase = createServerClient();
+  const { data: internalUser } = await supabase
+    .from("users")
+    .select("id, is_admin, email")
+    .eq("firebase_uid", decoded.uid)
+    .single();
+
+  if (!internalUser) {
+    return NextResponse.json({ error: "User not found" }, { status: 404 });
+  }
+
+  const isAdmin = internalUser.is_admin === true;
+  const status = req.nextUrl.searchParams.get("status") || "pending";
+
+  let query = supabase
+    .from("benefit_corrections")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(100);
+
+  if (!isAdmin) {
+    query = query.eq("user_id", internalUser.id);
+  } else if (status !== "all") {
+    query = query.eq("status", status);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error("[corrections] List error:", error);
+    return NextResponse.json({ error: "Failed to list corrections" }, { status: 500 });
+  }
+
+  return NextResponse.json({ corrections: data || [] });
+}
+
+/** POST — submit, review, or apply corrections */
+export async function POST(req: NextRequest) {
+  const decoded = await getAuthUser(req);
+  if (!decoded) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const supabase = createServerClient();
+  const { data: internalUser } = await supabase
+    .from("users")
+    .select("id, is_admin, email")
+    .eq("firebase_uid", decoded.uid)
+    .single();
+
+  if (!internalUser) {
+    return NextResponse.json({ error: "User not found" }, { status: 404 });
+  }
+
+  const body = await req.json();
+  const { action } = body;
+
+  // ── Submit a new correction ────────────────────────────────────────────
+  if (action === "submit") {
+    const flagEnabled = await isFeatureEnabled("benefit_corrections", internalUser.email || undefined);
+    if (!flagEnabled) {
+      return NextResponse.json({ error: "Benefit corrections are not enabled" }, { status: 403 });
+    }
+    const { serviceSlug, field, oldValue, proposedValue, notes, insurancePlanId, canonicalPlanId } = body as {
+      serviceSlug: string;
+      field: CorrectionField;
+      oldValue?: string;
+      proposedValue: string;
+      notes?: string;
+      insurancePlanId?: string;
+      canonicalPlanId?: string;
+    };
+
+    if (!serviceSlug || !field || !proposedValue) {
+      return NextResponse.json({ error: "serviceSlug, field, and proposedValue are required" }, { status: 400 });
+    }
+
+    const { data: correction, error } = await supabase
+      .from("benefit_corrections")
+      .insert({
+        user_id: internalUser.id,
+        insurance_plan_id: insurancePlanId || null,
+        canonical_plan_id: canonicalPlanId || null,
+        service_slug: serviceSlug,
+        field,
+        old_value: oldValue || null,
+        proposed_value: proposedValue,
+        notes: notes || null,
+      })
+      .select("id")
+      .single();
+
+    if (error) {
+      console.error("[corrections] Submit error:", error);
+      return NextResponse.json({ error: "Failed to submit correction" }, { status: 500 });
+    }
+
+    // Notify admin via Slack
+    try {
+      const { notifyBenefitCorrection } = await import("@/lib/notifications");
+      await notifyBenefitCorrection(serviceSlug, field, proposedValue, internalUser.email || undefined);
+    } catch { /* non-critical */ }
+
+    return NextResponse.json({ success: true, correctionId: correction.id });
+  }
+
+  // ── Admin: review a correction ─────────────────────────────────────────
+  if (action === "review") {
+    if (internalUser.is_admin !== true) {
+      return NextResponse.json({ error: "Admin only" }, { status: 403 });
+    }
+
+    const { correctionId, decision, reviewNotes } = body as {
+      correctionId: string;
+      decision: "approved" | "rejected";
+      reviewNotes?: string;
+    };
+
+    if (!correctionId || !decision) {
+      return NextResponse.json({ error: "correctionId and decision required" }, { status: 400 });
+    }
+
+    const { error } = await supabase
+      .from("benefit_corrections")
+      .update({
+        status: decision,
+        reviewed_by: internalUser.id,
+        reviewed_at: new Date().toISOString(),
+        review_notes: reviewNotes || null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", correctionId);
+
+    if (error) {
+      console.error("[corrections] Review error:", error);
+      return NextResponse.json({ error: "Failed to review correction" }, { status: 500 });
+    }
+
+    return NextResponse.json({ success: true });
+  }
+
+  // ── Admin: apply an approved correction to canonical plan ──────────────
+  if (action === "apply") {
+    if (internalUser.is_admin !== true) {
+      return NextResponse.json({ error: "Admin only" }, { status: 403 });
+    }
+
+    const { correctionId } = body as { correctionId: string };
+    if (!correctionId) {
+      return NextResponse.json({ error: "correctionId required" }, { status: 400 });
+    }
+
+    // Fetch the correction
+    const { data: correction } = await supabase
+      .from("benefit_corrections")
+      .select("*")
+      .eq("id", correctionId)
+      .single();
+
+    if (!correction || correction.status !== "approved") {
+      return NextResponse.json({ error: "Correction not found or not approved" }, { status: 400 });
+    }
+
+    // Apply to canonical_plan_services if canonical plan exists
+    if (!correction.canonical_plan_id) {
+      return NextResponse.json({ error: "This correction has no linked canonical plan — cannot auto-apply. Mark as approved and apply manually." }, { status: 400 });
+    }
+
+    if (correction.canonical_plan_id) {
+      const updateData: Record<string, unknown> = {};
+      const value = correction.proposed_value;
+
+      switch (correction.field) {
+        case "copay": {
+          const parsed = parseFloat(value.replace(/[$,]/g, ""));
+          if (isNaN(parsed)) return NextResponse.json({ error: "Invalid copay value — must be a number" }, { status: 400 });
+          updateData.copay = parsed;
+          break;
+        }
+        case "coinsurance": {
+          const parsed = parseFloat(value.replace(/%/g, ""));
+          if (isNaN(parsed)) return NextResponse.json({ error: "Invalid coinsurance value — must be a number" }, { status: 400 });
+          // Normalize: if user entered 20 (percent), store as 0.20
+          updateData.coinsurance = parsed > 1 ? parsed / 100 : parsed;
+          break;
+        }
+        case "covered":
+          updateData.is_covered = value.toLowerCase() === "true" || value.toLowerCase() === "yes";
+          break;
+        case "prior_auth":
+          updateData.requires_prior_auth = value.toLowerCase() === "true" || value.toLowerCase() === "yes";
+          break;
+        case "deductible_applies":
+          updateData.deductible_applies = value.toLowerCase() === "true" || value.toLowerCase() === "yes";
+          break;
+        case "annual_limit": {
+          const parsed = parseInt(value.replace(/[,$]/g, ""), 10);
+          if (isNaN(parsed)) return NextResponse.json({ error: "Invalid annual limit — must be a number" }, { status: 400 });
+          updateData.annual_limit = parsed;
+          break;
+        }
+      }
+
+      if (correction.field === "other") {
+        // "Other" corrections require manual admin intervention — cannot auto-apply to DB
+        return NextResponse.json({ error: "Corrections with field type 'other' cannot be auto-applied. Review the notes and update the plan manually." }, { status: 400 });
+      }
+
+      if (Object.keys(updateData).length > 0) {
+        updateData.confidence = 1.0; // Admin-applied = highest confidence
+        updateData.source = "admin";
+
+        const { error: updateError } = await supabase
+          .from("canonical_plan_services")
+          .update(updateData)
+          .eq("canonical_plan_id", correction.canonical_plan_id)
+          .eq("service_slug", correction.service_slug);
+
+        if (updateError) {
+          console.error("[corrections] Apply error:", updateError);
+          return NextResponse.json({ error: "Failed to apply correction" }, { status: 500 });
+        }
+      }
+    }
+
+    // Mark as applied
+    await supabase
+      .from("benefit_corrections")
+      .update({ status: "applied", updated_at: new Date().toISOString() })
+      .eq("id", correctionId);
+
+    return NextResponse.json({ success: true });
+  }
+
+  return NextResponse.json({ error: "Unknown action" }, { status: 400 });
+}
