@@ -88,12 +88,13 @@ function UploadForm() {
     step: string | null;
     completedPages: number;
     totalPages: number;
-    insurerMismatch?: { mismatch: boolean; type?: "insurer" | "plan_name"; existingInsurer?: string; parsedInsurer?: string; existingPlanName?: string; parsedPlanName?: string; pending_canonical_match?: { canonicalPlanId: string; matchedPlanName: string; confidence: number; sourceCount: number; insurerName: string } } | null;
+    insurerMismatch?: { mismatch: boolean; type?: "insurer" | "plan_name"; existingInsurer?: string; parsedInsurer?: string; existingPlanName?: string; parsedPlanName?: string; pending_canonical_match?: { canonicalPlanId: string; matchedPlanName: string; confidence: number; sourceCount: number; insurerName: string }; year_rollover?: { currentYear: number; newYear: number } } | null;
     processingError?: string | null;
     retryCount?: number;
     isStuck?: boolean;
   } | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [yearRolloverEnabled, setYearRolloverEnabled] = useState(false);
 
   // Rotating status message index — increments every 15s during processing
   const [messageIndex, setMessageIndex] = useState(0);
@@ -123,6 +124,14 @@ function UploadForm() {
       .eq("user_id", user.userId)
       .order("created_at", { ascending: false })
       .then(({ data }) => { if (data) setUserDocs(data); });
+    // Check feature flag for year rollover UI
+    supabase
+      .from("feature_flag_rules")
+      .select("enabled")
+      .eq("flag_key", "plan_year_rollover")
+      .eq("scope", "global")
+      .single()
+      .then(({ data }) => { if (data?.enabled) setYearRolloverEnabled(true); });
   }, [user, uploaded]);
 
   // Consent state — inline, not blocking
@@ -413,12 +422,13 @@ function UploadForm() {
     const isPendingReview = uploadStatus === "pending_review";
     const isUploading = uploadStatus === "uploading";
     const isProcessing = uploadStatus === "auto_processed" && processingProgress?.status !== "processed" && processingProgress?.status !== "error" && !processingProgress?.isStuck;
-    const isComplete = processingProgress?.status === "processed" && !processingProgress?.insurerMismatch?.mismatch && !processingProgress?.insurerMismatch?.pending_canonical_match;
+    const isComplete = processingProgress?.status === "processed" && !processingProgress?.insurerMismatch?.mismatch && !(yearRolloverEnabled && processingProgress?.insurerMismatch?.year_rollover) && !processingProgress?.insurerMismatch?.pending_canonical_match;
     const isError = processingProgress?.status === "error";
     const isStuck = !!processingProgress?.isStuck;
     const canRetry = (isError || isStuck) && (processingProgress?.retryCount || 0) < 3;
     const hasMismatch = processingProgress?.status === "processed" && processingProgress?.insurerMismatch?.mismatch;
-    const hasCanonicalMatch = processingProgress?.status === "processed" && !processingProgress?.insurerMismatch?.mismatch && !!processingProgress?.insurerMismatch?.pending_canonical_match;
+    const hasYearRollover = yearRolloverEnabled && processingProgress?.status === "processed" && !processingProgress?.insurerMismatch?.mismatch && !!processingProgress?.insurerMismatch?.year_rollover;
+    const hasCanonicalMatch = processingProgress?.status === "processed" && !processingProgress?.insurerMismatch?.mismatch && !hasYearRollover && !!processingProgress?.insurerMismatch?.pending_canonical_match;
     const isPlanType = docType === "sbc" || docType === "plan_document";
 
     // Calculate unified progress: upload (0-30%), analysis (30-100%)
@@ -725,6 +735,65 @@ function UploadForm() {
                     className="w-full py-2.5 border border-gray-200 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
                   >
                     Keep my current plan
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Plan year rollover prompt */}
+          {hasYearRollover && processingProgress?.insurerMismatch?.year_rollover && (() => {
+            const yr = processingProgress.insurerMismatch!.year_rollover!;
+            return (
+              <div className="mb-5 p-5 bg-blue-50 border border-blue-200 rounded-2xl">
+                <p className="text-sm font-semibold text-gray-900 mb-2">
+                  New plan year detected
+                </p>
+                <p className="text-xs text-gray-600 mb-4">
+                  This document is for your <strong>{yr.newYear}</strong> plan. Your current plan is from <strong>{yr.currentYear}</strong>. Switching will activate your {yr.newYear} benefits and reset your deductible progress.
+                </p>
+
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="flex-1 p-3 bg-white border border-gray-200 rounded-xl">
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Current</p>
+                    <p className="text-sm font-medium text-gray-900 mt-0.5">{yr.currentYear} Plan</p>
+                  </div>
+                  <svg className="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+                  <div className="flex-1 p-3 bg-blue-100 border border-blue-200 rounded-xl">
+                    <p className="text-[10px] font-semibold text-blue-500 uppercase tracking-wide">New</p>
+                    <p className="text-sm font-medium text-gray-900 mt-0.5">{yr.newYear} Plan</p>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <button
+                    onClick={async () => {
+                      if (!user) return;
+                      try {
+                        const idToken = await user.firebaseUser.getIdToken();
+                        const activateRes = await fetch("/api/documents/status", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+                          body: JSON.stringify({ documentId, action: "activate_plan" }),
+                        });
+                        if (!activateRes.ok) {
+                          console.error("Year rollover activation failed:", await activateRes.text());
+                        }
+                        window.location.href = "/plan";
+                      } catch (err) {
+                        console.error("Year rollover error:", err);
+                        setError("Failed to switch plan year. Please try again.");
+                      }
+                    }}
+                    className="w-full py-2.5 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 transition-colors"
+                  >
+                    Switch to {yr.newYear} plan
+                  </button>
+                  <button
+                    onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setProcessingProgress(null); setDocumentId(null); }}
+                    className="w-full py-2.5 border border-gray-200 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
+                  >
+                    Keep {yr.currentYear} plan
                   </button>
                 </div>
               </div>

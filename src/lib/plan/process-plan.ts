@@ -30,6 +30,7 @@ export interface ProcessPlanResult {
   parseWarnings?: string[];
   error?: string;
   insurerMismatch?: { mismatch: boolean; type?: string; existingInsurer: string; parsedInsurer: string; existingPlanName?: string; parsedPlanName?: string } | null;
+  yearRollover?: { currentYear: number; newYear: number } | null;
 }
 
 function inferServiceCategory(slug: string): string {
@@ -207,16 +208,44 @@ export async function processPlanDocumentData(
       };
     }
 
+    // ── Plan year rollover detection ─────────────────────────────────────────
+    let yearRollover: { currentYear: number; newYear: number } | null = null;
+    if (!mismatchData && planInsert.plan_year) {
+      const { data: existingActivePlanForYear } = await supabase
+        .from("insurance_plans")
+        .select("plan_year")
+        .eq("user_id", doc.user_id)
+        .eq("is_active", true)
+        .single();
+
+      if (existingActivePlanForYear?.plan_year
+        && existingActivePlanForYear.plan_year !== planInsert.plan_year) {
+        yearRollover = {
+          currentYear: existingActivePlanForYear.plan_year,
+          newYear: planInsert.plan_year,
+        };
+        console.log(`[process-plan] Year rollover: ${yearRollover.currentYear} → ${yearRollover.newYear}`);
+      }
+    }
+
     if (mismatchData) {
       console.log(`[process-plan] Mismatch (${mismatchData.type})`);
       await supabase.from("documents").update({ insurer_mismatch: mismatchData }).eq("id", documentId);
       planInsert.is_active = false;
     }
 
+    if (yearRollover) {
+      // Store year rollover info alongside any mismatch data
+      await supabase.from("documents").update({
+        insurer_mismatch: { ...(mismatchData || {}), year_rollover: yearRollover },
+      }).eq("id", documentId);
+      planInsert.is_active = false; // Wait for user confirmation before activating new year plan
+    }
+
     // If no mismatch and an active plan exists, MERGE services into it
     // (SBC + plan document are complementary sources for the same plan)
     let mergeIntoExistingPlan: string | null = null;
-    if (!mismatchData) {
+    if (!mismatchData && !yearRollover) {
       const { data: existingActivePlan } = await supabase
         .from("insurance_plans")
         .select("id")
@@ -330,7 +359,7 @@ export async function processPlanDocumentData(
           altPlanName: profilePlanNameForCanonical,
           planType: planInsert.plan_type || undefined,
           state: profileForCanonical?.state || undefined,
-          planYear: new Date().getFullYear(),
+          planYear: planInsert.plan_year || new Date().getFullYear(),
           groupNumber: profileForCanonical?.group_number || undefined,
           hiosId,
           deductible: planInsert.in_deductible_individual || undefined,
@@ -642,6 +671,7 @@ export async function processPlanDocumentData(
       },
       parseWarnings: parseResult.parseWarnings,
       insurerMismatch: mismatchData,
+      yearRollover,
     };
   } catch (err) {
     console.error("[process-plan] Error:", err);

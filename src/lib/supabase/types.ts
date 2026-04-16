@@ -518,6 +518,39 @@ export type Database = {
         Insert: Partial<ClaimInsightRow> & { service_id: string; insurer_name: string };
         Update: Partial<ClaimInsightRow>;
       };
+      benefit_corrections: {
+        Row: BenefitCorrectionRow;
+        Insert: BenefitCorrectionInsert;
+        Update: Partial<BenefitCorrectionRow>;
+      };
     };
   };
+};
+
+// ── Benefit Corrections ──────────────────────────────────────────────────────
+
+export type CorrectionField = "copay" | "coinsurance" | "covered" | "prior_auth" | "deductible_applies" | "annual_limit" | "other";
+export type CorrectionStatus = "pending" | "approved" | "rejected" | "applied";
+
+export interface BenefitCorrectionRow {
+  id: string;
+  user_id: string;
+  insurance_plan_id: string | null;
+  canonical_plan_id: string | null;
+  service_slug: string;
+  field: CorrectionField;
+  old_value: string | null;
+  proposed_value: string;
+  notes: string | null;
+  evidence_document_id: string | null;
+  status: CorrectionStatus;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type BenefitCorrectionInsert = Omit<BenefitCorrectionRow, "id" | "status" | "reviewed_by" | "reviewed_at" | "review_notes" | "created_at" | "updated_at"> & {
+  status?: CorrectionStatus;
 };

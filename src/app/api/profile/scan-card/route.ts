@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { extractTextFromDocument } from "@/lib/ocr";
-import { matchPlan, normalizeInsurerName } from "@/lib/plan/matcher";
+import { matchPlan } from "@/lib/plan/matcher";
 import { createServerClient } from "@/lib/supabase/server";
+import { extractCardWithHaiku, calculateHaikuConfidence } from "@/lib/card/haiku-card-extractor";
 import type { MatchResult } from "@/lib/plan/matcher";
+import type { InsuranceCardFields } from "@/types/insurance-card";
+
+// Re-export for backward compatibility (other files may import from this route)
+export type { InsuranceCardFields };
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -13,31 +18,6 @@ async function getAuthUser(req: NextRequest) {
   } catch {
     return null;
   }
-}
-
-export interface InsuranceCardFields {
-  insurer?: string;
-  planName?: string;
-  planType?: string;
-  groupNumber?: string;
-  memberId?: string;
-  copayPrimary?: number;
-  copaySpecialist?: number;
-  copayEr?: number;
-  copayUrgentCare?: number;
-  copayRx?: number;
-  deductibleIndividual?: number;
-  deductibleFamily?: number;
-  oopMaxIndividual?: number;
-  oopMaxFamily?: number;
-  coinsurancePct?: number;
-  rxBin?: string;
-  rxPcn?: string;
-  rxGroup?: string;
-  networkName?: string;
-  insurerPhone?: string;
-  zipCode?: string;
-  rawText: string;
 }
 
 // ── Insurer detection ──────────────────────────────────────────────────────────
@@ -73,7 +53,6 @@ const INSURER_PATTERNS: [RegExp, string][] = [
   [/bright\s*health/i, "Bright Health"],
   [/priority\s*health/i, "Priority Health"],
   [/tricare/i, "TRICARE"],
-  [/cigna/i, "Cigna"],
 ];
 
 // ── Plan type detection ────────────────────────────────────────────────────────
@@ -443,15 +422,58 @@ export async function POST(req: NextRequest) {
 
     const supabase = createServerClient();
     const ocrResult = await extractTextFromDocument(buffer, ocrMimeType);
-    const fields = parseInsuranceCard(ocrResult.text);
 
-    // Log raw OCR text for debugging (helps diagnose future card scan failures)
-    console.log("[scan-card] OCR text length:", ocrResult.text.length, "| Extracted insurer:", fields.insurer || "NONE", "| Member ID:", fields.memberId || "NONE");
+    // ── Extraction: Haiku primary, regex fallback ─────────────────────────
+    let fields: InsuranceCardFields;
+    let extractionConfidence: number;
+    let extractionMethod: "haiku" | "regex";
 
-    // Calculate extraction confidence based on key fields found
-    const keyFields = [fields.insurer, fields.memberId, fields.groupNumber, fields.planType];
-    const foundCount = keyFields.filter(Boolean).length;
-    const extractionConfidence = foundCount / keyFields.length;
+    const haikuResult = await extractCardWithHaiku(ocrResult.text);
+
+    if (haikuResult && haikuResult.fields.insurer) {
+      // Haiku succeeded and found at least the insurer
+      fields = haikuResult.fields;
+      extractionConfidence = calculateHaikuConfidence(haikuResult.haikuResult);
+      extractionMethod = "haiku";
+      console.log(`[scan-card] Haiku extraction OK | confidence: ${extractionConfidence.toFixed(2)} | insurer: ${fields.insurer || "NONE"} | memberId: ${fields.memberId || "NONE"}`);
+
+      // Supplement: if Haiku missed a field that regex can catch, fill it in
+      const regexFields = parseInsuranceCard(ocrResult.text);
+      // Identity fields
+      if (!fields.memberId && regexFields.memberId) fields.memberId = regexFields.memberId;
+      if (!fields.groupNumber && regexFields.groupNumber) fields.groupNumber = regexFields.groupNumber;
+      if (!fields.planName && regexFields.planName) fields.planName = regexFields.planName;
+      if (!fields.planType && regexFields.planType) fields.planType = regexFields.planType;
+      // Cost fields
+      if (fields.copayPrimary == null && regexFields.copayPrimary != null) fields.copayPrimary = regexFields.copayPrimary;
+      if (fields.copaySpecialist == null && regexFields.copaySpecialist != null) fields.copaySpecialist = regexFields.copaySpecialist;
+      if (fields.copayEr == null && regexFields.copayEr != null) fields.copayEr = regexFields.copayEr;
+      if (fields.copayUrgentCare == null && regexFields.copayUrgentCare != null) fields.copayUrgentCare = regexFields.copayUrgentCare;
+      if (fields.copayRx == null && regexFields.copayRx != null) fields.copayRx = regexFields.copayRx;
+      if (fields.deductibleIndividual == null && regexFields.deductibleIndividual != null) fields.deductibleIndividual = regexFields.deductibleIndividual;
+      if (fields.deductibleFamily == null && regexFields.deductibleFamily != null) fields.deductibleFamily = regexFields.deductibleFamily;
+      if (fields.oopMaxIndividual == null && regexFields.oopMaxIndividual != null) fields.oopMaxIndividual = regexFields.oopMaxIndividual;
+      if (fields.oopMaxFamily == null && regexFields.oopMaxFamily != null) fields.oopMaxFamily = regexFields.oopMaxFamily;
+      if (fields.coinsurancePct == null && regexFields.coinsurancePct != null) fields.coinsurancePct = regexFields.coinsurancePct;
+      // Auxiliary fields
+      if (!fields.zipCode && regexFields.zipCode) fields.zipCode = regexFields.zipCode;
+      if (!fields.insurerPhone && regexFields.insurerPhone) fields.insurerPhone = regexFields.insurerPhone;
+      if (!fields.rxBin && regexFields.rxBin) fields.rxBin = regexFields.rxBin;
+      if (!fields.rxPcn && regexFields.rxPcn) fields.rxPcn = regexFields.rxPcn;
+      if (!fields.rxGroup && regexFields.rxGroup) fields.rxGroup = regexFields.rxGroup;
+      if (!fields.networkName && regexFields.networkName) fields.networkName = regexFields.networkName;
+    } else {
+      // Haiku failed or didn't find insurer — fall back to regex
+      fields = parseInsuranceCard(ocrResult.text);
+      const keyFields = [fields.insurer, fields.memberId, fields.groupNumber, fields.planType];
+      const foundCount = keyFields.filter(Boolean).length;
+      extractionConfidence = foundCount / keyFields.length;
+      extractionMethod = "regex";
+      console.log(`[scan-card] Regex fallback | confidence: ${extractionConfidence.toFixed(2)} | insurer: ${fields.insurer || "NONE"} | memberId: ${fields.memberId || "NONE"}`);
+    }
+
+    // Log OCR stats
+    console.log(`[scan-card] OCR text length: ${ocrResult.text.length} | method: ${extractionMethod}`);
 
     // Attempt plan matching if we have enough data
     let planMatches: MatchResult[] = [];
@@ -524,6 +546,7 @@ export async function POST(req: NextRequest) {
       fields,
       confidence: extractionConfidence,
       ocrConfidence: ocrResult.confidence,
+      extractionMethod,
       planMatches: planMatches.map((m) => ({
         planId: m.planId,
         planName: m.planName,
