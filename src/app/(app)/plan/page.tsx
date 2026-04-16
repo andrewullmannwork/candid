@@ -522,13 +522,13 @@ export default function CandidPlanPage() {
             .from("feature_flag_rules")
             .select("enabled")
             .eq("flag_key", "benefit_corrections")
-            .eq("scope", "global")
+            .eq("target_type", "global")
             .single(),
           supabase
             .from("feature_flag_rules")
             .select("enabled")
             .eq("flag_key", "plan_year_rollover")
-            .eq("scope", "global")
+            .eq("target_type", "global")
             .single(),
         ]);
         if (plansRes.data) setHistoricalPlans(plansRes.data);

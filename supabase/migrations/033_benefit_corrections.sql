@@ -3,8 +3,8 @@
 -- Community voting deferred to T3.1 (multi-user notifications).
 
 -- Feature flag (disabled by default)
-INSERT INTO feature_flag_rules (flag_key, scope, enabled, description)
-VALUES ('benefit_corrections', 'global', false, 'Enable benefit correction submissions on plan page')
+INSERT INTO feature_flag_rules (flag_key, enabled, description, target_type)
+VALUES ('benefit_corrections', false, 'Enable benefit correction submissions on plan page', 'global')
 ON CONFLICT (flag_key) DO NOTHING;
 
 -- Corrections table: tracks user-submitted corrections to plan benefit data

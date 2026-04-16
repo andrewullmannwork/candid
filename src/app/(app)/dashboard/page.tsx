@@ -122,7 +122,7 @@ export default function DashboardPage() {
         .from("feature_flag_rules")
         .select("enabled")
         .eq("flag_key", "plan_year_rollover")
-        .eq("scope", "global")
+        .eq("target_type", "global")
         .single()
         .then(({ data }) => { if (data?.enabled) setYearRolloverEnabled(true); });
 
