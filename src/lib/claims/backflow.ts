@@ -25,7 +25,7 @@ export async function backflowBillCosts(
     lineItems: BackflowLineItem[];
   }
 ): Promise<{ updated: number; errors: string[] }> {
-  const { userId, insurancePlanId, lineItems } = params;
+  const { insurancePlanId, lineItems } = params;
   const errors: string[] = [];
   let updated = 0;
 

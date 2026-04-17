@@ -197,7 +197,6 @@ const insuranceAppealTemplate: LetterTemplate = {
     providerName,
     serviceDate,
     accountNumber,
-    findings,
     bill,
   }) => {
     const insurerName = bill.insurer?.name || "[Insurance Company]";

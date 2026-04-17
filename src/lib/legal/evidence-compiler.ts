@@ -100,7 +100,6 @@ ${lineDetails}`,
       .eq("insurance_plan_id", claim.insurance_plan_id);
 
     if (coverage && coverage.length > 0) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const relevant = coverage.filter((c) => {
         const lineItems = (claim.claim_line_items || []) as Array<Record<string, unknown>>;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -73,7 +73,7 @@ export async function notifyDisputeFollowup(params: {
   followupType: string;
   insurerName?: string;
 }): Promise<void> {
-  const { userEmail, disputeId, disputeType, amountDisputed, filedDate, followupType, insurerName } = params;
+  const { userEmail, disputeType, amountDisputed, filedDate, followupType, insurerName } = params;
   const daysAgo = Math.floor((Date.now() - new Date(filedDate).getTime()) / (1000 * 60 * 60 * 24));
   const claimUrl = `${APP_URL}/claim`;
   const typeLabel = disputeType.replace(/_/g, " ");

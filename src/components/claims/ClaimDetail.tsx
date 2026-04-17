@@ -74,11 +74,11 @@ export function ClaimDetail({
   const [expandedItem, setExpandedItem] = useState<string | null>(focusLineItemId || null);
   const [disputeLoading, setDisputeLoading] = useState(false);
 
-  // When a focus line item is provided, expand + scroll into view after data loads
+  // When a focus line item is provided, scroll it into view after data loads.
+  // The expanded state is already initialized from focusLineItemId via useState,
+  // so we only need the scroll side-effect here (no setState needed).
   useEffect(() => {
     if (!focusLineItemId || !data) return;
-    setExpandedItem(focusLineItemId);
-    // Scroll after the expansion render completes
     const t = setTimeout(() => {
       const el = document.querySelector(`[data-line-item-id="${focusLineItemId}"]`);
       if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });

@@ -1,8 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useAuth } from "@/lib/auth/auth-context";
-import { Disclaimer } from "@/components/shared/Disclaimer";
 
 interface DiscrepancyProps {
   discrepancy: {

@@ -7,11 +7,6 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-interface AuditFindingSummary {
-  type: string;
-  count: number;
-}
-
 /**
  * Collect and aggregate audit findings for a provider.
  * Called after runAudit() in the bill processing pipeline.

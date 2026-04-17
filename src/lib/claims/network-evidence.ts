@@ -63,7 +63,6 @@ export async function getNetworkEvidence(
     if (!items || items.length === 0) continue;
 
     // Filter out the requesting user's data and enforce k-anonymity
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const filtered = excludeUserId
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ? items.filter((i) => (i.claims as any)?.user_id !== excludeUserId)
