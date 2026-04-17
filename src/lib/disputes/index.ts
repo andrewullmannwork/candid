@@ -8,10 +8,13 @@ import type {
   FindingType,
 } from "../billing/types";
 import { LETTER_TEMPLATES } from "./templates";
+import type { PlanBenefitEvidence } from "./templates";
 import { randomUUID } from "crypto";
 
+export type { PlanBenefitEvidence };
+
 // Map finding types to appropriate letter types
-const FINDING_TO_LETTER: Record<FindingType, DisputeLetterType> = {
+const FINDING_TO_LETTER: Partial<Record<FindingType, DisputeLetterType>> = {
   overcharge: "overcharge",
   duplicate: "duplicate_charge",
   unbundling: "overcharge",
@@ -24,7 +27,8 @@ const FINDING_TO_LETTER: Record<FindingType, DisputeLetterType> = {
 export function generateDisputeLetter(
   report: AuditReport,
   findingIds: string[],
-  letterType?: DisputeLetterType
+  letterType?: DisputeLetterType,
+  planEvidence?: PlanBenefitEvidence[]
 ): DisputeLetter {
   const findings = report.findings.filter((f) => findingIds.includes(f.id));
 
@@ -49,6 +53,7 @@ export function generateDisputeLetter(
     serviceDate: bill.serviceDate,
     findings,
     bill,
+    planEvidence,
   });
 
   return {
@@ -129,6 +134,8 @@ function getLegalBasis(type: DisputeLetterType): string {
       return "State consumer protection laws, Fair Debt Collection Practices Act (if in collections)";
     case "itemized_request":
       return "HIPAA Section 164.524 (right of access), state itemized bill laws";
+    case "negotiation":
+      return "State consumer protection laws, fair pricing standards";
   }
 }
 
@@ -149,5 +156,7 @@ function getRequestedAction(
       return `Reverse claim denial and process for payment under plan benefits`;
     case "itemized_request":
       return `Provide complete itemized bill with procedure codes and line-item pricing`;
+    case "negotiation":
+      return `Negotiate a fair self-pay rate based on community and Medicare benchmarks`;
   }
 }

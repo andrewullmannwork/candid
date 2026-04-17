@@ -62,6 +62,19 @@ export async function persistDisputeLetter(
     }
 
     console.log(`[disputes-persist] Created dispute ${data.id}: type=${input.letterType}, amount=$${input.amountDisputed}`);
+
+    // Create follow-up reminders (feature-flagged)
+    try {
+      const { isFeatureEnabled } = await import("@/lib/config/product-flags");
+      const followupsEnabled = await isFeatureEnabled("dispute_feedback_loop");
+      if (followupsEnabled) {
+        const { createFollowups } = await import("@/lib/disputes/followups");
+        await createFollowups(supabase, { disputeId: data.id, userId: input.userId });
+      }
+    } catch (err) {
+      console.error("[disputes-persist] Follow-up creation failed (non-fatal):", err);
+    }
+
     return { disputeId: data.id };
   } catch (err) {
     console.error("[disputes-persist] Error:", err);
@@ -100,6 +113,32 @@ export async function updateDisputeOutcome(
     if (error) {
       console.error("[disputes-persist] Failed to update dispute:", error);
       return false;
+    }
+
+    // If dispute is resolved, cancel pending follow-ups + update accuracy scoring
+    const resolvedStatuses = ["won", "lost", "settled", "withdrawn", "won_on_escalation", "settled_on_escalation"];
+    if (resolvedStatuses.includes(update.status)) {
+      try {
+        await supabase
+          .from("dispute_followups")
+          .update({ status: "dismissed", updated_at: new Date().toISOString() })
+          .eq("dispute_id", disputeId)
+          .eq("status", "pending");
+      } catch {
+        // Non-blocking
+      }
+
+      // Update accuracy scoring (non-blocking)
+      try {
+        const { updateAccuracyScoring } = await import("@/lib/disputes/accuracy");
+        await updateAccuracyScoring(supabase, {
+          disputeId,
+          status: update.status,
+          amountRecovered: update.amountRecovered,
+        });
+      } catch (err) {
+        console.error("[disputes-persist] Accuracy scoring failed (non-fatal):", err);
+      }
     }
 
     console.log(`[disputes-persist] Updated dispute ${disputeId}: status=${update.status}${update.amountRecovered ? `, recovered=$${update.amountRecovered}` : ""}`);

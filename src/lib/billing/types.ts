@@ -113,7 +113,8 @@ export type DisputeLetterType =
   | "itemized_request" // Request for itemized bill
   | "insurance_appeal" // Insurance denial appeal
   | "balance_billing" // Balance billing complaint
-  | "duplicate_charge"; // Duplicate charge dispute
+  | "duplicate_charge" // Duplicate charge dispute
+  | "negotiation"; // Self-pay / uninsured rate negotiation
 
 export interface DisputeLetter {
   id: string;

@@ -9,6 +9,28 @@ interface LetterTemplate {
   body: (params: TemplateParams) => string;
 }
 
+export interface PlanBenefitEvidence {
+  serviceSlug: string;
+  serviceName: string;
+  copay: number | null;
+  coinsurance: number | null;
+  covered: boolean;
+  source: string | null;
+}
+
+export interface NetworkEvidenceData {
+  serviceName: string;
+  memberCount: number;
+  medianCost: number;
+}
+
+export interface SystemicEvidenceData {
+  insurerName: string;
+  planName: string;
+  serviceName: string;
+  affectedMemberCount: number;
+}
+
 interface TemplateParams {
   patientName: string;
   providerName: string;
@@ -16,6 +38,10 @@ interface TemplateParams {
   accountNumber?: string;
   findings: AuditFinding[];
   bill: ParsedBill;
+  planEvidence?: PlanBenefitEvidence[];
+  networkEvidence?: NetworkEvidenceData[];
+  systemicEvidence?: SystemicEvidenceData;
+  codeSubstitutionEvidence?: { deniedCode: string; siblingCode: string; siblingPayRate: number; serviceName: string };
 }
 
 function formatDate(iso: string): string {
@@ -44,6 +70,10 @@ const overchargeTemplate: LetterTemplate = {
     serviceDate,
     accountNumber,
     findings,
+    planEvidence,
+    networkEvidence,
+    systemicEvidence,
+    codeSubstitutionEvidence,
   }) => {
     const findingDetails = findings
       .map(
@@ -72,7 +102,27 @@ I am writing to formally dispute charges on my medical bill for services rendere
 ${findingDetails}
 
 The total estimated overcharge across these items is ${formatCurrency(totalOvercharge)}.
+${planEvidence && planEvidence.length > 0 ? `
+Additionally, according to my insurance plan documents, the following services are covered under my plan:
 
+${planEvidence.map((pe) => {
+  const parts = [`- ${pe.serviceName}`];
+  if (pe.copay != null) parts.push(`(plan copay: ${formatCurrency(pe.copay)})`);
+  if (pe.coinsurance != null) parts.push(`(plan coinsurance: ${(pe.coinsurance * 100).toFixed(0)}%)`);
+  if (!pe.copay && !pe.coinsurance) parts.push("(covered)");
+  return parts.join(" ");
+}).join("\n")}
+
+The charges on my bill exceed my plan's stated cost-sharing terms for these services.
+` : ""}${networkEvidence && networkEvidence.length > 0 ? `
+Furthermore, based on anonymized, aggregated community data from other plan members:
+
+${networkEvidence.map((ne) => `- ${ne.serviceName}: median patient cost among ${ne.memberCount} members is ${formatCurrency(ne.medianCost)}`).join("\n")}
+` : ""}${systemicEvidence ? `
+I am one of ${systemicEvidence.affectedMemberCount} members on ${systemicEvidence.planName} who have been charged above plan terms for ${systemicEvidence.serviceName}. This appears to be a systemic pattern by ${systemicEvidence.insurerName}.
+` : ""}${codeSubstitutionEvidence ? `
+The billing code ${codeSubstitutionEvidence.deniedCode} used on my bill maps to ${codeSubstitutionEvidence.serviceName}, which my plan covers. Code ${codeSubstitutionEvidence.siblingCode} for the same service has been approved ${(codeSubstitutionEvidence.siblingPayRate * 100).toFixed(0)}% of the time on this plan. This suggests either a coding error or a systematic classification discrepancy.
+` : ""}
 I am requesting the following:
 
 1. A detailed, itemized bill showing all charges, procedure codes (CPT/HCPCS), and quantities.
@@ -88,7 +138,7 @@ Sincerely,
 ${patientName}
 
 ---
-DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis tool. Candid is not a law firm, does not provide legal advice, and does not act as your legal representative. The information above is based on automated analysis of publicly available billing data and may not reflect your specific contractual rates or coverage. You should consult with a qualified attorney if you need legal advice regarding your medical bills.`;
+DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis tool. Candid is not a law firm, does not provide legal advice, and does not act as your legal representative. The information above is based on anonymized, aggregated community data and publicly available rates, and may not reflect your specific contractual rates or coverage. You should consult with a qualified attorney if you need legal advice regarding your medical bills.`;
   },
 };
 
@@ -131,7 +181,7 @@ Sincerely,
 ${patientName}
 
 ---
-DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis tool. Candid does not provide legal advice and does not act as your legal representative.`;
+DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis tool. Candid is not a law firm, does not provide legal advice, and does not act as your legal representative. The information above is based on anonymized, aggregated community data and publicly available rates, and may not reflect your specific contractual rates or coverage.`;
   },
 };
 
@@ -147,7 +197,6 @@ const insuranceAppealTemplate: LetterTemplate = {
     providerName,
     serviceDate,
     accountNumber,
-    findings,
     bill,
   }) => {
     const insurerName = bill.insurer?.name || "[Insurance Company]";
@@ -182,7 +231,7 @@ Sincerely,
 ${patientName}
 
 ---
-DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis tool. Candid does not provide legal advice and does not act as your legal representative. You should consult with a qualified attorney or patient advocate if you need assistance with your insurance appeal.`;
+DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis tool. Candid is not a law firm, does not provide legal advice, and does not act as your legal representative. The information above is based on anonymized, aggregated community data and publicly available rates, and may not reflect your specific contractual rates or coverage. You should consult with a qualified attorney or patient advocate if you need assistance with your insurance appeal.`;
   },
 };
 
@@ -199,6 +248,7 @@ const balanceBillingTemplate: LetterTemplate = {
     serviceDate,
     accountNumber,
     findings,
+    planEvidence,
   }) => {
     const findingDetails = findings
       .map(
@@ -231,7 +281,18 @@ Specifically:
 ${findingDetails}
 
 The total excess charges amount to approximately ${formatCurrency(totalExcess)}.
+${planEvidence && planEvidence.length > 0 ? `
+According to my plan documents, these services are covered with the following cost-sharing terms:
 
+${planEvidence.map((pe) => {
+  const parts = [`- ${pe.serviceName}`];
+  if (pe.copay != null) parts.push(`(copay: ${formatCurrency(pe.copay)})`);
+  if (pe.coinsurance != null) parts.push(`(coinsurance: ${(pe.coinsurance * 100).toFixed(0)}%)`);
+  return parts.join(" ");
+}).join("\n")}
+
+My patient responsibility should be limited to these cost-sharing amounts.
+` : ""}
 I am requesting:
 
 1. An immediate review of these charges
@@ -245,7 +306,7 @@ Sincerely,
 ${patientName}
 
 ---
-DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis tool. Candid does not provide legal advice and does not act as your legal representative.`;
+DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis tool. Candid is not a law firm, does not provide legal advice, and does not act as your legal representative. The information above is based on anonymized, aggregated community data and publicly available rates, and may not reflect your specific contractual rates or coverage.`;
   },
 };
 
@@ -306,7 +367,7 @@ Sincerely,
 ${patientName}
 
 ---
-DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis tool. Candid does not provide legal advice and does not act as your legal representative.`;
+DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis tool. Candid is not a law firm, does not provide legal advice, and does not act as your legal representative. The information above is based on anonymized, aggregated community data and publicly available rates, and may not reflect your specific contractual rates or coverage.`;
   },
 };
 
@@ -314,10 +375,40 @@ DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis t
 // TEMPLATE REGISTRY
 // ============================================================================
 
+// Negotiation template — uses standalone generator from negotiation-template.ts
+// Registered here for type completeness; actual generation via /api/disputes/generate Case 3
+const negotiationTemplate: LetterTemplate = {
+  type: "negotiation" as DisputeLetterType,
+  subject: (provider) => `Self-Pay Rate Negotiation — ${provider}`,
+  body: ({ patientName, providerName, serviceDate }) => {
+    return `${formatDate(new Date().toISOString())}
+
+${providerName}
+Billing Department
+
+Re: Self-Pay Rate Negotiation — Date of Service: ${formatDate(serviceDate)}
+Patient: ${patientName}
+
+To Whom It May Concern:
+
+I am writing to discuss the charges for services received on ${formatDate(serviceDate)}. As a self-pay patient, I am requesting a fair rate based on publicly available pricing data.
+
+Please contact me to discuss self-pay rates, financial assistance programs, or payment plan options.
+
+Sincerely,
+
+${patientName}
+
+---
+DISCLAIMER: This letter is informational only. Candid does not negotiate on your behalf and does not provide legal advice. You are responsible for reviewing, sending, and managing all communications with providers.`;
+  },
+};
+
 export const LETTER_TEMPLATES: Record<DisputeLetterType, LetterTemplate> = {
   overcharge: overchargeTemplate,
   itemized_request: itemizedRequestTemplate,
   insurance_appeal: insuranceAppealTemplate,
   balance_billing: balanceBillingTemplate,
   duplicate_charge: duplicateChargeTemplate,
+  negotiation: negotiationTemplate,
 };

@@ -7,6 +7,7 @@ import { createBrowserClient } from "@/lib/supabase/client";
 import type { PlanAnalysisResult, AnalyzedBenefit } from "@/lib/plan/analyzer";
 import { BENEFIT_CATEGORY_LABELS } from "@/lib/plan/benefits-catalog";
 import type { BenefitCategory } from "@/lib/plan/benefits-catalog";
+import { FollowupBanner } from "@/components/disputes/FollowupBanner";
 
 // Labels for service_catalog categories (different from benefits-catalog categories)
 const SERVICE_CATEGORY_LABELS: Record<string, string> = {
@@ -189,6 +190,7 @@ export default function DashboardPage() {
   const totalFields = 6;
   const profileComplete = filledFields >= 2; // any 2 identifiers is enough
   const hasDocuments = documents.length > 0;
+  const hasBills = documents.some((d) => d.doc_type === "eob" || d.doc_type === "itemized_bill");
   const pendingReviewDocs = documents.filter((d) => d.status === "pending_review");
   const processingPlanDocs = documents.filter(
     (d) => (d.status === "processing" || d.status === "queued")
@@ -209,6 +211,9 @@ export default function DashboardPage() {
           Here&apos;s everything Candid knows about your healthcare.
         </p>
       </div>
+
+      {/* ── Dispute follow-up banners ────────────────────────────────────── */}
+      <FollowupBanner />
 
       {/* ── Plan verification banner ──────────────────────────────────────── */}
       {planResult && (() => {
@@ -377,8 +382,8 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* ── Quick Actions — compact upload CTA ────────────────────────────── */}
-      {!hasDocuments && (
+      {/* ── Quick Actions — compact CTA ──────────────────────────────────── */}
+      {!hasBills && (
         <div className="p-4 bg-white border border-gray-100 rounded-2xl flex items-center gap-4">
           <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center shrink-0">
             <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -397,6 +402,30 @@ export default function DashboardPage() {
             className="shrink-0 px-4 py-2 bg-blue-600 text-white text-xs font-semibold rounded-lg hover:bg-blue-700 transition-colors"
           >
             Upload
+          </Link>
+        </div>
+      )}
+
+      {/* Show "View your bills" when user already has bills uploaded */}
+      {hasBills && (
+        <div className="p-4 bg-white border border-gray-100 rounded-2xl flex items-center gap-4">
+          <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center shrink-0">
+            <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+            </svg>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-gray-900">View your audit results</p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              See per-bill findings, potential savings, and dispute options.
+            </p>
+          </div>
+          <Link
+            href="/claim"
+            className="shrink-0 px-4 py-2 bg-blue-600 text-white text-xs font-semibold rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            View bills
           </Link>
         </div>
       )}

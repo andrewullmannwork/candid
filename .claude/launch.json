@@ -5,8 +5,7 @@
       "name": "candid-dev",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
-      "port": 3000,
-      "cwd": "/Users/andrewullmann/Desktop/candid"
+      "port": 3000
     }
   ]
 }

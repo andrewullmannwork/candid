@@ -196,8 +196,12 @@ function UploadForm() {
             // Mismatch or canonical match confirmation needed — show prompt
             setProcessingProgress(data);
           } else {
-            // No mismatch — redirect to plan page
-            setTimeout(() => { window.location.href = "/plan"; }, 1500);
+            // No mismatch — redirect based on doc type.
+            // Bills (eob, itemized_bill) → /claim (audit results live there).
+            // Plan docs (sbc, plan_document) → /plan (benefits live there).
+            const isBill = docType === "eob" || docType === "itemized_bill";
+            const destination = isBill ? "/claim" : "/plan";
+            setTimeout(() => { window.location.href = destination; }, 1500);
           }
           return;
         }
