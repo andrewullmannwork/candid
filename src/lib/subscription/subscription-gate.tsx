@@ -1,24 +1,36 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
+import { useAuth } from "@/lib/auth/auth-context";
 import { useSubscription, type SubscriptionTier } from "./use-subscription";
 
 interface SubscriptionGateProps {
   requiredTier: SubscriptionTier;
   featureName: string;
   children: React.ReactNode;
+  /** Action-level gating: wraps a button instead of a page section */
+  action?: "download" | "export" | "submit";
+  /** Called after successful upgrade to auto-trigger the gated action */
+  onUpgrade?: () => void;
 }
 
 /**
  * Wraps content that requires a specific subscription tier.
- * Shows an upgrade prompt if the user's tier is insufficient.
+ *
+ * Two modes:
+ * - Page-level (default): shows full upgrade prompt replacing children
+ * - Action-level (action prop): shows inline upgrade prompt at the button
  */
 export function SubscriptionGate({
   requiredTier,
   featureName,
   children,
+  action,
 }: SubscriptionGateProps) {
+  const { user } = useAuth();
   const { tier, loading, isPro } = useSubscription();
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
 
   if (loading) {
     return <div className="text-gray-500 py-4">Loading...</div>;
@@ -34,7 +46,48 @@ export function SubscriptionGate({
     return <>{children}</>;
   }
 
-  // Show upgrade prompt
+  // Action-level gate: inline upgrade prompt at the button
+  if (action) {
+    return (
+      <div className="relative">
+        <div className="opacity-50 pointer-events-none">{children}</div>
+        <div className="absolute inset-0 flex items-center justify-center">
+          <button
+            onClick={async () => {
+              if (!user || checkoutLoading) return;
+              setCheckoutLoading(true);
+              try {
+                const token = await user.firebaseUser.getIdToken();
+                const res = await fetch("/api/stripe/create-checkout", {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${token}`,
+                  },
+                  body: JSON.stringify({
+                    returnUrl: window.location.href,
+                  }),
+                });
+                if (res.ok) {
+                  const { url } = await res.json();
+                  if (url) window.location.href = url;
+                }
+              } catch {
+                // Silent
+              }
+              setCheckoutLoading(false);
+            }}
+            disabled={checkoutLoading}
+            className="px-4 py-2 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 disabled:opacity-50 transition-colors shadow-lg"
+          >
+            {checkoutLoading ? "Loading..." : `Upgrade to ${action}`}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Page-level gate: full upgrade prompt
   return (
     <div className="max-w-lg mx-auto mt-8">
       <div className="p-6 bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-xl text-center">

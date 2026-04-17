@@ -108,26 +108,61 @@ export function inferBillingCodeType(code: string): BillingCodeType {
 }
 
 /**
- * Map bill line item descriptions to service_catalog slugs using Haiku.
+ * Map bill line item descriptions to service_catalog slugs.
  *
- * Batches all line items into a single Haiku call. Returns a mapping for each
- * line item. Items that can't be confidently mapped get service_slug = null
- * in the caller (we return confidence < 0.3 for those).
+ * First checks billing_code_mappings for known high-confidence codes.
+ * Items that aren't cached are batched into a single Haiku call.
+ * This saves API costs as the community code database grows.
  *
- * Cost: ~$0.001-0.003 per bill (much cheaper than plan extraction).
+ * Cost: ~$0.001-0.003 per bill for uncached items.
  */
 export async function mapLineItemsToServices(
   lineItems: LineItemInput[]
 ): Promise<ServiceMapping[]> {
   if (lineItems.length === 0) return [];
 
-  const client = getClient();
-  if (!client) {
-    console.warn("[service-mapper] No API client — returning empty mappings");
-    return [];
+  // Phase 1: Check cached code mappings for known codes
+  const results: ServiceMapping[] = [];
+  const uncachedItems: LineItemInput[] = [];
+
+  try {
+    const { createServerClient } = await import("@/lib/supabase/server");
+    const { getCachedCodeMapping } = await import("@/lib/claims/code-intelligence");
+    const supabase = createServerClient();
+
+    for (const item of lineItems) {
+      if (item.billingCode && item.billingCodeType) {
+        const cached = await getCachedCodeMapping(supabase, item.billingCode, item.billingCodeType);
+        if (cached) {
+          results.push({
+            lineNumber: item.lineNumber,
+            serviceSlug: cached.serviceSlug,
+            confidence: cached.confidence,
+          });
+          continue;
+        }
+      }
+      uncachedItems.push(item);
+    }
+
+    if (results.length > 0) {
+      console.log(`[service-mapper] ${results.length}/${lineItems.length} resolved from cached code mappings`);
+    }
+  } catch {
+    // If cache lookup fails, fall through to Haiku for all items
+    uncachedItems.push(...lineItems.filter((li) => !results.some((r) => r.lineNumber === li.lineNumber)));
   }
 
-  const itemList = lineItems.map((item) => {
+  // Phase 2: Call Haiku for uncached items
+  if (uncachedItems.length === 0) return results;
+
+  const client = getClient();
+  if (!client) {
+    console.warn("[service-mapper] No API client — returning cached results only");
+    return results;
+  }
+
+  const itemList = uncachedItems.map((item) => {
     const parts = [`Line ${item.lineNumber}: "${item.description}"`];
     if (item.billingCode) parts.push(`Code: ${item.billingCode}`);
     if (item.billingCodeType) parts.push(`(${item.billingCodeType})`);
@@ -172,15 +207,18 @@ Return JSON array, one object per line item:
 
     // Validate slugs — only accept known service_catalog slugs
     const validSlugs = new Set<string>(SERVICE_SLUGS);
-    return parsed
+    const haikuResults = parsed
       .filter((m) => validSlugs.has(m.serviceSlug) || m.serviceSlug === "other")
       .map((m) => ({
         lineNumber: m.lineNumber,
-        serviceSlug: m.serviceSlug === "other" ? m.serviceSlug : m.serviceSlug,
+        serviceSlug: m.serviceSlug,
         confidence: Math.max(0, Math.min(1, m.confidence)),
       }));
+
+    // Merge cached results + Haiku results
+    return [...results, ...haikuResults];
   } catch (err) {
     console.error("[service-mapper] Haiku call failed:", err);
-    return [];
+    return results; // Return cached results even if Haiku fails
   }
 }

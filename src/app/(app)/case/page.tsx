@@ -1,10 +1,39 @@
 "use client";
 
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 export default function CandidCasePage() {
+  const searchParams = useSearchParams();
+  const escalationInsurer = searchParams.get("insurer");
+  const escalationService = searchParams.get("service");
+  const escalationAmount = searchParams.get("amount");
+  const isSystemic = searchParams.get("systemic") === "true";
+  const affectedCount = searchParams.get("affectedCount");
+  const hasEscalationContext = escalationInsurer || escalationService || escalationAmount;
+
   return (
     <div className="relative min-h-[80vh]">
+      {/* ── Escalation context card (from EscalationCard link) ──────────── */}
+      {hasEscalationContext && (
+        <div className="mb-4 p-4 bg-purple-50 border border-purple-200 rounded-xl z-30 relative">
+          <p className="text-sm font-semibold text-purple-900">Escalating your dispute</p>
+          <p className="text-xs text-purple-700 mt-1">
+            {escalationInsurer && `Insurer: ${escalationInsurer}`}
+            {escalationService && ` · Service: ${escalationService.replace(/_/g, " ")}`}
+            {escalationAmount && ` · Amount: $${parseFloat(escalationAmount).toLocaleString()}`}
+          </p>
+          {isSystemic && (
+            <p className="text-xs text-red-700 mt-1 font-semibold">
+              Systemic pattern detected — {affectedCount ? `${affectedCount} members affected` : "multiple members affected"}
+            </p>
+          )}
+          <p className="text-xs text-purple-600 mt-2">
+            When Candid Case launches, your dispute context will be pre-filled here.
+          </p>
+        </div>
+      )}
+
       {/* ── Locked overlay ──────────────────────────────────────────────── */}
       <div className="sticky top-[25vh] z-20 h-0">
         <div className="flex items-center justify-center">

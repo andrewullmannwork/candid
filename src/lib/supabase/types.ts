@@ -554,3 +554,133 @@ export interface BenefitCorrectionRow {
 export type BenefitCorrectionInsert = Omit<BenefitCorrectionRow, "id" | "status" | "reviewed_by" | "reviewed_at" | "review_notes" | "created_at" | "updated_at"> & {
   status?: CorrectionStatus;
 };
+
+// ── Billing Code Intelligence ────────────────────────────────────────────────
+
+export interface BillingCodeMappingRow {
+  id: string;
+  billing_code: string;
+  billing_code_type: string;
+  service_slug: string;
+  confidence: number;
+  observation_count: number;
+  provider_descriptions: string[];
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
+export interface BillingCodePlanOutcomeRow {
+  id: string;
+  billing_code: string;
+  billing_code_type: string;
+  canonical_plan_id: string;
+  total_claims: number;
+  paid_count: number;
+  denied_count: number;
+  avg_paid_amount: number | null;
+  avg_billed_amount: number | null;
+  common_denial_reasons: string[];
+  updated_at: string;
+}
+
+// ── Claim Discrepancies ──────────────────────────────────────────────────────
+
+export type DiscrepancyTier = 1 | 2 | 3;
+
+export type DiscrepancyField =
+  | "copay"
+  | "coinsurance"
+  | "coverage"
+  | "deductible"
+  | "allowed_amount"
+  | "coverage_status"
+  | "unknown_service"
+  | "code_substitution"
+  | "other";
+
+export type DiscrepancyStatus = "flagged" | "ignored" | "verifying" | "disputed" | "resolved";
+
+export type DiscrepancySource =
+  | "user_plan"
+  | "canonical_plan"
+  | "canonical_network"
+  | "bill_observed"
+  | "audit_rule"
+  | "code_intelligence";
+
+export interface ClaimDiscrepancyRow {
+  id: string;
+  claim_id: string;
+  claim_line_item_id: string;
+  user_id: string;
+  service_slug: string;
+  tier: DiscrepancyTier;
+  field: DiscrepancyField;
+  expected_value: string;
+  actual_value: string;
+  expected_source: DiscrepancySource;
+  expected_confidence: number;
+  status: DiscrepancyStatus;
+  is_systemic: boolean;
+  systemic_user_count: number | null;
+  resolved_dispute_id: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+// ── Plan Covered Services (bill-observed extensions) ─────────────────────────
+
+/** Additional columns on plan_covered_services from migration 035 */
+export interface PlanCoveredServiceBillObserved {
+  bill_observed_cost: number | null;
+  bill_observed_count: number;
+  bill_observed_source: string | null;
+  bill_observed_updated_at: string | null;
+}
+
+// ── Dispute Follow-ups (migration 038) ──────────────────────────────────────
+
+export type FollowupType = "initial_30d" | "reprompt_14d" | "final" | "post_escalation_60d" | "post_escalation_reprompt_30d";
+export type FollowupStatus = "pending" | "shown" | "dismissed" | "acted";
+export type EscalationType = "case" | "small_claims" | "external_appeal";
+
+// ── Accuracy Scoring (migration 039) ────────────────────────────────────────
+
+export interface AuditRuleAccuracyRow {
+  id: string;
+  rule_type: string;
+  insurer_name: string;
+  service_slug: string;
+  total_disputes: number;
+  won_count: number;
+  settled_count: number;
+  lost_count: number;
+  total_recovered: number;
+  avg_recovered_pct: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProviderAuditMetricsRow {
+  id: string;
+  provider_id: string;
+  total_bills_analyzed: number;
+  finding_count: number;
+  finding_rate: number;
+  finding_types: Record<string, unknown>;
+  updated_at: string;
+}
+
+export interface DisputeFollowupRow {
+  id: string;
+  dispute_id: string;
+  user_id: string;
+  followup_type: FollowupType;
+  due_date: string;
+  status: FollowupStatus;
+  escalation_type: EscalationType | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}

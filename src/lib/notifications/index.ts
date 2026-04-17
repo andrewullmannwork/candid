@@ -285,3 +285,54 @@ export async function notifyBenefitCorrection(
   });
 }
 
+/**
+ * Notify admin of a systemic insurer pattern.
+ * Fires when 3+ users on the same plan show the same discrepancy — likely
+ * insurer systematically underpaying, not plan data error.
+ */
+export async function notifySystemicPattern(
+  params: {
+    serviceSlug: string;
+    field: string;
+    expectedValue: string;
+    affectedUserCount: number;
+    canonicalPlanId: string;
+    insurerName?: string;
+    planName?: string;
+  }
+): Promise<void> {
+  const { serviceSlug, field, expectedValue, affectedUserCount, insurerName, planName } = params;
+  const serviceName = serviceSlug.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+  const planLabel = planName ? `${insurerName || "Insurer"} — ${planName}` : `Canonical plan ${params.canonicalPlanId.slice(0, 8)}`;
+
+  await sendSlack({
+    text: `🚨 Systemic insurer pattern: ${serviceName} on ${planLabel} (${affectedUserCount} users)`,
+    blocks: [
+      { type: "header", text: { type: "plain_text", text: "🚨 Systemic Insurer Pattern Detected" } },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: [
+            `*Service:* ${serviceName} (\`${serviceSlug}\`)`,
+            `*Plan:* ${planLabel}`,
+            `*Discrepancy:* ${field} — expected ${expectedValue}`,
+            `*Affected members:* ${affectedUserCount}`,
+            `*Assessment:* Likely insurer underpaying, not plan data error. High-priority dispute target.`,
+          ].join("\n"),
+        },
+      },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: "View Discrepancies" },
+            url: `${APP_URL}/admin/pipeline`,
+          },
+        ],
+      },
+    ],
+  });
+}
+

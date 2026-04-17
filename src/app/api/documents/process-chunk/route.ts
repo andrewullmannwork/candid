@@ -51,23 +51,28 @@ async function processBillDocument(
 
   const auditReport = await runAudit(parsedBill);
 
+  // Fetch user context once (used by claims, backflow, and code intelligence)
+  const { isFeatureEnabled } = await import("@/lib/config/product-flags");
+  const { data: userForFlag } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
+  const userEmail = userForFlag?.email || undefined;
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("active_insurance_plan_id, state")
+    .eq("user_id", doc.user_id)
+    .single();
+
+  const insurancePlanId = profile?.active_insurance_plan_id || null;
+
   // Persist claims (feature-flagged)
   let claimId: string | null = null;
   try {
-    const { isFeatureEnabled } = await import("@/lib/config/product-flags");
-    const { data: userForFlag } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
-    const claimsEnabled = await isFeatureEnabled("claims_persistence", userForFlag?.email || undefined);
+    const claimsEnabled = await isFeatureEnabled("claims_persistence", userEmail);
     if (claimsEnabled) {
       const { persistAuditResults } = await import("@/lib/claims/persist");
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("active_insurance_plan_id")
-        .eq("user_id", doc.user_id)
-        .single();
-
       const persistResult = await persistAuditResults(supabase, {
         userId: doc.user_id,
-        insurancePlanId: profile?.active_insurance_plan_id || undefined,
+        insurancePlanId: insurancePlanId || undefined,
         documentId,
         parsedBill,
         auditReport,
@@ -80,13 +85,152 @@ async function processBillDocument(
 
   // Collect pricing data (non-blocking)
   try {
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("state")
-      .eq("user_id", doc.user_id)
-      .single();
     await collectPricingData(parsedBill, profile?.state || null);
   } catch { /* best-effort */ }
+
+  // Provider enrichment: NPPES lookup + audit metrics (non-blocking)
+  const providerName = parsedBill.provider?.name || null;
+  const providerNpi = parsedBill.provider?.npi || null;
+  if (providerName || providerNpi) {
+    try {
+      // Find or match provider in providers table
+      const { data: provider } = providerNpi
+        ? await supabase.from("providers").select("id").eq("npi", providerNpi).maybeSingle()
+        : await supabase.from("providers").select("id").ilike("name", `%${providerName}%`).limit(1).maybeSingle();
+
+      if (provider?.id) {
+        // NPPES enrichment (30-day cache, best-effort)
+        const { lookupProvider } = await import("@/lib/care/provider-lookup");
+        lookupProvider(supabase, provider.id).catch(() => {});
+
+        // Provider audit metrics (best-effort)
+        const { collectProviderAuditData } = await import("@/lib/care/provider-audit-metrics");
+        collectProviderAuditData(
+          supabase,
+          provider.id,
+          auditReport.findings.length,
+          parsedBill.lineItems?.length || 0,
+          auditReport.findings.map((f) => f.type)
+        ).catch(() => {});
+      }
+    } catch { /* best-effort */ }
+  }
+
+  // Post-persist enrichment: backflow + code intelligence
+  // Query persisted claim_line_items to get service_slugs (assigned by service-mapper during persist)
+  if (claimId) {
+    let persistedLineItems: Array<{
+      billing_code: string | null;
+      billing_code_type: string | null;
+      service_slug: string | null;
+      description: string | null;
+      insurance_paid: number | null;
+      billed_amount: number | null;
+      patient_owes: number | null;
+      adjustment_reason_code: string | null;
+    }> = [];
+
+    try {
+      const { data: items } = await supabase
+        .from("claim_line_items")
+        .select("billing_code, billing_code_type, service_slug, description, insurance_paid, billed_amount, patient_owes, adjustment_reason_code")
+        .eq("claim_id", claimId);
+      persistedLineItems = items || [];
+    } catch { /* continue without enrichment */ }
+
+    // Backflow: bill costs → plan_covered_services (feature-flagged)
+    if (insurancePlanId && persistedLineItems.length > 0) {
+      try {
+        const backflowEnabled = await isFeatureEnabled("claims_backflow", userEmail);
+        if (backflowEnabled) {
+          const { backflowBillCosts } = await import("@/lib/claims/backflow");
+          await backflowBillCosts(supabase, {
+            userId: doc.user_id,
+            insurancePlanId,
+            lineItems: persistedLineItems.map((li) => ({
+              service_slug: li.service_slug,
+              patient_owes: li.patient_owes,
+              billed_amount: li.billed_amount,
+            })),
+          });
+        }
+      } catch (err) {
+        console.error("[process-chunk] Backflow failed (non-fatal):", err);
+      }
+    }
+
+    // Code intelligence: update billing_code_mappings + billing_code_plan_outcomes
+    if (persistedLineItems.length > 0) {
+      try {
+        const { updateCodeMappings, updateCodeOutcomes } = await import("@/lib/claims/code-intelligence");
+        await updateCodeMappings(supabase, persistedLineItems);
+
+        // Get canonical plan ID for code outcome tracking
+        if (insurancePlanId) {
+          const { data: plan } = await supabase
+            .from("insurance_plans")
+            .select("matched_catalog_plan_id")
+            .eq("id", insurancePlanId)
+            .single();
+          if (plan?.matched_catalog_plan_id) {
+            await updateCodeOutcomes(supabase, persistedLineItems, plan.matched_catalog_plan_id);
+          }
+        }
+      } catch (err) {
+        console.error("[process-chunk] Code intelligence failed (non-fatal):", err);
+      }
+    }
+
+    // Benefits utilization: auto-mark services as "used"
+    if (insurancePlanId && persistedLineItems.length > 0) {
+      try {
+        const { updateBenefitsUsed } = await import("@/lib/claims/benefits-utilization");
+        const slugs = persistedLineItems
+          .map((li) => li.service_slug)
+          .filter((s): s is string => s != null);
+        if (slugs.length > 0) {
+          await updateBenefitsUsed(supabase, {
+            userId: doc.user_id,
+            insurancePlanId,
+            serviceSlugs: slugs,
+          });
+        }
+      } catch (err) {
+        console.error("[process-chunk] Benefits utilization failed (non-fatal):", err);
+      }
+    }
+
+    // Claim matching: link related documents (EOB + bill for same service)
+    try {
+      const { matchRelatedClaims } = await import("@/lib/claims/claim-matching");
+      const providerName = (parsedBill.provider?.name) || null;
+      await matchRelatedClaims(supabase, {
+        claimId,
+        userId: doc.user_id,
+        dateOfService: parsedBill.serviceDate || null,
+        providerName,
+      });
+    } catch (err) {
+      console.error("[process-chunk] Claim matching failed (non-fatal):", err);
+    }
+
+    // Discrepancy detection: three-tier coverage + cost + code substitution (feature-flagged)
+    if (insurancePlanId) {
+      try {
+        const discrepancyEnabled = await isFeatureEnabled("eob_discrepancy_detection", userEmail);
+        if (discrepancyEnabled) {
+          const { detectDiscrepancies } = await import("@/lib/claims/discrepancy-engine");
+          await detectDiscrepancies(supabase, {
+            claimId,
+            userId: doc.user_id,
+            insurancePlanId,
+          });
+        }
+      } catch (err) {
+        console.error("[process-chunk] Discrepancy detection failed (non-fatal):", err);
+      }
+    }
+  }
 
   // Update document status
   await supabase.from("documents").update({ status: "processed" }).eq("id", documentId);
