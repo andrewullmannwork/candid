@@ -13,9 +13,15 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import Stripe from "stripe";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "", {
-  apiVersion: "2026-02-25.clover",
-});
+// Lazy-init Stripe so the module can load at build time when the env var
+// isn't set (e.g. in CI). We instantiate only when the route actually runs.
+function getStripe(): Stripe {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) {
+    throw new Error("STRIPE_SECRET_KEY not configured");
+  }
+  return new Stripe(key, { apiVersion: "2026-02-25.clover" });
+}
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -58,7 +64,7 @@ export async function POST(req: NextRequest) {
   let customerId = existingCustomer?.stripe_customer_id;
 
   if (!customerId) {
-    const customer = await stripe.customers.create({
+    const customer = await getStripe().customers.create({
       email: user.email,
       metadata: { userId: user.id },
     });
@@ -83,7 +89,7 @@ export async function POST(req: NextRequest) {
     ? `${returnUrl}&upgraded=true`
     : `${returnUrl}?upgraded=true`;
 
-  const session = await stripe.checkout.sessions.create({
+  const session = await getStripe().checkout.sessions.create({
     customer: customerId,
     mode: "subscription",
     line_items: [{ price: priceId, quantity: 1 }],
