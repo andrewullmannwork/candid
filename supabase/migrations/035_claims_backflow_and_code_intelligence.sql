@@ -7,8 +7,8 @@ SET enabled = true, updated_at = now()
 WHERE flag_key = 'claims_persistence';
 
 -- 2. Add claims_backflow feature flag (disabled by default)
-INSERT INTO feature_flag_rules (flag_key, enabled, target_type, target_value, description)
-VALUES ('claims_backflow', false, 'global', NULL, 'Bill cost backflow to plan_covered_services and canonical_plan_services')
+INSERT INTO feature_flag_rules (flag_key, enabled, description, target_type)
+VALUES ('claims_backflow', false, 'Bill cost backflow to plan_covered_services and canonical_plan_services', 'global')
 ON CONFLICT (flag_key) DO NOTHING;
 
 -- 3. Add bill-observed columns to plan_covered_services

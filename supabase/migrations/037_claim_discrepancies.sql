@@ -53,6 +53,6 @@ CREATE INDEX IF NOT EXISTS idx_discrepancies_tier ON claim_discrepancies(tier);
 CREATE INDEX IF NOT EXISTS idx_discrepancies_systemic ON claim_discrepancies(is_systemic) WHERE is_systemic = TRUE;
 
 -- 2. Feature flag (disabled by default)
-INSERT INTO feature_flag_rules (flag_key, enabled, target_type, target_value, description)
-VALUES ('eob_discrepancy_detection', false, 'global', NULL, 'Three-tier discrepancy detection engine in bill pipeline')
+INSERT INTO feature_flag_rules (flag_key, enabled, description, target_type)
+VALUES ('eob_discrepancy_detection', false, 'Three-tier discrepancy detection engine in bill pipeline', 'global')
 ON CONFLICT (flag_key) DO NOTHING;

@@ -2,8 +2,8 @@
 -- Phase 0B of Paid Candid Claim implementation
 
 -- 1. claims_view feature flag (disabled by default)
-INSERT INTO feature_flag_rules (flag_key, enabled, target_type, target_value, description)
-VALUES ('claims_view', false, 'global', NULL, 'Claims list + detail UI with coverage status and benefits utilization')
+INSERT INTO feature_flag_rules (flag_key, enabled, description, target_type)
+VALUES ('claims_view', false, 'Claims list + detail UI with coverage status and benefits utilization', 'global')
 ON CONFLICT (flag_key) DO NOTHING;
 
 -- 2. claim_group_id for linking related documents (EOB + bill for same service)

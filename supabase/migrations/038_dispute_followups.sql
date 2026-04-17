@@ -33,8 +33,8 @@ CREATE INDEX IF NOT EXISTS idx_followups_status ON dispute_followups(status) WHE
 CREATE INDEX IF NOT EXISTS idx_followups_dispute ON dispute_followups(dispute_id);
 
 -- 2. Feature flag (disabled by default)
-INSERT INTO feature_flag_rules (flag_key, enabled, target_type, target_value, description)
-VALUES ('dispute_feedback_loop', false, 'global', NULL, 'Timed follow-ups for dispute outcome tracking (30-day initial, 14-day reprompt)')
+INSERT INTO feature_flag_rules (flag_key, enabled, description, target_type)
+VALUES ('dispute_feedback_loop', false, 'Timed follow-ups for dispute outcome tracking (30-day initial, 14-day reprompt)', 'global')
 ON CONFLICT (flag_key) DO NOTHING;
 
 -- 3. Phase 2C prep: add escalation status values to dispute_outcomes

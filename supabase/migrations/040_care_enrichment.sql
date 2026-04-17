@@ -12,6 +12,6 @@ ALTER TABLE providers
   ADD COLUMN IF NOT EXISTS nppes_updated_at TIMESTAMPTZ;
 
 -- 2. candid_care_live feature flag
-INSERT INTO feature_flag_rules (flag_key, enabled, target_type, target_value, description)
-VALUES ('candid_care_live', false, 'global', NULL, 'Live Candid Care pricing UI (replaces placeholder)')
+INSERT INTO feature_flag_rules (flag_key, enabled, description, target_type)
+VALUES ('candid_care_live', false, 'Live Candid Care pricing UI (replaces placeholder)', 'global')
 ON CONFLICT (flag_key) DO NOTHING;

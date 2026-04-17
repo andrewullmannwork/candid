@@ -24,6 +24,6 @@ CREATE TABLE IF NOT EXISTS small_claims_courts (
 CREATE INDEX IF NOT EXISTS idx_scc_state ON small_claims_courts(state);
 
 -- 2. Feature flag
-INSERT INTO feature_flag_rules (flag_key, enabled, target_type, target_value, description)
-VALUES ('small_claims_prep', false, 'global', NULL, 'Small claims court preparation UI and evidence compiler')
+INSERT INTO feature_flag_rules (flag_key, enabled, description, target_type)
+VALUES ('small_claims_prep', false, 'Small claims court preparation UI and evidence compiler', 'global')
 ON CONFLICT (flag_key) DO NOTHING;
