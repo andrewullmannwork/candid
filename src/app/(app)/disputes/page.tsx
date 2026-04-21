@@ -3,21 +3,152 @@
 import { Suspense, useState, useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import type { DisputeLetter } from "@/lib/billing/types";
-import { SubscriptionGate } from "@/lib/subscription/subscription-gate";
+import { useAuth } from "@/lib/auth/auth-context";
+import { useSubscription } from "@/lib/subscription/use-subscription";
+import { LockedOverlay } from "@/components/shared/LockedOverlay";
 import { downloadCaseFile } from "@/lib/casefile";
 
 export default function DisputesPage() {
+  const { user } = useAuth();
+  const { isPro, loading } = useSubscription();
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+
+  // Session 35: direct to Stripe Checkout instead of routing through /billing.
+  // Session 36 will replace this redirect with an embedded Stripe Elements
+  // modal so CC entry happens inside the overlay (see plan:
+  // plans/t_stripe_elements_embed.md).
+  async function handleSubscribe() {
+    if (!user || checkoutLoading) return;
+    setCheckoutLoading(true);
+    try {
+      const token = await user.firebaseUser.getIdToken();
+      const res = await fetch("/api/stripe/create-checkout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ returnUrl: window.location.href }),
+      });
+      if (res.ok) {
+        const { url } = await res.json();
+        if (url) window.location.href = url;
+      }
+    } catch (err) {
+      console.error("Stripe checkout failed:", err);
+    }
+    setCheckoutLoading(false);
+  }
+
+  if (loading) {
+    return (
+      <div className="flex min-h-[60vh] items-center justify-center">
+        <div className="h-5 w-5 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+      </div>
+    );
+  }
+
+  if (!isPro) {
+    return (
+      <LockedOverlay
+        title="Dispute Letters requires Candid Pro"
+        description="Upgrade to draft appeal letters grounded in your plan benefits, track dispute outcomes, and escalate to the attorney marketplace when needed."
+        ctaLabel={checkoutLoading ? "Opening checkout..." : "Subscribe to Pro"}
+        onCta={handleSubscribe}
+        tone="pro"
+      >
+        <SampleDisputeLetterPreview />
+      </LockedOverlay>
+    );
+  }
+
   return (
-    <SubscriptionGate requiredTier="pro" featureName="Dispute Letters">
-      <Suspense>
-        <DisputesContent />
-      </Suspense>
-    </SubscriptionGate>
+    <Suspense>
+      <DisputesContent />
+    </Suspense>
+  );
+}
+
+/**
+ * Background preview rendered behind the upgrade CTA so free users see what
+ * a real dispute letter looks like (instead of staring at a blank interstitial).
+ */
+function SampleDisputeLetterPreview() {
+  return (
+    <div className="max-w-4xl mx-auto">
+      <h1 className="text-2xl font-bold mb-2">Dispute Letter</h1>
+      <p className="text-gray-600 mb-6">
+        Review and edit your letter below. When ready, download or copy it and
+        send it yourself.
+      </p>
+
+      <div className="bg-white rounded-lg shadow p-5 mb-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+          <div>
+            <span className="text-gray-500">Type:</span>{" "}
+            <span className="font-medium">Appeal to Insurer</span>
+          </div>
+          <div>
+            <span className="text-gray-500">To:</span>{" "}
+            <span className="font-medium">Aetna Member Services — Appeals</span>
+          </div>
+          <div>
+            <span className="text-gray-500">Action:</span>{" "}
+            <span className="font-medium">Reprocess claim at in-network rate</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-lg shadow">
+        <div className="flex items-center justify-between p-4 border-b">
+          <h2 className="font-semibold">Formal Appeal — Claim #AET-2026-0428</h2>
+          <div className="flex gap-2">
+            <span className="text-sm px-3 py-1.5 rounded border border-gray-300">Edit</span>
+            <span className="text-sm px-3 py-1.5 rounded bg-blue-600 text-white">
+              Download Case File
+            </span>
+          </div>
+        </div>
+        <div className="p-6 whitespace-pre-wrap font-mono text-sm leading-relaxed">
+{`Aetna Member Services — Appeals
+PO Box 14463
+Lexington, KY 40512
+
+Re: Formal appeal of claim denial
+Member: Jane Sample · Member ID: W123456789
+Date of service: June 1, 2026 · Claim #AET-2026-0428
+
+To Whom It May Concern:
+
+I am appealing the denial of the above claim for an established office visit
+(CPT 99214) at Swedish Providence on June 1, 2026. My plan documents (Aetna PPO
+Select, plan year 2026) specify a $20 copay for this service when rendered
+in-network. The provider is listed as in-network on your published directory.
+
+The EOB shows $428.00 billed, $0.00 insurance paid, and $0.00 patient
+responsibility — with no line-item allocation. Per 29 CFR §2560.503-1, I am
+entitled to a written explanation of the adverse benefit determination,
+including the specific plan provision on which the denial is based.
+
+Community data from anonymized, aggregated Candid user reports shows 14 other
+members of this plan have been charged the $20 copay for this service in 2026.
+This supports that the denial is inconsistent with plan terms.
+
+I request that this claim be reprocessed at the in-network rate and that I be
+credited for the $20 copay I have already paid. Please respond within 30
+business days as required by 29 CFR §2560.503-1(i).
+
+Sincerely,
+Jane Sample`}
+        </div>
+      </div>
+    </div>
   );
 }
 
 function DisputesContent() {
   const searchParams = useSearchParams();
+  const { user } = useAuth();
   const [letter, setLetter] = useState<DisputeLetter | null>(() => {
     const letterParam = searchParams.get("letter");
     if (letterParam) {
@@ -41,6 +172,52 @@ function DisputesContent() {
     }
     return "";
   });
+  const [disputeFetching, setDisputeFetching] = useState(false);
+
+  // ?dispute=<id> flow — when LetterTeaser routes here, fetch the persisted
+  // letter content and synthesize a DisputeLetter for the renderer. Only
+  // runs for Pro users because Free users never reach DisputesContent (the
+  // parent DisputesPage wraps them in LockedOverlay first).
+  useEffect(() => {
+    const disputeId = searchParams.get("dispute");
+    if (!disputeId || letter || !user) return;
+    let cancelled = false;
+    (async () => {
+      setDisputeFetching(true);
+      try {
+        const token = await user.firebaseUser.getIdToken();
+        const res = await fetch(`/api/disputes/${disputeId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!data.letterContent) return;
+        const synthesized: DisputeLetter = {
+          id: data.id,
+          auditReportId: data.claimId || "",
+          userId: "",
+          letterType: (data.disputeType === "internal_appeal" ? "insurance_appeal" : data.disputeType) || "insurance_appeal",
+          findingIds: [],
+          recipient: { name: "Insurance Appeals", role: "Appeals Department" },
+          subject: `Formal appeal — dispute ${data.id.slice(0, 8)}`,
+          body: data.letterContent,
+          supportingFacts: [],
+          requestedAction: "Reprocess the claim and issue a refund where applicable.",
+          status: "draft",
+          createdAt: data.filedDate || new Date().toISOString(),
+          updatedAt: data.filedDate || new Date().toISOString(),
+        };
+        setLetter(synthesized);
+        setEditedBody(data.letterContent);
+      } catch (err) {
+        console.error("Failed to load persisted dispute letter:", err);
+      }
+      if (!cancelled) setDisputeFetching(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams, letter, user]);
   const [isEditing, setIsEditing] = useState(false);
   const [copied, setCopied] = useState(false);
   const textRef = useRef<HTMLTextAreaElement>(null);
@@ -80,6 +257,13 @@ function DisputesContent() {
   };
 
   if (!letter) {
+    if (disputeFetching) {
+      return (
+        <div className="flex min-h-[40vh] items-center justify-center">
+          <div className="h-5 w-5 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+        </div>
+      );
+    }
     return (
       <div className="max-w-4xl mx-auto">
         <h1 className="text-2xl font-bold mb-6">Dispute Letters</h1>

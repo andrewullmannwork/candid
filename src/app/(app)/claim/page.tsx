@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useEffect, useState } from "react";
 import { BillCard } from "@/components/claims/BillCard";
@@ -53,6 +53,15 @@ interface ClaimSummary {
     billed_amount: number | null;
   }>;
   topFindings?: Array<{ title: string; estimatedOvercharge: number; billingCode?: string | null }>;
+  recovery?: {
+    billed: number;
+    alreadyPaid: number;
+    stillOutstanding: number;
+    shouldOwe: number;
+    potentialRecovery: number;
+    refundComponent: number;
+    forgivenessComponent: number;
+  };
 }
 
 interface ClaimStats {
@@ -62,32 +71,50 @@ interface ClaimStats {
   totalPatientResponsibility: number;
   totalPotentialSavings: number;
   totalIssuesFlagged: number;
+  // Session 35 T2.8
+  totalPotentialRecovery?: number;
+  totalRefundComponent?: number;
+  totalForgivenessComponent?: number;
+  totalAlreadyPaid?: number;
 }
 
 const TYPE_LABELS: Record<string, string> = {
-  internal_appeal: "Insurance Appeal",
+  internal_appeal: "Appeal to Insurer",
   external_appeal: "External Appeal",
-  complaint: "Complaint",
+  complaint: "Regulatory Complaint",
   legal: "Legal Action",
-  negotiation: "Billing Dispute",
+  negotiation: "Self-pay Negotiation",
 };
 
+// Session 35 lifecycle vocabulary. Legacy values (filed, in_progress, settled,
+// withdrawn, *_on_escalation) remain supported for existing rows — see
+// `src/lib/disputes/persist.ts#DisputeStatus`.
 const STATUS_STYLES: Record<string, string> = {
+  flagged: "text-amber-700 bg-amber-50",
   filed: "text-blue-700 bg-blue-50",
+  dispute_letter_drafted: "text-blue-700 bg-blue-50",
+  court_documentation_drafted: "text-purple-700 bg-purple-50",
   in_progress: "text-amber-700 bg-amber-50",
   won: "text-green-700 bg-green-50",
   lost: "text-red-700 bg-red-50",
   settled: "text-green-700 bg-green-50",
   withdrawn: "text-gray-700 bg-gray-50",
+  won_on_escalation: "text-green-700 bg-green-50",
+  settled_on_escalation: "text-green-700 bg-green-50",
 };
 
 const STATUS_LABELS: Record<string, string> = {
-  filed: "Filed",
-  in_progress: "Under Review",
+  flagged: "Flagged",
+  filed: "Dispute Letter Drafted",
+  dispute_letter_drafted: "Dispute Letter Drafted",
+  court_documentation_drafted: "Court Documentation Drafted",
+  in_progress: "In Progress",
   won: "Won",
   lost: "Lost",
   settled: "Settled",
   withdrawn: "Withdrawn",
+  won_on_escalation: "Won (on escalation)",
+  settled_on_escalation: "Settled (on escalation)",
 };
 
 type Tab = "bills" | "discrepancies" | "disputes";
@@ -97,13 +124,19 @@ type Tab = "bills" | "discrepancies" | "disputes";
 export default function CandidClaimPage() {
   const { user } = useAuth();
   const router = useRouter();
-  const [tab, setTab] = useState<Tab>("bills");
-  const [selectedClaimId, setSelectedClaimId] = useState<string | null>(null);
-  // Optional line-item to auto-focus when opening from a discrepancy
-  const [focusLineItemId, setFocusLineItemId] = useState<string | null>(null);
-  // Remember which tab the user came from so the breakdown back-button returns
-  // them to the same place (bills list or discrepancies list).
-  const [tabBeforeDetail, setTabBeforeDetail] = useState<Tab>("bills");
+  const searchParams = useSearchParams();
+
+  // URL-driven selected-claim state. Using the URL (not just React state)
+  // means the browser back button returns to the claims list instead of
+  // skipping all the way back to /dashboard.
+  const urlClaimId = searchParams.get("claim");
+  const urlFocusId = searchParams.get("focus");
+  const urlFromTab = (searchParams.get("from") as Tab | null) ?? null;
+
+  const [tab, setTab] = useState<Tab>(urlFromTab || "bills");
+  const selectedClaimId = urlClaimId;
+  const focusLineItemId = urlFocusId;
+  const tabBeforeDetail: Tab = urlFromTab || "bills";
 
   // Claims data
   const [claims, setClaims] = useState<ClaimSummary[]>([]);
@@ -239,24 +272,28 @@ export default function CandidClaimPage() {
     // Open the ClaimDetail for this discrepancy's claim so the user can review
     // the full facts and trigger the dispute letter flow from the line-item view.
     if (discrepancy?.claim_id) {
-      setTabBeforeDetail("discrepancies");
-      setFocusLineItemId(discrepancy.claim_line_item_id || null);
-      setSelectedClaimId(discrepancy.claim_id);
+      const focus = discrepancy.claim_line_item_id || "";
+      router.push(
+        `/claim?claim=${discrepancy.claim_id}&from=discrepancies${focus ? `&focus=${focus}` : ""}`,
+      );
     } else {
       router.push(`/upload?dispute_from=${discrepancy.claim_id}`);
     }
   }
 
   function openClaimDetail(claimId: string, sourceTab: Tab) {
-    setTabBeforeDetail(sourceTab);
-    setFocusLineItemId(null);
-    setSelectedClaimId(claimId);
+    // URL-driven so browser back returns to the claims list instead of /dashboard.
+    router.push(`/claim?claim=${claimId}&from=${sourceTab}`);
   }
 
   function closeClaimDetail() {
-    setSelectedClaimId(null);
-    setFocusLineItemId(null);
-    setTab(tabBeforeDetail);
+    // Prefer browser back (preserves scroll + matches user intent). Falls back
+    // to an explicit push if history is empty.
+    if (window.history.length > 1) {
+      router.back();
+    } else {
+      router.push(`/claim?tab=${tabBeforeDetail}`);
+    }
   }
 
   if (loading) {
@@ -294,6 +331,9 @@ export default function CandidClaimPage() {
     billsAnalyzed: claimStats?.totalBills || 0,
     issuesFlagged: claimStats?.totalIssuesFlagged || 0,
     disputesFiled: disputeData?.disputes.length || 0,
+    totalPotentialRecovery: claimStats?.totalPotentialRecovery ?? 0,
+    totalRefundComponent: claimStats?.totalRefundComponent ?? 0,
+    totalForgivenessComponent: claimStats?.totalForgivenessComponent ?? 0,
   };
 
   return (
@@ -510,7 +550,14 @@ function TabBadge({ count, active }: { count: number; active: boolean }) {
 function DisputeCard({ dispute, onUpdate }: { dispute: Dispute; onUpdate?: (update: { status: string; amountRecovered?: number }) => void }) {
   const [showOutcome, setShowOutcome] = useState(false);
   const [recoveredAmount, setRecoveredAmount] = useState("");
-  const isActive = dispute.status === "filed" || dispute.status === "in_progress";
+  // Active = anything not yet resolved. Includes legacy "filed" / "in_progress"
+  // plus the Session 35 T2.8 lifecycle vocab ("dispute_letter_drafted" and
+  // "court_documentation_drafted").
+  const isActive =
+    dispute.status === "filed" ||
+    dispute.status === "in_progress" ||
+    dispute.status === "dispute_letter_drafted" ||
+    dispute.status === "court_documentation_drafted";
   const [daysAgo] = useState(() => Math.floor((Date.now() - new Date(dispute.filedDate).getTime()) / (1000 * 60 * 60 * 24)));
 
   return (
@@ -539,9 +586,25 @@ function DisputeCard({ dispute, onUpdate }: { dispute: Dispute; onUpdate?: (upda
       </div>
 
       {isActive && onUpdate && !showOutcome && (
-        <div className="mt-3 flex gap-2 border-t border-gray-100 pt-3">
-          <button onClick={() => setShowOutcome(true)} className="text-xs font-medium text-green-600 hover:text-green-700">Mark as resolved</button>
-          <button onClick={() => onUpdate({ status: "in_progress" })} className="text-xs font-medium text-amber-600 hover:text-amber-700">Mark in progress</button>
+        <div className="mt-3 flex flex-wrap gap-2 border-t border-gray-100 pt-3">
+          <button
+            onClick={() => setShowOutcome(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-green-200 bg-green-50 px-3 py-1.5 text-xs font-semibold text-green-700 transition-colors hover:bg-green-100 hover:border-green-300"
+          >
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+            Mark as resolved
+          </button>
+          <button
+            onClick={() => onUpdate({ status: "in_progress" })}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition-colors hover:bg-amber-100 hover:border-amber-300"
+          >
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            Mark in progress
+          </button>
         </div>
       )}
 

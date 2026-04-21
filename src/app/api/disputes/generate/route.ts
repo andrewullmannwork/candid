@@ -91,6 +91,7 @@ export async function POST(req: NextRequest) {
           claimLineItemIds: body.claimLineItemIds || undefined,
           letterType: letterType || "overcharge",
           amountDisputed: totalDisputed,
+          letterContent: letter.body,
         });
         disputeId = result?.disputeId || null;
       } catch (err) {

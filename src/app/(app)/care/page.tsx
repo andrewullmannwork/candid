@@ -1,13 +1,13 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
 import { createBrowserClient } from "@/lib/supabase/client";
 import { PricingSearch } from "@/components/care/PricingSearch";
 import { PricingComparisonCard } from "@/components/care/PricingComparisonCard";
 import { UninsuredView } from "@/components/care/UninsuredView";
 import { Disclaimer } from "@/components/shared/Disclaimer";
+import { LockedOverlay } from "@/components/shared/LockedOverlay";
 
 export default function CandidCarePage() {
   const { user } = useAuth();
@@ -140,34 +140,68 @@ export default function CandidCarePage() {
 
   // ── Placeholder (Coming Soon) ───────────────────────────────────────────
   return (
-    <div className="relative min-h-[80vh]">
-      <div className="sticky top-[25vh] z-20 h-0">
-        <div className="flex items-center justify-center">
-        <div className="flex flex-col items-center bg-white/95 backdrop-blur-sm border border-gray-200 rounded-2xl shadow-xl px-10 py-8 max-w-md">
-          <div className="w-12 h-12 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center mb-4">
-            <svg className="w-6 h-6 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-            </svg>
-          </div>
-          <h2 className="text-lg font-bold text-gray-900">Candid Care</h2>
-          <span className="mt-1.5 text-[11px] font-semibold text-blue-600 bg-blue-50 px-2.5 py-0.5 rounded-full border border-blue-100">
-            Coming Soon
-          </span>
-          <p className="mt-3 text-sm text-gray-500 text-center leading-relaxed">
-            Real price transparency powered by real billing data. Upload bills now to help build the dataset.
-          </p>
-          <div className="mt-5 flex items-center gap-3">
-            <Link href="/upload" className="px-5 py-2 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 transition-colors">
-              Upload a bill
-            </Link>
-            <Link href="/dashboard" className="px-5 py-2 text-gray-500 text-sm font-medium border border-gray-200 rounded-xl hover:bg-gray-50 transition-colors">
-              Dashboard
-            </Link>
-          </div>
-        </div>
+    <LockedOverlay
+      title="Candid Care — Coming Soon"
+      description="Real price transparency powered by real billing data. Upload bills now to help build the dataset — the more bills from your plan, the sharper the comparisons."
+      ctaLabel="Upload a bill"
+      ctaHref="/upload"
+      tone="coming_soon"
+    >
+      <SampleCarePreview />
+    </LockedOverlay>
+  );
+}
+
+/**
+ * Populated-looking Candid Care page rendered behind the Coming Soon overlay,
+ * so users see what the feature will do once it's live for their region.
+ */
+function SampleCarePreview() {
+  return (
+    <div className="max-w-3xl mx-auto">
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-gray-900">Candid Care</h1>
+        <p className="mt-1 text-sm text-gray-500">
+          Compare prices, find fair providers, and make informed healthcare decisions.
+        </p>
+      </div>
+
+      <div className="flex gap-1 mb-4 p-1 bg-gray-100 rounded-xl w-fit">
+        <span className="px-4 py-1.5 text-xs font-semibold rounded-lg bg-white text-gray-900 shadow-sm">
+          Insured
+        </span>
+        <span className="px-4 py-1.5 text-xs font-semibold rounded-lg text-gray-500">
+          Uninsured / Self-Pay
+        </span>
+      </div>
+
+      <div className="bg-white border border-gray-100 rounded-xl p-5 mb-4">
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+          Knee MRI · Seattle, WA
+        </p>
+        <div className="space-y-3">
+          {[
+            { name: "Swedish Medical Center", price: 425, reports: 14, quality: "Best value" },
+            { name: "Pacific Radiology", price: 680, reports: 9, quality: "Good" },
+            { name: "Harbor Imaging", price: 1200, reports: 6, quality: "Above median" },
+            { name: "UW Medical Center", price: 2100, reports: 11, quality: "Premium" },
+          ].map((p) => (
+            <div key={p.name} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+              <div>
+                <p className="text-sm font-semibold text-gray-900">{p.name}</p>
+                <p className="text-[11px] text-gray-500">
+                  {p.reports} community reports · {p.quality}
+                </p>
+              </div>
+              <p className="text-lg font-bold text-gray-900 tabular-nums">
+                ${p.price.toLocaleString()}
+              </p>
+            </div>
+          ))}
         </div>
       </div>
+
+      <Disclaimer variant="pricing_care" className="mt-6" />
     </div>
   );
 }

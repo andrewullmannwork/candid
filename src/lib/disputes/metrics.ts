@@ -60,7 +60,13 @@ export async function getUserDisputeMetrics(
   const won = disputes.filter((d) => d.status === "won" || d.status === "won_on_escalation");
   const settled = disputes.filter((d) => d.status === "settled" || d.status === "settled_on_escalation");
   const lost = disputes.filter((d) => d.status === "lost");
-  const active = disputes.filter((d) => d.status === "filed" || d.status === "in_progress");
+  const active = disputes.filter(
+    (d) =>
+      d.status === "filed" ||
+      d.status === "in_progress" ||
+      d.status === "dispute_letter_drafted" ||
+      d.status === "court_documentation_drafted",
+  );
   const wonOnEscalation = disputes.filter((d) => d.status === "won_on_escalation" || d.status === "settled_on_escalation");
   const resolved = won.length + settled.length + lost.length;
 

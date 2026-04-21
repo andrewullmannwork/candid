@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
+import { useSubscription } from "@/lib/subscription/use-subscription";
 import { Disclaimer } from "@/components/shared/Disclaimer";
 
 interface LineItem {
@@ -17,6 +18,7 @@ interface LineItem {
   allowed_amount: number | null;
   insurance_paid: number | null;
   patient_owes: number | null;
+  amount_still_outstanding: number | null;
   metadata: Record<string, unknown>;
   coverageStatus: "covered" | "not_covered" | "unknown" | null;
   planCoverage: {
@@ -25,6 +27,15 @@ interface LineItem {
     coinsurance: number | null;
     source: string | null;
   } | null;
+  recovery?: {
+    billed: number;
+    alreadyPaid: number;
+    stillOutstanding: number;
+    shouldOwe: number;
+    potentialRecovery: number;
+    refundComponent: number;
+    forgivenessComponent: number;
+  };
 }
 
 interface AuditFinding {
@@ -41,6 +52,37 @@ interface ClaimData {
   lineItems: LineItem[];
   disputes: Array<{ id: string; dispute_type: string; status: string; amount_disputed: number; amount_recovered: number }>;
   relatedClaims: Array<{ id: string; date_of_service: string; status: string; total_billed: number }>;
+  recovery?: {
+    billed: number;
+    alreadyPaid: number;
+    stillOutstanding: number;
+    shouldOwe: number;
+    potentialRecovery: number;
+    refundComponent: number;
+    forgivenessComponent: number;
+  };
+}
+
+interface DisputeDetail {
+  id: string;
+  disputeType: string;
+  status: string;
+  amountDisputed: number;
+  amountRecovered: number;
+  filedDate: string | null;
+  resolutionDate: string | null;
+  claimId: string | null;
+  letterContent: string | null;
+  evidencePackage: Record<string, unknown> | null;
+  lineItems: Array<{
+    id: string;
+    line_number: number;
+    description: string | null;
+    billing_code: string | null;
+    billed_amount: number | null;
+    insurance_paid: number | null;
+    patient_owes: number | null;
+  }>;
 }
 
 const COVERAGE_BADGE: Record<string, { label: string; className: string }> = {
@@ -55,6 +97,63 @@ const SEVERITY_COLORS: Record<string, string> = {
   medium: "text-amber-700 bg-amber-50 border-amber-200",
   low: "text-yellow-700 bg-yellow-50 border-yellow-200",
 };
+
+// Lifecycle labels for disputes. Legacy statuses (filed, in_progress, settled,
+// withdrawn, *_on_escalation) still occur in the DB and are mapped here.
+const DISPUTE_STATUS_LABEL: Record<string, string> = {
+  flagged: "Flagged",
+  filed: "Dispute Letter Drafted",
+  dispute_letter_drafted: "Dispute Letter Drafted",
+  court_documentation_drafted: "Court Documentation Drafted",
+  in_progress: "In Progress",
+  won: "Won",
+  lost: "Lost",
+  settled: "Settled",
+  withdrawn: "Withdrawn",
+  won_on_escalation: "Won (on escalation)",
+  settled_on_escalation: "Settled (on escalation)",
+};
+
+const DISPUTE_STATUS_BADGE: Record<string, string> = {
+  flagged: "text-amber-700 bg-amber-50",
+  filed: "text-blue-700 bg-blue-50",
+  dispute_letter_drafted: "text-blue-700 bg-blue-50",
+  court_documentation_drafted: "text-purple-700 bg-purple-50",
+  in_progress: "text-blue-700 bg-blue-50",
+  won: "text-green-700 bg-green-50",
+  lost: "text-red-700 bg-red-50",
+  settled: "text-green-700 bg-green-50",
+  withdrawn: "text-gray-600 bg-gray-100",
+  won_on_escalation: "text-green-700 bg-green-50",
+  settled_on_escalation: "text-green-700 bg-green-50",
+};
+
+const DISPUTE_TYPE_LABEL: Record<string, string> = {
+  internal_appeal: "Appeal to Insurer",
+  external_appeal: "External Appeal",
+  complaint: "Regulatory Complaint",
+  legal: "Legal Action",
+  negotiation: "Self-pay Negotiation",
+};
+
+function disputeTypeLabel(type: string): string {
+  return (
+    DISPUTE_TYPE_LABEL[type] ||
+    type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+  );
+}
+
+// Quality-reporting codes (CPT Category II like "3074F" and HCPCS G-codes with
+// zero charges) clutter the main breakdown. Hide them in a collapsible section.
+function isQualityReporting(item: LineItem, findingCount: number): boolean {
+  const code = (item.billing_code || "").toUpperCase();
+  const isCatII = /^\d{4}F$/.test(code);
+  const billed = item.billed_amount || 0;
+  const paid = item.insurance_paid || 0;
+  const owed = item.patient_owes || 0;
+  const noCharges = billed === 0 && paid === 0 && owed === 0;
+  return isCatII || (noCharges && findingCount === 0);
+}
 
 export function ClaimDetail({
   claimId,
@@ -117,6 +216,17 @@ export function ClaimDetail({
   const claim = data.claim as Record<string, unknown>;
   const providerName = ((claim.metadata as Record<string, unknown>)?.provider as Record<string, unknown>)?.name as string || "Unknown Provider";
 
+  // Split line items — quality-reporting codes (CPT Cat II, zero-charge
+  // HCPCS entries) are hidden in a collapsible section so the main breakdown
+  // stays focused on actual charges.
+  const primaryLineItems: LineItem[] = [];
+  const qualityLineItems: LineItem[] = [];
+  for (const item of data.lineItems) {
+    const findingCount = ((item.metadata?.auditFindings || []) as AuditFinding[]).length;
+    if (isQualityReporting(item, findingCount)) qualityLineItems.push(item);
+    else primaryLineItems.push(item);
+  }
+
   return (
     <div>
       {/* Back button + header */}
@@ -140,9 +250,10 @@ export function ClaimDetail({
         </div>
       )}
 
-      {/* Line items table */}
+      {/* Line items table — 7-col layout per user preference.
+          Code, Coverage, Flags each get their own column. Numbers right-aligned. */}
       <div className="bg-white border border-gray-100 rounded-xl overflow-hidden mb-4">
-        <div className="grid grid-cols-12 gap-2 px-4 py-2 bg-gray-50 text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+        <div className="grid grid-cols-12 gap-4 items-center px-5 py-3 bg-gray-50 text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
           <div className="col-span-4">Service</div>
           <div className="col-span-2">Code</div>
           <div className="col-span-1 text-right">Billed</div>
@@ -152,13 +263,15 @@ export function ClaimDetail({
           <div className="col-span-1 text-center">Flags</div>
         </div>
 
-        {data.lineItems.map((item) => {
+        {primaryLineItems.map((item) => {
           const findings = ((item.metadata?.auditFindings || []) as AuditFinding[]);
           const isExpanded = expandedItem === item.id;
           const coverageBadge = item.coverageStatus ? COVERAGE_BADGE[item.coverageStatus] : null;
 
-          // Detect unexplained gap: billed > 0 but nothing paid or owed.
-          // Covered lines with this pattern = likely denial or missing allocation.
+          // Legacy display values — reverted from T2.8 recovery math per user
+          // preference. Paid column shows insurance_paid; You Owe shows
+          // patient_owes. Expansion on row click reveals the fact-grid +
+          // dispute-draft flow which is where the dispute value surfaces.
           const billed = item.billed_amount || 0;
           const paid = item.insurance_paid || 0;
           const owed = item.patient_owes || 0;
@@ -169,33 +282,31 @@ export function ClaimDetail({
             <div key={item.id} data-line-item-id={item.id}>
               <button
                 onClick={() => setExpandedItem(isExpanded ? null : item.id)}
-                className={`w-full grid grid-cols-12 gap-2 items-center px-4 py-3 text-left transition-colors border-t border-gray-100 ${
-                  gapRelevant ? "bg-amber-50/40 hover:bg-amber-50/70" : "hover:bg-gray-50"
-                }`}
+                className="w-full grid grid-cols-12 gap-4 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 hover:bg-gray-50"
               >
                 <div className="col-span-4 text-xs text-gray-900 truncate">
                   {item.description || item.service_slug?.replace(/_/g, " ") || "Unknown"}
                 </div>
-                <div className="col-span-2 text-xs text-gray-500 font-mono">
+                <div className="col-span-2 text-xs text-gray-500 font-mono truncate">
                   {item.billing_code || "—"}
                 </div>
-                <div className="col-span-1 text-xs text-gray-900 text-right">
+                <div className="col-span-1 text-xs text-gray-900 text-right tabular-nums">
                   ${billed.toLocaleString()}
                 </div>
-                <div className="col-span-1 text-xs text-gray-500 text-right">
+                <div className="col-span-1 text-xs text-gray-500 text-right tabular-nums">
                   ${paid.toLocaleString()}
                 </div>
-                <div className="col-span-1 text-xs font-semibold text-gray-900 text-right">
+                <div className="col-span-1 text-xs font-semibold text-gray-900 text-right tabular-nums">
                   ${owed.toLocaleString()}
                 </div>
-                <div className="col-span-2 text-center">
+                <div className="col-span-2 flex items-center justify-center">
                   {coverageBadge && (
                     <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className}`}>
                       {coverageBadge.label}
                     </span>
                   )}
                 </div>
-                <div className="col-span-1 text-center">
+                <div className="col-span-1 flex items-center justify-center">
                   {findings.length > 0 && (
                     <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full text-red-700 bg-red-50">
                       {findings.length}
@@ -209,15 +320,18 @@ export function ClaimDetail({
                 </div>
               </button>
 
-              {/* Inline gap explanation when expanded and there's a gap */}
+              {/* Inline gap explanation when expanded and there's a gap.
+                  Amber replaced with white per user preference — colors were
+                  too busy. Green "YOUR PLAN SAYS" and red "EOB SHOWS" boxes
+                  kept because they carry semantic meaning. */}
               {isExpanded && gapRelevant && findings.length === 0 && (
-                <div className="px-4 py-4 bg-amber-50 border-t border-amber-100 space-y-3">
+                <div className="px-4 py-4 bg-white border-t border-gray-100 space-y-3">
                   {/* Header */}
                   <div>
-                    <p className="text-sm font-semibold text-amber-900">
+                    <p className="text-sm font-semibold text-gray-900">
                       Unexplained ${billed.toLocaleString()} charge
                     </p>
-                    <p className="mt-1 text-xs text-amber-800">
+                    <p className="mt-1 text-xs text-gray-600">
                       {buildGapExplanation(billed, item.planCoverage)}
                     </p>
                   </div>
@@ -239,7 +353,7 @@ export function ClaimDetail({
                   </div>
 
                   {/* Actionable steps */}
-                  <div className="rounded-lg border border-amber-200 bg-white p-3">
+                  <div className="rounded-lg border border-gray-200 bg-white p-3">
                     <p className="text-xs font-semibold text-gray-900">How to dispute</p>
                     <ol className="mt-1.5 space-y-1 text-xs text-gray-600">
                       <li>1. Call the insurer claim number on your card and ask why no payment was made for this line.</li>
@@ -458,26 +572,32 @@ export function ClaimDetail({
         })}
       </div>
 
-      {/* Linked disputes */}
+      {/* Quality-reporting codes — collapsed by default */}
+      {qualityLineItems.length > 0 && (
+        <QualityMeasuresSection items={qualityLineItems} />
+      )}
+
+      {/* Disputes on this bill — new lifecycle vocabulary, clickable expansion */}
       {data.disputes.length > 0 && (
         <div className="mb-4">
-          <h3 className="text-sm font-semibold text-gray-900 mb-2">Linked Disputes</h3>
+          <h3 className="text-sm font-semibold text-gray-900 mb-2">Disputes</h3>
           <div className="space-y-2">
             {data.disputes.map((d) => (
-              <div key={d.id} className="p-3 bg-white border border-gray-100 rounded-xl flex justify-between items-center">
-                <div>
-                  <p className="text-xs font-semibold text-gray-900">{d.dispute_type.replace(/_/g, " ")}</p>
-                  <p className="text-[10px] text-gray-500">{d.status}</p>
-                </div>
-                <div className="text-right">
-                  <p className="text-xs font-bold">${d.amount_disputed.toLocaleString()}</p>
-                  {d.amount_recovered > 0 && (
-                    <p className="text-[10px] text-green-600">-${d.amount_recovered.toLocaleString()}</p>
-                  )}
-                </div>
-              </div>
+              <DisputeRow key={d.id} dispute={d} />
             ))}
           </div>
+          {/* T2.7 — bundle related bills into one consolidated dispute */}
+          <button
+            disabled
+            className="mt-3 w-full rounded-lg border border-dashed border-gray-200 bg-gray-50/60 px-3 py-2.5 text-left text-xs text-gray-500 cursor-not-allowed"
+            title="Coming soon — bundle related bills from the same visit into one consolidated dispute letter."
+          >
+            <span className="font-semibold text-gray-700">+ Bundle with a related bill</span>
+            <span className="ml-2 text-[10px] uppercase tracking-wider text-gray-400">Coming soon</span>
+            <span className="mt-0.5 block text-[11px] text-gray-500">
+              Group bills from the same visit (hospital + anesthesia + lab + radiology) into one dispute letter.
+            </span>
+          </button>
         </div>
       )}
 
@@ -517,4 +637,310 @@ function buildPlanSays(planCoverage: LineItem["planCoverage"]): string {
 
   if (parts.length === 0) return "Covered";
   return `Covered · ${parts.join(" · ")}`;
+}
+
+// ── Quality reporting codes ───────────────────────────────────────────────
+//
+// CPT Category II and zero-charge HCPCS codes are quality measures that
+// clutter the main breakdown. Show a collapsible section so they're
+// discoverable without crowding the charges view.
+
+function QualityMeasuresSection({ items }: { items: LineItem[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mb-4 rounded-xl border border-gray-100 bg-gray-50/60 overflow-hidden">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-100/60 transition-colors"
+      >
+        <div>
+          <p className="text-xs font-semibold text-gray-700">
+            Quality measures ({items.length}) · no charge
+          </p>
+          <p className="text-[11px] text-gray-500">
+            Reporting codes filed alongside the main service. Always $0.
+          </p>
+        </div>
+        <svg
+          className={`w-4 h-4 text-gray-400 transition-transform ${open ? "rotate-180" : ""}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {open && (
+        <div className="border-t border-gray-100 divide-y divide-gray-100">
+          {items.map((item) => (
+            <div key={item.id} className="grid grid-cols-12 gap-2 px-4 py-2 items-center">
+              <div className="col-span-8 text-xs text-gray-600 truncate">
+                {item.description || item.service_slug?.replace(/_/g, " ") || "Unknown"}
+              </div>
+              <div className="col-span-2 text-xs text-gray-500 font-mono">
+                {item.billing_code || "—"}
+              </div>
+              <div className="col-span-2 text-xs text-gray-400 text-right">No charge</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Linked Disputes row ──────────────────────────────────────────────────
+//
+// Clickable row. Expansion fetches the full dispute (letter text, evidence
+// package, linked bill line items) and renders inline with links back to
+// /disputes and /small-claims where the full artifacts live.
+
+function DisputeRow({
+  dispute,
+}: {
+  dispute: { id: string; dispute_type: string; status: string; amount_disputed: number; amount_recovered: number };
+}) {
+  const { user } = useAuth();
+  const { isPro } = useSubscription();
+  const [open, setOpen] = useState(false);
+  const [detail, setDetail] = useState<DisputeDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const statusLabel = DISPUTE_STATUS_LABEL[dispute.status] || dispute.status;
+  const statusBadgeClass = DISPUTE_STATUS_BADGE[dispute.status] || "text-gray-700 bg-gray-100";
+  const typeLabel = disputeTypeLabel(dispute.dispute_type);
+
+  async function toggleOpen() {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    setOpen(true);
+    if (detail || detailLoading || !user) return;
+    setDetailLoading(true);
+    try {
+      const token = await user.firebaseUser.getIdToken();
+      const res = await fetch(`/api/disputes/${dispute.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        setDetail(await res.json());
+      }
+    } catch (err) {
+      console.error("Failed to load dispute detail:", err);
+    }
+    setDetailLoading(false);
+  }
+
+  const hasLetter = !!detail?.letterContent;
+  const hasEvidence = !!detail?.evidencePackage;
+  const hasReachedLetterStage = dispute.status !== "flagged";
+  const hasReachedCourtStage =
+    dispute.status === "court_documentation_drafted" ||
+    dispute.status === "won" ||
+    dispute.status === "lost" ||
+    dispute.status === "settled" ||
+    dispute.status === "won_on_escalation" ||
+    dispute.status === "settled_on_escalation";
+
+  return (
+    <div className="rounded-xl border border-gray-100 bg-white overflow-hidden">
+      <button
+        onClick={toggleOpen}
+        className="w-full flex items-center justify-between px-3 py-3 text-left hover:bg-gray-50 transition-colors"
+      >
+        <div className="flex items-center gap-3">
+          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusBadgeClass}`}>
+            {statusLabel}
+          </span>
+          <div>
+            <p className="text-xs font-semibold text-gray-900">{typeLabel}</p>
+            <p className="text-[10px] text-gray-500">Click for details</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="text-right">
+            <p className="text-xs font-bold">${dispute.amount_disputed.toLocaleString()}</p>
+            {dispute.amount_recovered > 0 && (
+              <p className="text-[10px] text-green-600">+${dispute.amount_recovered.toLocaleString()}</p>
+            )}
+          </div>
+          <svg
+            className={`w-4 h-4 text-gray-400 transition-transform ${open ? "rotate-180" : ""}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </div>
+      </button>
+      {open && (
+        <div className="border-t border-gray-100 p-3 space-y-3 bg-gray-50/40">
+          {/* Bill being disputed */}
+          <div>
+            <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
+              Bill being disputed
+            </p>
+            {detailLoading && <p className="text-xs text-gray-400">Loading bill details...</p>}
+            {!detailLoading && detail && detail.lineItems.length === 0 && (
+              <p className="text-xs text-gray-400">No line items linked.</p>
+            )}
+            {!detailLoading && detail && detail.lineItems.length > 0 && (
+              <div className="space-y-1">
+                {detail.lineItems.map((li) => (
+                  <div key={li.id} className="flex items-center justify-between text-xs text-gray-700">
+                    <span className="truncate">
+                      {li.description || "Line item"}
+                      {li.billing_code && (
+                        <span className="ml-2 text-gray-400 font-mono">{li.billing_code}</span>
+                      )}
+                    </span>
+                    <span className="font-semibold ml-2">
+                      ${(li.billed_amount || 0).toLocaleString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Letter */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+                Dispute letter
+              </p>
+              {hasLetter && isPro && (
+                <a
+                  href={`/disputes?dispute=${dispute.id}`}
+                  className="text-[10px] font-semibold text-blue-600 hover:text-blue-700"
+                >
+                  View full letter →
+                </a>
+              )}
+            </div>
+            {hasLetter && isPro ? (
+              <pre className="p-2 bg-white border border-gray-100 rounded-lg text-[11px] text-gray-700 whitespace-pre-wrap font-sans line-clamp-4">
+                {detail!.letterContent}
+              </pre>
+            ) : (
+              <LetterTeaser
+                isPro={isPro}
+                hasReachedLetterStage={hasReachedLetterStage}
+                disputeId={dispute.id}
+              />
+            )}
+          </div>
+
+          {/* Court documents */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+                Court documentation
+              </p>
+              {hasEvidence && detail?.claimId && (
+                <a
+                  href={`/small-claims?claim=${detail.claimId}`}
+                  className="text-[10px] font-semibold text-blue-600 hover:text-blue-700"
+                >
+                  View evidence package →
+                </a>
+              )}
+            </div>
+            <p
+              className={`p-2 rounded-lg text-xs italic ${
+                hasReachedCourtStage && hasEvidence
+                  ? "bg-purple-50 text-purple-800 not-italic"
+                  : "bg-gray-100 text-gray-400"
+              }`}
+            >
+              {hasEvidence
+                ? "9-section court-ready evidence package prepared."
+                : hasReachedCourtStage
+                  ? "Evidence package reference available on the Small Claims page."
+                  : "Evidence not prepared yet."}
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Locked letter preview shown when the user can't see the real letter:
+ * either because they're on the Free plan, or because this is a legacy
+ * dispute that predates letter persistence (letter_content is NULL).
+ *
+ * Shows a blurred sample letter with an upgrade CTA overlayed so users
+ * understand the value of Pro and have a clear path to unlock it.
+ */
+function LetterTeaser({
+  isPro,
+  hasReachedLetterStage,
+  disputeId,
+}: {
+  isPro: boolean;
+  hasReachedLetterStage: boolean;
+  disputeId: string;
+}) {
+  const sampleLetter = `Aetna Member Services — Appeals
+PO Box 14463
+Lexington, KY 40512
+
+Re: Formal appeal of claim denial
+Member: Jane Sample · Member ID: W123456789
+Date of service: June 1, 2026 · Claim #AET-2026-0428
+
+To Whom It May Concern:
+
+I am appealing the denial of the above claim for an established office visit
+(CPT 99214) at Swedish Providence. My plan documents specify a $20 copay for
+this service when rendered in-network...`;
+
+  return (
+    <div className="relative rounded-lg border border-gray-100 overflow-hidden">
+      <pre
+        aria-hidden
+        className="pointer-events-none select-none p-2 bg-white text-[11px] text-gray-700 whitespace-pre-wrap font-sans filter blur-[3px] opacity-60 max-h-32 overflow-hidden"
+      >
+        {sampleLetter}
+      </pre>
+      <div className="absolute inset-0 flex items-center justify-center bg-white/50">
+        <div className="flex flex-col items-center gap-1.5">
+          {!isPro ? (
+            <>
+              <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+                🔒 Pro only
+              </span>
+              {/* Route to /disputes?dispute=<id>. That page already has the
+                  LockedOverlay billing interstitial (blurred sample letter +
+                  Subscribe button → Stripe Checkout). After subscription
+                  Stripe redirects back to the same URL, and /disputes picks
+                  up the dispute ID to render the real letter. */}
+              <a
+                href={`/disputes?dispute=${disputeId}`}
+                className="px-4 py-1.5 bg-blue-600 text-white text-xs font-semibold rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
+              >
+                Subscribe to view your dispute letter
+              </a>
+            </>
+          ) : hasReachedLetterStage ? (
+            <>
+              <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+                Legacy dispute
+              </span>
+              <p className="text-[11px] text-gray-600 text-center max-w-xs">
+                This letter predates text persistence. Regenerate it from the
+                bill&apos;s Draft Dispute Letter button to see the text here.
+              </p>
+            </>
+          ) : (
+            <p className="text-[11px] text-gray-500 italic">Letter not drafted yet.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }

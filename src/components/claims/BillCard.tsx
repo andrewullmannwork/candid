@@ -23,6 +23,15 @@ interface ClaimSummary {
   reviewNeededCount?: number;
   lineItemPatientOwedSum?: number;
   topFindings?: Array<{ title: string; estimatedOvercharge: number; billingCode?: string | null }>;
+  recovery?: {
+    billed: number;
+    alreadyPaid: number;
+    stillOutstanding: number;
+    shouldOwe: number;
+    potentialRecovery: number;
+    refundComponent: number;
+    forgivenessComponent: number;
+  };
 }
 
 const STATUS: Record<string, { label: string; className: string; dotClass: string }> = {
@@ -57,6 +66,13 @@ const STATUS: Record<string, { label: string; className: string; dotClass: strin
     className: "text-amber-700 bg-amber-50 border-amber-100",
     dotClass: "bg-amber-500",
   },
+  // Synthetic status when plan says you shouldn't owe but the bill charges
+  // you anyway — a recoverable overcharge (Session 35 T2.8).
+  overcharge_found: {
+    label: "Overcharge found",
+    className: "text-amber-700 bg-amber-50 border-amber-100",
+    dotClass: "bg-amber-500",
+  },
 };
 
 function formatDate(iso: string | null): string {
@@ -81,30 +97,36 @@ export function BillCard({
 }) {
   const hasIssues = claim.findingCount > 0;
   const reviewCount = claim.reviewNeededCount || 0;
-  // Upgrade status to "needs_review" when billed lines have no paid/owed allocation.
-  // This overrides "Clean" for legitimate data gaps even when the audit engine
-  // didn't find classic overcharges.
+  const savings = claim.potentialSavings || 0;
+  const billed = claim.total_billed || 0;
+  const providerClaimedOwed = claim.total_patient_responsibility || 0;
+  // Prefer API-derived recovery figures (T2.8). Fall back to the old
+  // heuristic for legacy cached payloads before Session 35 rollout.
+  const shouldOwe = claim.recovery?.shouldOwe ?? (reviewCount > 0 ? 0 : providerClaimedOwed);
+  const potentialRecovery = claim.recovery?.potentialRecovery ?? Math.max(0, billed - shouldOwe);
+  // Synthetic status precedence (most severe wins):
+  //   1. Classic audit findings  → claim.status (typically "flagged")
+  //   2. Unverified-charge review → "needs_review"
+  //   3. Plan-vs-bill overcharge → "overcharge_found" (new — replaces the
+  //      misleading "Clean" badge when there's a clear recovery opportunity)
+  //   4. Everything else         → claim.status
   const effectiveStatus = hasIssues
     ? claim.status
     : reviewCount > 0
       ? "needs_review"
-      : claim.status;
+      : potentialRecovery > 0
+        ? "overcharge_found"
+        : claim.status;
   const status = STATUS[effectiveStatus] || STATUS.processed;
-  const savings = claim.potentialSavings || 0;
-  const billed = claim.total_billed || 0;
-  const providerClaimedOwed = claim.total_patient_responsibility || 0;
-  // "What you SHOULD owe" — based on plan terms and paid allocations.
-  // If the provider claims you owe money but their line items show no
-  // breakdown, we can't verify their number. Until verified, should = 0.
-  // Once discrepancy detection runs with real plan data, this will be the
-  // copay/coinsurance from plan_covered_services.
-  const shouldOwe = reviewCount > 0 ? 0 : providerClaimedOwed;
-  const unverifiedAmount = reviewCount > 0 ? providerClaimedOwed : 0;
 
   return (
     <button
       onClick={() => onSelect(claim.id)}
-      className="group block w-full overflow-hidden rounded-2xl border border-gray-100 bg-white text-left transition-all hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-md"
+      className={`group block w-full overflow-hidden rounded-2xl border bg-white text-left transition-all hover:-translate-y-0.5 hover:shadow-md ${
+        potentialRecovery > 0
+          ? "border-green-200 hover:border-green-300 ring-1 ring-green-100"
+          : "border-gray-100 hover:border-blue-200"
+      }`}
     >
       {/* Header: provider + date + status badge */}
       <div className="flex items-start justify-between gap-3 border-b border-gray-50 bg-gray-50/50 px-5 py-3.5">
@@ -129,6 +151,10 @@ export function BillCard({
 
       {/* Body: amounts */}
       <div className="px-5 py-4">
+        {/* Main row: BILLED → YOU SHOULD OWE. Both columns kept equal height so
+            labels align on the top edge, numbers align on the bottom edge, and
+            the arrow sits visually centered between them. The recovery tagline
+            is moved to a separate row below so it doesn't shift the arrow. */}
         <div className="flex items-center justify-between">
           <div>
             <p className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Billed</p>
@@ -148,14 +174,13 @@ export function BillCard({
             >
               ${shouldOwe.toLocaleString()}
             </p>
-            {/* Provider's disputed claim: shown smaller, crossed-out style */}
-            {unverifiedAmount > 0 && (
-              <p className="mt-0.5 text-[10px] font-medium text-amber-600">
-                Provider claims ${unverifiedAmount.toLocaleString()} — unverified
-              </p>
-            )}
           </div>
         </div>
+        {potentialRecovery > 0 && (
+          <p className="mt-1.5 text-right text-[11px] font-bold text-green-700 tabular-nums">
+            +${potentialRecovery.toLocaleString()} recovery
+          </p>
+        )}
 
         {/* Findings preview */}
         {hasIssues && claim.topFindings && claim.topFindings.length > 0 && (
@@ -198,12 +223,27 @@ export function BillCard({
               {buildReviewHeadline(reviewCount)}
             </p>
             <p className="mt-1 text-xs text-amber-800">
-              {buildReviewExplanation(reviewCount, unverifiedAmount)}
+              {buildReviewExplanation(reviewCount)}
             </p>
           </div>
         )}
 
-        {!hasIssues && reviewCount === 0 && (
+        {/* Potential recovery callout — user shouldn't owe this much per plan.
+            Precedence: audit findings > unverified charges > recovery
+            opportunity > clean. Recovery branch fires only when the other
+            two are quiet, so we don't stack redundant callouts. */}
+        {!hasIssues && reviewCount === 0 && potentialRecovery > 0 && (
+          <div className="mt-4 rounded-xl border border-green-100 bg-green-50/60 p-3">
+            <p className="text-xs font-semibold text-green-900">
+              Potential recovery: +${potentialRecovery.toLocaleString()}
+            </p>
+            <p className="mt-1 text-xs text-green-800">
+              Your plan says you shouldn&apos;t owe{shouldOwe > 0 ? ` more than $${shouldOwe.toLocaleString()}` : " anything"} for this bill. The difference is recoverable — consider disputing.
+            </p>
+          </div>
+        )}
+
+        {!hasIssues && reviewCount === 0 && potentialRecovery === 0 && (
           <div className="mt-4 rounded-xl border border-green-100 bg-green-50/60 p-3">
             <p className="text-xs font-semibold text-green-900">
               No billing errors detected · {claim.lineItemCount} line {claim.lineItemCount === 1 ? "item" : "items"} audited
@@ -239,22 +279,7 @@ function buildReviewHeadline(reviewCount: number): string {
   return `${reviewCount} covered ${plural} with unverified charges`;
 }
 
-function buildReviewExplanation(
-  reviewCount: number,
-  unverifiedAmount: number,
-): string {
+function buildReviewExplanation(reviewCount: number): string {
   const serviceRef = reviewCount === 1 ? "this service" : "these services";
-
-  // Sentence 1: coverage + EOB state. Always included.
-  const coverageSentence = `Your plan covers ${serviceRef}, but the EOB shows $0 paid with no line-item breakdown.`;
-
-  // Sentence 2: balance explanation. Only included if we have an amount.
-  // Omit entirely when unverifiedAmount is missing or zero so we don't print
-  // "the balance" with no antecedent.
-  const balanceSentence =
-    unverifiedAmount > 0
-      ? `The $${unverifiedAmount.toLocaleString()} balance is likely a denial, write-off, or missing data.`
-      : "";
-
-  return [coverageSentence, balanceSentence].filter(Boolean).join(" ");
+  return `Your plan covers ${serviceRef}, but the EOB shows no line-item breakdown. See the full breakdown below to reconcile what's already been paid vs. what you still owe.`;
 }
