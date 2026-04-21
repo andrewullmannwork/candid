@@ -6,9 +6,10 @@ import { useAuth } from "@/lib/auth/auth-context";
 import { useEffect, useState, type ReactNode } from "react";
 
 const adminNav = [
+  { href: "/admin/dashboard", label: "Dashboard", pinned: true },
+  { href: "/admin/corrections", label: "Benefit Corrections" },
   { href: "/admin/pipeline", label: "Benefit Pipeline" },
   { href: "/admin/consent", label: "Consent Audit" },
-  { href: "/admin/corrections", label: "Benefit Corrections" },
   { href: "/admin/documents/review", label: "Document Review" },
   { href: "/admin/flags", label: "Feature Flags" },
   { href: "/admin/sbc-tickets", label: "SBC Tickets" },
@@ -148,7 +149,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
     <div className="flex min-h-screen">
       <aside className="w-56 bg-gray-900 text-white flex flex-col">
         <div className="p-4 border-b border-gray-700">
-          <Link href="/admin/waitlist" className="text-lg font-bold text-blue-400">
+          <Link href="/admin/dashboard" className="text-lg font-bold text-blue-400">
             Candid Admin
           </Link>
         </div>

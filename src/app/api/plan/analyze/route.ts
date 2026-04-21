@@ -66,6 +66,25 @@ export async function POST(request: Request) {
           return parts.join(", ").replace(/^./, (c: string) => c.toUpperCase());
         }
 
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        function formatOonCost(s: any, planType: string | null): string {
+          // Prefer explicit OON description from extraction.
+          if (s.out_cost_description) return s.out_cost_description;
+          // Fall back to structured OON fields.
+          const parts: string[] = [];
+          const copay = s.out_copay as number | null;
+          const coinsurance = s.out_coinsurance as number | null;
+          if (copay != null) parts.push(`$${copay} copay`);
+          if (coinsurance != null && coinsurance > 0) parts.push(`${Math.round(coinsurance * 100)}% coinsurance`);
+          if (s.out_deductible_applies) parts.push("after deductible");
+          if (parts.length > 0) return parts.join(", ").replace(/^./, (c: string) => c.toUpperCase());
+          if (copay === 0 && coinsurance === 0) return "No charge";
+          // HMO/EPO typically don't cover OON. Signal that instead of an empty em dash.
+          const pt = (planType || "").toUpperCase();
+          if (pt === "HMO" || pt === "EPO") return "Not covered";
+          return "";
+        }
+
         function cleanDescription(raw: string): string {
           return raw
             .replace(/\s+/g, " ").trim()
@@ -171,7 +190,7 @@ export async function POST(request: Request) {
                   copay: isNotCovered ? null : s.out_copay,
                   coinsurance: isNotCovered ? null : s.out_coinsurance,
                   deductibleApplies: isNotCovered ? false : s.out_deductible_applies,
-                  costDescription: isNotCovered ? "Not covered" : (s.out_cost_description || ""),
+                  costDescription: isNotCovered ? "Not covered" : formatOonCost(s, userPlan.plan_type),
                 },
                 annualLimit: s.annual_limit,
                 priorAuthRequired: s.prior_auth_required,

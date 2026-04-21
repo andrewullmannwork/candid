@@ -18,6 +18,10 @@ interface ImpactStats {
   billsAnalyzed: number;
   issuesFlagged: number;
   disputesFiled: number;
+  // Session 35 — T2.8: dispute-recovery framing
+  totalPotentialRecovery?: number;
+  totalRefundComponent?: number;
+  totalForgivenessComponent?: number;
 }
 
 export function ClaimImpactHero({
@@ -27,32 +31,60 @@ export function ClaimImpactHero({
   stats: ImpactStats;
   isEmpty: boolean;
 }) {
-  // When user has recovered money, that's the hero number. Otherwise show savings potential.
-  const heroNumber = stats.totalRecovered > 0 ? stats.totalRecovered : stats.potentialSavings;
-  const heroLabel = stats.totalRecovered > 0 ? "Recovered so far" : "Potential savings identified";
+  // Hero priority:
+  // 1. Money already recovered (wins — keep as hero when present)
+  // 2. Total potential recovery (new T2.8 framing — billed vs plan-should-owe)
+  // 3. Fallback to legacy potential-savings number for claims that haven't
+  //    been re-derived yet
+  const potentialRecovery = stats.totalPotentialRecovery ?? stats.potentialSavings;
+  const heroNumber = stats.totalRecovered > 0 ? stats.totalRecovered : potentialRecovery;
+  const heroLabel = stats.totalRecovered > 0 ? "Recovered so far" : "Potential recovery";
+  const hasBreakdown =
+    stats.totalRecovered === 0 &&
+    !!(stats.totalRefundComponent && stats.totalRefundComponent > 0) ||
+    !!(stats.totalForgivenessComponent && stats.totalForgivenessComponent > 0);
+  const useGreenGradient = heroNumber > 0 && !isEmpty;
 
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-50 via-indigo-50 to-white p-6 sm:p-8">
+    <div
+      className={`relative overflow-hidden rounded-2xl border p-6 sm:p-8 ${
+        useGreenGradient
+          ? "border-green-100 bg-gradient-to-br from-green-50 via-emerald-50 to-white"
+          : "border-blue-100 bg-gradient-to-br from-blue-50 via-indigo-50 to-white"
+      }`}
+    >
       {/* Decorative gradient blob */}
-      <div className="pointer-events-none absolute -right-12 -top-12 h-48 w-48 rounded-full bg-blue-200/30 blur-3xl" />
-      <div className="pointer-events-none absolute -bottom-16 -left-16 h-48 w-48 rounded-full bg-indigo-200/30 blur-3xl" />
+      <div
+        className={`pointer-events-none absolute -right-12 -top-12 h-48 w-48 rounded-full blur-3xl ${
+          useGreenGradient ? "bg-green-200/30" : "bg-blue-200/30"
+        }`}
+      />
+      <div
+        className={`pointer-events-none absolute -bottom-16 -left-16 h-48 w-48 rounded-full blur-3xl ${
+          useGreenGradient ? "bg-emerald-200/30" : "bg-indigo-200/30"
+        }`}
+      />
 
       <div className="relative">
-        <p className="text-xs font-semibold uppercase tracking-wider text-blue-700">
+        <p
+          className={`text-xs font-semibold uppercase tracking-wider ${
+            useGreenGradient ? "text-green-700" : "text-blue-700"
+          }`}
+        >
           {heroLabel}
         </p>
         <div className="mt-2 flex items-baseline gap-3">
           <p
             className={`font-bold tracking-tight ${
-              isEmpty ? "text-gray-300" : "text-gray-900"
+              isEmpty ? "text-gray-300" : useGreenGradient ? "text-green-700" : "text-gray-900"
             }`}
             style={{ fontSize: "clamp(2.5rem, 6vw, 3.5rem)", lineHeight: 1 }}
           >
             ${heroNumber.toLocaleString()}
           </p>
-          {!isEmpty && stats.potentialSavings > 0 && stats.totalRecovered > 0 && (
+          {!isEmpty && stats.totalRecovered > 0 && potentialRecovery > 0 && (
             <span className="text-sm font-medium text-gray-500">
-              / ${stats.potentialSavings.toLocaleString()} potential
+              / ${potentialRecovery.toLocaleString()} potential
             </span>
           )}
         </div>
@@ -62,11 +94,33 @@ export function ClaimImpactHero({
             Upload your first bill to see how much Candid can save you. We audit every line, flag overcharges, and draft dispute letters.
           </p>
         ) : (
-          <p className="mt-2 text-sm text-gray-600">
-            Across {stats.billsAnalyzed} {stats.billsAnalyzed === 1 ? "bill" : "bills"} ·{" "}
-            {stats.issuesFlagged} {stats.issuesFlagged === 1 ? "issue" : "issues"} flagged ·{" "}
-            {stats.disputesFiled} {stats.disputesFiled === 1 ? "dispute" : "disputes"} filed
-          </p>
+          <>
+            {hasBreakdown && (
+              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-gray-600">
+                {stats.totalRefundComponent && stats.totalRefundComponent > 0 && (
+                  <span>
+                    <span className="font-semibold text-green-700">
+                      ${stats.totalRefundComponent.toLocaleString()}
+                    </span>{" "}
+                    refund of what&apos;s already paid
+                  </span>
+                )}
+                {stats.totalForgivenessComponent && stats.totalForgivenessComponent > 0 && (
+                  <span>
+                    <span className="font-semibold text-green-700">
+                      ${stats.totalForgivenessComponent.toLocaleString()}
+                    </span>{" "}
+                    forgiveness of outstanding balances
+                  </span>
+                )}
+              </div>
+            )}
+            <p className="mt-2 text-sm text-gray-600">
+              Across {stats.billsAnalyzed} {stats.billsAnalyzed === 1 ? "bill" : "bills"} ·{" "}
+              {stats.issuesFlagged} {stats.issuesFlagged === 1 ? "issue" : "issues"} flagged ·{" "}
+              {stats.disputesFiled} {stats.disputesFiled === 1 ? "dispute" : "disputes"} filed
+            </p>
+          </>
         )}
 
         {/* Secondary stats row */}

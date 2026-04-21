@@ -505,11 +505,13 @@ function UploadForm() {
       return null;
     };
 
-    // Step progress thresholds
+    // Step dot positions — aligned with the dots' visual positions in a
+    // justify-between flex row (0%, 33%, 66%, ~95%). A dot turns green when
+    // the progress bar visually passes it. The next unreached dot pulses.
     const steps = [
       { label: "Upload", threshold: 0 },
-      { label: "Read", threshold: 30 },
-      { label: "Extract", threshold: 82 },
+      { label: "Read", threshold: 33 },
+      { label: "Extract", threshold: 66 },
       { label: "Save", threshold: 95 },
     ];
 
@@ -566,11 +568,14 @@ function UploadForm() {
               </div>
               {/* Step indicators — pill style */}
               <div className="flex justify-between mt-4">
-                {steps.map((step, i) => {
-                  const isStepComplete = overallProgress > step.threshold || (i === 0 && overallProgress >= 0 && !isUploading);
-                  const isActive = i === 0
-                    ? isUploading
-                    : overallProgress >= step.threshold && (i === steps.length - 1 || overallProgress < steps[i + 1].threshold);
+                {(() => {
+                  const reached = steps.map((s, i) =>
+                    i === 0 ? !isUploading : overallProgress >= s.threshold,
+                  );
+                  const firstUnreachedIdx = reached.indexOf(false);
+                  return steps.map((step, i) => {
+                  const isStepComplete = reached[i];
+                  const isActive = !isStepComplete && i === firstUnreachedIdx;
                   return (
                     <div key={step.label} className="flex items-center gap-1.5">
                       <span className="w-4 h-4 flex items-center justify-center">
@@ -594,7 +599,8 @@ function UploadForm() {
                       </span>
                     </div>
                   );
-                })}
+                  });
+                })()}
               </div>
             </div>
           )}

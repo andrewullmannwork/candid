@@ -17,13 +17,43 @@ export interface PersistDisputeInput {
   amountDisputed: number;
   insurerId?: string;
   conceptId?: string;
+  /** Full letter text so users can revisit what was drafted. */
+  letterContent?: string;
 }
 
+/**
+ * Dispute lifecycle statuses.
+ *
+ * Additive: the old values (filed, in_progress, won, lost, settled, withdrawn,
+ * won_on_escalation, settled_on_escalation) remain valid for legacy rows.
+ * New rows created from Session 35 onward should use the new lifecycle
+ * vocabulary (dispute_letter_drafted, court_documentation_drafted).
+ *
+ * Display mapping in `src/app/(app)/claim/page.tsx#STATUS_LABELS`.
+ */
+export type DisputeStatus =
+  // Legacy (still written by some paths; map to new labels at render time)
+  | "filed"
+  | "in_progress"
+  | "won"
+  | "lost"
+  | "settled"
+  | "withdrawn"
+  | "won_on_escalation"
+  | "settled_on_escalation"
+  // New lifecycle (Session 35)
+  | "dispute_letter_drafted"
+  | "court_documentation_drafted";
+
 export interface DisputeOutcomeUpdate {
-  status: "filed" | "in_progress" | "won" | "lost" | "settled" | "withdrawn";
+  status: DisputeStatus;
   amountRecovered?: number;
   resolutionDate?: string;
   strategyNotes?: string;
+  /** When we generate an evidence package, persist it here. */
+  evidencePackage?: Record<string, unknown>;
+  /** When we draft/regenerate a letter, overwrite it here. */
+  letterContent?: string;
 }
 
 /**
@@ -42,12 +72,13 @@ export async function persistDisputeLetter(
         claim_id: input.claimId || null,
         claim_line_item_id: input.claimLineItemIds?.[0] || null, // Primary line item
         dispute_type: mapLetterTypeToDisputeType(input.letterType),
-        status: "filed",
+        status: "dispute_letter_drafted",
         amount_disputed: input.amountDisputed,
         amount_recovered: 0,
         filed_date: new Date().toISOString().split("T")[0],
         insurer_id: input.insurerId || null,
         concept_id: input.conceptId || null,
+        letter_content: input.letterContent || null,
         metadata: {
           letterType: input.letterType,
           claimLineItemIds: input.claimLineItemIds || [],
@@ -103,6 +134,12 @@ export async function updateDisputeOutcome(
     }
     if (update.strategyNotes) {
       updateData.strategy_notes = update.strategyNotes;
+    }
+    if (update.evidencePackage !== undefined) {
+      updateData.evidence_package = update.evidencePackage;
+    }
+    if (update.letterContent !== undefined) {
+      updateData.letter_content = update.letterContent;
     }
 
     const { error } = await supabase
@@ -184,7 +221,10 @@ export async function getUserDisputes(
     0
   );
   const activeCount = disputes.filter(
-    (d) => d.status === "filed" || d.status === "in_progress"
+    (d) => d.status === "filed"
+      || d.status === "in_progress"
+      || d.status === "dispute_letter_drafted"
+      || d.status === "court_documentation_drafted"
   ).length;
 
   return {

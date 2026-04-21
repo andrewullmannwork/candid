@@ -6,6 +6,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import {
+  computeRecovery,
+  resolveStillOutstanding,
+  type PlanCoverageInput,
+} from "@/lib/claims/recovery-math";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -84,9 +89,32 @@ export async function GET(
     }
   }
 
-  // Enrich line items with coverage status
+  // Claim-level totals used as pro-rate fallback when individual line items
+  // lack allocation (the common Haiku header-only case).
+  const claimTotalBilled = Number(claim.total_billed || 0);
+  const claimStillOutstanding =
+    claim.amount_still_outstanding != null
+      ? Number(claim.amount_still_outstanding)
+      : claim.total_patient_responsibility != null
+        ? Number(claim.total_patient_responsibility)
+        : null;
+
+  // Enrich line items with coverage status + recovery metrics
   const enrichedLineItems = (lineItems || []).map((item) => {
-    const coverage = item.service_slug ? coverageMap.get(item.service_slug) : null;
+    const coverage: PlanCoverageInput | null = item.service_slug
+      ? coverageMap.get(item.service_slug) || null
+      : null;
+
+    const billed = Number(item.billed_amount || 0);
+    const stillOutstanding = resolveStillOutstanding({
+      lineBilled: billed,
+      lineStillOutstanding: item.amount_still_outstanding != null ? Number(item.amount_still_outstanding) : null,
+      linePatientOwes: item.patient_owes != null ? Number(item.patient_owes) : null,
+      claimTotalBilled,
+      claimStillOutstanding,
+    });
+    const recovery = computeRecovery(billed, stillOutstanding, coverage);
+
     return {
       ...item,
       coverageStatus: coverage
@@ -97,8 +125,59 @@ export async function GET(
           ? "unknown"
           : null,
       planCoverage: coverage || null,
+      recovery,
     };
   });
+
+  // Claim-level recovery totals — sum per-line components so the UI hero
+  // and BillCard surface accurate amounts without re-deriving.
+  const lineSummedRecovery = enrichedLineItems.reduce(
+    (acc, li) => ({
+      billed: acc.billed + li.recovery.billed,
+      alreadyPaid: acc.alreadyPaid + li.recovery.alreadyPaid,
+      stillOutstanding: acc.stillOutstanding + li.recovery.stillOutstanding,
+      shouldOwe: acc.shouldOwe + li.recovery.shouldOwe,
+      potentialRecovery: acc.potentialRecovery + li.recovery.potentialRecovery,
+      refundComponent: acc.refundComponent + li.recovery.refundComponent,
+      forgivenessComponent: acc.forgivenessComponent + li.recovery.forgivenessComponent,
+    }),
+    {
+      billed: 0,
+      alreadyPaid: 0,
+      stillOutstanding: 0,
+      shouldOwe: 0,
+      potentialRecovery: 0,
+      refundComponent: 0,
+      forgivenessComponent: 0,
+    },
+  );
+
+  // Header-only fallback: when line items weren't extracted (common for EOBs
+  // where Haiku captured the header totals but no per-line allocation), derive
+  // recovery directly from the claim header so the UI still surfaces a
+  // meaningful Potential Recovery number instead of $0.
+  const claimRecovery =
+    enrichedLineItems.length === 0 && claimTotalBilled > 0
+      ? (() => {
+          const stillOutstanding = claimStillOutstanding ?? 0;
+          const alreadyPaid = Math.max(0, claimTotalBilled - stillOutstanding);
+          // Without line-level service_slug we can't resolve a plan copay; assume
+          // $0 should-owe for header-only claims (the dispute is "you shouldn't
+          // owe any of this"). Session 36 reconciler will fix by synthesizing
+          // line items from the header before this branch ever fires.
+          const shouldOwe = 0;
+          const potentialRecovery = Math.max(0, claimTotalBilled - shouldOwe);
+          return {
+            billed: claimTotalBilled,
+            alreadyPaid,
+            stillOutstanding,
+            shouldOwe,
+            potentialRecovery,
+            refundComponent: Math.max(0, alreadyPaid - shouldOwe),
+            forgivenessComponent: Math.max(0, stillOutstanding - shouldOwe),
+          };
+        })()
+      : lineSummedRecovery;
 
   // Fetch linked disputes
   const { data: disputes } = await supabase
@@ -122,5 +201,6 @@ export async function GET(
     lineItems: enrichedLineItems,
     disputes: disputes || [],
     relatedClaims,
+    recovery: claimRecovery,
   });
 }
