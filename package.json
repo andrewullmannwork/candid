@@ -11,6 +11,8 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.86.1",
     "@google-cloud/documentai": "^9.6.0",
+    "@stripe/react-stripe-js": "^6.2.0",
+    "@stripe/stripe-js": "^9.3.0",
     "@supabase/supabase-js": "^2.99.3",
     "@upstash/qstash": "^2.10.1",
     "@vercel/analytics": "^2.0.1",
