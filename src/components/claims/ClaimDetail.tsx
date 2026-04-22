@@ -268,14 +268,20 @@ export function ClaimDetail({
           const isExpanded = expandedItem === item.id;
           const coverageBadge = item.coverageStatus ? COVERAGE_BADGE[item.coverageStatus] : null;
 
-          // Legacy display values — reverted from T2.8 recovery math per user
-          // preference. Paid column shows insurance_paid; You Owe shows
-          // patient_owes. Expansion on row click reveals the fact-grid +
-          // dispute-draft flow which is where the dispute value surfaces.
+          // Paid column = derived alreadyPaid (billed − stillOutstanding) so
+          // it matches BillCard + ClaimImpactHero at claim level. Falls back
+          // to raw insurance_paid for legacy payloads without recovery.
+          //
+          // hasGap uses RAW insurance_paid because the gap explanation
+          // literally says "$X billed · $0 insurance paid · $0 insurance owed"
+          // — that's an EOB observation, not a derived number. Using derived
+          // `paid` here would hide gaps on any line where the API pro-rated
+          // a non-zero "already paid" from the claim header.
           const billed = item.billed_amount || 0;
-          const paid = item.insurance_paid || 0;
+          const paid = item.recovery?.alreadyPaid ?? (item.insurance_paid || 0);
           const owed = item.patient_owes || 0;
-          const hasGap = billed > 0 && paid === 0 && owed === 0;
+          const rawInsurancePaid = item.insurance_paid || 0;
+          const hasGap = billed > 0 && rawInsurancePaid === 0 && owed === 0;
           const gapRelevant = hasGap && item.coverageStatus !== "not_covered";
 
           return (
@@ -347,7 +353,7 @@ export function ClaimDetail({
                     <div className="rounded-lg border border-red-100 bg-red-50 p-2.5">
                       <p className="text-[10px] font-semibold uppercase tracking-wider text-red-700">EOB shows</p>
                       <p className="mt-0.5 text-xs font-semibold text-red-900">
-                        ${billed.toLocaleString()} billed · $0 insurance paid · $0 patient owed
+                        ${billed.toLocaleString()} billed · $0 insurance paid · $0 insurance owed
                       </p>
                     </div>
                   </div>

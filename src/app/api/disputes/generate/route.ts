@@ -76,6 +76,7 @@ export async function POST(req: NextRequest) {
 
       // Persist dispute to database (feature-flagged)
       let disputeId: string | null = null;
+      let deduplicated = false;
       try {
         const { isFeatureEnabled } = await import("@/lib/config/product-flags");
         const disputeTrackingEnabled = await isFeatureEnabled("dispute_tracking");
@@ -94,13 +95,14 @@ export async function POST(req: NextRequest) {
           letterContent: letter.body,
         });
         disputeId = result?.disputeId || null;
+        deduplicated = result?.deduplicated ?? false;
       } catch (err) {
         if (err instanceof Error && err.message !== "feature_disabled") {
           console.error("[disputes] Failed to persist dispute (non-fatal):", err);
         }
       }
 
-      return NextResponse.json({ success: true, letter, disputeId });
+      return NextResponse.json({ success: true, letter, disputeId, deduplicated });
     }
 
     // Case 2: Generate itemized bill request (no audit needed)

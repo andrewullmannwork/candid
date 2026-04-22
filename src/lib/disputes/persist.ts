@@ -56,22 +56,82 @@ export interface DisputeOutcomeUpdate {
   letterContent?: string;
 }
 
+/** Statuses that mean a dispute is closed — they don't block a fresh row. */
+const RESOLVED_STATUSES = [
+  "won",
+  "lost",
+  "settled",
+  "withdrawn",
+  "won_on_escalation",
+  "settled_on_escalation",
+];
+
 /**
- * Create a dispute_outcomes row when a dispute letter is generated.
- * Initial status is "filed".
+ * Create or update a dispute_outcomes row when a dispute letter is generated.
+ *
+ * Dedup key: (user_id, claim_line_item_id, dispute_type) among non-resolved rows.
+ * A second draft for the same line item updates letter_content + max(amount_disputed)
+ * on the existing row instead of creating a duplicate. Resolved disputes
+ * (won/lost/settled/withdrawn/*_on_escalation) don't block a new row — the user
+ * may legitimately open a fresh fight after a prior one closed.
+ *
+ * When claim_line_item_id is null the dedup key is incomplete, so we fall
+ * through to INSERT (no safe way to tell two disputes apart).
  */
 export async function persistDisputeLetter(
   supabase: SupabaseClient,
   input: PersistDisputeInput
-): Promise<{ disputeId: string } | null> {
+): Promise<{ disputeId: string; deduplicated: boolean } | null> {
   try {
+    const disputeType = mapLetterTypeToDisputeType(input.letterType);
+    const primaryLineItemId = input.claimLineItemIds?.[0] || null;
+
+    if (primaryLineItemId) {
+      const { data: existing, error: selectError } = await supabase
+        .from("dispute_outcomes")
+        .select("id, amount_disputed")
+        .eq("user_id", input.userId)
+        .eq("claim_line_item_id", primaryLineItemId)
+        .eq("dispute_type", disputeType)
+        .not("status", "in", `(${RESOLVED_STATUSES.join(",")})`)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (selectError) {
+        console.error("[disputes-persist] Dedup lookup failed (falling through to insert):", selectError);
+      } else if (existing) {
+        const mergedAmount = Math.max(Number(existing.amount_disputed) || 0, input.amountDisputed);
+        const { error: updateError } = await supabase
+          .from("dispute_outcomes")
+          .update({
+            letter_content: input.letterContent ?? null,
+            amount_disputed: mergedAmount,
+            updated_at: new Date().toISOString(),
+            metadata: {
+              letterType: input.letterType,
+              claimLineItemIds: input.claimLineItemIds || [],
+            },
+          })
+          .eq("id", existing.id);
+
+        if (updateError) {
+          console.error("[disputes-persist] Dedup update failed:", updateError);
+          return null;
+        }
+
+        console.log(`[disputes-persist] Deduplicated dispute ${existing.id}: type=${input.letterType}, amount=$${mergedAmount}`);
+        return { disputeId: existing.id, deduplicated: true };
+      }
+    }
+
     const { data, error } = await supabase
       .from("dispute_outcomes")
       .insert({
         user_id: input.userId,
         claim_id: input.claimId || null,
-        claim_line_item_id: input.claimLineItemIds?.[0] || null, // Primary line item
-        dispute_type: mapLetterTypeToDisputeType(input.letterType),
+        claim_line_item_id: primaryLineItemId,
+        dispute_type: disputeType,
         status: "dispute_letter_drafted",
         amount_disputed: input.amountDisputed,
         amount_recovered: 0,
@@ -94,7 +154,8 @@ export async function persistDisputeLetter(
 
     console.log(`[disputes-persist] Created dispute ${data.id}: type=${input.letterType}, amount=$${input.amountDisputed}`);
 
-    // Create follow-up reminders (feature-flagged)
+    // Create follow-up reminders (feature-flagged). Skipped on dedup UPDATE —
+    // a follow-up already exists from the first draft.
     try {
       const { isFeatureEnabled } = await import("@/lib/config/product-flags");
       const followupsEnabled = await isFeatureEnabled("dispute_feedback_loop");
@@ -106,7 +167,7 @@ export async function persistDisputeLetter(
       console.error("[disputes-persist] Follow-up creation failed (non-fatal):", err);
     }
 
-    return { disputeId: data.id };
+    return { disputeId: data.id, deduplicated: false };
   } catch (err) {
     console.error("[disputes-persist] Error:", err);
     return null;
@@ -153,8 +214,7 @@ export async function updateDisputeOutcome(
     }
 
     // If dispute is resolved, cancel pending follow-ups + update accuracy scoring
-    const resolvedStatuses = ["won", "lost", "settled", "withdrawn", "won_on_escalation", "settled_on_escalation"];
-    if (resolvedStatuses.includes(update.status)) {
+    if (RESOLVED_STATUSES.includes(update.status)) {
       try {
         await supabase
           .from("dispute_followups")
