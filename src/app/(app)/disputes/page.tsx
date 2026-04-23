@@ -6,39 +6,12 @@ import type { DisputeLetter } from "@/lib/billing/types";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useSubscription } from "@/lib/subscription/use-subscription";
 import { LockedOverlay } from "@/components/shared/LockedOverlay";
+import { InlineSubscribePanel } from "@/components/billing/InlineSubscribePanel";
 import { downloadCaseFile } from "@/lib/casefile";
 
 export default function DisputesPage() {
-  const { user } = useAuth();
-  const { isPro, loading } = useSubscription();
-  const [checkoutLoading, setCheckoutLoading] = useState(false);
-
-  // Session 35: direct to Stripe Checkout instead of routing through /billing.
-  // Session 36 will replace this redirect with an embedded Stripe Elements
-  // modal so CC entry happens inside the overlay (see plan:
-  // plans/t_stripe_elements_embed.md).
-  async function handleSubscribe() {
-    if (!user || checkoutLoading) return;
-    setCheckoutLoading(true);
-    try {
-      const token = await user.firebaseUser.getIdToken();
-      const res = await fetch("/api/stripe/create-checkout", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ returnUrl: window.location.href }),
-      });
-      if (res.ok) {
-        const { url } = await res.json();
-        if (url) window.location.href = url;
-      }
-    } catch (err) {
-      console.error("Stripe checkout failed:", err);
-    }
-    setCheckoutLoading(false);
-  }
+  const { isPro, loading, waitFor } = useSubscription();
+  const [subscribing, setSubscribing] = useState(false);
 
   if (loading) {
     return (
@@ -53,9 +26,30 @@ export default function DisputesPage() {
       <LockedOverlay
         title="Dispute Letters requires Candid Pro"
         description="Upgrade to draft appeal letters grounded in your plan benefits, track dispute outcomes, and escalate to the attorney marketplace when needed."
-        ctaLabel={checkoutLoading ? "Opening checkout..." : "Subscribe to Pro"}
-        onCta={handleSubscribe}
+        ctaLabel="Subscribe to Pro"
+        onCta={() => setSubscribing(true)}
         tone="pro"
+        replaceCta={
+          subscribing ? (
+            <InlineSubscribePanel
+              triggerSurface="dispute"
+              subtitle="Unlimited dispute letters, drafted from your plan benefits."
+              contextRibbon={{
+                headline: "Unlock unlimited dispute letters",
+                subline: "Evidence-backed appeal templates drafted from your plan benefits.",
+              }}
+              onSuccess={async () => {
+                // Wait for the webhook to flip tier → pro before dismissing
+                // the form. Otherwise LockedOverlay re-renders with the
+                // upgrade prompt (tier still reads 'free' in the row the
+                // next refresh() fetches).
+                await waitFor((s) => s.tier === "pro" && (s.status === "active" || s.status === "trialing"));
+                setSubscribing(false);
+              }}
+              onCancel={() => setSubscribing(false)}
+            />
+          ) : undefined
+        }
       >
         <SampleDisputeLetterPreview />
       </LockedOverlay>
