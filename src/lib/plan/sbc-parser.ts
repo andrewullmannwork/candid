@@ -35,6 +35,25 @@ export interface SBCParsedService {
   stepTherapyRequired: boolean | null;
   notes: string | null;
   confidence: number;
+  // Phase 4.5 — direct-quote citation data for dispute letter evidence block.
+  // Populated when the extractor captures the verbatim SBC passage that
+  // supports this service's copay/coinsurance values. Nullable for legacy rows.
+  sourceExcerpt?: string | null;
+  sourcePage?: number | null;
+}
+
+// Phase 6.1 — extracted appeals contact block from SBC / plan document back pages.
+// Flows into insurer-appeals-upsert so the crowdsourced registry stays fresh.
+export interface SBCParsedAppealsContact {
+  addressLine1: string | null;
+  addressLine2: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
+  phone: string | null;
+  sourceExcerpt: string | null;
+  sourcePage: number | null;
+  confidence: number;
 }
 
 // ── Helper: parse dollar amounts ─────────────────────────────────────────────

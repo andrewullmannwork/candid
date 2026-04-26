@@ -26,20 +26,37 @@ export async function persistAuditResults(
   params: {
     userId: string;
     insurancePlanId?: string;
+    planYear?: number | null;
     documentId: string;
     parsedBill: ParsedBill;
     auditReport: AuditReport;
   }
 ): Promise<PersistClaimResult | null> {
-  const { userId, insurancePlanId, documentId, parsedBill, auditReport } = params;
+  const { userId, insurancePlanId, planYear, documentId, parsedBill, auditReport } = params;
 
   try {
+    // Resolve plan year if not provided — fall back to the linked plan, then DOS year.
+    let resolvedPlanYear: number | null = planYear ?? null;
+    if (resolvedPlanYear == null && insurancePlanId) {
+      const { data: plan } = await supabase
+        .from("insurance_plans")
+        .select("plan_year")
+        .eq("id", insurancePlanId)
+        .maybeSingle();
+      resolvedPlanYear = plan?.plan_year ?? null;
+    }
+    if (resolvedPlanYear == null && parsedBill.serviceDate) {
+      const m = parsedBill.serviceDate.match(/^(\d{4})/);
+      if (m) resolvedPlanYear = parseInt(m[1], 10);
+    }
+
     // Insert claims row
     const { data: claim, error: claimError } = await supabase
       .from("claims")
       .insert({
         user_id: userId,
         insurance_plan_id: insurancePlanId || null,
+        plan_year: resolvedPlanYear,
         source_document_id: documentId,
         date_of_service: parsedBill.serviceDate || null,
         total_billed: parsedBill.totals.totalBilled,
@@ -129,6 +146,7 @@ export async function persistAuditResults(
         allowed_amount: item.allowedAmount || null,
         insurance_paid: item.insurancePaid || null,
         patient_owes: item.patientResponsibility || null,
+        plan_year: resolvedPlanYear,
         adjustment_reason_code: null,
         modifier_codes: item.modifier ? [item.modifier] : null,
         metadata: {
