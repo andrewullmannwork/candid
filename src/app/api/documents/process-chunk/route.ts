@@ -62,7 +62,15 @@ async function processBillDocument(
     .eq("user_id", doc.user_id)
     .single();
 
-  const insurancePlanId = profile?.active_insurance_plan_id || null;
+  // T3.7: Resolve the plan that was active on the bill's date of service —
+  // NOT the user's currently-active plan. Falls back to active plan only if
+  // no historical plan matches the DOS window or year.
+  const { resolveClaimPlanContext } = await import("@/lib/claims/plan-year-resolver");
+  const { planId: insurancePlanId, planYear } = await resolveClaimPlanContext(supabase, {
+    userId: doc.user_id,
+    dateOfService: parsedBill.serviceDate || null,
+    fallbackActivePlanId: profile?.active_insurance_plan_id || null,
+  });
 
   // Persist claims (feature-flagged)
   let claimId: string | null = null;
@@ -73,6 +81,7 @@ async function processBillDocument(
       const persistResult = await persistAuditResults(supabase, {
         userId: doc.user_id,
         insurancePlanId: insurancePlanId || undefined,
+        planYear,
         documentId,
         parsedBill,
         auditReport,
@@ -173,7 +182,7 @@ async function processBillDocument(
             .eq("id", insurancePlanId)
             .single();
           if (plan?.matched_catalog_plan_id) {
-            await updateCodeOutcomes(supabase, persistedLineItems, plan.matched_catalog_plan_id);
+            await updateCodeOutcomes(supabase, persistedLineItems, plan.matched_catalog_plan_id, planYear);
           }
         }
       } catch (err) {

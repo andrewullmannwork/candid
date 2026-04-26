@@ -126,6 +126,7 @@ export interface DisputeLetter {
     name: string;
     role: string; // "Billing Department" | "Insurance Appeals" etc.
     address?: string;
+    phone?: string;
   };
   subject: string;
   body: string; // Full letter text
@@ -135,4 +136,15 @@ export interface DisputeLetter {
   status: "draft" | "approved" | "downloaded";
   createdAt: string;
   updatedAt: string;
+  // Phase 1 additions — planContext populated by /api/disputes routes when
+  // insurancePlanId or claimId is provided. Consumed by DisputeRecipientCard
+  // + evidence-resolver. Optional so existing callers stay compatible.
+  planContext?: {
+    planName: string | null;
+    planYear: number | null;
+    insurerName: string | null;
+  } | null;
+  // Phase 3: flagged when the claim's plan year has no matching insurance_plans
+  // row. UI surfaces MissingPlanBanner + download warning modal.
+  missingPlanForYear?: number | null;
 }

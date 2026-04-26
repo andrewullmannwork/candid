@@ -110,10 +110,17 @@ export async function POST(req: NextRequest) {
             const { data: userForFlag } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
             if (await isFeatureEnabled("claims_persistence", userForFlag?.email || undefined)) {
               const { persistAuditResults } = await import("@/lib/claims/persist");
+              const { resolveClaimPlanContext } = await import("@/lib/claims/plan-year-resolver");
               const { data: profile } = await supabase.from("profiles").select("active_insurance_plan_id").eq("user_id", doc.user_id).single();
+              const { planId, planYear } = await resolveClaimPlanContext(supabase, {
+                userId: doc.user_id,
+                dateOfService: parsedBill.serviceDate || null,
+                fallbackActivePlanId: profile?.active_insurance_plan_id || null,
+              });
               await persistAuditResults(supabase, {
                 userId: doc.user_id,
-                insurancePlanId: profile?.active_insurance_plan_id || undefined,
+                insurancePlanId: planId || undefined,
+                planYear,
                 documentId,
                 parsedBill,
                 auditReport,

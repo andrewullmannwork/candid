@@ -100,7 +100,8 @@ export async function updateCodeMappings(
 export async function updateCodeOutcomes(
   supabase: SupabaseClient,
   lineItems: CodeLineItem[],
-  canonicalPlanId: string | null
+  canonicalPlanId: string | null,
+  planYear: number | null = null
 ): Promise<{ updated: number }> {
   if (!canonicalPlanId) return { updated: 0 };
 
@@ -114,13 +115,16 @@ export async function updateCodeOutcomes(
     try {
       const isPaid = li.insurance_paid != null && li.insurance_paid > 0;
 
-      const { data: existing } = await supabase
+      const query = supabase
         .from("billing_code_plan_outcomes")
         .select("id, total_claims, paid_count, denied_count, avg_paid_amount, avg_billed_amount, common_denial_reasons")
         .eq("billing_code", li.billing_code!)
         .eq("billing_code_type", li.billing_code_type!)
-        .eq("canonical_plan_id", canonicalPlanId)
-        .maybeSingle();
+        .eq("canonical_plan_id", canonicalPlanId);
+      const { data: existing } = await (planYear != null
+        ? query.eq("plan_year", planYear)
+        : query.is("plan_year", null)
+      ).maybeSingle();
 
       if (existing) {
         const newTotal = existing.total_claims + 1;
@@ -164,6 +168,7 @@ export async function updateCodeOutcomes(
           billing_code: li.billing_code!,
           billing_code_type: li.billing_code_type!,
           canonical_plan_id: canonicalPlanId,
+          plan_year: planYear,
           total_claims: 1,
           paid_count: isPaid ? 1 : 0,
           denied_count: isPaid ? 0 : 1,

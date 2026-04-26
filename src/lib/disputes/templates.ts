@@ -2,6 +2,8 @@
 // User reviews, edits, approves, and downloads. User sends letter themselves.
 
 import type { AuditFinding, ParsedBill, DisputeLetterType } from "../billing/types";
+import type { PlanContext } from "./plan-context";
+import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
 
 interface LetterTemplate {
   type: DisputeLetterType;
@@ -42,6 +44,204 @@ interface TemplateParams {
   networkEvidence?: NetworkEvidenceData[];
   systemicEvidence?: SystemicEvidenceData;
   codeSubstitutionEvidence?: { deniedCode: string; siblingCode: string; siblingPayRate: number; serviceName: string };
+  planContext?: PlanContext | null;
+  evidence?: DisputeEvidence | null;
+}
+
+// ============================================================================
+// Shared "Why this service should be covered" renderer
+// ============================================================================
+// Returns a formatted block (with trailing blank line) or "" when we don't have
+// enough verified evidence to render anything useful. Internal provenance
+// markers (source, confidence, k-anonymity counts) gate rendering but never
+// appear in the output — see Candid_Data_Patterns.md hard rule 4.
+
+function renderEvidenceBlock(
+  evidence: DisputeEvidence | null | undefined,
+  planContext: PlanContext | null | undefined,
+  title: string = "Why this service should be covered",
+): string {
+  if (!evidence || evidence.claims.length === 0) return "";
+
+  // Render if we have ANY line items — even without plan-copay matches we
+  // can still cite the billing code, EOB math, and request reconsideration
+  // per the legal basis. The alternative (no block) makes the letter
+  // indistinguishable from a generic form letter.
+  const hasAnyLineItems = evidence.claims.some((c) => c.lineItemEvidence.length > 0);
+  if (!hasAnyLineItems) return "";
+
+  const multiClaim = evidence.claims.length > 1;
+  const lines: string[] = [`**${title}**`, ""];
+  let itemNumber = 1;
+
+  for (const claim of evidence.claims) {
+    if (multiClaim) {
+      const header = [
+        claim.providerName ?? "Bill",
+        claim.dateOfService ? formatDate(claim.dateOfService) : null,
+      ].filter(Boolean).join(" · ");
+      lines.push(`**${header}**`, "");
+    }
+
+    for (const li of claim.lineItemEvidence) {
+      const block = renderLineItemEvidence(li, itemNumber, planContext);
+      if (block) {
+        lines.push(block, "");
+        itemNumber++;
+      }
+    }
+  }
+
+  // If plan data isn't on file, call that out so the insurer sees we are
+  // open to supplementing — rather than pretending we had no data at all.
+  if (!planContext?.plan || !hasAnyPlanBenefit(evidence)) {
+    lines.push(
+      "I do not have my full plan documents on file at the time of this letter. I request the Plan Administrator review the above charges against the applicable plan provisions and provide a written determination citing the specific provision on which any denial is based, per 29 CFR §2560.503-1(g).",
+      "",
+    );
+  }
+
+  if (multiClaim) {
+    lines.push(
+      `**Total in dispute across ${evidence.claims.length} bills: ${formatCurrency(evidence.totals.totalDiscrepancy)}**`,
+      "",
+    );
+  }
+
+  return lines.join("\n");
+}
+
+function hasAnyPlanBenefit(evidence: DisputeEvidence): boolean {
+  return evidence.claims.some((c) => c.lineItemEvidence.some((li) => li.planBenefit));
+}
+
+function renderLineItemEvidence(
+  li: LineItemEvidence,
+  index: number,
+  planContext: PlanContext | null | undefined,
+): string {
+  // Bare minimum to render: a code OR a billed amount. Skip phantom items.
+  if (!li.billingCode && li.billedAmount === 0 && !li.patientOwes) return "";
+
+  const codeLabel = li.billingCode
+    ? `${li.billingCode.type} ${li.billingCode.value}`
+    : null;
+  const headline = [
+    `${index}. **${li.serviceName}**`,
+    codeLabel ? `(${codeLabel})` : null,
+    li.billedAmount > 0 ? `— billed ${formatCurrency(li.billedAmount)}` : null,
+  ].filter(Boolean).join(" ");
+
+  const bullets: string[] = [];
+
+  if (li.planBenefit) {
+    const planName = planContext?.plan?.planName ?? "Your plan";
+    const year = planContext?.plan?.planYear ? `, ${planContext.plan.planYear}` : "";
+    const costDescriptor = li.planBenefit.copay != null
+      ? `a **${formatCurrency(li.planBenefit.copay)} copay**`
+      : li.planBenefit.coinsurance != null
+      ? `**${Math.round(li.planBenefit.coinsurance * 100)}% coinsurance**`
+      : "cost-sharing terms";
+    bullets.push(
+      `   - ${planName}${year} specifies ${costDescriptor} for this service. Source: ${li.planBenefit.citation}.`,
+    );
+    if (li.planBenefit.sbcExcerpt) {
+      bullets.push(`     > *"${li.planBenefit.sbcExcerpt.trim()}"*`);
+    }
+  }
+
+  if (li.insurancePaid != null || li.patientOwes != null) {
+    const eobParts: string[] = [];
+    eobParts.push(`${formatCurrency(li.billedAmount)} billed`);
+    eobParts.push(`${formatCurrency(li.insurancePaid ?? 0)} insurance paid`);
+    eobParts.push(`${formatCurrency(li.patientOwes ?? 0)} patient responsibility`);
+    bullets.push(`   - EOB shows: ${eobParts.join(" · ")}.`);
+  }
+
+  if (li.expectedPatientCost != null && li.actualPatientCost != null) {
+    const overage = li.discrepancyAmount ?? 0;
+    if (overage > 0) {
+      bullets.push(
+        `   - Expected patient cost per plan: ${formatCurrency(li.expectedPatientCost)}. Actual patient responsibility: ${formatCurrency(li.actualPatientCost)}. **Discrepancy: ${formatCurrency(overage)}.**`,
+      );
+    }
+  } else if (li.discrepancyReason) {
+    bullets.push(`   - ${li.discrepancyReason}`);
+  } else if (!li.planBenefit && li.patientOwes != null && li.patientOwes > 0) {
+    // No plan match — at minimum explain the request crisply.
+    bullets.push(
+      `   - I request the plan determine the allowed amount for this code and apply the applicable cost-sharing; any amount above my in-network cost-sharing should be written off per plan terms.`,
+    );
+  }
+
+  // Community outcome bullet — "other claims that have been paid" signal.
+  // Already k-anonymity-gated in the resolver (omitted when total_claims < 5).
+  if (li.communityOutcome) {
+    const c = li.communityOutcome;
+    const parts: string[] = [];
+    if (c.paidCount > 0) {
+      parts.push(`**${c.paidCount} of ${c.totalClaims}** claims for this code on this plan have been paid`);
+    } else {
+      parts.push(`${c.totalClaims} claims for this code on this plan are on record`);
+    }
+    if (c.avgPaidAmount != null && c.paidCount > 0) {
+      parts.push(`average payment ${formatCurrency(c.avgPaidAmount)}`);
+    }
+    bullets.push(`   - ${parts.join("; ")} (anonymized, aggregated Candid member data).`);
+  }
+
+  // Sibling-code bullet — "similar procedures but with slightly different
+  // billing codes that have been paid." Already filtered to paid siblings.
+  if (li.siblingCodes && li.siblingCodes.length > 0) {
+    const sibParts = li.siblingCodes
+      .slice(0, 3)
+      .map((s) =>
+        `${s.label} (${s.paidCount}/${s.totalClaims} paid${s.avgPaidAmount != null ? `, avg ${formatCurrency(s.avgPaidAmount)}` : ""})`
+      )
+      .join("; ");
+    bullets.push(
+      `   - Related codes in the same service category have been paid on this plan: ${sibParts}. A narrow coding distinction should not justify a blanket denial of this category.`,
+    );
+  }
+
+  // Pricing benchmark bullet — Care data. Include whenever we have
+  // k-anonymous regional data; let the reader judge the gap.
+  if (li.pricingBenchmark?.medianBilled != null && li.billedAmount > 0) {
+    const pb = li.pricingBenchmark;
+    const median = pb.medianBilled!;
+    const overageRatio = (li.billedAmount - median) / median;
+    const regionSuffix = pb.region ? ` in ${pb.region}` : "";
+    const communityPaidSuffix = pb.medianAllowed != null || pb.avgPatientPaid != null
+      ? ` Members' insurance typically pays ${pb.medianAllowed != null ? formatCurrency(pb.medianAllowed) : "an undisclosed amount"}${pb.avgPatientPaid != null ? `; the average patient responsibility is ${formatCurrency(pb.avgPatientPaid)}` : ""}.`
+      : "";
+    if (overageRatio >= 0.1) {
+      bullets.push(
+        `   - Community benchmark: median billed rate for this code${regionSuffix} is ${formatCurrency(median)} across ${pb.sampleSize} anonymized Candid-member reports. The ${formatCurrency(li.billedAmount)} charged is ${Math.round(overageRatio * 100)}% above that median.${communityPaidSuffix}`,
+      );
+    } else if (overageRatio > -0.1) {
+      bullets.push(
+        `   - Community benchmark: median billed rate for this code${regionSuffix} is ${formatCurrency(median)} (n=${pb.sampleSize}), roughly in line with the billed amount.${communityPaidSuffix}`,
+      );
+    }
+  }
+
+  // Audit findings bullet — Medicare benchmark comparison + overcharge /
+  // duplicate / upcoding flags captured at claim creation.
+  if (li.auditFindings && li.auditFindings.length > 0) {
+    for (const f of li.auditFindings) {
+      const parts: string[] = [];
+      parts.push(`Candid audit flag (**${f.title}**)`);
+      if (f.benchmarkAmount != null && f.benchmarkSource) {
+        parts.push(`${f.benchmarkSource} benchmark ${formatCurrency(f.benchmarkAmount)}`);
+      }
+      if (f.estimatedOvercharge > 0) {
+        parts.push(`estimated overcharge ${formatCurrency(f.estimatedOvercharge)}`);
+      }
+      bullets.push(`   - ${parts.join(" · ")}.`);
+    }
+  }
+
+  return bullets.length > 0 ? [headline, ...bullets].join("\n") : "";
 }
 
 function formatDate(iso: string): string {
@@ -74,6 +274,8 @@ const overchargeTemplate: LetterTemplate = {
     networkEvidence,
     systemicEvidence,
     codeSubstitutionEvidence,
+    planContext,
+    evidence,
   }) => {
     const findingDetails = findings
       .map(
@@ -85,6 +287,12 @@ const overchargeTemplate: LetterTemplate = {
     const totalOvercharge = findings.reduce(
       (sum, f) => sum + f.estimatedOvercharge,
       0
+    );
+
+    const evidenceBlock = renderEvidenceBlock(
+      evidence,
+      planContext,
+      "Supporting evidence for each charge",
     );
 
     return `${formatDate(new Date().toISOString())}
@@ -102,6 +310,7 @@ I am writing to formally dispute charges on my medical bill for services rendere
 ${findingDetails}
 
 The total estimated overcharge across these items is ${formatCurrency(totalOvercharge)}.
+${evidenceBlock ? `\n${evidenceBlock}` : ""}
 ${planEvidence && planEvidence.length > 0 ? `
 Additionally, according to my insurance plan documents, the following services are covered under my plan:
 
@@ -198,23 +407,32 @@ const insuranceAppealTemplate: LetterTemplate = {
     serviceDate,
     accountNumber,
     bill,
+    planContext,
+    evidence,
   }) => {
-    const insurerName = bill.insurer?.name || "[Insurance Company]";
+    const insurerName = planContext?.insurer?.name
+      || bill.insurer?.name
+      || planContext?.plan?.insurerName
+      || "[Insurance Company]";
     const memberId = bill.patient.memberId || "[Member ID]";
+    const planLabel = planContext?.plan?.planName
+      ? `${planContext.plan.planName}${planContext.plan.planYear ? `, plan year ${planContext.plan.planYear}` : ""}`
+      : null;
+    const evidenceBlock = renderEvidenceBlock(evidence, planContext);
 
     return `${formatDate(new Date().toISOString())}
 
 ${insurerName}
-Appeals Department
+Member Services — Appeals
 
 Re: Appeal of Claim Denial — Date of Service: ${formatDate(serviceDate)}
 Patient: ${patientName}
 Member ID: ${memberId}
-Provider: ${providerName}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
+Provider: ${providerName}${planLabel ? `\nPlan: ${planLabel}` : ""}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
 
 To Whom It May Concern:
 
-I am writing to formally appeal the denial of my claim for services rendered on ${formatDate(serviceDate)} by ${providerName}.
+I am writing to formally appeal the denial of my claim for services rendered on ${formatDate(serviceDate)} by ${providerName}.${planLabel ? ` This claim was processed under ${planLabel}.` : ""}
 
 The services provided were medically necessary and should be covered under my plan. I am requesting a full review of this denial, including:
 
@@ -222,7 +440,7 @@ The services provided were medically necessary and should be covered under my pl
 2. The clinical criteria used to determine medical necessity
 3. Instructions for requesting an external review if this internal appeal is denied
 
-Under the Affordable Care Act and applicable state law, I am entitled to a full and fair review of this denial. I request a written determination within the timeframe required by law (generally 30 days for post-service claims).
+${evidenceBlock ? `${evidenceBlock}\n` : ""}Under the Affordable Care Act and applicable state law, I am entitled to a full and fair review of this denial. Under 29 CFR §2560.503-1, any denial must cite the specific plan provision on which it is based. I request a written determination within the timeframe required by law (generally 30 days for post-service claims).
 
 I reserve all rights to pursue external review and any other remedies available under federal and state law.
 
@@ -249,7 +467,14 @@ const balanceBillingTemplate: LetterTemplate = {
     accountNumber,
     findings,
     planEvidence,
+    planContext,
+    evidence,
   }) => {
+    const evidenceBlock = renderEvidenceBlock(
+      evidence,
+      planContext,
+      "Why these charges violate my plan's cost-sharing terms",
+    );
     const findingDetails = findings
       .map(
         (f, i) =>
@@ -281,7 +506,7 @@ Specifically:
 ${findingDetails}
 
 The total excess charges amount to approximately ${formatCurrency(totalExcess)}.
-${planEvidence && planEvidence.length > 0 ? `
+${evidenceBlock ? `\n${evidenceBlock}\n` : ""}${planEvidence && planEvidence.length > 0 ? `
 According to my plan documents, these services are covered with the following cost-sharing terms:
 
 ${planEvidence.map((pe) => {
@@ -323,7 +548,14 @@ const duplicateChargeTemplate: LetterTemplate = {
     serviceDate,
     accountNumber,
     findings,
+    planContext,
+    evidence,
   }) => {
+    const evidenceBlock = renderEvidenceBlock(
+      evidence,
+      planContext,
+      "Line items flagged as duplicates",
+    );
     const findingDetails = findings
       .map(
         (f, i) =>
@@ -353,7 +585,7 @@ After reviewing my bill, I have identified the following charges that appear to 
 ${findingDetails}
 
 The total amount of suspected duplicate charges is ${formatCurrency(totalDuplicate)}.
-
+${evidenceBlock ? `\n${evidenceBlock}` : ""}
 I am requesting:
 
 1. A detailed review of each charge listed above

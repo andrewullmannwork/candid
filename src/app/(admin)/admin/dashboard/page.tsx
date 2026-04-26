@@ -125,6 +125,8 @@ function renderItemPreview(sectionKey: string, item: Record<string, unknown>): s
       return `${item.file_name || item.id || "document"} · ${item.status || "?"}`;
     case "support":
       return `${item.subject || "(no subject)"} · ${item.status || "open"}`;
+    case "disputes_missing_plan":
+      return `${item.disputeType || "dispute"} · needs ${item.needsPlanForYear || "?"} plan`;
     default:
       return String(item.id || "item");
   }
