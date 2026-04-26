@@ -9,6 +9,8 @@ import type {
 } from "../billing/types";
 import { LETTER_TEMPLATES } from "./templates";
 import type { PlanBenefitEvidence } from "./templates";
+import type { PlanContext } from "./plan-context";
+import type { DisputeEvidence } from "./evidence-resolver";
 import { randomUUID } from "crypto";
 
 export type { PlanBenefitEvidence };
@@ -24,17 +26,30 @@ const FINDING_TO_LETTER: Partial<Record<FindingType, DisputeLetterType>> = {
   stale_claim: "overcharge",
 };
 
+export interface GenerateDisputeLetterOptions {
+  planEvidence?: PlanBenefitEvidence[];
+  planContext?: PlanContext | null;
+  evidence?: DisputeEvidence | null;
+}
+
 export function generateDisputeLetter(
   report: AuditReport,
   findingIds: string[],
   letterType?: DisputeLetterType,
-  planEvidence?: PlanBenefitEvidence[]
+  optionsOrPlanEvidence?: GenerateDisputeLetterOptions | PlanBenefitEvidence[]
 ): DisputeLetter {
   const findings = report.findings.filter((f) => findingIds.includes(f.id));
 
   if (findings.length === 0) {
     throw new Error("No matching findings for the provided IDs");
   }
+
+  // Back-compat: callers used to pass `planEvidence` as the 4th arg directly.
+  // Newer callers pass `{ planEvidence, planContext, evidence }`.
+  const options: GenerateDisputeLetterOptions = Array.isArray(optionsOrPlanEvidence)
+    ? { planEvidence: optionsOrPlanEvidence }
+    : (optionsOrPlanEvidence ?? {});
+  const { planEvidence, planContext, evidence } = options;
 
   // Auto-detect letter type from findings if not specified
   const resolvedType =
@@ -54,7 +69,30 @@ export function generateDisputeLetter(
     findings,
     bill,
     planEvidence,
+    planContext: planContext ?? null,
+    evidence: evidence ?? null,
   });
+
+  // Recipient: insurance appeals use insurer + appeals address when available;
+  // fall back to provider for billing-department letters.
+  const isAppeal = resolvedType === "insurance_appeal";
+  const insurer = planContext?.insurer ?? null;
+  const hasInsurerAddress = !!insurer?.appealsAddress;
+
+  const recipient = isAppeal && insurer
+    ? {
+        name: insurer.name,
+        role: "Member Services — Appeals",
+        address: hasInsurerAddress
+          ? formatAppealsAddress(insurer.appealsAddress!)
+          : undefined,
+        phone: insurer.appealsPhone ?? undefined,
+      }
+    : {
+        name: bill.provider.name,
+        role: isAppeal ? "Insurance Appeals Department" : "Billing Department",
+        address: bill.provider.address,
+      };
 
   return {
     id: randomUUID(),
@@ -62,13 +100,7 @@ export function generateDisputeLetter(
     userId: report.userId,
     letterType: resolvedType,
     findingIds,
-    recipient: {
-      name: bill.provider.name,
-      role: resolvedType === "insurance_appeal"
-        ? "Insurance Appeals Department"
-        : "Billing Department",
-      address: bill.provider.address,
-    },
+    recipient,
     subject: template.subject(bill.provider.name),
     body,
     supportingFacts: findings.map((f) => f.description),
@@ -77,7 +109,31 @@ export function generateDisputeLetter(
     status: "draft",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    planContext: planContext?.plan
+      ? {
+          planName: planContext.plan.planName,
+          planYear: planContext.plan.planYear,
+          insurerName: planContext.insurer?.name ?? planContext.plan.insurerName,
+        }
+      : planContext
+      ? { planName: null, planYear: null, insurerName: planContext.insurer?.name ?? null }
+      : null,
+    missingPlanForYear: planContext?.missingForYear ?? null,
   };
+}
+
+function formatAppealsAddress(addr: {
+  line1: string;
+  line2: string | null;
+  city: string;
+  state: string;
+  postalCode: string;
+}): string {
+  const cityStateZip = [addr.city, addr.state, addr.postalCode]
+    .filter(Boolean)
+    .join(", ")
+    .replace(`, ${addr.postalCode}`, ` ${addr.postalCode}`);
+  return [addr.line1, addr.line2, cityStateZip].filter(Boolean).join("\n");
 }
 
 export function generateItemizedBillRequest(

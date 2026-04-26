@@ -10,7 +10,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { jsonrepair } from "jsonrepair";
-import type { SBCParsedService } from "./sbc-parser";
+import type { SBCParsedService, SBCParsedAppealsContact } from "./sbc-parser";
 
 const MODEL = "claude-haiku-4-5-20251001";
 
@@ -107,7 +107,13 @@ Extract every unique healthcare service covered by this plan. Be THOROUGH.
 
 ${CATEGORY_CHECKLIST}
 
-For each service, return a JSON object:
+Return a JSON object of the form:
+{
+  "services": [ /* service objects — see below */ ],
+  "appealsContact": { /* optional — see bottom */ } or null
+}
+
+For each service, include:
 {
   "serviceSlug": "lowercase_underscore_identifier",
   "serviceName": "Clean Human-Readable Name",
@@ -124,7 +130,9 @@ For each service, return a JSON object:
   "stepTherapyRequired": true/false/null,
   "covered": true/false,
   "coverageConditions": "Special conditions or null",
-  "confidence": 0.5-1.0
+  "confidence": 0.5-1.0,
+  "sourceExcerpt": "Verbatim passage from the document that establishes this cost (one sentence max, no paraphrasing)" or null,
+  "sourcePage": page number as integer or null
 }
 
 Standard slugs (use when they match): ${STANDARD_SLUGS}
@@ -138,8 +146,22 @@ CRITICAL RULES:
 - If listed as "Not Covered", include with covered: false
 - For Rx, list each tier as a separate service with retail AND home delivery costs
 - For supply limits, always format as "90-day supply", "30-day supply" (hyphenated, space before "supply")
+- sourceExcerpt is the verbatim passage — DO NOT paraphrase or summarize. If you cannot locate a single clean passage, leave it null.
 
-Return ONLY a JSON array. No markdown, no explanation.
+For appealsContact, scan the document for the Member Services / Appeals / Grievances address block (often on the back pages of SBCs and plan documents). Return null if none is present. Otherwise:
+{
+  "addressLine1": "PO Box or street address",
+  "addressLine2": null or additional line,
+  "city": "City",
+  "state": "Two-letter state code",
+  "postalCode": "ZIP or ZIP+4",
+  "phone": "1-800-... or null",
+  "sourceExcerpt": "verbatim passage",
+  "sourcePage": page number or null,
+  "confidence": 0.5-1.0
+}
+
+Return ONLY a JSON object with keys "services" and "appealsContact". No markdown, no explanation.
 
 Document text:
 ${truncated}`;
@@ -162,6 +184,25 @@ interface RawExtracted {
   covered?: boolean;
   coverageConditions?: string | null;
   confidence?: number;
+  sourceExcerpt?: string | null;
+  sourcePage?: number | null;
+}
+
+interface RawAppealsContact {
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postalCode?: string | null;
+  phone?: string | null;
+  sourceExcerpt?: string | null;
+  sourcePage?: number | null;
+  confidence?: number | null;
+}
+
+interface RawExtractionPayload {
+  services?: RawExtracted[];
+  appealsContact?: RawAppealsContact | null;
 }
 
 // Fix "90day" → "90-day", "30day" → "30-day" etc. in extracted text fields
@@ -195,6 +236,35 @@ function toSBCParsedService(e: RawExtracted): SBCParsedService {
     stepTherapyRequired: e.stepTherapyRequired ?? null,
     notes: null,
     confidence: e.confidence ?? 0.85,
+    sourceExcerpt: e.sourceExcerpt ?? null,
+    sourcePage: e.sourcePage ?? null,
+  };
+}
+
+function toAppealsContact(raw: RawAppealsContact | null | undefined): SBCParsedAppealsContact | null {
+  if (!raw?.addressLine1) return null;
+  return {
+    addressLine1: raw.addressLine1 ?? null,
+    addressLine2: raw.addressLine2 ?? null,
+    city: raw.city ?? null,
+    state: raw.state ?? null,
+    postalCode: raw.postalCode ?? null,
+    phone: raw.phone ?? null,
+    sourceExcerpt: raw.sourceExcerpt ?? null,
+    sourcePage: raw.sourcePage ?? null,
+    confidence: raw.confidence ?? 0.7,
+  };
+}
+
+function normalizeExtractedPayload(value: unknown): { services: RawExtracted[]; appealsContact: RawAppealsContact | null } {
+  // Back-compat: old prompt returned an array of services directly.
+  if (Array.isArray(value)) {
+    return { services: value as RawExtracted[], appealsContact: null };
+  }
+  const obj = (value ?? {}) as RawExtractionPayload;
+  return {
+    services: Array.isArray(obj.services) ? obj.services : [],
+    appealsContact: obj.appealsContact ?? null,
   };
 }
 
@@ -202,10 +272,10 @@ export async function extractServicesWithClaude(
   ocrText: string,
   planName: string | null,
   isFullPlanDoc: boolean
-): Promise<{ services: SBCParsedService[]; fromClaude: boolean; error?: string }> {
+): Promise<{ services: SBCParsedService[]; appealsContact: SBCParsedAppealsContact | null; fromClaude: boolean; error?: string }> {
   const client = getClient();
   if (!client) {
-    return { services: [], fromClaude: false, error: "ANTHROPIC_API_KEY not set" };
+    return { services: [], appealsContact: null, fromClaude: false, error: "ANTHROPIC_API_KEY not set" };
   }
 
   console.log("[claude-extractor] Starting extraction for:", planName || "unknown plan", "| text length:", ocrText.length);
@@ -222,9 +292,10 @@ export async function extractServicesWithClaude(
     const text = response.content[0].type === "text" ? response.content[0].text : "";
     console.log(`[claude-extractor] Response: ${text.length} chars | stop: ${response.stop_reason} | usage: ${JSON.stringify(response.usage)}`);
 
-    const extracted = parseJSON(text) as RawExtracted[];
-    let allServices = extracted;
-    console.log(`[claude-extractor] Extracted ${allServices.length} services`);
+    const payload = normalizeExtractedPayload(parseJSON(text));
+    let allServices = payload.services;
+    const appealsContactRaw = payload.appealsContact;
+    console.log(`[claude-extractor] Extracted ${allServices.length} services${appealsContactRaw ? " + appealsContact" : ""}`);
 
     // If truncated, make ONE continuation call for remaining services
     if (response.stop_reason === "max_tokens" || (response.stop_reason === "end_turn" && allServices.length === 0)) {
@@ -241,9 +312,9 @@ export async function extractServicesWithClaude(
         console.log(`[claude-extractor] Continuation: ${contText.length} chars | stop: ${contResponse.stop_reason}`);
 
         try {
-          const contExtracted = parseJSON(contText) as RawExtracted[];
-          if (contExtracted.length > 0) {
-            allServices = [...allServices, ...contExtracted];
+          const contPayload = normalizeExtractedPayload(parseJSON(contText));
+          if (contPayload.services.length > 0) {
+            allServices = [...allServices, ...contPayload.services];
             console.log(`[claude-extractor] Total after continuation: ${allServices.length} services`);
           }
         } catch {
@@ -253,14 +324,14 @@ export async function extractServicesWithClaude(
     }
 
     if (allServices.length === 0) {
-      return { services: [], fromClaude: false, error: "Haiku returned 0 services" };
+      return { services: [], appealsContact: toAppealsContact(appealsContactRaw), fromClaude: false, error: "Haiku returned 0 services" };
     }
 
     const services = allServices.map(toSBCParsedService);
-    return { services, fromClaude: true };
+    return { services, appealsContact: toAppealsContact(appealsContactRaw), fromClaude: true };
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error("[claude-extractor] Extraction error:", errMsg);
-    return { services: [], fromClaude: false, error: errMsg };
+    return { services: [], appealsContact: null, fromClaude: false, error: errMsg };
   }
 }

@@ -77,6 +77,7 @@ export async function GET(req: NextRequest) {
     supportTicketsOpen,
     waitlistRecent,
     insurancePlansNeedsReview,
+    appealsProposedPending,
   ] = await Promise.all([
     safeCount(supabase, "benefit_corrections", (q) => q.eq("status", "pending")),
     safeCount(supabase, "documents", (q) =>
@@ -90,7 +91,51 @@ export async function GET(req: NextRequest) {
     safeCount(supabase, "support_tickets", (q) => q.in("status", ["open", "in_progress"])),
     safeCount(supabase, "waitlist_signups", (q) => q.gte("created_at", sevenDaysAgo)),
     safeCount(supabase, "insurance_plans", (q) => q.eq("verification_status", "unverified")),
+    safeCount(supabase, "insurer_appeals_proposed_changes", (q) => q.eq("status", "pending")),
   ]);
+
+  // Phase 7: pending disputes that are missing a plan for their claim year.
+  // A dispute "needs plan" when its claim has a plan_year but the user has no
+  // insurance_plans row with that year.
+  const disputesNeedingPlan = await (async () => {
+    try {
+      const { data: rows } = await supabase
+        .from("dispute_outcomes")
+        .select("id, claim_id, dispute_type, created_at, user_id, claims!inner(plan_year, user_id)")
+        .in("status", ["dispute_letter_drafted", "filed", "in_progress"])
+        .order("created_at", { ascending: false })
+        .limit(25);
+      if (!rows) return [];
+      const results: Array<{ id: string; claim_id: string; dispute_type: string; created_at: string; claim_year: number }> = [];
+      for (const r of rows) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const claimRaw = (r as any).claims;
+        const claim = Array.isArray(claimRaw) ? claimRaw[0] : claimRaw;
+        const claimYear = claim?.plan_year ?? null;
+        if (!claimYear) continue;
+        const { data: plan } = await supabase
+          .from("insurance_plans")
+          .select("id")
+          .eq("user_id", r.user_id)
+          .eq("plan_year", claimYear)
+          .limit(1)
+          .maybeSingle();
+        if (!plan) {
+          results.push({
+            id: r.id,
+            claim_id: r.claim_id,
+            dispute_type: r.dispute_type,
+            created_at: r.created_at,
+            claim_year: claimYear,
+          });
+        }
+      }
+      return results;
+    } catch {
+      return [];
+    }
+  })();
+  const needsPlanCount = disputesNeedingPlan.length;
 
   // Top items for each section (up to 5 each)
   const [correctionsTop, documentsTop, supportTop] = await Promise.all([
@@ -169,6 +214,28 @@ export async function GET(req: NextRequest) {
         href: "/admin/pipeline",
         description: "Plans pending verification or CMS match.",
         items: [],
+      },
+      {
+        key: "insurer_appeals",
+        title: "Insurer Appeals Queue",
+        count: appealsProposedPending,
+        href: "/admin/claims#insurer-appeals-pending",
+        description: "Doc extractions + user corrections awaiting admin review (Pattern 1 registry).",
+        items: [],
+      },
+      {
+        key: "disputes_missing_plan",
+        title: "Disputes missing plan year",
+        count: needsPlanCount,
+        href: "/admin/claims#missing-plan-year",
+        description: "Pending dispute letters where the claim's plan year has no matching user plan on file — letter is weaker without it.",
+        items: disputesNeedingPlan.map((d) => ({
+          id: d.id,
+          claimId: d.claim_id,
+          disputeType: d.dispute_type,
+          needsPlanForYear: d.claim_year,
+          created_at: d.created_at,
+        })),
       },
     ],
   });

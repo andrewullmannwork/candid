@@ -5,6 +5,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateDisputeLetter, generateItemizedBillRequest } from "@/lib/disputes";
 import type { PlanBenefitEvidence } from "@/lib/disputes";
+import { resolvePlanContext } from "@/lib/disputes/plan-context";
+import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
 import { persistDisputeLetter } from "@/lib/disputes/persist";
 import { createServerClient } from "@/lib/supabase/server";
 import type { AuditReport, DisputeLetterType } from "@/lib/billing/types";
@@ -29,7 +31,41 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Fetch plan benefit evidence if insurancePlanId provided
+      const supabase = createServerClient();
+
+      // Phase 1: resolve plan context — insurer name + appeals address from
+      // the user's plan matching the bill's date of service.
+      let planContext = null;
+      try {
+        planContext = await resolvePlanContext(supabase, {
+          userId: auditReport.userId,
+          claimId: body.claimId ?? null,
+          dateOfService: auditReport.parsedBill.serviceDate ?? null,
+        });
+      } catch (err) {
+        console.error("[disputes] plan-context resolve failed (non-fatal):", err);
+      }
+
+      // Phase 4: resolve structured evidence for the "Why this should be
+      // covered" letter block.
+      let evidence = null;
+      try {
+        const claimIds = body.claimId ? [body.claimId as string] : [];
+        const lineItemIds = (body.claimLineItemIds as string[] | undefined) ?? undefined;
+        if (claimIds.length > 0) {
+          evidence = await resolveEvidence(supabase, {
+            userId: auditReport.userId,
+            claimIds,
+            lineItemIds,
+            planContext,
+            letterType: letterType ?? "overcharge",
+          });
+        }
+      } catch (err) {
+        console.error("[disputes] evidence resolve failed (non-fatal):", err);
+      }
+
+      // Fetch plan benefit evidence if insurancePlanId provided (legacy path)
       let planEvidence: PlanBenefitEvidence[] | undefined;
       if (insurancePlanId) {
         try {
@@ -72,7 +108,11 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      const letter = generateDisputeLetter(auditReport, findingIds, letterType, planEvidence);
+      const letter = generateDisputeLetter(auditReport, findingIds, letterType, {
+        planEvidence,
+        planContext,
+        evidence,
+      });
 
       // Persist dispute to database (feature-flagged)
       let disputeId: string | null = null;
@@ -82,7 +122,6 @@ export async function POST(req: NextRequest) {
         const disputeTrackingEnabled = await isFeatureEnabled("dispute_tracking");
         if (!disputeTrackingEnabled) throw new Error("feature_disabled");
 
-        const supabase = createServerClient();
         const selectedFindings = auditReport.findings.filter((f) => findingIds.includes(f.id));
         const totalDisputed = selectedFindings.reduce((sum, f) => sum + f.estimatedOvercharge, 0);
 
@@ -102,7 +141,13 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      return NextResponse.json({ success: true, letter, disputeId, deduplicated });
+      return NextResponse.json({
+        success: true,
+        letter,
+        disputeId,
+        deduplicated,
+        missingPlanForYear: planContext?.missingForYear ?? null,
+      });
     }
 
     // Case 2: Generate itemized bill request (no audit needed)

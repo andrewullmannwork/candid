@@ -239,17 +239,26 @@ export async function POST(req: NextRequest) {
       if (!claimsEnabled) throw new Error("feature_disabled");
 
       const { persistAuditResults } = await import("@/lib/claims/persist");
+      const { resolveClaimPlanContext } = await import("@/lib/claims/plan-year-resolver");
 
-      // Get user's active insurance plan for linking
+      // Get user's active insurance plan for fallback
       const { data: profileForClaim } = await supabase
         .from("profiles")
         .select("active_insurance_plan_id")
         .eq("user_id", doc.user_id)
         .single();
 
+      // T3.7: match historical plan by DOS before falling back to active.
+      const { planId, planYear } = await resolveClaimPlanContext(supabase, {
+        userId: doc.user_id,
+        dateOfService: parsedBill.serviceDate || null,
+        fallbackActivePlanId: profileForClaim?.active_insurance_plan_id || null,
+      });
+
       const persistResult = await persistAuditResults(supabase, {
         userId: doc.user_id,
-        insurancePlanId: profileForClaim?.active_insurance_plan_id || undefined,
+        insurancePlanId: planId || undefined,
+        planYear,
         documentId,
         parsedBill,
         auditReport,

@@ -115,7 +115,13 @@ export async function processPlanDocumentData(
       if (claudeResult.fromClaude && claudeResult.services.length > 0) {
         parseResult.services = claudeResult.services;
         console.log(`[process-plan] Haiku extracted ${claudeResult.services.length} services`);
-      } else {
+      }
+      // Phase 6.1 — pipe appealsContact to the self-updating insurer registry.
+      // Deferred until after the insurer match resolves below (we need insurer_id).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (parseResult as any).appealsContact = claudeResult.appealsContact ?? null;
+
+      if (!(claudeResult.fromClaude && claudeResult.services.length > 0)) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const extractorError = (claudeResult as any).error;
         const reason = `Haiku returned fromClaude=${claudeResult.fromClaude}, services=${claudeResult.services.length}${extractorError ? `, error: ${extractorError}` : ""}`;
@@ -334,6 +340,33 @@ export async function processPlanDocumentData(
       // Medium-confidence doc — held for admin review, don't touch canonical tables
     } else try {
       const insurerMatch = await matchInsurerCatalog(supabase, planInsert.insurer_name || "");
+
+      // Phase 6.1 — feed Haiku-extracted appeals block into the self-updating registry.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const appealsContact = (parseResult as any).appealsContact ?? null;
+      if (insurerMatch && appealsContact) {
+        try {
+          const { upsertAppealsFromDoc } = await import("@/lib/disputes/insurer-appeals-upsert");
+          await upsertAppealsFromDoc(supabase, {
+            insurerId: insurerMatch.id,
+            extracted: {
+              addressLine1: appealsContact.addressLine1,
+              addressLine2: appealsContact.addressLine2,
+              city: appealsContact.city,
+              state: appealsContact.state,
+              postalCode: appealsContact.postalCode,
+              phone: appealsContact.phone,
+              sourceExcerpt: appealsContact.sourceExcerpt,
+              sourcePage: appealsContact.sourcePage,
+              confidence: appealsContact.confidence,
+            },
+            userId: doc.user_id,
+            documentId,
+          });
+        } catch (err) {
+          console.error("[process-plan] appeals upsert failed (non-fatal):", err);
+        }
+      }
       if (insurerMatch && planInsert.plan_name) {
         // Get user profile for state, group_number, and hios_id from insurance_plans
         const { data: profileForCanonical } = await supabase
@@ -509,6 +542,12 @@ export async function processPlanDocumentData(
         supply_limit_days: s.supplyLimitDays, home_delivery_copay: s.homeDeliveryCopay,
         step_therapy_required: s.stepTherapyRequired, notes: s.notes,
         confidence: s.confidence, source: "sbc_parsed" as const,
+        // Phase 4.5 — SBC direct-quote citation support. `sbc_excerpt` +
+        // `sbc_page` columns added in migration 050 (nullable, safe no-op for
+        // older Postgres replicas where the column isn't yet present — the
+        // Supabase client silently drops unknown columns per PostgREST behavior).
+        sbc_excerpt: s.sourceExcerpt ?? null,
+        sbc_page: s.sourcePage ?? null,
       }));
 
       if (serviceInserts.length > 0) {
