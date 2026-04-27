@@ -1,21 +1,47 @@
 /**
- * EvidenceGaps — surfaces missing-evidence prompts with upload CTAs.
+ * EvidenceGaps — surfaces missing-evidence prompts with actionable CTAs.
  *
- * Renders below the EvidenceBlock on /disputes when the resolver flagged
- * signals we couldn't populate. Each gap is an actionable card: "Upload
- * your plan → add copay citation." The /disputes page already refetches
- * on window focus, so returning after upload auto-refreshes the letter
- * with the new data.
+ * Rendered below the EvidenceBlock on /disputes when the resolver flagged
+ * signals we couldn't populate. Each gap is either:
+ *   - a navigation CTA (Link to /upload?planYear=...&returnTo=...)
+ *   - an inline action (audit_findings_missing → POST rerun-audit endpoint
+ *     and refresh the dispute in place; no navigation needed).
+ *
+ * The /disputes page already refetches on window focus AND awaits the
+ * onAuditRerun callback, so dynamic state hydrates either way.
  */
+"use client";
+
+import { useState } from "react";
 import Link from "next/link";
 import type { EvidenceGap } from "@/lib/disputes/evidence-resolver";
 
 interface Props {
   gaps: EvidenceGap[];
+  /**
+   * Called when the user clicks "Re-run audit" on the
+   * `audit_findings_missing` gap. Should run the rerun-audit POST and then
+   * refetch the dispute. The component handles its own loading state.
+   */
+  onAuditRerun?: () => Promise<void>;
 }
 
-export function EvidenceGaps({ gaps }: Props) {
+export function EvidenceGaps({ gaps, onAuditRerun }: Props) {
+  const [rerunStatus, setRerunStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+
   if (!gaps || gaps.length === 0) return null;
+
+  const handleAuditRerun = async () => {
+    if (!onAuditRerun || rerunStatus === "running") return;
+    setRerunStatus("running");
+    try {
+      await onAuditRerun();
+      setRerunStatus("done");
+    } catch {
+      setRerunStatus("error");
+    }
+  };
+
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
       <div className="mb-3">
@@ -40,19 +66,59 @@ export function EvidenceGaps({ gaps }: Props) {
               </div>
               <p className="mt-1 pl-6 text-sm text-slate-600">{gap.description}</p>
             </div>
-            {gap.ctaLabel && gap.ctaHref ? (
-              <Link
-                href={gap.ctaHref}
-                className="inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow md:ml-4"
-              >
-                {gap.ctaLabel}
-              </Link>
-            ) : null}
+            {renderCta(gap, {
+              onAuditRerun: handleAuditRerun,
+              rerunStatus,
+              hasAuditCallback: !!onAuditRerun,
+            })}
           </li>
         ))}
       </ul>
     </section>
   );
+}
+
+function renderCta(
+  gap: EvidenceGap,
+  ctx: {
+    onAuditRerun: () => void;
+    rerunStatus: "idle" | "running" | "done" | "error";
+    hasAuditCallback: boolean;
+  },
+) {
+  if (gap.kind === "audit_findings_missing" && ctx.hasAuditCallback) {
+    const label =
+      ctx.rerunStatus === "running"
+        ? "Re-running audit…"
+        : ctx.rerunStatus === "done"
+        ? "Audit refreshed ✓"
+        : ctx.rerunStatus === "error"
+        ? "Try again"
+        : (gap.ctaLabel ?? "Re-run audit");
+    return (
+      <button
+        type="button"
+        onClick={ctx.onAuditRerun}
+        disabled={ctx.rerunStatus === "running"}
+        className="inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow disabled:cursor-wait disabled:opacity-70 md:ml-4"
+      >
+        {label}
+      </button>
+    );
+  }
+
+  if (gap.ctaLabel && gap.ctaHref) {
+    return (
+      <Link
+        href={gap.ctaHref}
+        className="inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow md:ml-4"
+      >
+        {gap.ctaLabel}
+      </Link>
+    );
+  }
+
+  return null;
 }
 
 function GapIcon() {

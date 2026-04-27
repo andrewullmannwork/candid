@@ -8,6 +8,7 @@ import { useSubscription } from "@/lib/subscription/use-subscription";
 import { LockedOverlay } from "@/components/shared/LockedOverlay";
 import { InlineSubscribePanel } from "@/components/billing/InlineSubscribePanel";
 import { downloadCaseFile } from "@/lib/casefile";
+import { disputeUrlForResult } from "@/lib/disputes/url";
 import { DisputeLetterHero } from "@/components/disputes/DisputeLetterHero";
 import { DisputeRecipientCard } from "@/components/disputes/DisputeRecipientCard";
 import { EvidenceBlock } from "@/components/disputes/EvidenceBlock";
@@ -392,7 +393,26 @@ function DisputesContent() {
 
       <EvidenceBlock evidence={evidence} planLabel={planLabel} />
 
-      <EvidenceGaps gaps={evidence?.gaps ?? []} />
+      <EvidenceGaps
+        gaps={evidence?.gaps ?? []}
+        onAuditRerun={
+          disputeId
+            ? async () => {
+                if (!user) return;
+                const token = await user.firebaseUser.getIdToken();
+                const res = await fetch(
+                  `/api/disputes/${disputeId}/rerun-audit`,
+                  {
+                    method: "POST",
+                    headers: { Authorization: `Bearer ${token}` },
+                  },
+                );
+                if (!res.ok) throw new Error("rerun-audit failed");
+                await fetchDispute(disputeId);
+              }
+            : undefined
+        }
+      />
 
       {nameMismatch ? (
         <div className="flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 shadow-sm md:flex-row md:items-start md:justify-between">
@@ -448,7 +468,7 @@ function DisputesContent() {
             <ToolbarButton
               onClick={handleDownload}
               icon="letter"
-              label="Letter only"
+              label="Download letter"
             />
           </div>
         </div>
@@ -711,8 +731,11 @@ function RequestItemizedBill() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
 
-      const letterData = encodeURIComponent(JSON.stringify(data.letter));
-      window.location.href = `/disputes?letter=${letterData}`;
+      // Itemized-bill requests don't go through the persistence path today
+      // (no audit findings → no claim line items to dedupe on), so this
+      // generally falls through to the legacy ?letter=<JSON> URL. The shared
+      // helper still prefers ?dispute=<id> when persistence is enabled.
+      window.location.href = disputeUrlForResult(data);
     } catch {
       alert("Failed to generate letter. Please try again.");
     } finally {

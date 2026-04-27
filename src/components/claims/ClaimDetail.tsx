@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useSubscription } from "@/lib/subscription/use-subscription";
 import { Disclaimer } from "@/components/shared/Disclaimer";
+import { disputeUrlForResult } from "@/lib/disputes/url";
 
 interface LineItem {
   id: string;
@@ -441,7 +442,7 @@ export function ClaimDetail({
 
                         if (res.ok) {
                           const result = await res.json();
-                          router.push(`/disputes?letter=${encodeURIComponent(JSON.stringify(result.letter))}`);
+                          router.push(disputeUrlForResult(result));
                         }
                       } catch (err) {
                         console.error("Dispute generation failed:", err);
@@ -545,7 +546,7 @@ export function ClaimDetail({
 
                           if (res.ok) {
                             const result = await res.json();
-                            router.push(`/disputes?letter=${encodeURIComponent(JSON.stringify(result.letter))}`);
+                            router.push(disputeUrlForResult(result));
                           }
                         } catch (err) {
                           console.error("Dispute generation failed:", err);

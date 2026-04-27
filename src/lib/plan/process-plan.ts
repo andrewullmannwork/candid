@@ -9,7 +9,7 @@ import { parseSBCText } from "@/lib/plan/sbc-parser";
 import { parsePlanDocument } from "@/lib/plan/plan-doc-parser";
 import { extractServicesWithClaude } from "@/lib/plan/claude-extractor";
 import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
-import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
+import { matchInsurerWithPlanFallback } from "@/lib/plan/insurer-match";
 import type { SBCParsedService } from "@/lib/plan/sbc-parser";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
@@ -112,16 +112,21 @@ export async function processPlanDocumentData(
         parseResult.plan.plan_name || null,
         isFullPlanDoc
       );
-      if (claudeResult.fromClaude && claudeResult.services.length > 0) {
-        parseResult.services = claudeResult.services;
-        console.log(`[process-plan] Haiku extracted ${claudeResult.services.length} services`);
-      }
-      // Phase 6.1 — pipe appealsContact to the self-updating insurer registry.
-      // Deferred until after the insurer match resolves below (we need insurer_id).
+
+      // Phase 6.1 — pipe appealsContact to the self-updating insurer registry
+      // regardless of service-extraction success; the doc may still contain a
+      // valid appeals contact block even when services parsing failed. The
+      // upsert runs after the insurer match resolves below (needs insurer_id).
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (parseResult as any).appealsContact = claudeResult.appealsContact ?? null;
 
-      if (!(claudeResult.fromClaude && claudeResult.services.length > 0)) {
+      const haikuSucceeded =
+        claudeResult.fromClaude && claudeResult.services.length > 0;
+
+      if (haikuSucceeded) {
+        parseResult.services = claudeResult.services;
+        console.log(`[process-plan] Haiku extracted ${claudeResult.services.length} services`);
+      } else {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const extractorError = (claudeResult as any).error;
         const reason = `Haiku returned fromClaude=${claudeResult.fromClaude}, services=${claudeResult.services.length}${extractorError ? `, error: ${extractorError}` : ""}`;
@@ -339,7 +344,23 @@ export async function processPlanDocumentData(
     } else if (skipCanonical) {
       // Medium-confidence doc — held for admin review, don't touch canonical tables
     } else try {
-      const insurerMatch = await matchInsurerCatalog(supabase, planInsert.insurer_name || "");
+      // Use the plan-name fallback so PEO-administered plans (where
+      // `insurer_name` was captured as the group sponsor — e.g., "Sequoia
+      // One PEO, LLC") still resolve to their actual carrier (e.g., Cigna
+      // via plan-name inference on "Open Access Plus"). Without this,
+      // canonical_plan_id stays null for PEO plans → community/sibling/
+      // pricing signals never populate. See OPS.4 in Candid_Todos.
+      const insurerMatch = await matchInsurerWithPlanFallback(supabase, {
+        insurerName: planInsert.insurer_name,
+        planName: planInsert.plan_name,
+      });
+      if (insurerMatch?.via === "plan_name_inference") {
+        console.log("[canonical-plan] insurer matched via plan-name inference", {
+          insurerName: planInsert.insurer_name,
+          planName: planInsert.plan_name,
+          matchedInsurer: insurerMatch.name,
+        });
+      }
 
       // Phase 6.1 — feed Haiku-extracted appeals block into the self-updating registry.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

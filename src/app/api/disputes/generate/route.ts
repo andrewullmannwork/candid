@@ -59,6 +59,10 @@ export async function POST(req: NextRequest) {
             lineItemIds,
             planContext,
             letterType: letterType ?? "overcharge",
+            // disputeId not yet known at generate time (persistDisputeLetter
+            // runs below). The /api/disputes/[disputeId] GET path re-resolves
+            // evidence with the correct disputeId on first load, so any
+            // returnTo URLs in EvidenceGaps fix themselves on next fetch.
           });
         }
       } catch (err) {

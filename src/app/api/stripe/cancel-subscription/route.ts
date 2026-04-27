@@ -11,7 +11,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
-import { getStripe } from "@/lib/stripe";
+import { getStripe, resolveCurrentPeriodEnd } from "@/lib/stripe";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -55,8 +55,7 @@ export async function POST(req: NextRequest) {
     cancel_at_period_end: true,
   });
 
-  const periodEnd = (subscription as unknown as { current_period_end?: number })
-    .current_period_end;
+  const periodEnd = resolveCurrentPeriodEnd(subscription);
 
   // Webhook will also mirror this, but write-through so the UI can refresh
   // immediately without waiting for the webhook round-trip.
