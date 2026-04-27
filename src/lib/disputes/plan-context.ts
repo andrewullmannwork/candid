@@ -93,33 +93,46 @@ export async function resolvePlanContext(
     if (m) planYear = parseInt(m[1], 10);
   }
 
-  // Fetch user's plans once; we pick the right one locally.
+  // Fetch user's plans once; we pick the right one locally. `is_active` is
+  // pulled in so we can prefer the active row when multiple rows match the
+  // same year/window — happens when the user has duplicate insurance_plans
+  // rows (case + name variants from card vs SBC vs PEO uploads). Without
+  // this preference, `created_at DESC` ordering would pick the most recent
+  // upload, which is often NOT the user's currently-active plan.
   const { data: userPlans } = await supabase
     .from("insurance_plans")
-    .select("id, plan_name, plan_year, insurer_name, plan_type, canonical_plan_id, coverage_period_start, coverage_period_end, created_at")
+    .select("id, plan_name, plan_year, insurer_name, plan_type, canonical_plan_id, coverage_period_start, coverage_period_end, created_at, is_active")
     .eq("user_id", userId)
     .order("created_at", { ascending: false });
 
   const plans = userPlans ?? [];
 
-  const yearMatch = planYear != null
-    ? plans.find((p) => p.plan_year === planYear)
-    : null;
+  const yearMatches = planYear != null
+    ? plans.filter((p) => p.plan_year === planYear)
+    : [];
+  // Prefer the active plan among equal-year matches; otherwise newest by
+  // created_at (already pre-sorted DESC by the query above).
+  const yearMatch = yearMatches.find((p) => p.is_active) ?? yearMatches[0] ?? null;
 
-  const windowMatch = !yearMatch && dateOfService
-    ? plans.find((p) =>
+  const windowMatches = !yearMatch && dateOfService
+    ? plans.filter((p) =>
         p.coverage_period_start &&
         p.coverage_period_end &&
         dateOfService! >= p.coverage_period_start &&
         dateOfService! <= p.coverage_period_end)
-    : null;
+    : [];
+  const windowMatch = windowMatches.find((p) => p.is_active) ?? windowMatches[0] ?? null;
 
   const resolvedPlan = yearMatch ?? windowMatch ?? null;
 
-  // Fallback plan = any plan on file when no year match, so the resolver can
-  // still surface *something* useful (e.g., user's 2026 plan when claim is
-  // 2025 but no 2025 plan on file yet).
-  const fallbackPlan = !resolvedPlan && plans.length > 0 ? plans[0] : null;
+  // Fallback plan = any plan on file when no year/window match, so the
+  // resolver can still surface *something* useful (e.g., user's 2026 plan
+  // when claim is 2025 but no 2025 plan on file yet). Prefer the active
+  // row over the most-recently-created so we don't surface a stale or
+  // duplicate row.
+  const fallbackPlan = !resolvedPlan && plans.length > 0
+    ? (plans.find((p) => p.is_active) ?? plans[0])
+    : null;
 
   const missingForYear = planYear != null && !resolvedPlan ? planYear : null;
 
