@@ -38,17 +38,20 @@ export async function resolveClaimPlanContext(
   }
 
   // 1. Coverage-window match. Most precise — handles mid-year plan switches.
+  // When multiple rows match (duplicate insurance_plans rows from card+SBC+PEO
+  // uploads), prefer the active one. is_active DESC sorts true ahead of false.
   if (dateOfService) {
-    const { data: windowMatch } = await supabase
+    const { data: windowMatches } = await supabase
       .from("insurance_plans")
-      .select("id, plan_year")
+      .select("id, plan_year, is_active")
       .eq("user_id", userId)
       .lte("coverage_period_start", dateOfService)
       .gte("coverage_period_end", dateOfService)
+      .order("is_active", { ascending: false })
       .order("coverage_period_start", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .limit(1);
 
+    const windowMatch = windowMatches?.[0];
     if (windowMatch?.id) {
       return {
         planId: windowMatch.id,
@@ -58,18 +61,20 @@ export async function resolveClaimPlanContext(
   }
 
   // 2. Plan-year match. Catches plans without coverage window dates.
+  // Same active-preferring tiebreak as #1.
   if (dateOfService) {
     const year = extractYear(dateOfService);
     if (year !== null) {
-      const { data: yearMatch } = await supabase
+      const { data: yearMatches } = await supabase
         .from("insurance_plans")
-        .select("id, plan_year")
+        .select("id, plan_year, is_active")
         .eq("user_id", userId)
         .eq("plan_year", year)
+        .order("is_active", { ascending: false })
         .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
+        .limit(1);
 
+      const yearMatch = yearMatches?.[0];
       if (yearMatch?.id) {
         return { planId: yearMatch.id, planYear: yearMatch.plan_year ?? year };
       }
