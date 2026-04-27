@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import type { AuditReport, AuditFinding } from "@/lib/billing/types";
+import { disputeUrlForResult } from "@/lib/disputes/url";
 
 export default function AuditPage() {
   const [report, setReport] = useState<AuditReport | null>(null);
@@ -70,9 +71,9 @@ export default function AuditPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
 
-      // Navigate to dispute letter page with the generated letter
-      const letterData = encodeURIComponent(JSON.stringify(data.letter));
-      window.location.href = `/disputes?letter=${letterData}`;
+      // Prefer ?dispute=<id> so /disputes runs the always-regen + plan-context
+      // + evidence-resolver path on load (Phase 1 + 4 + 7 of dispute letter v2).
+      window.location.href = disputeUrlForResult(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Letter generation failed");
     }

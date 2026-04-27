@@ -95,6 +95,7 @@ export async function GET(
         lineItemIds: allLineItemIds.length > 0 ? allLineItemIds : undefined,
         planContext,
         letterType: dispute.dispute_type,
+        disputeId: dispute.id,
       });
 
       // Debug logging — helps diagnose why insurer resolution fails for a

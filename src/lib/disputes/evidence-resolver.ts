@@ -185,9 +185,16 @@ export async function resolveEvidence(
     lineItemIds?: string[];
     planContext: PlanContext | null;
     letterType?: string;
+    /**
+     * Persisted dispute id (when known). Used to build returnTo URLs on
+     * EvidenceGaps upload CTAs so the user lands back on the correct
+     * dispute after uploading. Falls back to the claim id if absent — that
+     * still routes through /disputes but won't auto-refetch the right row.
+     */
+    disputeId?: string | null;
   },
 ): Promise<DisputeEvidence> {
-  const { userId, claimIds, lineItemIds, planContext, letterType } = params;
+  const { userId, claimIds, lineItemIds, planContext, letterType, disputeId } = params;
 
   if (claimIds.length === 0) {
     return emptyEvidence(planContext, letterType);
@@ -288,7 +295,7 @@ export async function resolveEvidence(
   // Claim-level community aggregate: useful for the letter's opening
   // paragraph when individual line-item counts are all zero.
   const claimLevelCommunity = aggregateCommunity(claimsArr);
-  const gaps = computeEvidenceGaps(claimsArr, planContext, params.claimIds);
+  const gaps = computeEvidenceGaps(claimsArr, planContext, params.claimIds, disputeId ?? null);
 
   return {
     claims: claimsArr,
@@ -318,10 +325,15 @@ function computeEvidenceGaps(
   claims: ClaimEvidence[],
   planContext: PlanContext | null,
   claimIds: string[],
+  disputeId: string | null,
 ): EvidenceGap[] {
   const gaps: EvidenceGap[] = [];
-  const firstClaimId = claimIds[0];
-  const returnTo = firstClaimId ? encodeURIComponent(`/disputes?dispute=${firstClaimId}`) : "";
+  // Prefer the persisted dispute id for the returnTo URL so the user lands
+  // back on the right /disputes?dispute=<id> view after uploading. Fall
+  // back to the claim id only when no dispute is persisted yet (e.g.,
+  // legacy ?letter= flow); the user can still navigate manually.
+  const returnIdent = disputeId ?? claimIds[0] ?? null;
+  const returnTo = returnIdent ? encodeURIComponent(`/disputes?dispute=${returnIdent}`) : "";
 
   const allLineItems = claims.flatMap((c) => c.lineItemEvidence);
   const anyPlanBenefit = allLineItems.some((li) => li.planBenefit);
@@ -358,9 +370,10 @@ function computeEvidenceGaps(
       kind: "audit_findings_missing",
       title: "No audit findings attached",
       description:
-        "Audit findings (Medicare benchmark comparisons + overcharge flags) attach to a bill at upload time. Re-upload this bill to attach fresh findings to the letter.",
-      ctaLabel: "Upload again",
-      ctaHref: "/upload",
+        "Re-run the audit against this bill to attach Medicare benchmark comparisons + overcharge flags directly to the letter.",
+      ctaLabel: "Re-run audit",
+      // Intentionally no ctaHref — the UI wires this kind to an inline
+      // POST /api/disputes/[disputeId]/rerun-audit instead of a navigation.
     });
   }
 

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getStripe } from "@/lib/stripe";
+import { getStripe, resolveCurrentPeriodEnd } from "@/lib/stripe";
 import { createServerClient } from "@/lib/supabase/server";
 import type Stripe from "stripe";
 
@@ -47,8 +47,7 @@ export async function POST(req: NextRequest) {
         const subscription = event.data.object as Stripe.Subscription;
         const customerId = subscription.customer as string;
 
-        // In Stripe API 2025+, current_period_end may live on subscription items
-        const periodEnd = (subscription as unknown as Record<string, unknown>).current_period_end as number | undefined;
+        const periodEnd = resolveCurrentPeriodEnd(subscription);
 
         await supabase
           .from("stripe_customers")
