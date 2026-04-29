@@ -92,11 +92,16 @@ function parseCostSharing(text: string): CostSharing {
     return result;
   }
 
-  // "No charge" = 100% covered
+  // "No charge" = 100% covered. Cost is zero, but the deductible may still apply
+  // when the SBC qualifies "no charge" with "after deductible has been met".
   if (/no\s+charge/i.test(raw)) {
     result.copay = 0;
     result.coinsurance = 0;
-    result.deductibleApplies = false;
+    if (/(?:after|then|plus)\s+(?:[\w\s]+?\s+)?deductible/i.test(raw)) {
+      result.deductibleApplies = true;
+    } else {
+      result.deductibleApplies = false;
+    }
     return result;
   }
 
@@ -342,12 +347,29 @@ export function parseSBCText(text: string, documentId?: string): SBCParseResult 
     plan.network_name = plan.plan_name;
   }
 
-  // Coverage period
-  const periodMatch = text.match(/coverage\s+period[:\s]*(\d{2})\/(\d{2})\/(\d{4})\s*[-–]\s*(\d{2})\/(\d{2})\/(\d{4})/i);
+  // Coverage period — supports two SBC formats:
+  //  (a) "Coverage Period: 01/01/2026 - 12/31/2026" (full range, e.g. WHA, Cigna)
+  //  (b) "Coverage Period: Beginning On or After 1/1/2025" (single date, e.g. Ambetter, Blue Shield)
+  const periodMatch = text.match(/coverage\s+period[:\s]*(\d{1,2})\/(\d{1,2})\/(\d{4})\s*[-–]\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/i);
   if (periodMatch) {
-    plan.coverage_period_start = `${periodMatch[3]}-${periodMatch[1]}-${periodMatch[2]}`;
-    plan.coverage_period_end = `${periodMatch[6]}-${periodMatch[4]}-${periodMatch[5]}`;
+    const m1 = periodMatch[1].padStart(2, "0");
+    const d1 = periodMatch[2].padStart(2, "0");
+    const m2 = periodMatch[4].padStart(2, "0");
+    const d2 = periodMatch[5].padStart(2, "0");
+    plan.coverage_period_start = `${periodMatch[3]}-${m1}-${d1}`;
+    plan.coverage_period_end = `${periodMatch[6]}-${m2}-${d2}`;
     plan.plan_year = parseInt(periodMatch[3], 10);
+  } else {
+    // Fallback: "Beginning On or After MM/DD/YYYY" — assume calendar-year coverage
+    const beginningMatch = text.match(/(?:coverage\s+period[^\n]*?)?beginning\s+(?:on\s+or\s+after\s+)?(\d{1,2})\/(\d{1,2})\/(\d{4})/i);
+    if (beginningMatch) {
+      const m = beginningMatch[1].padStart(2, "0");
+      const d = beginningMatch[2].padStart(2, "0");
+      const y = parseInt(beginningMatch[3], 10);
+      plan.coverage_period_start = `${y}-${m}-${d}`;
+      plan.coverage_period_end = `${y}-12-31`;
+      plan.plan_year = y;
+    }
   }
 
   // Plan type
@@ -356,13 +378,18 @@ export function parseSBCText(text: string, documentId?: string): SBCParseResult 
     plan.plan_type = planTypeMatch[1].toUpperCase();
   }
 
-  // Coverage tier
-  const tierMatch = text.match(/coverage\s+for[:\s]*(individual|family|individual.*family)/i);
+  // Coverage tier — handles standard "Individual + Family" plus carrier variants
+  // like "All Covered Members" (Ambetter / Health Net) and "Self + Family" (WHA).
+  const tierMatch = text.match(/coverage\s+for[:\s]*(individual\s*\+\s*family|individual.*family|self\s*\+\s*family|self\s+only|individual|family|all\s+covered\s+members)/i);
   if (tierMatch) {
     const t = tierMatch[1].toLowerCase();
-    if (/individual.*family/i.test(t)) plan.coverage_tier = "individual_family";
-    else if (/family/i.test(t)) plan.coverage_tier = "family";
-    else plan.coverage_tier = "individual";
+    if (/all\s+covered\s+members/.test(t) || /individual.*family/.test(t) || /self\s*\+\s*family/.test(t)) {
+      plan.coverage_tier = "individual_family";
+    } else if (/family/.test(t)) {
+      plan.coverage_tier = "family";
+    } else {
+      plan.coverage_tier = "individual";
+    }
   }
 
   // ── Extract deductibles ─────────────────────────────────────────────────
@@ -707,6 +734,33 @@ export function parseSBCText(text: string, documentId?: string): SBCParseResult 
   if (services.length > 0) parsedFields++;
 
   const confidence = parsedFields / totalFields;
+
+  // Substance Use Disorder parity derivation. Many SBCs bundle SUD into mental
+  // health rows (section header "Mental health, behavioral health, or substance
+  // abuse services"; ER row text "medical, mental health and substance use
+  // disorders"). ACA mental health parity requires SUD coverage at parity with
+  // mental health, so when the SBC mentions SUD anywhere we mirror each
+  // mental_health_outpatient/inpatient entry into a substance_abuse_*
+  // counterpart with identical cost-sharing — unless the SBC has dedicated
+  // SUD rows already producing those slugs.
+  if (/substance\s+(?:abuse|use)/i.test(text)) {
+    const existingSlugs = new Set(services.map((s) => s.serviceSlug));
+    const sudPairs: Array<[string, string]> = [
+      ["mental_health_outpatient", "substance_abuse_outpatient"],
+      ["mental_health_inpatient", "substance_abuse_inpatient"],
+    ];
+    let derivedCount = 0;
+    for (const [mhSlug, sudSlug] of sudPairs) {
+      if (existingSlugs.has(sudSlug)) continue;
+      const mh = services.find((s) => s.serviceSlug === mhSlug);
+      if (!mh) continue;
+      services.push({ ...mh, serviceSlug: sudSlug });
+      derivedCount++;
+    }
+    if (derivedCount > 0) {
+      warnings.push(`Substance abuse services derived from mental health rows per ACA mental health parity (MHPAEA); ${derivedCount} entries synthesized. Verify against EOC.`);
+    }
+  }
 
   if (services.length === 0) warnings.push("No per-service cost sharing was extracted");
   if (plan.in_deductible_individual == null) warnings.push("Could not extract in-network deductible");
