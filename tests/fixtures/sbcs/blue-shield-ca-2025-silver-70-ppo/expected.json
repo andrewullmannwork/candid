@@ -1,8 +1,9 @@
 {
   "fixture_metadata": {
     "slug": "blue-shield-ca-2025-silver-70-ppo",
-    "annotated_by": "andrew + claude session 43",
+    "annotated_by": "claude session 43; andrew spot-checked anchor fields session 44",
     "annotated_at": "2026-04-29",
+    "spot_check_status": "MEDIUM confidence per Andrew session-44 spot-check; corrections applied: insurer_name split into verbatim/canonical, actuarial_value_source flag added, in_coinsurance_default_post_deductible_only flag added, network_name corrected (Full PPO → Blue Shield of California PPO), appeals_contact populated with mailing address (was sparse; missed page entirely), NEW appeals_contacts array added with all 4 grievance categories from page 6 grievance table (medical/Rx, MHSA participating, MHSA non-participating, pediatric dental). Schema gaps documented for Phase 2 §10: cost_cap_per_unit (specialty Rx capped at $250/$500), multi-tier networks (MHSA Participating vs Non-Participating beyond simple in/out), coverage_conditions verbatim qualifiers for Other Covered services (with limitations etc).",
     "source_pdf_pages": 370,
     "is_bundled_pdf": true,
     "sbc_page_range": "1-8",
@@ -40,6 +41,8 @@
 
   "plan": {
     "plan_name": "Blue Shield Silver 70 PPO 2500/55 PCP + Child Dental",
+    "insurer_name_verbatim": "Blue Shield of California",
+    "insurer_name_canonical": "Blue Shield of California",
     "insurer_name": "Blue Shield of California",
     "insurer_brand_name": "Blue Shield of California",
     "employer_name": null,
@@ -48,13 +51,14 @@
     "state": "CA",
     "metal_level": "silver",
     "actuarial_value": 0.70,
+    "actuarial_value_source": "naming_convention",
     "csr_level": null,
     "is_hdhp": false,
     "hsa_eligible": false,
     "marketplace_type": "shop",
     "on_marketplace": true,
     "hios_id": null,
-    "network_name": "Full PPO",
+    "network_name": "Blue Shield of California PPO",
     "coverage_period_start": "2025-01-01",
     "coverage_period_end": "2025-12-31",
     "coverage_tier": "individual_family",
@@ -70,6 +74,7 @@
     "out_oop_max_family": 26500,
 
     "in_coinsurance_default": 0.35,
+    "in_coinsurance_default_post_deductible_only": false,
     "out_coinsurance_default": 0.50,
 
     "deductible_calc_method": "embedded",
@@ -1057,13 +1062,61 @@
   ],
 
   "appeals_contact": {
-    "address_line_1": null,
-    "address_line_2": null,
-    "city": null,
+    "address_line_1": "P.O. Box 5588",
+    "address_line_2": "Blue Shield of California Customer Service Appeals and Grievance",
+    "city": "El Dorado Hills",
     "state": "CA",
-    "postal_code": null,
+    "postal_code": "95762",
     "phone": "1-855-258-3744",
-    "source_excerpt": "Blue Shield Customer Service at 1-855-258-3744 or the Department of Labor's Employee Benefits Security Administration at 1-866-444-EBSA (3272). Additionally, you can contact the California Department of Managed Health Care Help at 1-888-466-2219 or visit helpline@dmhc.ca.gov.",
-    "source_page": 6
-  }
+    "source_excerpt": "Blue Shield Customer Service at 1-855-258-3744 or the Department of Labor's Employee Benefits Security Administration at 1-866-444-EBSA (3272). Additionally, you can contact the California Department of Managed Health Care Help at 1-888-466-2219 or visit helpline@dmhc.ca.gov. Where to mail grievances: Blue Shield of California, Customer Service Appeals and Grievance, P.O. Box 5588, El Dorado Hills, CA 95762.",
+    "source_page": 6,
+    "_note": "Singular field retained for parser-output backward compat (medical/Rx default). Multi-category structured data lives in `appeals_contacts` array below."
+  },
+
+  "appeals_contacts": [
+    {
+      "service_category": "medical_and_prescription_drug",
+      "organization_name": "Blue Shield of California",
+      "department": "Customer Service Appeals and Grievance",
+      "address_line_1": "P.O. Box 5588",
+      "city": "El Dorado Hills",
+      "state": "CA",
+      "postal_code": "95762",
+      "phone": "1-855-258-3744",
+      "source_page": 6
+    },
+    {
+      "service_category": "mental_health_substance_use_mhsa_participating",
+      "organization_name": "Blue Shield of California",
+      "department": "Mental Health Service Administrator",
+      "address_line_1": "P.O. Box 719002",
+      "city": "San Diego",
+      "state": "CA",
+      "postal_code": "92171",
+      "phone": null,
+      "source_page": 6
+    },
+    {
+      "service_category": "mental_health_substance_use_mhsa_non_participating",
+      "organization_name": "Blue Shield of California",
+      "department": "Customer Service Appeals and Grievance",
+      "address_line_1": "P.O. Box 5588",
+      "city": "El Dorado Hills",
+      "state": "CA",
+      "postal_code": "95762",
+      "phone": null,
+      "source_page": 6
+    },
+    {
+      "service_category": "pediatric_dental",
+      "organization_name": "Blue Shield of California",
+      "department": "Dental Plan Administrator, Attn: Dental Appeals/Grievances",
+      "address_line_1": "P.O. Box 30545",
+      "city": "Salt Lake City",
+      "state": "UT",
+      "postal_code": "84130-0545",
+      "phone": null,
+      "source_page": 6
+    }
+  ]
 }

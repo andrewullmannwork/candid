@@ -128,12 +128,17 @@ Mirrors `InsurancePlanRow` from `src/lib/supabase/types.ts`. Additional fields n
 
 | Field | Type | Why annotated |
 |---|---|---|
-| `insurer_brand_name` | string \| null | Marketplace-facing brand vs legal entity name. Ambetter is the brand; Centene is the legal entity. The parser's insurer-detection regex maps both to "Centene". |
+| `insurer_name_verbatim` | string \| null | (Added Session 44 spot-check) The insurer name AS PRINTED on the SBC — e.g. "Ambetter" for the Centene/Ambetter Bronze 60. Ground-truth source for parser verbatim-extraction. |
+| `insurer_name_canonical` | string \| null | (Added Session 44 spot-check) The canonical name the parser/canonical-match should emit — e.g. "Centene" for "Ambetter". Used to measure parser canonical-mapping accuracy. |
+| `insurer_name` | string \| null | DEPRECATED in favor of the verbatim/canonical split. Kept for backward compat with the existing parser; equals `insurer_name_canonical`. |
+| `insurer_brand_name` | string \| null | Marketplace-facing brand vs legal entity name. Ambetter is the brand; Centene is the legal entity. |
 | `metal_level` | "bronze" \| "silver" \| "gold" \| "platinum" \| "catastrophic" \| null | Required for Phase 5 cross-tier match validation. Null when off-marketplace and no formal AV. |
 | `actuarial_value` | number \| null | 0.60, 0.70, 0.80, 0.87, etc. Records the AV variant within the metal tier. |
+| `actuarial_value_source` | "naming_convention" \| "hios_lookup" \| "empirical_claims" \| null | (Added Session 44 spot-check) Provenance of the AV value. Today AV is inferred from "Bronze 60" / "Silver 70" naming convention. v1.5+ should add HIOS-ID lookup against CMS Marketplace data; once flywheel ramps, an empirical AV computed from billing data becomes available as a separate signal. |
 | `csr_level` | 73 \| 87 \| 94 \| null | Cost-sharing reduction enhancement level for low-income silvers. Null for standard plans. |
 | `is_hdhp` | bool | True when the plan is HSA-eligible high-deductible. The parser detects this from `plan_type == "HDHP"` but most HDHP carriers list plan_type as PPO/HMO and put HDHP in the plan name. |
 | `hsa_eligible` | bool | Usually equals `is_hdhp` but technically distinct (HDHPs that fail other IRS rules are not HSA-eligible). |
+| `in_coinsurance_default_post_deductible_only` | bool | (Added Session 44 spot-check) HDHP semantic discriminator. When `in_coinsurance_default: 0` AND this flag is `true`, the value means "$0 cost-share AFTER the deductible has been met" — which is materially different from "$0 always." Without the flag, `in_coinsurance_default: 0` is ambiguous between pre-deductible-zero and post-deductible-zero. Flag MUST be `true` for HDHP plans. |
 | `marketplace_type` | "individual" \| "shop" \| "employer" \| "medicare" \| "medicaid" \| null | SHOP/Small Business is regulatorily distinct from individual marketplace. |
 | `on_marketplace` | bool | Whether the plan was sold on a public ACA exchange (FFM, SBE, or SHOP). |
 | `hios_id` | string \| null | 14-character HIOS plan ID when the plan appears in CMS PPL. Null for off-marketplace plans. |
@@ -159,9 +164,16 @@ Many SBCs bundle SUD coverage into mental health rows (page-section header "Ment
 
 The parser performs this derivation as a post-process step in `parseSBCText` (added by migration 054 / session 43 PR). Phase 5 cross-tier validation can rely on both slugs being populated.
 
-### `appeals_contact`
+### `appeals_contact` (singular — DEPRECATED) and `appeals_contacts` (plural array — preferred)
 
-Single object (not array) — SBCs have at most one appeals contact block on the back page. All-null when the SBC does not include this section.
+**Updated Session 44 spot-check.** The original assumption "SBCs have at most one appeals contact block" was wrong for some carriers. Blue Shield of California's SBC has FOUR distinct grievance addresses on page 6, one per service category (medical/Rx, MHSA Participating, MHSA Non-Participating, pediatric dental).
+
+Two fields coexist:
+
+- **`appeals_contact`** (singular object, deprecated) — kept for backward compat with the current parser, which emits a single contact. Populated with the medical/Rx default category for plans with multi-category contacts.
+- **`appeals_contacts`** (plural array, preferred) — array of `{ service_category, organization_name, department, address_line_1, city, state, postal_code, phone, source_page }`. `service_category` enum includes: `medical_and_prescription_drug`, `mental_health_substance_use_mhsa_participating`, `mental_health_substance_use_mhsa_non_participating`, `pediatric_dental` (extensible).
+
+Phase 2 §10 schema-additions list flags this as a Phase 5 schema migration: deprecate singular field, parser extracts all multi-category addresses.
 
 ## Conventions
 
