@@ -95,6 +95,7 @@ export const SERVICE_CATALOG: ServiceDefinition[] = [
   { slug: "childrens_eye_exam", name: "Children's Eye Exam", category: "other", isPreventiveEligible: false },
   { slug: "childrens_glasses", name: "Children's Glasses", category: "other", isPreventiveEligible: false },
   { slug: "childrens_dental", name: "Children's Dental Check-Up", category: "other", isPreventiveEligible: false },
+  { slug: "routine_eye_exam_adult", name: "Routine Eye Exam — Adult", category: "other", isPreventiveEligible: false },
   { slug: "dental_injury", name: "Dental Care — Injury to Teeth", category: "other", isPreventiveEligible: false },
 ];
 
