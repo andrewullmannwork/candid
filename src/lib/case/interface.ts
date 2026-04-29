@@ -94,6 +94,10 @@ export type FirmListingStatus =
 /**
  * 1:1 with `firm_directory` (Phase 4.5 NEW table per audit §4.1).
  * Solo practitioners get a Firm-of-1 with `solo: true`. Uniform model.
+ *
+ * Note: malpractice insurance carrier is intentionally NOT collected per
+ * Q-DR-1G1-3 lock (Session 42). Candid is a marketplace, not a vetting service.
+ * See Candid_Onboarding_Patterns + Candid_ToS §7.10/§7.11.
  */
 export interface Firm {
   id: string;
@@ -104,7 +108,6 @@ export interface Firm {
   phone: string | null;
 
   listing_status: FirmListingStatus;
-  malpractice_insurance_carrier: string | null;
   accepts_referrals: boolean;
   founded_year: number | null;
   solo: boolean;
@@ -158,7 +161,6 @@ export interface Lawyer {
   accepting_new_clients: boolean | null;
 
   bar_status: BarStatus;
-  malpractice_disclosed: boolean | null;
 
   listing_status: LawyerListingStatus;
   listing_paused_until: string | null;
