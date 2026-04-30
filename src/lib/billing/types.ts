@@ -1,8 +1,46 @@
 // Core billing data types for Candid audit pipeline
 
+// DR-3D Q-DR-3D-2 — EX codes captured with verbatim note text per occurrence.
+// Cigna A-codes are positional (same letter, different meaning across EOBs); note_text
+// disambiguates downstream via insurer_ex_code_mappings (Phase 5 mig 063).
+export interface ExCode {
+  code: string; // e.g., "A1", "JU"
+  note_text: string; // Verbatim text from EOB Notes section
+  note_text_hash?: string; // sha256(normalize(note_text)); set by post-process
+}
+
+// DR-3D Q-DR-3D-4 — accumulator entry per (benefit_year, network_tier,
+// accumulator_type, is_individual) 4-dim key. Phase 5 mig 061 promotes to table.
+export type AccumulatorType = "medical" | "rx" | "dental" | "vision" | "combined" | "mental_health";
+export type NetworkTier = "in_network" | "out_of_network" | "tiered" | "unknown";
+
+export interface Accumulator {
+  benefit_year: string; // Calendar year of service_date (NOT plan year)
+  network_tier: NetworkTier;
+  accumulator_type: AccumulatorType; // Default 'combined' if EOB doesn't distinguish
+  is_individual: boolean; // true=individual; false=family aggregate
+  deductible_applied?: number;
+  deductible_max?: number;
+  oop_applied?: number;
+  oop_max?: number;
+  copays_applied?: number;
+  coinsurance_applied?: number;
+}
+
+// DR-3D Q-DR-3D-6 — Haiku per-field confidence METADATA per Q-DR-3B-1.
+// NOT auto-blended into Pattern 1 score; consumed by Phase 6 calibration.
+export interface EOBExtractionMeta {
+  fieldConfidences: Record<string, number>; // dot-path key → 0..1
+  warnings: string[]; // Defensive-handler observations from parseHaikuMetaBlock
+}
+
+export type ClaimLineStatus = "paid" | "not_paid" | "pending" | "denied" | "adjusted";
+export type ProcedureCodeType = "CPT" | "HCPCS_L2" | "REV" | "DRG" | "NDC" | "G_CODE" | "CAT_II";
+
 export interface BillLineItem {
   lineNumber: number;
   procedureCode: string; // CPT or HCPCS code (5-digit)
+  procedureCodeType?: ProcedureCodeType; // DR-3D Task 3F discriminator
   revenueCode?: string; // 4-digit revenue code (hospital bills)
   description: string; // Raw description from the bill
   category: string; // Plain-English category (no CPT descriptions)
@@ -11,9 +49,36 @@ export interface BillLineItem {
   billedAmount: number; // What provider charged
   allowedAmount?: number; // What insurance says is reasonable
   insurancePaid?: number; // What insurance paid
-  patientResponsibility?: number; // What patient owes
+  patientResponsibility?: number; // What patient owes (lump sum; superseded by member_* when EOB decomposes)
   adjustments?: number; // Write-offs / contractual adjustments
   modifier?: string; // CPT modifier (e.g., "25" for separate E/M)
+
+  // DR-3D EOB-specific extensions (all optional; populated by EOB parser only)
+  line_number_in_eob?: string; // Verbatim e.g. "0100"; preserves EOB ordering
+  paid_date?: string; // ISO date
+  claim_line_status?: ClaimLineStatus;
+  denied_amount?: number; // Distinct from $0 paid; explicitly DENIED portion
+  contract_discount?: number; // Insurer-negotiated discount, NOT bundled into adjustments
+  ins_adjusted?: number; // Task 3F: split from generic adjustments
+  provider_adjusted?: number; // Task 3F: split from generic adjustments
+  cob_allowed?: number; // Coordination of Benefits
+  cob_paid?: number;
+  cob_payer_id?: string;
+  tax_paid?: number;
+  interest_paid?: number;
+  member_copay?: number; // Decomposed from patientResponsibility
+  member_coinsurance?: number;
+  member_applied_to_deductible?: number;
+  network_status?: NetworkTier;
+  carc_codes?: string[]; // CMS X12 enumerated; lookup via carc_dictionary (mig 062)
+  rarc_codes?: string[]; // CMS X12 enumerated; lookup via rarc_dictionary (mig 062)
+  ex_codes?: ExCode[]; // Insurer-specific; mapped via insurer_ex_code_mappings (mig 063)
+  is_adjustment_reversal?: boolean; // Set by post-process detectReversalCycles
+  adjusts_line_id?: string; // FK to original line; set by post-process
+
+  // Task 3F: rendering provider (per-line; distinct from facility-level provider on ParsedBill)
+  rendering_provider_npi?: string;
+  rendering_provider_name?: string;
 }
 
 export interface ParsedBill {
@@ -23,7 +88,7 @@ export interface ParsedBill {
   billType: "eob" | "itemized_bill";
   provider: {
     name: string;
-    npi?: string; // National Provider Identifier
+    npi?: string; // National Provider Identifier (facility-level)
     taxId?: string;
     address?: string;
   };
@@ -35,6 +100,7 @@ export interface ParsedBill {
   insurer?: {
     name: string;
     planName?: string;
+    accountNumber?: string;
   };
   serviceDate: string; // Primary date of service
   statementDate?: string; // Date bill was generated
@@ -45,10 +111,21 @@ export interface ParsedBill {
     totalInsurancePaid?: number;
     totalPatientResponsibility?: number;
     totalAdjustments?: number;
+    totalDenied?: number; // DR-3D
+    totalContractDiscount?: number; // DR-3D
+    totalInsAdjusted?: number; // Task 3F: split
+    totalProviderAdjusted?: number; // Task 3F: split
   };
   rawText: string; // Full OCR text for reference
   confidence: number; // 0-1, OCR extraction confidence
   parseErrors: string[]; // Any fields that couldn't be extracted
+
+  // DR-3D EOB-specific extensions (optional; populated by EOB parser only)
+  external_claim_number?: string; // Insurer's claim ID
+  eob_date?: string; // Date EOB was generated (distinct from service_date)
+  network_status?: NetworkTier;
+  accumulators?: Accumulator[];
+  extractionMeta?: EOBExtractionMeta; // Q-DR-3D-6 per-field confidence + warnings
 }
 
 // Audit findings
