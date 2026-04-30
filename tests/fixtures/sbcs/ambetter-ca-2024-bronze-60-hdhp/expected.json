@@ -1,8 +1,9 @@
 {
   "fixture_metadata": {
     "slug": "ambetter-ca-2024-bronze-60-hdhp",
-    "annotated_by": "andrew + claude session 43",
+    "annotated_by": "claude session 43; andrew spot-checked anchor fields session 44",
     "annotated_at": "2026-04-29",
+    "spot_check_status": "MEDIUM confidence per Andrew session-44 spot-check; corrections applied: insurer_name split into verbatim/canonical, actuarial_value_source flag added, in_coinsurance_default_post_deductible_only flag added (HDHP semantic clarity), address_line_2 corrected to formal organizational name. Schema gaps documented for Phase 2 §10: cost_cap_per_unit, multi-tier networks, covered_in_network_only discriminator, coverage_conditions verbatim qualifiers for Other Covered services (medically necessary etc), actuarial_value_empirical (v1.5+ from billing data), appeals_contacts multi-entry array.",
     "source_pdf_pages": 12,
     "is_bundled_pdf": false,
     "sbc_page_range": "1-7",
@@ -37,6 +38,8 @@
 
   "plan": {
     "plan_name": "Bronze 60 HDHP Ambetter PPO",
+    "insurer_name_verbatim": "Ambetter",
+    "insurer_name_canonical": "Centene",
     "insurer_name": "Centene",
     "insurer_brand_name": "Ambetter",
     "employer_name": null,
@@ -45,6 +48,7 @@
     "state": "CA",
     "metal_level": "bronze",
     "actuarial_value": 0.60,
+    "actuarial_value_source": "naming_convention",
     "csr_level": null,
     "is_hdhp": true,
     "hsa_eligible": true,
@@ -67,6 +71,7 @@
     "out_oop_max_family": 50000,
 
     "in_coinsurance_default": 0,
+    "in_coinsurance_default_post_deductible_only": true,
     "out_coinsurance_default": 0.50,
 
     "deductible_calc_method": "embedded",
@@ -1052,12 +1057,12 @@
 
   "appeals_contact": {
     "address_line_1": "P.O. Box 10348",
-    "address_line_2": "Health Net Appeals and Grievance Department",
+    "address_line_2": "Health Net of California, Inc./Health Net Life Insurance Company Appeals & Grievances",
     "city": "Van Nuys",
     "state": "CA",
     "postal_code": "91410-0348",
     "phone": "1-888-926-4988",
-    "source_excerpt": "Health Net's Customer Contact Center at 1-888-926-4988, submit a grievance form through www.myhealthnetca.com, or file your complaint in writing to, Health Net Appeals and Grievance Department, P.O. Box 10348, Van Nuys, CA 91410-0348.",
+    "source_excerpt": "Health Net's Customer Contact Center at 1-888-926-4988, submit a grievance form through www.myhealthnetca.com, or file your complaint in writing to, Health Net of California, Inc./Health Net Life Insurance Company Appeals & Grievances, P.O. Box 10348, Van Nuys, CA 91410-0348.",
     "source_page": 6
   }
 }
