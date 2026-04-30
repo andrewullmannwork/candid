@@ -1,0 +1,79 @@
+SYNTHETIC FIXTURE — modeled on Ambetter Health EOB sample (capture_audit_2026-04 §4.4 expected values).
+PII anonymized; layout preserves Ambetter's column structure with explicit code labeling.
+
+==========================================================================================
+EXPLANATION OF BENEFITS
+Ambetter Health (Centene)
+==========================================================================================
+
+Member: JANE DOE
+Member ID: AMB123456789
+Group: 4567
+
+Claim Number: T153CC874265
+Provider: STATE IMAGING CO
+Provider NPI: 1234567890
+Network Status: In-Network
+Service Date: 04/03/2019
+
+Service Detail
+==========================================================================================
+Service     Service                                        Member Cost Share         Net
+Line        Date     Description    Billed    Allowed    Denied   Copay  Coins  Ded  Paid     EX  CARC  RARC
+0100        04/03/19 MRI 73221      1,128.20  0.00       1,128.20 0.00   0.00   0.00 0.00     A1  197   N572
+0101        04/03/19 MRI 73221      -1,128.20 0.00       -1,128.20 0.00  0.00   0.00 0.00     A1  197   N572
+0102        04/03/19 MRI 73221      1,128.20  203.13     0.00     0.00   0.00   0.00 203.13   JU  45
+0200        04/03/19 RADIOLOGY 76140 245.00   195.00     50.00    0.00   0.00   0.00 195.00   QM  246
+0300        04/03/19 CONTRAST 95004 75.00     75.00      0.00     30.00  0.00   0.00 45.00    A1
+
+Net Claim Summary:
+   Sum of Billed: $1,393.20
+   Sum of Allowed: $473.13
+   Sum of Denied: $50.00
+   Health Plan Payment: $443.13
+
+Explanation Codes Descriptions
+==========================================================================================
+EX Code  Description                                              CARC  RARC
+A1       Coding error - resubmit with proper diagnosis codes      197   -
+JU       Allowed amount adjustment per contract pricing           45    -
+QM       Service partially denied per medical necessity review    246   -
+
+CARC Code Descriptions
+==========================================================================================
+197 - Precertification/authorization/notification/pre-treatment requirement was absent.
+246 - This non-payable code is for required reporting only.
+45  - Charge exceeds fee schedule/maximum allowable or contracted/legislated fee arrangement.
+
+RARC Code Descriptions
+==========================================================================================
+N572 - This procedure is not payable unless appropriate non-payable reporting codes are submitted.
+
+Accumulator Information
+==========================================================================================
+Benefit Year: 2019
+Deductible Applied YTD: $570.58
+Annual Deductible Limit: $1,050.00
+In-Network Deductible Remaining: $479.42
+Applied to Out of Pocket Max YTD: $978.36
+Annual Out of Pocket Limit: $2,700.00
+In-Network Out of Pocket Remaining: $1,721.64
+Copays Applied YTD: $30.00
+Coinsurance Applied YTD: $0.00
+
+Benefit Year: 2018 (Prior Year Snapshot)
+Deductible Applied YTD: $1,050.00
+Annual Deductible Limit: $1,050.00
+Applied to Out of Pocket Max YTD: $2,700.00
+Annual Out of Pocket Limit: $2,700.00
+
+==========================================================================================
+NOTICE OF YOUR APPEAL RIGHTS
+
+If you have any questions about this Explanation of Benefits, please call Customer Service.
+You have the right to appeal any denied claim within 180 days. To appeal: send a written
+request including (1) member name, (2) member ID, (3) claim number, (4) reason for appeal.
+For external review information, contact your state Department of Insurance.
+
+YOUR RIGHTS AND PROTECTIONS AGAINST SURPRISE MEDICAL BILLS
+[Boilerplate text about No Surprises Act provisions follows on subsequent pages...]
