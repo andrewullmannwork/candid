@@ -7,10 +7,50 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { ParsedBill, AuditReport, AuditFinding } from "@/lib/billing/types";
+import type { ParsedBill, AuditReport, AuditFinding, BillLineItem } from "@/lib/billing/types";
 import { mapLineItemsToServices, inferBillingCodeType } from "@/lib/claims/service-mapper";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { notifyUnmappedLineItems } from "@/lib/notifications";
+import { buildProvenanceEntry, type FieldProvenanceEntry } from "@/lib/parser/field-categories";
+
+/**
+ * Build a field_provenance JSONB payload for a parsed bill line item per DR-3B
+ * (Q-DR-3B-1 + Q-DR-3B-2). Source is `doc_extraction` for EOBs (insurer record) and
+ * `bill_observed` for itemized bills (provider claim) — Q-DR-3A-4-final hierarchy
+ * routes them to the right category at conflict resolution time.
+ *
+ * Per Q-DR-3B-1, Haiku per-field confidence (item._meta) is METADATA only — preserved
+ * for Phase 6 calibration analysis but never auto-blended into the SOURCE_DEFAULT.
+ */
+function buildLineItemProvenance(
+  item: BillLineItem,
+  billType: "eob" | "itemized_bill",
+): Record<string, FieldProvenanceEntry> {
+  const source = billType === "eob" ? "doc_extraction" : "bill_observed";
+  const provenance: Record<string, FieldProvenanceEntry> = {};
+
+  const fields: Array<[string, unknown, number?]> = [
+    ["billing_code", item.procedureCode],
+    ["billing_code_type", item.procedureCode],
+    ["description", item.description],
+    ["units", item.quantity],
+    ["billed_amount", item.billedAmount],
+    ["allowed_amount", item.allowedAmount],
+    ["insurance_paid", item.insurancePaid],
+    ["patient_owes", item.patientResponsibility],
+    ["service_date", item.serviceDate],
+    ["rendering_provider_name", item.rendering_provider_name],
+    ["rendering_provider_npi", item.rendering_provider_npi],
+  ];
+
+  for (const [column, value] of fields) {
+    if (value === null || value === undefined || value === "") continue;
+    const entry = buildProvenanceEntry("claim_line_items", column, source);
+    if (entry) provenance[column] = entry;
+  }
+
+  return provenance;
+}
 
 export interface PersistClaimResult {
   claimId: string;
@@ -94,6 +134,11 @@ export async function persistAuditResults(
     const serviceMappingEnabled = await isFeatureEnabled("billing_code_service_mapping");
     const serviceMappings = new Map<number, { slug: string; confidence: number }>();
 
+    // DR-3B per-field provenance: only emit when parse_strategy_v2 flag is ON.
+    // OFF preserves legacy behavior (no field_provenance writes; column default '{}'
+    // applies via mig 056 so reads stay backwards-compatible).
+    const parseStrategyV2Enabled = await isFeatureEnabled("parse_strategy_v2");
+
     if (serviceMappingEnabled && parsedBill.lineItems.length > 0) {
       try {
         const mappings = await mapLineItemsToServices(
@@ -134,7 +179,7 @@ export async function persistAuditResults(
 
       const mapping = serviceMappings.get(item.lineNumber);
 
-      return {
+      const baseRow: Record<string, unknown> = {
         claim_id: claim.id,
         line_number: item.lineNumber,
         billing_code: item.procedureCode || null,
@@ -154,6 +199,12 @@ export async function persistAuditResults(
           ...(mapping ? { serviceMapping: { slug: mapping.slug, confidence: mapping.confidence } } : {}),
         },
       };
+
+      if (parseStrategyV2Enabled) {
+        baseRow.field_provenance = buildLineItemProvenance(item, parsedBill.billType);
+      }
+
+      return baseRow;
     });
 
     const lineItemIds: string[] = [];

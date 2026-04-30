@@ -25,6 +25,7 @@ const ALLOWED_TABLES = [
   "concepts",
   "concept_relationships",
   "feature_flag_rules",
+  "parse_audit_runs",
 ] as const;
 
 type AllowedTable = (typeof ALLOWED_TABLES)[number];
