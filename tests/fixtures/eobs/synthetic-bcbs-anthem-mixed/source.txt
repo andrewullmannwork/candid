@@ -1,0 +1,70 @@
+SYNTHETIC FIXTURE — first-pass approximation of Anthem Blue Cross Blue Shield PPO EOB.
+Layout terminology anchored on Anthem educational materials (Peralta College "Examples of EOBs from Anthem", 2026-04 web research).
+PII fully synthetic; replace this fixture if/when a real Anthem/BCBS EOB sample surfaces.
+
+==========================================================================================
+EXPLANATION OF BENEFITS — THIS IS NOT A BILL
+Anthem Blue Cross Blue Shield (BCBS Association)
+==========================================================================================
+
+Member Name: ROBERT TANAKA
+Member ID: ABC987654321
+Group Number: 00123456
+Plan: Anthem Gold PPO 250
+
+Claim Number: 26410875432100
+Statement Date: 04/15/2026
+Date Received: 04/01/2026
+Provider: METRO ORTHOPAEDIC ASSOCIATES
+Provider NPI: 1437289561
+Network Status: In-Network
+
+Claim Detail
+==========================================================================================
+Service     Service                                Total      Patient   Allowed   Applied to    Coins/    Claims     Member
+Number      Date     Description    Code   Qty    Billed     Savings   Charges   Deductible    Copay     Payment    Owes      Notes
+
+0001        03/12/26 OFFICE VISIT EST 99213  1    250.00     85.00     165.00    165.00        0.00      0.00       165.00    R1
+0002        03/12/26 OFFICE VISIT EST 99213  1    -250.00    -85.00    -165.00   -165.00       0.00      0.00       -165.00   R1
+0003        03/12/26 OFFICE VISIT EST 99214  1    320.00     105.00    215.00    215.00        0.00      0.00       215.00    -
+0004        03/12/26 X-RAY 73510      1            175.00    52.00     123.00    0.00          24.60     98.40      24.60     -
+0005        03/12/26 INJECTION 20610  1            145.00    35.00     110.00    0.00          22.00     88.00      22.00     C2
+
+Total: $640.00 billed, $313.00 allowed, $186.40 plan paid, $426.60 member responsibility
+
+Notes / Reason Codes
+==========================================================================================
+R1 - Original claim line resubmitted with corrected procedure code; cancelled and refiled. CARC 16 RARC N/A
+C2 - Subject to applicable copay per plan benefit. CARC 3 RARC N/A
+
+CARC Code Descriptions
+==========================================================================================
+CARC 16 - Claim/service lacks information or has submission/billing error. Refile.
+CARC 3  - Co-payment Amount.
+
+Accumulator Status
+==========================================================================================
+Benefit Year: 2026
+In-Network Individual Deductible: $380.00 of $250.00 met
+In-Network Individual Out-of-Pocket: $426.60 of $3,000.00 met
+Out-of-Network Individual Deductible: $0.00 of $1,500.00 met
+Out-of-Network Individual Out-of-Pocket: $0.00 of $6,000.00 met
+
+==========================================================================================
+YOUR RIGHT TO APPEAL — DO NOT TREAT AS DATA
+
+If you disagree with this claim decision, you have the right to file an appeal. To appeal,
+write to the address listed on the back of your member ID card within 180 days of receiving
+this Explanation of Benefits. Include your member ID, claim number, and the reason for your
+appeal. For external review information, contact your state Department of Insurance.
+
+Your Rights And Protections Against Surprise Medical Bills (No Surprises Act):
+Under federal law, you are protected from balance billing for emergency services and certain
+out-of-network services at in-network facilities. For more information, visit cms.gov/nosurprises.
+
+GLOSSARY OF TERMS — DO NOT TREAT AS DATA
+==========================================================================================
+Allowed Amount: The maximum amount your health plan will pay for a covered service.
+Coinsurance: Your share of costs as a percentage of the allowed amount.
+Copay: A fixed dollar amount you pay for a covered service.
+Deductible: The amount you pay before your plan begins paying its share.

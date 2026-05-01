@@ -1,5 +1,9 @@
 // Core billing data types for Candid audit pipeline
 
+import type { SourceExcerptVerified, ExtractionMethod } from "../parser/types";
+// Re-export so existing callers can pull these from billing/types.ts.
+export type { SourceExcerptVerified, ExtractionMethod };
+
 // DR-3D Q-DR-3D-2 — EX codes captured with verbatim note text per occurrence.
 // Cigna A-codes are positional (same letter, different meaning across EOBs); note_text
 // disambiguates downstream via insurer_ex_code_mappings (Phase 5 mig 063).
@@ -29,9 +33,34 @@ export interface Accumulator {
 
 // DR-3D Q-DR-3D-6 — Haiku per-field confidence METADATA per Q-DR-3B-1.
 // NOT auto-blended into Pattern 1 score; consumed by Phase 6 calibration.
+//
+// Pattern P-8 (Phase 3.1B) extends this with per-field source provenance:
+// `fieldProvenance` carries source_excerpt + verification + section_hint per field.
+// `fieldConfidences` retained for backcompat with existing readers; populated from
+// fieldProvenance.{field}.confidence as a convenience projection.
 export interface EOBExtractionMeta {
-  fieldConfidences: Record<string, number>; // dot-path key → 0..1
-  warnings: string[]; // Defensive-handler observations from parseHaikuMetaBlock
+  fieldConfidences: Record<string, number>; // dot-path key → 0..1 (backcompat projection of fieldProvenance.confidence)
+  fieldProvenance: Record<string, FieldMeta>; // Pattern P-8 — full per-field meta (citation-grade source provenance)
+  warnings: string[]; // Defensive-handler observations from parseHaikuMetaBlock + verifySourceExcerpts
+}
+
+/**
+ * Pattern P-8 per-field metadata. Stored as JSONB sub-keys under
+ * `field_provenance.{field}` after `buildLineItemProvenance` writes.
+ *
+ * `source_section_hint` is parser-specific (EOB enum lives in eob-postprocess.ts;
+ * SBC/EOC/formulary parsers will define their own). Stored as opaque string in JSONB;
+ * consumers format via `formatSectionHint()` in `src/lib/parser/source-display.ts`.
+ *
+ * `source_excerpt_verified` is a 3-state enum per Q-P3.1B-6 v2 — no fuzzy matching.
+ */
+export interface FieldMeta {
+  confidence?: number; // 0-1, Haiku self-reported (METADATA only per Q-DR-3B-1)
+  source_excerpt?: string; // ≤200 chars verbatim from doc; Pattern P-8
+  source_excerpt_verified?: SourceExcerptVerified; // 'verified' | 'not_found' | 'ocr_unverifiable'
+  source_excerpt_extraction_method?: ExtractionMethod; // 'pdftotext' | 'native_pdf_text' | 'ocr'
+  source_section_hint?: string; // parser-specific section enum value (string in JSONB)
+  source_section_verified?: boolean; // excerpt appears within named section's text-range
 }
 
 export type ClaimLineStatus = "paid" | "not_paid" | "pending" | "denied" | "adjusted";

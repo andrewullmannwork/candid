@@ -7,7 +7,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { ParsedBill, AuditReport, AuditFinding, BillLineItem } from "@/lib/billing/types";
+import type { ParsedBill, AuditReport, AuditFinding, BillLineItem, FieldMeta } from "@/lib/billing/types";
 import { mapLineItemsToServices, inferBillingCodeType } from "@/lib/claims/service-mapper";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { notifyUnmappedLineItems } from "@/lib/notifications";
@@ -22,14 +22,33 @@ import { buildProvenanceEntry, type FieldProvenanceEntry } from "@/lib/parser/fi
  * Per Q-DR-3B-1, Haiku per-field confidence (item._meta) is METADATA only — preserved
  * for Phase 6 calibration analysis but never auto-blended into the SOURCE_DEFAULT.
  */
+// Pattern P-8 (Phase 3.1B) — column → Haiku _meta dot-path key mapping.
+// Haiku emits meta keys with snake_case fields normalized to camelCase by
+// `parseHaikuMetaBlock`; column names use snake_case. Lookup happens after the
+// normalization so values here use the camelCase form Haiku returns.
+const COLUMN_TO_META_KEY: Record<string, string> = {
+  billing_code: "procedureCode",
+  description: "description",
+  units: "quantity",
+  billed_amount: "billedAmount",
+  allowed_amount: "allowedAmount",
+  insurance_paid: "insurancePaid",
+  patient_owes: "patientResponsibility",
+  service_date: "serviceDate",
+  rendering_provider_name: "renderingProviderName",
+  rendering_provider_npi: "renderingProviderNpi",
+};
+
 function buildLineItemProvenance(
   item: BillLineItem,
   billType: "eob" | "itemized_bill",
+  lineIndex?: number,
+  fieldProvenanceMeta?: Record<string, FieldMeta>,
 ): Record<string, FieldProvenanceEntry> {
   const source = billType === "eob" ? "doc_extraction" : "bill_observed";
   const provenance: Record<string, FieldProvenanceEntry> = {};
 
-  const fields: Array<[string, unknown, number?]> = [
+  const fields: Array<[string, unknown]> = [
     ["billing_code", item.procedureCode],
     ["billing_code_type", item.procedureCode],
     ["description", item.description],
@@ -45,7 +64,28 @@ function buildLineItemProvenance(
 
   for (const [column, value] of fields) {
     if (value === null || value === undefined || value === "") continue;
-    const entry = buildProvenanceEntry("claim_line_items", column, source);
+
+    // Pattern P-8: look up Haiku per-field meta (source_excerpt + section_hint +
+    // verification flags) when available. Skip for columns Haiku doesn't tag (e.g.,
+    // billing_code_type — derived from procedureCode, not separately provenance-tagged).
+    let patternP8: Parameters<typeof buildProvenanceEntry>[4];
+    let haikuConfidence: number | undefined;
+    if (fieldProvenanceMeta && lineIndex !== undefined && COLUMN_TO_META_KEY[column]) {
+      const metaKey = `lineItems[${lineIndex}].${COLUMN_TO_META_KEY[column]}`;
+      const meta = fieldProvenanceMeta[metaKey];
+      if (meta) {
+        haikuConfidence = meta.confidence;
+        patternP8 = {
+          sourceExcerpt: meta.source_excerpt,
+          sourceExcerptVerified: meta.source_excerpt_verified,
+          sourceExcerptExtractionMethod: meta.source_excerpt_extraction_method,
+          sourceSectionHint: meta.source_section_hint,
+          sourceSectionVerified: meta.source_section_verified,
+        };
+      }
+    }
+
+    const entry = buildProvenanceEntry("claim_line_items", column, source, haikuConfidence, patternP8);
     if (entry) provenance[column] = entry;
   }
 
@@ -162,7 +202,7 @@ export async function persistAuditResults(
     }
 
     // Insert claim_line_items
-    const lineItemInserts = parsedBill.lineItems.map((item) => {
+    const lineItemInserts = parsedBill.lineItems.map((item, idx) => {
       const findings = findingsByLine.get(item.lineNumber) || [];
       const findingMeta = findings.length > 0
         ? {
@@ -201,7 +241,12 @@ export async function persistAuditResults(
       };
 
       if (parseStrategyV2Enabled) {
-        baseRow.field_provenance = buildLineItemProvenance(item, parsedBill.billType);
+        baseRow.field_provenance = buildLineItemProvenance(
+          item,
+          parsedBill.billType,
+          idx,
+          parsedBill.extractionMeta?.fieldProvenance,
+        );
       }
 
       return baseRow;

@@ -35,6 +35,17 @@ import type { ParsedBill } from "../src/lib/billing/types";
 
 config({ path: resolve(__dirname, "../.env.local"), override: true });
 
+interface PatternP8Metrics {
+  field_provenance_size_bytes: number; // JSON.stringify(fieldProvenance).length
+  source_excerpt_coverage_rate: number | null; // verified='verified' / total with excerpt; null when no excerpts
+  source_section_hint_match_rate: number | null; // section_verified=true / total with section_hint; null when none
+  section_ranges_found: number; // total ranges from segmentEOBSections() (sanity check segmentation found boilerplate)
+  do_not_extract_extractions: number; // count of fields claiming a *_DO_NOT_EXTRACT source (suppression check)
+  fields_with_excerpt: number;
+  fields_with_section_hint: number;
+  fields_total_in_provenance: number;
+}
+
 interface HarnessRow {
   run_id: string;
   parser_version: string;
@@ -49,7 +60,12 @@ interface HarnessRow {
   haiku_cache_read_tokens: number;
   haiku_cache_create_tokens: number;
   per_field_results: Record<string, unknown>;
-  warnings: { meta_warnings: string[]; accumulator_warnings: string[] };
+  warnings: {
+    meta_warnings: string[];
+    accumulator_warnings: string[];
+    excerpt_verification_warnings: string[]; // Pattern P-8 — section_mismatch, ocr_unverifiable, do_not_extract pulls
+    pattern_p8_metrics: PatternP8Metrics;
+  };
   parse_duration_ms: number;
   parse_attempt_idx: number;
   parse_status: "success" | "timed_out" | "extraction_failed" | "truncated";
@@ -114,6 +130,65 @@ function fieldIsCaptured(parsed: ParsedBill, dotPath: string): boolean {
   return v != null && (Array.isArray(v) ? v.length > 0 : true);
 }
 
+function emptyPatternP8Metrics(): PatternP8Metrics {
+  return {
+    field_provenance_size_bytes: 0,
+    source_excerpt_coverage_rate: null,
+    source_section_hint_match_rate: null,
+    section_ranges_found: 0,
+    do_not_extract_extractions: 0,
+    fields_with_excerpt: 0,
+    fields_with_section_hint: 0,
+    fields_total_in_provenance: 0,
+  };
+}
+
+// Pattern P-8 watch metrics per Q-P3.1B-7 (revised v2 — 3-state verified enum).
+function computePatternP8Metrics(
+  parsed: ParsedBill,
+  excerptVerificationWarnings: string[],
+): PatternP8Metrics {
+  const fp = parsed.extractionMeta?.fieldProvenance ?? {};
+  const entries = Object.values(fp);
+
+  let withExcerpt = 0;
+  let excerptVerified = 0;
+  let withSectionHint = 0;
+  let sectionVerified = 0;
+  let doNotExtractCount = 0;
+
+  for (const meta of entries) {
+    if (meta.source_excerpt) {
+      withExcerpt++;
+      if (meta.source_excerpt_verified === "verified") excerptVerified++;
+    }
+    if (meta.source_section_hint) {
+      withSectionHint++;
+      if (meta.source_section_verified === true) sectionVerified++;
+      if (meta.source_section_hint.endsWith("_DO_NOT_EXTRACT")) doNotExtractCount++;
+    }
+  }
+
+  // section_ranges_found is encoded in excerptVerificationWarnings indirectly; we
+  // approximate by counting `source_section_unknown:` warnings (failures to find named
+  // sections). For an absolute count we'd need to plumb the segmentation result through —
+  // deferred since it's a sanity check, not a target metric.
+  const sectionRangesFound = excerptVerificationWarnings.filter((w) =>
+    w.startsWith("source_section_mismatch:") || w.startsWith("source_section_unknown:"),
+  ).length;
+
+  return {
+    field_provenance_size_bytes: JSON.stringify(fp).length,
+    source_excerpt_coverage_rate: withExcerpt > 0 ? excerptVerified / withExcerpt : null,
+    source_section_hint_match_rate: withSectionHint > 0 ? sectionVerified / withSectionHint : null,
+    section_ranges_found: sectionRangesFound,
+    do_not_extract_extractions: doNotExtractCount,
+    fields_with_excerpt: withExcerpt,
+    fields_with_section_hint: withSectionHint,
+    fields_total_in_provenance: entries.length,
+  };
+}
+
 function computeCost(usage: {
   input_tokens: number;
   output_tokens: number;
@@ -160,7 +235,12 @@ async function runFixture(
       haiku_cache_read_tokens: 0,
       haiku_cache_create_tokens: 0,
       per_field_results: {},
-      warnings: { meta_warnings: [], accumulator_warnings: [] },
+      warnings: {
+        meta_warnings: [],
+        accumulator_warnings: [],
+        excerpt_verification_warnings: [],
+        pattern_p8_metrics: emptyPatternP8Metrics(),
+      },
       parse_duration_ms: durationMs,
       parse_attempt_idx: attemptIdx,
       parse_status: "extraction_failed",
@@ -176,15 +256,28 @@ async function runFixture(
     if (isCaptured) captured++;
   }
 
-  // Pull warnings off parsed.parseErrors (post-process pushes meta + accumulator warnings there)
-  const warnings = parsed.parseErrors.reduce(
+  // Pull warnings off parsed.parseErrors. Post-process pushes 3 categories there:
+  // accumulator_*, source_* (Pattern P-8 verification), and meta_* (everything else).
+  const warningBuckets = parsed.parseErrors.reduce(
     (acc, w) => {
       if (w.startsWith("accumulator_")) acc.accumulator_warnings.push(w);
+      else if (w.startsWith("source_")) acc.excerpt_verification_warnings.push(w);
       else acc.meta_warnings.push(w);
       return acc;
     },
-    { meta_warnings: [] as string[], accumulator_warnings: [] as string[] },
+    {
+      meta_warnings: [] as string[],
+      accumulator_warnings: [] as string[],
+      excerpt_verification_warnings: [] as string[],
+    },
   );
+
+  const patternP8Metrics = computePatternP8Metrics(parsed, warningBuckets.excerpt_verification_warnings);
+
+  const warnings = {
+    ...warningBuckets,
+    pattern_p8_metrics: patternP8Metrics,
+  };
 
   // NOTE v1: cost / token tracking not directly accessible from parseBillWithHaiku return.
   // Stub values; v2 will require parser to expose usage in its return.
@@ -244,8 +337,14 @@ async function main() {
     console.log(`\n[harness] running fixture ${fixtureId}...`);
     const row = await runFixture(fixturePath, fixtureId, runId, parserVersion, 1);
     rows.push(row);
+    const p8 = row.warnings.pattern_p8_metrics;
+    const excerptRate = p8.source_excerpt_coverage_rate;
+    const sectionRate = p8.source_section_hint_match_rate;
     console.log(
-      `  status=${row.parse_status} captured=${row.fields_captured}/${row.fields_total} (${((row.fields_captured / row.fields_total) * 100).toFixed(0)}%) duration=${row.parse_duration_ms}ms warnings=${row.warnings.meta_warnings.length + row.warnings.accumulator_warnings.length}`
+      `  status=${row.parse_status} captured=${row.fields_captured}/${row.fields_total} (${((row.fields_captured / row.fields_total) * 100).toFixed(0)}%) duration=${row.parse_duration_ms}ms warnings=${row.warnings.meta_warnings.length + row.warnings.accumulator_warnings.length + row.warnings.excerpt_verification_warnings.length}`,
+    );
+    console.log(
+      `  P-8: provenance=${p8.field_provenance_size_bytes}B excerpt_coverage=${excerptRate !== null ? (excerptRate * 100).toFixed(0) + "%" : "n/a"} section_match=${sectionRate !== null ? (sectionRate * 100).toFixed(0) + "%" : "n/a"} fields_with_excerpt=${p8.fields_with_excerpt}/${p8.fields_total_in_provenance} do_not_extract=${p8.do_not_extract_extractions}`,
     );
   }
 

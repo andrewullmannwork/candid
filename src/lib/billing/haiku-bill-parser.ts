@@ -22,6 +22,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { jsonrepair } from "jsonrepair";
 import { randomUUID } from "crypto";
 import type { Accumulator, BillLineItem, ExCode, ParsedBill, ProcedureCodeType } from "./types";
+import type { ExtractionMethod } from "../parser/types";
 import { categorizeProcedureCode } from "./parser";
 import { applyEOBPostProcess } from "./eob-postprocess";
 
@@ -102,12 +103,26 @@ const INSTRUCTIONS = `You are extracting structured data from a medical bill or 
 5. **Adjustment reversal lines**: Extract lines verbatim with their EOB-shown line numbers (e.g., "0100", "0101") in line_number_in_eob. DO NOT attempt to detect reversal cycles — that happens in post-processing. Just extract every line including ones with negative amounts.
 6. **Dates**: ISO format YYYY-MM-DD.
 7. **Missing fields**: If a field is not present in the document, omit it (do not guess).
-8. **Accumulator extraction (CRITICAL — merge by key tuple)**: Emit EXACTLY ONE entry per unique (benefit_year, network_tier, accumulator_type, is_individual) tuple. When EOB shows separate sentences for deductible AND out-of-pocket for the same bucket (e.g., "$30 toward $500 in-network individual deductible" AND "$200 toward $3000 in-network individual OOP"), MERGE them into a SINGLE accumulator entry. DO NOT emit separate entries — that creates duplicate keys. Distinct buckets (in-network + out-of-network, individual + family, current + prior year) get distinct entries.
+8. **Accumulator extraction (CRITICAL — merge by key tuple)**: Emit EXACTLY ONE entry per unique (benefit_year, network_tier, accumulator_type, is_individual) tuple. When EOB shows separate sentences for deductible AND out-of-pocket for the same bucket (e.g., "$30 toward $500 in-network individual deductible" AND "$200 toward $3000 in-network individual OOP"), MERGE them into a SINGLE accumulator entry. DO NOT emit separate entries — that creates duplicate keys. Distinct buckets (in-network + out-of-network, individual + family, current + prior year) get distinct entries. **MULTI-YEAR EMISSION (CRITICAL)**: When the document shows accumulator values for MULTIPLE benefit years (e.g., a 2026 snapshot AND a 2018 prior-year carryover), emit ONE entry per (benefit_year, network_tier, accumulator_type, is_individual) tuple — INCLUDING the prior-year entries. Do not collapse prior-year snapshots into the current-year entry; do not silently skip prior-year data. Each year is a distinct bucket.
 9. **Per-occurrence _meta emission (CRITICAL)**: Emit a _meta confidence entry for EVERY OCCURRENCE of high-leverage fields. For an 8-line EOB, emit 8 separate _meta entries for lineItems[N].denied_amount (one per line, even if values repeat). For 4 accumulator buckets, emit 4 separate _meta entries for accumulators[N].deductible_applied.
 10. **Cycle detection signals**: Preserve verbatim line_number_in_eob if shown. If insurer doesn't number lines (e.g., Cigna), use sequential "1", "2", "3".
 11. **Rendering provider** (per-line): If the EOB or bill shows a rendering provider (the individual professional who delivered the service) distinct from the facility provider, populate rendering_provider_npi + rendering_provider_name on the line item. Facility-level provider goes on top-level provider field.
 12. **Procedure code type discriminator**: Set procedureCodeType based on format: 5-digit numeric = "CPT"; letter+4digit (e.g., J7298) = "HCPCS_L2"; 4-digit revenue = "REV"; 3-digit numeric DRG = "DRG"; 11-digit NDC = "NDC"; G+4digit = "G_CODE"; 4-digit ending in F = "CAT_II".
 13. **Adjustment splits**: If the document shows distinct adjustment categories (e.g., "Insurance adjusted: -$436.52" + "Provider adjusted: -$7.00"), populate ins_adjusted + provider_adjusted separately on the line item AND in totals (totalInsAdjusted + totalProviderAdjusted). Lump-sum adjustments still go in adjustments field.
+14. **Citation-grade source provenance (Pattern P-8 — CRITICAL)**: For each high-leverage field's _meta entry (see field list below), include TWO additional sub-keys alongside 'confidence':
+   - 'source_excerpt' (≤200 chars): the exact verbatim text from the document that supports this extraction. MUST appear character-for-character in the document text. If you can't quote a verbatim ≤200-char excerpt, omit this field rather than paraphrase.
+   - 'source_section_hint' (one of: "claim_header", "line_items_table", "denial_codes_section", "accumulator_block", "appeal_rights_DO_NOT_EXTRACT", "glossary_DO_NOT_EXTRACT", "footer_legalese_DO_NOT_EXTRACT", "other"): which section of the document the excerpt was pulled from.
+
+   Example:
+     "_meta": {
+       "lineItems[0].deniedAmount": {
+         "confidence": 0.95,
+         "source_excerpt": "Service not reimbursable. Denied $245.00.",
+         "source_section_hint": "line_items_table"
+       }
+     }
+
+   CRITICAL: NEVER extract data values from sections marked '_DO_NOT_EXTRACT' (appeal rights, glossary, footer legalese). If you find yourself wanting to pull data from those sections, suppress the field entirely. Tagging a field's source as '*_DO_NOT_EXTRACT' is a self-reported hallucination admission and the field will be flagged for review.
 
 ## OUTPUT JSON SCHEMA
 
@@ -179,12 +194,12 @@ const INSTRUCTIONS = `You are extracting structured data from a medical bill or 
     "total_provider_adjusted": 0
   },
   "_meta": {
-    "claim_number": { "confidence": 0.95 },
-    "lineItems[0].denied_amount": { "confidence": 0.85 }
+    "claim_number": { "confidence": 0.95, "source_excerpt": "Claim Number: ABC123", "source_section_hint": "claim_header" },
+    "lineItems[0].denied_amount": { "confidence": 0.85, "source_excerpt": "Denied $50.00", "source_section_hint": "line_items_table" }
   }
 }
 
-High-leverage _meta fields (emit per occurrence): claim_number, eob_date, network_status, lineItems[*].denied_amount, lineItems[*].claim_line_status, lineItems[*].carc_codes, lineItems[*].rarc_codes, lineItems[*].ex_codes[*].note_text, lineItems[*].member_copay, lineItems[*].member_coinsurance, lineItems[*].member_applied_to_deductible, accumulators[*].deductible_applied, accumulators[*].oop_applied.
+High-leverage _meta fields (emit per occurrence WITH source_excerpt + source_section_hint per Rule #14): claim_number, eob_date, network_status, lineItems[*].denied_amount, lineItems[*].claim_line_status, lineItems[*].carc_codes, lineItems[*].rarc_codes, lineItems[*].ex_codes[*].note_text, lineItems[*].member_copay, lineItems[*].member_coinsurance, lineItems[*].member_applied_to_deductible, accumulators[*].deductible_applied, accumulators[*].oop_applied.
 
 ## EXAMPLE 1 — Simple 1-line paid claim
 
@@ -229,11 +244,11 @@ Output:
   }],
   "totals": { "total_billed": 200, "total_allowed": 80, "total_insurance_paid": 50, "total_patient_responsibility": 30 },
   "_meta": {
-    "claim_number": { "confidence": 0.98 },
-    "lineItems[0].claim_line_status": { "confidence": 0.92 },
-    "lineItems[0].member_copay": { "confidence": 0.95 },
-    "lineItems[0].ex_codes[0].note_text": { "confidence": 0.97 },
-    "accumulators[0].deductible_applied": { "confidence": 0.90 }
+    "claim_number": { "confidence": 0.98, "source_excerpt": "Claim # 1234567", "source_section_hint": "claim_header" },
+    "lineItems[0].claim_line_status": { "confidence": 0.92, "source_excerpt": "Plan paid $50", "source_section_hint": "line_items_table" },
+    "lineItems[0].member_copay": { "confidence": 0.95, "source_excerpt": "Copay $30", "source_section_hint": "line_items_table" },
+    "lineItems[0].ex_codes[0].note_text": { "confidence": 0.97, "source_excerpt": "B1 - PATIENT COPAY APPLIED PER PLAN BENEFIT.", "source_section_hint": "denial_codes_section" },
+    "accumulators[0].deductible_applied": { "confidence": 0.90, "source_excerpt": "$30/$500 in-network individual deductible 2026", "source_section_hint": "accumulator_block" }
   }
 }
 
@@ -279,9 +294,9 @@ INCORRECT (DO NOT EMIT — duplicate keys, separate entries):
   ]
 }
 
-## EXAMPLE 4 — Per-occurrence _meta emission (multi-line EOB)
+## EXAMPLE 4 — Per-occurrence _meta emission with citation-grade source provenance (multi-line EOB)
 
-For an EOB with 3 denied line items, emit _meta for EVERY line:
+For an EOB with 3 denied line items, emit _meta for EVERY line WITH source_excerpt + source_section_hint:
 
 {
   "lineItems": [
@@ -290,12 +305,12 @@ For an EOB with 3 denied line items, emit _meta for EVERY line:
     { "line_number_in_eob": "3", "denied_amount": 25, "claim_line_status": "denied" }
   ],
   "_meta": {
-    "lineItems[0].denied_amount": { "confidence": 0.97 },
-    "lineItems[0].claim_line_status": { "confidence": 0.95 },
-    "lineItems[1].denied_amount": { "confidence": 0.97 },
-    "lineItems[1].claim_line_status": { "confidence": 0.95 },
-    "lineItems[2].denied_amount": { "confidence": 0.97 },
-    "lineItems[2].claim_line_status": { "confidence": 0.95 }
+    "lineItems[0].denied_amount": { "confidence": 0.97, "source_excerpt": "Line 1  Denied $50", "source_section_hint": "line_items_table" },
+    "lineItems[0].claim_line_status": { "confidence": 0.95, "source_excerpt": "Line 1  Denied $50", "source_section_hint": "line_items_table" },
+    "lineItems[1].denied_amount": { "confidence": 0.97, "source_excerpt": "Line 2  Denied $75", "source_section_hint": "line_items_table" },
+    "lineItems[1].claim_line_status": { "confidence": 0.95, "source_excerpt": "Line 2  Denied $75", "source_section_hint": "line_items_table" },
+    "lineItems[2].denied_amount": { "confidence": 0.97, "source_excerpt": "Line 3  Denied $25", "source_section_hint": "line_items_table" },
+    "lineItems[2].claim_line_status": { "confidence": 0.95, "source_excerpt": "Line 3  Denied $25", "source_section_hint": "line_items_table" }
   }
 }
 
@@ -310,6 +325,11 @@ export async function parseBillWithHaiku(
   documentId: string,
   userId: string,
   billType: "eob" | "itemized_bill",
+  // Pattern P-8 (Phase 3.1B) — drives source_excerpt verification path. Default
+  // 'pdftotext' since most uploads come through pdftotext extraction. Callers
+  // running OCR on image-only PDFs should pass 'ocr' explicitly so verification
+  // returns 'ocr_unverifiable' rather than 'not_found' on misses.
+  extractionMethod: ExtractionMethod = "pdftotext",
 ): Promise<ParsedBill | null> {
   const client = getClient();
   if (!client) return null;
@@ -351,7 +371,35 @@ export async function parseBillWithHaiku(
     }
 
     const text = response.content[0].type === "text" ? response.content[0].text : "";
-    const result = parseJSON(text) as HaikuRawResult;
+    let result: HaikuRawResult;
+    try {
+      result = parseJSON(text) as HaikuRawResult;
+    } catch {
+      // Phase 3.1B reliability fix: retry once on stochastic JSON parse failure.
+      // Haiku is non-deterministic; ~16% of EOB parses had malformed JSON in the
+      // session_49_phase31b_p8_baseline run. Retry-once mitigates Class A failures.
+      // DR-3C 3-parse voting will replace this when wired in Phase 3.2.
+      console.warn("[haiku-bill-parser] JSON parse failed; retrying once (stochastic Haiku mitigation)");
+      const retryResponse = await client.messages.create({
+        model: MODEL,
+        max_tokens: HAIKU_MAX_OUTPUT, // retry at max budget; the failed call may have been near limit
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: INSTRUCTIONS, cache_control: { type: "ephemeral" } },
+            { type: "text", text: "\n\n" + ocrText },
+          ],
+        }],
+      });
+      const retryText = retryResponse.content[0].type === "text" ? retryResponse.content[0].text : "";
+      try {
+        result = parseJSON(retryText) as HaikuRawResult;
+        console.log("[haiku-bill-parser] retry succeeded");
+      } catch (retryErr) {
+        console.error("[haiku-bill-parser] retry also failed; giving up");
+        throw retryErr;
+      }
+    }
 
     if (!result || !Array.isArray(result.lineItems ?? result.line_items)) {
       console.error("[haiku-bill-parser] Invalid response structure");
@@ -453,14 +501,18 @@ export async function parseBillWithHaiku(
       accumulators: Array.isArray(result.accumulators) ? result.accumulators : undefined,
     };
 
-    // Apply post-process pipeline (cycle detection + accumulator merge + EX hash + _meta parse)
+    // Apply post-process pipeline (cycle detection + accumulator merge + EX hash + _meta parse + Pattern P-8 verification)
     if (billType === "eob") {
-      const post = applyEOBPostProcess(parsedBill, result._meta);
+      const post = applyEOBPostProcess(parsedBill, result._meta, {
+        rawDocText: ocrText,
+        extractionMethod,
+      });
       console.log(
-        `[haiku-bill-parser] post-process: ${post.pairsFound} reversal pair(s); accumulators ${post.accumulatorsChanged ? "merged" : "ok"}; ${post.metaWarnings.length} meta warning(s); ${post.accumulatorWarnings.length} accumulator warning(s)`
+        `[haiku-bill-parser] post-process: ${post.pairsFound} reversal pair(s); accumulators ${post.accumulatorsChanged ? "merged" : "ok"}; ${post.metaWarnings.length} meta warning(s); ${post.accumulatorWarnings.length} accumulator warning(s); ${post.excerptVerificationWarnings.length} excerpt warning(s); ${post.sectionRangesFound} section range(s) found`
       );
-      if (post.metaWarnings.length || post.accumulatorWarnings.length) {
-        parsedBill.parseErrors.push(...post.metaWarnings, ...post.accumulatorWarnings);
+      const allWarnings = [...post.metaWarnings, ...post.accumulatorWarnings, ...post.excerptVerificationWarnings];
+      if (allWarnings.length) {
+        parsedBill.parseErrors.push(...allWarnings);
       }
     }
 
