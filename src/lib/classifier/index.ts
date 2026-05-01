@@ -7,6 +7,7 @@ export type ClassifiedDocType =
   | "sbc"
   | "insurance_card"
   | "plan_document"
+  | "eoc" // Phase 3.1A — Evidence of Coverage (full regulatory plan doc; section-aware Haiku extraction)
   | "other";
 
 export interface ClassificationResult {
@@ -105,6 +106,25 @@ const PLAN_DOC_SIGNALS: SignalPattern[] = [
   { pattern: /group\s+policy/i, weight: 8, label: "Group Policy" },
 ];
 
+// Phase 3.1A — EOC signals discriminate from plan_document via section-richness +
+// length signals. EOCs are typically 100-300 pages with multiple priority sections;
+// plan_documents are shorter (30-100 pages) with less section structure. Section
+// vocabulary signals get higher weight than plan_document equivalents.
+const EOC_SIGNALS: SignalPattern[] = [
+  { pattern: /evidence\s+of\s+coverage/i, weight: 30, label: "Evidence of Coverage" },
+  { pattern: /member\s+handbook/i, weight: 25, label: "Member Handbook" },
+  { pattern: /prior\s+authorization\s+(?:code\s+)?(?:list|requirements)/i, weight: 20, label: "PA Code List" },
+  { pattern: /medical\s+necessity\s+(?:criteria|guidelines|requirements)/i, weight: 18, label: "Medical Necessity Criteria" },
+  { pattern: /medically\s+necessary\s+(?:criteria|services)/i, weight: 15, label: "Medically Necessary" },
+  { pattern: /internal\s+(?:and\s+external\s+)?(?:review|appeal)/i, weight: 12, label: "Internal/External Review" },
+  { pattern: /independent\s+review\s+organization/i, weight: 10, label: "IRO" },
+  { pattern: /grievance\s+procedures/i, weight: 8, label: "Grievance Procedures" },
+  { pattern: /qualifying\s+(?:life\s+)?event/i, weight: 8, label: "Qualifying Life Event" },
+  { pattern: /special\s+enrollment\s+period/i, weight: 8, label: "Special Enrollment" },
+  { pattern: /knox[- ]keene/i, weight: 12, label: "Knox-Keene (CA HMO)" },
+  { pattern: /summary\s+plan\s+description/i, weight: 15, label: "SPD (ERISA)" },
+];
+
 // ── Classification engine ──────────────────────────────────────────────────────
 
 function scorePatterns(text: string, patterns: SignalPattern[]): { score: number; matched: string[] } {
@@ -149,6 +169,7 @@ export function classifyDocument(input: {
   const billResult = scorePatterns(text, ITEMIZED_BILL_SIGNALS);
   const cardResult = scorePatterns(text, INSURANCE_CARD_SIGNALS);
   const planDocResult = scorePatterns(text, PLAN_DOC_SIGNALS);
+  const eocResult = scorePatterns(text, EOC_SIGNALS);
 
   const scoreBreakdown: Record<ClassifiedDocType, number> = {
     sbc: sbcResult.score,
@@ -156,12 +177,20 @@ export function classifyDocument(input: {
     itemized_bill: billResult.score,
     insurance_card: cardResult.score,
     plan_document: planDocResult.score,
+    eoc: eocResult.score,
     other: 0,
   };
 
   // Insurance card heuristic: very short text is a strong signal
   if (text.length < 500 && cardResult.score > 0) {
     scoreBreakdown.insurance_card += 30;
+  }
+
+  // EOC heuristic: long documents (≥30K chars ≈ 30+ pages OCR'd) with section-rich
+  // signals are high-confidence EOC. Short docs with only "Evidence of Coverage" title
+  // could be promotional summaries — don't promote without supporting section signals.
+  if (text.length >= 30000 && eocResult.score >= 30) {
+    scoreBreakdown.eoc += 20;
   }
 
   // File name hints
@@ -172,10 +201,18 @@ export function classifyDocument(input: {
     if (/itemized|bill|statement/i.test(fn)) scoreBreakdown.itemized_bill += 15;
     if (/card|id.card/i.test(fn)) scoreBreakdown.insurance_card += 15;
     if (/plan|certificate|benefits/i.test(fn)) scoreBreakdown.plan_document += 10;
+    if (/\beoc\b|evidence.of.coverage|member.handbook/i.test(fn)) scoreBreakdown.eoc += 15;
   }
 
   // Collect all matched keywords
-  matchedKeywords.push(...sbcResult.matched, ...eobResult.matched, ...billResult.matched, ...cardResult.matched, ...planDocResult.matched);
+  matchedKeywords.push(
+    ...sbcResult.matched,
+    ...eobResult.matched,
+    ...billResult.matched,
+    ...cardResult.matched,
+    ...planDocResult.matched,
+    ...eocResult.matched,
+  );
 
   // Find winner
   const entries = Object.entries(scoreBreakdown) as [ClassifiedDocType, number][];

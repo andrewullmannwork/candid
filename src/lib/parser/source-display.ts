@@ -38,7 +38,23 @@ export function formatSectionHint(hint: string | undefined | null): string {
     case "other":
       return "Other";
 
-    // Future SBC / EOC / formulary section hints land here as parsers ship.
+    // EOC sections (Phase 3.1A — Pattern P-8 inheritance per Q-P3.1A-4)
+    case "prior_auth_codes":
+      return "Prior Authorization Code List";
+    case "medical_necessity":
+      return "Medical Necessity Criteria";
+    case "appeals_procedures":
+      return "Internal/External Appeals Procedures";
+    case "cob_rules":
+      return "Coordination of Benefits Rules";
+    case "eligibility_rules":
+      return "Eligibility + Effective Date Rules";
+    case "definitions":
+      return "Definitions";
+    case "header_DO_NOT_EXTRACT":
+      return "EOC Cover Page / Header (boilerplate — should not be extracted)";
+
+    // Future SBC / formulary section hints land here as parsers ship.
     default:
       // Generic fallback: gently format any *_DO_NOT_EXTRACT-suffixed hint, since the
       // suffix convention is universal. Other unknowns surface as "Unknown section"

@@ -8,7 +8,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 
-const VALID_TYPES = ["sbc", "plan_document", "eob", "itemized_bill", "insurance_card", "other"] as const;
+const VALID_TYPES = ["sbc", "plan_document", "eoc", "eob", "itemized_bill", "insurance_card", "other"] as const;
 type DocType = typeof VALID_TYPES[number];
 
 interface HaikuClassification {
@@ -44,8 +44,9 @@ export async function classifyWithHaiku(
         content: `Classify this document. Is it a healthcare/insurance document? If yes, what type?
 
 Types:
-- "sbc" — Summary of Benefits and Coverage (standardized 8-page document)
-- "plan_document" — Full plan certificate or benefits booklet (detailed, often 30+ pages)
+- "sbc" — Summary of Benefits and Coverage (standardized 8-page ACA-mandated summary)
+- "plan_document" — Plan certificate, benefits booklet, or short benefits summary (typically 10-50 pages); LACKS the section-richness of an EOC
+- "eoc" — Evidence of Coverage / Member Handbook (full regulatory plan document, typically 100-300 pages, with multiple priority sections: Prior Authorization Code List, Medical Necessity Criteria, Internal/External Appeals Procedures, Coordination of Benefits, Eligibility/COBRA/Special Enrollment, Definitions). Distinguishing signals from plan_document: longer (30+ pages of OCR text), has prior-auth code tables, has formal medical necessity criteria sections, ERISA SPD or Knox-Keene phrasing
 - "eob" — Explanation of Benefits (post-claim statement from insurer)
 - "itemized_bill" — Itemized medical bill with procedure codes
 - "insurance_card" — Insurance ID card

@@ -17,7 +17,7 @@ interface ParseAuditRun {
   id: string;
   run_id: string;
   parser_version: string;
-  parser_name: "sbc" | "bill" | "eob" | "card";
+  parser_name: "sbc" | "bill" | "eob" | "card" | "eoc";
   fixture_id: string;
   fixture_kind: "annotated" | "bulk_unannotated" | "synthetic";
   recall: number | null;
@@ -45,7 +45,7 @@ interface FieldResult {
   actual?: unknown;
 }
 
-const PARSER_NAMES = ["all", "bill", "eob", "sbc", "card"] as const;
+const PARSER_NAMES = ["all", "bill", "eob", "sbc", "card", "eoc"] as const;
 type ParserFilter = (typeof PARSER_NAMES)[number];
 
 export default function ParseAuditRunsPage() {

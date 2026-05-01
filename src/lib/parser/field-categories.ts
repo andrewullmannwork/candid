@@ -19,6 +19,7 @@ import type { SourceExcerptVerified, ExtractionMethod } from "./types";
 
 export type FieldCategory =
   | "sbc_authoritative"
+  | "eoc_authoritative" // Phase 3.1A: EOC > SBC for PA criteria, medical necessity, appeals procedures, COB rules, eligibility rules, definitions
   | "bill_monetary"
   | "bill_identity_place"
   | "calculated_with_provenance"
@@ -35,6 +36,7 @@ export type SourceProvenance =
   | "nppes"
   | "irs_990_h"
   | "doc_extraction"
+  | "doc_extraction_eoc" // Phase 3.1A: EOC parser distinct from SBC/plan_document doc_extraction
   | "card_corroboration"
   | "bill_observed"
   | "user_reported_outcome"
@@ -59,6 +61,7 @@ export const SOURCE_DEFAULT_CONFIDENCE: Record<SourceProvenance, number> = {
   nppes: 0.85,
   irs_990_h: 0.8,
   doc_extraction: 0.5,
+  doc_extraction_eoc: 0.5, // Phase 3.1A: same baseline as doc_extraction; cross-source corroboration boosts via Pattern 1 #3
   card_corroboration: 0.6,
   bill_observed: 0.5,
   user_reported_outcome: 0.5,
@@ -102,6 +105,20 @@ export const FIELD_EXCEPTIONS: Record<string, FieldCategory> = {
   "claim_line_items.place_of_service": "bill_identity_place",
   "claim_line_items.rendering_provider_name": "bill_identity_place",
   "claim_line_items.service_date": "bill_identity_place",
+
+  // Phase 3.1A Q-P3.1A-8: EOC > SBC for citation-grade authority on these fields.
+  // SBC has standardized 8-page summary; EOC has full regulatory text. Dispute letters
+  // cite EOC verbatim for PA criteria, medical necessity, appeals procedures, etc.
+  // Per-field FIELD_EXCEPTIONS land where EOC outranks SBC; default sbc_authoritative
+  // category covers cost-sharing matrix where SBC > EOC.
+  // JSONB-keyed fields (e.g., plan_covered_services.coverage_rules.requires_prior_auth):
+  // category lookup uses the JSONB column name; consumer-read parses the inner key.
+  "plan_covered_services.coverage_rules": "eoc_authoritative",
+  "plan_covered_services.medical_necessity_text": "eoc_authoritative",
+  "plan_covered_services.requires_prior_auth": "eoc_authoritative",
+  "insurance_plans.appeals_internal_timing_days": "eoc_authoritative",
+  "insurance_plans.cob_primary_determination_method": "eoc_authoritative",
+  "insurance_plans.eligibility_dependent_age_limit": "eoc_authoritative",
 };
 
 /**
@@ -113,7 +130,19 @@ export const CATEGORY_HIERARCHY: Record<FieldCategory, SourceProvenance[]> = {
     "admin_verified",
     "user_correction",
     "multi_source_corroboration",
-    "doc_extraction",
+    "doc_extraction", // SBC primary
+    "doc_extraction_eoc", // EOC fallback for cost-sharing matrix (SBC > EOC for these fields)
+    "card_corroboration",
+    "bill_observed",
+  ],
+  eoc_authoritative: [
+    // Phase 3.1A: PA criteria, medical necessity, appeals procedures, COB rules,
+    // eligibility rules, definitions — EOC is citation-grade; SBC is summary-only.
+    "admin_verified",
+    "user_correction",
+    "multi_source_corroboration",
+    "doc_extraction_eoc", // EOC primary
+    "doc_extraction", // SBC fallback (rarely populates these fields)
     "card_corroboration",
     "bill_observed",
   ],
