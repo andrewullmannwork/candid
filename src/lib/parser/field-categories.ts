@@ -15,6 +15,8 @@
  * See plans/phase_3_parse_strategy_refactor.md DR-3A locked decisions.
  */
 
+import type { SourceExcerptVerified, ExtractionMethod } from "./types";
+
 export type FieldCategory =
   | "sbc_authoritative"
   | "bill_monetary"
@@ -188,26 +190,57 @@ export interface FieldProvenanceEntry {
   confidence: number; // 0-1
   last_corroborated_at: string; // ISO timestamp
   haiku_confidence?: number; // 0-1, optional
+  // Pattern P-8 (Phase 3.1B) — citation-grade source provenance.
+  // All 5 fields optional: present only when the parser writes them under
+  // `parse_strategy_v2` flag ON. Stripped from `claim_line_items_aggregate` view (mig 058).
+  source_excerpt?: string;
+  source_excerpt_verified?: SourceExcerptVerified;
+  source_excerpt_extraction_method?: ExtractionMethod;
+  source_section_hint?: string;
+  source_section_verified?: boolean;
 }
 
 /**
  * Build a FieldProvenanceEntry for a fresh extraction. Returns null when the field
  * isn't categorized (callers should skip including it in field_provenance per the
  * lookupCategory contract).
+ *
+ * Pattern P-8 fields (sourceExcerpt + verified + extractionMethod + sectionHint +
+ * sectionVerified) are optional; pass them when `parse_strategy_v2` flag is ON
+ * AND the upstream parser captured + verified them.
  */
 export function buildProvenanceEntry(
   table: string,
   column: string,
   source: SourceProvenance,
   haikuConfidence?: number,
+  patternP8?: {
+    sourceExcerpt?: string;
+    sourceExcerptVerified?: SourceExcerptVerified;
+    sourceExcerptExtractionMethod?: ExtractionMethod;
+    sourceSectionHint?: string;
+    sourceSectionVerified?: boolean;
+  },
 ): FieldProvenanceEntry | null {
   const category = lookupCategory(table, column);
   if (!category) return null;
 
-  return {
+  const entry: FieldProvenanceEntry = {
     source,
     confidence: SOURCE_DEFAULT_CONFIDENCE[source],
     last_corroborated_at: new Date().toISOString(),
-    ...(haikuConfidence !== undefined ? { haiku_confidence: haikuConfidence } : {}),
   };
+  if (haikuConfidence !== undefined) entry.haiku_confidence = haikuConfidence;
+
+  if (patternP8) {
+    if (patternP8.sourceExcerpt !== undefined) entry.source_excerpt = patternP8.sourceExcerpt;
+    if (patternP8.sourceExcerptVerified !== undefined) entry.source_excerpt_verified = patternP8.sourceExcerptVerified;
+    if (patternP8.sourceExcerptExtractionMethod !== undefined) {
+      entry.source_excerpt_extraction_method = patternP8.sourceExcerptExtractionMethod;
+    }
+    if (patternP8.sourceSectionHint !== undefined) entry.source_section_hint = patternP8.sourceSectionHint;
+    if (patternP8.sourceSectionVerified !== undefined) entry.source_section_verified = patternP8.sourceSectionVerified;
+  }
+
+  return entry;
 }

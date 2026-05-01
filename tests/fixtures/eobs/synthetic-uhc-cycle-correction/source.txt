@@ -1,0 +1,77 @@
+SYNTHETIC FIXTURE — first-pass approximation of UnitedHealthcare commercial EOB.
+Layout terminology anchored on UnitedHealthcare educational materials (uhc.com "Understanding your medical EOB", 2026-04 web research).
+PII fully synthetic; replace this fixture if/when a real UHC EOB sample surfaces.
+
+==========================================================================================
+HEALTH STATEMENT
+UnitedHealthcare — This is not a bill
+==========================================================================================
+
+Member: PRIYA SHARMA
+Member ID: 968-12-7754-31
+Group: 0712990
+Plan: UnitedHealthcare Choice Plus
+
+Claim Number: 5102841029X
+Statement Date: 03/28/2026
+Date(s) of Service: 02/15/2026 - 02/15/2026
+Provider: SPRINGFIELD MEDICAL GROUP
+Provider TIN: 84-3201147
+Network: In Network
+
+Claim Summary
+==========================================================================================
+                            Amount Billed    Plan Discount    Plan Paid    Patient Balance
+Total                       $1,825.00        $612.50          $832.50      $380.00
+
+Claim Detail — Services Received 02/15/2026
+==========================================================================================
+Line   Service Description                Code        Amount       Plan       Allowed     Plan       Patient    Reason
+                                                       Billed       Discount   Amount      Paid       Balance    Code
+
+1      OFFICE VISIT NEW PATIENT 30 MIN    99203        385.00       125.00     260.00      0.00       260.00     A1
+2      OFFICE VISIT NEW PATIENT 30 MIN    99203       -385.00      -125.00    -260.00      0.00      -260.00     A1
+3      OFFICE VISIT EST PATIENT 25 MIN    99214        285.00        85.00     200.00      170.00      30.00     -
+4      LIPID PANEL                        80061        165.00        72.50      92.50       92.50       0.00     -
+5      EKG ROUTINE                        93000        225.00        65.00     160.00      0.00       160.00     A2
+6      VENIPUNCTURE                       36415         15.00         5.00      10.00       10.00       0.00     -
+7      OFFICE VISIT NEW PATIENT 30 MIN    99203        365.00       125.00     240.00      170.00      70.00     -
+8      VITAMIN D 25-HYDROXY               82306        770.00       460.00     310.00      270.00      40.00     A3
+
+Why we made this decision (Reason Codes)
+==========================================================================================
+A1 — This service was billed in error and reversed; corrected line submitted on Line 7.
+       (CARC 18: Exact duplicate claim/service. Refile with correction.)
+A2 — Service requires precertification not on file; please refile with documentation.
+       (CARC 197: Precertification/authorization absent.)
+A3 — Member responsible for portion of allowed amount per plan benefit (deductible).
+       (CARC 1: Deductible amount.)
+
+Your Plan Benefits Summary
+==========================================================================================
+Annual Deductible Status (2026 Benefit Year)
+                                  Individual                  Family
+In Network                        $380 of $1,500 met          $380 of $3,000 met
+Out of Network                    $0 of $3,000 met            $0 of $6,000 met
+
+Annual Out-of-Pocket Status (2026 Benefit Year)
+                                  Individual                  Family
+In Network                        $380 of $4,500 met          $380 of $9,000 met
+Out of Network                    $0 of $9,000 met            $0 of $18,000 met
+
+==========================================================================================
+HOW TO APPEAL THIS DECISION — DO NOT TREAT AS DATA
+
+You have the right to appeal this claim decision. To file an appeal, contact UnitedHealthcare
+within 180 days of the date of this statement. Send your written appeal to the address on
+the back of your member ID card. Include your member ID, claim number, the date of service,
+and a clear explanation of the basis for your appeal. You may also request an external review
+through your state Department of Insurance after exhausting internal appeals.
+
+DEFINITIONS — DO NOT TREAT AS DATA
+==========================================================================================
+Amount Billed: What your provider charged for the service.
+Plan Discount: The negotiated savings between your plan and your provider.
+Allowed Amount: The maximum amount your plan will pay for a covered service.
+Plan Paid: The portion of the allowed amount your plan paid to the provider.
+Patient Balance: The amount you may owe for the service.
