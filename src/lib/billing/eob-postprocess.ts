@@ -372,25 +372,32 @@ export function applyEOBPostProcess(
  * acknowledging insurer-specific heading variations may produce gaps.
  */
 export function segmentEOBSections(rawDocText: string): SectionRanges {
-  // Anchored regex per section type. Heading must be at the start of a line, optionally
-  // preceded by whitespace (Cigna EOBs indent section headers, others don't). Avoids
-  // catching body-text references like "see CLAIM DETAIL above" because those are mid-line.
+  // Pattern P-8 section heading vocabulary — INSURER-AGNOSTIC SEMANTIC SYNONYMS ONLY.
+  // Each phrase names what the section IS (a semantic concept), not how a particular
+  // insurer phrases it. Adding insurer-specific phrasing pollutes the regex and creates
+  // brittle coupling. If a fixture surfaces a section that needs a new phrase, ask:
+  // "Is this how multiple insurers reasonably name this section?" If yes, add. If no,
+  // reframe as a semantic synonym or skip.
+  //
+  // Anchor: `^\s*` matches at line start with optional leading whitespace (Cigna indents
+  // section headers, others don't). Avoids catching body-text references like
+  // "see CLAIM DETAIL above" because those appear mid-line.
   const sectionPatterns: Array<[EOBSectionHint, RegExp]> = [
     [
       "claim_header",
-      /^\s*(EXPLANATION OF BENEFITS|HEALTH STATEMENT|HEALTHCARE STATEMENT|HEALTH CARE SUMMARY|SUMMARY OF (?:A )?CLAIM)\b/im,
+      /^\s*(EXPLANATION OF BENEFITS|HEALTH STATEMENT|HEALTHCARE STATEMENT|HEALTH CARE SUMMARY|SUMMARY OF (?:A )?CLAIM|CLAIM SUMMARY FOR|BENEFIT EXPLANATION|STATEMENT OF BENEFITS)\b/im,
     ],
     [
       "line_items_table",
-      /^\s*(CLAIM DETAIL|SERVICE DETAIL|CLAIM SUMMARY|SERVICES RECEIVED|DETAIL OF SERVICES|YOUR CLAIM DETAIL|FOR SERVICES PROVIDED BY)\b/im,
+      /^\s*(CLAIM DETAIL|SERVICE DETAIL|CLAIM SUMMARY|SERVICES RECEIVED|DETAIL OF SERVICES|YOUR CLAIM DETAIL|FOR SERVICES PROVIDED BY|PROCEDURES BILLED|BILLABLE SERVICES|CHARGE DETAIL|PROVIDED SERVICES|LINE ITEMS|SERVICES PERFORMED)\b/im,
     ],
     [
       "denial_codes_section",
-      /^\s*(EXPLANATION CODES?|REASON CODES?|(CARC|RARC|EX) CODE.*(DESCRIPTION|CODE)|NOTES.*REASON|WHY WE MADE THIS DECISION|NOTES \/ REASON CODES|^\s*NOTES\s*$)\b/im,
+      /^\s*(EXPLANATION CODES?|REASON CODES?|(CARC|RARC|EX) CODE.*(DESCRIPTION|CODE)|NOTES.*REASON|WHY WE MADE THIS DECISION|NOTES \/ REASON CODES|^\s*NOTES\s*$|DENIAL CODES?|ADJUSTMENT REASON CODES?|REMARK CODES?|MESSAGE CODES?)\b/im,
     ],
     [
       "accumulator_block",
-      /^\s*(ACCUMULATOR(\s+(INFORMATION|STATUS))?|YOUR PLAN BENEFITS SUMMARY|DEDUCTIBLE STATUS|OUT.OF.POCKET STATUS|ANNUAL DEDUCTIBLE STATUS|PLAN YEAR DEDUCTIBLE)\b/im,
+      /^\s*(ACCUMULATOR(\s+(INFORMATION|STATUS))?|YOUR PLAN BENEFITS SUMMARY|DEDUCTIBLE STATUS|OUT.OF.POCKET STATUS|ANNUAL DEDUCTIBLE STATUS|PLAN YEAR DEDUCTIBLE|DEDUCTIBLE AND OUT[- ]OF[- ]POCKET|MEMBER COST SHARE SUMMARY|COST SHARE SUMMARY|PLAN PAYMENT SUMMARY)\b/im,
     ],
     [
       "appeal_rights_DO_NOT_EXTRACT",
@@ -428,26 +435,105 @@ export function segmentEOBSections(rawDocText: string): SectionRanges {
     result[hint].push({ start, end });
   }
 
+  // Pattern P-8 (Phase 3.1B.1) — segment the document preamble (content before the
+  // first explicit heading) as an "other" range. Every insurer's EOB has page-header
+  // content, mailing addresses, member ID blocks, statement date, and similar
+  // structured-but-pre-heading data living in this region. Without this, Haiku-extracted
+  // excerpts from the preamble fail Tier 2 attribution despite being in legitimate
+  // (non-boilerplate) content.
+  //
+  // Insurer-agnostic: any EOB layout with content before the first regex-matched
+  // heading benefits identically. If no headings match at all, the entire doc is
+  // treated as "other" (degraded but recoverable — better than zero attribution).
+  if (matches.length === 0) {
+    result.other = [{ start: 0, end: rawDocText.length }];
+  } else if (matches[0].start > 0) {
+    result.other = result.other ?? [];
+    result.other.unshift({ start: 0, end: matches[0].start });
+  }
+
   return result;
+}
+
+/**
+ * Pattern P-8 — collapse whitespace + zero-width chars to make substring matching
+ * insurer-agnostic. Recall-maximize per `feedback_candid_recall_over_precision`.
+ *
+ * Strips zero-width characters (ZWSP/ZWNJ/ZWJ/BOM), then collapses runs of any Unicode
+ * whitespace (incl newlines, NBSP, em/en/narrow-no-break/ideographic-space) to a single
+ * space. Used by verifySourceExcerpts() Tier 1 + Tier 2 fallback matching only.
+ *
+ * Newlines are intentionally collapsed here. segmentEOBSections() does NOT use this
+ * helper — its `^\s*` line anchors require newlines preserved.
+ */
+function normalizeWhitespace(text: string): string {
+  return text
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Pattern P-8 (Phase 3.1B.1) \u2014 find which segmented section actually contains the
+ * excerpt. Used by verifySourceExcerpts() to compute section_verified under the
+ * recall-maximize semantics ("excerpt lives in some real section" rather than
+ * "excerpt lives in the specific section Haiku claimed").
+ *
+ * Two-pass per range (exact, then normalized fallback). Prefers non-DO_NOT_EXTRACT
+ * sections when an excerpt appears in multiple overlapping ranges (rare in practice
+ * but possible if segmentation produces overlap). Returns the section hint string,
+ * or null if the excerpt isn't in any segmented section.
+ *
+ * `getNormalizedExcerpt` is a memoized accessor so the caller can lazy-cache the
+ * normalized form across Tier 1 + Tier 2 without recomputing.
+ */
+function findContainingSection(
+  excerpt: string,
+  rawDocText: string,
+  sectionRanges: SectionRanges,
+  getNormalizedExcerpt: () => string,
+): string | null {
+  let doNotExtractMatch: string | null = null;
+  for (const [hint, ranges] of Object.entries(sectionRanges)) {
+    if (!ranges?.length) continue;
+    const found = ranges.some(({ start, end }) => {
+      const sect = rawDocText.slice(start, end);
+      if (sect.includes(excerpt)) return true;
+      const ne = getNormalizedExcerpt();
+      return ne.length > 0 && normalizeWhitespace(sect).includes(ne);
+    });
+    if (found) {
+      if (!hint.endsWith("_DO_NOT_EXTRACT")) {
+        return hint;
+      }
+      doNotExtractMatch = hint;
+    }
+  }
+  return doNotExtractMatch;
 }
 
 /**
  * Pattern P-8 — verify per-field source excerpts against raw doc text + section ranges.
  *
- * Three-state verification per Q-P3.1B-6 v2 (no fuzzy matching at any extraction method):
- *   - exact substring match → source_excerpt_verified='verified'
- *   - extraction_method='ocr' AND no exact match → 'ocr_unverifiable'
+ * Three-state verification per Q-P3.1B-6 v2 (no fuzzy matching). Two-pass match per
+ * Phase 3.1B.1 recall-maximize: byte-exact first; whitespace-normalized fallback when
+ * exact misses.
+ *   - exact substring match → 'verified'
+ *   - normalized substring match → 'verified' + warning `..._verified_via_normalization`
+ *   - extraction_method='ocr' AND no match → 'ocr_unverifiable'
  *   - any other method, no match → 'not_found'
  *
  * Section attribution (Tier 2): if `source_section_hint` is provided AND that section
- * is in `sectionRanges`, check that the excerpt appears within ANY of the named section's
- * text-ranges → source_section_verified=true. Else false.
+ * is in `sectionRanges`, check that the excerpt appears within ANY range (exact, then
+ * normalized fallback) → source_section_verified=true. Else false.
  *
- * Hallucination guard: if `source_section_hint` ends with `_DO_NOT_EXTRACT`, force
- * source_excerpt_verified='not_found' AND source_section_verified=false; emit warning.
+ * DO_NOT_EXTRACT attribution (Q-P3.1B.1-1 LOCK): warning-only. The excerpt's verified
+ * + section_verified states are determined by match logic (recall-maximize). Citation-
+ * grade strictness is enforced at the consumer-read layer via Pattern P-8 hard rule
+ * (filter on section_hint suffix `_DO_NOT_EXTRACT`).
  *
  * Mutates a copy of `fieldProvenance` (does not modify the input). Returns the new
- * map plus a warnings list (do_not_extract pulls, missing sections, etc.).
+ * map plus a warnings list.
  */
 export function verifySourceExcerpts(
   fieldProvenance: Record<string, FieldMeta>,
@@ -461,32 +547,36 @@ export function verifySourceExcerpts(
   const warnings: string[] = [];
   const out: Record<string, FieldMeta> = {};
 
+  // Lazy-cache normalized doc text (computed on first Pass-2 fallback; reused thereafter).
+  let normalizedRawDocText: string | null = null;
+
   for (const [fieldPath, meta] of Object.entries(fieldProvenance)) {
     const updated: FieldMeta = { ...meta };
 
     if (!meta.source_excerpt) {
-      // No excerpt to verify; carry over as-is.
       out[fieldPath] = updated;
       continue;
     }
 
     updated.source_excerpt_extraction_method = extractionMethod;
 
-    // Hallucination guard: DO_NOT_EXTRACT sections force verified='not_found'.
-    if (isDoNotExtractSection(meta.source_section_hint)) {
-      updated.source_excerpt_verified = "not_found";
-      updated.source_section_verified = false;
-      warnings.push(`source_section_do_not_extract:${fieldPath}:${meta.source_section_hint}`);
-      out[fieldPath] = updated;
-      continue;
+    const excerpt = meta.source_excerpt;
+    let normalizedExcerpt: string | null = null;
+
+    // Tier 1: two-pass match against full raw doc.
+    let matched = rawDocText.includes(excerpt);
+    if (!matched) {
+      if (normalizedRawDocText === null) normalizedRawDocText = normalizeWhitespace(rawDocText);
+      normalizedExcerpt = normalizeWhitespace(excerpt);
+      if (normalizedExcerpt.length > 0 && normalizedRawDocText.includes(normalizedExcerpt)) {
+        matched = true;
+        warnings.push(`source_excerpt_verified_via_normalization:${fieldPath}`);
+      }
     }
 
-    // Tier 1: exact substring match against full raw doc text.
-    const matched = rawDocText.includes(meta.source_excerpt);
     if (matched) {
       updated.source_excerpt_verified = "verified";
     } else if (extractionMethod === "ocr") {
-      // No fuzzy fallback — explicit 'ocr_unverifiable' signal per Q-P3.1B-6 v2.
       updated.source_excerpt_verified = "ocr_unverifiable";
       warnings.push(`source_excerpt_ocr_unverifiable:${fieldPath}`);
     } else {
@@ -494,23 +584,38 @@ export function verifySourceExcerpts(
       warnings.push(`source_excerpt_not_found:${fieldPath}`);
     }
 
-    // Tier 2: section attribution — excerpt appears within named section's text-range?
-    if (meta.source_section_hint && sectionRanges[meta.source_section_hint]?.length) {
-      const ranges = sectionRanges[meta.source_section_hint];
-      const inSection = ranges.some(({ start, end }) => {
-        const sectionText = rawDocText.slice(start, end);
-        return sectionText.includes(meta.source_excerpt!);
+    // Tier 2: section attribution — recall-maximize semantics per Phase 3.1B.1.
+    //
+    // section_verified means "excerpt lives in SOME real (non-DO_NOT_EXTRACT) section,"
+    // NOT "excerpt lives in the SPECIFIC section Haiku claimed." Under the
+    // citation-grade contract (Pattern P-8 hard rule), what matters is evidence
+    // quality (is this from real claim content? or from boilerplate?), not Haiku's
+    // labeling accuracy. Mis-attribution is still logged via warning for diagnostics.
+    //
+    // Insurer-agnostic: any EOB layout where segmentation finds named sections
+    // benefits identically. No insurer-specific code paths.
+    if (meta.source_section_hint) {
+      const actualSection = findContainingSection(excerpt, rawDocText, sectionRanges, () => {
+        if (normalizedExcerpt === null) normalizedExcerpt = normalizeWhitespace(excerpt);
+        return normalizedExcerpt;
       });
-      updated.source_section_verified = inSection;
-      if (!inSection && updated.source_excerpt_verified === "verified") {
-        // Excerpt is in the doc but not in the named section — likely semantic mis-attribution.
-        warnings.push(`source_section_mismatch:${fieldPath}:${meta.source_section_hint}`);
+
+      updated.source_section_verified =
+        actualSection !== null && !actualSection.endsWith("_DO_NOT_EXTRACT");
+
+      if (actualSection !== meta.source_section_hint && updated.source_excerpt_verified === "verified") {
+        warnings.push(
+          `source_section_mismatch:${fieldPath}:${meta.source_section_hint}` +
+            (actualSection ? `:actual=${actualSection}` : `:not_in_any_segmented_section`),
+        );
       }
     } else {
       updated.source_section_verified = false;
-      if (meta.source_section_hint) {
-        warnings.push(`source_section_unknown:${fieldPath}:${meta.source_section_hint}`);
-      }
+    }
+
+    // DO_NOT_EXTRACT attribution: warning only (no state override per Q-P3.1B.1-1 LOCK).
+    if (isDoNotExtractSection(meta.source_section_hint)) {
+      warnings.push(`source_section_do_not_extract:${fieldPath}:${meta.source_section_hint}`);
     }
 
     out[fieldPath] = updated;
