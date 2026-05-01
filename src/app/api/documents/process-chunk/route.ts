@@ -16,7 +16,9 @@ import { createServerClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { extractTextFromDocument } from "@/lib/ocr";
 import { splitPDF, estimatePageCount } from "@/lib/ocr/document-ai";
-import { processPlanDocumentData } from "@/lib/plan/process-plan";
+import { processPlanDocumentData, type ProcessPlanResult } from "@/lib/plan/process-plan";
+import { processEOCDocumentData } from "@/lib/plan/process-eoc";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { parseBillFromOCR } from "@/lib/billing/parser";
 import { parseBillWithHaiku } from "@/lib/billing/haiku-bill-parser";
 import { runAudit } from "@/lib/audit";
@@ -28,6 +30,13 @@ import { notifyAdminForReview } from "@/lib/notifications";
 const CHUNK_SIZE = 15; // pages per OCR chunk
 
 const BILL_TYPES = new Set(["eob", "itemized_bill"]);
+
+// Phase 3.1A — image-PDF refusal threshold per Q-P3.1A-12 LOCK.
+// EOCs need ≥500 chars of text-extracted content for the EOC parser to function
+// meaningfully. Below this threshold likely indicates an image-only PDF where pdftotext
+// returned blanks/scraps; OCR cost would be ~$15/EOC for 150 pages — exceeds the $1
+// hard cap (Q-P3.1A-6) by 15×. Prompt user to upload text-extractable version.
+const EOC_MIN_TEXT_CHARS = 500;
 
 /**
  * Process a bill/EOB document: parse → audit → persist claims → collect pricing.
@@ -260,6 +269,77 @@ const CONFIDENCE_LOW = 0.4;
  * - Medium (0.4-0.8): User's selection dictates type
  * - Low (<0.4): Halted — reject or queue for admin
  */
+/**
+ * Phase 3.1A — dispatcher for plan-doc OR EOC processing.
+ *
+ * Three responsibilities:
+ *   1. Image-PDF refusal (Q-P3.1A-12 LOCK): if classifiedType=='eoc' AND ocrText is
+ *      degraded (<EOC_MIN_TEXT_CHARS), mark document rejected_image_eoc + surface
+ *      UI prompt; do NOT invoke EOC parser (cost ceiling per Q-P3.1A-6).
+ *   2. Feature-flag gate (Q-P3.1A-10 LOCK): if classifiedType=='eoc' AND
+ *      eoc_parser_v1 flag OFF for this user, fall through to legacy plan-doc-parser
+ *      (gives plan-identity extraction without EOC-specific section parsing).
+ *   3. Otherwise: invoke processPlanDocumentData (existing legacy path) for sbc,
+ *      plan_document, and EOC-with-flag-OFF.
+ */
+async function dispatchPlanOrEOC(args: {
+  supabase: ReturnType<typeof createServerClient>;
+  doc: { id: string; user_id: string; file_name: string };
+  ocrText: string;
+  documentId: string;
+  classification: { classifiedType: string; confidence: number; mismatch: boolean };
+  skipCanonical: boolean;
+}): Promise<ProcessPlanResult> {
+  const { supabase, doc, ocrText, documentId, classification, skipCanonical } = args;
+
+  if (classification.classifiedType === "eoc") {
+    // 1. Image-PDF refusal per Q-P3.1A-12 LOCK.
+    if (ocrText.length < EOC_MIN_TEXT_CHARS) {
+      const reason = `EOC document appears to be a scanned image (only ${ocrText.length} chars of text extracted). Please upload a text-based PDF version from your insurer's portal for accurate processing.`;
+      console.warn(`[process-chunk] ${reason} (documentId=${documentId})`);
+      await supabase
+        .from("documents")
+        .update({
+          status: "error",
+          processing_error: reason,
+          processing_step: "rejected_image_eoc",
+        })
+        .eq("id", documentId);
+      return { success: false, error: reason, parseWarnings: [reason] };
+    }
+
+    // 2. Feature-flag gate per Q-P3.1A-10 LOCK.
+    const { data: userForFlag } = await supabase
+      .from("users")
+      .select("email")
+      .eq("firebase_uid", doc.user_id)
+      .maybeSingle();
+    const eocEnabled = await isFeatureEnabled("eoc_parser_v1", userForFlag?.email || undefined);
+
+    if (eocEnabled) {
+      console.log(`[process-chunk] EOC parser v1 ENABLED for user. Routing to processEOCDocumentData.`);
+      return processEOCDocumentData(supabase, { doc, ocrText, documentId, classification });
+    }
+
+    // Flag OFF — fall through to legacy plan-doc-parser path so EOC docs still get
+    // plan-identity extraction. Coerce classifiedType to 'plan_document' for the
+    // legacy classifier branch (since processPlanDocumentData uses isFullPlanDoc=true
+    // for plan_document AND eoc with current logic).
+    console.log(`[process-chunk] EOC parser v1 DISABLED for user. Falling back to legacy plan-doc-parser.`);
+    return processPlanDocumentData(
+      supabase,
+      doc,
+      ocrText,
+      documentId,
+      { ...classification, classifiedType: "plan_document" },
+      { skipCanonical },
+    );
+  }
+
+  // Non-EOC types: existing legacy path.
+  return processPlanDocumentData(supabase, doc, ocrText, documentId, classification, { skipCanonical });
+}
+
 function resolveDocumentType(
   userType: string,
   haikuType: string,
@@ -498,14 +578,15 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ step: "done", continue: false, ...billResult });
       }
 
-      const result = await processPlanDocumentData(
+      // Phase 3.1A — EOC dispatch with image-PDF refusal + feature-flag gate.
+      const result = await dispatchPlanOrEOC({
         supabase,
-        { id: doc.id, user_id: doc.user_id, file_name: doc.file_name },
-        fullOcrText,
+        doc,
+        ocrText: fullOcrText,
         documentId,
-        { classifiedType: effectiveType, confidence: classification.confidence, mismatch: typeMismatch || false },
-        { skipCanonical }
-      );
+        classification: { classifiedType: effectiveType, confidence: classification.confidence, mismatch: typeMismatch || false },
+        skipCanonical,
+      });
 
       console.log(`[process-chunk] Inline result: success=${result.success}, services=${result.servicesCreated}, skipCanonical=${skipCanonical}`);
       return NextResponse.json({ step: "done", continue: false, ...result });
@@ -591,22 +672,18 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ step: "done", continue: false, ...billResult });
       }
 
-      const result = await processPlanDocumentData(
+      // Phase 3.1A — EOC dispatch with image-PDF refusal + feature-flag gate.
+      const fbResult = await dispatchPlanOrEOC({
         supabase,
-        { id: doc.id, user_id: doc.user_id, file_name: doc.file_name },
+        doc,
         ocrText,
         documentId,
-        { classifiedType: fbEffectiveType, confidence: classification.confidence, mismatch: fallbackMismatch || false },
-        { skipCanonical: fbSkipCanonical }
-      );
+        classification: { classifiedType: fbEffectiveType, confidence: classification.confidence, mismatch: fallbackMismatch || false },
+        skipCanonical: fbSkipCanonical,
+      });
 
-      console.log(`[process-chunk] Result: success=${result.success}, services=${result.servicesCreated}, skipCanonical=${fbSkipCanonical}`);
-
-      if (!result.success) {
-        return NextResponse.json({ error: result.error }, { status: 500 });
-      }
-
-      return NextResponse.json({ step: "done", continue: false, ...result });
+      console.log(`[process-chunk] Fallback result: success=${fbResult.success}, services=${fbResult.servicesCreated}, skipCanonical=${fbSkipCanonical}`);
+      return NextResponse.json({ step: "done", continue: false, ...fbResult });
     }
 
     // Working state — a step is in progress, check if it's stale

@@ -57,6 +57,7 @@ export type SourceProvenance =
   | "admin_verified"
   | "multi_source_corroboration"
   | "doc_extraction"
+  | "doc_extraction_eoc" // Phase 3.1A: EOC parser (citation-grade for PA criteria, medical necessity, appeals, COB, eligibility, definitions)
   | "card_corroboration"
   | "cms_marketplace"
   | "cms_medicare"

@@ -32,6 +32,8 @@ import * as fs from "fs";
 import { execSync } from "child_process";
 import { parseBillWithHaiku } from "../src/lib/billing/haiku-bill-parser";
 import type { ParsedBill } from "../src/lib/billing/types";
+import { parseEOC } from "../src/lib/eoc/parser";
+import type { EOCParseResult } from "../src/lib/eoc/types";
 
 config({ path: resolve(__dirname, "../.env.local"), override: true });
 
@@ -49,7 +51,7 @@ interface PatternP8Metrics {
 interface HarnessRow {
   run_id: string;
   parser_version: string;
-  parser_name: "eob" | "bill" | "sbc" | "card";
+  parser_name: "eob" | "bill" | "sbc" | "card" | "eoc";
   fixture_id: string;
   fixture_kind: "annotated" | "bulk_unannotated" | "synthetic";
   fields_captured: number;
@@ -302,6 +304,182 @@ async function runFixture(
   };
 }
 
+// ── Phase 3.1A — EOC fixture runner ──────────────────────────────────────────
+//
+// Mirrors runFixture() but invokes parseEOC() instead of parseBillWithHaiku().
+// Pattern P-8 metrics computed by walking EOCParseResult sections; structural
+// completeness = sections_extracted / 6 priority sections (A/B/C/D/F/K).
+// Cost telemetry comes directly from EOCParseResult (parser tracks per-section costs).
+
+const EOC_PRIORITY_SECTIONS = [
+  "prior_auth_codes",
+  "medical_necessity",
+  "appeals_procedures",
+  "cob_rules",
+  "eligibility_rules",
+  "definitions",
+] as const;
+
+interface EOCPatternP8Metrics {
+  fields_total: number; // total Pattern P-8 fields across all sections
+  fields_with_excerpt: number;
+  fields_verified: number; // verified='verified'
+  fields_section_verified: number; // section_verified=true (non-DO_NOT_EXTRACT)
+  source_excerpt_coverage_rate: number | null;
+  source_section_match_rate: number | null;
+}
+
+function computeEOCPatternP8Metrics(parsed: EOCParseResult): EOCPatternP8Metrics {
+  let fieldsTotal = 0;
+  let fieldsWithExcerpt = 0;
+  let fieldsVerified = 0;
+  let fieldsSectionVerified = 0;
+
+  const visitOne = (
+    item: { source_excerpt?: string; source_excerpt_verified?: string; source_section_verified?: boolean },
+  ) => {
+    fieldsTotal++;
+    if (item.source_excerpt && item.source_excerpt.length > 0) {
+      fieldsWithExcerpt++;
+      if (item.source_excerpt_verified === "verified") fieldsVerified++;
+      if (item.source_section_verified === true) fieldsSectionVerified++;
+    }
+  };
+
+  if (parsed.sections.prior_auth_codes) {
+    parsed.sections.prior_auth_codes.data.codes.forEach(visitOne);
+  }
+  if (parsed.sections.medical_necessity) {
+    parsed.sections.medical_necessity.data.criteria.forEach(visitOne);
+  }
+  if (parsed.sections.appeals_procedures) {
+    visitOne(parsed.sections.appeals_procedures.data);
+  }
+  if (parsed.sections.cob_rules) {
+    visitOne(parsed.sections.cob_rules.data);
+  }
+  if (parsed.sections.eligibility_rules) {
+    visitOne(parsed.sections.eligibility_rules.data);
+  }
+  if (parsed.sections.definitions) {
+    parsed.sections.definitions.data.definitions.forEach(visitOne);
+  }
+
+  return {
+    fields_total: fieldsTotal,
+    fields_with_excerpt: fieldsWithExcerpt,
+    fields_verified: fieldsVerified,
+    fields_section_verified: fieldsSectionVerified,
+    source_excerpt_coverage_rate: fieldsWithExcerpt > 0 ? fieldsVerified / fieldsWithExcerpt : null,
+    source_section_match_rate: fieldsWithExcerpt > 0 ? fieldsSectionVerified / fieldsWithExcerpt : null,
+  };
+}
+
+async function runEOCFixture(
+  fixturePath: string,
+  fixtureId: string,
+  runId: string,
+  parserVersion: string,
+  attemptIdx: number,
+): Promise<HarnessRow> {
+  const sourceText = fs.readFileSync(`${fixturePath}/source.txt`, "utf-8");
+  const fixtureKind: HarnessRow["fixture_kind"] = fixtureId.startsWith("synthetic-") ? "synthetic" : "annotated";
+
+  const t0 = Date.now();
+  let parsed: EOCParseResult;
+  try {
+    parsed = await parseEOC(sourceText, {
+      documentId: `harness-${fixtureId}`,
+      extractionMethod: "pdftotext",
+    });
+  } catch (err) {
+    const durationMs = Date.now() - t0;
+    return {
+      run_id: runId,
+      parser_version: parserVersion,
+      parser_name: "eoc",
+      fixture_id: fixtureId,
+      fixture_kind: fixtureKind,
+      fields_captured: 0,
+      fields_total: EOC_PRIORITY_SECTIONS.length,
+      cost_usd: 0,
+      haiku_tokens_input: 0,
+      haiku_tokens_output: 0,
+      haiku_cache_read_tokens: 0,
+      haiku_cache_create_tokens: 0,
+      per_field_results: { error: err instanceof Error ? err.message : String(err) },
+      warnings: {
+        meta_warnings: [String(err)],
+        accumulator_warnings: [],
+        excerpt_verification_warnings: [],
+        pattern_p8_metrics: emptyPatternP8Metrics(),
+      },
+      parse_duration_ms: durationMs,
+      parse_attempt_idx: attemptIdx,
+      parse_status: "extraction_failed",
+    };
+  }
+  const durationMs = Date.now() - t0;
+
+  // Structural completeness: how many of 6 priority sections were extracted.
+  const sectionsCaptured = EOC_PRIORITY_SECTIONS.filter((s) => parsed.sections[s] !== undefined).length;
+
+  // Section result row counts (drilldown for admin debug).
+  const perFieldResults: Record<string, unknown> = {
+    segmentation_used: parsed.segmentation_used,
+    sections_extracted: Object.keys(parsed.sections),
+    parse_errors: parsed.parse_errors,
+    pa_codes_count: parsed.sections.prior_auth_codes?.data.codes.length ?? 0,
+    medical_necessity_count: parsed.sections.medical_necessity?.data.criteria.length ?? 0,
+    definitions_count: parsed.sections.definitions?.data.definitions.length ?? 0,
+    appeals_present: !!parsed.sections.appeals_procedures,
+    cob_present: !!parsed.sections.cob_rules,
+    eligibility_present: !!parsed.sections.eligibility_rules,
+  };
+
+  // Pattern P-8 metrics (EOC analog of EOB metrics).
+  const eocP8 = computeEOCPatternP8Metrics(parsed);
+
+  // Bucket warnings (mirror EOB harness convention)
+  const excerptWarnings = parsed.warnings.filter((w) => w.startsWith("source_"));
+  const otherWarnings = parsed.warnings.filter((w) => !w.startsWith("source_"));
+
+  return {
+    run_id: runId,
+    parser_version: parserVersion,
+    parser_name: "eoc",
+    fixture_id: fixtureId,
+    fixture_kind: fixtureKind,
+    fields_captured: sectionsCaptured,
+    fields_total: EOC_PRIORITY_SECTIONS.length,
+    cost_usd: parsed.total_cost_usd,
+    haiku_tokens_input: parsed.total_input_tokens,
+    haiku_tokens_output: parsed.total_output_tokens,
+    haiku_cache_read_tokens: 0, // EOC parser tracks aggregated tokens; cache breakdown in v1.5
+    haiku_cache_create_tokens: 0,
+    per_field_results: perFieldResults,
+    warnings: {
+      meta_warnings: otherWarnings,
+      accumulator_warnings: [], // EOC has no accumulators concept
+      excerpt_verification_warnings: excerptWarnings,
+      pattern_p8_metrics: {
+        // Reuse the EOB shape; map EOC metrics to compatible field names.
+        field_provenance_size_bytes: JSON.stringify(parsed.sections).length,
+        source_excerpt_coverage_rate: eocP8.source_excerpt_coverage_rate,
+        source_section_hint_match_rate: eocP8.source_section_match_rate,
+        section_ranges_found: Object.keys(parsed.sections).length,
+        do_not_extract_extractions: parsed.warnings.filter((w) => w.includes("do_not_extract")).length,
+        fields_with_excerpt: eocP8.fields_with_excerpt,
+        fields_with_section_hint: eocP8.fields_with_excerpt, // same denominator for EOC
+        fields_total_in_provenance: eocP8.fields_total,
+      },
+    },
+    parse_duration_ms: durationMs,
+    parse_attempt_idx: attemptIdx,
+    parse_status: parsed.parse_errors.length === 0 ? "success" : "extraction_failed",
+  };
+}
+
 async function main() {
   const args = process.argv.slice(2);
   function getArg(flag: string, defaultVal: string): string {
@@ -309,7 +487,9 @@ async function main() {
     return idx >= 0 && idx + 1 < args.length ? args[idx + 1] : defaultVal;
   }
   const runId = getArg("--run-id", `harness_${Date.now()}`);
-  const fixturesDir = getArg("--fixtures-dir", "tests/fixtures/eobs");
+  const parser = getArg("--parser", "eob") as "eob" | "eoc";
+  const defaultFixturesDir = parser === "eoc" ? "tests/fixtures/eocs" : "tests/fixtures/eobs";
+  const fixturesDir = getArg("--fixtures-dir", defaultFixturesDir);
   const dryRun = args.includes("--dry-run");
 
   const parserVersion = (() => {
@@ -335,7 +515,10 @@ async function main() {
       continue;
     }
     console.log(`\n[harness] running fixture ${fixtureId}...`);
-    const row = await runFixture(fixturePath, fixtureId, runId, parserVersion, 1);
+    const row =
+      parser === "eoc"
+        ? await runEOCFixture(fixturePath, fixtureId, runId, parserVersion, 1)
+        : await runFixture(fixturePath, fixtureId, runId, parserVersion, 1);
     rows.push(row);
     const p8 = row.warnings.pattern_p8_metrics;
     const excerptRate = p8.source_excerpt_coverage_rate;
