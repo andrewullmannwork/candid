@@ -41,97 +41,625 @@ export const CONSENT_DOCUMENTS: Record<ConsentType, ConsentDocument> = {
   // ===========================================================================
   tos: defineConsent(
     "tos",
-    "1.4",
-    "2026-04-08",
+    "1.1",
+    "2026-04-28",
     "Terms of Service",
     "By creating an account, you agree to our Terms of Service governing your use of Candid.",
     `CANDID TERMS OF SERVICE
-Version 1.4 — Effective April 8, 2026
+Version 1.1 — Effective April 28, 2026
+Last Revised: April 28, 2026
 Operated by Airgetlam Labs LLC
 
+Version 1.1 amendment: Added §7.10 (No Malpractice Insurance Information) and §7.11 (User Responsibility for Diligence). Candid does not collect, verify, or display attorney malpractice insurance information; marketplace framing requires Users to perform their own diligence. No other substantive changes.
+
+TABLE OF CONTENTS
+
+1. Acceptance of Terms
+2. Definitions
+3. Description of Services
+4. Eligibility and Account Registration
+5. Platform Status; No Endorsement
+6. User Submissions and Content
+7. Lawyer Marketplace
+8. Subscription, Fees, and Billing
+9. Intellectual Property; Copyright; DMCA
+10. Healthcare-Specific Provisions
+11. Legal-Services-Specific Provisions
+12. Disclaimers and Warranties
+13. Limitation of Liability
+14. Indemnification
+15. Termination
+16. Modifications to Terms
+17. Dispute Resolution; Arbitration; Class Action Waiver
+18. Governing Law; Venue
+19. State-Specific Provisions
+20. General Provisions
+21. Contact Information
+
 1. ACCEPTANCE OF TERMS
-By creating an account or using any Candid service, you ("you" or "User") agree to be bound by these Terms of Service ("Terms"). If you do not agree, do not create an account or use the platform. These Terms constitute a legally binding agreement between you and Airgetlam Labs LLC ("Candid," "we," "us," or "our").
 
-2. ELIGIBILITY
-You must be at least 18 years of age and legally capable of entering into binding contracts. By using Candid, you represent that you have legal authority over any medical billing records or insurance documents you upload. Candid is not intended for use by minors.
+These Terms of Service ("Terms") form a binding legal agreement between you ("User," "you," or "your") and Airgetlam Labs LLC, a Delaware limited liability company doing business as Candid ("Candid," "we," "us," or "our"), governing your access to and use of the Candid platform, including the website at www.candidclaim.com, any associated mobile applications, APIs, content, features, and services (collectively, the "Services").
 
-3. SERVICE DESCRIPTION
-Candid is a consumer financial technology platform that provides the following services:
-(a) Candid Claim (Free Tier) — Automated medical bill auditing that identifies potential overcharges, billing errors, unbundling violations, upcoding, and duplicate charges by comparing your bills against public pricing benchmarks.
-(b) Candid Plan — Insurance benefits analysis that identifies covered benefits, in-network advantages, and cost-sharing opportunities you may not be utilizing.
-(c) Candid Claim (Paid Tier) — Factual inquiry template generation, documentation aggregation, and educational dispute workflows to help you contest identified billing errors.
-(d) Candid Case — A directory of attorneys who specialize in healthcare billing disputes, medical debt, and insurance coverage issues.
-(e) Candid Care — Price transparency estimates comparing procedure costs across providers in your area, powered by aggregated public and user-contributed data.
-(f) Insurance card scanning — upload your insurance card for automatic extraction of plan details.
-(g) Email document intake — forward healthcare documents to your Candid email address for processing.
+BY ACCESSING, REGISTERING FOR, OR USING THE SERVICES, YOU ACKNOWLEDGE THAT YOU HAVE READ, UNDERSTOOD, AND AGREE TO BE BOUND BY THESE TERMS, INCLUDING THE BINDING ARBITRATION AGREEMENT AND CLASS ACTION WAIVER IN SECTION 17. IF YOU DO NOT AGREE TO THESE TERMS, DO NOT ACCESS OR USE THE SERVICES.
 
-Candid matches you with relevant insurance plan data from public sources (CMS Marketplace API) and our canonical plan database built from de-identified user-contributed plan documents.
+You represent that you are at least eighteen (18) years of age and have the legal capacity to enter into this agreement. The Services are not intended for users under 18.
 
-Marketplace listings on Candid (attorneys, providers, health services) are for informational purposes only and do not constitute an endorsement, referral, or recommendation by Candid or Airgetlam Labs LLC.
+These Terms incorporate by reference our Privacy Policy (https://www.candidclaim.com/privacy), Community Guidelines (https://www.candidclaim.com/guidelines), and any service-specific terms, all of which form part of this agreement.
 
-4. DOCUMENT PREPARATION — NOT LEGAL ADVICE OR LEGAL DETERMINATIONS
-IMPORTANT: Candid is a factual inquiry template tool and educational resource. Candid does NOT:
-- Provide legal advice, legal opinions, or legal representation
-- Make legal determinations or apply legal theories to your specific facts
-- Analyze whether a provider violated any specific law or regulation
-- Recommend specific legal arguments or dispute strategies
-- Provide medical advice or act as your attorney or advocate
-All dispute templates, audit reports, and informational outputs generated by Candid are factual inquiry tools for your independent use. Dispute templates populate only factual data you provide (provider names, dates, procedure codes, charge amounts) into standardized letter formats. You — not Candid — select which template to use, review all content for accuracy, decide whether and when to send any document, and physically send any correspondence yourself.
-Candid never submits, files, or sends documents on your behalf. Candid does not determine legal merit, evaluate claims, or advise on whether to pursue a dispute. You maintain full control over all communications with providers, insurers, and other parties.
+2. DEFINITIONS
 
-5. NO GUARANTEE OF OUTCOMES
-Audit findings, benefit analyses, and cost estimates are based on publicly available data and the information you provide. They may not reflect your actual costs, coverage terms, or legal rights. Candid does not guarantee any financial outcome, dispute resolution, billing adjustment, or recovery amount. Past results for other users do not predict your results.
+For purposes of these Terms:
 
-6. USER RESPONSIBILITIES
-You agree to:
-(a) Provide accurate and complete information, including insurance plan details and uploaded documents
-(b) Review all generated documents before use
-(c) Not use Candid for any unlawful purpose or to submit fraudulent claims
-(d) Not attempt to reverse-engineer, scrape, or systematically extract data from the platform
-(e) Maintain the security of your account credentials
-(f) Promptly notify us of any unauthorized access to your account
+- "Candid Care" means our healthcare price-transparency and provider-quality information service.
+- "Candid Case" means our lawyer marketplace and case-file generation service.
+- "Candid Claim" means our medical bill audit and dispute-letter generation service, including both free and subscription tiers.
+- "Candid Plan" means our health insurance plan benefit analysis service.
+- "Content" means all text, data, images, ratings, reviews, comments, documents, and other materials submitted, posted, uploaded, or transmitted through the Services.
+- "Listed Lawyer" means an attorney whose profile appears in the Candid Case marketplace pursuant to Section 7.
+- "Named Party" means any person or entity (including but not limited to a Listed Lawyer, healthcare provider, hospital, clinic, doctor, or facility) identified by name in User Submissions.
+- "User Submission" means any Content authored, submitted, or posted by a User, including ratings, written reviews, corrections, flags, fraud reports, or document uploads.
+- "Verified Content" means Content that Candid has independently verified through external sources (such as state bar admission status or NPI directory data). All other Content is "Self-Reported Content" or "User-Generated Content."
 
-7. ACCOUNT AND SUBSCRIPTION TERMS
-(a) Free Tier — Candid Claim (free audit) and Candid Plan are available at no charge, subject to usage limits we may establish.
-(b) Paid Subscription — Access to premium features (paid Candid Claim, Candid Case, Candid Care) requires an active subscription. Subscription fees, billing cycles, and included features are displayed at the time of purchase.
-(c) Billing — Access to premium features requires a subscription or service fee. Specific billing terms, timing (such as advance or arrears billing), and cycles are displayed at the time of purchase. Payment is processed through Stripe, Inc. You authorize us to charge your selected payment method.
-(d) Cancellation — You may cancel your subscription at any time through your account settings. Cancellation takes effect at the end of your current billing period. No partial refunds are provided for unused portions of a billing period.
-(e) Price Changes — We may change subscription prices with 30 days' notice. Price changes take effect at the start of your next billing period after the notice.
+3. DESCRIPTION OF SERVICES
 
-8. INTELLECTUAL PROPERTY
-All content, software, algorithms, designs, and documentation comprising the Candid platform are owned by Airgetlam Labs LLC or its licensors. You retain ownership of all documents you upload. You grant us a limited license to process your uploaded documents solely for the purpose of providing the services described in Section 3. This license terminates when you delete your documents or close your account.
+Candid provides an information platform that helps users:
 
-9. LIMITATION OF LIABILITY
-TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, AIRGETLAM LABS LLC SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, INCLUDING BUT NOT LIMITED TO LOSS OF PROFITS, DATA, OR GOODWILL, ARISING FROM YOUR USE OF OR INABILITY TO USE THE PLATFORM. OUR TOTAL AGGREGATE LIABILITY FOR ALL CLAIMS ARISING FROM THESE TERMS SHALL NOT EXCEED THE AMOUNT YOU PAID US IN THE TWELVE (12) MONTHS PRECEDING THE CLAIM, OR ONE HUNDRED DOLLARS ($100), WHICHEVER IS GREATER.
+- Audit medical bills and insurance claims for billing errors;
+- Analyze health insurance plan benefits;
+- Generate dispute letters that the User sends themselves;
+- Discover attorneys through a marketplace directory (Candid Case);
+- Compare healthcare providers and pricing (Candid Care);
+- Connect with health-service and supplemental-insurance marketplaces.
 
-10. INDEMNIFICATION
-You agree to indemnify and hold harmless Airgetlam Labs LLC, its officers, employees, and agents from any claims, damages, losses, or expenses (including reasonable attorneys' fees) arising from: (a) your use of the platform, (b) your violation of these Terms, (c) your use of any documents generated by Candid, or (d) your interactions with providers, insurers, attorneys, or other third parties facilitated through Candid.
+Candid is an information services platform. Candid is not a law firm, healthcare provider, insurance broker, financial advisor, credit repair organization, or any other regulated entity unless expressly stated and licensed. Specific service-by-service disclosures are set forth in Sections 10 and 11.
 
-11. DISPUTE RESOLUTION
-(a) Informal Resolution — Before filing any formal proceeding, you agree to contact us via the support ticket system on your account Settings page and attempt to resolve the dispute informally for at least 30 days.
-(b) Binding Arbitration — Any dispute not resolved informally shall be resolved by binding arbitration administered by the American Arbitration Association ("AAA") under its Consumer Arbitration Rules. Arbitration shall be conducted in English, and the arbitrator's decision shall be final and binding.
-(c) Class Action Waiver — You agree that any dispute resolution proceedings will be conducted only on an individual basis and not in a class, consolidated, or representative action.
-(d) Small Claims Exception — Either party may bring an individual action in small claims court if the claim falls within that court's jurisdiction.
-(e) Opt-Out — You may opt out of this arbitration agreement by submitting a support ticket within 30 days of creating your account with the subject "Arbitration Opt-Out."
+Candid reserves the right to modify, suspend, or discontinue any aspect of the Services at any time, with or without notice, except as otherwise required by law.
 
-12. GOVERNING LAW
-These Terms are governed by the laws of the State of Delaware, without regard to conflict-of-law principles. For any disputes not subject to arbitration, you consent to the exclusive jurisdiction of the state and federal courts located in Delaware.
+4. ELIGIBILITY AND ACCOUNT REGISTRATION
 
-13. TERMINATION
-We may suspend or terminate your account if you violate these Terms or engage in activity that harms Candid, other users, or third parties. You may close your account at any time. Upon termination, your right to use the platform ceases immediately. Sections 4, 5, 9, 10, 11, and 12 survive termination.
+4.1 Eligibility
 
-14. SEVERABILITY
-If any provision of these Terms is found unenforceable, the remaining provisions remain in full effect.
+You must be at least 18 years old and a legal resident of the United States to use the Services. By using the Services, you represent and warrant that you meet these requirements.
 
-15. ENTIRE AGREEMENT
-These Terms, together with our Privacy Policy, Health Data Consent, and any other consent documents you accept, constitute the entire agreement between you and Airgetlam Labs LLC regarding the Candid platform.
+4.2 Account Registration
 
-16. MODIFICATIONS
-We may update these Terms at any time. Material changes will be communicated via email and will require re-acceptance before continued use of gated features. Your continued use of Candid after re-acceptance constitutes agreement to the updated Terms.
+You may be required to register an account to access certain features. You agree to:
 
-17. CONTACT
-Airgetlam Labs LLC
-Contact us via your account Settings page or by submitting a support ticket at candidclaim.com.`
+(a) provide accurate, current, and complete information;
+(b) maintain and promptly update your account information;
+(c) maintain the security of your password;
+(d) notify Candid immediately of any unauthorized access to your account; and
+(e) accept responsibility for all activities that occur under your account.
+
+4.3 Account Termination by You
+
+You may terminate your account at any time through the Services or by contacting us at support@candidclaim.com. Termination of your account does not relieve you of any obligation to pay outstanding fees or charges.
+
+4.4 Account Termination by Candid
+
+Candid may suspend or terminate your account at any time, with or without notice, for any reason, including but not limited to violation of these Terms, the Community Guidelines, or applicable law. Candid is not liable for any loss or damage arising from such termination.
+
+5. PLATFORM STATUS; NO ENDORSEMENT
+
+5.1 Interactive Computer Service
+
+Candid is an interactive computer service provider as defined in 47 U.S.C. § 230. Candid does not author, edit, endorse, ratify, guarantee, warrant, or assume responsibility for the accuracy, completeness, legality, reliability, or quality of any User Submission or third-party content. Candid's role is limited to providing the platform; submitters are solely responsible for their Content.
+
+5.2 No Verification Except as Stated
+
+Candid distinguishes between Verified Content, Self-Reported Content, and User-Generated Content:
+
+- Verified Content means data Candid has confirmed through authoritative external sources, such as state bar admission status (verified through state bar APIs), NPI provider data (verified through NPPES), or licensure records. Verified Content carries a "Verified by Candid" indicator.
+- Self-Reported Content means data submitted by Listed Lawyers, healthcare providers, or Users that Candid has not independently verified, including but not limited to: profile photographs, hourly rates, retainer amounts, free consultation availability, specialty self-attestations, language capabilities, accessibility features, and availability status. Self-Reported Content carries a "Self-reported" indicator.
+- User-Generated Content means ratings, written reviews, comments, and similar content authored by Users. User-Generated Content reflects the views of the submitter only and does not represent Candid's views.
+
+Candid makes no representation or warranty regarding the accuracy of Self-Reported Content or User-Generated Content. Users are responsible for confirming details with Listed Lawyers, healthcare providers, or other Named Parties before relying on any information.
+
+5.3 No Professional Relationship
+
+Use of the Services does not create any attorney-client, doctor-patient, fiduciary, agency, employment, partnership, or joint venture relationship between you and Candid. Communications through the Services are not privileged or confidential except as expressly provided by these Terms or applicable law.
+
+6. USER SUBMISSIONS AND CONTENT
+
+This Section 6 governs ratings, written reviews, corrections, fraud reports, and other User Submissions concerning Named Parties.
+
+6.1 License Grant
+
+By creating, posting, or submitting any User Submission to the Services, you grant Candid a non-exclusive, royalty-free, worldwide, perpetual, irrevocable, sublicensable, and transferable license to host, store, reproduce, display, publish, distribute, modify, edit (for moderation purposes), translate, create derivative works of, and remove your User Submission, in any media now known or later developed, for the purposes of operating, providing, marketing, and improving the Services. You retain ownership of the underlying intellectual property in your original Content.
+
+6.2 Submitter Representations and Warranties
+
+By submitting any User Submission, you represent and warrant that:
+
+(a) you have full authority to submit the Content;
+(b) the Content is true and accurate to the best of your knowledge and belief, and is based on your own first-hand experience or independently verified information;
+(c) the Content does not infringe any copyright, trademark, trade secret, right of publicity, right of privacy, or other intellectual property or proprietary right of any third party;
+(d) the Content does not contain any defamatory, libelous, threatening, harassing, obscene, or unlawful material;
+(e) the Content is your original work or you have obtained all necessary licenses, consents, and approvals;
+(f) you are not impersonating another person or entity;
+(g) you have no undisclosed conflict of interest with respect to any Named Party (for example, you are not a competitor of a Listed Lawyer reviewing that lawyer);
+(h) you are not subject to any legal restriction (such as a non-disclosure or non-disparagement agreement) that prohibits the submission; and
+(i) the Content complies with these Terms and the Community Guidelines.
+
+6.3 Pre-Publication Review (Right of Response)
+
+For User Submissions that contain free-text content concerning a Named Party (including written reviews and qualitative comments), Candid will:
+
+(a) provide the Named Party with notification and the opportunity to submit a response within seven (7) calendar days from submission;
+
+(b) display the User Submission with a prominent "Pending [Named Party] Response" badge during the seven-day window, with the Named Party's response (if any) inline upon publication or window expiration;
+
+(c) publish the User Submission, together with any Named Party response, after the seven-day window closes or upon Named Party response, whichever is sooner.
+
+Pre-publication review is a courtesy procedure designed to support fair representation. Pre-publication review does not constitute Candid's verification, fact-checking, endorsement, or legal review of any User Submission. Candid does not warrant the accuracy of any User Submission, before or after publication. Candid's pre-publication procedures are not a substitute for any pre-publication review or retraction demand process required by applicable defamation law in your jurisdiction.
+
+Quantitative or structured-data fields in User Submissions (such as numeric ratings, dollar amounts, and outcome categories) are not subject to the seven-day window and may be aggregated and displayed immediately, subject to k-anonymity thresholds as described in the Community Guidelines.
+
+6.4 Sole Discretion to Moderate or Remove
+
+Candid may, at its sole discretion, with or without notice and with or without cause, remove, edit, refuse to publish, or restrict access to any User Submission. Reasons for removal include but are not limited to: violation of the Community Guidelines, defamation, harassment, slurs or hate speech, off-topic content, conflict of interest, factually disputed claims that the Named Party documents as inaccurate, intellectual property infringement, court order, or any other reason Candid deems appropriate.
+
+Listed reasons in our Community Guidelines are illustrative, not exhaustive. Candid is not obligated to remove any specific Content, and Candid's choice not to remove particular Content does not constitute endorsement or ratification.
+
+6.5 Appeal of Removal
+
+If Candid removes your User Submission, you may appeal the removal decision by contacting us at support@candidclaim.com within fourteen (14) calendar days of removal. Appeals will be reviewed by a senior administrator who was not involved in the original removal decision. The administrator's appeal decision is final and not subject to further appeal within the platform.
+
+Named Parties may not appeal removal of User Submissions concerning them, as such removals are in the Named Party's favor.
+
+6.6 Submitter Anonymity
+
+The identity of submitters is not visible to Named Parties or to other Users. Candid displays only aggregate review counts and anonymized handles. Candid may disclose submitter identity only:
+
+(a) to comply with legal process (subpoena, court order, or law enforcement request);
+(b) to investigate suspected fraud or misuse of the Services;
+(c) with the submitter's express written consent; or
+(d) as otherwise required by law.
+
+Submitters should be aware that Candid's anonymization is operational, not legal. Anonymity does not protect submitters from defamation liability, contractual non-disparagement obligations, or other legal exposures arising from their User Submissions. Submitters are solely responsible for their compliance with applicable law.
+
+6.7 Removal of Content; Audit Retention
+
+Removal of User Submissions from public read paths does not constitute deletion. Candid retains removed Content in internal audit logs for legal compliance, appeals processing, fraud investigation, and other legitimate business purposes. Candid is not obligated to permanently delete any User Submission except as required by applicable law (such as GDPR right-to-erasure requests, CCPA deletion requests, or court orders).
+
+6.8 Aggregate Display; Methodology Disclosure
+
+Candid may display aggregate metrics derived from User Submissions, including but not limited to rating averages, observation counts, and recovery medians. All aggregate metrics displayed publicly are accompanied by methodology disclosure (inline for headline metrics, hover-accessible footnote for per-row metrics). Aggregate metrics with fewer than the applicable k-anonymity threshold of underlying observations are not displayed.
+
+6.9 Fraud Reports
+
+Users may submit reports concerning suspected fraud, identity misrepresentation, or credentialing inaccuracies in Listed Lawyer or healthcare provider profiles. Fraud reports require:
+
+(a) good-faith belief in the accuracy of the report;
+(b) supporting information (such as a URL, document, or specific factual basis); and
+(c) acknowledgment that knowingly false fraud reports may constitute defamation or tortious interference and may result in account termination.
+
+Fraud reports are subject to anti-abuse rate-limiting and routed to Candid's fraud investigation queue.
+
+7. LAWYER MARKETPLACE
+
+7.1 Directory, Not Referral Service
+
+The Candid Case marketplace is a paid directory of attorneys who self-onboard and pay a flat fee to be listed. Candid does not function as a "lawyer referral service" as defined in any state's lawyer referral statutes or rules. Candid does not refer specific Users to specific Listed Lawyers. Users select Listed Lawyers based on Listed Lawyers' self-reported and verified profile data, filters, and ratings, and contact Listed Lawyers directly.
+
+7.2 Flat Fee Structure
+
+Listed Lawyers pay Candid a flat periodic fee (or, in some cases, a free promotional listing) to maintain a marketplace listing. Candid does not receive, request, or accept any payment that is contingent on, calculated by reference to, or in any way related to: the User's selection of a particular Listed Lawyer, the User's engagement of a particular Listed Lawyer, the outcome of any matter handled by a Listed Lawyer, or any monetary recovery received by a User. Candid's compensation from Listed Lawyers is structured to comply with ABA Model Rule of Professional Conduct 7.2 and analogous state rules.
+
+7.3 No Legal Advice
+
+Candid does not provide legal advice. Information in the Candid Case marketplace, including specialty descriptions, listed rates, and aggregate metrics, is informational only. The selection of an attorney for any specific matter is a decision the User must make based on the User's own circumstances, possibly with the advice of an attorney. Listed Lawyers' biographical, qualification, and rate information is Self-Reported Content (except for state bar admission and disciplinary status, which are Verified Content) and is not warranted by Candid.
+
+7.4 No Attorney-Client Relationship Through Candid
+
+Use of the Candid Case marketplace does not create an attorney-client relationship between you and any Listed Lawyer or between you and Candid. An attorney-client relationship is formed only by direct engagement with a Listed Lawyer outside the Services.
+
+7.5 Communications Through Candid Are Not Privileged
+
+Pre-engagement communications between Users and Listed Lawyers conducted through Candid's marketplace messaging (if any) are not subject to attorney-client privilege. Candid recommends that Users not transmit confidential or privileged information through the Services. Users should communicate sensitive information directly with Listed Lawyers through privileged channels established by the User's engagement.
+
+7.6 Lawyer Verification and Suspension
+
+Candid verifies Listed Lawyer state bar admission and disciplinary status through state bar APIs at onboarding and on a periodic basis. Candid will suspend or remove a Listed Lawyer from the marketplace upon:
+
+(a) bar discipline of any kind (immediate suspension);
+(b) three (3) or more substantiated User complaints within ninety (90) days;
+(c) ninety (90) days or more of stale state bar verification status;
+(d) non-responsiveness or other operational issues affecting Users; or
+(e) any other circumstance Candid deems warrants suspension.
+
+7.7 Re-Listing After Removal
+
+Listed Lawyers whose listings have been removed by Candid may apply for a new listing pursuant to Candid's re-listing procedures. Re-listed lawyers must disclose, in their new profile, that a prior listing was removed, including the date and category of removal. Candid uses NPI and bar number as composite identifiers to enforce a single active listing per attorney.
+
+7.8 No Identification of Opposing Counsel
+
+The Services do not identify, profile, or otherwise surface information concerning opposing counsel for any User's matter. Listed Lawyers are surfaced in their professional capacity as marketplace participants, not as adversaries to identified parties.
+
+7.9 State-by-State Operation
+
+The lawyer marketplace operates only in jurisdictions where Candid has determined that operation complies with applicable lawyer referral, advertising, and consumer protection rules. Candid may add, remove, or modify operations in any jurisdiction at any time. Users in unsupported jurisdictions may experience reduced functionality.
+
+7.10 No Malpractice Insurance Information
+
+Candid does not collect, verify, or display attorney professional liability ("malpractice") insurance information for Listed Lawyers. The presence or absence of malpractice insurance, the identity of any insurance carrier, the limits of any policy, and any related coverage details are NOT represented, vetted, or disclosed by Candid through the Services.
+
+Users seeking information about a Listed Lawyer's malpractice insurance coverage are responsible for obtaining that information directly from the Lawyer prior to engagement. Many states require lawyers to disclose malpractice insurance status to prospective clients pursuant to state bar rules; this is a Lawyer-to-client obligation governed by applicable bar rules, not a Candid-to-User obligation. Users should ask Listed Lawyers directly about insurance coverage during consultations or as part of their independent due diligence.
+
+The absence of malpractice insurance information on Candid is by design. Candid Case is a marketplace where Users connect with Listed Lawyers for their own evaluation and engagement. Users assume the burden of vetting Listed Lawyers, including without limitation evaluating their professional credentials, experience, fees, references, malpractice coverage, and any other factor material to engagement. Candid's verification activities are limited to those expressly described in Section 7.6 (state bar admission and disciplinary status); no other verification or representation is made by Candid concerning Listed Lawyers.
+
+7.11 User Responsibility for Diligence
+
+Without limiting any other provision, Users acknowledge and agree that:
+
+(a) Candid is a marketplace, not a vetting service;
+(b) Listed Lawyer profile information beyond state bar admission and disciplinary status (Section 7.6) is Self-Reported by the Lawyer and not independently verified by Candid;
+(c) Users are solely responsible for evaluating Listed Lawyer suitability before engaging the Lawyer for legal services, and for conducting any additional verification (including malpractice insurance, fee structure, credentials, references) the User deems material; and
+(d) Engagement of a Listed Lawyer is a separate transaction between the User and the Lawyer, and Candid is not a party to that engagement, nor responsible for any aspect of the Lawyer's services or conduct following engagement.
+
+8. SUBSCRIPTION, FEES, AND BILLING
+
+8.1 Free and Paid Tiers
+
+Candid offers free and paid tiers of service. Free-tier features include the Candid Claim audit engine, the Candid Plan benefit analysis, and access to the Candid Case marketplace and small claims preparation. Paid-tier features (Candid Pro) include but are not limited to dispute letter generation, premium Candid Care features, and other features identified at sign-up.
+
+8.2 Recurring Billing
+
+Paid subscriptions are recurring and billed on a monthly basis (or other interval disclosed at sign-up) until canceled. By providing payment information and subscribing, you authorize Candid (through its payment processor, Stripe, Inc.) to charge the applicable subscription fee to your designated payment method on each billing date.
+
+8.3 Payment Methods; Stripe
+
+Candid uses Stripe, Inc. for payment processing. Your payment card information is stored by Stripe, not by Candid. Candid retains only display fields (last four digits, card brand, expiration). Use of Stripe is subject to Stripe's terms of service (https://stripe.com/legal/ssa).
+
+8.4 Cancellation; Period-End Cancellation
+
+You may cancel your paid subscription at any time through the Billing page (https://www.candidclaim.com/billing). Cancellation takes effect at the end of the then-current billing period; you retain access to paid features until the period closes. Candid does not provide pro-rata refunds for unused portions of a billing period.
+
+8.5 Fee Changes
+
+Candid may modify subscription fees with thirty (30) days' written notice. Continued subscription after the effective date constitutes acceptance of the new fee. You may cancel before the new fee takes effect to avoid the change.
+
+8.6 No Refunds
+
+Except as required by applicable law or as expressly stated in these Terms, all fees paid are non-refundable.
+
+8.7 Lawyer Marketplace Fees
+
+Listed Lawyers' marketplace fees are governed by separate agreements between Candid and each Listed Lawyer and are not the subject of these Terms.
+
+9. INTELLECTUAL PROPERTY; COPYRIGHT; DMCA
+
+9.1 Candid's Intellectual Property
+
+The Services, including all software, designs, text, graphics, audio, video, photographs, logos, trademarks, and other content created by Candid (collectively, the "Candid IP"), are the property of Candid or its licensors and are protected by United States and international copyright, trademark, patent, trade secret, and other intellectual property laws.
+
+You are granted a limited, non-exclusive, non-transferable, revocable license to access and use the Services solely as expressly permitted by these Terms. Except as expressly authorized, you may not copy, reproduce, modify, distribute, sell, license, sublicense, transfer, publicly display, publicly perform, transmit, or otherwise exploit Candid IP.
+
+9.2 User Content License
+
+The license you grant Candid in your User Submissions is set forth in Section 6.1.
+
+9.3 DMCA Copyright Policy
+
+Candid complies with the Digital Millennium Copyright Act ("DMCA"). If you believe that Content on the Services infringes your copyright, you may submit a DMCA takedown notice to Candid's designated DMCA agent.
+
+9.3.1 Designated DMCA Agent
+
+DMCA notices must be sent to:
+
+   Airgetlam Labs LLC, Legal Department
+   Designated DMCA Agent
+   7547 Leviston Avenue
+   El Cerrito, CA 94530
+   Email: legal@candidclaim.com
+
+9.3.2 DMCA Notice Requirements
+
+A valid DMCA notice must include:
+
+(a) a physical or electronic signature of the copyright owner or authorized agent;
+(b) identification of the copyrighted work claimed to have been infringed;
+(c) identification of the allegedly infringing Content with sufficient detail (URL or location) to permit Candid to locate it;
+(d) sufficient contact information for the complainant;
+(e) a statement that the complainant has a good-faith belief that the use is not authorized by the copyright owner, agent, or law; and
+(f) a statement, under penalty of perjury, that the information in the notice is accurate and that the complainant is authorized to act on behalf of the copyright owner.
+
+9.3.3 Counter-Notification
+
+If your Content has been removed or disabled in response to a DMCA notice, you may submit a counter-notification containing the information required by 17 U.S.C. § 512(g)(3). Upon receipt of a valid counter-notification, Candid may restore the Content unless the complainant initiates a court action within 10-14 business days.
+
+9.3.4 Repeat Infringer Policy
+
+Candid will terminate, in appropriate circumstances, the accounts of Users who are repeat copyright infringers.
+
+9.4 Trademark Notices
+
+If you believe that Content on the Services infringes a trademark you own, please contact us at legal@candidclaim.com with relevant details. While trademark complaints are not subject to the DMCA, Candid reviews them in good faith.
+
+10. HEALTHCARE-SPECIFIC PROVISIONS
+
+10.1 No Medical Advice
+
+The Services do not provide medical advice. Information about healthcare providers, procedures, costs, and quality is informational only and is not a substitute for professional medical advice, diagnosis, or treatment. Always seek the advice of a licensed physician or other qualified healthcare provider with any questions about a medical condition.
+
+10.2 Cost Information Is Not a Quote
+
+Pricing information surfaced through Candid Care, including median costs, ranges, percentiles, and Medicare benchmarks, is informational only and is not a quote, offer, or guarantee. Actual costs may vary significantly based on the User's insurance plan, plan year, deductible status, individual provider negotiations, and other factors. Users should confirm costs directly with the provider before receiving care.
+
+10.3 No Endorsement of Providers
+
+The presence or absence of any healthcare provider in Candid Care does not constitute endorsement, recommendation, or warranty by Candid. Provider selection is the User's decision based on the User's own circumstances and judgment.
+
+10.4 Document Uploads; Protected Health Information
+
+If you upload medical bills, Explanations of Benefits, Summary of Benefits and Coverage documents, or other documents that may contain Protected Health Information ("PHI") as defined under HIPAA, you authorize Candid to process such documents for purposes of providing the Services. You are solely responsible for redacting any PHI of third parties (such as dependents) from uploaded documents to the extent appropriate. Candid's handling of PHI is described in detail in our Privacy Policy (https://www.candidclaim.com/privacy).
+
+10.5 No Warranty of Audit Accuracy
+
+The Candid Claim audit engine surfaces potential billing errors based on rule-based and aggregate-data heuristics. Audit findings are informational and do not guarantee the existence of an actual billing error. Users are responsible for evaluating audit findings, consulting with healthcare providers and insurers, and determining whether to take any action.
+
+10.6 No Insurance Brokerage
+
+Candid is not a licensed insurance broker, agent, or advisor in any jurisdiction. Information about insurance plans, supplemental insurance, alternative plans, or related products is informational only. Users should consult licensed insurance professionals before making coverage decisions.
+
+11. LEGAL-SERVICES-SPECIFIC PROVISIONS
+
+11.1 No Legal Advice
+
+The Services do not provide legal advice. Candid is not a law firm and does not engage in the practice of law. Information provided through the Services, including dispute letter templates, audit findings, case files, small claims preparation, marketplace match descriptions, and any other content, is informational only and is not a substitute for advice from a licensed attorney.
+
+11.2 User Sends All Letters
+
+Dispute letters, negotiation letters, and any other correspondence generated through the Services are drafted for the User and must be sent by the User. Candid does not transmit, file, or submit any document to any insurer, healthcare provider, court, regulator, or other party on the User's behalf. The User is solely responsible for sending all communications.
+
+11.3 Credit Repair Organizations Act (CROA)
+
+Candid is not a "credit repair organization" as defined in the Credit Repair Organizations Act, 15 U.S.C. § 1679a, and the Services are not "credit repair services" or analogous services regulated under that statute or analogous state laws. The Services do not modify or improve any consumer credit record, history, rating, or score. Medical bill disputes are addressed to insurers and healthcare providers, not to credit bureaus or collection agencies.
+
+To the extent any portion of the Services is alleged to fall within CROA or analogous state laws, Users acknowledge and agree that:
+
+(a) they are not required to pay for any portion of the Services in advance of completion of services they performed (the User performs the dispute themselves; Candid provides information services only);
+(b) Candid does not make claims about the User's credit score or rating;
+(c) the User has the right to cancel any contract for credit repair services within three (3) business days, and any such right is hereby preserved.
+
+11.4 Small Claims Preparation Is Not Legal Advice
+
+Information about state-by-state small claims procedures, filing fees, jurisdictional thresholds, and court forms is publicly sourced and informational. Candid does not provide legal advice regarding small claims actions. Users contemplating legal action should consult an attorney.
+
+11.5 Case Files Are User Property
+
+Case files generated through the Services compile information provided by the User and from public and aggregate sources for the User's own use. Case files are the User's property. Candid does not warrant the accuracy, completeness, or legal sufficiency of any case file for any specific legal proceeding.
+
+12. DISCLAIMERS AND WARRANTIES
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE SERVICES ARE PROVIDED "AS IS" AND "AS AVAILABLE" WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, AND ANY WARRANTIES ARISING FROM COURSE OF DEALING OR USAGE OF TRADE.
+
+WITHOUT LIMITING THE FOREGOING, CANDID DOES NOT WARRANT THAT:
+
+(a) THE SERVICES WILL MEET THE USER'S REQUIREMENTS;
+(b) THE SERVICES WILL BE UNINTERRUPTED, TIMELY, SECURE, OR ERROR-FREE;
+(c) ANY INFORMATION OBTAINED THROUGH THE SERVICES WILL BE ACCURATE, COMPLETE, OR RELIABLE;
+(d) DEFECTS IN THE SERVICES WILL BE CORRECTED;
+(e) THE SERVICES OR THE SERVERS THAT MAKE THEM AVAILABLE ARE FREE FROM VIRUSES OR OTHER HARMFUL COMPONENTS; OR
+(f) ANY DISPUTE LETTER, AUDIT FINDING, MATCH RECOMMENDATION, OR OTHER OUTPUT WILL ACHIEVE ANY PARTICULAR RESULT.
+
+SOME JURISDICTIONS DO NOT ALLOW EXCLUSION OF CERTAIN WARRANTIES; THE LIMITATIONS IN THIS SECTION 12 APPLY ONLY TO THE EXTENT PERMITTED BY APPLICABLE LAW.
+
+13. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, CANDID, AIRGETLAM LABS LLC, AND THEIR RESPECTIVE OFFICERS, DIRECTORS, EMPLOYEES, AGENTS, AFFILIATES, AND LICENSORS (COLLECTIVELY, "CANDID PARTIES") SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES, INCLUDING BUT NOT LIMITED TO DAMAGES FOR LOSS OF PROFITS, GOODWILL, USE, DATA, OR OTHER INTANGIBLE LOSSES, ARISING FROM OR RELATED TO YOUR USE OF OR INABILITY TO USE THE SERVICES, REGARDLESS OF THE THEORY OF LIABILITY (CONTRACT, TORT, NEGLIGENCE, STRICT LIABILITY, OR OTHERWISE) AND EVEN IF CANDID PARTIES HAVE BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE TOTAL CUMULATIVE LIABILITY OF CANDID PARTIES TO YOU FOR ALL CLAIMS ARISING FROM OR RELATED TO THESE TERMS OR THE SERVICES SHALL NOT EXCEED THE GREATER OF: (A) THE TOTAL AMOUNTS PAID BY YOU TO CANDID IN THE TWELVE (12) MONTHS PRECEDING THE CLAIM, OR (B) ONE HUNDRED U.S. DOLLARS ($100).
+
+SOME JURISDICTIONS DO NOT ALLOW THE EXCLUSION OR LIMITATION OF CERTAIN DAMAGES; THE LIMITATIONS IN THIS SECTION 13 APPLY ONLY TO THE EXTENT PERMITTED BY APPLICABLE LAW.
+
+The limitations in this Section 13 apply regardless of whether any limited remedy provided in these Terms fails of its essential purpose.
+
+14. INDEMNIFICATION
+
+You agree to indemnify, defend, and hold harmless Candid Parties (as defined in Section 13) from and against any and all claims, demands, lawsuits, damages, liabilities, losses, judgments, settlements, costs, and expenses (including reasonable attorneys' fees and court costs) arising out of or relating to:
+
+(a) your access to or use of the Services;
+(b) your violation of these Terms or the Community Guidelines;
+(c) your violation of any rights of any third party, including but not limited to defamation, intellectual property, privacy, or publicity rights;
+(d) your User Submissions (including without limitation any claim that a User Submission is defamatory, infringing, false, misleading, or unlawful);
+(e) your violation of any applicable law or regulation; or
+(f) any misrepresentation or breach of any of your representations and warranties under these Terms.
+
+Candid reserves the right, at its own expense, to assume the exclusive defense and control of any matter for which you are required to indemnify Candid, in which case you agree to cooperate with Candid's defense. You shall not settle any matter affecting Candid without Candid's prior written consent.
+
+15. TERMINATION
+
+15.1 Termination by Candid
+
+Candid may suspend, restrict, or terminate your access to the Services, in whole or in part, at any time, with or without notice, for any reason, including but not limited to:
+
+(a) breach of these Terms;
+(b) violation of the Community Guidelines;
+(c) fraud, misrepresentation, or other unlawful conduct;
+(d) extended inactivity;
+(e) regulatory or legal requirement; or
+(f) at Candid's sole discretion.
+
+15.2 Termination by You
+
+You may terminate your account at any time as described in Section 4.3.
+
+15.3 Effect of Termination
+
+Upon termination:
+
+(a) your right to access the Services ceases;
+(b) Candid may delete or archive your account and User Submissions, subject to retention obligations under Section 6.7 and applicable law;
+(c) any outstanding payment obligations survive;
+(d) the provisions specified in Section 20.5 survive.
+
+16. MODIFICATIONS TO TERMS
+
+Candid may modify these Terms at any time. Material modifications will be communicated to Users by:
+
+(a) updating the "Last Revised" date at the top of these Terms;
+(b) posting the modified Terms on the Services; and
+(c) for material changes, providing notice through email or in-platform notification at least thirty (30) days before the effective date.
+
+Material changes to the dispute resolution provisions in Section 17 (arbitration agreement, class action waiver, governing law, venue) require your express acceptance, which may be obtained through an in-platform consent flow. If you do not accept material changes to dispute resolution provisions, you may terminate your account before the changes take effect.
+
+For all other modifications, your continued use of the Services after the effective date of the modifications constitutes your acceptance of the modified Terms. If you do not agree to any modifications, you must stop using the Services and may terminate your account.
+
+17. DISPUTE RESOLUTION; ARBITRATION; CLASS ACTION WAIVER
+
+PLEASE READ THIS SECTION 17 CAREFULLY. IT REQUIRES YOU AND CANDID TO RESOLVE DISPUTES THROUGH BINDING INDIVIDUAL ARBITRATION RATHER THAN COURT, AND IT WAIVES YOUR RIGHT TO PARTICIPATE IN A CLASS ACTION.
+
+17.1 Informal Resolution
+
+Before initiating arbitration, you and Candid agree to first attempt to resolve any dispute informally for at least sixty (60) days. To begin informal resolution, you must send a written notice describing the dispute to legal@candidclaim.com with the subject line "Dispute Notice." Candid will respond within thirty (30) days.
+
+17.2 Binding Arbitration
+
+If the dispute is not resolved through informal resolution, you and Candid agree that any dispute, claim, or controversy arising out of or relating to these Terms or the Services (including the formation, breach, termination, validity, or enforceability of these Terms) shall be resolved by binding individual arbitration administered by JAMS in accordance with its applicable rules then in effect.
+
+The arbitration shall be conducted by a single arbitrator. Hearings, if any, will be conducted by videoconference unless the parties agree otherwise. The arbitrator's decision is final and binding, subject only to limited judicial review under the Federal Arbitration Act, 9 U.S.C. § 1 et seq.
+
+17.3 Class Action Waiver
+
+YOU AND CANDID AGREE THAT EACH MAY BRING CLAIMS AGAINST THE OTHER ONLY IN AN INDIVIDUAL CAPACITY AND NOT AS A PLAINTIFF OR CLASS MEMBER IN ANY PURPORTED CLASS, COLLECTIVE, REPRESENTATIVE, OR PRIVATE ATTORNEY GENERAL PROCEEDING. THE ARBITRATOR MAY NOT CONSOLIDATE OR JOIN MORE THAN ONE PERSON'S CLAIMS WITHOUT THE PARTIES' EXPRESS WRITTEN CONSENT AND MAY NOT PRESIDE OVER ANY FORM OF REPRESENTATIVE OR CLASS PROCEEDING.
+
+If a court or arbitrator finds that the class action waiver in this Section 17.3 is unenforceable for any reason, then the entirety of Section 17 (arbitration agreement) shall be null and void, but the remainder of these Terms shall continue in full force and effect.
+
+17.4 Right to Opt Out of Arbitration
+
+YOU MAY OPT OUT OF THE ARBITRATION AGREEMENT IN THIS SECTION 17 BY SENDING WRITTEN NOTICE TO legal@candidclaim.com WITHIN THIRTY (30) DAYS AFTER FIRST ACCEPTING THESE TERMS, WITH THE SUBJECT LINE "ARBITRATION OPT-OUT" AND INCLUDING YOUR FULL NAME AND ACCOUNT EMAIL. If you opt out, you and Candid will resolve disputes in court as described in Section 18, but you remain bound by the class action waiver if it is enforceable in court.
+
+17.5 Exceptions
+
+Notwithstanding Section 17.2, either party may bring an action in court (subject to Section 18) for:
+
+(a) intellectual property infringement;
+(b) injunctive or equitable relief to protect intellectual property rights, confidentiality, or to prevent material harm;
+(c) small claims court matters within that court's jurisdiction; or
+(d) as required by applicable law (such as certain statutory actions that cannot be arbitrated).
+
+17.6 Arbitration Costs
+
+Each party shall bear its own arbitration costs except as required by JAMS rules or applicable law. Candid will pay arbitration filing, administration, and arbitrator fees to the extent JAMS Consumer Arbitration Minimum Standards or analogous rules require.
+
+17.7 Arbitration Confidentiality
+
+Arbitration proceedings shall be confidential. Neither party may disclose the existence, content, or results of any arbitration except as required by law or to enforce the arbitration award.
+
+18. GOVERNING LAW; VENUE
+
+These Terms and any dispute arising out of or relating to these Terms or the Services shall be governed by and construed in accordance with the laws of the State of Delaware, without regard to its conflict of laws principles.
+
+For any matter not subject to binding arbitration under Section 17 (including matters where the User has opted out of arbitration or matters falling within Section 17.5 exceptions), the parties consent to the exclusive jurisdiction of the state and federal courts located in New Castle County, Delaware, and waive any objection to venue therein.
+
+This choice of law and forum applies to the maximum extent permitted by applicable consumer protection law. Some jurisdictions provide consumers with non-waivable rights to sue in their home jurisdiction; the foregoing applies only to the extent permitted by such laws.
+
+19. STATE-SPECIFIC PROVISIONS
+
+19.1 California Residents
+
+19.1.1 California Civil Code § 1789.3 Notice
+
+Pursuant to California Civil Code § 1789.3, California residents are entitled to the following consumer rights notice:
+
+   The provider of this service is Airgetlam Labs LLC, 7547 Leviston Avenue, El Cerrito, CA 94530. To file a complaint regarding the Services or to receive further information regarding use of the Services, contact us at support@candidclaim.com or write to us at the address listed. You may also contact the Complaint Assistance Unit of the Division of Consumer Services of the California Department of Consumer Affairs, 1625 North Market Boulevard, Suite N-112, Sacramento, California 95834, or by telephone at (800) 952-5210.
+
+19.1.2 California Subscription Disclosure
+
+Subscriptions are governed by California Business & Professions Code § 17600 et seq. (Automatic Renewal Law). You will be provided clear disclosure of subscription terms at the point of sale, sent confirmation of your subscription, and given an easy method of cancellation as described in Section 8.4.
+
+19.1.3 California Consumer Privacy
+
+Your privacy rights under the California Consumer Privacy Act (CCPA) and California Privacy Rights Act (CPRA) are described in our Privacy Policy (https://www.candidclaim.com/privacy).
+
+19.2 New York Residents
+
+The arbitration provisions in Section 17 are subject to the requirements of New York General Obligations Law § 5-1401 and analogous law. New York residents may have additional consumer protection rights described in our Privacy Policy (https://www.candidclaim.com/privacy).
+
+19.3 Massachusetts Residents
+
+The arbitration provisions in Section 17 do not apply to claims under Massachusetts General Laws Chapter 93A (Consumer Protection Act) to the extent that statute prohibits binding arbitration of such claims.
+
+19.4 Other Jurisdictions
+
+Where these Terms conflict with non-waivable consumer protection rights in any jurisdiction, the non-waivable rights shall prevail to the minimum extent necessary, and the remainder of these Terms shall remain in full force and effect.
+
+19.5 International Users
+
+The Services are operated from and intended for use within the United States. If you access the Services from outside the United States, you do so at your own risk and are responsible for compliance with local law. If you are subject to the European Union General Data Protection Regulation (GDPR), the United Kingdom Data Protection Act, or analogous laws, please review our Privacy Policy (https://www.candidclaim.com/privacy) for applicable data subject rights.
+
+20. GENERAL PROVISIONS
+
+20.1 Entire Agreement
+
+These Terms, together with the Privacy Policy (https://www.candidclaim.com/privacy), the Community Guidelines (https://www.candidclaim.com/guidelines), and any service-specific terms, constitute the entire agreement between you and Candid regarding the Services and supersede any prior or contemporaneous agreements, understandings, or representations.
+
+20.2 Severability
+
+If any provision of these Terms is held by a court or arbitrator of competent jurisdiction to be invalid, illegal, or unenforceable, that provision shall be modified to the minimum extent necessary to make it valid and enforceable, or, if such modification is not possible, severed from these Terms. The remaining provisions shall continue in full force and effect.
+
+20.3 No Waiver
+
+Failure or delay by either party in exercising any right under these Terms shall not constitute a waiver of that right. No waiver of any term shall be deemed a continuing waiver or a waiver of any other term.
+
+20.4 Assignment
+
+You may not assign or transfer these Terms or any rights or obligations hereunder, by operation of law or otherwise, without Candid's prior written consent. Candid may freely assign or transfer these Terms in connection with a merger, acquisition, sale of assets, or by operation of law. Any unauthorized assignment by you is null and void.
+
+20.5 Survival
+
+The provisions of these Terms that by their nature should survive termination shall so survive, including without limitation: Sections 5 (Platform Status), 6 (User Submissions), 9 (Intellectual Property), 12 (Disclaimers), 13 (Limitation of Liability), 14 (Indemnification), 15.3 (Effect of Termination), 17 (Arbitration), 18 (Governing Law), 20 (General Provisions), and any payment obligations.
+
+20.6 Force Majeure
+
+Candid shall not be liable for any failure or delay in performance arising from circumstances beyond its reasonable control, including acts of God, natural disasters, war, terrorism, civil unrest, government action, labor disputes, internet or telecommunications failures, or pandemics.
+
+20.7 Notices
+
+Notices to Candid must be sent to:
+
+   Airgetlam Labs LLC
+   7547 Leviston Avenue
+   El Cerrito, CA 94530
+   Email: legal@candidclaim.com
+
+Notices to you may be sent via email to the address associated with your account or by posting on the Services. Notices are deemed effective upon receipt (for email) or twenty-four (24) hours after posting (for in-platform notices).
+
+20.8 No Third-Party Beneficiaries
+
+These Terms do not create any third-party beneficiary rights, except that Candid Parties (as defined in Section 13) are intended beneficiaries of Sections 12, 13, and 14.
+
+20.9 Headings
+
+Section headings are for convenience only and do not affect interpretation.
+
+20.10 Construction
+
+These Terms shall not be construed against either party as the drafter. The parties acknowledge that they have had the opportunity to review and consult with counsel.
+
+20.11 Electronic Signatures and Records
+
+You consent to the use of electronic signatures and records in connection with these Terms and the Services. You may withdraw consent by terminating your account.
+
+20.12 Government Users
+
+If you are a U.S. government end-user, the Services and any related documentation are "commercial items" as defined at 48 C.F.R. § 2.101, consisting of "commercial computer software" and "commercial computer software documentation." Government use is subject to these Terms.
+
+21. CONTACT INFORMATION
+
+Company:
+
+   Airgetlam Labs LLC, doing business as Candid
+   7547 Leviston Avenue
+   El Cerrito, CA 94530
+   Website: https://www.candidclaim.com
+
+General Inquiries and Support: support@candidclaim.com
+Legal Notices, DMCA, Disputes, Trademark, Arbitration Opt-Out: legal@candidclaim.com
+Privacy Inquiries (CCPA, CPRA, GDPR): privacy@candidclaim.com
+
+Candid is an Airgetlam Labs LLC company.`
   ),
 
   // ===========================================================================
