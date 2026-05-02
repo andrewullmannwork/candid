@@ -17,8 +17,72 @@
  * compatibility) via `toLegacySBCResult()` adapter at the orchestrator boundary.
  */
 
-import type { SBCParsedService, SBCParsedAppealsContact } from "../plan/sbc-parser";
+import type { InsurancePlanInsert } from "@/lib/supabase/types";
 import type { PatternP8Provenance as SharedPatternP8Provenance } from "../parser/verify-source-excerpts";
+
+/**
+ * Canonical SBC parse result shape (Phase 3.2.1: relocated from src/lib/plan/sbc-parser.ts).
+ * Used by the persistence layer (process-plan.ts) as the lingua franca that both the
+ * Haiku-first parser (via `translateHaikuToLegacy()`) and downstream consumers speak.
+ */
+export interface SBCParseResult {
+  plan: Partial<InsurancePlanInsert>;
+  services: SBCParsedService[];
+  confidence: number;
+  parseWarnings: string[];
+}
+
+/**
+ * Per-service row in an SBC parse result. Cost-sharing fields cover both in-network
+ * and out-of-network variants. Pattern P-8 source_excerpt + sourcePage support
+ * citation-grade dispute letter evidence (Phase 4.5 work; nullable for backward compat).
+ */
+export interface SBCParsedService {
+  serviceSlug: string;
+  placeOfService: string;
+  inCopay: number | null;
+  inCoinsurance: number | null;
+  inDeductibleApplies: boolean | null;
+  inCopayWaiverCondition: string | null;
+  inCostDescription: string;
+  outCopay: number | null;
+  outCoinsurance: number | null;
+  outDeductibleApplies: boolean | null;
+  outCostDescription: string;
+  oonPaidAtInNetwork: boolean;
+  annualLimit: string | null;
+  annualLimitValue: number | null;
+  priorAuthRequired: boolean | null;
+  penaltyNoPrecert: number | null;
+  covered: boolean;
+  coverageConditions: string | null;
+  supplyLimitDays: number | null;
+  homeDeliveryCopay: number | null;
+  stepTherapyRequired: boolean | null;
+  notes: string | null;
+  confidence: number;
+  // Phase 4.5 — direct-quote citation data for dispute letter evidence block.
+  // Populated when the extractor captures the verbatim SBC passage that
+  // supports this service's copay/coinsurance values. Nullable for legacy rows.
+  sourceExcerpt?: string | null;
+  sourcePage?: number | null;
+}
+
+/**
+ * Phase 6.1 — extracted appeals contact block from SBC / plan document back pages.
+ * Flows into insurer-appeals-upsert so the crowdsourced registry stays fresh.
+ */
+export interface SBCParsedAppealsContact {
+  addressLine1: string | null;
+  addressLine2: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
+  phone: string | null;
+  sourceExcerpt: string | null;
+  sourcePage: number | null;
+  confidence: number;
+}
 
 /**
  * SBC-specific section hints per Pattern P-8 convention.

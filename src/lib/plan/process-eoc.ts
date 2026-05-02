@@ -26,6 +26,7 @@ import { parseEOC } from "@/lib/eoc/parser";
 import { resolveOrEnqueueConcept } from "@/lib/eoc/concept-resolver";
 import type { EOCParseResult } from "@/lib/eoc/types";
 import type { ProcessPlanResult } from "@/lib/plan/process-plan";
+import { buildEOCPlanIdentityProvenance } from "@/lib/parser/provenance-builders";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
@@ -148,6 +149,16 @@ async function persistEOCPlanIdentity(
   documentId: string,
   parsed: EOCParseResult,
 ): Promise<ProcessPlanResult> {
+  // Phase 3.2.1 Q-P3.2.1-2 — Pattern P-8 plan-identity provenance for EOC writes.
+  // EOC plan_identity comes from regex parsePlanDocument (per Q-P3.1A-11) so there's
+  // no patternP8 sub-keys; entries carry source="doc_extraction_eoc" + confidence +
+  // last_corroborated_at only. Cross-source corroboration with SBC plan-identity
+  // (where values match) lifts confidence via Pattern 1 #3 — corroboration is value-
+  // match-based, not excerpt-match-based, so absence of P-8 sub-keys here doesn't
+  // break the flywheel.
+  const eocPlanIdentityProvenance = buildEOCPlanIdentityProvenance(parsed.plan_identity);
+  const hasProvenanceEntries = Object.keys(eocPlanIdentityProvenance).length > 0;
+
   const planFields = {
     user_id: doc.user_id,
     insurer_name: parsed.plan_identity.insurer_name,
@@ -161,6 +172,7 @@ async function persistEOCPlanIdentity(
     source_document_id: documentId,
     is_active: true,
     verification_status: "document_verified" as const,
+    ...(hasProvenanceEntries ? { field_provenance: eocPlanIdentityProvenance } : {}),
   };
 
   // Check for existing active plan for this user.
@@ -182,6 +194,10 @@ async function persistEOCPlanIdentity(
     if (planFields.in_oop_max_individual !== null) updates.in_oop_max_individual = planFields.in_oop_max_individual;
     if (planFields.out_deductible_individual !== null) updates.out_deductible_individual = planFields.out_deductible_individual;
     if (planFields.out_oop_max_individual !== null) updates.out_oop_max_individual = planFields.out_oop_max_individual;
+    // Phase 3.2.1 — propagate EOC plan-identity provenance into existing row.
+    // Last-writer-wins on JSONB (acceptable per Subplan §Risks; Pattern 1 #3
+    // corroboration handles cross-source value-matching independent of excerpt diversity).
+    if (hasProvenanceEntries) updates.field_provenance = eocPlanIdentityProvenance;
 
     const { error: updateErr } = await supabase
       .from("insurance_plans")

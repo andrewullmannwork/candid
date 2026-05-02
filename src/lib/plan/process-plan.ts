@@ -5,15 +5,20 @@
  */
 
 import { createServerClient } from "@/lib/supabase/server";
-import { parseSBCText } from "@/lib/plan/sbc-parser";
 import { parsePlanDocument } from "@/lib/plan/plan-doc-parser";
 import { extractServicesWithClaude } from "@/lib/plan/claude-extractor";
 import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
 import { matchInsurerWithPlanFallback } from "@/lib/plan/insurer-match";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { votedParseSBC } from "@/lib/sbc/voted-parser";
+import type { VotedParseSBCResult } from "@/lib/sbc/voted-parser";
 import { translateHaikuToLegacy } from "@/lib/sbc/legacy-adapter";
-import type { SBCParsedService } from "@/lib/plan/sbc-parser";
+import type { SBCHaikuService, SBCParseResult, SBCParsedService } from "@/lib/sbc/types";
+import {
+  buildPlanCoveredServiceProvenance,
+  buildCanonicalPlanServiceProvenance,
+  buildSBCPlanIdentityProvenance,
+} from "@/lib/parser/provenance-builders";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
@@ -72,7 +77,10 @@ export async function processPlanDocumentData(
     // ── Phase 3.2: Haiku-first SBC parser dispatch (behind sbc_parser_v1 flag) ─
     // Per Q-P3.2-2 LOCK = REPLACE: when flag ON + !isFullPlanDoc, use new
     // src/lib/sbc/ Haiku-first parser (Pattern P-8 + DR-3D + DR-3C voting).
-    // When flag OFF: continue with legacy regex parseSBCText path (no behavior change).
+    // Phase 3.2.1 Q-P3.2.1-1: legacy regex SBC parser dropped. Flag OFF on SBC route
+    // throws explicit error (no silent fallback). plan_document classification still
+    // uses regex parsePlanDocument + claude-extractor (F.14 fast-follow tracks Phase 3.4
+    // migration to Haiku-first plan-doc parser).
     const { data: userForFlagCheck } = await supabase
       .from("users")
       .select("email")
@@ -82,39 +90,50 @@ export async function processPlanDocumentData(
       ? await isFeatureEnabled("sbc_parser_v1", userForFlagCheck?.email ?? undefined)
       : false;
 
-    let parseResult: ReturnType<typeof parseSBCText>;
+    let parseResult: SBCParseResult;
     let usedNewSBCParser = false;
+    let haikuResult: VotedParseSBCResult | null = null;
     let haikuFirstAppealsContact: ReturnType<typeof translateHaikuToLegacy>["appealsContact"] = null;
 
     if (sbcParserV1Enabled) {
+      // SBC route under sbc_parser_v1 ON — Haiku-first parser is the only path.
+      // Per Phase 3.2.1 Q-P3.2.1-1 LOCK: legacy regex fallback removed; Haiku-failure
+      // throws explicit error → existing failed_extraction document state + Slack alert
+      // + T0.4 retry surface. Pre-launch context permits this.
+      console.log("[process-plan] sbc_parser_v1 ON — dispatching Haiku-first parser");
       try {
-        console.log("[process-plan] sbc_parser_v1 ON — dispatching Haiku-first parser");
-        const haikuResult = await votedParseSBC({
+        haikuResult = await votedParseSBC({
           ocrText,
           extractionMethod: "pdftotext",
           canonicalMatchExists: false, // v1: always cold-start vote (N=3) for safety; v1.5 add canonical pre-check
         });
-        const translated = translateHaikuToLegacy(haikuResult);
-        parseResult = {
-          plan: translated.plan,
-          services: translated.services,
-          confidence: translated.confidence,
-          parseWarnings: translated.parseWarnings,
-        };
-        haikuFirstAppealsContact = translated.appealsContact;
-        usedNewSBCParser = true;
-        console.log(
-          `[process-plan] sbc_parser_v1: ${haikuResult.services.length} services + ${haikuResult.otherCoveredServices.length} other-covered + voting=${haikuResult.votingMetadata.triggered ? `triggered (n=${haikuResult.votingMetadata.successfulAttempts}/${haikuResult.votingMetadata.n})` : "skipped"} + cost=$${haikuResult.costUsd.toFixed(4)}`,
-        );
       } catch (err) {
-        console.error("[process-plan] sbc_parser_v1 failed, falling back to legacy:", err);
-        parseResult = parseSBCText(ocrText, documentId);
+        console.error("[process-plan] sbc_parser_v1 failed:", err);
+        throw new Error(`SBC_PARSE_FAILED: ${err instanceof Error ? err.message : String(err)}`);
       }
+      const translated = translateHaikuToLegacy(haikuResult);
+      parseResult = {
+        plan: translated.plan,
+        services: translated.services,
+        confidence: translated.confidence,
+        parseWarnings: translated.parseWarnings,
+      };
+      haikuFirstAppealsContact = translated.appealsContact;
+      usedNewSBCParser = true;
+      console.log(
+        `[process-plan] sbc_parser_v1: ${haikuResult.services.length} services + ${haikuResult.otherCoveredServices.length} other-covered + voting=${haikuResult.votingMetadata.triggered ? `triggered (n=${haikuResult.votingMetadata.successfulAttempts}/${haikuResult.votingMetadata.n})` : "skipped"} + cost=$${haikuResult.costUsd.toFixed(4)}`,
+      );
+    } else if (isFullPlanDoc) {
+      // plan_document classification → regex parsePlanDocument + Haiku augmentation
+      // (extractServicesWithClaude below). No flag dependency; this path is unchanged.
+      // Future Phase 3.4 candidate: migrate this path to a Haiku-first parser too,
+      // at which point claude-extractor.ts becomes droppable per F.14 fast-follow.
+      parseResult = parsePlanDocument(ocrText);
     } else {
-      // Legacy path (regex + later Haiku augmentation)
-      parseResult = isFullPlanDoc
-        ? parsePlanDocument(ocrText)
-        : parseSBCText(ocrText, documentId);
+      // SBC classification with sbc_parser_v1 OFF — explicit failure.
+      // The flag stays in code as a kill-switch for debugging; flipping a specific
+      // user OFF will surface this error rather than silently degrade their data.
+      throw new Error("SBC_PARSER_DISABLED: sbc_parser_v1 flag is OFF for this user");
     }
 
     // ── Plan identity: Haiku primary, regex fallback (skipped under sbc_parser_v1) ────
@@ -133,7 +152,9 @@ export async function processPlanDocumentData(
         if (haikuIds.insurer) parseResult.plan.insurer_name = haikuIds.insurer;
         if (haikuIds.planType) parseResult.plan.plan_type = haikuIds.planType;
       } catch (haikuErr) {
-        // Haiku failed — regex results from sbc-parser remain as fallback
+        // Phase 3.2.1: this code path runs only for plan_document classification
+        // (isFullPlanDoc=true). Haiku plan-identity augmentation is best-effort;
+        // on failure, the regex parsePlanDocument result stands as-is.
         console.warn("[process-plan] Haiku plan identity failed, using regex fallback:", haikuErr);
       }
     }
@@ -217,6 +238,14 @@ export async function processPlanDocumentData(
     } // end else (legacy claude-extractor path)
 
     // ── Plan insert + mismatch detection ────────────────────────────────────
+    // Phase 3.2.1 Q-P3.2.1-2 + Q-P3.2.1-4: when haikuResult is available, persist
+    // per-field Pattern P-8 provenance for plan-identity columns to insurance_plans.
+    // field_provenance JSONB (mig 063). plan_document path leaves field_provenance
+    // empty (default '{}') — plan-doc regex extraction has no patternP8.
+    const planIdentityProvenance = haikuResult
+      ? buildSBCPlanIdentityProvenance(haikuResult.planIdentity)
+      : null;
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const planInsert: Record<string, any> = {
       ...parseResult.plan,
@@ -225,6 +254,7 @@ export async function processPlanDocumentData(
       source_document_id: documentId,
       is_active: true,
       verification_status: "document_verified" as const,
+      ...(planIdentityProvenance ? { field_provenance: planIdentityProvenance } : {}),
     };
 
     const { data: userProfile } = await supabase
@@ -334,6 +364,9 @@ export async function processPlanDocumentData(
     if (mergeIntoExistingPlan) {
       targetPlanId = mergeIntoExistingPlan;
       // Update the existing plan with any new metadata (deductibles, OOP, etc.)
+      // Phase 3.2.1 — also propagate field_provenance from this upload's parse so
+      // Pattern P-8 cite chain stays current. Plan_document path skips since
+      // planIdentityProvenance is null there.
       await supabase.from("insurance_plans").update({
         source: (isFullPlanDoc ? "plan_doc_upload" : "sbc_upload") as string,
         source_document_id: documentId,
@@ -343,6 +376,7 @@ export async function processPlanDocumentData(
         in_oop_max_individual: planInsert.in_oop_max_individual,
         out_deductible_individual: planInsert.out_deductible_individual,
         out_oop_max_individual: planInsert.out_oop_max_individual,
+        ...(planIdentityProvenance ? { field_provenance: planIdentityProvenance } : {}),
       }).eq("id", targetPlanId);
       // Ensure profile points to this plan and back-populate plan info
       const profileUpdate: Record<string, unknown> = { active_insurance_plan_id: targetPlanId };
@@ -603,30 +637,50 @@ export async function processPlanDocumentData(
 
       const confident = [...deduped.values()].filter(s => s.confidence >= 0.5);
 
-      const serviceInserts = confident.map((s) => ({
-        insurance_plan_id: targetPlanId,
-        service_id: slugToId.get(s.serviceSlug)!,
-        concept_id: conceptIdMap.get(s.serviceSlug) || null,
-        place_of_service: s.placeOfService || "any",
-        in_copay: s.inCopay, in_coinsurance: s.inCoinsurance,
-        in_deductible_applies: s.inDeductibleApplies, in_copay_waiver_condition: s.inCopayWaiverCondition,
-        in_cost_description: s.inCostDescription,
-        out_copay: s.outCopay, out_coinsurance: s.outCoinsurance,
-        out_deductible_applies: s.outDeductibleApplies, out_cost_description: s.outCostDescription,
-        oon_paid_at_in_network: s.oonPaidAtInNetwork,
-        annual_limit: s.annualLimit, annual_limit_value: s.annualLimitValue,
-        prior_auth_required: s.priorAuthRequired, penalty_no_precert: s.penaltyNoPrecert,
-        covered: s.covered, coverage_conditions: s.coverageConditions,
-        supply_limit_days: s.supplyLimitDays, home_delivery_copay: s.homeDeliveryCopay,
-        step_therapy_required: s.stepTherapyRequired, notes: s.notes,
-        confidence: s.confidence, source: "sbc_parsed" as const,
-        // Phase 4.5 — SBC direct-quote citation support. `sbc_excerpt` +
-        // `sbc_page` columns added in migration 050 (nullable, safe no-op for
-        // older Postgres replicas where the column isn't yet present — the
-        // Supabase client silently drops unknown columns per PostgREST behavior).
-        sbc_excerpt: s.sourceExcerpt ?? null,
-        sbc_page: s.sourcePage ?? null,
-      }));
+      // Phase 3.2.1 — when haikuResult is available, build a parallel map of
+      // SBCHaikuService rows keyed by (slug, place_of_service) so we can attach
+      // Pattern P-8 field_provenance JSONB to each persisted plan_covered_services
+      // row. Plan_document path (haikuResult=null) skips field_provenance writes;
+      // those rows default to '{}' per mig 056.
+      const haikuServiceByKey = new Map<string, SBCHaikuService>();
+      if (haikuResult) {
+        for (const hs of [...haikuResult.services, ...haikuResult.otherCoveredServices]) {
+          const key = `${hs.serviceSlug}|${hs.placeOfService || "any"}`;
+          const existing = haikuServiceByKey.get(key);
+          if (!existing || hs.confidence > existing.confidence) haikuServiceByKey.set(key, hs);
+        }
+      }
+
+      const serviceInserts = confident.map((s) => {
+        const haikuService = haikuServiceByKey.get(`${s.serviceSlug}|${s.placeOfService || "any"}`);
+        return {
+          insurance_plan_id: targetPlanId,
+          service_id: slugToId.get(s.serviceSlug)!,
+          concept_id: conceptIdMap.get(s.serviceSlug) || null,
+          place_of_service: s.placeOfService || "any",
+          in_copay: s.inCopay, in_coinsurance: s.inCoinsurance,
+          in_deductible_applies: s.inDeductibleApplies, in_copay_waiver_condition: s.inCopayWaiverCondition,
+          in_cost_description: s.inCostDescription,
+          out_copay: s.outCopay, out_coinsurance: s.outCoinsurance,
+          out_deductible_applies: s.outDeductibleApplies, out_cost_description: s.outCostDescription,
+          oon_paid_at_in_network: s.oonPaidAtInNetwork,
+          annual_limit: s.annualLimit, annual_limit_value: s.annualLimitValue,
+          prior_auth_required: s.priorAuthRequired, penalty_no_precert: s.penaltyNoPrecert,
+          covered: s.covered, coverage_conditions: s.coverageConditions,
+          supply_limit_days: s.supplyLimitDays, home_delivery_copay: s.homeDeliveryCopay,
+          step_therapy_required: s.stepTherapyRequired, notes: s.notes,
+          confidence: s.confidence, source: "sbc_parsed" as const,
+          // Phase 4.5 — SBC direct-quote citation support. `sbc_excerpt` +
+          // `sbc_page` columns added in migration 050 (nullable, safe no-op for
+          // older Postgres replicas where the column isn't yet present — the
+          // Supabase client silently drops unknown columns per PostgREST behavior).
+          sbc_excerpt: s.sourceExcerpt ?? null,
+          sbc_page: s.sourcePage ?? null,
+          // Phase 3.2.1 Q-P3.2.1-2 — Pattern P-8 field_provenance JSONB write per
+          // service row. One row excerpt covers all cost-sharing fields per Q-P3.2.1-5.
+          ...(haikuService ? { field_provenance: buildPlanCoveredServiceProvenance(haikuService) } : {}),
+        };
+      });
 
       if (serviceInserts.length > 0) {
         const { error: svcError } = await supabase
@@ -641,22 +695,31 @@ export async function processPlanDocumentData(
         try {
           const canonicalServiceInserts = confident
             .filter((s) => slugToId.has(s.serviceSlug))
-            .map((s) => ({
-              canonical_plan_id: canonicalPlanId!,
-              concept_id: conceptIdMap.get(s.serviceSlug) || null,
-              service_slug: s.serviceSlug,
-              copay: s.inCopay,
-              coinsurance: s.inCoinsurance,
-              is_covered: s.covered !== false,
-              requires_prior_auth: s.priorAuthRequired || false,
-              requires_referral: false,
-              deductible_applies: s.inDeductibleApplies !== false,
-              annual_limit: s.annualLimitValue || null,
-              visit_limit: null,
-              coverage_rules: {},
-              confidence: s.confidence,
-              source: (classification.classifiedType === "sbc" ? "sbc_parser" : "user_upload") as string,
-            }));
+            .map((s) => {
+              const haikuService = haikuServiceByKey.get(`${s.serviceSlug}|${s.placeOfService || "any"}`);
+              return {
+                canonical_plan_id: canonicalPlanId!,
+                concept_id: conceptIdMap.get(s.serviceSlug) || null,
+                service_slug: s.serviceSlug,
+                copay: s.inCopay,
+                coinsurance: s.inCoinsurance,
+                is_covered: s.covered !== false,
+                requires_prior_auth: s.priorAuthRequired || false,
+                requires_referral: false,
+                deductible_applies: s.inDeductibleApplies !== false,
+                annual_limit: s.annualLimitValue || null,
+                visit_limit: null,
+                coverage_rules: {},
+                confidence: s.confidence,
+                source: (classification.classifiedType === "sbc" ? "sbc_parser" : "user_upload") as string,
+                // Phase 3.2.1 Q-P3.2.1-2 — Pattern P-8 field_provenance JSONB on
+                // canonical_plan_services. Cold-start canonical seeds get cite-grade
+                // provenance from the user's upload; subsequent corroborators replace
+                // (last-writer-wins on UPSERT — citation diversity tracked as Phase 4
+                // follow-up DR per Subplan §Risks).
+                ...(haikuService ? { field_provenance: buildCanonicalPlanServiceProvenance(haikuService) } : {}),
+              };
+            });
 
           if (canonicalServiceInserts.length > 0) {
             const { error: canonicalSvcError } = await supabase
@@ -676,12 +739,17 @@ export async function processPlanDocumentData(
     }
 
     // ── Canonical service inheritance: fill gaps from community data ────────
-    // When a plan links to a canonical, inherit any services the user doesn't have yet
+    // When a plan links to a canonical, inherit any services the user doesn't have yet.
+    // Phase 3.2.1 — propagate field_provenance from canonical to inherited row to
+    // preserve Pattern P-8 cite chain. The inherited row's provenance reflects the
+    // ORIGINAL evidence (some other user's SBC upload that seeded the canonical),
+    // not the inheritance event — Phase 4 dispute letter cite is still valid because
+    // the source_excerpt traces back to the actual document that captured the value.
     if (canonicalPlanId && !canonicalNeedsConfirmation && !canonicalIsNew) {
       try {
         const { data: canonicalServices } = await supabase
           .from("canonical_plan_services")
-          .select("service_slug, copay, coinsurance, deductible_applies, is_covered, requires_prior_auth, confidence")
+          .select("service_slug, copay, coinsurance, deductible_applies, is_covered, requires_prior_auth, confidence, field_provenance")
           .eq("canonical_plan_id", canonicalPlanId);
 
         if (canonicalServices && canonicalServices.length > 0) {
@@ -720,6 +788,12 @@ export async function processPlanDocumentData(
                   prior_auth_required: cs.requires_prior_auth,
                   confidence: Math.min(cs.confidence, 0.8), // Inherited data slightly lower confidence
                   source: "canonical_inherited" as const,
+                  // Phase 3.2.1 — preserve Pattern P-8 cite chain across inheritance.
+                  // canonical_plan_services row's field_provenance traces back to the
+                  // original SBC user's source_excerpt; that's still the citable evidence
+                  // for this user's plan. Defaults to {} when canonical row predates
+                  // Phase 3.2.1 (legacy seed without field_provenance).
+                  field_provenance: cs.field_provenance ?? {},
                 }, { onConflict: "insurance_plan_id,service_id,place_of_service" });
                 if (!inhErr) inherited++;
               }

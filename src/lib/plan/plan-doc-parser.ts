@@ -5,7 +5,7 @@
 // ERISA/COBRA details. This parser is designed to be flexible across insurer formats.
 
 import type { InsurancePlanInsert, PlanCoveredServiceInsert } from "@/lib/supabase/types";
-import type { SBCParseResult, SBCParsedService } from "./sbc-parser";
+import type { SBCParseResult, SBCParsedService } from "@/lib/sbc/types";
 
 // Re-export the same result type for consistency
 export type PlanDocParseResult = SBCParseResult;
