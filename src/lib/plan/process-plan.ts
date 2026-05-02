@@ -10,6 +10,9 @@ import { parsePlanDocument } from "@/lib/plan/plan-doc-parser";
 import { extractServicesWithClaude } from "@/lib/plan/claude-extractor";
 import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
 import { matchInsurerWithPlanFallback } from "@/lib/plan/insurer-match";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { votedParseSBC } from "@/lib/sbc/voted-parser";
+import { translateHaikuToLegacy } from "@/lib/sbc/legacy-adapter";
 import type { SBCParsedService } from "@/lib/plan/sbc-parser";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
@@ -66,26 +69,73 @@ export async function processPlanDocumentData(
     const isFullPlanDoc = classification.classifiedType === "plan_document"
       || (classification.classifiedType !== "sbc" && ocrText.length > 50000);
 
-    // Parse plan metadata (insurer, deductibles, OOP) with regex
-    const parseResult = isFullPlanDoc
-      ? parsePlanDocument(ocrText)
-      : parseSBCText(ocrText, documentId);
+    // ── Phase 3.2: Haiku-first SBC parser dispatch (behind sbc_parser_v1 flag) ─
+    // Per Q-P3.2-2 LOCK = REPLACE: when flag ON + !isFullPlanDoc, use new
+    // src/lib/sbc/ Haiku-first parser (Pattern P-8 + DR-3D + DR-3C voting).
+    // When flag OFF: continue with legacy regex parseSBCText path (no behavior change).
+    const { data: userForFlagCheck } = await supabase
+      .from("users")
+      .select("email")
+      .eq("firebase_uid", doc.user_id)
+      .single();
+    const sbcParserV1Enabled = !isFullPlanDoc
+      ? await isFeatureEnabled("sbc_parser_v1", userForFlagCheck?.email ?? undefined)
+      : false;
 
-    // ── Plan identity: Haiku primary, regex fallback ────────────────────────
-    // Haiku reliably extracts plan name from any SBC format; regex is fragile
-    try {
-      const { extractPlanIdentifiersWithHaiku } = await import("@/lib/plan/extraction-dedup");
-      const haikuIds = await extractPlanIdentifiersWithHaiku(ocrText);
-      if (haikuIds.planName) {
-        console.log("[process-plan] Haiku plan identity:", haikuIds.planName, "|", haikuIds.insurer, "|", haikuIds.planType);
-        parseResult.plan.plan_name = haikuIds.planName;
+    let parseResult: ReturnType<typeof parseSBCText>;
+    let usedNewSBCParser = false;
+    let haikuFirstAppealsContact: ReturnType<typeof translateHaikuToLegacy>["appealsContact"] = null;
+
+    if (sbcParserV1Enabled) {
+      try {
+        console.log("[process-plan] sbc_parser_v1 ON — dispatching Haiku-first parser");
+        const haikuResult = await votedParseSBC({
+          ocrText,
+          extractionMethod: "pdftotext",
+          canonicalMatchExists: false, // v1: always cold-start vote (N=3) for safety; v1.5 add canonical pre-check
+        });
+        const translated = translateHaikuToLegacy(haikuResult);
+        parseResult = {
+          plan: translated.plan,
+          services: translated.services,
+          confidence: translated.confidence,
+          parseWarnings: translated.parseWarnings,
+        };
+        haikuFirstAppealsContact = translated.appealsContact;
+        usedNewSBCParser = true;
+        console.log(
+          `[process-plan] sbc_parser_v1: ${haikuResult.services.length} services + ${haikuResult.otherCoveredServices.length} other-covered + voting=${haikuResult.votingMetadata.triggered ? `triggered (n=${haikuResult.votingMetadata.successfulAttempts}/${haikuResult.votingMetadata.n})` : "skipped"} + cost=$${haikuResult.costUsd.toFixed(4)}`,
+        );
+      } catch (err) {
+        console.error("[process-plan] sbc_parser_v1 failed, falling back to legacy:", err);
+        parseResult = parseSBCText(ocrText, documentId);
       }
-      // Haiku is also more reliable for insurer and plan type
-      if (haikuIds.insurer) parseResult.plan.insurer_name = haikuIds.insurer;
-      if (haikuIds.planType) parseResult.plan.plan_type = haikuIds.planType;
-    } catch (haikuErr) {
-      // Haiku failed — regex results from sbc-parser remain as fallback
-      console.warn("[process-plan] Haiku plan identity failed, using regex fallback:", haikuErr);
+    } else {
+      // Legacy path (regex + later Haiku augmentation)
+      parseResult = isFullPlanDoc
+        ? parsePlanDocument(ocrText)
+        : parseSBCText(ocrText, documentId);
+    }
+
+    // ── Plan identity: Haiku primary, regex fallback (skipped under sbc_parser_v1) ────
+    // Haiku reliably extracts plan name from any SBC format; regex is fragile.
+    // The new SBC Haiku parser already extracts plan identity natively, so skip
+    // this redundant call when usedNewSBCParser is true.
+    if (!usedNewSBCParser) {
+      try {
+        const { extractPlanIdentifiersWithHaiku } = await import("@/lib/plan/extraction-dedup");
+        const haikuIds = await extractPlanIdentifiersWithHaiku(ocrText);
+        if (haikuIds.planName) {
+          console.log("[process-plan] Haiku plan identity:", haikuIds.planName, "|", haikuIds.insurer, "|", haikuIds.planType);
+          parseResult.plan.plan_name = haikuIds.planName;
+        }
+        // Haiku is also more reliable for insurer and plan type
+        if (haikuIds.insurer) parseResult.plan.insurer_name = haikuIds.insurer;
+        if (haikuIds.planType) parseResult.plan.plan_type = haikuIds.planType;
+      } catch (haikuErr) {
+        // Haiku failed — regex results from sbc-parser remain as fallback
+        console.warn("[process-plan] Haiku plan identity failed, using regex fallback:", haikuErr);
+      }
     }
 
     // ── Cross-check against profile plan name for canonical matching ────────
@@ -104,7 +154,14 @@ export async function processPlanDocumentData(
       }
     }
 
-    // ── Haiku service extraction ────────────────────────────────────────────
+    // ── Haiku service extraction (skipped under sbc_parser_v1; new parser already extracted) ──
+    if (usedNewSBCParser) {
+      // New SBC Haiku parser already populated services + appealsContact;
+      // skip the legacy claude-extractor call to avoid double-extraction.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (parseResult as any).appealsContact = haikuFirstAppealsContact;
+      console.log(`[process-plan] sbc_parser_v1: skipped legacy claude-extractor (Haiku-first produced ${parseResult.services.length} services)`);
+    } else {
     console.log("[process-plan] Attempting Haiku extraction...");
     try {
       const claudeResult = await extractServicesWithClaude(
@@ -157,6 +214,7 @@ export async function processPlanDocumentData(
         parseWarnings: ["Service extraction failed — flagged for admin review"],
       };
     }
+    } // end else (legacy claude-extractor path)
 
     // ── Plan insert + mismatch detection ────────────────────────────────────
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -336,7 +394,6 @@ export async function processPlanDocumentData(
 
     // Check feature flag — get user email for targeting
     const { data: userForFlag } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
-    const { isFeatureEnabled } = await import("@/lib/config/product-flags");
     const canonicalEnabled = await isFeatureEnabled("canonical_plans", userForFlag?.email || undefined);
 
     if (!canonicalEnabled) {

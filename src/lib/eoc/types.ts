@@ -17,7 +17,7 @@
  * tier definitions) deferred to Phase 3.2 / Phase 6 / v1.5+ per Subplan §Out of scope.
  */
 
-import type { SourceExcerptVerified, ExtractionMethod } from "../parser/types";
+import type { PatternP8Provenance as SharedPatternP8Provenance } from "../parser/verify-source-excerpts";
 
 /**
  * EOC-specific section hints per Pattern P-8 convention.
@@ -42,14 +42,12 @@ export type EOCSectionHint =
 /**
  * Pattern P-8 5-sub-keys inlined per text-extracted field.
  * Same shape as concept_admin_review_queue columns (mig 061).
+ *
+ * Generic shape lives in `src/lib/parser/verify-source-excerpts.ts`; EOC parameterizes
+ * it with `EOCSectionHint`. Re-exported here to preserve existing import paths in
+ * EOC haiku-prompts files (which import `PatternP8Provenance` from this module).
  */
-export interface PatternP8Provenance {
-  source_excerpt: string;
-  source_excerpt_verified: SourceExcerptVerified;
-  source_excerpt_extraction_method: ExtractionMethod;
-  source_section_hint: EOCSectionHint;
-  source_section_verified: boolean;
-}
+export type PatternP8Provenance = SharedPatternP8Provenance<EOCSectionHint>;
 
 /**
  * Section A — Prior Auth Code Lists.

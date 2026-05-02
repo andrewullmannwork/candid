@@ -1,0 +1,160 @@
+/**
+ * SBC parser types per Phase 3.2 Subplan + Q-P3.2-2 LOCK = REPLACE (Haiku-first).
+ *
+ * Architecture mirrors `src/lib/eoc/` (Phase 3.1A.1) but tuned for SBC's tabular
+ * structure. Per Pattern P-6 hard rule: inherits 7 universal mechanisms via
+ * `src/lib/haiku-client/base.ts` + Pattern P-8 verifier via
+ * `src/lib/parser/verify-source-excerpts.ts`.
+ *
+ * 5 SBC sections per Q-P3.2-3 LOCK (per-section dispatch from start):
+ *   - important_questions: plan-level scalars (deductible, OOP max, network info)
+ *   - common_medical_events: per-service cost-sharing table (the bulk)
+ *   - other_covered_services: additional benefits list
+ *   - excluded_services: list of non-covered items
+ *   - appeals_grievances: appeals contact info + procedures
+ *
+ * Output translates to legacy SBCParseResult (see `process-plan.ts` persistence
+ * compatibility) via `toLegacySBCResult()` adapter at the orchestrator boundary.
+ */
+
+import type { SBCParsedService, SBCParsedAppealsContact } from "../plan/sbc-parser";
+import type { PatternP8Provenance as SharedPatternP8Provenance } from "../parser/verify-source-excerpts";
+
+/**
+ * SBC-specific section hints per Pattern P-8 convention.
+ *
+ * Suffix `_DO_NOT_EXTRACT` reserved for boilerplate. SBC boilerplate includes:
+ *   - SBC document header (template language, regulatory citations)
+ *   - Footer disclaimers (legal language, "no guarantee" boilerplate)
+ *   - Coverage examples (synthetic numeric scenarios at end of SBC — narrative-only)
+ *
+ * Also includes the "uniform glossary" pages found in some bundled SBC PDFs.
+ */
+export type SBCSectionHint =
+  | "important_questions"
+  | "common_medical_events"
+  | "other_covered_services"
+  | "excluded_services"
+  | "appeals_grievances"
+  | "other"
+  | "header_DO_NOT_EXTRACT"
+  | "footer_legalese_DO_NOT_EXTRACT"
+  | "coverage_examples_DO_NOT_EXTRACT"
+  | "uniform_glossary_DO_NOT_EXTRACT";
+
+/**
+ * SBC Pattern P-8 provenance — generic shape parameterized with SBCSectionHint.
+ */
+export type SBCPatternP8Provenance = SharedPatternP8Provenance<SBCSectionHint>;
+
+/**
+ * Per-field plan-level value with Pattern P-8 provenance + Haiku self-confidence
+ * (`_meta` block per Q-DR-3D-6, METADATA-only per Pattern P-2).
+ */
+export interface SBCPlanField<T> {
+  value: T;
+  patternP8: SBCPatternP8Provenance;
+  haikuConfidence?: number;
+}
+
+/**
+ * SBC plan-level scalars from "Important Questions" section (extracted via Haiku).
+ * Mirrors fields in `Partial<InsurancePlanInsert>` but with P-8 provenance per field.
+ *
+ * v1 scope: high-leverage scalars only. Additional fields (HSA-eligibility,
+ * pediatric dental embedded, pediatric vision embedded) deferred to v1.5+ per
+ * iteration signal.
+ */
+export interface SBCPlanIdentity {
+  planName: SBCPlanField<string | null>;
+  insurerName: SBCPlanField<string | null>;
+  planType: SBCPlanField<string | null>; // PPO / HMO / EPO / POS / HDHP
+  metalTier: SBCPlanField<string | null>; // Bronze / Silver / Gold / Platinum / Catastrophic
+  coverageTier: SBCPlanField<string | null>; // individual / individual_family / etc.
+  planYear: SBCPlanField<number | null>;
+  coveragePeriodStart: SBCPlanField<string | null>; // ISO date
+  deductibleIndividual: SBCPlanField<number | null>;
+  deductibleFamily: SBCPlanField<number | null>;
+  oopMaxIndividual: SBCPlanField<number | null>;
+  oopMaxFamily: SBCPlanField<number | null>;
+  rxDeductibleIndividual: SBCPlanField<number | null>;
+  rxDeductibleFamily: SBCPlanField<number | null>;
+  referralRequired: SBCPlanField<boolean | null>;
+  minimumValueStandard: SBCPlanField<boolean | null>;
+}
+
+/**
+ * SBC service row with Pattern P-8 provenance.
+ *
+ * Reuses legacy `SBCParsedService` shape — Pattern P-8 sub-keys are added as a
+ * structured `patternP8` property (vs flat `sourceExcerpt` field on legacy shape,
+ * which is preserved for backward compat at the persistence boundary).
+ *
+ * One source_excerpt per service (the full SBC table row) — covers all cost-sharing
+ * fields (in/out copay/coinsurance/deductible) since they all derive from the
+ * same row. Per-cost-sharing-field excerpts are unnecessary granularity.
+ */
+export interface SBCHaikuService extends SBCParsedService {
+  patternP8: SBCPatternP8Provenance;
+  haikuConfidence?: number; // _meta block per Q-DR-3D-6
+}
+
+/**
+ * SBC appeals contact with Pattern P-8 provenance. Supports multi-grievance-category
+ * SBCs (e.g., Blue Shield 2025 fixtures with separate medical/Rx/MHSA/dental
+ * grievance categories — annotated in fixture expected.json).
+ */
+export interface SBCHaikuAppealsContact extends SBCParsedAppealsContact {
+  patternP8: SBCPatternP8Provenance;
+  category?: string; // e.g., "medical/Rx", "MHSA Participating" — null for single-category SBCs
+}
+
+/**
+ * Per-section sub-result with cost telemetry + warnings.
+ * Mirrors EOC `EOCSectionResult<T>` shape.
+ */
+export interface SBCSectionResult<T> {
+  section_type: SBCSectionHint;
+  section_range: { start: number; end: number };
+  data: T;
+  haiku_input_tokens: number;
+  haiku_output_tokens: number;
+  haiku_cost_usd: number;
+  warnings: string[];
+}
+
+/**
+ * Top-level SBC Haiku parse result.
+ *
+ * Translated to legacy `SBCParseResult` for persistence compatibility via
+ * `toLegacySBCResult()` adapter (process-plan.ts boundary). Pattern P-8 sub-keys
+ * persist into `field_provenance` JSONB on canonical_plan_services + plan_covered_services
+ * (existing column from Phase 3 mig 056).
+ */
+export interface SBCHaikuParseResult {
+  planIdentity: SBCPlanIdentity;
+  services: SBCHaikuService[];
+  excludedServices: string[]; // Simple list (verbatim per fixture excluded_services_list)
+  excludedServicesPatternP8: SBCPatternP8Provenance | null;
+  otherCoveredServices: SBCHaikuService[]; // Treated identically to common-medical-events services
+  appealsContacts: SBCHaikuAppealsContact[]; // Multi-category support
+  parseWarnings: string[];
+  haikuTokensInput: number;
+  haikuTokensOutput: number;
+  haikuCacheCreateTokens: number;
+  haikuCacheReadTokens: number;
+  costUsd: number;
+  parseStrategyV2: true; // marker indicating Haiku-first path (vs legacy regex)
+}
+
+/**
+ * Legacy adapter — produces existing SBCParseResult shape from SBCHaikuParseResult
+ * for persistence layer compatibility. Pattern P-8 sub-keys flow separately to
+ * field_provenance JSONB write.
+ */
+export interface SBCParseResultLegacy {
+  plan: Record<string, unknown>; // Partial<InsurancePlanInsert>
+  services: SBCParsedService[];
+  confidence: number;
+  parseWarnings: string[];
+}

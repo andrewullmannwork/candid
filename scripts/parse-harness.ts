@@ -34,6 +34,9 @@ import { parseBillWithHaiku } from "../src/lib/billing/haiku-bill-parser";
 import type { ParsedBill } from "../src/lib/billing/types";
 import { parseEOC } from "../src/lib/eoc/parser";
 import type { EOCParseResult } from "../src/lib/eoc/types";
+import { parseSBC } from "../src/lib/sbc/parser";
+import { votedParseSBC } from "../src/lib/sbc/voted-parser";
+import type { SBCHaikuParseResult } from "../src/lib/sbc/types";
 
 config({ path: resolve(__dirname, "../.env.local"), override: true });
 
@@ -480,6 +483,194 @@ async function runEOCFixture(
   };
 }
 
+// ── Phase 3.2 — SBC fixture runner ──────────────────────────────────────────
+//
+// Mirrors runFixture() but invokes parseSBC() / votedParseSBC() instead of
+// parseBillWithHaiku(). Pattern P-8 metrics computed by walking SBCHaikuParseResult
+// (planIdentity scalars + services + otherCoveredServices + appealsContacts +
+// excludedServices); structural completeness = sections_extracted / 5 priority
+// sections (Important Questions / Common Medical Events / Other Covered /
+// Excluded / Appeals).
+
+const SBC_PRIORITY_SECTIONS = [
+  "important_questions",
+  "common_medical_events",
+  "other_covered_services",
+  "excluded_services",
+  "appeals_grievances",
+] as const;
+
+interface SBCPatternP8Metrics {
+  fields_total: number;
+  fields_with_excerpt: number;
+  fields_verified: number;
+  fields_section_verified: number;
+  source_excerpt_coverage_rate: number | null;
+  source_section_match_rate: number | null;
+}
+
+function computeSBCPatternP8Metrics(parsed: SBCHaikuParseResult): SBCPatternP8Metrics {
+  let fieldsTotal = 0;
+  let fieldsWithExcerpt = 0;
+  let fieldsVerified = 0;
+  let fieldsSectionVerified = 0;
+
+  const visitOne = (p8: {
+    source_excerpt?: string;
+    source_excerpt_verified?: string;
+    source_section_verified?: boolean;
+  } | null | undefined) => {
+    if (!p8) return;
+    fieldsTotal++;
+    if (p8.source_excerpt && p8.source_excerpt.length > 0) {
+      fieldsWithExcerpt++;
+      if (p8.source_excerpt_verified === "verified") fieldsVerified++;
+      if (p8.source_section_verified === true) fieldsSectionVerified++;
+    }
+  };
+
+  // Plan identity scalars (15 fields)
+  const planIdentity = parsed.planIdentity;
+  for (const key of Object.keys(planIdentity) as Array<keyof typeof planIdentity>) {
+    visitOne(planIdentity[key].patternP8);
+  }
+  // Services + otherCoveredServices
+  parsed.services.forEach((svc) => visitOne(svc.patternP8));
+  parsed.otherCoveredServices.forEach((svc) => visitOne(svc.patternP8));
+  // Excluded services list (single P-8)
+  visitOne(parsed.excludedServicesPatternP8);
+  // Appeals contacts
+  parsed.appealsContacts.forEach((contact) => visitOne(contact.patternP8));
+
+  return {
+    fields_total: fieldsTotal,
+    fields_with_excerpt: fieldsWithExcerpt,
+    fields_verified: fieldsVerified,
+    fields_section_verified: fieldsSectionVerified,
+    source_excerpt_coverage_rate: fieldsWithExcerpt > 0 ? fieldsVerified / fieldsWithExcerpt : null,
+    source_section_match_rate: fieldsWithExcerpt > 0 ? fieldsSectionVerified / fieldsWithExcerpt : null,
+  };
+}
+
+async function runSBCFixture(
+  fixturePath: string,
+  fixtureId: string,
+  runId: string,
+  parserVersion: string,
+  attemptIdx: number,
+  withVoting: boolean,
+): Promise<HarnessRow> {
+  const sourceText = fs.readFileSync(`${fixturePath}/source.txt`, "utf-8");
+  const fixtureKind: HarnessRow["fixture_kind"] = fixtureId.startsWith("synthetic-") ? "synthetic" : "annotated";
+
+  const t0 = Date.now();
+  let parsed: SBCHaikuParseResult;
+  try {
+    parsed = withVoting
+      ? await votedParseSBC({ ocrText: sourceText, extractionMethod: "pdftotext", canonicalMatchExists: false })
+      : await parseSBC({ ocrText: sourceText, extractionMethod: "pdftotext" });
+  } catch (err) {
+    const durationMs = Date.now() - t0;
+    return {
+      run_id: runId,
+      parser_version: parserVersion,
+      parser_name: "sbc",
+      fixture_id: fixtureId,
+      fixture_kind: fixtureKind,
+      fields_captured: 0,
+      fields_total: SBC_PRIORITY_SECTIONS.length,
+      cost_usd: 0,
+      haiku_tokens_input: 0,
+      haiku_tokens_output: 0,
+      haiku_cache_read_tokens: 0,
+      haiku_cache_create_tokens: 0,
+      per_field_results: { error: err instanceof Error ? err.message : String(err) },
+      warnings: {
+        meta_warnings: [String(err)],
+        accumulator_warnings: [],
+        excerpt_verification_warnings: [],
+        pattern_p8_metrics: emptyPatternP8Metrics(),
+      },
+      parse_duration_ms: durationMs,
+      parse_attempt_idx: attemptIdx,
+      parse_status: "extraction_failed",
+    };
+  }
+  const durationMs = Date.now() - t0;
+
+  // Structural completeness: how many of 5 priority sections produced output (any field non-null)
+  let sectionsCaptured = 0;
+  if (parsed.planIdentity.planName.value !== null || parsed.planIdentity.deductibleIndividual.value !== null) {
+    sectionsCaptured++; // important_questions
+  }
+  if (parsed.services.length > 0) sectionsCaptured++;
+  if (parsed.otherCoveredServices.length > 0) sectionsCaptured++;
+  if (parsed.excludedServices.length > 0) sectionsCaptured++;
+  if (parsed.appealsContacts.length > 0) sectionsCaptured++;
+
+  // Section result row counts (drilldown for admin debug)
+  const perFieldResults: Record<string, unknown> = {
+    plan_name: parsed.planIdentity.planName.value,
+    insurer_name: parsed.planIdentity.insurerName.value,
+    plan_type: parsed.planIdentity.planType.value,
+    metal_tier: parsed.planIdentity.metalTier.value,
+    plan_year: parsed.planIdentity.planYear.value,
+    deductible_in_individual: parsed.planIdentity.deductibleIndividual.value,
+    oop_max_in_individual: parsed.planIdentity.oopMaxIndividual.value,
+    services_count: parsed.services.length,
+    other_covered_count: parsed.otherCoveredServices.length,
+    excluded_count: parsed.excludedServices.length,
+    appeals_contacts_count: parsed.appealsContacts.length,
+    parse_strategy_v2: parsed.parseStrategyV2,
+  };
+
+  // Pattern P-8 metrics
+  const sbcP8 = computeSBCPatternP8Metrics(parsed);
+
+  // Bucket warnings
+  const excerptWarnings = parsed.parseWarnings.filter((w) => w.startsWith("source_"));
+  const otherWarnings = parsed.parseWarnings.filter((w) => !w.startsWith("source_"));
+
+  return {
+    run_id: runId,
+    parser_version: parserVersion,
+    parser_name: "sbc",
+    fixture_id: fixtureId,
+    fixture_kind: fixtureKind,
+    fields_captured: sectionsCaptured,
+    fields_total: SBC_PRIORITY_SECTIONS.length,
+    cost_usd: parsed.costUsd,
+    haiku_tokens_input: parsed.haikuTokensInput,
+    haiku_tokens_output: parsed.haikuTokensOutput,
+    haiku_cache_read_tokens: parsed.haikuCacheReadTokens,
+    haiku_cache_create_tokens: parsed.haikuCacheCreateTokens,
+    per_field_results: perFieldResults,
+    warnings: {
+      meta_warnings: otherWarnings,
+      accumulator_warnings: [],
+      excerpt_verification_warnings: excerptWarnings,
+      pattern_p8_metrics: {
+        field_provenance_size_bytes: JSON.stringify({
+          planIdentity: parsed.planIdentity,
+          services: parsed.services,
+          otherCoveredServices: parsed.otherCoveredServices,
+          appealsContacts: parsed.appealsContacts,
+        }).length,
+        source_excerpt_coverage_rate: sbcP8.source_excerpt_coverage_rate,
+        source_section_hint_match_rate: sbcP8.source_section_match_rate,
+        section_ranges_found: sectionsCaptured,
+        do_not_extract_extractions: parsed.parseWarnings.filter((w) => w.includes("do_not_extract")).length,
+        fields_with_excerpt: sbcP8.fields_with_excerpt,
+        fields_with_section_hint: sbcP8.fields_with_excerpt,
+        fields_total_in_provenance: sbcP8.fields_total,
+      },
+    },
+    parse_duration_ms: durationMs,
+    parse_attempt_idx: attemptIdx,
+    parse_status: parsed.services.length === 0 && parsed.otherCoveredServices.length === 0 ? "extraction_failed" : "success",
+  };
+}
+
 async function main() {
   const args = process.argv.slice(2);
   function getArg(flag: string, defaultVal: string): string {
@@ -487,10 +678,12 @@ async function main() {
     return idx >= 0 && idx + 1 < args.length ? args[idx + 1] : defaultVal;
   }
   const runId = getArg("--run-id", `harness_${Date.now()}`);
-  const parser = getArg("--parser", "eob") as "eob" | "eoc";
-  const defaultFixturesDir = parser === "eoc" ? "tests/fixtures/eocs" : "tests/fixtures/eobs";
+  const parser = getArg("--parser", "eob") as "eob" | "eoc" | "sbc";
+  const defaultFixturesDir =
+    parser === "eoc" ? "tests/fixtures/eocs" : parser === "sbc" ? "tests/fixtures/sbcs" : "tests/fixtures/eobs";
   const fixturesDir = getArg("--fixtures-dir", defaultFixturesDir);
   const dryRun = args.includes("--dry-run");
+  const withVoting = args.includes("--voting"); // Phase 3.2: --voting enables DR-3C N=3 cold-start path
 
   const parserVersion = (() => {
     try {
@@ -518,7 +711,9 @@ async function main() {
     const row =
       parser === "eoc"
         ? await runEOCFixture(fixturePath, fixtureId, runId, parserVersion, 1)
-        : await runFixture(fixturePath, fixtureId, runId, parserVersion, 1);
+        : parser === "sbc"
+          ? await runSBCFixture(fixturePath, fixtureId, runId, parserVersion, 1, withVoting)
+          : await runFixture(fixturePath, fixtureId, runId, parserVersion, 1);
     rows.push(row);
     const p8 = row.warnings.pattern_p8_metrics;
     const excerptRate = p8.source_excerpt_coverage_rate;
