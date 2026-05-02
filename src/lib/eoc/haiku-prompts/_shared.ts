@@ -3,7 +3,18 @@
  *
  * Implements Pattern P-D conventions per Pattern P-6 (must reference dr3d_dogfood_findings):
  *   - Adaptive max_tokens (input + 4000, capped at 32000)
- *   - cache_control: ephemeral on system prompt
+ *   - cache_control: ephemeral on system prompt — NO-OP at current prompt sizes:
+ *     Claude Haiku 4.5 requires a 4096-token minimum cacheable prefix; our EOC
+ *     INSTRUCTIONS are 800-1300 tokens (well below threshold). Empirical Phase
+ *     3.1A.1 verification (35 harness rows over $4.27 spend): all rows show
+ *     cache_creation_input_tokens=0 + cache_read_input_tokens=0. Directive is
+ *     left in place because it engages automatically once prompts grow past
+ *     4096 tokens (e.g., via Phase 3.1A.2 few-shot expansion). Padding
+ *     prompts purely to hit the threshold is rejected for v1: padding adds
+ *     full-rate input tokens to every call AND risks degrading extraction
+ *     quality (more context = more paraphrase risk). Cost-benefit favors
+ *     caching only at 7+ chunks per section; many sections fall below.
+ *     Source: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
  *   - Truncation retry at HAIKU_MAX_OUTPUT
  *   - Stochastic JSON parse retry-once (Phase 3.1B reliability fix)
  *   - jsonrepair fallback + regex JSON extraction
