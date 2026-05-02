@@ -10,8 +10,12 @@
  */
 
 import type { InsurancePlanInsert } from "@/lib/supabase/types";
-import type { SBCParseResult, SBCParsedService, SBCParsedAppealsContact } from "../plan/sbc-parser";
-import type { SBCHaikuParseResult } from "./types";
+import type {
+  SBCParseResult,
+  SBCParsedService,
+  SBCParsedAppealsContact,
+  SBCHaikuParseResult,
+} from "./types";
 
 interface LegacyParseResultWithAppealsContact extends SBCParseResult {
   appealsContact: SBCParsedAppealsContact | null;

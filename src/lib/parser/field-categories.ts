@@ -83,6 +83,11 @@ export const TABLE_DEFAULT_CATEGORY: Record<string, FieldCategory> = {
   claims: "bill_monetary",
   insurer_catalog: "reference_data",
   providers: "reference_data",
+  // Phase 3.2.1 Q-P3.2.1-2 / Q-P3.2.1-3: SBC is authoritative for plan-identity scalars
+  // (deductible, OOP max, plan_name, plan_year). FIELD_EXCEPTIONS already routes EOC-
+  // authoritative subset (appeals_internal_timing_days, cob_primary_determination_method,
+  // eligibility_dependent_age_limit) to eoc_authoritative.
+  insurance_plans: "sbc_authoritative",
 };
 
 /**

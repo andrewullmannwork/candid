@@ -17,7 +17,6 @@ import { createHash } from "crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { jsonrepair } from "jsonrepair";
 import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
-import { parseSBCText } from "@/lib/plan/sbc-parser";
 import { parsePlanDocument } from "@/lib/plan/plan-doc-parser";
 import type { ProcessPlanResult } from "@/lib/plan/process-plan";
 
@@ -306,10 +305,15 @@ export async function linkDocumentToCanonical(
   identifiers: PlanIdentifiers
 ): Promise<ProcessPlanResult> {
   try {
-    // Parse plan metadata from OCR preview (deductibles, OOP, etc.)
-    const parseResult = ocrText.length > 50000
-      ? parsePlanDocument(ocrText)
-      : parseSBCText(ocrText, doc.id);
+    // Parse plan metadata from OCR preview (deductibles, OOP, etc.).
+    // Phase 3.2.1: legacy parseSBCText removed; parsePlanDocument handles both SBC
+    // and full-plan-document text via regex on shared field shapes (deductibles,
+    // OOP max, plan_name, insurer_name). This is the dedup SKIP path — when canonical
+    // is stable, we use the new parser for plan-identity only. Service data comes
+    // entirely from canonical_plan_services downstream (line 392+); no service-level
+    // parsing happens here. Missing fields fall back to canonical defaults at the
+    // insurance_plans write site (line 349+).
+    const parseResult = parsePlanDocument(ocrText);
 
     // Get canonical plan data
     const { data: canonical } = await supabase

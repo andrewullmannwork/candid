@@ -10,7 +10,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { jsonrepair } from "jsonrepair";
-import type { SBCParsedService, SBCParsedAppealsContact } from "./sbc-parser";
+import type { SBCParsedService, SBCParsedAppealsContact } from "@/lib/sbc/types";
 
 const MODEL = "claude-haiku-4-5-20251001";
 
