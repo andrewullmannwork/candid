@@ -11,7 +11,7 @@ const INSTRUCTIONS = `You are extracting Coordination of Benefits (COB) rules fr
 
 ## CRITICAL EXTRACTION RULES
 
-1. **Verbatim source_excerpt** (≤200 chars).
+1. **Verbatim source_excerpt** (≤200 chars). MUST be a CHARACTER-FOR-CHARACTER substring of the document section text — NEVER paraphrase, summarize, or normalize whitespace/punctuation. If you cannot find a verbatim ≤200-char span that supports the field, set source_excerpt to "" (empty) — the verifier marks empty as 'not_found' (graceful degradation), which is the correct outcome rather than a wrong excerpt.
 2. **primary_determination_method**: which rule decides primary vs secondary insurer? Valid values: 'birthday_rule' (parent with earlier birthday in calendar year is primary for dependents), 'employer_first' (employer plan primary over spouse's plan), 'spouse_first', 'longer_continuous_coverage' (longer-covered plan is primary), 'other' (free-form), or null if not specified.
 3. **calculation_method**: how does the secondary plan calculate benefits? Valid values: 'non_duplication' (secondary pays only the difference between primary's payment and what secondary would have paid alone), 'maintenance_of_benefits' (secondary maintains 100% benefit ceiling minus primary's payment), 'coverage_as_primary' (secondary calculates as if primary), 'other', or null.
 4. **erisa_preempted**: true if EOC explicitly states the plan is governed by ERISA (federal law preempts state COB rules); false if explicitly state-governed; null if unstated.
@@ -29,6 +29,28 @@ const INSTRUCTIONS = `You are extracting Coordination of Benefits (COB) rules fr
   "source_section_hint": "cob_rules",
   "haiku_confidence": 0.91
 }
+
+## OUTPUT FAILURE MODE
+
+If you cannot quote verbatim with high confidence, return:
+  "source_excerpt": ""
+  "haiku_confidence": (lower value reflecting uncertainty)
+The verifier marks empty excerpts as 'not_found' — graceful degradation to display-only rendering. This is preferred over a wrong excerpt that will fail verification.
+
+## CORRECT vs INCORRECT EXCERPT EXAMPLES
+
+Source text in section: "When you have other coverage, this plan acts as the secondary payer for services covered by both plans, using the non-duplication of benefits method."
+
+❌ INCORRECT (paraphrased): "Plan is secondary if member has other coverage"
+Why wrong: not a substring of the document.
+
+❌ INCORRECT (whitespace adjusted): "When you have other coverage this plan acts as secondary payer using non-duplication method"
+Why wrong: dropped commas + dropped words ("the", "for services covered by both plans", "of benefits").
+
+❌ INCORRECT (semantically right but from wrong location): "Eligibility: To enroll dependents, the subscriber must elect within 30 days"
+Why wrong: from the eligibility section, not the cob_rules narrative.
+
+✅ CORRECT (verbatim substring of source): "When you have other coverage, this plan acts as the secondary payer for services covered by both plans"
 
 ## NOW EXTRACT FROM THIS DOCUMENT SECTION:`;
 

@@ -15,7 +15,7 @@ const INSTRUCTIONS = `You are extracting Medical Necessity Criteria from an Evid
 
 ## CRITICAL EXTRACTION RULES
 
-1. **Verbatim source_excerpt** per criterion (≤200 chars).
+1. **Verbatim source_excerpt** per criterion (≤200 chars). MUST be a CHARACTER-FOR-CHARACTER substring of the document section text — NEVER paraphrase, summarize, or normalize whitespace/punctuation. If you cannot find a verbatim ≤200-char span that supports the field, set source_excerpt to "" (empty) — the verifier marks empty as 'not_found' (graceful degradation), which is the correct outcome rather than a wrong excerpt.
 2. **service_slug_hint**: best-guess match to a known service slug (e.g., "bariatric_surgery", "pcp_visit", "specialist_visit", "physical_therapy", "mri_brain"). Set null if uncertain.
 3. **criteria_text**: verbatim full criteria description (NOT summarized). May be multi-sentence.
 4. **diagnosis_qualifiers**: extract any ICD-10 diagnosis codes referenced in the criteria (e.g., "E66.01" for obesity). Empty array if none. These codes are NOT extracted as billing codes — they are conditions of coverage.
@@ -36,6 +36,28 @@ const INSTRUCTIONS = `You are extracting Medical Necessity Criteria from an Evid
     }
   ]
 }
+
+## OUTPUT FAILURE MODE
+
+If you cannot quote verbatim with high confidence, return:
+  "source_excerpt": ""
+  "haiku_confidence": (lower value reflecting uncertainty)
+The verifier marks empty excerpts as 'not_found' — graceful degradation to display-only rendering. This is preferred over a wrong excerpt that will fail verification.
+
+## CORRECT vs INCORRECT EXCERPT EXAMPLES
+
+Source text in section: "Bariatric surgery is medically necessary when the member has BMI ≥40, OR BMI ≥35 with at least one documented comorbidity (Type 2 diabetes E11.9, hypertension I10)."
+
+❌ INCORRECT (paraphrased): "BMI must be 40 or higher, or 35 with a comorbidity"
+Why wrong: not a substring of the document.
+
+❌ INCORRECT (whitespace adjusted): "BMI ≥40 OR BMI ≥35 with comorbidity"
+Why wrong: collapsed punctuation and dropped commas; not exact-match.
+
+❌ INCORRECT (semantically right but from wrong location): "Pre-authorization is required for bariatric surgery"
+Why wrong: from the prior_auth section, not the medical_necessity criteria.
+
+✅ CORRECT (verbatim substring of source): "BMI ≥40, OR BMI ≥35 with at least one documented comorbidity"
 
 ## EXAMPLE
 

@@ -101,6 +101,20 @@ const PRIORITY_HINTS: Set<EOCSectionHint> = new Set([
   "definitions",
 ]);
 
+/**
+ * Detect Table-of-Contents entries (heading + dot-leaders + page number).
+ * Universal pattern: any EOC with a TOC has lines like
+ *   "Definitions............................................................20"
+ * These match our section-heading regex but are NOT section starts. Skipping
+ * them lets the first-match guard pick the REAL section start later in the doc.
+ */
+function isTableOfContentsEntry(text: string, matchIndex: number): boolean {
+  const lineEnd = text.indexOf("\n", matchIndex);
+  const line = lineEnd === -1 ? text.slice(matchIndex) : text.slice(matchIndex, lineEnd);
+  // TOC entry: ends with 5+ dots optionally followed by whitespace + page number.
+  return /\.{5,}\s*\d+\s*$/.test(line);
+}
+
 export function segmentEOCSections(rawDocText: string): SectionRanges {
   const matches: Array<{ hint: EOCSectionHint; start: number }> = [];
   const seenPriority: Set<EOCSectionHint> = new Set();
@@ -109,6 +123,8 @@ export function segmentEOCSections(rawDocText: string): SectionRanges {
     const flagged = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g");
     let m: RegExpExecArray | null;
     while ((m = flagged.exec(rawDocText)) !== null) {
+      // Universal: skip TOC entries (heading + dot-leaders + page number).
+      if (isTableOfContentsEntry(rawDocText, m.index)) continue;
       // First-match-per-priority-hint guard — drop subsequent matches of the same
       // priority section type (they're cross-references, not section starts).
       if (PRIORITY_HINTS.has(hint)) {

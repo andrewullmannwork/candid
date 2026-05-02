@@ -13,7 +13,7 @@ const INSTRUCTIONS = `You are extracting Appeals Procedures from an Evidence of 
 
 ## CRITICAL EXTRACTION RULES
 
-1. **Verbatim source_excerpt** (≤200 chars) capturing the most-citation-worthy excerpt — typically the timing window line.
+1. **Verbatim source_excerpt** (≤200 chars) capturing the most-citation-worthy excerpt — typically the timing window line. MUST be a CHARACTER-FOR-CHARACTER substring of the document section text — NEVER paraphrase, summarize, or normalize whitespace/punctuation. If you cannot find a verbatim ≤200-char span that supports the field, set source_excerpt to "" (empty) — the verifier marks empty as 'not_found' (graceful degradation), which is the correct outcome rather than a wrong excerpt.
 2. **Numeric timing windows**: extract days/hours as integers when explicitly stated. Use null when not specified.
 3. **filing_methods**: array of valid methods. Use canonical strings: 'mail', 'fax', 'online_portal', 'phone'.
 4. **full_text**: verbatim full appeals procedure text (may be long; this drives dispute-letter citation evidence). Do NOT summarize.
@@ -35,6 +35,28 @@ const INSTRUCTIONS = `You are extracting Appeals Procedures from an Evidence of 
   "source_section_hint": "appeals_procedures",
   "haiku_confidence": 0.92
 }
+
+## OUTPUT FAILURE MODE
+
+If you cannot quote verbatim with high confidence, return:
+  "source_excerpt": ""
+  "haiku_confidence": (lower value reflecting uncertainty)
+The verifier marks empty excerpts as 'not_found' — graceful degradation to display-only rendering. This is preferred over a wrong excerpt that will fail verification.
+
+## CORRECT vs INCORRECT EXCERPT EXAMPLES
+
+Source text in section: "You must file your internal appeal within 30 days of the denial notice. Urgent appeals must be filed within 72 hours."
+
+❌ INCORRECT (paraphrased): "Appeals deadline is 30 days, urgent 72 hours"
+Why wrong: not a substring of the document.
+
+❌ INCORRECT (whitespace adjusted): "You must file appeal within 30 days of denial. Urgent within 72 hours."
+Why wrong: dropped words ("internal", "the", "notice", "appeals", "be filed") — not exact-match.
+
+❌ INCORRECT (semantically right but from wrong location): "Appeal means a formal request to reconsider a coverage decision"
+Why wrong: from the definitions section, not the appeals_procedures process narrative.
+
+✅ CORRECT (verbatim substring of source): "You must file your internal appeal within 30 days of the denial notice"
 
 ## NOW EXTRACT FROM THIS DOCUMENT SECTION:`;
 

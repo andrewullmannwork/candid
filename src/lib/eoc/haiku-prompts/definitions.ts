@@ -15,11 +15,12 @@ const INSTRUCTIONS = `You are extracting Definitions from an Evidence of Coverag
 
 ## CRITICAL EXTRACTION RULES
 
-1. **Verbatim source_excerpt** per definition (≤200 chars).
+1. **Verbatim source_excerpt** per definition (≤200 chars). MUST be a CHARACTER-FOR-CHARACTER substring of the document section text — NEVER paraphrase, summarize, or normalize whitespace/punctuation. If you cannot find a verbatim ≤200-char span that supports the field, set source_excerpt to "" (empty) — the verifier marks empty as 'not_found' (graceful degradation), which is the correct outcome rather than a wrong excerpt.
 2. **term**: the defined term as written (preserve original capitalization; e.g., "Medical Necessity", "Emergency Medical Condition").
 3. **definition_text**: verbatim full definition text (do NOT summarize). May be multi-sentence.
 4. **DO NOT extract**: cross-references to definitions in other documents, glossary that just lists terms without definitions, header marketing copy that uses defined terms.
 5. **source_section_hint**: always 'definitions'.
+6. **Vertical-stacked layout**: when source has term on its own line(s) followed by a blank line and then the definition (no inline "Term: definition" or "Term — definition" separator), DO NOT fabricate a separator in source_excerpt. Quote ONLY the definition portion as source_excerpt — do NOT prepend "Term: " or "Term — " to make it readable. The term goes in the term field; source_excerpt is verbatim ONLY.
 
 ## RESPONSE SCHEMA
 
@@ -34,6 +35,28 @@ const INSTRUCTIONS = `You are extracting Definitions from an Evidence of Coverag
     }
   ]
 }
+
+## OUTPUT FAILURE MODE
+
+If you cannot quote verbatim with high confidence, return:
+  "source_excerpt": ""
+  "haiku_confidence": (lower value reflecting uncertainty)
+The verifier marks empty excerpts as 'not_found' — graceful degradation to display-only rendering. This is preferred over a wrong excerpt that will fail verification.
+
+## CORRECT vs INCORRECT EXCERPT EXAMPLES
+
+Source text in section: "Medical Emergency: a sudden onset of a medical condition that, if not treated immediately, could reasonably result in serious impairment of bodily function."
+
+❌ INCORRECT (paraphrased): "Medical emergency means an urgent condition needing immediate care"
+Why wrong: not a substring of the document.
+
+❌ INCORRECT (whitespace adjusted): "Medical Emergency a sudden onset of a medical condition if not treated immediately could result in serious impairment"
+Why wrong: dropped colon, commas, "that", "reasonably", "of bodily function" — not exact-match.
+
+❌ INCORRECT (semantically right but from wrong location): "Emergency services are covered without prior authorization"
+Why wrong: from the prior_auth_codes or coverage section, not the definitions glossary entry.
+
+✅ CORRECT (verbatim substring of source): "Medical Emergency: a sudden onset of a medical condition that, if not treated immediately"
 
 ## EXAMPLE
 

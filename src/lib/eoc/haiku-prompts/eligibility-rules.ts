@@ -11,7 +11,7 @@ const INSTRUCTIONS = `You are extracting Eligibility + Effective Date Rules from
 
 ## CRITICAL EXTRACTION RULES
 
-1. **Verbatim source_excerpt** (≤200 chars).
+1. **Verbatim source_excerpt** (≤200 chars). MUST be a CHARACTER-FOR-CHARACTER substring of the document section text — NEVER paraphrase, summarize, or normalize whitespace/punctuation. If you cannot find a verbatim ≤200-char span that supports the field, set source_excerpt to "" (empty) — the verifier marks empty as 'not_found' (graceful degradation), which is the correct outcome rather than a wrong excerpt.
 2. **effective_date_rule**: free-form text describing when coverage starts (e.g., "1st of month following enrollment", "date of hire", "30 days after enrollment").
 3. **dependent_age_limit**: integer max age for dependent coverage (typically 26 under ACA). Use null if not specified.
 4. **cobra_eligible**: true if the plan offers COBRA continuation; false if explicitly not (rare); null if unstated.
@@ -33,6 +33,28 @@ const INSTRUCTIONS = `You are extracting Eligibility + Effective Date Rules from
   "source_section_hint": "eligibility_rules",
   "haiku_confidence": 0.9
 }
+
+## OUTPUT FAILURE MODE
+
+If you cannot quote verbatim with high confidence, return:
+  "source_excerpt": ""
+  "haiku_confidence": (lower value reflecting uncertainty)
+The verifier marks empty excerpts as 'not_found' — graceful degradation to display-only rendering. This is preferred over a wrong excerpt that will fail verification.
+
+## CORRECT vs INCORRECT EXCERPT EXAMPLES
+
+Source text in section: "Eligible employees may elect COBRA continuation coverage within 60 days of the qualifying event. Coverage continues for up to 18 months."
+
+❌ INCORRECT (paraphrased): "COBRA election period is 60 days; coverage lasts 18 months"
+Why wrong: not a substring of the document.
+
+❌ INCORRECT (whitespace adjusted): "Eligible employees may elect COBRA within 60 days. Coverage continues 18 months."
+Why wrong: dropped "continuation coverage", "of the qualifying event", "for up to" — not exact-match.
+
+❌ INCORRECT (semantically right but from wrong location): "COBRA means the Consolidated Omnibus Budget Reconciliation Act of 1985"
+Why wrong: from the definitions section, not the eligibility_rules narrative.
+
+✅ CORRECT (verbatim substring of source): "Eligible employees may elect COBRA continuation coverage within 60 days of the qualifying event"
 
 ## NOW EXTRACT FROM THIS DOCUMENT SECTION:`;
 
