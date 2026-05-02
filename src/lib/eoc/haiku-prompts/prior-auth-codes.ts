@@ -11,7 +11,7 @@ const INSTRUCTIONS = `You are extracting Prior Authorization (PA) requirements f
 
 ## CRITICAL EXTRACTION RULES
 
-1. **Verbatim source_excerpt**: For every code, include a verbatim quote (≤200 chars) from the EOC text where the code appears. NEVER fabricate or paraphrase.
+1. **Verbatim source_excerpt**: For every code, include a verbatim quote (≤200 chars) from the EOC text where the code appears. MUST be a CHARACTER-FOR-CHARACTER substring of the document section text — NEVER paraphrase, summarize, or normalize whitespace/punctuation. If you cannot find a verbatim ≤200-char span that supports the field, set source_excerpt to "" (empty) — the verifier marks empty as 'not_found' (graceful degradation), which is the correct outcome rather than a wrong excerpt.
 2. **Code identification**: extract billing_code + billing_code_type. Valid types: CPT (5 digits, e.g., "99213"), HCPCS (letter + 4 digits, e.g., "J3490"), NDC (drug, e.g., "0002-1407-30"), REV (revenue, e.g., "0250"), DRG (e.g., "470").
 3. **PA criteria**: free-form text describing when PA is required for this code (may be empty if just listed). Verbatim from EOC; do NOT summarize.
 4. **DO NOT extract**: codes mentioned in glossary cross-references, footer legal disclaimers, definitions section, header marketing copy. Those go to source_section_hint='glossary_legalese_DO_NOT_EXTRACT' or 'header_DO_NOT_EXTRACT'.
@@ -32,6 +32,28 @@ const INSTRUCTIONS = `You are extracting Prior Authorization (PA) requirements f
     ...
   ]
 }
+
+## OUTPUT FAILURE MODE
+
+If you cannot quote verbatim with high confidence, return:
+  "source_excerpt": ""
+  "haiku_confidence": (lower value reflecting uncertainty)
+The verifier marks empty excerpts as 'not_found' — graceful degradation to display-only rendering. This is preferred over a wrong excerpt that will fail verification.
+
+## CORRECT vs INCORRECT EXCERPT EXAMPLES
+
+Source text in section: "70553 (MRI brain w/o + w/ contrast) — Required for all outpatient imaging"
+
+❌ INCORRECT (paraphrased): "MRI brain requires PA"
+Why wrong: not a substring of the document.
+
+❌ INCORRECT (whitespace adjusted): "70553 (MRI brain) Required for outpatient imaging"
+Why wrong: dropped "w/o + w/ contrast" qualifier and the " — " separator.
+
+❌ INCORRECT (semantically right but from wrong location): "Prior authorization is the process by which the plan reviews requested services"
+Why wrong: from the definitions section, not the prior_auth_codes list.
+
+✅ CORRECT (verbatim substring of source): "70553 (MRI brain w/o + w/ contrast) — Required for all outpatient imaging"
 
 ## EXAMPLE
 

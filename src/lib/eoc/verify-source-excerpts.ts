@@ -19,13 +19,27 @@ import { isDoNotExtractSection } from "../parser/types";
 import type { EOCParseResult, EOCSectionResult, PatternP8Provenance } from "./types";
 
 /**
- * Collapse whitespace + zero-width chars for insurer-agnostic substring matching.
- * Mirrors eob-postprocess.ts:normalizeWhitespace() implementation.
- * Strips ZWSP/ZWNJ/ZWJ/BOM via Unicode escapes; collapses any whitespace run.
+ * Normalize text for insurer-agnostic + format-agnostic substring matching.
+ * Mirrors eob-postprocess.ts:normalizeWhitespace() but adds Unicode punctuation
+ * normalization (smart quotes, dashes) per Phase 3.1A.1 empirical finding —
+ * pdftotext-extracted text contains curly quotes (U+2018/U+2019/U+201C/U+201D)
+ * and en/em-dashes that Haiku frequently emits as ASCII equivalents (U+0027/U+0022/U+002D).
+ *
+ *   - Strips zero-width chars (ZWSP/ZWNJ/ZWJ/BOM)
+ *   - Folds curly single quotes → straight apostrophe (')
+ *   - Folds curly double quotes → straight double quote (")
+ *   - Folds em-dash, en-dash, figure-dash, minus-sign → hyphen-minus (-)
+ *   - Collapses any whitespace run → single space
+ *
+ * Universal across insurers + document formats. Citation-grade strictness still
+ * preserved at consumer-read layer (Pattern P-8 hard rule unchanged).
  */
 function normalizeWhitespace(text: string): string {
   return text
     .replace(/[​-‍﻿]/g, "")
+    .replace(/[‘’‚‛]/g, "'")
+    .replace(/[“”„‟]/g, '"')
+    .replace(/[‐‑‒–—―−]/g, "-")
     .replace(/\s+/g, " ")
     .trim();
 }
