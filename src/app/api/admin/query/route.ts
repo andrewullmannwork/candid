@@ -26,6 +26,10 @@ const ALLOWED_TABLES = [
   "concept_relationships",
   "feature_flag_rules",
   "parse_audit_runs",
+  // Bundle PR #1 (Session 55, audit item #8) — Pattern 1 #1 admin review queues
+  // for parser-emitted unknown reference data (slugs + billing codes).
+  "concept_admin_review_queue",
+  "service_catalog_admin_review_queue",
 ] as const;
 
 type AllowedTable = (typeof ALLOWED_TABLES)[number];

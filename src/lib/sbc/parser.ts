@@ -30,7 +30,7 @@ import { extractCommonMedicalEvents } from "./haiku-prompts/common-medical-event
 import { extractOtherCovered } from "./haiku-prompts/other-covered";
 import { extractExcludedServices } from "./haiku-prompts/excluded-services";
 import { extractAppealsGrievances } from "./haiku-prompts/appeals-grievances";
-import { validateServiceSlugs } from "./concept-resolver";
+import { validateServiceSlugs, type SlugEnqueueContext } from "./concept-resolver";
 import { verifySBCSourceExcerpts } from "./verify-source-excerpts";
 
 const COST_HARD_CAP_USD = 2.0;
@@ -113,10 +113,15 @@ async function dispatchSection<T>(
 export interface ParseSBCInput {
   ocrText: string;
   extractionMethod: ExtractionMethod;
+  // Bundle PR #1 (Session 55, audit item #8) — optional admin-queue context for
+  // unknown slug routing (Pattern 1 #1). When omitted (e.g., parse-harness),
+  // unknowns are dropped with warning (legacy behavior). When present (production
+  // parse path), unknowns are enqueued to service_catalog_admin_review_queue.
+  enqueueContext?: Omit<SlugEnqueueContext, "sectionHint"> | null;
 }
 
 export async function parseSBC(input: ParseSBCInput): Promise<SBCHaikuParseResult> {
-  const { ocrText, extractionMethod } = input;
+  const { ocrText, extractionMethod, enqueueContext } = input;
   const warnings: string[] = [];
   const costTracker: CostTracker = { totalUsd: 0 };
 
@@ -184,11 +189,18 @@ export async function parseSBC(input: ParseSBCInput): Promise<SBCHaikuParseResul
     warnings.push(`cost_soft_alarm:${costTracker.totalUsd.toFixed(4)}`);
   }
 
-  // Step 4: Slug validation (drop unknown slugs + log warnings)
+  // Step 4: Slug validation (drop unknown slugs + Pattern 1 #1 admin gate enqueue
+  // when enqueueContext is provided per Bundle PR #1 audit item #8 close).
   const rawCommonServices = commonMedicalEventsResult?.data.services ?? [];
   const rawOtherServices = otherCoveredResult?.data.services ?? [];
-  const commonValidation = validateServiceSlugs(rawCommonServices);
-  const otherValidation = validateServiceSlugs(rawOtherServices);
+  const commonCtx: SlugEnqueueContext | null = enqueueContext
+    ? { ...enqueueContext, sectionHint: "common_medical_events" }
+    : null;
+  const otherCtx: SlugEnqueueContext | null = enqueueContext
+    ? { ...enqueueContext, sectionHint: "other_covered_services" }
+    : null;
+  const commonValidation = await validateServiceSlugs(rawCommonServices, commonCtx);
+  const otherValidation = await validateServiceSlugs(rawOtherServices, otherCtx);
   warnings.push(...commonValidation.warnings, ...otherValidation.warnings);
   // Push section warnings into top-level warnings
   if (commonMedicalEventsResult?.warnings) warnings.push(...commonMedicalEventsResult.warnings);
