@@ -19,6 +19,8 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { PlanContext } from "./plan-context";
+import { extractPatternP8FromEntry, isCitationGrade } from "@/lib/parser/consumer-read";
+import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 
 const K_ANON_PRICING = 5;
 
@@ -34,6 +36,22 @@ export interface PlanBenefitDetail {
   citation: string;
   sbcExcerpt: string | null;
   sbcPage: number | null;
+  /**
+   * Phase 4 Task 4-E: Pattern P-8 cite-grade verification status for the row's
+   * primary cost field. Per Q-DR-4E-1 LOCK = (B), derived from in_copay's P-8
+   * verification when copay is non-null, else from in_coinsurance's P-8.
+   *
+   * Drives the dispute letter blockquote 3-case logic per Q-DR-4E-2 LOCK:
+   *   - Case 1 (sbcExcerptVerified === true): bullet + verbatim blockquote
+   *   - Case 2 (false but covered + copay/coinsurance present): bullet, no blockquote
+   *   - Case 3 (false + no certainty): drop bullet entirely
+   *
+   * Note: when Pattern P-8 verbatim is available and verified, we PREFER it over
+   * the legacy sbcExcerpt column (mig 050 era) — the per-field excerpt is more
+   * specific to the disputed cost than a row-level excerpt. Falls back to legacy
+   * column when no P-8 data is present (legacy rows from before mig 056).
+   */
+  sbcExcerptVerified: boolean;
 }
 
 export interface LineItemEvidence {
@@ -420,11 +438,15 @@ async function loadCoverage(
   if (!insurancePlanId) return byServiceSlug;
 
   // plan_covered_services rows; service_catalog.slug is the natural join key.
-  // sbc_excerpt/sbc_page exist after migration 050 (Phase 4.5). Use optional
-  // chaining / default-null to stay compatible when the columns aren't populated yet.
+  // sbc_excerpt/sbc_page exist after migration 050 (Phase 4.5).
+  // field_provenance JSONB exists after migration 056 (Phase 3 — per-field P-8 storage).
+  // Use optional chaining / default-null to stay compatible with rows that predate
+  // either migration.
   const { data: rows } = await supabase
     .from("plan_covered_services")
-    .select("covered, in_copay, in_coinsurance, source, confidence, sbc_excerpt, sbc_page, service_catalog!inner(slug, name)")
+    .select(
+      "covered, in_copay, in_coinsurance, source, confidence, sbc_excerpt, sbc_page, field_provenance, service_catalog!inner(slug, name)",
+    )
     .eq("insurance_plan_id", insurancePlanId);
 
   if (!rows) return byServiceSlug;
@@ -437,12 +459,24 @@ async function loadCoverage(
     confidence: number | null;
     sbc_excerpt: string | null;
     sbc_page: number | null;
+    field_provenance: Record<string, FieldProvenanceEntry> | null;
     service_catalog: { slug: string; name: string } | Array<{ slug: string; name: string }>;
   }>) {
     const cat = Array.isArray(r.service_catalog) ? r.service_catalog[0] : r.service_catalog;
     if (!cat?.slug) continue;
     const confidence = r.confidence ?? 0.5;
     if (confidence < MIN_PLAN_BENEFIT_CONFIDENCE) continue;
+
+    // Phase 4 Task 4-E: derive Pattern P-8 cite-grade verification for the row's
+    // primary cost field. Per Q-DR-4E-1 LOCK = (B), the gating field is in_copay
+    // when copay is non-null; in_coinsurance otherwise. When P-8 verbatim is
+    // available, prefer it over the legacy sbc_excerpt column.
+    const primaryField = r.in_copay !== null ? "in_copay" : "in_coinsurance";
+    const p8Entry = r.field_provenance?.[primaryField];
+    const p8 = extractPatternP8FromEntry(p8Entry);
+    const sbcExcerptVerified = isCitationGrade(p8);
+    const preferredExcerpt = p8?.source_excerpt ?? r.sbc_excerpt ?? null;
+
     byServiceSlug.set(cat.slug, {
       covered: r.covered !== false,
       copay: r.in_copay,
@@ -450,8 +484,9 @@ async function loadCoverage(
       source: r.source ?? "unknown",
       confidence,
       citation: `Plan SBC${r.sbc_page ? `, page ${r.sbc_page}` : ""} — ${cat.name}`,
-      sbcExcerpt: r.sbc_excerpt ?? null,
+      sbcExcerpt: preferredExcerpt,
       sbcPage: r.sbc_page ?? null,
+      sbcExcerptVerified,
     });
   }
 

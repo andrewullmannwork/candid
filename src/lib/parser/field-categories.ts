@@ -232,6 +232,14 @@ export interface FieldProvenanceEntry {
   source_excerpt_extraction_method?: ExtractionMethod;
   source_section_hint?: string;
   source_section_verified?: boolean;
+  // Phase 4.0.5 forward-compat hook (NOT YET POPULATED by parsers).
+  // Records which sections the parser dispatched Haiku to during first-parse for
+  // this field. Phase 4.0.5 wires the parser writes + targeted re-parse logic;
+  // Phase 4.0 ships only the type so consumer-read can branch forward-compat
+  // (Map.get(searched_sections)?.length ?? 0 === 0 → treat as "unknown coverage").
+  // Once populated: enables deterministic `verbatim_absent` derivation when
+  // (searched_sections covers ALL_SECTIONS) AND (source_excerpt_verified === "not_found").
+  searched_sections?: string[];
 }
 
 /**

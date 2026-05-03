@@ -181,6 +181,10 @@ function DisputesContent() {
   const [missingPlanDismissed, setMissingPlanDismissed] = useState(false);
   const [downloadWarnOpen, setDownloadWarnOpen] = useState(false);
   const [nameMismatch, setNameMismatch] = useState<{ billName: string; profileName: string } | null>(null);
+  // Phase 4 Task 4-E: server-authoritative flag state for cite-grade gating on
+  // EvidenceBlock UI. Resolved server-side in /api/disputes/[disputeId] GET so
+  // we don't duplicate flag-evaluation logic on the client.
+  const [gateUnverified, setGateUnverified] = useState(false);
   const disputeId = searchParams.get("dispute");
 
   // Fetch dispute + plan context + evidence (reused for refetch-on-focus).
@@ -195,6 +199,7 @@ function DisputesContent() {
     setPlanContext(data.planContext ?? null);
     setEvidence(data.evidence ?? null);
     setNameMismatch(data.patientNameMismatch ?? null);
+    setGateUnverified(!!data.gateUnverified);
     if (data.letterContent) {
       const synthesized: DisputeLetter = {
         id: data.id,
@@ -391,7 +396,7 @@ function DisputesContent() {
         onConfirmAddress={handleConfirmAddress}
       />
 
-      <EvidenceBlock evidence={evidence} planLabel={planLabel} />
+      <EvidenceBlock evidence={evidence} planLabel={planLabel} gateUnverified={gateUnverified} />
 
       <EvidenceGaps
         gaps={evidence?.gaps ?? []}

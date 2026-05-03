@@ -12,6 +12,12 @@ interface FlagRule {
   target_type: "global" | "users" | "percentage";
   target_users: string[];
   target_percentage: number;
+  // Phase 4 Task 4-B (Session 56 mig 067) — typed config payload for non-boolean
+  // flag tuning (e.g., pattern1_corroboration_threshold has {value: 3} for the
+  // distinct-user threshold for canonical-source corroboration). Read at runtime
+  // via `readFeatureFlagConfig<T>` in src/lib/config/product-flags.ts. Edit UI
+  // exposed in this admin page (Phase 4 Task 4 bonus, Session 57).
+  config: Record<string, unknown> | null;
   updated_at: string;
 }
 
@@ -25,6 +31,12 @@ export default function FeatureFlagsPage() {
   const [newDesc, setNewDesc] = useState("");
   const [editingUsers, setEditingUsers] = useState<string | null>(null);
   const [userInput, setUserInput] = useState("");
+  // Phase 4 bonus: per-flag config editing state. `editingConfig` is the flag.id
+  // currently being edited; `configDraft` holds the unsaved JSON text; `configError`
+  // surfaces parse errors inline (does NOT block the input — user can iterate).
+  const [editingConfig, setEditingConfig] = useState<string | null>(null);
+  const [configDraft, setConfigDraft] = useState("");
+  const [configError, setConfigError] = useState<string | null>(null);
 
   async function loadFlags() {
     try {
@@ -80,6 +92,54 @@ export default function FeatureFlagsPage() {
     setFlags((prev) => prev.map((f) => f.id === flag.id ? { ...f, target_users: users, updated_at: new Date().toISOString() } : f));
     setEditingUsers(null);
     setUserInput("");
+  }
+
+  // Phase 4 bonus: parse + persist the JSON config payload for a flag. Validates
+  // JSON inline; only writes to DB on successful parse. Empty input clears the
+  // config to null (semantically "no config"; readFeatureFlagConfig returns the
+  // caller's fallback).
+  async function saveConfig(flag: FlagRule) {
+    const trimmed = configDraft.trim();
+    let parsed: Record<string, unknown> | null = null;
+    if (trimmed.length > 0) {
+      try {
+        const candidate: unknown = JSON.parse(trimmed);
+        if (
+          typeof candidate !== "object" ||
+          candidate === null ||
+          Array.isArray(candidate)
+        ) {
+          setConfigError("Config must be a JSON object (e.g. { \"value\": 3 })");
+          return;
+        }
+        parsed = candidate as Record<string, unknown>;
+      } catch (err) {
+        setConfigError(err instanceof Error ? err.message : "Invalid JSON");
+        return;
+      }
+    }
+    setConfigError(null);
+    await update("feature_flag_rules", flag.id, {
+      config: parsed,
+      updated_at: new Date().toISOString(),
+    });
+    setFlags((prev) =>
+      prev.map((f) => (f.id === flag.id ? { ...f, config: parsed, updated_at: new Date().toISOString() } : f)),
+    );
+    setEditingConfig(null);
+    setConfigDraft("");
+  }
+
+  function startConfigEdit(flag: FlagRule) {
+    setEditingConfig(flag.id);
+    setConfigDraft(flag.config ? JSON.stringify(flag.config, null, 2) : "");
+    setConfigError(null);
+  }
+
+  function cancelConfigEdit() {
+    setEditingConfig(null);
+    setConfigDraft("");
+    setConfigError(null);
   }
 
   async function addFlag() {
@@ -271,6 +331,70 @@ export default function FeatureFlagsPage() {
                         + Add user
                       </button>
                     )}
+                  </div>
+                )}
+              </div>
+
+              {/* Phase 4 bonus: typed JSON config editor (Session 57). Surfaces
+                  feature_flag_rules.config payload added by mig 067. Read at
+                  runtime via readFeatureFlagConfig<T>(flagKey, configKey, fallback)
+                  in src/lib/config/product-flags.ts. Used today by:
+                  pattern1_corroboration_threshold = {"value": 3}.            */}
+              <div className="mt-3 pt-3 border-t border-gray-100">
+                {editingConfig === flag.id ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-gray-700">
+                        Editing <code className="font-mono bg-gray-100 px-1 rounded">{flag.flag_key}.config</code>
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => saveConfig(flag)}
+                          className="px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={cancelConfigEdit}
+                          className="px-2 py-1 text-xs text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                    <textarea
+                      value={configDraft}
+                      onChange={(e) => { setConfigDraft(e.target.value); setConfigError(null); }}
+                      placeholder='{ "value": 3 }'
+                      rows={3}
+                      className="w-full px-2 py-1.5 text-xs font-mono border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    {configError && (
+                      <p className="text-xs text-red-600">{configError}</p>
+                    )}
+                    <p className="text-[11px] text-gray-400">
+                      JSON object only (e.g. <code className="font-mono">{"{ \"value\": 3 }"}</code>). Empty clears the config.
+                      Read at runtime via <code className="font-mono">readFeatureFlagConfig(flagKey, configKey, fallback)</code>.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-medium text-gray-500">Config:</span>
+                      {flag.config ? (
+                        <code className="text-xs font-mono bg-gray-50 text-gray-700 px-2 py-0.5 rounded border border-gray-200">
+                          {JSON.stringify(flag.config)}
+                        </code>
+                      ) : (
+                        <span className="text-xs text-gray-300 italic">none</span>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => startConfigEdit(flag)}
+                      className="text-xs text-blue-600 hover:text-blue-800"
+                    >
+                      {flag.config ? "Edit" : "+ Add config"}
+                    </button>
                   </div>
                 )}
               </div>

@@ -46,6 +46,17 @@ interface TemplateParams {
   codeSubstitutionEvidence?: { deniedCode: string; siblingCode: string; siblingPayRate: number; serviceName: string };
   planContext?: PlanContext | null;
   evidence?: DisputeEvidence | null;
+  /**
+   * Phase 4 Task 4-E: when consumer_read_filter_v1 flag is ON, dispute letter
+   * blockquote rendering is gated by Pattern P-8 cite-grade verification per
+   * Q-P4-2 LOCK (legal surface = hide on unverified). Drives the 3-case logic
+   * in renderLineItemEvidence per Q-DR-4E-2 LOCK.
+   *
+   * When false (default; legacy + flag OFF), all blockquotes render unconditionally.
+   * When true, only cite-grade-verified excerpts render; non-cite-grade rows fall
+   * back to bullet-without-quote (Case 2) or drop bullet entirely (Case 3).
+   */
+  gateUnverified?: boolean;
 }
 
 // ============================================================================
@@ -60,6 +71,7 @@ function renderEvidenceBlock(
   evidence: DisputeEvidence | null | undefined,
   planContext: PlanContext | null | undefined,
   title: string = "Why this service should be covered",
+  gateUnverified: boolean = false,
 ): string {
   if (!evidence || evidence.claims.length === 0) return "";
 
@@ -84,7 +96,7 @@ function renderEvidenceBlock(
     }
 
     for (const li of claim.lineItemEvidence) {
-      const block = renderLineItemEvidence(li, itemNumber, planContext);
+      const block = renderLineItemEvidence(li, itemNumber, planContext, gateUnverified);
       if (block) {
         lines.push(block, "");
         itemNumber++;
@@ -119,6 +131,7 @@ function renderLineItemEvidence(
   li: LineItemEvidence,
   index: number,
   planContext: PlanContext | null | undefined,
+  gateUnverified: boolean = false,
 ): string {
   // Bare minimum to render: a code OR a billed amount. Skip phantom items.
   if (!li.billingCode && li.billedAmount === 0 && !li.patientOwes) return "";
@@ -134,7 +147,22 @@ function renderLineItemEvidence(
 
   const bullets: string[] = [];
 
-  if (li.planBenefit) {
+  // Phase 4 Task 4-E: planBenefit-derived bullets are gated by trust level
+  // when gateUnverified is true. 3-case logic per Q-DR-4E-2 LOCK:
+  //   - Case 1 (cite-grade verified): bullet + verbatim blockquote
+  //   - Case 2 (covered + structured cost-sharing populated, no cite-grade): bullet WITHOUT blockquote
+  //   - Case 3 (no cite-grade AND no certainty of coverage): drop the planBenefit bullets entirely
+  //   - Discrepancy bullet (derived from planBenefit math) gated on the same trust level
+  // When gateUnverified === false (legacy / flag OFF), all bullets render unconditionally.
+  const planBenefitTrusted = !!(
+    li.planBenefit &&
+    (!gateUnverified ||
+      li.planBenefit.sbcExcerptVerified ||
+      (li.planBenefit.covered === true &&
+        (li.planBenefit.copay !== null || li.planBenefit.coinsurance !== null)))
+  );
+
+  if (li.planBenefit && planBenefitTrusted) {
     const planName = planContext?.plan?.planName ?? "Your plan";
     const year = planContext?.plan?.planYear ? `, ${planContext.plan.planYear}` : "";
     const costDescriptor = li.planBenefit.copay != null
@@ -145,7 +173,9 @@ function renderLineItemEvidence(
     bullets.push(
       `   - ${planName}${year} specifies ${costDescriptor} for this service. Source: ${li.planBenefit.citation}.`,
     );
-    if (li.planBenefit.sbcExcerpt) {
+    // Blockquote (Case 1 only): render the verbatim excerpt only when cite-grade
+    // verified OR gating is off entirely (legacy behavior).
+    if (li.planBenefit.sbcExcerpt && (!gateUnverified || li.planBenefit.sbcExcerptVerified)) {
       bullets.push(`     > *"${li.planBenefit.sbcExcerpt.trim()}"*`);
     }
   }
@@ -158,14 +188,14 @@ function renderLineItemEvidence(
     bullets.push(`   - EOB shows: ${eobParts.join(" · ")}.`);
   }
 
-  if (li.expectedPatientCost != null && li.actualPatientCost != null) {
+  if (li.expectedPatientCost != null && li.actualPatientCost != null && planBenefitTrusted) {
     const overage = li.discrepancyAmount ?? 0;
     if (overage > 0) {
       bullets.push(
         `   - Expected patient cost per plan: ${formatCurrency(li.expectedPatientCost)}. Actual patient responsibility: ${formatCurrency(li.actualPatientCost)}. **Discrepancy: ${formatCurrency(overage)}.**`,
       );
     }
-  } else if (li.discrepancyReason) {
+  } else if (li.discrepancyReason && planBenefitTrusted) {
     bullets.push(`   - ${li.discrepancyReason}`);
   } else if (!li.planBenefit && li.patientOwes != null && li.patientOwes > 0) {
     // No plan match — at minimum explain the request crisply.
@@ -276,6 +306,7 @@ const overchargeTemplate: LetterTemplate = {
     codeSubstitutionEvidence,
     planContext,
     evidence,
+    gateUnverified,
   }) => {
     const findingDetails = findings
       .map(
@@ -293,6 +324,7 @@ const overchargeTemplate: LetterTemplate = {
       evidence,
       planContext,
       "Supporting evidence for each charge",
+      gateUnverified ?? false,
     );
 
     return `${formatDate(new Date().toISOString())}
@@ -409,6 +441,7 @@ const insuranceAppealTemplate: LetterTemplate = {
     bill,
     planContext,
     evidence,
+    gateUnverified,
   }) => {
     const insurerName = planContext?.insurer?.name
       || bill.insurer?.name
@@ -418,7 +451,12 @@ const insuranceAppealTemplate: LetterTemplate = {
     const planLabel = planContext?.plan?.planName
       ? `${planContext.plan.planName}${planContext.plan.planYear ? `, plan year ${planContext.plan.planYear}` : ""}`
       : null;
-    const evidenceBlock = renderEvidenceBlock(evidence, planContext);
+    const evidenceBlock = renderEvidenceBlock(
+      evidence,
+      planContext,
+      "Why this service should be covered",
+      gateUnverified ?? false,
+    );
 
     return `${formatDate(new Date().toISOString())}
 
@@ -469,11 +507,13 @@ const balanceBillingTemplate: LetterTemplate = {
     planEvidence,
     planContext,
     evidence,
+    gateUnverified,
   }) => {
     const evidenceBlock = renderEvidenceBlock(
       evidence,
       planContext,
       "Why these charges violate my plan's cost-sharing terms",
+      gateUnverified ?? false,
     );
     const findingDetails = findings
       .map(
@@ -550,11 +590,13 @@ const duplicateChargeTemplate: LetterTemplate = {
     findings,
     planContext,
     evidence,
+    gateUnverified,
   }) => {
     const evidenceBlock = renderEvidenceBlock(
       evidence,
       planContext,
       "Line items flagged as duplicates",
+      gateUnverified ?? false,
     );
     const findingDetails = findings
       .map(
