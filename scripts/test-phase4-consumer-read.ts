@@ -18,11 +18,14 @@ import {
   getDisplayState,
   decorateForDisplay,
   decorateRowsWithDisplayState,
+  extractPatternP8FromEntry,
+  decorateFieldFromEntry,
   DISPLAY_STATE_TOOLTIP_EN,
   type DisplayStateInput,
   type DisplayStateReason,
 } from "@/lib/parser/consumer-read";
 import type { PatternP8Provenance } from "@/lib/parser/verify-source-excerpts";
+import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 
 const TAG = "[phase4-consumer-read]";
 
@@ -344,6 +347,99 @@ function testC6_TooltipMapComplete() {
   }
 }
 
+// ─── C7: extractPatternP8FromEntry + decorateFieldFromEntry (Task 4-B helpers) ──
+function testC7_ExtractAndDecorateFromEntry() {
+  console.log(`${TAG} C7: extractPatternP8FromEntry + decorateFieldFromEntry ...`);
+
+  // C7.1: null/undefined entry → null
+  assertEq(extractPatternP8FromEntry(null), null, "C7.1: null entry → null");
+  assertEq(extractPatternP8FromEntry(undefined), null, "C7.2: undefined entry → null");
+
+  // C7.3: entry with all 5 P-8 fields → returns PatternP8Provenance
+  const fullEntry: FieldProvenanceEntry = {
+    source: "doc_extraction",
+    confidence: 0.5,
+    last_corroborated_at: "2026-05-02T12:00:00Z",
+    source_excerpt: "Deductible: $1,500 individual",
+    source_excerpt_verified: "verified",
+    source_excerpt_extraction_method: "pdftotext",
+    source_section_hint: "important_questions",
+    source_section_verified: true,
+  };
+  const extracted = extractPatternP8FromEntry(fullEntry);
+  assert(extracted !== null, "C7.3: full entry → non-null");
+  assertEq(extracted?.source_excerpt, "Deductible: $1,500 individual", "C7.4: source_excerpt extracted");
+  assertEq(extracted?.source_excerpt_verified, "verified", "C7.5: source_excerpt_verified extracted");
+  assertEq(extracted?.source_section_verified, true, "C7.6: source_section_verified extracted");
+
+  // C7.7: entry missing source_excerpt → null (partial P-8 not citation-grade)
+  const partialEntry: FieldProvenanceEntry = {
+    source: "doc_extraction",
+    confidence: 0.5,
+    last_corroborated_at: "2026-05-02T12:00:00Z",
+    source_excerpt_verified: "verified",
+    source_excerpt_extraction_method: "pdftotext",
+    source_section_hint: "important_questions",
+    source_section_verified: true,
+  };
+  assertEq(extractPatternP8FromEntry(partialEntry), null, "C7.7: missing source_excerpt → null");
+
+  // C7.8: entry without any P-8 (legacy regex extraction) → null
+  const legacyEntry: FieldProvenanceEntry = {
+    source: "doc_extraction_eoc",
+    confidence: 0.5,
+    last_corroborated_at: "2026-05-02T12:00:00Z",
+  };
+  assertEq(extractPatternP8FromEntry(legacyEntry), null, "C7.8: legacy entry (no P-8) → null");
+
+  // C7.9: decorateFieldFromEntry round-trip with full P-8 entry
+  const decorated = decorateFieldFromEntry(1500, fullEntry, {
+    sourceCount: 1,
+    source: "doc_extraction",
+    multiSourceThreshold: 3,
+  });
+  assertEq(decorated.value, 1500, "C7.9: value preserved");
+  assertEq(decorated.state, "verified", "C7.10: state from P-8 cite-grade");
+  assertEq(decorated.reason, "p8_cite_grade_self_source", "C7.11: reason from P-8 self-source");
+  assertEq(decorated.excerpt, "Deductible: $1,500 individual", "C7.12: excerpt extracted from entry");
+  assertEq(decorated.hasExcerpt, true, "C7.13: hasExcerpt true");
+
+  // C7.14: decorateFieldFromEntry with null entry uses fallbackConfidence
+  const nullEntryDecorated = decorateFieldFromEntry(450, null, {
+    sourceCount: 5,
+    source: "canonical_inherited",
+    multiSourceThreshold: 3,
+    fallbackConfidence: 0.5,
+  });
+  assertEq(nullEntryDecorated.value, 450, "C7.14: value preserved with null entry");
+  assertEq(nullEntryDecorated.state, "verified", "C7.15: state = verified (corroborated cross-user)");
+  assertEq(nullEntryDecorated.reason, "corroborated_multi_user", "C7.16: reason = multi-user");
+
+  // C7.17: decorateFieldFromEntry with canonical_inherited below threshold → estimated
+  const belowThreshold = decorateFieldFromEntry(450, null, {
+    sourceCount: 1,
+    source: "canonical_inherited",
+    multiSourceThreshold: 3,
+  });
+  assertEq(belowThreshold.state, "estimated", "C7.17: below threshold → estimated");
+  assertEq(belowThreshold.reason, "cross_user_below_threshold", "C7.18: reason = below threshold");
+
+  // C7.19: decorateFieldFromEntry confidence sourced from entry, not fallback
+  const customConfidenceEntry: FieldProvenanceEntry = {
+    source: "doc_extraction",
+    confidence: 0.3, // low confidence
+    last_corroborated_at: "2026-05-02T12:00:00Z",
+  };
+  const lowConfidenceResult = decorateFieldFromEntry(100, customConfidenceEntry, {
+    sourceCount: 1,
+    source: "doc_extraction",
+    multiSourceThreshold: 3,
+    fallbackConfidence: 0.9, // ignored in favor of entry's 0.3
+  });
+  assertEq(lowConfidenceResult.state, "estimated", "C7.19: state = estimated (low confidence)");
+  assertEq(lowConfidenceResult.reason, "low_confidence", "C7.20: reason = low_confidence");
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 function main() {
   console.log(`${TAG} Phase 4 consumer-read filter smoke test starting`);
@@ -353,6 +449,7 @@ function main() {
   testC4_DecorateForDisplay();
   testC5_DecorateRows();
   testC6_TooltipMapComplete();
+  testC7_ExtractAndDecorateFromEntry();
   console.log(`${TAG} ${passed} passed, ${failed} failed`);
   if (failed > 0) {
     console.error(`${TAG} FAILURES — exiting non-zero`);
