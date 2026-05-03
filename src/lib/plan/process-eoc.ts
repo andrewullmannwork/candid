@@ -27,6 +27,7 @@ import { resolveOrEnqueueConcept } from "@/lib/eoc/concept-resolver";
 import type { EOCParseResult } from "@/lib/eoc/types";
 import type { ProcessPlanResult } from "@/lib/plan/process-plan";
 import { buildEOCPlanIdentityProvenance } from "@/lib/parser/provenance-builders";
+import { loadValidServiceSlugs, enqueueUnknownServiceSlug } from "@/lib/parser/service-catalog-slugs";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
@@ -297,12 +298,48 @@ async function persistEOCSections(
 
   // ── Section B: medical_necessity ──────────────────────────────────────────────
   if (parsed.sections.medical_necessity && proposedByUserId) {
+    // Bundle PR #1 (Session 55, audit item #8) — Pattern 1 #1 admin gate for slug
+    // growth. Validate Haiku-emitted service_slug_hint against service_catalog;
+    // unknowns route to service_catalog_admin_review_queue (mig 065) for admin
+    // promotion. Prior behavior dropped unknowns silently — anti-flywheel.
+    // service_catalog is the broader DB-truth vocabulary; STANDARD_SLUGS (51
+    // SBC-curated) would over-prune EOC-legitimate slugs like specialty mental
+    // health / transplant.
+    const validSlugs = await loadValidServiceSlugs(supabase);
+
     for (const criterion of parsed.sections.medical_necessity.data.criteria) {
       // For medical_necessity, service_slug_hint is the parser's best-guess at which
       // service catalog entry this maps to. If present + matches existing service_catalog,
-      // write to coverage_rules. If no slug hint, log for admin review (defer to v1.5 —
-      // medical-necessity criteria without slug binding can't merge into coverage_rules).
+      // write to coverage_rules. If unknown, enqueue for admin promotion (Pattern 1 #1).
+      // If no slug hint at all, log for admin review (criteria without slug binding
+      // can't merge into coverage_rules).
       if (criterion.service_slug_hint) {
+        if (!validSlugs.has(criterion.service_slug_hint)) {
+          try {
+            const { isNew } = await enqueueUnknownServiceSlug(supabase, {
+              sourceDocId: documentId,
+              proposedByUserId,
+              parserSource: "eoc",
+              proposedServiceSlug: criterion.service_slug_hint,
+              proposedServiceLabel: criterion.criteria_text.slice(0, 200),
+              proposedCategory: null,
+              sourceExcerpt: criterion.source_excerpt,
+              sourceExcerptVerified: criterion.source_excerpt_verified,
+              sourceExcerptExtractionMethod: criterion.source_excerpt_extraction_method,
+              sourceSectionHint: criterion.source_section_hint,
+              sourceSectionVerified: criterion.source_section_verified,
+              contextExtract: extractContext(parsed, criterion.source_excerpt),
+            });
+            warnings.push(
+              isNew
+                ? `eoc_medical_necessity_slug_enqueued_new:${criterion.service_slug_hint}`
+                : `eoc_medical_necessity_slug_enqueued_existing:${criterion.service_slug_hint}`,
+            );
+          } catch (err) {
+            warnings.push(`eoc_medical_necessity_slug_enqueue_failed:${criterion.service_slug_hint}:${err instanceof Error ? err.message : String(err)}`);
+          }
+          continue;
+        }
         try {
           await mergeCoverageRules(supabase, planId, criterion.service_slug_hint, {
             medical_necessity_text: criterion.criteria_text,

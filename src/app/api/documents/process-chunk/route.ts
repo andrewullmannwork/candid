@@ -38,6 +38,14 @@ const BILL_TYPES = new Set(["eob", "itemized_bill"]);
 // hard cap (Q-P3.1A-6) by 15×. Prompt user to upload text-extractable version.
 const EOC_MIN_TEXT_CHARS = 500;
 
+// Bundle PR #1 (Session 55, audit item #17) — image-PDF refusal threshold for SBC.
+// Smallest legitimate SBC fixture in tests/fixtures/sbcs/ is 15,352 chars; 500-char
+// threshold leaves ~3% safety margin. Below this likely indicates a scanned-image
+// SBC where pdftotext returned blanks; Haiku would emit confident-but-wrong values
+// from garbage OCR. Prompt user to upload text-extractable version (mirrors EOC
+// pattern at lines 295-309).
+const SBC_MIN_TEXT_CHARS = 500;
+
 /**
  * Process a bill/EOB document: parse → audit → persist claims → collect pricing.
  * Mirrors the logic in /api/documents/process but runs inline in the chunk pipeline.
@@ -334,6 +342,24 @@ async function dispatchPlanOrEOC(args: {
       { ...classification, classifiedType: "plan_document" },
       { skipCanonical },
     );
+  }
+
+  // Bundle PR #1 (Session 55, audit item #17) — image-PDF refusal for SBC.
+  // EOC has analogous refusal above; SBC was unprotected. Without this, scanned-image
+  // SBCs hit Haiku with garbage OCR and produce confident-but-wrong values that
+  // poison the canonical seed. T0.4 retry button surfaces the explicit error to user.
+  if (classification.classifiedType === "sbc" && ocrText.length < SBC_MIN_TEXT_CHARS) {
+    const reason = `SBC document appears to be a scanned image (only ${ocrText.length} chars of text extracted). Please upload a text-based PDF version from your insurer's portal for accurate processing.`;
+    console.warn(`[process-chunk] ${reason} (documentId=${documentId})`);
+    await supabase
+      .from("documents")
+      .update({
+        status: "error",
+        processing_error: reason,
+        processing_step: "rejected_image_sbc",
+      })
+      .eq("id", documentId);
+    return { success: false, error: reason, parseWarnings: [reason] };
   }
 
   // Non-EOC types: existing legacy path.

@@ -19,6 +19,8 @@ import {
   buildCanonicalPlanServiceProvenance,
   buildSBCPlanIdentityProvenance,
 } from "@/lib/parser/provenance-builders";
+import { upsertCanonicalServicesWithMerge } from "@/lib/parser/canonical-merge";
+import { loadValidServiceSlugs, enqueueUnknownServiceSlug } from "@/lib/parser/service-catalog-slugs";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
@@ -83,12 +85,22 @@ export async function processPlanDocumentData(
     // migration to Haiku-first plan-doc parser).
     const { data: userForFlagCheck } = await supabase
       .from("users")
-      .select("email")
+      .select("email, id")
       .eq("firebase_uid", doc.user_id)
       .single();
     const sbcParserV1Enabled = !isFullPlanDoc
       ? await isFeatureEnabled("sbc_parser_v1", userForFlagCheck?.email ?? undefined)
       : false;
+    // Bundle PR #1 (Session 55, audit item #8) — Pattern 1 #1 admin gate context
+    // for unknown slug routing. Threaded through votedParseSBC → parseSBC →
+    // validateServiceSlugs. Unknowns hit service_catalog_admin_review_queue (mig 065)
+    // for admin promotion to service_catalog. Without this context, validateServiceSlugs
+    // falls back to drop-with-warning (e.g., parse-harness path).
+    const slugEnqueueContext = {
+      supabase,
+      documentId,
+      proposedByUserId: userForFlagCheck?.id ?? null,
+    };
 
     let parseResult: SBCParseResult;
     let usedNewSBCParser = false;
@@ -106,6 +118,7 @@ export async function processPlanDocumentData(
           ocrText,
           extractionMethod: "pdftotext",
           canonicalMatchExists: false, // v1: always cold-start vote (N=3) for safety; v1.5 add canonical pre-check
+          enqueueContext: slugEnqueueContext,
         });
       } catch (err) {
         console.error("[process-plan] sbc_parser_v1 failed:", err);
@@ -202,8 +215,43 @@ export async function processPlanDocumentData(
         claudeResult.fromClaude && claudeResult.services.length > 0;
 
       if (haikuSucceeded) {
-        parseResult.services = claudeResult.services;
-        console.log(`[process-plan] Haiku extracted ${claudeResult.services.length} services`);
+        // Bundle PR #1 (Session 55, audit item #8 plan_document slug-correctness
+        // portion) — Pattern 1 #1 admin gate for claude-extractor output.
+        // Validate against service_catalog (broader DB-truth vocab; not the
+        // narrow STANDARD_SLUGS prompt list) → enqueue unknowns to admin queue.
+        // Parser-quality angle (49% recall floor) stays in Phase 3.4 / F.14.
+        const validSlugs = await loadValidServiceSlugs(supabase);
+        const validatedServices: typeof claudeResult.services = [];
+        let enqueuedCount = 0;
+        for (const svc of claudeResult.services) {
+          if (validSlugs.has(svc.serviceSlug)) {
+            validatedServices.push(svc);
+            continue;
+          }
+          try {
+            await enqueueUnknownServiceSlug(supabase, {
+              sourceDocId: documentId,
+              proposedByUserId: slugEnqueueContext.proposedByUserId,
+              parserSource: "plan_document",
+              proposedServiceSlug: svc.serviceSlug,
+              proposedServiceLabel: null,
+              proposedCategory: null,
+              // claude-extractor doesn't emit Pattern P-8 sub-keys — defaults reflect that.
+              // Phase 3.4 Haiku-first migration will provide proper provenance.
+              sourceExcerpt: "",
+              sourceExcerptVerified: "not_found",
+              sourceExcerptExtractionMethod: "pdftotext",
+              sourceSectionHint: "plan_document",
+              sourceSectionVerified: false,
+              contextExtract: null,
+            });
+            enqueuedCount++;
+          } catch (enqErr) {
+            console.warn(`[process-plan] enqueue unknown slug failed: ${svc.serviceSlug}: ${enqErr instanceof Error ? enqErr.message : String(enqErr)}`);
+          }
+        }
+        parseResult.services = validatedServices;
+        console.log(`[process-plan] Haiku extracted ${claudeResult.services.length} services; ${validatedServices.length} validated against service_catalog; ${enqueuedCount} unknown slugs enqueued for admin`);
       } else {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const extractorError = (claudeResult as any).error;
@@ -712,24 +760,26 @@ export async function processPlanDocumentData(
                 coverage_rules: {},
                 confidence: s.confidence,
                 source: (classification.classifiedType === "sbc" ? "sbc_parser" : "user_upload") as string,
-                // Phase 3.2.1 Q-P3.2.1-2 — Pattern P-8 field_provenance JSONB on
-                // canonical_plan_services. Cold-start canonical seeds get cite-grade
-                // provenance from the user's upload; subsequent corroborators replace
-                // (last-writer-wins on UPSERT — citation diversity tracked as Phase 4
-                // follow-up DR per Subplan §Risks).
+                // Bundle PR #1 (Session 55, audit item #13) — field_provenance is
+                // shallow-merged server-side via mig 064 PL/pgSQL function. Cross-field
+                // citation diversity preserved (USER B's payload no longer drops USER A's
+                // keys for fields B doesn't touch). Within-field diversity (sources array
+                // per field) deferred to Phase 4 Subplan with consumer-read filter.
                 ...(haikuService ? { field_provenance: buildCanonicalPlanServiceProvenance(haikuService) } : {}),
               };
             });
 
           if (canonicalServiceInserts.length > 0) {
-            const { error: canonicalSvcError } = await supabase
-              .from("canonical_plan_services")
-              .upsert(canonicalServiceInserts, { onConflict: "canonical_plan_id,service_slug" });
+            const { error: canonicalSvcError } = await upsertCanonicalServicesWithMerge(
+              supabase,
+              canonicalPlanId!,
+              canonicalServiceInserts,
+            );
 
             if (canonicalSvcError) {
               console.error("[canonical-plan] Failed to upsert canonical services:", canonicalSvcError);
             } else {
-              console.log(`[canonical-plan] Upserted ${canonicalServiceInserts.length} services to canonical plan ${canonicalPlanId}`);
+              console.log(`[canonical-plan] Upserted ${canonicalServiceInserts.length} services to canonical plan ${canonicalPlanId} (advisory-locked, JSONB-merged)`);
             }
           }
         } catch (err) {

@@ -14,6 +14,7 @@ const adminNav = [
   { href: "/admin/documents/review", label: "Document Review" },
   { href: "/admin/flags", label: "Feature Flags" },
   { href: "/admin/parse-audit-runs", label: "Parse Audit Runs" },
+  { href: "/admin/review-queue", label: "Review Queue" },
   { href: "/admin/sbc-tickets", label: "SBC Tickets" },
   { href: "/admin/settings", label: "Settings" },
   { href: "/admin/copy", label: "Site Copy" },
