@@ -1,0 +1,291 @@
+/**
+ * Consumer-Read Filter — Pattern P-8 + Pattern 1 #4 enforcement at display layer.
+ *
+ * Phase 4 Task 4-A (Session 55+). Closes audit items #6 + #10 + #14 + interim #4.
+ *
+ * THE PROBLEM
+ * Phases 3.1B → 3.2 → 3.2.1 → Bundle PR #1 built per-field source provenance
+ * (Pattern P-8) + admin promotion queue (Pattern 1 #1). Bundle PR #1 confirmed
+ * empirically that ZERO consumer code reads `field_provenance` — Pattern P-8 is
+ * unenforced at display. Plan page renders deductible/copay regardless of whether
+ * the parser captured a verifiable excerpt; dispute letter quotes plan terms
+ * without P-8 verification; "(estimated)" tag fires only for premium when
+ * `premiumSource === 'canonical_fallback'`.
+ *
+ * THE SOLUTION
+ * Pure-function library exposing predicates + decorators. Caller (API routes,
+ * UI components) passes per-field provenance + confidence + source + sourceCount;
+ * library returns a 4-state DisplayState + a tooltip key per Q-P4-1 LOCK.
+ *
+ * SELF-SOURCE vs CROSS-USER
+ * Pattern 1 #4 ("multi-source corroboration threshold") applies to CROSS-USER
+ * data (canonical inheritance, canonical fallback, provider attestations) NOT
+ * to a user reading their OWN uploaded data. Single-source data on the user's
+ * own profile renders as "verified" if cite-grade; the corroboration threshold
+ * only gates promotion to canonical and cross-user display.
+ *
+ * Per-source corroboration thresholds (Session 55):
+ *   - canonical_inherited / canonical_fallback → P1 #4 default (3 distinct users;
+ *     configurable via feature_flags.pattern1_corroboration_threshold per Q-P4-3)
+ *   - provider_submitted → 2 distinct user corroborations (provider attestation
+ *     needs user validation; Pattern 1 hard rule clarification Session 55)
+ *   - All other sources (admin_verified, user_correction, doc_extraction on
+ *     user's own row, card_corroboration, bill_observed, cms_marketplace, etc.)
+ *     → no corroboration required (self or trusted)
+ *
+ * CANONICAL PUSH SEMANTICS
+ * When canonical hits its threshold, the `canonical_inherited` rows on every
+ * user's `plan_covered_services` automatically render as "verified" via the
+ * P1 #4 check here — without code changes downstream. Push is implicit because
+ * the inheritance pattern (process-plan.ts) updates inherited rows when
+ * canonical changes, and this library reads the live row state.
+ *
+ * IMPORTANT FOR API CALLERS (Task 4-B integration):
+ *   When fetching `canonical_inherited` rows from `plan_covered_services`, the
+ *   API MUST join `canonical_plan_services.verification_count` to populate the
+ *   `sourceCount` argument here — otherwise canonical-corroborated values will
+ *   be misclassified as low-corroboration and render as "estimated".
+ */
+
+import type { PatternP8Provenance } from "./verify-source-excerpts";
+import type { SourceProvenance } from "./field-categories";
+
+// 4-state vocabulary per Q-P4-1 LOCK (collapsed `verified` + `corroborated` from
+// the original 5-state proposal; tooltip differentiates the two paths to verified).
+export type DisplayState = "verified" | "estimated" | "unverified" | "hidden";
+
+// Reasons surface to UI as tooltip keys (Q-DR-4A-2 LOCK = enum, not literal text;
+// caller maps to UI string for i18n boundary).
+export type DisplayStateReason =
+  // verified family
+  | "p8_cite_grade_corroborated"      // both: cite-grade + multi-source
+  | "p8_cite_grade_self_source"       // self-source with citation
+  | "corroborated_multi_user"         // multi-source, no citation
+  // estimated family
+  | "self_source_no_cite"             // user's own upload but P-8 verifier failed
+  | "cross_user_below_threshold"      // canonical/provider data; not enough corroborators yet
+  | "canonical_fallback"              // county/CMS marketplace fallback
+  | "ocr_unverifiable"                // scanned doc; verifier honest about limitation
+  | "low_confidence"                  // confidence < 0.5
+  // unverified family
+  | "haiku_not_found"                 // parser flagged not_found — likely hallucination
+  // hidden family
+  | "do_not_extract_section";         // boilerplate (e.g., glossary, footer legalese)
+
+// Sources that require cross-user corroboration before they render as verified.
+// All other sources are self/trusted; sourceCount=1 is sufficient for verified
+// (paired with cite-grade per Q-P4-4 LOCK).
+const CROSS_USER_DEFAULT_SOURCES = new Set<string>(["canonical_inherited", "canonical_fallback"]);
+const PROVIDER_ATTESTATION_SOURCE = "provider_submitted";
+const PROVIDER_ATTESTATION_THRESHOLD = 2;
+
+/**
+ * Returns the per-source corroboration threshold (number of distinct users required
+ * to lift the source's data to "verified" via multi-user corroboration).
+ *
+ * Returns 0 for self/trusted sources (no corroboration required for verified).
+ * Caller passes the configured default for cross-user defaults; provider_submitted
+ * has its own hardcoded threshold (Pattern 1 clarification Session 55: providers
+ * are not authoritative until 2 user uploads corroborate).
+ */
+export function corroborationThreshold(source: string, configuredDefault: number): number {
+  if (CROSS_USER_DEFAULT_SOURCES.has(source)) return configuredDefault;
+  if (source === PROVIDER_ATTESTATION_SOURCE) return PROVIDER_ATTESTATION_THRESHOLD;
+  return 0;
+}
+
+/**
+ * Pattern P-8 hard rule predicate (citation-grade test).
+ * Returns true iff:
+ *   - provenance is non-null
+ *   - source_excerpt_verified === 'verified' (parser confirmed verbatim match in doc)
+ *   - source_section_verified === true (excerpt found within Haiku-claimed section)
+ *   - source_section_hint does NOT end with '_DO_NOT_EXTRACT' (not boilerplate)
+ */
+export function isCitationGrade(provenance: PatternP8Provenance | null | undefined): boolean {
+  if (!provenance) return false;
+  if (provenance.source_excerpt_verified !== "verified") return false;
+  if (!provenance.source_section_verified) return false;
+  if (provenance.source_section_hint.endsWith("_DO_NOT_EXTRACT")) return false;
+  return true;
+}
+
+export interface DisplayStateInput {
+  /** Pattern P-8 source provenance from `field_provenance.{field}` JSONB. Null for legacy/pre-Phase-3 rows. */
+  provenance: PatternP8Provenance | null | undefined;
+  /** Per-row or per-field confidence (0-1). */
+  confidence: number;
+  /** Distinct user count contributing to this value. For canonical_inherited rows,
+   *  caller MUST pass canonical_plan_services.verification_count (joined upstream),
+   *  not the user's own row count. */
+  sourceCount: number;
+  /** SourceProvenance value (or surface-specific value like "canonical_inherited"
+   *  or "canonical_fallback"). Determines whether corroboration is required. */
+  source: SourceProvenance | string;
+  /** Multi-source corroboration threshold for cross-user sources. Caller reads
+   *  feature_flags.pattern1_corroboration_threshold per Q-P4-3 LOCK and passes
+   *  here. Self/trusted sources ignore this value (threshold = 0 for them). */
+  multiSourceThreshold: number;
+}
+
+export interface DisplayStateResult {
+  state: DisplayState;
+  reason: DisplayStateReason;
+}
+
+/**
+ * Derive the display state for a single value per Q-P4-1 LOCK (4-state) +
+ * Q-P4-4 LOCK (P-8 + P1 #4 as orthogonal axes; UI composes via tooltip).
+ *
+ * Tier order: hidden > verified > unverified > estimated (default).
+ * Tier 0 (hidden): DO_NOT_EXTRACT trumps everything (boilerplate is always hidden).
+ * Tier 1 (verified): cite-grade OR sufficient corroboration → verified.
+ * Tier 2 (unverified): parser-flagged not_found → unverified (likely hallucination).
+ * Tier 3 (estimated): everything else, with reason indicating sub-state.
+ */
+export function getDisplayState(input: DisplayStateInput): DisplayStateResult {
+  const { provenance, confidence, sourceCount, source, multiSourceThreshold } = input;
+
+  // Tier 0: DO_NOT_EXTRACT section trumps everything (boilerplate that happened
+  // to verify is still boilerplate).
+  if (provenance?.source_section_hint?.endsWith("_DO_NOT_EXTRACT")) {
+    return { state: "hidden", reason: "do_not_extract_section" };
+  }
+
+  const citeGrade = isCitationGrade(provenance);
+  const requiredCount = corroborationThreshold(source, multiSourceThreshold);
+  // Self/trusted sources (requiredCount === 0) are auto-corroborated.
+  // Cross-user sources need sourceCount >= configured threshold.
+  const corroborated = requiredCount === 0 || sourceCount >= requiredCount;
+
+  // Tier 1: verified — cite-grade OR sufficient corroboration.
+  if (citeGrade && corroborated && requiredCount > 0) {
+    return { state: "verified", reason: "p8_cite_grade_corroborated" };
+  }
+  if (citeGrade) {
+    // Self-source with cite or cross-user with cite (corroboration may not be met yet
+    // but cite-grade alone is sufficient for trust per Pattern P-8).
+    return { state: "verified", reason: "p8_cite_grade_self_source" };
+  }
+  if (corroborated && requiredCount > 0) {
+    // Cross-user data, no cite, but enough corroborators.
+    return { state: "verified", reason: "corroborated_multi_user" };
+  }
+
+  // Tier 2: unverified — parser explicitly flagged not_found (hallucination signal).
+  // This trumps "estimated" defaults because negative signal is more important
+  // than absence-of-positive.
+  if (provenance?.source_excerpt_verified === "not_found") {
+    return { state: "unverified", reason: "haiku_not_found" };
+  }
+
+  // Tier 3: estimated — everything else, categorized by reason.
+  // Cross-user, below threshold takes precedence over generic single_source label.
+  if (requiredCount > 0 && sourceCount < requiredCount) {
+    if (source === "canonical_fallback") {
+      return { state: "estimated", reason: "canonical_fallback" };
+    }
+    return { state: "estimated", reason: "cross_user_below_threshold" };
+  }
+
+  // Self-source variations
+  if (provenance?.source_excerpt_verified === "ocr_unverifiable") {
+    return { state: "estimated", reason: "ocr_unverifiable" };
+  }
+  if (confidence < 0.5) {
+    return { state: "estimated", reason: "low_confidence" };
+  }
+
+  // Default: self-source with provenance but neither cite-grade nor flagged.
+  return { state: "estimated", reason: "self_source_no_cite" };
+}
+
+/**
+ * Decoration wrapper for UI consumption. Wraps a value with display metadata
+ * + the source excerpt (when available) for citation tooltip rendering.
+ */
+export interface DecoratedValue<T> {
+  value: T;
+  state: DisplayState;
+  reason: DisplayStateReason;
+  hasExcerpt: boolean;
+  excerpt: string | null;
+}
+
+export function decorateForDisplay<T>(value: T, input: DisplayStateInput): DecoratedValue<T> {
+  const { state, reason } = getDisplayState(input);
+  const excerpt = input.provenance?.source_excerpt ?? null;
+  return {
+    value,
+    state,
+    reason,
+    hasExcerpt: !!excerpt && excerpt.length > 0,
+    excerpt,
+  };
+}
+
+/**
+ * Pattern 1 #4 row-level decoration helper for API layer (Task 4-B).
+ * Adds displayState + displayReason fields per row WITHOUT dropping rows
+ * (Q-DR-4A-3 LOCK = decorate-not-drop). Callers downstream filter by state
+ * if they need to hide low-trust rows.
+ */
+export function decorateRowsWithDisplayState<
+  T extends {
+    confidence: number;
+    sourceCount: number;
+    source: SourceProvenance | string;
+    provenance?: PatternP8Provenance | null;
+  },
+>(
+  rows: T[],
+  multiSourceThreshold: number,
+): Array<T & { displayState: DisplayState; displayReason: DisplayStateReason }> {
+  return rows.map((row) => {
+    const { state, reason } = getDisplayState({
+      provenance: row.provenance ?? null,
+      confidence: row.confidence,
+      sourceCount: row.sourceCount,
+      source: row.source,
+      multiSourceThreshold,
+    });
+    return { ...row, displayState: state, displayReason: reason };
+  });
+}
+
+/**
+ * Tooltip text mapping for the UI layer per Q-DR-4A-2 LOCK + user direction
+ * Session 55 ("playful, transparent about origin, invitation to participate").
+ *
+ * Caller (UI component) imports this map for default en-US strings; future
+ * i18n replaces this with a t() function call keyed on DisplayStateReason.
+ */
+export const DISPLAY_STATE_TOOLTIP_EN: Record<DisplayStateReason, string> = {
+  // verified family
+  p8_cite_grade_corroborated:
+    "Verified — exact quote from your document plus other Candid users back this up.",
+  p8_cite_grade_self_source:
+    "Verified from your uploaded document. Waiting to confirm across other Candid users — your upload helps grow the community knowledge.",
+  corroborated_multi_user:
+    "Confirmed by multiple Candid users on this plan.",
+
+  // estimated family
+  self_source_no_cite:
+    "Based on your uploaded document. Waiting to confirm across other Candid users — pop back later as more folks chime in.",
+  cross_user_below_threshold:
+    "Sourced from other Candid users on this plan — still gathering enough confirmations to be sure. Upload your own SBC to help verify.",
+  canonical_fallback:
+    "Estimated from public marketplace data. Upload your SBC for the real story.",
+  ocr_unverifiable:
+    "Pulled from a scanned document — we couldn't fully verify the exact wording. Worth double-checking your plan papers.",
+  low_confidence:
+    "Best estimate — the parser wasn't very confident here. Please verify against your plan documents.",
+
+  // unverified family
+  haiku_not_found:
+    "We extracted this but couldn't find a matching quote in the source — please verify against your plan documents before relying on it.",
+
+  // hidden family (no tooltip needed; UI doesn't render the value or badge)
+  do_not_extract_section:
+    "(hidden — boilerplate section)",
+};
