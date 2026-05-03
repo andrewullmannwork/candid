@@ -30,6 +30,13 @@ export interface GenerateDisputeLetterOptions {
   planEvidence?: PlanBenefitEvidence[];
   planContext?: PlanContext | null;
   evidence?: DisputeEvidence | null;
+  /**
+   * Phase 4 Task 4-E. When true, dispute letter blockquote rendering is gated by
+   * Pattern P-8 cite-grade verification per Q-P4-2 LOCK (legal surface). Caller
+   * supplies this from `consumer_read_filter_v1` flag state. Defaults false
+   * (legacy / flag OFF behavior — all blockquotes render unconditionally).
+   */
+  gateUnverified?: boolean;
 }
 
 export function generateDisputeLetter(
@@ -49,7 +56,7 @@ export function generateDisputeLetter(
   const options: GenerateDisputeLetterOptions = Array.isArray(optionsOrPlanEvidence)
     ? { planEvidence: optionsOrPlanEvidence }
     : (optionsOrPlanEvidence ?? {});
-  const { planEvidence, planContext, evidence } = options;
+  const { planEvidence, planContext, evidence, gateUnverified } = options;
 
   // Auto-detect letter type from findings if not specified
   const resolvedType =
@@ -71,6 +78,7 @@ export function generateDisputeLetter(
     planEvidence,
     planContext: planContext ?? null,
     evidence: evidence ?? null,
+    gateUnverified: gateUnverified ?? false,
   });
 
   // Recipient: insurance appeals use insurer + appeals address when available;

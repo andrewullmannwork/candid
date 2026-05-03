@@ -15,6 +15,7 @@ import type { DisputeLetterType, AuditReport } from "@/lib/billing/types";
 import type { PlanContext } from "./plan-context";
 import type { DisputeEvidence } from "./evidence-resolver";
 import { LETTER_TEMPLATES } from "./templates";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
 
 interface RerenderParams {
   disputeId: string;
@@ -82,6 +83,13 @@ export async function rerenderDisputeLetter(
     totals: { totalBilled: Number(claim.total_billed ?? 0) },
   } as unknown as AuditReport["parsedBill"];
 
+  // Phase 4 Task 4-E: gate blockquote rendering on Pattern P-8 cite-grade
+  // verification when consumer_read_filter_v1 is ON. Re-render path always
+  // honors current flag state — when flag flips ON post-draft, regenerated
+  // letter applies the gating; when flag flips OFF, letter goes back to
+  // legacy unconditional rendering. Symmetric with /api/disputes/generate.
+  const gateUnverified = await isFeatureEnabled("consumer_read_filter_v1");
+
   const body = template.body({
     patientName: bill.patient.name ?? "",
     providerName: bill.provider.name ?? "",
@@ -90,6 +98,7 @@ export async function rerenderDisputeLetter(
     bill,
     planContext,
     evidence,
+    gateUnverified,
   });
 
   return body;

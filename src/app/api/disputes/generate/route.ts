@@ -112,10 +112,21 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // Phase 4 Task 4-E: when consumer_read_filter_v1 flag is ON, gate
+      // letter blockquote rendering by Pattern P-8 cite-grade verification
+      // (3-case logic in templates.ts per Q-DR-4E-2 LOCK). Reads flag once
+      // per request — userEmail is unavailable here (auditReport.userId is
+      // a firebase_uid), so flag falls back to global-only evaluation, which
+      // matches the production rollout sequence (admin-only soak via target_users
+      // in feature_flag_rules; otherwise global).
+      const { isFeatureEnabled: isFlagEnabled } = await import("@/lib/config/product-flags");
+      const gateUnverified = await isFlagEnabled("consumer_read_filter_v1");
+
       const letter = generateDisputeLetter(auditReport, findingIds, letterType, {
         planEvidence,
         planContext,
         evidence,
+        gateUnverified,
       });
 
       // Persist dispute to database (feature-flagged)

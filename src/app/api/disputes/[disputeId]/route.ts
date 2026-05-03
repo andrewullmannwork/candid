@@ -18,6 +18,7 @@ import { createServerClient } from "@/lib/supabase/server";
 import { resolvePlanContext } from "@/lib/disputes/plan-context";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
 import { resolveAccountName } from "@/lib/disputes/rerender";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -43,13 +44,22 @@ export async function GET(
 
   const { data: user } = await supabase
     .from("users")
-    .select("id")
+    .select("id, email")
     .eq("firebase_uid", decoded.uid)
     .single();
 
   if (!user) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
+
+  // Phase 4 Task 4-E: gateUnverified is server-authoritative. Resolve once per
+  // request and surface in response so EvidenceBlock client component can apply
+  // the 3-case cite-grade gating per Q-DR-4E-2 LOCK without duplicating flag
+  // evaluation logic on the client side.
+  const gateUnverified = await isFeatureEnabled(
+    "consumer_read_filter_v1",
+    user.email ?? undefined,
+  );
 
   const { data: dispute, error } = await supabase
     .from("dispute_outcomes")
@@ -213,6 +223,7 @@ export async function GET(
     missingPlanForYear: planContext?.missingForYear ?? null,
     evidence,
     patientNameMismatch,
+    gateUnverified,
   });
 }
 

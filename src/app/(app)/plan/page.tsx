@@ -7,6 +7,15 @@ import { createBrowserClient } from "@/lib/supabase/client";
 import type { PlanAnalysisResult, AnalyzedBenefit } from "@/lib/plan/analyzer";
 import type { BenefitCategory } from "@/lib/plan/benefits-catalog";
 import { BENEFIT_CATEGORY_LABELS } from "@/lib/plan/benefits-catalog";
+import {
+  DisplayStateBadge,
+  SourceQuote,
+  VerifyAffordance,
+  decoratedShape,
+  aggregateRowState,
+  type DecoratedValue,
+  type DisplayState,
+} from "@/components/display-state";
 
 const SERVICE_CATEGORY_LABELS: Record<string, string> = {
   office_visit: "Office Visits",
@@ -27,6 +36,11 @@ const SERVICE_CATEGORY_LABELS: Record<string, string> = {
 
 // ── Extended API response type ─────────────────────────────────────────────────
 
+// Phase 4 Task 4-B: when consumer_read_filter_v1 flag is ON, P-8-eligible fields
+// arrive as DecoratedValue<T> wrappers; when OFF, raw T (legacy). Plan page
+// branches via `decoratedShape()` helper at render time.
+type MaybeDecorated<T> = T | DecoratedValue<T>;
+
 interface AnalyzeResponse extends PlanAnalysisResult {
   dataSource: "user_plan" | "user_plan_with_canonical" | "matched_plan" | "cms_api" | "verified_plan" | "static_catalog";
   planName?: string;
@@ -36,14 +50,14 @@ interface AnalyzeResponse extends PlanAnalysisResult {
   insurer?: string;
   planType?: string;
   planSummary?: {
-    inDeductible?: number;
-    outDeductible?: number;
-    inOopMax?: number;
-    outOopMax?: number;
-    planType?: string;
+    inDeductible?: MaybeDecorated<number | null>;
+    outDeductible?: MaybeDecorated<number | null>;
+    inOopMax?: MaybeDecorated<number | null>;
+    outOopMax?: MaybeDecorated<number | null>;
+    planType?: MaybeDecorated<string | null>;
     metalLevel?: string;
     verificationStatus?: string;
-    premiumMonthly?: number | null;
+    premiumMonthly?: MaybeDecorated<number | null>;
     premiumSource?: string;
   };
 }
@@ -298,6 +312,15 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource }: {
     multi_user_verified: "Verified",
   };
 
+  // Phase 4 Task 4-D: each P-8-eligible field unwraps to {value, state, reason}.
+  // When flag OFF, state is null and DisplayStateBadge renders nothing.
+  const inDed = decoratedShape<number | null>(planSummary.inDeductible);
+  const outDed = decoratedShape<number | null>(planSummary.outDeductible);
+  const inOop = decoratedShape<number | null>(planSummary.inOopMax);
+  const outOop = decoratedShape<number | null>(planSummary.outOopMax);
+  const planType = decoratedShape<string | null>(planSummary.planType);
+  const premium = decoratedShape<number | null>(planSummary.premiumMonthly);
+
   return (
     <div className="mt-4 p-4 bg-white border border-gray-200 rounded-xl">
       <div className="flex items-center justify-between">
@@ -308,9 +331,9 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource }: {
               {planYear}
             </span>
           )}
-          {planSummary.planType && (
+          {planType.value && (
             <span className="ml-2 text-xs font-medium text-gray-500">
-              {planSummary.planType}
+              {planType.value}
               {planSummary.metalLevel && ` / ${planSummary.metalLevel}`}
             </span>
           )}
@@ -325,56 +348,122 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource }: {
           </span>
         )}
       </div>
-      {planSummary.premiumMonthly != null && (
-        <div className="mt-3 flex items-baseline gap-1.5">
+      {premium.value != null && (
+        <div className="mt-3 flex items-baseline gap-1.5 flex-wrap">
           <span className="text-xl font-bold text-gray-900">
-            ${planSummary.premiumMonthly.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            ${premium.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </span>
           <span className="text-xs text-gray-500">/month</span>
           {planSummary.premiumSource === "county_specific" && (
             <span className="ml-1.5 text-[10px] font-medium text-green-600 bg-green-50 px-1.5 py-0.5 rounded">Your county</span>
           )}
-          {planSummary.premiumSource === "canonical_fallback" && (
-            <span className="ml-1.5 text-[10px] font-medium text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">(estimated)</span>
+          {/* Phase 4 Task 4-D: ad-hoc premiumSource === "canonical_fallback" → "(estimated)"
+              tag REMOVED (Q-DR-4B-3 LOCK). Premium routes through the unified
+              DisplayStateBadge below — synthesized source mapping in API
+              (canonical_fallback gets threshold; cms_marketplace = trusted) drives
+              the state per consumer-read library. */}
+          {premium.state && premium.reason && (
+            <DisplayStateBadge state={premium.state} reason={premium.reason} size="xs" />
           )}
         </div>
       )}
       <div className="mt-3 grid grid-cols-2 gap-3">
         <div>
           <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Deductible (in-network)</p>
-          <p className="text-sm font-medium text-gray-900">
-            {planSummary.inDeductible != null
-              ? `$${planSummary.inDeductible.toLocaleString()}`
-              : <span className="text-gray-300">Upload SBC</span>}
-          </p>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <p className="text-sm font-medium text-gray-900">
+              {inDed.value != null
+                ? `$${inDed.value.toLocaleString()}`
+                : <span className="text-gray-300">Upload SBC</span>}
+            </p>
+            {inDed.state && inDed.reason && inDed.value != null && (
+              <DisplayStateBadge state={inDed.state} reason={inDed.reason} size="xs" />
+            )}
+          </div>
         </div>
         <div>
           <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Deductible (out-of-network)</p>
-          <p className="text-sm font-medium text-gray-900">
-            {planSummary.outDeductible != null
-              ? `$${planSummary.outDeductible.toLocaleString()}`
-              : <span className="text-gray-300">&mdash;</span>}
-          </p>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <p className="text-sm font-medium text-gray-900">
+              {outDed.value != null
+                ? `$${outDed.value.toLocaleString()}`
+                : <span className="text-gray-300">&mdash;</span>}
+            </p>
+            {outDed.state && outDed.reason && outDed.value != null && (
+              <DisplayStateBadge state={outDed.state} reason={outDed.reason} size="xs" />
+            )}
+          </div>
         </div>
         <div>
           <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">OOP Max (in-network)</p>
-          <p className="text-sm font-medium text-gray-900">
-            {planSummary.inOopMax != null
-              ? `$${planSummary.inOopMax.toLocaleString()}`
-              : <span className="text-gray-300">Upload SBC</span>}
-          </p>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <p className="text-sm font-medium text-gray-900">
+              {inOop.value != null
+                ? `$${inOop.value.toLocaleString()}`
+                : <span className="text-gray-300">Upload SBC</span>}
+            </p>
+            {inOop.state && inOop.reason && inOop.value != null && (
+              <DisplayStateBadge state={inOop.state} reason={inOop.reason} size="xs" />
+            )}
+          </div>
         </div>
         <div>
           <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">OOP Max (out-of-network)</p>
-          <p className="text-sm font-medium text-gray-900">
-            {planSummary.outOopMax != null
-              ? `$${planSummary.outOopMax.toLocaleString()}`
-              : <span className="text-gray-300">&mdash;</span>}
-          </p>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <p className="text-sm font-medium text-gray-900">
+              {outOop.value != null
+                ? `$${outOop.value.toLocaleString()}`
+                : <span className="text-gray-300">&mdash;</span>}
+            </p>
+            {outOop.state && outOop.reason && outOop.value != null && (
+              <DisplayStateBadge state={outOop.state} reason={outOop.reason} size="xs" />
+            )}
+          </div>
         </div>
       </div>
     </div>
   );
+}
+
+// ── Row-level display state aggregation ────────────────────────────────────────
+// Phase 4 Task 4-D: each benefit row has up to 6 P-8-eligible decorated cost fields
+// (in/out copay + in/out coinsurance + annualLimit + priorAuthRequired). Aggregate
+// to a single row-level DisplayState so the row badge represents the "weakest link"
+// — user sees one badge per row, drill into expanded view for the verbatim source.
+//
+// Returns null when no decorated fields are present (flag OFF; legacy raw shape).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function computeRowDisplay(item: any): {
+  state: DisplayState;
+  reason: import("@/components/display-state").DisplayStateReason;
+  excerpt: string | null;
+} | null {
+  const fields = [
+    decoratedShape<number | null>(item?.costSharing?.inNetwork?.copay),
+    decoratedShape<number | null>(item?.costSharing?.inNetwork?.coinsurance),
+    decoratedShape<number | null>(item?.costSharing?.outOfNetwork?.copay),
+    decoratedShape<number | null>(item?.costSharing?.outOfNetwork?.coinsurance),
+    decoratedShape<string | null>(item?.costSharing?.annualLimit),
+    decoratedShape<boolean | null>(item?.costSharing?.priorAuthRequired),
+  ];
+  const aggState = aggregateRowState(fields.map((f) => f.state));
+  if (!aggState) return null;
+  if (aggState === "verified") {
+    // Prefer a verified field that ALSO has an excerpt (cite-grade) so the row's
+    // SourceQuote in expanded view has substance. Fall back to any verified field's
+    // reason for tooltip if no excerpt is available.
+    const withExcerpt = fields.find((f) => f.state === "verified" && f.hasExcerpt && f.excerpt);
+    if (withExcerpt) return { state: "verified", reason: withExcerpt.reason!, excerpt: withExcerpt.excerpt };
+    const anyVerified = fields.find((f) => f.state === "verified");
+    return { state: "verified", reason: anyVerified?.reason ?? "corroborated_multi_user", excerpt: null };
+  }
+  // For non-verified aggregate, surface the worst field's reason for the badge tooltip.
+  const worstField = fields.find((f) => f.state === aggState);
+  return {
+    state: aggState,
+    reason: worstField?.reason ?? "self_source_no_cite",
+    excerpt: null,
+  };
 }
 
 // ── Main Page ──────────────────────────────────────────────────────────────────
@@ -725,6 +814,7 @@ export default function CandidPlanPage() {
                   const item = rawItem as any; // Extended fields: costSharing, visitLimit, priorAuthRequired, covered
                   const isUsed = usedBenefits.has(item.benefit.id);
                   const isExpanded = expandedBenefit === item.benefit.id;
+                  const rowDisplay = computeRowDisplay(item);
                   return (
                     <div key={item.benefit.id} className={`transition-colors ${isUsed ? "bg-green-50/30" : "bg-white"}`}>
                       <div className="flex items-start gap-3 p-4">
@@ -762,6 +852,16 @@ export default function CandidPlanPage() {
                               </p>
                             </div>
                             <div className="flex items-center gap-2 shrink-0">
+                              {/* Phase 4 Task 4-D: row-level state badge — aggregates the
+                                  worst signal across the row's decorated cost fields.
+                                  Renders nothing when flag OFF (rowDisplay === null). */}
+                              {rowDisplay && (
+                                <DisplayStateBadge
+                                  state={rowDisplay.state}
+                                  reason={rowDisplay.reason}
+                                  size="xs"
+                                />
+                              )}
                               {item.benefit.hsaFsaEligible && (
                                 <span className="text-[10px] font-semibold bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">
                                   HSA/FSA
@@ -830,6 +930,19 @@ export default function CandidPlanPage() {
                               </span>
                             )}
                           </div>
+
+                          {/* Phase 4 Task 4-D: provenance evidence section. When the row has
+                              cite-grade verbatim, render the SourceQuote (gold-standard
+                              treatment per Q-DR-4E-2 case 1). When state is non-verified,
+                              render the VerifyAffordance prompt to upload a more complete
+                              plan document. Skipped entirely when no decoration is present
+                              (rowDisplay null = flag OFF; preserves byte-identical legacy). */}
+                          {rowDisplay && rowDisplay.state === "verified" && rowDisplay.excerpt && (
+                            <SourceQuote excerpt={rowDisplay.excerpt} />
+                          )}
+                          {rowDisplay && rowDisplay.state !== "verified" && (
+                            <VerifyAffordance state={rowDisplay.state} reason={rowDisplay.reason} />
+                          )}
 
                           {/* Relevance note (when no cost grid — for generic benefits) */}
                           {!item.costSharing && item.relevanceNote && (

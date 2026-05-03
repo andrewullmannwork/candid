@@ -225,6 +225,50 @@ export function decorateForDisplay<T>(value: T, input: DisplayStateInput): Decor
 }
 
 /**
+ * Aggregate multiple per-field display states into a single row-level state.
+ * Used by plan/page.tsx benefit rows (which have copay + coinsurance + priorAuth +
+ * annualLimit decorated fields). Picks the worst signal — the user is shown the
+ * weakest link so they know which row needs scrutiny.
+ *
+ * Tier order (worst → best for surfacing): unverified > estimated > verified
+ * Returns null when no decorated fields are present (flag OFF or all hidden).
+ *
+ * Lives in consumer-read.ts (not display-state.tsx) so smoke tests can exercise
+ * it without importing React / next/link from the UI layer.
+ */
+export function aggregateRowState(states: Array<DisplayState | null>): DisplayState | null {
+  const visible = states.filter((s): s is DisplayState => s !== null && s !== "hidden");
+  if (visible.length === 0) return null;
+  if (visible.some((s) => s === "unverified")) return "unverified";
+  if (visible.some((s) => s === "estimated")) return "estimated";
+  return "verified";
+}
+
+/**
+ * Runtime type guard for `T | DecoratedValue<T>` consumer-side branching.
+ *
+ * Use case (Phase 4 Tasks 4-D + 4-E): API responses carry `T` when
+ * `consumer_read_filter_v1` flag is OFF and `DecoratedValue<T>` when ON.
+ * UI components branch via this guard rather than threading flag state through
+ * every render path — preserves byte-identical legacy rendering when flag OFF
+ * and unlocks DisplayStateBadge + SourceQuote rendering when flag ON.
+ *
+ * Checks for the three discriminator keys (`value`, `state`, `reason`) — a bare
+ * `{ value: 30 }` object would otherwise false-positive. Picks `reason` over
+ * `excerpt` because excerpt is nullable; reason is always present on a real
+ * DecoratedValue.
+ */
+export function isDecoratedValue<T = unknown>(v: unknown): v is DecoratedValue<T> {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    "value" in v &&
+    "state" in v &&
+    "reason" in v
+  );
+}
+
+/**
  * Extract a `PatternP8Provenance` (5 required keys) from a `FieldProvenanceEntry`
  * (storage shape with all 5 keys optional). Returns null when any key is missing.
  *

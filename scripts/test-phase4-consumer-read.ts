@@ -7,6 +7,10 @@
  *   C3: getDisplayState() for the 4 states + 9 reasons
  *   C4: decorateForDisplay() round-trips with excerpt extraction
  *   C5: decorateRowsWithDisplayState() preserves rows + adds annotations
+ *   C6: DISPLAY_STATE_TOOLTIP_EN map covers all reasons
+ *   C7: extractPatternP8FromEntry / decorateFieldFromEntry (Task 4-B)
+ *   C8: isDecoratedValue type guard (Task 4-D — UI consumer-side branching)
+ *   C9: aggregateRowState worst-signal aggregation (Task 4-D — row-level state)
  *
  * Usage:
  *   npx tsx scripts/test-phase4-consumer-read.ts
@@ -20,9 +24,12 @@ import {
   decorateRowsWithDisplayState,
   extractPatternP8FromEntry,
   decorateFieldFromEntry,
+  isDecoratedValue,
+  aggregateRowState,
   DISPLAY_STATE_TOOLTIP_EN,
   type DisplayStateInput,
   type DisplayStateReason,
+  type DisplayState,
 } from "@/lib/parser/consumer-read";
 import type { PatternP8Provenance } from "@/lib/parser/verify-source-excerpts";
 import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
@@ -440,6 +447,83 @@ function testC7_ExtractAndDecorateFromEntry() {
   assertEq(lowConfidenceResult.reason, "low_confidence", "C7.20: reason = low_confidence");
 }
 
+// ─── C8: isDecoratedValue type guard (Session 57 Task 4-D) ─────────────────
+function testC8_IsDecoratedValue(): void {
+  // Raw primitives → false
+  assertEq(isDecoratedValue(null), false, "C8.1: null → false");
+  assertEq(isDecoratedValue(undefined), false, "C8.2: undefined → false");
+  assertEq(isDecoratedValue(42), false, "C8.3: number → false");
+  assertEq(isDecoratedValue("foo"), false, "C8.4: string → false");
+  assertEq(isDecoratedValue(true), false, "C8.5: boolean → false");
+  assertEq(isDecoratedValue([]), false, "C8.6: array → false");
+
+  // Objects missing required keys → false (avoid bare-object false-positive)
+  assertEq(isDecoratedValue({}), false, "C8.7: empty object → false");
+  assertEq(isDecoratedValue({ value: 30 }), false, "C8.8: only value → false");
+  assertEq(isDecoratedValue({ value: 30, state: "verified" }), false, "C8.9: missing reason → false");
+
+  // Real DecoratedValue → true
+  const decorated = decorateForDisplay(30, {
+    provenance: provVerified(),
+    confidence: 0.9,
+    sourceCount: 1,
+    source: "doc_extraction",
+    multiSourceThreshold: 3,
+  });
+  assertEq(isDecoratedValue(decorated), true, "C8.10: real DecoratedValue → true");
+  assertEq(decorated.value, 30, "C8.11: decorated.value preserved");
+
+  // DecoratedValue<null> still passes (value can be null)
+  const decoratedNull = decorateForDisplay<number | null>(null, {
+    provenance: null,
+    confidence: 0.5,
+    sourceCount: 1,
+    source: "doc_extraction",
+    multiSourceThreshold: 3,
+  });
+  assertEq(isDecoratedValue(decoratedNull), true, "C8.12: DecoratedValue<null> → true");
+}
+
+// ─── C9: aggregateRowState (Session 57 Task 4-D) ───────────────────────────
+function testC9_AggregateRowState(): void {
+  // Empty array → null (no decoration available; flag OFF case)
+  assertEq(aggregateRowState([]), null, "C9.1: empty → null");
+
+  // All-null array → null (no decorated fields on this row)
+  assertEq(aggregateRowState([null, null, null]), null, "C9.2: all null → null");
+
+  // Single field, single state
+  assertEq(aggregateRowState(["verified"]), "verified", "C9.3: single verified");
+  assertEq(aggregateRowState(["estimated"]), "estimated", "C9.4: single estimated");
+  assertEq(aggregateRowState(["unverified"]), "unverified", "C9.5: single unverified");
+
+  // hidden filtered out (boilerplate; not a real signal)
+  assertEq(aggregateRowState(["hidden", "verified"]), "verified", "C9.6: hidden filtered → verified");
+  assertEq(aggregateRowState(["hidden"]), null, "C9.7: only hidden → null (no real signal)");
+
+  // Worst-state wins (priority: unverified > estimated > verified)
+  assertEq(aggregateRowState(["verified", "verified"]), "verified", "C9.8: all verified");
+  assertEq(aggregateRowState(["verified", "estimated"]), "estimated", "C9.9: any estimated drags down");
+  assertEq(aggregateRowState(["verified", "unverified"]), "unverified", "C9.10: any unverified drags hardest");
+  assertEq(aggregateRowState(["estimated", "unverified"]), "unverified", "C9.11: unverified > estimated");
+  assertEq(
+    aggregateRowState(["verified", "estimated", "unverified"]),
+    "unverified",
+    "C9.12: mixed → worst (unverified)",
+  );
+
+  // Real-world row: 6 decorated cost fields, mostly verified, one estimated
+  const realisticRow: Array<DisplayState | null> = [
+    "verified",
+    "verified",
+    null, // out_copay missing
+    null, // out_coinsurance missing
+    "verified",
+    "estimated", // priorAuth not yet cite-grade
+  ];
+  assertEq(aggregateRowState(realisticRow), "estimated", "C9.13: realistic row → worst signal");
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 function main() {
   console.log(`${TAG} Phase 4 consumer-read filter smoke test starting`);
@@ -450,6 +534,8 @@ function main() {
   testC5_DecorateRows();
   testC6_TooltipMapComplete();
   testC7_ExtractAndDecorateFromEntry();
+  testC8_IsDecoratedValue();
+  testC9_AggregateRowState();
   console.log(`${TAG} ${passed} passed, ${failed} failed`);
   if (failed > 0) {
     console.error(`${TAG} FAILURES — exiting non-zero`);
