@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { analyzePlan } from "@/lib/plan/analyzer";
 import { createServerClient } from "@/lib/supabase/server";
+import { loadDecorationContext, type DecorationContext } from "@/lib/plan/analyze-decoration";
+import { decorateFieldFromEntry } from "@/lib/parser/consumer-read";
+import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 
 export async function POST(request: Request) {
   try {
@@ -47,6 +50,44 @@ export async function POST(request: Request) {
         .single();
 
       if (userPlan) {
+        // Phase 4 Task 4-B: load consumer-read filter decoration context.
+        // Returns null when consumer_read_filter_v1 flag is OFF — response stays
+        // byte-identical to pre-Phase-4. Returns context object when flag ON;
+        // callers thread context through decorateFieldFromEntry() per field.
+        const { data: userForFlag } = await supabase
+          .from("users")
+          .select("email")
+          .eq("firebase_uid", userId)
+          .single();
+        const decoration: DecorationContext | null = await loadDecorationContext(
+          supabase,
+          userForFlag?.email ?? null,
+          userPlan,
+        );
+
+        // Local helpers — keep route.ts self-contained for the Task 4-B atomic shape.
+        // Future Tasks 4-D + 4-E may extract to a shared util when 3+ call sites need them.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        function getProv(row: any, key: string): FieldProvenanceEntry | undefined {
+          const fp = row?.field_provenance;
+          if (!fp || typeof fp !== "object") return undefined;
+          const entry = (fp as Record<string, unknown>)[key];
+          return entry as FieldProvenanceEntry | undefined;
+        }
+        function maybeDecorate<T>(
+          value: T,
+          entry: FieldProvenanceEntry | undefined,
+          source: string,
+          sourceCount: number,
+        ): T | ReturnType<typeof decorateFieldFromEntry<T>> {
+          if (!decoration) return value;
+          return decorateFieldFromEntry(value, entry, {
+            sourceCount,
+            source,
+            multiSourceThreshold: decoration.multiSourceThreshold,
+          });
+        }
+
         const { data: coveredServices } = await supabase
           .from("plan_covered_services")
           .select("*, service_catalog!inner(slug, name, category, merged_into_id)")
@@ -163,6 +204,11 @@ export async function POST(request: Request) {
             const catalogBenefit = catalogId ? catalogBenefitMap.get(catalogId) : undefined;
 
             const isNotCovered = s.covered === false;
+            // Phase 4 Task 4-B: when decoration context is present, wrap P-8-eligible
+            // numeric/boolean fields in DecoratedValue<T>. plan_covered_services rows
+            // are self-source — sourceCount=1, threshold=0 in consumer-read library
+            // for non-canonical sources.
+            const rowSource: string = s.source ?? "doc_extraction";
             return {
               serviceSlug: slug,
               benefit: {
@@ -181,19 +227,19 @@ export async function POST(request: Request) {
               isRecommended: !isNotCovered,
               costSharing: {
                 inNetwork: {
-                  copay: isNotCovered ? null : s.in_copay,
-                  coinsurance: isNotCovered ? null : s.in_coinsurance,
+                  copay: maybeDecorate<number | null>(isNotCovered ? null : s.in_copay, getProv(s, "in_copay"), rowSource, 1),
+                  coinsurance: maybeDecorate<number | null>(isNotCovered ? null : s.in_coinsurance, getProv(s, "in_coinsurance"), rowSource, 1),
                   deductibleApplies: isNotCovered ? false : s.in_deductible_applies,
                   costDescription: isNotCovered ? "Not covered" : (s.in_cost_description || formatCost(s)),
                 },
                 outOfNetwork: {
-                  copay: isNotCovered ? null : s.out_copay,
-                  coinsurance: isNotCovered ? null : s.out_coinsurance,
+                  copay: maybeDecorate<number | null>(isNotCovered ? null : s.out_copay, getProv(s, "out_copay"), rowSource, 1),
+                  coinsurance: maybeDecorate<number | null>(isNotCovered ? null : s.out_coinsurance, getProv(s, "out_coinsurance"), rowSource, 1),
                   deductibleApplies: isNotCovered ? false : s.out_deductible_applies,
                   costDescription: isNotCovered ? "Not covered" : formatOonCost(s, userPlan.plan_type),
                 },
-                annualLimit: s.annual_limit,
-                priorAuthRequired: s.prior_auth_required,
+                annualLimit: maybeDecorate<string | null>(s.annual_limit, getProv(s, "annual_limit"), rowSource, 1),
+                priorAuthRequired: maybeDecorate<boolean | null>(s.prior_auth_required, getProv(s, "prior_auth_required"), rowSource, 1),
                 penaltyNoPrecert: s.penalty_no_precert,
               },
               visitLimit: s.annual_limit,
@@ -222,6 +268,14 @@ export async function POST(request: Request) {
                 (cs) => cs.service_slug && !userSlugs.has(cs.service_slug)
               );
 
+              // Phase 4 Task 4-B: canonical gap-fill rows are CROSS-USER source
+              // ("canonical_inherited") — subject to multi-source corroboration
+              // threshold per Q-P4-3 LOCK. sourceCount = canonical_plans.verification_count
+              // (denormalized via mig 066). Field-provenance keys differ from
+              // plan_covered_services (canonical schema has copay/coinsurance/etc
+              // without in_/out_ prefix; OON columns absent on canonical).
+              const canonicalSourceCount = decoration?.canonicalSourceCount ?? 1;
+              const canonicalLogicalSource = "canonical_inherited";
               canonicalGapBenefits = gapServices.map((cs) => ({
                 benefit: {
                   id: cs.service_slug || cs.id,
@@ -245,14 +299,14 @@ export async function POST(request: Request) {
                 isRecommended: cs.is_covered !== false,
                 costSharing: {
                   inNetwork: {
-                    copay: cs.is_covered === false ? null : cs.copay,
-                    coinsurance: cs.is_covered === false ? null : cs.coinsurance,
+                    copay: maybeDecorate<number | null>(cs.is_covered === false ? null : cs.copay, getProv(cs, "copay"), canonicalLogicalSource, canonicalSourceCount),
+                    coinsurance: maybeDecorate<number | null>(cs.is_covered === false ? null : cs.coinsurance, getProv(cs, "coinsurance"), canonicalLogicalSource, canonicalSourceCount),
                     deductibleApplies: cs.is_covered === false ? false : cs.deductible_applies,
                     costDescription: cs.is_covered === false ? "Not covered" : "",
                   },
                   outOfNetwork: { copay: null, coinsurance: null, deductibleApplies: false, costDescription: "" },
-                  annualLimit: cs.annual_limit ? String(cs.annual_limit) : null,
-                  priorAuthRequired: cs.requires_prior_auth,
+                  annualLimit: maybeDecorate<string | null>(cs.annual_limit ? String(cs.annual_limit) : null, getProv(cs, "annual_limit"), canonicalLogicalSource, canonicalSourceCount),
+                  priorAuthRequired: maybeDecorate<boolean | null>(cs.requires_prior_auth, getProv(cs, "requires_prior_auth"), canonicalLogicalSource, canonicalSourceCount),
                   penaltyNoPrecert: null,
                 },
                 covered: cs.is_covered,
@@ -297,14 +351,25 @@ export async function POST(request: Request) {
                   premiumSource = fallbackResult.source;
                 }
               }
+              // Phase 4 Task 4-B: decorate plan-identity fields when decoration context
+              // is non-null. Plan-identity reads field_provenance from insurance_plans
+              // (mig 063). Premium has NO P-8 provenance (structural data from CMS API,
+              // not text-extracted) — passes null entry; logical source = premiumSource
+              // (canonical_fallback gets threshold; cms_county/marketplace = trusted).
+              const planSource: string = userPlan.source ?? "doc_extraction";
+              const premiumLogicalSource: string =
+                premiumSource === "canonical_fallback" ? "canonical_fallback" :
+                premiumSource ? premiumSource : "cms_marketplace";
+              const premiumSourceCount =
+                premiumLogicalSource === "canonical_fallback" ? (decoration?.canonicalSourceCount ?? 1) : 1;
               return {
-                inDeductible: userPlan.in_deductible_individual ?? profile.deductible_individual,
-                outDeductible: userPlan.out_deductible_individual,
-                inOopMax: userPlan.in_oop_max_individual ?? profile.oop_max_individual,
-                outOopMax: userPlan.out_oop_max_individual,
-                planType: userPlan.plan_type,
+                inDeductible: maybeDecorate<number | null>(userPlan.in_deductible_individual ?? profile.deductible_individual, getProv(userPlan, "in_deductible_individual"), planSource, 1),
+                outDeductible: maybeDecorate<number | null>(userPlan.out_deductible_individual, getProv(userPlan, "out_deductible_individual"), planSource, 1),
+                inOopMax: maybeDecorate<number | null>(userPlan.in_oop_max_individual ?? profile.oop_max_individual, getProv(userPlan, "in_oop_max_individual"), planSource, 1),
+                outOopMax: maybeDecorate<number | null>(userPlan.out_oop_max_individual, getProv(userPlan, "out_oop_max_individual"), planSource, 1),
+                planType: maybeDecorate<string | null>(userPlan.plan_type, getProv(userPlan, "plan_type"), planSource, 1),
                 verificationStatus: userPlan.verification_status,
-                premiumMonthly,
+                premiumMonthly: maybeDecorate<number | null>(premiumMonthly, undefined, premiumLogicalSource, premiumSourceCount),
                 premiumSource,
               };
             })(),

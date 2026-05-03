@@ -48,7 +48,7 @@
  */
 
 import type { PatternP8Provenance } from "./verify-source-excerpts";
-import type { SourceProvenance } from "./field-categories";
+import type { FieldProvenanceEntry, SourceProvenance } from "./field-categories";
 
 // 4-state vocabulary per Q-P4-1 LOCK (collapsed `verified` + `corroborated` from
 // the original 5-state proposal; tooltip differentiates the two paths to verified).
@@ -222,6 +222,70 @@ export function decorateForDisplay<T>(value: T, input: DisplayStateInput): Decor
     hasExcerpt: !!excerpt && excerpt.length > 0,
     excerpt,
   };
+}
+
+/**
+ * Extract a `PatternP8Provenance` (5 required keys) from a `FieldProvenanceEntry`
+ * (storage shape with all 5 keys optional). Returns null when any key is missing.
+ *
+ * Use case (Phase 4 Task 4-B / API layer): consumer-side code reading
+ * `field_provenance.{field}` JSONB has FieldProvenanceEntry on hand but
+ * `getDisplayState()` requires the strict 5-required PatternP8Provenance contract.
+ * This bridge prevents undefined-key crashes (e.g., `source_section_hint.endsWith`
+ * would throw on undefined) and treats partial-P8 entries as "no P-8" for display
+ * purposes — partial provenance is not citation-grade by definition.
+ */
+export function extractPatternP8FromEntry(
+  entry: FieldProvenanceEntry | null | undefined,
+): PatternP8Provenance | null {
+  if (!entry) return null;
+  if (
+    entry.source_excerpt === undefined ||
+    entry.source_excerpt_verified === undefined ||
+    entry.source_excerpt_extraction_method === undefined ||
+    entry.source_section_hint === undefined ||
+    entry.source_section_verified === undefined
+  ) {
+    return null;
+  }
+  return {
+    source_excerpt: entry.source_excerpt,
+    source_excerpt_verified: entry.source_excerpt_verified,
+    source_excerpt_extraction_method: entry.source_excerpt_extraction_method,
+    source_section_hint: entry.source_section_hint,
+    source_section_verified: entry.source_section_verified,
+  };
+}
+
+/**
+ * High-level API helper: decorate a single field given its raw value + the
+ * stored FieldProvenanceEntry + per-source corroboration context. Bundles
+ * extractPatternP8FromEntry + decorateForDisplay so API code stays terse.
+ *
+ * If `entry` is null/undefined, falls back to a "self-source no provenance"
+ * shape using the value's source argument (caller passes source explicitly,
+ * e.g., 'cms_marketplace' for premium fields without P-8 storage).
+ */
+export function decorateFieldFromEntry<T>(
+  value: T,
+  entry: FieldProvenanceEntry | null | undefined,
+  context: {
+    sourceCount: number;
+    source: SourceProvenance | string;
+    multiSourceThreshold: number;
+    /** Override confidence when entry is null (e.g., premium fields without P-8). Default 0.5. */
+    fallbackConfidence?: number;
+  },
+): DecoratedValue<T> {
+  const provenance = extractPatternP8FromEntry(entry);
+  const confidence = entry?.confidence ?? context.fallbackConfidence ?? 0.5;
+  return decorateForDisplay(value, {
+    provenance,
+    confidence,
+    sourceCount: context.sourceCount,
+    source: context.source,
+    multiSourceThreshold: context.multiSourceThreshold,
+  });
 }
 
 /**

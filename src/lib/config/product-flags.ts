@@ -40,6 +40,38 @@ export async function isFeatureEnabled(
 }
 
 /**
+ * Read a typed config value from `feature_flag_rules.config` JSONB (mig 067).
+ *
+ * Used for non-boolean flag configuration (e.g.,
+ * pattern1_corroboration_threshold has config = {value: 3} representing the
+ * distinct-user count threshold for canonical-source corroboration). Returns
+ * `fallback` when the flag row is missing, the config key is absent, or the
+ * value type doesn't match.
+ *
+ * Type parameter T narrows the return type. Type checking is shallow (typeof);
+ * complex shapes should add a runtime parser at the call site.
+ */
+export async function readFeatureFlagConfig<T extends string | number | boolean>(
+  flagKey: string,
+  configKey: string,
+  fallback: T,
+): Promise<T> {
+  const supabase = createServerClient();
+  const { data: flag } = await supabase
+    .from("feature_flag_rules")
+    .select("enabled, config")
+    .eq("flag_key", flagKey)
+    .single();
+
+  if (!flag || !flag.enabled) return fallback;
+  const config = flag.config as Record<string, unknown> | null;
+  if (!config || !(configKey in config)) return fallback;
+  const value = config[configKey];
+  if (typeof value !== typeof fallback) return fallback;
+  return value as T;
+}
+
+/**
  * Simple deterministic hash for percentage rollout.
  * Not cryptographic — just needs to be consistent and well-distributed.
  */
