@@ -1,22 +1,18 @@
 /**
- * Bundle PR #1 smoke test — Session 55 (audit items #8a, #13, #17).
+ * Bundle PR #1 smoke test — Session 55 (audit items #8a, #17) + Session 55
+ * mig 065 (slug enqueue path). T3 (audit item #13 canonical write merge race)
+ * trimmed Session 61 Task 4.0.6-I — mig 064 RPC superseded by Phase 4.0.6
+ * helper; SQL function still callable per Pattern 1 #10 but no longer
+ * exercised from production code path so smoke retired.
  *
  * Runs three independent test cases verifying:
  *   T1: SBC image-PDF refusal logic (#17) — pure logic, no DB.
  *   T2: EOC slug validation (#8a) — requires DB (loadValidServiceSlugs query).
- *   T3: Canonical write merge with concurrent execution (#13) — requires mig 064
- *       applied to the database. Exercises the advisory lock + JSONB shallow-merge.
+ *   T4: Slug enqueue path (mig 065) — requires DB.
  *
  * Usage:
  *   npx tsx scripts/test-bundle-pr1-smoke.ts
- *   npx tsx scripts/test-bundle-pr1-smoke.ts --skip-t3   (skip if mig 064 not yet applied)
- *
- * IMPORTANT
- * T3 writes to canonical_plan_services. With OPS.9 not yet closed, this is a
- * production table. T3 uses a sentinel canonical_plan_id ('00000000-0000-0000-
- * 0000-bundle1test1') that is cleaned up at end of test; if test crashes, the
- * row may persist (DELETE manually via Supabase Studio if it does). Sentinel
- * UUID is invalid as a real plan reference so it cannot interfere with real users.
+ *   npx tsx scripts/test-bundle-pr1-smoke.ts --skip-t4   (skip if mig 065 not yet applied)
  */
 
 import * as fs from "fs";
@@ -29,12 +25,7 @@ config({ path: resolve(__dirname, "../.env.local"), override: true });
 
 import { createServerClient } from "@/lib/supabase/server";
 import { loadValidServiceSlugs, enqueueUnknownServiceSlug } from "@/lib/parser/service-catalog-slugs";
-import { upsertCanonicalServicesWithMerge, type CanonicalServiceInsert } from "@/lib/parser/canonical-merge";
 
-// Sentinel UUID for test isolation. Hex-only chars; clearly identifiable as test
-// data. Cleaned up at end of T3; if test crashes, DELETE WHERE canonical_plan_id =
-// SENTINEL_CANONICAL_ID via Supabase Studio.
-const SENTINEL_CANONICAL_ID = "00000000-0000-0000-0000-0000bbbbbbbb";
 const TEST_TAG_LOG = "[bundle-pr1-smoke]";
 
 function log(msg: string) {
@@ -120,109 +111,14 @@ async function testT2_EocSlugValidation() {
   pass("T2", `loaded ${validSlugs.size} valid slugs; sentinel pcp_visit present; fabricated slug rejected`);
 }
 
-// ─── T3: Canonical write merge with concurrent execution ─────────────────────
-async function testT3_ConcurrentCanonicalMerge() {
-  const supabase = createServerClient();
-
-  // First, clean up any prior leftover sentinel rows
-  await supabase
-    .from("canonical_plan_services")
-    .delete()
-    .eq("canonical_plan_id", SENTINEL_CANONICAL_ID);
-
-  // We need a real canonical_plan_id to UPSERT against. canonical_plan_services has
-  // a FK to canonical_plans(id). Create a sentinel canonical_plan row first.
-  const { error: planErr } = await supabase
-    .from("canonical_plans")
-    .upsert(
-      {
-        id: SENTINEL_CANONICAL_ID,
-        plan_name: "BUNDLE-PR1-TEST-CANONICAL-DELETE-IF-FOUND",
-        insurer_id: null,
-        plan_year: 2099,
-        state: "XX",
-        plan_type: "PPO",
-      },
-      { onConflict: "id" },
-    );
-  if (planErr) {
-    fail("T3", `failed to create sentinel canonical_plans row: ${planErr.message}`);
-  }
-
-  const baseInsert = (slug: string, fieldProvenance: Record<string, unknown>): CanonicalServiceInsert => ({
-    canonical_plan_id: SENTINEL_CANONICAL_ID,
-    concept_id: null,
-    service_slug: slug,
-    copay: 25,
-    coinsurance: 0.2,
-    is_covered: true,
-    requires_prior_auth: false,
-    requires_referral: false,
-    deductible_applies: true,
-    annual_limit: null,
-    visit_limit: null,
-    coverage_rules: {},
-    confidence: 0.9,
-    source: "smoke_test",
-    field_provenance: fieldProvenance,
-  });
-
-  // Writer A: provenance for { deductible_individual, copay }
-  const writerA = upsertCanonicalServicesWithMerge(supabase, SENTINEL_CANONICAL_ID, [
-    baseInsert("pcp_visit", {
-      deductible_individual: { source_excerpt: "writerA-deductible", confidence: 0.9 },
-      copay: { source_excerpt: "writerA-copay", confidence: 0.9 },
-    }),
-  ]);
-
-  // Writer B: provenance for { oop_max_individual, copay } — concurrent
-  const writerB = upsertCanonicalServicesWithMerge(supabase, SENTINEL_CANONICAL_ID, [
-    baseInsert("pcp_visit", {
-      oop_max_individual: { source_excerpt: "writerB-oop", confidence: 0.85 },
-      copay: { source_excerpt: "writerB-copay", confidence: 0.85 },
-    }),
-  ]);
-
-  const [resultA, resultB] = await Promise.all([writerA, writerB]);
-  if (resultA.error) fail("T3", `writerA error: ${resultA.error.message}`);
-  if (resultB.error) fail("T3", `writerB error: ${resultB.error.message}`);
-
-  // Read back the row and verify provenance shape
-  const { data: row, error: readErr } = await supabase
-    .from("canonical_plan_services")
-    .select("field_provenance")
-    .eq("canonical_plan_id", SENTINEL_CANONICAL_ID)
-    .eq("service_slug", "pcp_visit")
-    .single();
-
-  if (readErr || !row) {
-    fail("T3", `failed to read back row: ${readErr?.message ?? "no row"}`);
-  }
-
-  const fp = (row.field_provenance ?? {}) as Record<string, unknown>;
-
-  // Pre-merge bug behavior: only one writer's keys would survive.
-  // Post-merge: ALL THREE keys should be present (deductible_individual + oop_max_individual + copay).
-  const expectedKeys = ["deductible_individual", "oop_max_individual", "copay"];
-  const missingKeys = expectedKeys.filter((k) => !(k in fp));
-  if (missingKeys.length > 0) {
-    fail("T3", `merged field_provenance missing keys: ${missingKeys.join(",")}; got: ${JSON.stringify(Object.keys(fp))}`);
-  }
-
-  // For 'copay', last-writer-wins within field is acceptable (within-field diversity
-  // deferred to Phase 4). Just verify the value is one of the two writers.
-  const copayProv = fp.copay as { source_excerpt?: string };
-  if (copayProv.source_excerpt !== "writerA-copay" && copayProv.source_excerpt !== "writerB-copay") {
-    fail("T3", `copay provenance unexpected: ${JSON.stringify(copayProv)}`);
-  }
-
-  pass("T3", `merged provenance has all 3 keys (cross-field diversity preserved); copay = ${copayProv.source_excerpt} (within-field last-writer-wins)`);
-
-  // Cleanup
-  await supabase.from("canonical_plan_services").delete().eq("canonical_plan_id", SENTINEL_CANONICAL_ID);
-  await supabase.from("canonical_plans").delete().eq("id", SENTINEL_CANONICAL_ID);
-  log("T3 cleanup complete");
-}
+// ─── T3: REMOVED Session 61 (Task 4.0.6-I) ───────────────────────────────────
+// Audit item #13 (canonical write merge race) closed end-to-end Session 55 +
+// superseded Session 61. Phase 4.0.6 helper (commit-and-evaluate) replaces the
+// mig 064 RPC value-write path; canonical_plan_services writes happen via
+// apply_promotion_event with advisory-lock per (canonical, service, field)
+// rather than the old per-canonical-id lock. mig 064 SQL function still
+// callable per Pattern 1 #10 hard-delete prohibition; smoke retired because
+// production code no longer exercises it.
 
 // ─── T4: Slug enqueue path (mig 065) ─────────────────────────────────────────
 async function testT4_SlugEnqueue() {
@@ -318,18 +214,11 @@ async function testT4_SlugEnqueue() {
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 async function main() {
-  const skipT3 = process.argv.includes("--skip-t3");
   const skipT4 = process.argv.includes("--skip-t4");
   log("Bundle PR #1 smoke test starting");
 
   testT1_SbcImagePdfRefusal();
   await testT2_EocSlugValidation();
-
-  if (skipT3) {
-    log("Skipping T3 (--skip-t3 flag)");
-  } else {
-    await testT3_ConcurrentCanonicalMerge();
-  }
 
   if (skipT4) {
     log("Skipping T4 (--skip-t4 flag — mig 065 not yet applied)");

@@ -28,7 +28,6 @@ import type { EOCParseResult } from "@/lib/eoc/types";
 import type { ProcessPlanResult } from "@/lib/plan/process-plan";
 import { buildEOCPlanIdentityProvenance } from "@/lib/parser/provenance-builders";
 import { loadValidServiceSlugs, enqueueUnknownServiceSlug } from "@/lib/parser/service-catalog-slugs";
-import { isFeatureEnabled } from "@/lib/config/product-flags";
 import {
   commitUploadAndEvaluateCorroboration,
   PHASE_4_0_6_PLAN_IDENTITY_FIELDS_EOC,
@@ -106,48 +105,44 @@ export async function processEOCDocumentData(
   const persistenceWarnings = await persistEOCSections(supabase, doc, documentId, targetPlanId, parsed);
   parseWarnings.push(...persistenceWarnings);
 
-  // 3.5 Phase 4.0.6 corroboration evaluator post-commit (per Q-P4.0.6-1 LOCK v4
-  // Single discipline point — all upload paths route through
-  // commitUploadAndEvaluateCorroboration helper). EOC plan-identity is
-  // regex-extracted (no Pattern P-8 verified excerpts in v1) so EOC's own
-  // contribution doesn't count toward corroboration; calling the helper still
-  // runs evaluator on this canonical to detect threshold-met state from prior
-  // SBC uploads on the same canonical. Phase 5+ may upgrade EOC plan-identity
-  // to Pattern P-8 verified excerpts so cross-source corroboration fires.
-  const promotionEventEnabled = await isFeatureEnabled(
-    "canonical_promotion_event_v1",
-    undefined, // global flag; no per-user check needed
-  );
-  if (promotionEventEnabled) {
-    try {
-      const { data: planRow } = await supabase
-        .from("insurance_plans")
-        .select("canonical_plan_id, user_id")
-        .eq("id", targetPlanId)
-        .maybeSingle();
-      const canonicalPlanId = planRow?.canonical_plan_id as string | null | undefined;
-      if (canonicalPlanId) {
-        const candidates = PHASE_4_0_6_PLAN_IDENTITY_FIELDS_EOC.map((fieldName) => ({
-          serviceSlug: null as string | null,
-          fieldName,
-        }));
-        const result = await commitUploadAndEvaluateCorroboration(supabase, {
-          canonicalPlanId,
-          actorUserId: (planRow?.user_id as string | undefined) ?? doc.user_id,
-          fireSource: "process-eoc",
-          candidates,
-        });
-        console.log(
-          `[canonical-promotion] [eoc] canonical=${canonicalPlanId} candidates=${candidates.length} fired=${result.promotionsFired} challenges=${result.challengeCandidates} errors=${result.errors.length}`,
-        );
-        if (result.errors.length > 0) {
-          console.error("[canonical-promotion] [eoc] errors:", result.errors);
-          parseWarnings.push(...result.errors.map((e) => `canonical_promotion_eoc:${e}`));
-        }
+  // 3.5 Phase 4.0.6 corroboration evaluator post-commit. Single discipline point
+  // — all upload paths route through commitUploadAndEvaluateCorroboration helper
+  // (Q-P4.0.6-1 LOCK v4; Engineering North Star #1 single code path). EOC
+  // plan-identity is regex-extracted (no Pattern P-8 verified excerpts in v1) so
+  // EOC's own contribution doesn't count toward corroboration; calling the
+  // helper still runs evaluator on this canonical to detect threshold-met state
+  // from prior SBC uploads on the same canonical. Phase 5+ may upgrade EOC
+  // plan-identity to Pattern P-8 verified excerpts so cross-source corroboration
+  // fires. Helper invocation is unconditional post-Task 4.0.6-I cleanup
+  // (mig 064 RPC value-write branch sunset 2026-05-04).
+  try {
+    const { data: planRow } = await supabase
+      .from("insurance_plans")
+      .select("canonical_plan_id, user_id")
+      .eq("id", targetPlanId)
+      .maybeSingle();
+    const canonicalPlanId = planRow?.canonical_plan_id as string | null | undefined;
+    if (canonicalPlanId) {
+      const candidates = PHASE_4_0_6_PLAN_IDENTITY_FIELDS_EOC.map((fieldName) => ({
+        serviceSlug: null as string | null,
+        fieldName,
+      }));
+      const result = await commitUploadAndEvaluateCorroboration(supabase, {
+        canonicalPlanId,
+        actorUserId: (planRow?.user_id as string | undefined) ?? doc.user_id,
+        fireSource: "process-eoc",
+        candidates,
+      });
+      console.log(
+        `[canonical-promotion] [eoc] canonical=${canonicalPlanId} candidates=${candidates.length} fired=${result.promotionsFired} challenges=${result.challengeCandidates} errors=${result.errors.length}`,
+      );
+      if (result.errors.length > 0) {
+        console.error("[canonical-promotion] [eoc] errors:", result.errors);
+        parseWarnings.push(...result.errors.map((e) => `canonical_promotion_eoc:${e}`));
       }
-    } catch (err) {
-      console.error("[canonical-promotion] [eoc] non-fatal:", err);
     }
+  } catch (err) {
+    console.error("[canonical-promotion] [eoc] non-fatal:", err);
   }
 
   // 4. parse_audit_runs telemetry per Pattern P-7.
