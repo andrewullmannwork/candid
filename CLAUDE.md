@@ -4,6 +4,7 @@
 
 Before starting any work, review the platform context to understand WHY we're building:
 - **Full context:** `/Users/andrewullmann/Desktop/du_weldenvarden/04_Professional/Airgetlam Labs LLC/Candid/Candid_Context.md`
+- **Foundational data principles:** `/Users/andrewullmann/Desktop/du_weldenvarden/04_Professional/Airgetlam Labs LLC/Candid/Candid_Data_Principles.md` — read FIRST before architectural decisions; the source of truth for canonical-write boundaries (Pattern 1 #14), corroboration thresholds (Pattern 1 #3), per-surface display gating (Pattern 1 #4), identity-fraud defense placement (Pattern 1 #15), and the data flywheel.
 - **Initiative tracker:** `/Users/andrewullmann/Desktop/du_weldenvarden/04_Professional/Airgetlam Labs LLC/Candid/Candid_Todos.md`
 - **Detailed plans:** `/Users/andrewullmann/Desktop/du_weldenvarden/04_Professional/Airgetlam Labs LLC/Candid/plans/`
 
@@ -61,12 +62,14 @@ Steps:
 
 ## Data Architecture Rules
 
-See `data_architecture.md` in the vault for the full schema reference.
+Source of truth: `Candid_Data_Principles.md` (foundational decisions) + `Candid_Data_Patterns.md` (Pattern 1 — 15 universal hard rules; Pattern 2 — plan identity matching; Pattern M / O cross-references). Schema reference: `Candid_Schema_Reference.md`. Parsing patterns: `Candid_Parse_Patterns.md`. All under `/Users/andrewullmann/Desktop/du_weldenvarden/04_Professional/Airgetlam Labs LLC/Candid/`.
 
 1. **Every upload enriches the platform.** User documents improve data for all users on the same plan.
 2. **Canonical over duplicated.** One shared plan record per (insurer, plan_name, state, year).
-3. **Confidence-scaled.** Single-source = 0.5, multi-source = higher, admin-verified = 1.0.
+3. **Confidence-scaled with per-surface gating** (Pattern 1 #4). Single-source = 0.5, multi-source = 0.9, admin-verified = 1.0. Per-surface display rule: informational surfaces (Plan page, dashboard) show estimated/unverified data with state badges; legal surfaces (Dispute letter, Case File) HIDE non-cite-grade fields entirely per Pattern P-8 cite-grade gate.
 4. **User-specific overlays.** Canonical plans hold shared coverage. Per-user records hold personal data.
 5. **Consent-first aggregation.** All cross-user data is anonymized. Individual records never exposed.
 6. **Schema traces to product.** Every table should map to a product scenario.
 7. **Store finest grain, display right level.** Capture billing codes even when displaying service summaries.
+8. **User events write user-scoped only; canonical via explicit promotion** (Pattern 1 #14). First-parse uploads, re-parse, manual corrections, value disputes — all write to user rows (`insurance_plans`, `plan_covered_services`, `claim_line_items`). Canonical reference tables (`canonical_plans`, `canonical_plan_services`) populated ONLY via Pattern 2 identity creation OR Pattern 1 #3 promotion event when corroboration threshold met (currently ≥3 distinct users until P.2 Phone OTP). Direct user-driven writes to canonical tables are forbidden. Today's mig 064 RPC is known implementation drift — Phase 4.0.6 (Sessions 59-60) corrects with canonical promotion event mechanism.
+9. **Identity-fraud defense at the onboarding pipeline, not the data layer** (Pattern 1 #15). For data sources where IDENTITY fraud is the dominant threat (provider portal, lawyer onboarding, future partner-portal submissions), defense lives at the ONBOARDING pipeline (Pattern O) — NOT at the quarantine layer (Pattern 1 #13). Pattern 1 #13 quarantine is for transactional outlier defense from already-authenticated users; identity-fraud defense ensures the submitter is who they claim to be BEFORE their data enters the pipeline.
