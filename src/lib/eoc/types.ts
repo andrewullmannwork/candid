@@ -201,4 +201,17 @@ export interface EOCParseResult {
   segmentation_used: "regex_only" | "regex_plus_haiku_discovery" | "haiku_discovery_only" | "preamble_only";
   warnings: string[];
   parse_errors: Array<{ section: EOCSectionHint; error: string }>;
+  /**
+   * Phase 4.0.5: section-coverage tracking. Lists which EOCSectionHints had
+   * Haiku dispatch successfully complete during this parse (sections present
+   * in `sections` map and not in parse_errors).
+   *
+   * Drives:
+   *   - `verbatim_absent` derivation in verifyEOCSourceExcerpts post-pass
+   *     (when verified='not_found' AND dispatchedSections covers ALL non-
+   *     DO_NOT_EXTRACT EOC sections).
+   *   - `searched_sections` population on each FieldProvenanceEntry built
+   *     by provenance-builders.ts (forward-compat hook from Phase 4.0).
+   */
+  dispatched_sections: EOCSectionHint[];
 }

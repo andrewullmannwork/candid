@@ -184,6 +184,16 @@ export async function parseSBC(input: ParseSBCInput): Promise<SBCHaikuParseResul
   const excludedServicesResult = await dispatchSection(excludedServicesPlan, extractionMethod, costTracker, warnings);
   const appealsResult = await dispatchSection(appealsPlan, extractionMethod, costTracker, warnings);
 
+  // Phase 4.0.5: track dispatchedSections for verbatim_absent derivation +
+  // searched_sections population on FieldProvenanceEntry per Q-P4.0.5-2 LOCK.
+  const dispatchedSections: SBCSectionHint[] = [
+    importantQuestionsResult ? "important_questions" : null,
+    commonMedicalEventsResult ? "common_medical_events" : null,
+    otherCoveredResult ? "other_covered_services" : null,
+    excludedServicesResult ? "excluded_services" : null,
+    appealsResult ? "appeals_grievances" : null,
+  ].filter((s): s is SBCSectionHint => s !== null);
+
   // Cost soft alarm
   if (costTracker.totalUsd > COST_SOFT_ALARM_USD) {
     warnings.push(`cost_soft_alarm:${costTracker.totalUsd.toFixed(4)}`);
@@ -237,6 +247,7 @@ export async function parseSBC(input: ParseSBCInput): Promise<SBCHaikuParseResul
     haikuCacheReadTokens: 0,
     costUsd: totalCostUsd,
     parseStrategyV2: true,
+    dispatchedSections,
   };
 
   // Step 7: Pattern P-8 verification (insurer-agnostic; uses shared verifier)

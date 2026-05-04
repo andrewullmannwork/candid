@@ -565,6 +565,10 @@ export async function parseEOC(
   }
 
   // 6. Build preliminary + 7. Pattern P-8 verification.
+  // Phase 4.0.5: track dispatched_sections from `sections` map keys (sections that
+  // had a successful Haiku result populate the map entry; failed sections appear
+  // in parse_errors instead per Promise.allSettled pattern).
+  const dispatched_sections = Object.keys(sections) as EOCSectionHint[];
   const preliminary: EOCParseResult = {
     plan_identity: planIdentity,
     sections,
@@ -574,6 +578,7 @@ export async function parseEOC(
     segmentation_used: segmentationUsed,
     warnings,
     parse_errors: parseErrors,
+    dispatched_sections,
   };
 
   let final = verifyEOCSourceExcerpts(ocrText, preliminary, sectionRanges);

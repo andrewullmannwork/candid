@@ -13,12 +13,21 @@ interface EscalationCardProps {
     insurerName?: string;
     planName?: string;
     serviceSlug?: string;
+    /**
+     * T2.2 v3 (Q-T2.2-7 LOCK): denial reason category for /case URL pre-fill.
+     * Maps to the dispute_type field on dispute_outcomes (e.g., 'internal_appeal',
+     * 'external_appeal', 'complaint', 'legal', 'negotiation') or a finer-grained
+     * denial classification when available. Pre-fill is informational only — no
+     * algorithmic match per ABA Rule 7.2 + Q-DR-1G1-3 marketplace-not-vetting.
+     */
+    denialType?: string;
   };
   onEscalate?: (type: "case" | "small_claims" | "external_appeal") => void;
 }
 
 export function EscalationCard({ dispute, onEscalate }: EscalationCardProps) {
-  const caseUrl = `/case?insurer=${encodeURIComponent(dispute.insurerName || "")}&service=${encodeURIComponent(dispute.serviceSlug || "")}&amount=${dispute.amountDisputed}${dispute.isSystemic ? `&systemic=true&affectedCount=${dispute.systemicUserCount || 0}` : ""}`;
+  const denialTypeParam = dispute.denialType || dispute.disputeType || "";
+  const caseUrl = `/case?insurer=${encodeURIComponent(dispute.insurerName || "")}&service=${encodeURIComponent(dispute.serviceSlug || "")}&amount=${dispute.amountDisputed}&denial_type=${encodeURIComponent(denialTypeParam)}${dispute.isSystemic ? `&systemic=true&affectedCount=${dispute.systemicUserCount || 0}` : ""}`;
 
   return (
     <div className="p-4 bg-white border border-gray-100 rounded-xl">

@@ -209,6 +209,20 @@ export interface SBCHaikuParseResult {
   haikuCacheReadTokens: number;
   costUsd: number;
   parseStrategyV2: true; // marker indicating Haiku-first path (vs legacy regex)
+  /**
+   * Phase 4.0.5 (Q-P4.0.5-2 LOCK): section-coverage tracking. Lists which
+   * SBCSectionHints had Haiku dispatch successfully complete during this parse.
+   * Sections that dispatched but failed (cost-cap or exception) are excluded.
+   * DO_NOT_EXTRACT sections are never dispatched and never appear here.
+   *
+   * Drives:
+   *   - `verbatim_absent` derivation in verifySBCSourceExcerpts post-pass
+   *     (when verified='not_found' AND dispatchedSections covers ALL non-
+   *     DO_NOT_EXTRACT SBC sections).
+   *   - `searched_sections` population on each FieldProvenanceEntry built by
+   *     provenance-builders.ts (forward-compat hook from Phase 4.0).
+   */
+  dispatchedSections: SBCSectionHint[];
 }
 
 /**
