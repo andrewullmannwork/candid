@@ -16,10 +16,8 @@ import { translateHaikuToLegacy } from "@/lib/sbc/legacy-adapter";
 import type { SBCHaikuService, SBCParseResult, SBCParsedService } from "@/lib/sbc/types";
 import {
   buildPlanCoveredServiceProvenance,
-  buildCanonicalPlanServiceProvenance,
   buildSBCPlanIdentityProvenance,
 } from "@/lib/parser/provenance-builders";
-import { upsertCanonicalServicesWithMerge } from "@/lib/parser/canonical-merge";
 import { loadValidServiceSlugs, enqueueUnknownServiceSlug } from "@/lib/parser/service-catalog-slugs";
 import {
   commitUploadAndEvaluateCorroboration,
@@ -786,90 +784,34 @@ export async function processPlanDocumentData(
         else servicesCreated = serviceInserts.length;
       }
 
-      // ── Canonical plan services write — flag-gated per Q-P4.0.6-8 LOCK ──────
-      // Phase 4.0.6 architectural correction: when canonical_promotion_event_v1
-      // flag is ON, SKIP the legacy mig 064 RPC value-write branch (Pattern 1
-      // #14 enforcement at TS layer; mig 064 RPC stays callable as no-op
-      // fallback). Instead, run the corroboration evaluator post-commit; canonical
-      // promotion happens explicitly via apply_promotion_event when threshold met.
-      // When flag is OFF, legacy mig 064 RPC writes user-source data to
-      // canonical_plan_services at 0.5 confidence (display-layer band-aided by
-      // Phase 4.0 consumer-read filter Pattern 1 #4 enforcement).
+      // ── Canonical promotion event — Phase 4.0.6 single code path ────────
+      // Per Engineering North Star #1 (Candid_Data_Principles §1) + Pattern 1
+      // #14 (§2): user data writes user-scoped only; canonical promotion happens
+      // via explicit apply_promotion_event when Pattern 1 #3 corroboration
+      // threshold met. Helper invocation is unconditional post-Task 4.0.6-I
+      // cleanup (mig 064 RPC value-write branch sunset 2026-05-04). Per
+      // Q-P4.0.6-1 LOCK v4 = (B): app-level evaluator. Q-P4.0.6-2 LOCK = (A):
+      // advisory lock per (canonical, service, field) inside
+      // apply_promotion_event. mig 064 RPC remains callable per Pattern 1 #10
+      // hard-delete prohibition; superseded comment in mig 069.
       if (canonicalPlanId && !canonicalNeedsConfirmation) {
-        const promotionEventEnabled = await isFeatureEnabled(
-          "canonical_promotion_event_v1",
-          userForFlagCheck?.email ?? undefined,
-        );
-
         try {
-          if (!promotionEventEnabled) {
-            // ── Legacy path (pre-Phase-4.0.6): mig 064 RPC value-write ────
-            const canonicalServiceInserts = confident
-              .filter((s) => slugToId.has(s.serviceSlug))
-              .map((s) => {
-                const haikuService = haikuServiceByKey.get(`${s.serviceSlug}|${s.placeOfService || "any"}`);
-                return {
-                  canonical_plan_id: canonicalPlanId!,
-                  concept_id: conceptIdMap.get(s.serviceSlug) || null,
-                  service_slug: s.serviceSlug,
-                  copay: s.inCopay,
-                  coinsurance: s.inCoinsurance,
-                  is_covered: s.covered !== false,
-                  requires_prior_auth: s.priorAuthRequired || false,
-                  requires_referral: false,
-                  deductible_applies: s.inDeductibleApplies !== false,
-                  annual_limit: s.annualLimitValue || null,
-                  visit_limit: null,
-                  coverage_rules: {},
-                  confidence: s.confidence,
-                  source: (classification.classifiedType === "sbc" ? "sbc_parser" : "user_upload") as string,
-                  // Bundle PR #1 (Session 55, audit item #13) — field_provenance is
-                  // shallow-merged server-side via mig 064 PL/pgSQL function. Cross-field
-                  // citation diversity preserved (USER B's payload no longer drops USER A's
-                  // keys for fields B doesn't touch). Within-field diversity (sources array
-                  // per field) lands in Phase 4.0.6 promotion event mechanism.
-                  ...(haikuService ? { field_provenance: buildCanonicalPlanServiceProvenance(haikuService) } : {}),
-                };
-              });
+          const candidates = derivePromotionCandidatesFromHaikuResult(haikuResult);
+          const result = await commitUploadAndEvaluateCorroboration(supabase, {
+            canonicalPlanId: canonicalPlanId!,
+            actorUserId: userForFlagCheck?.id ?? doc.user_id,
+            fireSource: "process-plan",
+            candidates,
+          });
 
-            if (canonicalServiceInserts.length > 0) {
-              const { error: canonicalSvcError } = await upsertCanonicalServicesWithMerge(
-                supabase,
-                canonicalPlanId!,
-                canonicalServiceInserts,
-              );
-
-              if (canonicalSvcError) {
-                console.error("[canonical-plan] Failed to upsert canonical services:", canonicalSvcError);
-              } else {
-                console.log(`[canonical-plan] Upserted ${canonicalServiceInserts.length} services to canonical plan ${canonicalPlanId} (advisory-locked, JSONB-merged)`);
-              }
-            }
-          } else {
-            // ── Phase 4.0.6 path (canonical_promotion_event_v1 ON) ────────
-            // Skip direct canonical write. User-side data already committed
-            // to insurance_plans + plan_covered_services field_provenance.
-            // Run corroboration evaluator → promotion events fire when
-            // Pattern 1 #3 threshold met. Per Q-P4.0.6-1 LOCK v4 = (B)
-            // app-level evaluator; Q-P4.0.6-2 LOCK = (A) advisory lock per
-            // (canonical, service, field) inside apply_promotion_event.
-            const candidates = derivePromotionCandidatesFromHaikuResult(haikuResult);
-            const result = await commitUploadAndEvaluateCorroboration(supabase, {
-              canonicalPlanId: canonicalPlanId!,
-              actorUserId: userForFlagCheck?.id ?? doc.user_id,
-              fireSource: "process-plan",
-              candidates,
-            });
-
-            console.log(
-              `[canonical-promotion] canonical=${canonicalPlanId} candidates=${candidates.length} fired=${result.promotionsFired} challenges=${result.challengeCandidates} errors=${result.errors.length}`,
-            );
-            if (result.errors.length > 0) {
-              console.error("[canonical-promotion] errors:", result.errors);
-            }
+          console.log(
+            `[canonical-promotion] canonical=${canonicalPlanId} candidates=${candidates.length} fired=${result.promotionsFired} challenges=${result.challengeCandidates} errors=${result.errors.length}`,
+          );
+          if (result.errors.length > 0) {
+            console.error("[canonical-promotion] errors:", result.errors);
           }
         } catch (err) {
-          console.error("[canonical-plan] Canonical write error (non-fatal):", err);
+          console.error("[canonical-promotion] Helper error (non-fatal):", err);
         }
       }
     }
@@ -882,41 +824,29 @@ export async function processPlanDocumentData(
     // not the inheritance event — Phase 4 dispute letter cite is still valid because
     // the source_excerpt traces back to the actual document that captured the value.
     //
-    // Phase 4.0.6 (Q-P4.0.6-7 LOCK v4): when canonical_promotion_event_v1 flag is ON,
-    // inheritance fires ONLY from rows with confidence ≥ 0.9 (cross_user_inheritance_min_confidence;
-    // tunable via flag config). Pre-corroboration users see "we don't have community-verified
-    // data on this yet" rather than another user's single-source assertion at 0.5
-    // confidence. Aligns with Pattern 1 #14 cross-user inheritance implication. When
-    // flag OFF: legacy behavior (inherit all rows regardless of confidence).
+    // Phase 4.0.6 (Q-P4.0.6-7 LOCK): inheritance fires ONLY from corroborated
+    // canonical rows (confidence ≥ cross_user_inheritance_min_confidence;
+    // default 0.9; runtime-tunable via canonical_promotion_event_v1.config).
+    // Pre-corroboration users see "we don't have community-verified data on
+    // this yet" rather than another user's single-source assertion. Aligns
+    // with Pattern 1 #14 cross-user inheritance implication. Always-on
+    // post-Task 4.0.6-I cleanup (legacy unfiltered branch sunset).
     if (canonicalPlanId && !canonicalNeedsConfirmation && !canonicalIsNew) {
       try {
-        const inheritanceFlagEnabled = await isFeatureEnabled(
-          "canonical_promotion_event_v1",
-          userForFlagCheck?.email ?? undefined,
-        );
+        const { data: flagRow } = await supabase
+          .from("feature_flag_rules")
+          .select("config")
+          .eq("flag_key", "canonical_promotion_event_v1")
+          .single();
+        const cfg = (flagRow?.config as Record<string, unknown> | null) ?? null;
+        const minConf = cfg?.cross_user_inheritance_min_confidence;
+        const inheritanceMinConfidence = typeof minConf === "number" && minConf >= 0 ? minConf : 0.9;
 
-        let inheritanceMinConfidence = 0;
-        if (inheritanceFlagEnabled) {
-          const { data: flagRow } = await supabase
-            .from("feature_flag_rules")
-            .select("config")
-            .eq("flag_key", "canonical_promotion_event_v1")
-            .single();
-          const cfg = (flagRow?.config as Record<string, unknown> | null) ?? null;
-          const minConf = cfg?.cross_user_inheritance_min_confidence;
-          inheritanceMinConfidence = typeof minConf === "number" && minConf >= 0 ? minConf : 0.9;
-        }
-
-        let canonicalServicesQuery = supabase
+        const { data: canonicalServices } = await supabase
           .from("canonical_plan_services")
           .select("service_slug, copay, coinsurance, deductible_applies, is_covered, requires_prior_auth, confidence, field_provenance")
-          .eq("canonical_plan_id", canonicalPlanId);
-
-        if (inheritanceFlagEnabled) {
-          canonicalServicesQuery = canonicalServicesQuery.gte("confidence", inheritanceMinConfidence);
-        }
-
-        const { data: canonicalServices } = await canonicalServicesQuery;
+          .eq("canonical_plan_id", canonicalPlanId)
+          .gte("confidence", inheritanceMinConfidence);
 
         if (canonicalServices && canonicalServices.length > 0) {
           // Get user's existing service slugs
