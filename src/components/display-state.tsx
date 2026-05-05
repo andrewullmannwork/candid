@@ -110,23 +110,15 @@ interface BadgeStyle {
   icon: React.ReactNode;
 }
 
-// CF-19 (Session 64) — 6-state visual treatment per user direction.
-//   candid_verified    → fully green (filled emerald) — Pattern 1 #3 corroboration met
-//   document_verified  → dark green border (border-2 emerald) — Pattern P-8 cite-grade from THIS user's doc
-//   found_in_document  → light green border (border-1 light emerald) — extracted from doc; verbatim absent
-//   estimated          → amber pill (existing)
-//   unverified         → rose pill (existing)
-//   hidden             → no render
+// CF-19 v2 (Session 64) — 3 visible badge variants per user direction simplification.
+//   candid_verified  → fully green pill              (Pattern 1 #3 corroboration met)
+//   verified         → green outline                 (extracted from user's uploaded doc)
+//   estimated        → amber pill + Upload CTA       (non-doc source)
+//   hidden           → no render (page-level banner for parser_failure aggregates)
 
 const CHECKMARK_ICON = (
   <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-  </svg>
-);
-
-const DOC_ICON = (
-  <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
   </svg>
 );
 
@@ -138,20 +130,12 @@ const CANDID_VERIFIED_STYLE: BadgeStyle = {
   icon: CHECKMARK_ICON,
 };
 
-const DOCUMENT_VERIFIED_STYLE: BadgeStyle = {
+const VERIFIED_STYLE: BadgeStyle = {
   bg: "bg-emerald-50",
   text: "text-emerald-700",
   ring: "ring-emerald-400",
-  label: "Document Verified",
+  label: "Verified",
   icon: CHECKMARK_ICON,
-};
-
-const FOUND_IN_DOCUMENT_STYLE: BadgeStyle = {
-  bg: "bg-emerald-50/60",
-  text: "text-emerald-600",
-  ring: "ring-emerald-200",
-  label: "Found in Document",
-  icon: DOC_ICON,
 };
 
 const ESTIMATED_STYLE: BadgeStyle = {
@@ -166,24 +150,10 @@ const ESTIMATED_STYLE: BadgeStyle = {
   ),
 };
 
-const UNVERIFIED_STYLE: BadgeStyle = {
-  bg: "bg-rose-50",
-  text: "text-rose-700",
-  ring: "ring-rose-200",
-  label: "Unverified",
-  icon: (
-    <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M12 21a9 9 0 110-18 9 9 0 010 18z" />
-    </svg>
-  ),
-};
-
 function styleFor(state: DisplayState): BadgeStyle | null {
   if (state === "candid_verified") return CANDID_VERIFIED_STYLE;
-  if (state === "document_verified") return DOCUMENT_VERIFIED_STYLE;
-  if (state === "found_in_document") return FOUND_IN_DOCUMENT_STYLE;
+  if (state === "verified") return VERIFIED_STYLE;
   if (state === "estimated") return ESTIMATED_STYLE;
-  if (state === "unverified") return UNVERIFIED_STYLE;
   return null; // "hidden" → component returns null upstream
 }
 

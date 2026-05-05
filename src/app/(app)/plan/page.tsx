@@ -356,17 +356,14 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
           )}
         </h3>
         <div className="flex items-center gap-1.5 shrink-0">
-          {/* CF-19 (Session 64): summary-card aggregate badge with `?` tooltip. */}
+          {/* CF-19 (Session 64): summary-card aggregate badge.
+              Per user direction: only render for verified-tier states. Estimated/
+              unverified summary-card values hide individually below. */}
           {summaryAggState && summaryAggReason && (
-            <span className="inline-flex items-center gap-1">
-              <DisplayStateBadge state={summaryAggState} reason={summaryAggReason} size="xs" />
-              <span
-                className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-gray-200 text-gray-600 text-[9px] font-semibold cursor-help"
-                title="This signal reflects the weakest evidence across all values on this card. Hover individual values for per-field detail."
-              >
-                ?
-              </span>
-            </span>
+            summaryAggState === "candid_verified" ||
+            summaryAggState === "verified"
+          ) && (
+            <DisplayStateBadge state={summaryAggState} reason={summaryAggReason} size="xs" />
           )}
           {planSummary.verificationStatus && (
             <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
@@ -391,60 +388,42 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
           {/* CF-19 (Session 64): per-field DisplayStateBadge removed — aggregate at card header. */}
         </div>
       )}
-      <div className="mt-3 grid grid-cols-2 gap-3">
-        <div>
-          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Deductible (in-network)</p>
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <p
-              className="text-sm font-medium text-gray-900"
-              title={inDed.state && inDed.reason ? `${inDed.state}: ${inDed.reason}` : undefined}
-            >
-              {inDed.value != null
-                ? `$${inDed.value.toLocaleString()}`
-                : <span className="text-gray-300">Upload SBC</span>}
-            </p>
+      {/* CF-19 v2 (Session 64) per user direction: per-field values render only when
+          state is null (flag OFF — legacy) OR verified-tier (candid_verified / verified).
+          Estimated values render with "Upload your plan document" CTA below; hidden
+          (parser_failure) values show "—" + page-level banner aggregates failures. */}
+      {(() => {
+        const isVisible = (s: typeof inDed.state): boolean =>
+          s === null || s === "candid_verified" || s === "verified" || s === "estimated";
+        const renderValue = (
+          field: typeof inDed,
+          placeholder: string,
+        ): React.ReactNode => {
+          if (!isVisible(field.state)) return <span className="text-gray-300">&mdash;</span>;
+          if (field.value == null) return <span className="text-gray-300">{placeholder}</span>;
+          return `$${field.value.toLocaleString()}`;
+        };
+        return (
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <div>
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Deductible (in-network)</p>
+              <p className="text-sm font-medium text-gray-900">{renderValue(inDed, "Upload SBC")}</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Deductible (out-of-network)</p>
+              <p className="text-sm font-medium text-gray-900">{renderValue(outDed, "—")}</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">OOP Max (in-network)</p>
+              <p className="text-sm font-medium text-gray-900">{renderValue(inOop, "Upload SBC")}</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">OOP Max (out-of-network)</p>
+              <p className="text-sm font-medium text-gray-900">{renderValue(outOop, "—")}</p>
+            </div>
           </div>
-        </div>
-        <div>
-          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Deductible (out-of-network)</p>
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <p
-              className="text-sm font-medium text-gray-900"
-              title={outDed.state && outDed.reason ? `${outDed.state}: ${outDed.reason}` : undefined}
-            >
-              {outDed.value != null
-                ? `$${outDed.value.toLocaleString()}`
-                : <span className="text-gray-300">&mdash;</span>}
-            </p>
-          </div>
-        </div>
-        <div>
-          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">OOP Max (in-network)</p>
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <p
-              className="text-sm font-medium text-gray-900"
-              title={inOop.state && inOop.reason ? `${inOop.state}: ${inOop.reason}` : undefined}
-            >
-              {inOop.value != null
-                ? `$${inOop.value.toLocaleString()}`
-                : <span className="text-gray-300">Upload SBC</span>}
-            </p>
-          </div>
-        </div>
-        <div>
-          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">OOP Max (out-of-network)</p>
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <p
-              className="text-sm font-medium text-gray-900"
-              title={outOop.state && outOop.reason ? `${outOop.state}: ${outOop.reason}` : undefined}
-            >
-              {outOop.value != null
-                ? `$${outOop.value.toLocaleString()}`
-                : <span className="text-gray-300">&mdash;</span>}
-            </p>
-          </div>
-        </div>
-      </div>
+        );
+      })()}
       {/* Phase 4.0.5 Task 4.0.5-F: smart 2-button affordance for plan-identity
           scalars. Picks the worst-signal scalar across (inDed, outDed, inOop,
           outOop) — premium excluded since it's CMS-marketplace-sourced and re-parse
@@ -460,10 +439,10 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
           { state: outOop.state, reason: outOop.reason, count: outOop.searchedSectionsCount, fieldName: "out_oop_max_individual" },
         ].filter((c) => c.state !== null);
         if (candidates.length === 0) return null;
-        const worst =
-          candidates.find((c) => c.state === "unverified") ??
-          candidates.find((c) => c.state === "estimated") ??
-          null;
+        // CF-19 v2: only Estimated state shows the upload affordance. Verified-tier states
+        // get no inline prompt — value is trusted. Hidden states (parser_failure) get the
+        // page-level banner instead.
+        const worst = candidates.find((c) => c.state === "estimated") ?? null;
         if (!worst || !worst.state || !worst.reason) return null;
         return (
           <div className="mt-3">
@@ -510,8 +489,7 @@ function computeRowDisplay(item: any): {
   // "show source quote if cite-grade else surface reason" treatment.
   const isVerifiedTier =
     aggState === "candid_verified" ||
-    aggState === "document_verified" ||
-    aggState === "found_in_document";
+    aggState === "verified";
   if (isVerifiedTier) {
     // Prefer a field at this exact state that ALSO has an excerpt (cite-grade) so
     // the row's SourceQuote in expanded view has substance. Fall back to any field
@@ -528,7 +506,7 @@ function computeRowDisplay(item: any): {
     const anyAtState = fields.find((f) => f.state === aggState);
     return {
       state: aggState,
-      reason: anyAtState?.reason ?? "corroborated_multi_user",
+      reason: anyAtState?.reason ?? "community_corroborated",
       excerpt: null,
       searchedSectionsCount: anyAtState?.searchedSectionsCount,
     };
@@ -539,7 +517,7 @@ function computeRowDisplay(item: any): {
   const worstField = fields.find((f) => f.state === aggState);
   return {
     state: aggState,
-    reason: worstField?.reason ?? "self_source_no_cite",
+    reason: worstField?.reason ?? "parser_failure",
     excerpt: null,
     searchedSectionsCount: worstField?.searchedSectionsCount,
   };
@@ -863,16 +841,30 @@ export default function CandidPlanPage() {
       {/* Benefits by category */}
       <div className="mt-6 space-y-4">
         {Array.from(grouped.entries()).map(([category, benefits]) => {
-          const usedInCategory = benefits.filter((b) => usedBenefits.has(b.benefit.id)).length;
-          // CF-19 (Session 64): aggregate the worst-signal display state across
-          // every benefit row in this category. ONE badge at category header
-          // replaces N per-row pills (less noisy per user direction). Tooltip on
-          // the badge surfaces "applies to all items in this category" semantics.
+          // CF-19 (Session 64): per-row + category visibility filter.
+          // Pre-compute each row's display state to determine visibility.
+          // Categories with zero verified-tier rows are hidden entirely (no
+          // empty container with broken progress bar). Flag-OFF case (all rowDisplays
+          // null) falls back to legacy rendering — show all rows.
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const rowDisplays = benefits.map((b) => computeRowDisplay(b as any));
-          const categoryAggState = aggregateRowState(rowDisplays.map((r) => r?.state ?? null));
-          // Pick a representative reason — prefer the worst field's reason for tooltip.
-          const worstRowDisplay = rowDisplays.find((r) => r?.state === categoryAggState);
+          const flagOff = rowDisplays.every((r) => r === null);
+          const visibleBenefits = flagOff
+            ? benefits
+            : benefits.filter((_, i) => {
+                const s = rowDisplays[i]?.state;
+                return s === "candid_verified" || s === "verified";
+              });
+          if (visibleBenefits.length === 0) return null;
+          const usedInCategory = visibleBenefits.filter((b) => usedBenefits.has(b.benefit.id)).length;
+          const visibleRowDisplays = flagOff
+            ? rowDisplays
+            : rowDisplays.filter((r) => {
+                const s = r?.state;
+                return s === "candid_verified" || s === "verified";
+              });
+          const categoryAggState = aggregateRowState(visibleRowDisplays.map((r) => r?.state ?? null));
+          const worstRowDisplay = visibleRowDisplays.find((r) => r?.state === categoryAggState);
           const categoryAggReason = worstRowDisplay?.reason ?? null;
           return (
             <div key={category} className="border border-gray-100 rounded-2xl overflow-hidden">
@@ -883,17 +875,13 @@ export default function CandidPlanPage() {
                   <span className="font-semibold text-gray-900 truncate">
                     {BENEFIT_CATEGORY_LABELS[category as BenefitCategory] || SERVICE_CATEGORY_LABELS[category] || category.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}
                   </span>
-                  {/* Aggregate state badge — one per category instead of per-row */}
-                  {categoryAggState && categoryAggReason && (
-                    <span className="inline-flex items-center gap-1">
-                      <DisplayStateBadge state={categoryAggState} reason={categoryAggReason} size="xs" />
-                      <span
-                        className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-gray-200 text-gray-600 text-[9px] font-semibold cursor-help"
-                        title={`This signal reflects the weakest evidence across all ${benefits.length} items in this category. Individual rows may have stronger evidence — expand to see per-row detail.`}
-                      >
-                        ?
-                      </span>
-                    </span>
+                  {/* Aggregate state badge — one per category. Per user direction Session 64
+                      v2 simplification: render for verified-tier states (candid_verified /
+                      verified) — and Estimated when category mostly has data from non-doc
+                      sources (CMS marketplace etc.). Hidden categories (all parser_failure)
+                      already filtered out by visibleBenefits.length === 0 check above. */}
+                  {categoryAggState && categoryAggReason && (categoryAggState === "candid_verified" || categoryAggState === "verified" || categoryAggState === "estimated") && (
+                    <DisplayStateBadge state={categoryAggState} reason={categoryAggReason} size="xs" />
                   )}
                 </div>
                 <div className="flex items-center gap-2">
@@ -917,6 +905,16 @@ export default function CandidPlanPage() {
                   const isUsed = usedBenefits.has(item.benefit.id);
                   const isExpanded = expandedBenefit === item.benefit.id;
                   const rowDisplay = computeRowDisplay(item);
+                  // CF-19 v2 (Session 64): rows render when state is null (flag OFF) OR
+                  // verified-tier (candid_verified / verified) OR estimated. Only `hidden`
+                  // (parser_failure / boilerplate) rows are skipped — page-level banner
+                  // surfaces the parser_failure aggregate.
+                  const isRenderable =
+                    rowDisplay === null ||
+                    rowDisplay.state === "candid_verified" ||
+                    rowDisplay.state === "verified" ||
+                    rowDisplay.state === "estimated";
+                  if (!isRenderable) return null;
                   return (
                     <div key={item.benefit.id} className={`transition-colors ${isUsed ? "bg-green-50/30" : "bg-white"}`}>
                       <div className="flex items-start gap-3 p-4">
@@ -1034,14 +1032,14 @@ export default function CandidPlanPage() {
                               render the VerifyAffordance prompt to upload a more complete
                               plan document. Skipped entirely when no decoration is present
                               (rowDisplay null = flag OFF; preserves byte-identical legacy). */}
-                          {/* CF-19 (Session 64): SourceQuote renders for any verified-tier state
-                              with a verbatim excerpt. document_verified is the canonical case
-                              (Pattern P-8 cite-grade); candid_verified can also carry an excerpt
-                              when the corroborated-canonical row inherited a cite-grade entry. */}
-                          {rowDisplay && (rowDisplay.state === "candid_verified" || rowDisplay.state === "document_verified") && rowDisplay.excerpt && (
+                          {/* CF-19 v2 (Session 64): SourceQuote renders only when the row
+                              has cite-grade verbatim. Reason discriminates: only
+                              from_user_document_cite_grade and community_corroborated (with
+                              excerpt) qualify for blockquote treatment. */}
+                          {rowDisplay && rowDisplay.excerpt && (rowDisplay.reason === "from_user_document_cite_grade" || rowDisplay.reason === "community_corroborated") && (
                             <SourceQuote excerpt={rowDisplay.excerpt} />
                           )}
-                          {rowDisplay && rowDisplay.state !== "candid_verified" && rowDisplay.state !== "document_verified" && (
+                          {rowDisplay && rowDisplay.state === "estimated" && (
                             <VerifyAffordance
                               state={rowDisplay.state}
                               reason={rowDisplay.reason}

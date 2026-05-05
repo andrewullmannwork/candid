@@ -53,31 +53,24 @@ interface VerifyAffordanceProps {
   onReparseSuccess?: (decoratedValue: DecoratedValue<unknown>, finalVerifiedState: string) => void;
 }
 
-const SBC_NON_DO_NOT_EXTRACT_SECTION_COUNT = 5;
+// SBC_NON_DO_NOT_EXTRACT_SECTION_COUNT was used by the pre-CF-19-v2 two_button affordance
+// routing for haiku_not_found re-check eligibility. CF-19 v2 collapses re-parse out of the
+// inline affordance — moves to dispute-letter generation flow per CF-20 (Session 65). Constant
+// retained as 5 for documentation; unused at runtime now.
 
 function reasonMessage(reason: DisplayStateReason): string {
+  // CF-19 v2 (Session 64): Estimated reasons all encourage doc upload. Tooltip-text
+  // distinction kept lightweight — backend reason routes to message; user sees one
+  // upload CTA regardless.
   switch (reason) {
-    case "haiku_not_found":
-      return "We extracted this value but couldn't find a matching quote in your document.";
-    case "verbatim_absent_searched_all":
-      return "We searched your entire plan document and couldn't find a verbatim quote for this value. A more complete plan document (full EOC, not just an SBC) may have it.";
-    case "ocr_unverifiable":
-      return "Pulled from a scanned document — wording couldn't be fully verified.";
-    case "canonical_fallback":
-      return "Estimated from public marketplace data.";
-    case "cross_user_below_threshold":
-      return "Sourced from other Candid users on this plan; still gathering enough confirmations.";
-    case "self_source_no_cite":
-      return "Based on your uploaded document. Couldn't find a verbatim citation.";
-    case "low_confidence":
-      return "Best estimate — the parser wasn't very confident here.";
-    case "p8_cite_grade_corroborated":
-    case "p8_cite_grade_self_source":
-    case "corroborated_multi_user":
-    case "do_not_extract_section":
-      return "We have this value but couldn't find a verbatim citation in your plan documents.";
+    case "canonical_below_threshold":
+      return "We have data on this plan from other Candid users, but we're still gathering confirmations.";
+    case "cms_marketplace":
+      return "Estimated from public CMS marketplace data based on your insurance card.";
+    case "provider_attestation_below_threshold":
+      return "Estimated from provider-reported data; still being verified.";
     default:
-      return "We have this value but couldn't find a verbatim citation in your plan documents.";
+      return "We're estimating this value. Upload your plan document for the real story.";
   }
 }
 
@@ -98,33 +91,20 @@ export function VerifyAffordance({
   const router = useRouter();
 
   const effectiveState = optimisticState ?? state;
-  // CF-19 (Session 64) — 6-state vocabulary: any of the 3 verified-tier states
-  // (candid_verified / document_verified / found_in_document) means we have enough
-  // signal that we don't need the verify-affordance prompt; user can take action
-  // via the doc upload flow if they want stronger evidence.
-  if (
-    effectiveState === "candid_verified" ||
-    effectiveState === "document_verified" ||
-    effectiveState === "found_in_document" ||
-    effectiveState === "hidden"
-  ) {
-    return null;
-  }
+  // CF-19 v2 (Session 64): only Estimated state shows the inline upload affordance.
+  // Verified-tier (candid_verified / verified) is trusted; hidden (parser_failure)
+  // surfaces via page-level banner instead.
+  if (effectiveState !== "estimated") return null;
 
-  // Determine whether the "Re-check our analysis" button should appear.
-  // Conditions (all required):
-  //   - reason is haiku_not_found (verbatim_absent has different UX — no re-check)
-  //   - planId + fieldName provided by caller
-  //   - searchedSectionsCount is defined AND incomplete (< 5)
-  // Pre-Phase-4.0.5 rows (searched_sections undefined) fall back to single-link
-  // per Q-P4.0.5-7 LOCK forward-only commitment.
-  const reparseCallable =
-    reason === "haiku_not_found" &&
-    planId !== undefined &&
-    fieldName !== undefined &&
-    searchedSectionsCount !== undefined &&
-    searchedSectionsCount > 0 &&
-    searchedSectionsCount < SBC_NON_DO_NOT_EXTRACT_SECTION_COUNT;
+  // CF-20 (Session 65 fast-follow): re-parse-on-flag for dispute-letter cite-grade
+  // deferred. The PR #39 inline re-parse button (haiku_not_found) is now hidden by
+  // default for Estimated state; re-parse moves to dispute-letter generation flow.
+  // Suppress the button entirely for Estimated rows; only show the upload CTA.
+  const reparseCallable = false;
+  void planId;
+  void fieldName;
+  void serviceSlug;
+  void searchedSectionsCount;
 
   async function handleReparse() {
     if (!planId || !fieldName) return;
@@ -193,10 +173,7 @@ export function VerifyAffordance({
   }
 
   const message = reasonMessage(reason);
-  const ocrUnverifiableLabel = reason === "ocr_unverifiable";
-  const linkLabel = ocrUnverifiableLabel
-    ? "Upload a clearer scan"
-    : "Upload a different plan document";
+  const linkLabel = "Upload your plan document";
 
   return (
     <div className="rounded-xl border border-amber-200 bg-amber-50/60 px-4 py-3">
@@ -278,30 +255,15 @@ export function affordanceShapeFor(opts: {
   reason: DisplayStateReason;
   searchedSectionsCount: number | undefined;
 }): AffordanceShape {
-  // CF-19 (Session 64): any of the 3 verified-tier states has enough signal —
-  // user can take action via doc upload if they want stronger evidence; no inline prompt.
-  // Note: verbatim_absent_searched_all is now found_in_document state, NOT unverified —
-  // but the affordance routing still wants to show a one_button "upload more complete doc"
-  // prompt for it. Special-cased below (state-agnostic on reason).
-  if (
-    opts.state === "candid_verified" ||
-    opts.state === "document_verified" ||
-    opts.state === "found_in_document" ||
-    opts.state === "hidden"
-  ) {
-    // Exception: found_in_document via verbatim_absent_searched_all — still surface
-    // the one-button upload prompt because user can resolve the gap with a fuller doc.
-    if (opts.state === "found_in_document" && opts.reason === "verbatim_absent_searched_all") {
-      return "one_button_upload";
-    }
-    return null;
-  }
-  if (opts.reason === "verbatim_absent_searched_all") return "one_button_upload";
-  if (opts.reason === "haiku_not_found") {
-    const c = opts.searchedSectionsCount;
-    if (c === undefined || c === 0) return "single_link";
-    if (c >= SBC_NON_DO_NOT_EXTRACT_SECTION_COUNT) return "one_button_upload";
-    return "two_button";
-  }
-  return "single_link";
+  // CF-19 v2 (Session 64): only Estimated triggers the inline upload affordance.
+  // Verified-tier (candid_verified / verified) doesn't need a prompt — user trusts it.
+  // Hidden (parser_failure / boilerplate) is handled by the page-level error banner.
+  if (opts.state !== "estimated") return null;
+  // Estimated: single one-button-upload affordance ("Upload your plan document").
+  // Backend reasons (canonical_below_threshold / cms_marketplace / provider_attestation_below_threshold)
+  // all share the same UX path: encourage user to upload SBC for the real story.
+  // searchedSectionsCount kept as input parameter for future re-parse routing (CF-20).
+  void opts.reason;
+  void opts.searchedSectionsCount;
+  return "one_button_upload";
 }
