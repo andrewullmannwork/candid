@@ -853,7 +853,7 @@ export default function CandidPlanPage() {
             ? benefits
             : benefits.filter((_, i) => {
                 const s = rowDisplays[i]?.state;
-                return s === "candid_verified" || s === "verified";
+                return s === "candid_verified" || s === "verified" || s === "estimated";
               });
           if (visibleBenefits.length === 0) return null;
           const usedInCategory = visibleBenefits.filter((b) => usedBenefits.has(b.benefit.id)).length;
@@ -861,7 +861,7 @@ export default function CandidPlanPage() {
             ? rowDisplays
             : rowDisplays.filter((r) => {
                 const s = r?.state;
-                return s === "candid_verified" || s === "verified";
+                return s === "candid_verified" || s === "verified" || s === "estimated";
               });
           const categoryAggState = aggregateRowState(visibleRowDisplays.map((r) => r?.state ?? null));
           const worstRowDisplay = visibleRowDisplays.find((r) => r?.state === categoryAggState);
