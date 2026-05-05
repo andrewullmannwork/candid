@@ -8,9 +8,12 @@ export default function CandidCasePage() {
   const escalationInsurer = searchParams.get("insurer");
   const escalationService = searchParams.get("service");
   const escalationAmount = searchParams.get("amount");
+  // T2.2 v3 (Q-T2.2-7 LOCK): denial_type pre-fill param. Informational only —
+  // no algorithmic match per ABA Rule 7.2 + Q-DR-1G1-3 marketplace-not-vetting.
+  const escalationDenialType = searchParams.get("denial_type");
   const isSystemic = searchParams.get("systemic") === "true";
   const affectedCount = searchParams.get("affectedCount");
-  const hasEscalationContext = escalationInsurer || escalationService || escalationAmount;
+  const hasEscalationContext = escalationInsurer || escalationService || escalationAmount || escalationDenialType;
 
   return (
     <div className="relative min-h-[80vh]">
@@ -22,6 +25,7 @@ export default function CandidCasePage() {
             {escalationInsurer && `Insurer: ${escalationInsurer}`}
             {escalationService && ` · Service: ${escalationService.replace(/_/g, " ")}`}
             {escalationAmount && ` · Amount: $${parseFloat(escalationAmount).toLocaleString()}`}
+            {escalationDenialType && ` · Denial type: ${escalationDenialType.replace(/_/g, " ")}`}
           </p>
           {isSystemic && (
             <p className="text-xs text-red-700 mt-1 font-semibold">

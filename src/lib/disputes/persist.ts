@@ -213,7 +213,8 @@ export async function updateDisputeOutcome(
       return false;
     }
 
-    // If dispute is resolved, cancel pending follow-ups + update accuracy scoring
+    // If dispute is resolved, cancel pending follow-ups + run Pattern 1 #13
+    // outlier evaluation + update accuracy scoring.
     if (RESOLVED_STATUSES.includes(update.status)) {
       try {
         await supabase
@@ -223,6 +224,22 @@ export async function updateDisputeOutcome(
           .eq("status", "pending");
       } catch {
         // Non-blocking
+      }
+
+      // T2.2 v3: Pattern 1 #13 outlier evaluation on amount_recovered
+      // (per [[Candid_Data_Principles]] §6 #13 + Q-T2.2-8 LOCK).
+      // Runs BEFORE accuracy scoring so quarantined rows are flagged in time
+      // for accuracy.ts to skip them per Q-T2.2-12 LOCK reality-reconciled.
+      if (update.amountRecovered !== undefined && update.amountRecovered > 0) {
+        try {
+          const { evaluateOutlier } = await import("@/lib/disputes/outlier-eval");
+          await evaluateOutlier(supabase, {
+            disputeId,
+            amountRecovered: update.amountRecovered,
+          });
+        } catch (err) {
+          console.error("[disputes-persist] Outlier evaluation failed (non-fatal):", err);
+        }
       }
 
       // Update accuracy scoring (non-blocking)

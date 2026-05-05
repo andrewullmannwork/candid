@@ -7,9 +7,45 @@
  * - After second reprompt: final prompt (final)
  *
  * Outcomes feed accuracy scoring (Phase 2B) and escalation routing (Phase 2C).
+ *
+ * T2.2 v3 (Session 62): cadence read from dispute_feedback_loop.config JSONB
+ * (admin-tunable; defaults preserve existing 30/14/14 behavior). Per Q-T2.2-2 LOCK.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+
+const DEFAULT_FIRST_DAYS = 30;
+const DEFAULT_REPEAT_DAYS = 14;
+
+interface FollowupCadence {
+  firstDays: number;
+  repeatDays: number;
+}
+
+async function readCadence(supabase: SupabaseClient): Promise<FollowupCadence> {
+  try {
+    const { data } = await supabase
+      .from("feature_flag_rules")
+      .select("config")
+      .eq("flag_key", "dispute_feedback_loop")
+      .maybeSingle();
+    const cfg = (data?.config as Record<string, unknown> | undefined) ?? {};
+    const first = cfg.follow_up_first_days;
+    const repeat = cfg.follow_up_repeat_days;
+    return {
+      firstDays: typeof first === "number" && first > 0 ? first : DEFAULT_FIRST_DAYS,
+      repeatDays: typeof repeat === "number" && repeat > 0 ? repeat : DEFAULT_REPEAT_DAYS,
+    };
+  } catch {
+    return { firstDays: DEFAULT_FIRST_DAYS, repeatDays: DEFAULT_REPEAT_DAYS };
+  }
+}
+
+function addDays(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.toISOString().split("T")[0];
+}
 
 export type FollowupType =
   | "initial_30d"
@@ -46,7 +82,8 @@ export interface ActiveFollowup extends FollowupRow {
 }
 
 /**
- * Create the initial 30-day follow-up after a dispute is filed.
+ * Create the initial follow-up after a dispute is filed.
+ * Cadence read from dispute_feedback_loop.config.follow_up_first_days (default 30).
  * Called from persist.ts when dispute_feedback_loop flag is enabled.
  */
 export async function createFollowups(
@@ -54,19 +91,18 @@ export async function createFollowups(
   params: { disputeId: string; userId: string }
 ): Promise<void> {
   const { disputeId, userId } = params;
-
-  const dueDate = new Date();
-  dueDate.setDate(dueDate.getDate() + 30);
+  const { firstDays } = await readCadence(supabase);
+  const dueDate = addDays(firstDays);
 
   await supabase.from("dispute_followups").insert({
     dispute_id: disputeId,
     user_id: userId,
     followup_type: "initial_30d",
-    due_date: dueDate.toISOString().split("T")[0],
+    due_date: dueDate,
     status: "pending",
   });
 
-  console.log(`[followups] Created 30-day follow-up for dispute ${disputeId}, due ${dueDate.toISOString().split("T")[0]}`);
+  console.log(`[followups] Created ${firstDays}-day follow-up for dispute ${disputeId}, due ${dueDate}`);
 }
 
 /**
@@ -171,16 +207,17 @@ export async function handleFollowupAction(
     const isInitial = followup.followup_type === "initial_30d";
     const isReprompt = followup.followup_type === "reprompt_14d";
 
+    const { repeatDays } = await readCadence(supabase);
+
     if (isInitial) {
-      // Create 14-day reprompt
-      const dueDate = new Date();
-      dueDate.setDate(dueDate.getDate() + 14);
+      // Create reprompt (admin-tunable cadence)
+      const dueDate = addDays(repeatDays);
 
       await supabase.from("dispute_followups").insert({
         dispute_id: followup.dispute_id,
         user_id: userId,
         followup_type: "reprompt_14d",
-        due_date: dueDate.toISOString().split("T")[0],
+        due_date: dueDate,
         status: "pending",
       });
 
@@ -188,15 +225,14 @@ export async function handleFollowupAction(
     }
 
     if (isReprompt) {
-      // Create final follow-up (14 more days)
-      const dueDate = new Date();
-      dueDate.setDate(dueDate.getDate() + 14);
+      // Create final follow-up (admin-tunable cadence; same repeat interval)
+      const dueDate = addDays(repeatDays);
 
       await supabase.from("dispute_followups").insert({
         dispute_id: followup.dispute_id,
         user_id: userId,
         followup_type: "final",
-        due_date: dueDate.toISOString().split("T")[0],
+        due_date: dueDate,
         status: "pending",
       });
 

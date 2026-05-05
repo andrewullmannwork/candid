@@ -68,7 +68,10 @@ export type DisplayStateReason =
   | "ocr_unverifiable"                // scanned doc; verifier honest about limitation
   | "low_confidence"                  // confidence < 0.5
   // unverified family
-  | "haiku_not_found"                 // parser flagged not_found — likely hallucination
+  | "haiku_not_found"                 // parser flagged not_found — likely hallucination (re-parse may recover)
+  | "verbatim_absent_searched_all"    // Phase 4.0.5: deterministic — verifier searched ALL
+                                      //   non-DO_NOT_EXTRACT sections + value not in document.
+                                      //   Re-parse won't help; user needs different/more complete doc.
   // hidden family
   | "do_not_extract_section";         // boilerplate (e.g., glossary, footer legalese)
 
@@ -172,9 +175,14 @@ export function getDisplayState(input: DisplayStateInput): DisplayStateResult {
     return { state: "verified", reason: "corroborated_multi_user" };
   }
 
-  // Tier 2: unverified — parser explicitly flagged not_found (hallucination signal).
-  // This trumps "estimated" defaults because negative signal is more important
-  // than absence-of-positive.
+  // Tier 2: unverified — parser explicitly flagged not_found OR verbatim_absent.
+  // verbatim_absent is the Phase 4.0.5 deterministic state (parser searched ALL
+  // non-DO_NOT_EXTRACT sections + value still not found). Both render as
+  // `unverified` but with different reason codes for UX (re-parse may help on
+  // not_found; only doc-replace helps on verbatim_absent).
+  if (provenance?.source_excerpt_verified === "verbatim_absent") {
+    return { state: "unverified", reason: "verbatim_absent_searched_all" };
+  }
   if (provenance?.source_excerpt_verified === "not_found") {
     return { state: "unverified", reason: "haiku_not_found" };
   }
@@ -392,6 +400,8 @@ export const DISPLAY_STATE_TOOLTIP_EN: Record<DisplayStateReason, string> = {
   // unverified family
   haiku_not_found:
     "We extracted this but couldn't find a matching quote in the source — please verify against your plan documents before relying on it.",
+  verbatim_absent_searched_all:
+    "We searched every section of your plan document and couldn't find this value verbatim. Try uploading a more complete plan document (full EOC, not just an SBC).",
 
   // hidden family (no tooltip needed; UI doesn't render the value or badge)
   do_not_extract_section:

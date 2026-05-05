@@ -167,3 +167,39 @@ export async function notifyDenialEscalation(params: {
 
   await sendEmail({ to: userEmail, subject, html });
 }
+
+/**
+ * T2.2 v3: Slack admin alert when a dispute outcome is quarantined per Pattern 1 #13
+ * outlier evaluation (amount_recovered ≥ threshold OR > multiplier × amount_disputed).
+ *
+ * Admin reviews quarantined rows + can release via flywheel_eligibility_status update
+ * to 'verified_via_admin' (per [[Candid_Data_Principles]] §6 #13 quarantine state machine).
+ */
+export async function notifyOutlierQuarantine(params: {
+  disputeId: string;
+  amountRecovered: number;
+  amountDisputed: number;
+  reason: string;
+}): Promise<void> {
+  const { disputeId, amountRecovered, amountDisputed, reason } = params;
+
+  await sendSlack({
+    text: `🚨 Outlier dispute quarantined — admin review needed`,
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text:
+            `*🚨 Pattern 1 #13 outlier quarantine fired*\n` +
+            `Dispute \`${disputeId}\` quarantined from cross-user aggregates.\n\n` +
+            `*Reason:* ${reason}\n` +
+            `*amount_recovered:* $${amountRecovered.toLocaleString()}\n` +
+            `*amount_disputed:* $${amountDisputed.toLocaleString()}\n\n` +
+            `Review at \`/admin/disputes\` (filter by flywheel_eligibility_status=quarantined_outlier). ` +
+            `Release via update to 'verified_via_admin' if legitimate.`,
+        },
+      },
+    ],
+  });
+}

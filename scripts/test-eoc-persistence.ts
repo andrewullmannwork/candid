@@ -215,6 +215,7 @@ async function main() {
         segmentation_used: "preamble_only",
         warnings: [],
         parse_errors: [],
+        dispatched_sections: [],
       };
 
       // Direct persist via processEOCDocumentData would need the full pipeline path;

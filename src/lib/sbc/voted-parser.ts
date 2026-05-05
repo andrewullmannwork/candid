@@ -283,6 +283,13 @@ export async function votedParseSBC(input: VotedParseSBCInput): Promise<VotedPar
     ...abstainedFields.map((f) => `voting_abstained:${f}`),
   ];
 
+  // Phase 4.0.5: dispatchedSections is the UNION across all N=3 attempts.
+  // In practice all 3 attempts dispatch the same sections (segmentation is
+  // deterministic), so the union equals any single attempt's set.
+  const unionedDispatchedSections = Array.from(
+    new Set(successful.flatMap((r) => r.dispatchedSections)),
+  );
+
   return {
     planIdentity: votedPlanIdentity,
     services: votedServices,
@@ -297,6 +304,7 @@ export async function votedParseSBC(input: VotedParseSBCInput): Promise<VotedPar
     haikuCacheReadTokens: 0,
     costUsd: totalCostUsd,
     parseStrategyV2: true,
+    dispatchedSections: unionedDispatchedSections,
     votingMetadata: {
       triggered: true,
       n: VOTING_N,

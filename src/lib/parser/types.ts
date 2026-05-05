@@ -58,8 +58,13 @@ export function isDoNotExtractSection(sectionHint: string | undefined): boolean 
  *   fails. Honest signal that we can't verify excerpt without fuzzy matching (which
  *   we explicitly DO NOT do — fuzzy matching would corrupt the citation-grade
  *   contract on short excerpts).
+ * - `verbatim_absent` (Phase 4.0.5): deterministic — verifier searched ALL
+ *   non-DO_NOT_EXTRACT sections AND emitted `not_found`. Indicates the value is
+ *   genuinely absent from this document (vs `not_found` which could mean
+ *   parser missed during search). UX: "upload a different plan document"
+ *   (re-parse won't help; same doc has been exhaustively searched).
  */
-export type SourceExcerptVerified = "verified" | "not_found" | "ocr_unverifiable";
+export type SourceExcerptVerified = "verified" | "not_found" | "ocr_unverifiable" | "verbatim_absent";
 
 /**
  * How the raw document text was extracted. Drives the verification path:
