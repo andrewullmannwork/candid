@@ -250,6 +250,12 @@ export interface FieldProvenanceEntry {
  * Pattern P-8 fields (sourceExcerpt + verified + extractionMethod + sectionHint +
  * sectionVerified) are optional; pass them when `parse_strategy_v2` flag is ON
  * AND the upstream parser captured + verified them.
+ *
+ * Phase 4.0.5: `searchedSections` records which sections the parser dispatched to
+ * during this parse. Required for verbatim_absent derivation + targeted re-parse
+ * at consumer-read time. Pass parser-level `dispatchedSections` (e.g.,
+ * `SBCHaikuParseResult.dispatchedSections`) so every field on the same parse
+ * result inherits the same coverage array.
  */
 export function buildProvenanceEntry(
   table: string,
@@ -263,6 +269,7 @@ export function buildProvenanceEntry(
     sourceSectionHint?: string;
     sourceSectionVerified?: boolean;
   },
+  searchedSections?: string[],
 ): FieldProvenanceEntry | null {
   const category = lookupCategory(table, column);
   if (!category) return null;
@@ -282,6 +289,10 @@ export function buildProvenanceEntry(
     }
     if (patternP8.sourceSectionHint !== undefined) entry.source_section_hint = patternP8.sourceSectionHint;
     if (patternP8.sourceSectionVerified !== undefined) entry.source_section_verified = patternP8.sourceSectionVerified;
+  }
+
+  if (searchedSections !== undefined && searchedSections.length > 0) {
+    entry.searched_sections = [...searchedSections];
   }
 
   return entry;

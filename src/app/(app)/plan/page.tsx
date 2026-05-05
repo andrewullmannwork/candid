@@ -296,11 +296,12 @@ function DataSourceBanner({ dataSource, planName, planType, insurer, verificatio
 
 // ── Plan Summary Card ──────────────────────────────────────────────────────────
 
-function PlanSummaryCard({ planName, planYear, planSummary, dataSource }: {
+function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insurancePlanId }: {
   planName?: string;
   planYear?: number | null;
   planSummary?: AnalyzeResponse["planSummary"];
   dataSource: string;
+  insurancePlanId?: string;
 }) {
   if (!planSummary || dataSource === "static_catalog") return null;
 
@@ -421,6 +422,38 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource }: {
           </div>
         </div>
       </div>
+      {/* Phase 4.0.5 Task 4.0.5-F: smart 2-button affordance for plan-identity
+          scalars. Picks the worst-signal scalar across (inDed, outDed, inOop,
+          outOop) — premium excluded since it's CMS-marketplace-sourced and re-parse
+          can't help. fieldName routes to `in_deductible_individual` as the
+          representative re-parse target; worstField.searchedSectionsCount drives
+          shape decision (2-button when incomplete; 1-button when complete or
+          undefined per Q-P4.0.5-7 forward-only fallback). */}
+      {(() => {
+        const candidates = [
+          { state: inDed.state, reason: inDed.reason, count: inDed.searchedSectionsCount, fieldName: "in_deductible_individual" },
+          { state: outDed.state, reason: outDed.reason, count: outDed.searchedSectionsCount, fieldName: "out_deductible_individual" },
+          { state: inOop.state, reason: inOop.reason, count: inOop.searchedSectionsCount, fieldName: "in_oop_max_individual" },
+          { state: outOop.state, reason: outOop.reason, count: outOop.searchedSectionsCount, fieldName: "out_oop_max_individual" },
+        ].filter((c) => c.state !== null);
+        if (candidates.length === 0) return null;
+        const worst =
+          candidates.find((c) => c.state === "unverified") ??
+          candidates.find((c) => c.state === "estimated") ??
+          null;
+        if (!worst || !worst.state || !worst.reason) return null;
+        return (
+          <div className="mt-3">
+            <VerifyAffordance
+              state={worst.state}
+              reason={worst.reason}
+              planId={insurancePlanId}
+              fieldName={worst.fieldName}
+              searchedSectionsCount={worst.count}
+            />
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -437,6 +470,7 @@ function computeRowDisplay(item: any): {
   state: DisplayState;
   reason: import("@/components/display-state").DisplayStateReason;
   excerpt: string | null;
+  searchedSectionsCount: number | undefined;
 } | null {
   const fields = [
     decoratedShape<number | null>(item?.costSharing?.inNetwork?.copay),
@@ -453,16 +487,31 @@ function computeRowDisplay(item: any): {
     // SourceQuote in expanded view has substance. Fall back to any verified field's
     // reason for tooltip if no excerpt is available.
     const withExcerpt = fields.find((f) => f.state === "verified" && f.hasExcerpt && f.excerpt);
-    if (withExcerpt) return { state: "verified", reason: withExcerpt.reason!, excerpt: withExcerpt.excerpt };
+    if (withExcerpt) {
+      return {
+        state: "verified",
+        reason: withExcerpt.reason!,
+        excerpt: withExcerpt.excerpt,
+        searchedSectionsCount: withExcerpt.searchedSectionsCount,
+      };
+    }
     const anyVerified = fields.find((f) => f.state === "verified");
-    return { state: "verified", reason: anyVerified?.reason ?? "corroborated_multi_user", excerpt: null };
+    return {
+      state: "verified",
+      reason: anyVerified?.reason ?? "corroborated_multi_user",
+      excerpt: null,
+      searchedSectionsCount: anyVerified?.searchedSectionsCount,
+    };
   }
   // For non-verified aggregate, surface the worst field's reason for the badge tooltip.
+  // Phase 4.0.5: also surface that field's searchedSectionsCount so VerifyAffordance
+  // can decide between 2-button (incomplete coverage) and 1-button (complete or undefined).
   const worstField = fields.find((f) => f.state === aggState);
   return {
     state: aggState,
     reason: worstField?.reason ?? "self_source_no_cite",
     excerpt: null,
+    searchedSectionsCount: worstField?.searchedSectionsCount,
   };
 }
 
@@ -703,6 +752,7 @@ export default function CandidPlanPage() {
         planYear={yearRolloverEnabled ? result.planYear : null}
         planSummary={result.planSummary}
         dataSource={result.dataSource}
+        insurancePlanId={result.insurancePlanId}
       />
 
       {/* Profile completeness — contextual, non-blocking */}
@@ -941,7 +991,14 @@ export default function CandidPlanPage() {
                             <SourceQuote excerpt={rowDisplay.excerpt} />
                           )}
                           {rowDisplay && rowDisplay.state !== "verified" && (
-                            <VerifyAffordance state={rowDisplay.state} reason={rowDisplay.reason} />
+                            <VerifyAffordance
+                              state={rowDisplay.state}
+                              reason={rowDisplay.reason}
+                              planId={result?.insurancePlanId}
+                              fieldName="in_copay"
+                              serviceSlug={item.serviceSlug || item.benefit.id}
+                              searchedSectionsCount={rowDisplay.searchedSectionsCount}
+                            />
                           )}
 
                           {/* Relevance note (when no cost grid — for generic benefits) */}

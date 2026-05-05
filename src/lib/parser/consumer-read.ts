@@ -211,6 +211,11 @@ export function getDisplayState(input: DisplayStateInput): DisplayStateResult {
 /**
  * Decoration wrapper for UI consumption. Wraps a value with display metadata
  * + the source excerpt (when available) for citation tooltip rendering.
+ *
+ * Phase 4.0.5: `searchedSectionsCount` carries the parser-level dispatched-section
+ * count for the field. UI uses it to pick the affordance shape (2-button "Re-check"
+ * when incomplete; 1-button "Upload" when complete or undefined per Q-P4.0.5-7
+ * forward-only commitment). Undefined for legacy rows or fields without P-8.
  */
 export interface DecoratedValue<T> {
   value: T;
@@ -218,6 +223,7 @@ export interface DecoratedValue<T> {
   reason: DisplayStateReason;
   hasExcerpt: boolean;
   excerpt: string | null;
+  searchedSectionsCount?: number;
 }
 
 export function decorateForDisplay<T>(value: T, input: DisplayStateInput): DecoratedValue<T> {
@@ -331,13 +337,18 @@ export function decorateFieldFromEntry<T>(
 ): DecoratedValue<T> {
   const provenance = extractPatternP8FromEntry(entry);
   const confidence = entry?.confidence ?? context.fallbackConfidence ?? 0.5;
-  return decorateForDisplay(value, {
+  const decorated = decorateForDisplay(value, {
     provenance,
     confidence,
     sourceCount: context.sourceCount,
     source: context.source,
     multiSourceThreshold: context.multiSourceThreshold,
   });
+  // Phase 4.0.5: carry section-coverage count to UI for VerifyAffordance shape decision.
+  if (entry?.searched_sections !== undefined) {
+    decorated.searchedSectionsCount = entry.searched_sections.length;
+  }
+  return decorated;
 }
 
 /**

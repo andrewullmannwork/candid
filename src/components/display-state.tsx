@@ -28,15 +28,18 @@
  *                          to detect which shape is in hand without threading flag
  *                          state through every render path.
  */
-import Link from "next/link";
 import type { DecoratedValue, DisplayState, DisplayStateReason } from "@/lib/parser/consumer-read";
 import {
   DISPLAY_STATE_TOOLTIP_EN,
   isDecoratedValue,
   aggregateRowState,
 } from "@/lib/parser/consumer-read";
+// Phase 4.0.5 Task 4.0.5-F: smart 2-button affordance moved to dedicated Client
+// Component file. Re-export from here preserves existing imports across the codebase
+// (`import { VerifyAffordance } from "@/components/display-state"`).
+import { VerifyAffordance } from "@/components/verify-affordance";
 
-export { isDecoratedValue, aggregateRowState };
+export { isDecoratedValue, aggregateRowState, VerifyAffordance };
 export type { DecoratedValue, DisplayState, DisplayStateReason };
 
 /**
@@ -64,9 +67,17 @@ export function decoratedShape<T>(v: T | DecoratedValue<T> | null | undefined): 
   reason: DisplayStateReason | null;
   excerpt: string | null;
   hasExcerpt: boolean;
+  searchedSectionsCount: number | undefined;
 } {
   if (v == null) {
-    return { value: null, state: null, reason: null, excerpt: null, hasExcerpt: false };
+    return {
+      value: null,
+      state: null,
+      reason: null,
+      excerpt: null,
+      hasExcerpt: false,
+      searchedSectionsCount: undefined,
+    };
   }
   if (isDecoratedValue<T>(v)) {
     return {
@@ -75,6 +86,7 @@ export function decoratedShape<T>(v: T | DecoratedValue<T> | null | undefined): 
       reason: v.reason,
       excerpt: v.excerpt,
       hasExcerpt: v.hasExcerpt,
+      searchedSectionsCount: v.searchedSectionsCount,
     };
   }
   return {
@@ -83,6 +95,7 @@ export function decoratedShape<T>(v: T | DecoratedValue<T> | null | undefined): 
     reason: null,
     excerpt: null,
     hasExcerpt: false,
+    searchedSectionsCount: undefined,
   };
 }
 
@@ -206,58 +219,5 @@ export function SourceQuote({ excerpt, source = "your plan document" }: SourceQu
   );
 }
 
-interface VerifyAffordanceProps {
-  /** The display state the affordance is responding to. Determines messaging. */
-  state: DisplayState;
-  reason: DisplayStateReason;
-  /** Optional override URL — defaults to /upload (existing flow). */
-  uploadHref?: string;
-}
-
-/**
- * "Upload a more complete plan document" affordance for non-verified rows.
- *
- * Phase 4.0: single link to /upload (the existing re-upload flow already handles
- * additional plan documents merging into the active plan). Renders ONLY for
- * non-verified states; null otherwise.
- *
- * Phase 4.0.5: this component will be replaced/extended with a 2-button affordance
- * ("Re-check our analysis" via targeted re-parse vs "Upload different doc") driven
- * by the verbatim_absent state derivation. Layout is intentionally simple now so
- * the upgrade is a content swap, not a layout refactor.
- */
-export function VerifyAffordance({
-  state,
-  reason,
-  uploadHref = "/upload",
-}: VerifyAffordanceProps) {
-  if (state === "verified" || state === "hidden") return null;
-
-  const message =
-    reason === "haiku_not_found"
-      ? "We extracted this value but couldn't find a matching quote in your document."
-      : reason === "ocr_unverifiable"
-      ? "Pulled from a scanned document — wording couldn't be fully verified."
-      : reason === "canonical_fallback"
-      ? "Estimated from public marketplace data."
-      : reason === "cross_user_below_threshold"
-      ? "Sourced from other Candid users on this plan; still gathering enough confirmations."
-      : "We have this value but couldn't find a verbatim citation in your plan documents.";
-
-  return (
-    <div className="rounded-xl border border-amber-200 bg-amber-50/60 px-4 py-3">
-      <p className="text-xs text-amber-900">
-        <span className="font-semibold">Want to verify this?</span> {message}
-      </p>
-      <Link
-        href={uploadHref}
-        className="inline-flex items-center gap-1 mt-2 text-xs font-semibold text-amber-700 hover:text-amber-900"
-      >
-        Upload a more complete plan document
-        <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-        </svg>
-      </Link>
-    </div>
-  );
-}
+// Phase 4.0.5: VerifyAffordance moved to src/components/verify-affordance.tsx
+// (Client Component for onClick handler). Re-export above preserves callers.

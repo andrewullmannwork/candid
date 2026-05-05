@@ -51,10 +51,14 @@ function adaptPatternP8(
  * One source_excerpt (Q-P3.2.1-5) — the full row text — applies to every cost-sharing
  * field on the row. All entries share `service.patternP8` + `service.haikuConfidence`.
  * Uncategorized columns are silently skipped (lookupCategory returns null).
+ *
+ * Phase 4.0.5: `searchedSections` (parser-level `dispatchedSections`) propagates to
+ * every field for forward-compat verbatim_absent derivation + targeted re-parse.
  */
 export function buildPlanCoveredServiceProvenance(
   service: SBCHaikuService,
   source: SourceProvenance = "doc_extraction",
+  searchedSections?: string[],
 ): Record<string, FieldProvenanceEntry> {
   const patternP8 = adaptPatternP8(service.patternP8);
   const haikuConfidence = service.haikuConfidence;
@@ -94,6 +98,7 @@ export function buildPlanCoveredServiceProvenance(
       source,
       haikuConfidence,
       patternP8,
+      searchedSections,
     );
     if (entry) provenance[column] = entry;
   }
@@ -106,10 +111,13 @@ export function buildPlanCoveredServiceProvenance(
  * Subset of plan_covered_services columns (canonical schema is narrower; e.g.,
  * canonical uses `copay`/`coinsurance`/`deductible_applies` for in-network, lacks
  * out-of-network columns + cost_description text). Same single-excerpt rule.
+ *
+ * Phase 4.0.5: searchedSections propagated for verbatim_absent derivation.
  */
 export function buildCanonicalPlanServiceProvenance(
   service: SBCHaikuService,
   source: SourceProvenance = "doc_extraction",
+  searchedSections?: string[],
 ): Record<string, FieldProvenanceEntry> {
   const patternP8 = adaptPatternP8(service.patternP8);
   const haikuConfidence = service.haikuConfidence;
@@ -134,6 +142,7 @@ export function buildCanonicalPlanServiceProvenance(
       source,
       haikuConfidence,
       patternP8,
+      searchedSections,
     );
     if (entry) provenance[column] = entry;
   }
@@ -148,10 +157,14 @@ export function buildCanonicalPlanServiceProvenance(
  * are extracted independently from the SBC's "Important Questions" section, NOT from
  * a shared row). Legacy fields without patternP8 (e.g., when extraction came from
  * regex fallback) write source + confidence only.
+ *
+ * Phase 4.0.5: searchedSections propagated for verbatim_absent derivation +
+ * targeted re-parse coverage tracking.
  */
 export function buildSBCPlanIdentityProvenance(
   planIdentity: SBCPlanIdentity,
   source: SourceProvenance = "doc_extraction",
+  searchedSections?: string[],
 ): Record<string, FieldProvenanceEntry> {
   // Map SBCPlanIdentity field-key → DB column name.
   // Aligns with legacy-adapter.ts:translateHaikuToLegacy() column projection so the
@@ -178,6 +191,7 @@ export function buildSBCPlanIdentityProvenance(
       source,
       field.haikuConfidence,
       adaptPatternP8(field.patternP8),
+      searchedSections,
     );
     if (entry) provenance[column] = entry;
   }

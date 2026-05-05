@@ -336,8 +336,12 @@ export async function processPlanDocumentData(
     // per-field Pattern P-8 provenance for plan-identity columns to insurance_plans.
     // field_provenance JSONB (mig 063). plan_document path leaves field_provenance
     // empty (default '{}') — plan-doc regex extraction has no patternP8.
+    // Phase 4.0.5: pass haikuResult.dispatchedSections so each per-field
+    // FieldProvenanceEntry records `searched_sections` — drives verbatim_absent
+    // derivation + targeted re-parse coverage tracking. Forward-only per
+    // Q-P4.0.5-7 LOCK (pre-Phase-4.0.5 rows have searched_sections=undefined).
     const planIdentityProvenance = haikuResult
-      ? buildSBCPlanIdentityProvenance(haikuResult.planIdentity)
+      ? buildSBCPlanIdentityProvenance(haikuResult.planIdentity, "doc_extraction", haikuResult.dispatchedSections)
       : null;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -772,7 +776,17 @@ export async function processPlanDocumentData(
           sbc_page: s.sourcePage ?? null,
           // Phase 3.2.1 Q-P3.2.1-2 — Pattern P-8 field_provenance JSONB write per
           // service row. One row excerpt covers all cost-sharing fields per Q-P3.2.1-5.
-          ...(haikuService ? { field_provenance: buildPlanCoveredServiceProvenance(haikuService) } : {}),
+          // Phase 4.0.5: pass dispatchedSections so each entry records searched_sections
+          // for verbatim_absent derivation + targeted re-parse coverage.
+          ...(haikuService
+            ? {
+                field_provenance: buildPlanCoveredServiceProvenance(
+                  haikuService,
+                  "doc_extraction",
+                  haikuResult?.dispatchedSections,
+                ),
+              }
+            : {}),
         };
       });
 
@@ -933,11 +947,14 @@ export async function processPlanDocumentData(
     }
 
     // ── Finalize document ───────────────────────────────────────────────────
+    // Phase 4.0.5: `processing_ocr_text` retained post-process (was previously
+    // cleared) so /api/plan/reparse-field can dispatch Haiku on un-searched
+    // sections without re-OCR. Forward-only — pre-Phase-4.0.5 docs have null
+    // and fall back to upload-different-doc affordance per Q-P4.0.5-7 LOCK.
     await supabase.from("documents").update({
       status: "processed",
       linked_insurance_plan_id: targetPlanId,
       processing_step: null,
-      processing_ocr_text: null,
       processing_extracted_services: null,
     }).eq("id", documentId);
 
