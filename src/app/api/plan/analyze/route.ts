@@ -304,7 +304,15 @@ export async function POST(request: Request) {
                     deductibleApplies: cs.is_covered === false ? false : cs.deductible_applies,
                     costDescription: cs.is_covered === false ? "Not covered" : "",
                   },
-                  outOfNetwork: { copay: null, coinsurance: null, deductibleApplies: false, costDescription: "" },
+                  // CF-19c (Session 64): canonical_plan_services now carries OON columns
+                  // (mig 071). Populate them when present; null until promotion events fire
+                  // post-corroboration to populate canonical OON values from user uploads.
+                  outOfNetwork: {
+                    copay: maybeDecorate<number | null>(cs.is_covered === false ? null : (cs.out_copay ?? null), getProv(cs, "out_copay"), canonicalLogicalSource, canonicalSourceCount),
+                    coinsurance: maybeDecorate<number | null>(cs.is_covered === false ? null : (cs.out_coinsurance ?? null), getProv(cs, "out_coinsurance"), canonicalLogicalSource, canonicalSourceCount),
+                    deductibleApplies: cs.is_covered === false ? false : (cs.out_deductible_applies ?? false),
+                    costDescription: cs.is_covered === false ? "Not covered" : "",
+                  },
                   annualLimit: maybeDecorate<string | null>(cs.annual_limit ? String(cs.annual_limit) : null, getProv(cs, "annual_limit"), canonicalLogicalSource, canonicalSourceCount),
                   priorAuthRequired: maybeDecorate<boolean | null>(cs.requires_prior_auth, getProv(cs, "requires_prior_auth"), canonicalLogicalSource, canonicalSourceCount),
                   penaltyNoPrecert: null,

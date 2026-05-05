@@ -67,6 +67,8 @@ export function verifySBCSourceExcerpts(
     : null;
 
   // Plan-level fields — verify each scalar's Pattern P-8
+  // CF-19c (Session 64): OON deductible/OOP fields added — they get the same
+  // Pattern P-8 verifier path as in-network values.
   const planFields = [
     "planName",
     "insurerName",
@@ -79,6 +81,10 @@ export function verifySBCSourceExcerpts(
     "deductibleFamily",
     "oopMaxIndividual",
     "oopMaxFamily",
+    "outDeductibleIndividual",
+    "outDeductibleFamily",
+    "outOopMaxIndividual",
+    "outOopMaxFamily",
     "rxDeductibleIndividual",
     "rxDeductibleFamily",
     "referralRequired",

@@ -64,6 +64,11 @@ function emptyPlanIdentity(extractionMethod: ExtractionMethod): SBCPlanIdentity 
     deductibleFamily: emptyNumber,
     oopMaxIndividual: emptyNumber,
     oopMaxFamily: emptyNumber,
+    // CF-19c (Session 64): OON plan-identity scalars
+    outDeductibleIndividual: emptyNumber,
+    outDeductibleFamily: emptyNumber,
+    outOopMaxIndividual: emptyNumber,
+    outOopMaxFamily: emptyNumber,
     rxDeductibleIndividual: emptyNumber,
     rxDeductibleFamily: emptyNumber,
     referralRequired: emptyBool,

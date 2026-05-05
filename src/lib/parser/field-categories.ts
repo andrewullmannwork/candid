@@ -37,6 +37,7 @@ export type SourceProvenance =
   | "irs_990_h"
   | "doc_extraction"
   | "doc_extraction_eoc" // Phase 3.1A: EOC parser distinct from SBC/plan_document doc_extraction
+  | "canonical_inherited" // CF-19a (Session 64): smart-skip copies canonical → user; per-field source recorded so analyze layer routes through cross-user threshold check (Pattern 1 #4) and tooltip surfaces "from another Candid user's upload" semantics. Pattern 1 #14 honored — written to user-scoped tables only as inheritance pointer; canonical untouched.
   | "card_corroboration"
   | "bill_observed"
   | "user_reported_outcome"
@@ -62,6 +63,7 @@ export const SOURCE_DEFAULT_CONFIDENCE: Record<SourceProvenance, number> = {
   irs_990_h: 0.8,
   doc_extraction: 0.5,
   doc_extraction_eoc: 0.5, // Phase 3.1A: same baseline as doc_extraction; cross-source corroboration boosts via Pattern 1 #3
+  canonical_inherited: 0.5, // CF-19a Session 64: same baseline as doc_extraction; threshold-promotion happens compute-on-read via canonical_plans.verification_count
   card_corroboration: 0.6,
   bill_observed: 0.5,
   user_reported_outcome: 0.5,

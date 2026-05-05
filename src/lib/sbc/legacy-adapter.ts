@@ -23,6 +23,9 @@ interface LegacyParseResultWithAppealsContact extends SBCParseResult {
 
 export function translateHaikuToLegacy(haiku: SBCHaikuParseResult): LegacyParseResultWithAppealsContact {
   // Plan-level fields
+  // CF-19c (Session 64): OON plan-identity now flows through legacy adapter (was
+  // hardcoded null pre-Session-64; SBC Haiku Important Questions prompt now extracts
+  // out-of-network deductibles/OOP maxes alongside in-network).
   const plan: Partial<InsurancePlanInsert> = {
     plan_name: haiku.planIdentity.planName.value,
     insurer_name: haiku.planIdentity.insurerName.value,
@@ -32,8 +35,10 @@ export function translateHaikuToLegacy(haiku: SBCHaikuParseResult): LegacyParseR
     in_deductible_family: haiku.planIdentity.deductibleFamily.value,
     in_oop_max_individual: haiku.planIdentity.oopMaxIndividual.value,
     in_oop_max_family: haiku.planIdentity.oopMaxFamily.value,
-    out_deductible_individual: null,
-    out_oop_max_individual: null,
+    out_deductible_individual: haiku.planIdentity.outDeductibleIndividual.value,
+    out_deductible_family: haiku.planIdentity.outDeductibleFamily.value,
+    out_oop_max_individual: haiku.planIdentity.outOopMaxIndividual.value,
+    out_oop_max_family: haiku.planIdentity.outOopMaxFamily.value,
   };
 
   // Services: combine common-medical-events + other-covered (both Haiku-extracted from

@@ -50,30 +50,48 @@
 import type { PatternP8Provenance } from "./verify-source-excerpts";
 import type { FieldProvenanceEntry, SourceProvenance } from "./field-categories";
 
-// 4-state vocabulary per Q-P4-1 LOCK (collapsed `verified` + `corroborated` from
-// the original 5-state proposal; tooltip differentiates the two paths to verified).
-export type DisplayState = "verified" | "estimated" | "unverified" | "hidden";
+// 4-state user-facing vocabulary per CF-19 (Session 64, v2 — user direction simplification):
+//   - "candid_verified"  → fully green     (Pattern 1 #3 corroboration met — community-confirmed)
+//   - "verified"         → green outline   (extracted from user's uploaded document; cite-grade
+//                                           or non-cite-grade — collapsed for user; backend
+//                                           distinguishes via reason for dispute-letter logic)
+//   - "estimated"        → amber + upload-CTA (data from non-doc source — CMS marketplace, card
+//                                              match, canonical below threshold; user should
+//                                              upload SBC for the real story)
+//   - "hidden"           → no render        (boilerplate, parser failures, OCR failures, missing
+//                                            data — page-level banner shows when parser_failure
+//                                            reason is present on any field)
+//
+// Aggregation order (worst → best): hidden → estimated → verified → candid_verified
+//   (hidden filtered out as boilerplate; doesn't contribute to category badge).
+//
+// **Backend distinction preserved**: cite-grade vs non-cite-grade lives in DisplayStateReason
+// (`from_user_document_cite_grade` vs `from_user_document_no_cite`) — dispute letter logic
+// reads the reason, not the state, to decide blockquote rendering. CF-20 (Session 65 fast-follow)
+// will add a re-parse-on-cite-grade-fail prompt when user clicks "Generate dispute letter"
+// against a `from_user_document_no_cite` field.
+export type DisplayState =
+  | "candid_verified"
+  | "verified"
+  | "estimated"
+  | "hidden";
 
-// Reasons surface to UI as tooltip keys (Q-DR-4A-2 LOCK = enum, not literal text;
-// caller maps to UI string for i18n boundary).
+// Reasons surface to UI as tooltip keys + backend routing keys (Q-DR-4A-2 LOCK = enum,
+// not literal text). Reasons are richer than states so backend logic (affordance routing,
+// dispute-letter cite-grade gating, sample-state detection) can differentiate.
 export type DisplayStateReason =
-  // verified family
-  | "p8_cite_grade_corroborated"      // both: cite-grade + multi-source
-  | "p8_cite_grade_self_source"       // self-source with citation
-  | "corroborated_multi_user"         // multi-source, no citation
-  // estimated family
-  | "self_source_no_cite"             // user's own upload but P-8 verifier failed
-  | "cross_user_below_threshold"      // canonical/provider data; not enough corroborators yet
-  | "canonical_fallback"              // county/CMS marketplace fallback
-  | "ocr_unverifiable"                // scanned doc; verifier honest about limitation
-  | "low_confidence"                  // confidence < 0.5
-  // unverified family
-  | "haiku_not_found"                 // parser flagged not_found — likely hallucination (re-parse may recover)
-  | "verbatim_absent_searched_all"    // Phase 4.0.5: deterministic — verifier searched ALL
-                                      //   non-DO_NOT_EXTRACT sections + value not in document.
-                                      //   Re-parse won't help; user needs different/more complete doc.
-  // hidden family
-  | "do_not_extract_section";         // boilerplate (e.g., glossary, footer legalese)
+  // candid_verified family
+  | "community_corroborated"              // Pattern 1 #3 met — multiple distinct users on the canonical confirm this value (with or without cite-grade)
+  // verified family — both render with same badge; backend routes via reason
+  | "from_user_document_cite_grade"       // Pattern P-8 cite-grade from user's own doc — load-bearing for dispute letter blockquotes
+  | "from_user_document_no_cite"          // Extracted from user's doc but verbatim absent OR section misattribution. NOT cite-grade for legal surfaces. Triggers CF-20 re-parse prompt on dispute-letter generation.
+  // estimated family — paired with "Upload your plan document" CTA
+  | "canonical_below_threshold"           // Canonical exists but verification_count < threshold (Pattern 1 #3 not yet met)
+  | "cms_marketplace"                     // CMS public-marketplace data (county-resolved premium, plan-catalog match from card scan)
+  | "provider_attestation_below_threshold" // Provider portal data with <2 user corroborations (Phase 4.5b territory)
+  // hidden family — no value rendered to user
+  | "parser_failure"                      // Parser hallucination, OCR failure, low confidence, or null provenance — triggers page-level error banner ("Document upload failed. Try again or upload a different document.")
+  | "boilerplate";                        // DO_NOT_EXTRACT section
 
 // Sources that require cross-user corroboration before they render as verified.
 // All other sources are self/trusted; sourceCount=1 is sufficient for verified
@@ -137,75 +155,83 @@ export interface DisplayStateResult {
 }
 
 /**
- * Derive the display state for a single value per Q-P4-1 LOCK (4-state) +
- * Q-P4-4 LOCK (P-8 + P1 #4 as orthogonal axes; UI composes via tooltip).
+ * Derive the display state for a single value per CF-19 v2 (Session 64) 4-state vocabulary.
  *
- * Tier order: hidden > verified > unverified > estimated (default).
- * Tier 0 (hidden): DO_NOT_EXTRACT trumps everything (boilerplate is always hidden).
- * Tier 1 (verified): cite-grade OR sufficient corroboration → verified.
- * Tier 2 (unverified): parser-flagged not_found → unverified (likely hallucination).
- * Tier 3 (estimated): everything else, with reason indicating sub-state.
+ * Tier order (most specific first; first match wins):
+ *   Tier 0: hidden            — DO_NOT_EXTRACT boilerplate (reason = "boilerplate")
+ *   Tier 1: candid_verified   — Pattern 1 #3 corroboration met (≥ threshold distinct users)
+ *   Tier 2: verified          — Extracted from user's own document (cite-grade OR no-cite;
+ *                                backend reason distinguishes for dispute-letter logic)
+ *   Tier 3: estimated         — Non-doc source: CMS marketplace, canonical below threshold,
+ *                                provider attestation below threshold. Paired with upload CTA.
+ *   Tier 4: hidden            — Parser failure (hallucination / OCR / low-confidence / null
+ *                                provenance) — page-level error banner fires.
  */
 export function getDisplayState(input: DisplayStateInput): DisplayStateResult {
   const { provenance, confidence, sourceCount, source, multiSourceThreshold } = input;
 
-  // Tier 0: DO_NOT_EXTRACT section trumps everything (boilerplate that happened
-  // to verify is still boilerplate).
+  // Tier 0: boilerplate trumps everything.
   if (provenance?.source_section_hint?.endsWith("_DO_NOT_EXTRACT")) {
-    return { state: "hidden", reason: "do_not_extract_section" };
+    return { state: "hidden", reason: "boilerplate" };
   }
 
   const citeGrade = isCitationGrade(provenance);
   const requiredCount = corroborationThreshold(source, multiSourceThreshold);
-  // Self/trusted sources (requiredCount === 0) are auto-corroborated.
   // Cross-user sources need sourceCount >= configured threshold.
-  const corroborated = requiredCount === 0 || sourceCount >= requiredCount;
+  const meetsCrossUserThreshold = requiredCount > 0 && sourceCount >= requiredCount;
 
-  // Tier 1: verified — cite-grade OR sufficient corroboration.
-  if (citeGrade && corroborated && requiredCount > 0) {
-    return { state: "verified", reason: "p8_cite_grade_corroborated" };
+  // Tier 1: candid_verified — Pattern 1 #3 corroboration met (community-confirmed).
+  // Both cite-grade-corroborated and no-cite-but-corroborated paths land here.
+  if (meetsCrossUserThreshold) {
+    return { state: "candid_verified", reason: "community_corroborated" };
   }
+
+  // Tier 2: verified — extracted from user's uploaded document.
+  // Backend distinguishes cite-grade (load-bearing for dispute letters) vs no-cite
+  // (CF-20 will trigger re-parse-on-flag when user generates a dispute letter).
   if (citeGrade) {
-    // Self-source with cite or cross-user with cite (corroboration may not be met yet
-    // but cite-grade alone is sufficient for trust per Pattern P-8).
-    return { state: "verified", reason: "p8_cite_grade_self_source" };
+    return { state: "verified", reason: "from_user_document_cite_grade" };
   }
-  if (corroborated && requiredCount > 0) {
-    // Cross-user data, no cite, but enough corroborators.
-    return { state: "verified", reason: "corroborated_multi_user" };
-  }
-
-  // Tier 2: unverified — parser explicitly flagged not_found OR verbatim_absent.
-  // verbatim_absent is the Phase 4.0.5 deterministic state (parser searched ALL
-  // non-DO_NOT_EXTRACT sections + value still not found). Both render as
-  // `unverified` but with different reason codes for UX (re-parse may help on
-  // not_found; only doc-replace helps on verbatim_absent).
-  if (provenance?.source_excerpt_verified === "verbatim_absent") {
-    return { state: "unverified", reason: "verbatim_absent_searched_all" };
-  }
-  if (provenance?.source_excerpt_verified === "not_found") {
-    return { state: "unverified", reason: "haiku_not_found" };
+  // Doc extraction with verbatim_absent (Phase 4.0.5: parser searched all sections + value
+  // wasn't located) OR section-misattribution (verified=true but section_verified=false) —
+  // both are "from user's doc but no cite-grade". Backend routes both to the same reason
+  // since dispute-letter logic only cares about cite-grade vs not-cite-grade.
+  if (
+    provenance?.source_excerpt_verified === "verbatim_absent" ||
+    (provenance &&
+      (source === "doc_extraction" || source === "doc_extraction_eoc") &&
+      provenance.source_excerpt_verified === "verified")
+  ) {
+    return { state: "verified", reason: "from_user_document_no_cite" };
   }
 
-  // Tier 3: estimated — everything else, categorized by reason.
-  // Cross-user, below threshold takes precedence over generic single_source label.
+  // Tier 3: estimated — non-doc source.
+  // Cross-user below threshold takes precedence over generic estimated.
   if (requiredCount > 0 && sourceCount < requiredCount) {
-    if (source === "canonical_fallback") {
-      return { state: "estimated", reason: "canonical_fallback" };
+    if (source === "canonical_inherited" || source === "canonical_fallback") {
+      // Canonical-fallback subsumes today's "inherited_canonical_pre_corroboration"
+      // — both fire when canonical exists but verification_count < threshold.
+      // Distinguish by source: canonical_fallback (CMS-marketplace pre-doc) vs
+      // canonical_inherited (smart-skip with canonical < threshold).
+      if (source === "canonical_fallback") {
+        return { state: "estimated", reason: "cms_marketplace" };
+      }
+      return { state: "estimated", reason: "canonical_below_threshold" };
     }
-    return { state: "estimated", reason: "cross_user_below_threshold" };
+    return { state: "estimated", reason: "provider_attestation_below_threshold" };
+  }
+  // Pure CMS marketplace source (no canonical match yet, e.g., insurance card scan with
+  // plan-catalog lookup but no parsed SBC).
+  if (source === "cms_marketplace") {
+    return { state: "estimated", reason: "cms_marketplace" };
   }
 
-  // Self-source variations
-  if (provenance?.source_excerpt_verified === "ocr_unverifiable") {
-    return { state: "estimated", reason: "ocr_unverifiable" };
-  }
-  if (confidence < 0.5) {
-    return { state: "estimated", reason: "low_confidence" };
-  }
-
-  // Default: self-source with provenance but neither cite-grade nor flagged.
-  return { state: "estimated", reason: "self_source_no_cite" };
+  // Tier 4: hidden — parser failure.
+  // Includes haiku_not_found (early-exit hallucination), ocr_unverifiable (scanned doc
+  // verifier limitation), low_confidence (parser self-reported), and null-provenance
+  // (legacy rows pre-mig-063 OR smart-skip pre-fix). Page-level banner aggregates all
+  // parser-failure reasons → user gets ONE re-upload CTA, not N hidden values.
+  return { state: "hidden", reason: "parser_failure" };
 }
 
 /**
@@ -240,22 +266,21 @@ export function decorateForDisplay<T>(value: T, input: DisplayStateInput): Decor
 
 /**
  * Aggregate multiple per-field display states into a single row-level state.
- * Used by plan/page.tsx benefit rows (which have copay + coinsurance + priorAuth +
- * annualLimit decorated fields). Picks the worst signal — the user is shown the
- * weakest link so they know which row needs scrutiny.
+ * Used by plan/page.tsx benefit rows + category headers + summary card.
+ * Picks the worst signal so the user sees the weakest link.
  *
- * Tier order (worst → best for surfacing): unverified > estimated > verified
+ * Tier order (worst → best for surfacing):
+ *   estimated > verified > candid_verified
+ * Hidden states are filtered out (boilerplate / parser_failure don't contribute to
+ * the row badge — parser_failure is surfaced via page-level banner instead).
  * Returns null when no decorated fields are present (flag OFF or all hidden).
- *
- * Lives in consumer-read.ts (not display-state.tsx) so smoke tests can exercise
- * it without importing React / next/link from the UI layer.
  */
 export function aggregateRowState(states: Array<DisplayState | null>): DisplayState | null {
   const visible = states.filter((s): s is DisplayState => s !== null && s !== "hidden");
   if (visible.length === 0) return null;
-  if (visible.some((s) => s === "unverified")) return "unverified";
   if (visible.some((s) => s === "estimated")) return "estimated";
-  return "verified";
+  if (visible.some((s) => s === "verified")) return "verified";
+  return "candid_verified";
 }
 
 /**
@@ -323,6 +348,20 @@ export function extractPatternP8FromEntry(
  * If `entry` is null/undefined, falls back to a "self-source no provenance"
  * shape using the value's source argument (caller passes source explicitly,
  * e.g., 'cms_marketplace' for premium fields without P-8 storage).
+ *
+ * CF-19a (Session 64) — source-threading hole closed:
+ * Per-field source from `entry.source` takes precedence over the row-level
+ * `context.source` argument when present. This is critical for smart-skip
+ * inheritance: when extraction-dedup writes provenance entries with
+ * `source: 'canonical_inherited'`, the row-level source on insurance_plans
+ * may still read 'sbc_upload' (the user did upload an SBC; that's accurate
+ * for the upload event, not the value origin). The per-field source carries
+ * the value-origin signal that consumer-read needs for cross-user threshold
+ * routing — independent of the upload-event source.
+ *
+ * Engineering NS #1 (single code path) honored: callers don't need to know
+ * which source took effect — they pass row-level source as the fallback;
+ * helper resolves precedence.
  */
 export function decorateFieldFromEntry<T>(
   value: T,
@@ -337,11 +376,13 @@ export function decorateFieldFromEntry<T>(
 ): DecoratedValue<T> {
   const provenance = extractPatternP8FromEntry(entry);
   const confidence = entry?.confidence ?? context.fallbackConfidence ?? 0.5;
+  // CF-19a: per-field entry source takes precedence over caller's row-level source.
+  const effectiveSource = entry?.source ?? context.source;
   const decorated = decorateForDisplay(value, {
     provenance,
     confidence,
     sourceCount: context.sourceCount,
-    source: context.source,
+    source: effectiveSource,
     multiSourceThreshold: context.multiSourceThreshold,
   });
   // Phase 4.0.5: carry section-coverage count to UI for VerifyAffordance shape decision.
@@ -388,33 +429,27 @@ export function decorateRowsWithDisplayState<
  * i18n replaces this with a t() function call keyed on DisplayStateReason.
  */
 export const DISPLAY_STATE_TOOLTIP_EN: Record<DisplayStateReason, string> = {
-  // verified family
-  p8_cite_grade_corroborated:
-    "Verified — exact quote from your document plus other Candid users back this up.",
-  p8_cite_grade_self_source:
-    "Verified from your uploaded document. Waiting to confirm across other Candid users — your upload helps grow the community knowledge.",
-  corroborated_multi_user:
-    "Confirmed by multiple Candid users on this plan.",
+  // candid_verified family — fully green
+  community_corroborated:
+    "Candid Verified — multiple Candid users on this plan have confirmed this value.",
 
-  // estimated family
-  self_source_no_cite:
-    "Based on your uploaded document. Waiting to confirm across other Candid users — pop back later as more folks chime in.",
-  cross_user_below_threshold:
-    "Sourced from other Candid users on this plan — still gathering enough confirmations to be sure. Upload your own SBC to help verify.",
-  canonical_fallback:
-    "Estimated from public marketplace data. Upload your SBC for the real story.",
-  ocr_unverifiable:
-    "Pulled from a scanned document — we couldn't fully verify the exact wording. Worth double-checking your plan papers.",
-  low_confidence:
-    "Best estimate — the parser wasn't very confident here. Please verify against your plan documents.",
+  // verified family — green outline (cite-grade vs no-cite differ at backend; user sees one badge)
+  from_user_document_cite_grade:
+    "Verified — we pulled this directly from your uploaded plan document with a verbatim citation.",
+  from_user_document_no_cite:
+    "Verified — extracted from your uploaded plan document. (We couldn't pinpoint the exact verbatim quote, so this isn't citation-grade for dispute letters yet.)",
 
-  // unverified family
-  haiku_not_found:
-    "We extracted this but couldn't find a matching quote in the source — please verify against your plan documents before relying on it.",
-  verbatim_absent_searched_all:
-    "We searched every section of your plan document and couldn't find this value verbatim. Try uploading a more complete plan document (full EOC, not just an SBC).",
+  // estimated family — amber + Upload-CTA
+  canonical_below_threshold:
+    "Estimated — we have data on this plan from other Candid users, but we're still gathering enough confirmations. Upload your plan document for the real story.",
+  cms_marketplace:
+    "Estimated — drawn from public CMS marketplace data based on your insurance card. Upload your plan document for accurate values.",
+  provider_attestation_below_threshold:
+    "Estimated — provider-reported data still being verified. Upload your plan document to check it against your real plan.",
 
-  // hidden family (no tooltip needed; UI doesn't render the value or badge)
-  do_not_extract_section:
+  // hidden family — page-level banner handles parser_failure
+  parser_failure:
+    "We couldn't fully extract this from your document.",
+  boilerplate:
     "(hidden — boilerplate section)",
 };

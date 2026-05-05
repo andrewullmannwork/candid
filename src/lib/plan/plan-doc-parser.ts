@@ -523,6 +523,18 @@ export function parsePlanDocument(text: string): PlanDocParseResult {
   if (plan.in_deductible_individual == null) warnings.push("Could not extract in-network deductible");
 
   // ── OOP Max extraction — multi-pattern ─────────────────────────────────
+  // CF-19 (Session 64) — $0 OOP Max regex bug fix. Previously the OOP-section
+  // capture window (up to 500 chars after the OOP keyword) commonly bled into
+  // neighboring DEDUCTIBLE rows in tabular SBCs (e.g., Cigna OAP). The reused
+  // `individualAmountPatterns` array included a "Deductible[:\s]+$X individual"
+  // pattern (intended for deductible section) that would then match "Deductible: $0
+  // individual" inside the OOP window — landing $0 in `in_oop_max_individual`.
+  //
+  // Two fixes:
+  //   1. Use OOP-specific amount patterns that do NOT include the "Deductible:"
+  //      keyword anchor.
+  //   2. Strip leading "Deductible:" prefixed lines from the captured OOP section
+  //      before pattern matching (defensive — handles tabular bleed).
   const oopSectionPatterns = [
     /Out-of-Pocket\s+(?:Maximum|Limit)[\s\S]{0,500}/gi,
     /Maximum\s+Out-of-Pocket[\s\S]{0,500}/gi,
@@ -531,30 +543,66 @@ export function parsePlanDocument(text: string): PlanDocParseResult {
     /Your\s+Out-of-Pocket[\s\S]{0,500}/gi,
   ];
 
+  // OOP-specific amount patterns. CRITICALLY does NOT match "Deductible: $X"
+  // (that pattern leaks into OOP windows in tabular SBCs).
+  const oopIndividualAmountPatterns = [
+    /Individual[\s\S]{0,80}?\$\s*([\d,]+)\s*(?:per\s*(?:covered\s+)?person)?/i,
+    /\$\s*([\d,]+)\s*(?:\/\s*Individual|per\s*(?:covered\s+)?person)/i,
+    /Individual[:\s]+\$\s*([\d,]+)/i,
+    /per\s+(?:covered\s+)?person[:\s]*\$\s*([\d,]+)/i,
+    // OOP-anchored variants (when section text includes the OOP-Max keyword inline)
+    /(?:Out-of-Pocket|Maximum)[:\s]*\$\s*([\d,]+)\s*(?:individual|per\s*person)?/i,
+  ];
+
+  const oopFamilyAmountPatterns = [
+    /Family[\s\S]{0,80}?\$\s*([\d,]+)\s*(?:per\s*family)?/i,
+    /\$\s*([\d,]+)\s*(?:\/\s*Family|per\s*family)/i,
+    /Family[:\s]+\$\s*([\d,]+)/i,
+  ];
+
   for (const oopPattern of oopSectionPatterns) {
     if (plan.in_oop_max_individual != null) break;
     const oopMatches = [...text.matchAll(oopPattern)];
     for (const oopM of oopMatches) {
-      const oopSection = oopM[0];
-      for (const amtPattern of individualAmountPatterns) {
+      // Defense-in-depth: strip lines that explicitly mention "Deductible" so
+      // the OOP-amount patterns can't pick up a deductible value sitting in the
+      // window. Preserve the rest of the OOP context.
+      const oopSection = oopM[0]
+        .split(/\n/)
+        .filter((line) => !/\bdeductible\b/i.test(line))
+        .join("\n");
+      if (!oopSection.trim()) continue;
+
+      for (const amtPattern of oopIndividualAmountPatterns) {
         const indivMatch = oopSection.match(amtPattern);
         if (indivMatch && !plan.in_oop_max_individual) {
-          plan.in_oop_max_individual = parseFloat(indivMatch[1].replace(/,/g, ""));
-          break;
+          const candidate = parseFloat(indivMatch[1].replace(/,/g, ""));
+          // Sanity: skip implausibly low values that hint at deductible bleed
+          // (OOP Max should be at minimum >= deductible). Real OOP for individual
+          // health plans is typically $1,000+; $0 indicates the regex matched the
+          // wrong field.
+          if (candidate >= 500 || (plan.in_deductible_individual != null && candidate >= plan.in_deductible_individual)) {
+            plan.in_oop_max_individual = candidate;
+            break;
+          }
         }
       }
-      for (const amtPattern of familyAmountPatterns) {
+      for (const amtPattern of oopFamilyAmountPatterns) {
         const familyMatch = oopSection.match(amtPattern);
         if (familyMatch && !plan.in_oop_max_family) {
-          plan.in_oop_max_family = parseFloat(familyMatch[1].replace(/,/g, ""));
-          break;
+          const candidate = parseFloat(familyMatch[1].replace(/,/g, ""));
+          if (candidate >= 500 || (plan.in_deductible_family != null && candidate >= plan.in_deductible_family)) {
+            plan.in_oop_max_family = candidate;
+            break;
+          }
         }
       }
       if (plan.in_oop_max_individual) break;
     }
   }
 
-  // Cross-validation: deductible must be less than OOP max
+  // Cross-validation: deductible must be <= OOP max. If we caught a deductible-bleed
+  // through (despite the filter above), swap rather than persist nonsense.
   if (plan.in_deductible_individual != null && plan.in_oop_max_individual != null) {
     if (plan.in_deductible_individual > plan.in_oop_max_individual) {
       // Swap — the parser got them backwards

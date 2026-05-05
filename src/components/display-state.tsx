@@ -110,16 +110,32 @@ interface BadgeStyle {
   icon: React.ReactNode;
 }
 
+// CF-19 v2 (Session 64) — 3 visible badge variants per user direction simplification.
+//   candid_verified  → fully green pill              (Pattern 1 #3 corroboration met)
+//   verified         → green outline                 (extracted from user's uploaded doc)
+//   estimated        → amber pill + Upload CTA       (non-doc source)
+//   hidden           → no render (page-level banner for parser_failure aggregates)
+
+const CHECKMARK_ICON = (
+  <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+  </svg>
+);
+
+const CANDID_VERIFIED_STYLE: BadgeStyle = {
+  bg: "bg-emerald-600",
+  text: "text-white",
+  ring: "ring-emerald-700",
+  label: "Candid Verified",
+  icon: CHECKMARK_ICON,
+};
+
 const VERIFIED_STYLE: BadgeStyle = {
   bg: "bg-emerald-50",
   text: "text-emerald-700",
-  ring: "ring-emerald-200",
+  ring: "ring-emerald-400",
   label: "Verified",
-  icon: (
-    <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-    </svg>
-  ),
+  icon: CHECKMARK_ICON,
 };
 
 const ESTIMATED_STYLE: BadgeStyle = {
@@ -134,22 +150,10 @@ const ESTIMATED_STYLE: BadgeStyle = {
   ),
 };
 
-const UNVERIFIED_STYLE: BadgeStyle = {
-  bg: "bg-rose-50",
-  text: "text-rose-700",
-  ring: "ring-rose-200",
-  label: "Unverified",
-  icon: (
-    <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M12 21a9 9 0 110-18 9 9 0 010 18z" />
-    </svg>
-  ),
-};
-
 function styleFor(state: DisplayState): BadgeStyle | null {
+  if (state === "candid_verified") return CANDID_VERIFIED_STYLE;
   if (state === "verified") return VERIFIED_STYLE;
   if (state === "estimated") return ESTIMATED_STYLE;
-  if (state === "unverified") return UNVERIFIED_STYLE;
   return null; // "hidden" → component returns null upstream
 }
 

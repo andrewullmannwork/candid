@@ -66,7 +66,7 @@ Source of truth: `Candid_Data_Principles.md` (foundational decisions) + `Candid_
 
 1. **Every upload enriches the platform.** User documents improve data for all users on the same plan.
 2. **Canonical over duplicated.** One shared plan record per (insurer, plan_name, state, year).
-3. **Confidence-scaled with per-surface gating** (Pattern 1 #4). Single-source = 0.5, multi-source = 0.9, admin-verified = 1.0. Per-surface display rule: informational surfaces (Plan page, dashboard) show estimated/unverified data with state badges; legal surfaces (Dispute letter, Case File) HIDE non-cite-grade fields entirely per Pattern P-8 cite-grade gate.
+3. **Confidence-scaled with per-surface gating** (Pattern 1 #4). Single-source = 0.5, multi-source = 0.9, admin-verified = 1.0. Per-surface display rule: informational surfaces (Plan page, dashboard) show estimated/unverified data with state badges; legal surfaces (Dispute letter, Case File) HIDE non-cite-grade fields entirely per Pattern P-8 cite-grade gate. **CF-19 (Session 64) 6-state vocabulary**: `candid_verified` (Pattern 1 #3 corroborated, full green), `document_verified` (Pattern P-8 cite-grade from user's doc, dark green border), `found_in_document` (extracted from doc but verbatim absent or section misattribution, light green border), `estimated` (amber), `unverified` (rose), `hidden`. Aggregation worst→best: `unverified > estimated > found_in_document > document_verified > candid_verified`.
 4. **User-specific overlays.** Canonical plans hold shared coverage. Per-user records hold personal data.
 5. **Consent-first aggregation.** All cross-user data is anonymized. Individual records never exposed.
 6. **Schema traces to product.** Every table should map to a product scenario.

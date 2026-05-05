@@ -124,13 +124,19 @@ export function buildCanonicalPlanServiceProvenance(
 
   // canonical_plan_services columns populated from SBC services per process-plan.ts:
   // (canonical_plan_id + concept_id + service_slug are key/identity, NOT provenance-tagged)
+  // CF-19c (Session 64): OON columns added (mig 071) — canonical now mirrors plan_covered_services
+  // for cost-sharing symmetry. Allows smart-skip to copy OON values from canonical to user rows.
   const fields: Array<[string, unknown]> = [
-    ["copay", service.inCopay], // canonical has only in-network copay
+    ["copay", service.inCopay], // legacy in-network copay column
     ["coinsurance", service.inCoinsurance],
     ["is_covered", service.covered],
     ["requires_prior_auth", service.priorAuthRequired],
     ["deductible_applies", service.inDeductibleApplies],
     ["annual_limit", service.annualLimitValue],
+    // CF-19c — OON cost-sharing
+    ["out_copay", service.outCopay],
+    ["out_coinsurance", service.outCoinsurance],
+    ["out_deductible_applies", service.outDeductibleApplies],
   ];
 
   const provenance: Record<string, FieldProvenanceEntry> = {};
@@ -169,6 +175,8 @@ export function buildSBCPlanIdentityProvenance(
   // Map SBCPlanIdentity field-key → DB column name.
   // Aligns with legacy-adapter.ts:translateHaikuToLegacy() column projection so the
   // provenance keys match what's actually persisted.
+  // CF-19c (Session 64): OON plan-identity columns added to mapping. Values come from
+  // the SBC's "Important Questions" section's out-of-network deductible/OOP cells.
   const mappings: Array<[string, keyof SBCPlanIdentity]> = [
     ["plan_name", "planName"],
     ["insurer_name", "insurerName"],
@@ -178,6 +186,10 @@ export function buildSBCPlanIdentityProvenance(
     ["in_deductible_family", "deductibleFamily"],
     ["in_oop_max_individual", "oopMaxIndividual"],
     ["in_oop_max_family", "oopMaxFamily"],
+    ["out_deductible_individual", "outDeductibleIndividual"],
+    ["out_deductible_family", "outDeductibleFamily"],
+    ["out_oop_max_individual", "outOopMaxIndividual"],
+    ["out_oop_max_family", "outOopMaxFamily"],
   ];
 
   const provenance: Record<string, FieldProvenanceEntry> = {};
@@ -192,6 +204,42 @@ export function buildSBCPlanIdentityProvenance(
       field.haikuConfidence,
       adaptPatternP8(field.patternP8),
       searchedSections,
+    );
+    if (entry) provenance[column] = entry;
+  }
+  return provenance;
+}
+
+/**
+ * Build field_provenance for inherited columns when smart-skip copies canonical →
+ * user (no Haiku run on the user's actual document).
+ *
+ * CF-19a (Session 64). Used by extraction-dedup.linkDocumentToCanonical to record
+ * "this value came from another Candid user's upload of the same plan, not from
+ * extracting your doc directly." Per Pattern 1 #14, written to user-scoped tables
+ * only as inheritance pointer; canonical untouched.
+ *
+ * NO Pattern P-8 sub-keys — smart-skip didn't run Haiku, no source_excerpt.
+ * Display layer threshold-promotes to "Candid Verified" when canonical's
+ * verification_count >= multiSourceThreshold (compute-on-read in analyze/route.ts).
+ *
+ * Caller passes (column, value) pairs for fields with non-null values; this helper
+ * writes one entry per non-null pair using `source = 'canonical_inherited'`.
+ */
+export function buildCanonicalInheritedProvenance(
+  table: string,
+  fields: Array<[string, unknown]>,
+): Record<string, FieldProvenanceEntry> {
+  const provenance: Record<string, FieldProvenanceEntry> = {};
+  for (const [column, value] of fields) {
+    if (value === null || value === undefined) continue;
+    const entry = buildProvenanceEntry(
+      table,
+      column,
+      "canonical_inherited",
+      undefined, // no haiku confidence — we didn't run Haiku
+      undefined, // no Pattern P-8 sub-keys — no source_excerpt
+      undefined, // no searched_sections — no Haiku dispatch
     );
     if (entry) provenance[column] = entry;
   }
