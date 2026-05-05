@@ -26,6 +26,11 @@ const INSTRUCTIONS = `You are extracting plan-level scalars from the "Important 
 7. **Coverage tier** = individual / individual_family / family / employee_only / employee_spouse — pick from this list; null if uncertain.
 8. **DO NOT extract** from glossary cross-references, footer disclaimers, or coverage example text.
 9. **source_section_hint**: always "important_questions".
+10. **In-network vs Out-of-network**: SBCs typically present deductibles and OOP maxes side-by-side for both networks (e.g., "$0 in-network / $2,000 out-of-network individual"). Extract BOTH variants when present:
+   - **deductibleIndividual** / **deductibleFamily** / **oopMaxIndividual** / **oopMaxFamily** are IN-NETWORK values
+   - **outDeductibleIndividual** / **outDeductibleFamily** / **outOopMaxIndividual** / **outOopMaxFamily** are OUT-OF-NETWORK values
+   - If the SBC only presents in-network (network-only plan) or shows "Not applicable" for out-of-network, set the out_* fields to null with empty source_excerpt.
+   - For shared-deductible plans where the same deductible applies to both networks, populate both with the same value but different (or same) source_excerpts as appropriate.
 
 ## RESPONSE SCHEMA
 
@@ -41,6 +46,10 @@ const INSTRUCTIONS = `You are extracting plan-level scalars from the "Important 
   "deductibleFamily": { "value": 5000, "source_excerpt": "...", "haiku_confidence": 0.96 },
   "oopMaxIndividual": { "value": 8500, "source_excerpt": "...", "haiku_confidence": 0.94 },
   "oopMaxFamily": { "value": 17000, "source_excerpt": "...", "haiku_confidence": 0.94 },
+  "outDeductibleIndividual": { "value": 5000, "source_excerpt": "...", "haiku_confidence": 0.94 },
+  "outDeductibleFamily": { "value": 10000, "source_excerpt": "...", "haiku_confidence": 0.94 },
+  "outOopMaxIndividual": { "value": 17000, "source_excerpt": "...", "haiku_confidence": 0.93 },
+  "outOopMaxFamily": { "value": 34000, "source_excerpt": "...", "haiku_confidence": 0.93 },
   "rxDeductibleIndividual": { "value": 300, "source_excerpt": "...", "haiku_confidence": 0.91 },
   "rxDeductibleFamily": { "value": 600, "source_excerpt": "...", "haiku_confidence": 0.91 },
   "referralRequired": { "value": false, "source_excerpt": "...", "haiku_confidence": 0.93 },
@@ -105,6 +114,10 @@ interface RawResponse {
   deductibleFamily?: RawFieldEntry;
   oopMaxIndividual?: RawFieldEntry;
   oopMaxFamily?: RawFieldEntry;
+  outDeductibleIndividual?: RawFieldEntry;
+  outDeductibleFamily?: RawFieldEntry;
+  outOopMaxIndividual?: RawFieldEntry;
+  outOopMaxFamily?: RawFieldEntry;
   rxDeductibleIndividual?: RawFieldEntry;
   rxDeductibleFamily?: RawFieldEntry;
   referralRequired?: RawFieldEntry;
@@ -175,6 +188,11 @@ export async function extractImportantQuestions(
     deductibleFamily: makeNumberField(result.data.deductibleFamily, extractionMethod),
     oopMaxIndividual: makeNumberField(result.data.oopMaxIndividual, extractionMethod),
     oopMaxFamily: makeNumberField(result.data.oopMaxFamily, extractionMethod),
+    // CF-19c (Session 64): out-of-network plan-identity scalars
+    outDeductibleIndividual: makeNumberField(result.data.outDeductibleIndividual, extractionMethod),
+    outDeductibleFamily: makeNumberField(result.data.outDeductibleFamily, extractionMethod),
+    outOopMaxIndividual: makeNumberField(result.data.outOopMaxIndividual, extractionMethod),
+    outOopMaxFamily: makeNumberField(result.data.outOopMaxFamily, extractionMethod),
     rxDeductibleIndividual: makeNumberField(result.data.rxDeductibleIndividual, extractionMethod),
     rxDeductibleFamily: makeNumberField(result.data.rxDeductibleFamily, extractionMethod),
     referralRequired: makeBooleanField(result.data.referralRequired, extractionMethod),

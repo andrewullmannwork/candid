@@ -137,10 +137,18 @@ export interface SBCPlanIdentity {
   coverageTier: SBCPlanField<string | null>; // individual / individual_family / etc.
   planYear: SBCPlanField<number | null>;
   coveragePeriodStart: SBCPlanField<string | null>; // ISO date
-  deductibleIndividual: SBCPlanField<number | null>;
-  deductibleFamily: SBCPlanField<number | null>;
-  oopMaxIndividual: SBCPlanField<number | null>;
-  oopMaxFamily: SBCPlanField<number | null>;
+  deductibleIndividual: SBCPlanField<number | null>; // in-network
+  deductibleFamily: SBCPlanField<number | null>; // in-network
+  oopMaxIndividual: SBCPlanField<number | null>; // in-network
+  oopMaxFamily: SBCPlanField<number | null>; // in-network
+  // CF-19c (Session 64): out-of-network plan-identity scalars. SBC's "Important Questions"
+  // section typically contains both in-network and out-of-network deductible/OOP values
+  // side-by-side; previous version dropped the OON values via legacy-adapter hardcoded
+  // null. Now extracted + persisted with their own Pattern P-8 provenance.
+  outDeductibleIndividual: SBCPlanField<number | null>;
+  outDeductibleFamily: SBCPlanField<number | null>;
+  outOopMaxIndividual: SBCPlanField<number | null>;
+  outOopMaxFamily: SBCPlanField<number | null>;
   rxDeductibleIndividual: SBCPlanField<number | null>;
   rxDeductibleFamily: SBCPlanField<number | null>;
   referralRequired: SBCPlanField<boolean | null>;

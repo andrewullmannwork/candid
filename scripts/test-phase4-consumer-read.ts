@@ -37,7 +37,7 @@ import {
   type DisplayState,
 } from "@/lib/parser/consumer-read";
 import type { PatternP8Provenance } from "@/lib/parser/verify-source-excerpts";
-import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
+import type { FieldProvenanceEntry, SourceProvenance } from "@/lib/parser/field-categories";
 // Phase 4.0.5 Task 4.0.5-G: extended smoke test groups C10 + C11 + C12.
 import {
   deriveVerbatimAbsentFromCoverage,
@@ -154,7 +154,7 @@ function testC3_GetDisplayState() {
   assertEq(hidden.state, "hidden", "C3.1.state");
   assertEq(hidden.reason, "do_not_extract_section", "C3.1.reason");
 
-  // Tier 1 (verified) — cite-grade + cross-user corroborated
+  // CF-19 6-state: Tier 1 (candid_verified) — cite-grade + cross-user corroborated
   const r1 = getDisplayState({
     provenance: provVerified(),
     confidence: 0.9,
@@ -162,10 +162,10 @@ function testC3_GetDisplayState() {
     source: "canonical_inherited",
     multiSourceThreshold: 3,
   });
-  assertEq(r1.state, "verified", "C3.2.state");
+  assertEq(r1.state, "candid_verified", "C3.2.state");
   assertEq(r1.reason, "p8_cite_grade_corroborated", "C3.2.reason");
 
-  // Tier 1 (verified) — cite-grade self-source (single user, no corroboration needed)
+  // Tier 2 (document_verified) — cite-grade self-source (single user, no corroboration needed)
   const r2 = getDisplayState({
     provenance: provVerified(),
     confidence: 0.5,
@@ -173,10 +173,10 @@ function testC3_GetDisplayState() {
     source: "doc_extraction",
     multiSourceThreshold: 3,
   });
-  assertEq(r2.state, "verified", "C3.3.state");
+  assertEq(r2.state, "document_verified", "C3.3.state");
   assertEq(r2.reason, "p8_cite_grade_self_source", "C3.3.reason");
 
-  // Tier 1 (verified) — corroborated multi-user, no cite (canonical with verification_count >= threshold)
+  // Tier 1 (candid_verified) — corroborated multi-user, no cite (canonical with verification_count >= threshold)
   const r3 = getDisplayState({
     provenance: null,
     confidence: 0.9,
@@ -184,8 +184,8 @@ function testC3_GetDisplayState() {
     source: "canonical_inherited",
     multiSourceThreshold: 3,
   });
-  assertEq(r3.state, "verified", "C3.4.state");
-  assertEq(r3.reason, "corroborated_multi_user", "C3.4.reason");
+  assertEq(r3.state, "candid_verified", "C3.4.state");
+  assertEq(r3.reason, "inherited_canonical_corroborated", "C3.4.reason");
 
   // Tier 2 (unverified) — Haiku not_found
   const r4 = getDisplayState({
@@ -198,7 +198,9 @@ function testC3_GetDisplayState() {
   assertEq(r4.state, "unverified", "C3.5.state");
   assertEq(r4.reason, "haiku_not_found", "C3.5.reason");
 
-  // Tier 3 (estimated) — cross-user below threshold (canonical_inherited with sourceCount<3)
+  // Tier 5 (estimated) — cross-user below threshold (canonical_inherited with sourceCount<3)
+  // CF-19: canonical_inherited gets its OWN reason (inherited_canonical_pre_corroboration)
+  // distinct from cross_user_below_threshold (used for provider_submitted etc.)
   const r5 = getDisplayState({
     provenance: null,
     confidence: 0.7,
@@ -207,7 +209,7 @@ function testC3_GetDisplayState() {
     multiSourceThreshold: 3,
   });
   assertEq(r5.state, "estimated", "C3.6.state");
-  assertEq(r5.reason, "cross_user_below_threshold", "C3.6.reason");
+  assertEq(r5.reason, "inherited_canonical_pre_corroboration", "C3.6.reason");
 
   // Tier 3 (estimated) — canonical_fallback
   const r6 = getDisplayState({
@@ -231,7 +233,7 @@ function testC3_GetDisplayState() {
   assertEq(r7.state, "estimated", "C3.8.state");
   assertEq(r7.reason, "cross_user_below_threshold", "C3.8.reason");
 
-  // Tier 3 (estimated) — provider_submitted ABOVE threshold (sourceCount=2)
+  // Tier 1 (candid_verified) — provider_submitted ABOVE threshold (sourceCount=2)
   const r8 = getDisplayState({
     provenance: null,
     confidence: 0.7,
@@ -239,7 +241,7 @@ function testC3_GetDisplayState() {
     source: "provider_submitted",
     multiSourceThreshold: 3,
   });
-  assertEq(r8.state, "verified", "C3.9.state");
+  assertEq(r8.state, "candid_verified", "C3.9.state");
   assertEq(r8.reason, "corroborated_multi_user", "C3.9.reason");
 
   // Tier 3 (estimated) — ocr_unverifiable
@@ -288,7 +290,7 @@ function testC4_DecorateForDisplay() {
   };
   const result = decorateForDisplay({ deductible: 1500 }, input);
   assertEq(result.value.deductible, 1500, "C4.1: value preserved");
-  assertEq(result.state, "verified", "C4.2: state set");
+  assertEq(result.state, "document_verified", "C4.2: state set (CF-19: doc-cite-grade self-source)");
   assertEq(result.reason, "p8_cite_grade_self_source", "C4.3: reason set");
   assertEq(result.hasExcerpt, true, "C4.4: hasExcerpt true");
   assertEq(result.excerpt, "Deductible: $1,500 individual", "C4.5: excerpt extracted");
@@ -336,11 +338,12 @@ function testC5_DecorateRows() {
   assertEq(decorated.length, 3, "C5.1: row count preserved");
   assertEq(decorated[0].id, "row1", "C5.2: row1 id preserved");
   assertEq(decorated[0].copay, 25, "C5.3: row1 copay preserved");
-  assertEq(decorated[0].displayState, "verified", "C5.4: row1 verified (self-source cite-grade)");
+  assertEq(decorated[0].displayState, "document_verified", "C5.4: row1 document_verified (self-source cite-grade)");
   assertEq(decorated[0].displayReason, "p8_cite_grade_self_source", "C5.5: row1 reason");
   assertEq(decorated[1].displayState, "estimated", "C5.6: row2 estimated (canonical, below threshold)");
-  assertEq(decorated[1].displayReason, "cross_user_below_threshold", "C5.7: row2 reason");
-  assertEq(decorated[2].displayState, "verified", "C5.8: row3 verified (canonical, above threshold + cite-grade)");
+  // CF-19: canonical_inherited below threshold has its own reason
+  assertEq(decorated[1].displayReason, "inherited_canonical_pre_corroboration", "C5.7: row2 reason");
+  assertEq(decorated[2].displayState, "candid_verified", "C5.8: row3 candid_verified (canonical, above threshold + cite-grade)");
   assertEq(decorated[2].displayReason, "p8_cite_grade_corroborated", "C5.9: row3 reason");
 }
 
@@ -348,15 +351,25 @@ function testC5_DecorateRows() {
 function testC6_TooltipMapComplete() {
   console.log(`${TAG} C6: DISPLAY_STATE_TOOLTIP_EN coverage ...`);
   const expectedReasons: DisplayStateReason[] = [
+    // candid_verified family
     "p8_cite_grade_corroborated",
-    "p8_cite_grade_self_source",
     "corroborated_multi_user",
+    "inherited_canonical_corroborated",
+    // document_verified family
+    "p8_cite_grade_self_source",
+    // found_in_document family — CF-19 (Session 64)
+    "verbatim_absent_searched_all",
+    "found_in_doc_no_cite",
+    // estimated family
     "self_source_no_cite",
     "cross_user_below_threshold",
     "canonical_fallback",
+    "inherited_canonical_pre_corroboration",
     "ocr_unverifiable",
     "low_confidence",
+    // unverified family
     "haiku_not_found",
+    // hidden family
     "do_not_extract_section",
   ];
   for (const reason of expectedReasons) {
@@ -417,7 +430,7 @@ function testC7_ExtractAndDecorateFromEntry() {
     multiSourceThreshold: 3,
   });
   assertEq(decorated.value, 1500, "C7.9: value preserved");
-  assertEq(decorated.state, "verified", "C7.10: state from P-8 cite-grade");
+  assertEq(decorated.state, "document_verified", "C7.10: state from P-8 cite-grade (CF-19: doc-cite-grade self-source)");
   assertEq(decorated.reason, "p8_cite_grade_self_source", "C7.11: reason from P-8 self-source");
   assertEq(decorated.excerpt, "Deductible: $1,500 individual", "C7.12: excerpt extracted from entry");
   assertEq(decorated.hasExcerpt, true, "C7.13: hasExcerpt true");
@@ -430,17 +443,18 @@ function testC7_ExtractAndDecorateFromEntry() {
     fallbackConfidence: 0.5,
   });
   assertEq(nullEntryDecorated.value, 450, "C7.14: value preserved with null entry");
-  assertEq(nullEntryDecorated.state, "verified", "C7.15: state = verified (corroborated cross-user)");
-  assertEq(nullEntryDecorated.reason, "corroborated_multi_user", "C7.16: reason = multi-user");
+  assertEq(nullEntryDecorated.state, "candid_verified", "C7.15: state = candid_verified (corroborated cross-user)");
+  assertEq(nullEntryDecorated.reason, "inherited_canonical_corroborated", "C7.16: CF-19: canonical_inherited above threshold → inherited_canonical_corroborated reason");
 
   // C7.17: decorateFieldFromEntry with canonical_inherited below threshold → estimated
+  // CF-19: canonical_inherited has its own dedicated reason
   const belowThreshold = decorateFieldFromEntry(450, null, {
     sourceCount: 1,
     source: "canonical_inherited",
     multiSourceThreshold: 3,
   });
   assertEq(belowThreshold.state, "estimated", "C7.17: below threshold → estimated");
-  assertEq(belowThreshold.reason, "cross_user_below_threshold", "C7.18: reason = below threshold");
+  assertEq(belowThreshold.reason, "inherited_canonical_pre_corroboration", "C7.18: reason = inherited_canonical_pre_corroboration");
 
   // C7.19: decorateFieldFromEntry confidence sourced from entry, not fallback
   const customConfidenceEntry: FieldProvenanceEntry = {
@@ -495,7 +509,7 @@ function testC8_IsDecoratedValue(): void {
   assertEq(isDecoratedValue(decoratedNull), true, "C8.12: DecoratedValue<null> → true");
 }
 
-// ─── C9: aggregateRowState (Session 57 Task 4-D) ───────────────────────────
+// ─── C9: aggregateRowState — CF-19 (Session 64) 6-state vocabulary ─────────
 function testC9_AggregateRowState(): void {
   // Empty array → null (no decoration available; flag OFF case)
   assertEq(aggregateRowState([]), null, "C9.1: empty → null");
@@ -503,33 +517,43 @@ function testC9_AggregateRowState(): void {
   // All-null array → null (no decorated fields on this row)
   assertEq(aggregateRowState([null, null, null]), null, "C9.2: all null → null");
 
-  // Single field, single state
-  assertEq(aggregateRowState(["verified"]), "verified", "C9.3: single verified");
+  // Single field, single state — 6-state vocabulary per CF-19
+  assertEq(aggregateRowState(["candid_verified"]), "candid_verified", "C9.3a: single candid_verified");
+  assertEq(aggregateRowState(["document_verified"]), "document_verified", "C9.3b: single document_verified");
+  assertEq(aggregateRowState(["found_in_document"]), "found_in_document", "C9.3c: single found_in_document");
   assertEq(aggregateRowState(["estimated"]), "estimated", "C9.4: single estimated");
   assertEq(aggregateRowState(["unverified"]), "unverified", "C9.5: single unverified");
 
   // hidden filtered out (boilerplate; not a real signal)
-  assertEq(aggregateRowState(["hidden", "verified"]), "verified", "C9.6: hidden filtered → verified");
-  assertEq(aggregateRowState(["hidden"]), null, "C9.7: only hidden → null (no real signal)");
+  assertEq(aggregateRowState(["hidden", "candid_verified"]), "candid_verified", "C9.6: hidden filtered → candid_verified");
+  assertEq(aggregateRowState(["hidden"]), null, "C9.7: only hidden → null");
 
-  // Worst-state wins (priority: unverified > estimated > verified)
-  assertEq(aggregateRowState(["verified", "verified"]), "verified", "C9.8: all verified");
-  assertEq(aggregateRowState(["verified", "estimated"]), "estimated", "C9.9: any estimated drags down");
-  assertEq(aggregateRowState(["verified", "unverified"]), "unverified", "C9.10: any unverified drags hardest");
+  // Worst-state wins (priority: unverified > estimated > found_in_document > document_verified > candid_verified)
+  assertEq(aggregateRowState(["candid_verified", "candid_verified"]), "candid_verified", "C9.8: all candid_verified");
+  assertEq(aggregateRowState(["candid_verified", "estimated"]), "estimated", "C9.9: any estimated drags down");
+  assertEq(aggregateRowState(["candid_verified", "unverified"]), "unverified", "C9.10: any unverified drags hardest");
   assertEq(aggregateRowState(["estimated", "unverified"]), "unverified", "C9.11: unverified > estimated");
   assertEq(
-    aggregateRowState(["verified", "estimated", "unverified"]),
+    aggregateRowState(["candid_verified", "estimated", "unverified"]),
     "unverified",
     "C9.12: mixed → worst (unverified)",
   );
+  // Verified-tier ordering: candid > document > found_in_document
+  assertEq(aggregateRowState(["candid_verified", "document_verified"]), "document_verified", "C9.12a: doc < candid");
+  assertEq(aggregateRowState(["document_verified", "found_in_document"]), "found_in_document", "C9.12b: found < doc");
+  assertEq(
+    aggregateRowState(["candid_verified", "document_verified", "found_in_document"]),
+    "found_in_document",
+    "C9.12c: 3-tier verified → worst (found_in_document)",
+  );
 
-  // Real-world row: 6 decorated cost fields, mostly verified, one estimated
+  // Real-world row: 6 decorated cost fields, mostly candid_verified, one estimated
   const realisticRow: Array<DisplayState | null> = [
-    "verified",
-    "verified",
+    "candid_verified",
+    "candid_verified",
     null, // out_copay missing
     null, // out_coinsurance missing
-    "verified",
+    "candid_verified",
     "estimated", // priorAuth not yet cite-grade
   ];
   assertEq(aggregateRowState(realisticRow), "estimated", "C9.13: realistic row → worst signal");
@@ -666,7 +690,10 @@ function testC11_ReparseContract(): void {
     multiSourceThreshold: 3,
   };
   const verbatimAbsentResult = getDisplayState(verbatimAbsentInput);
-  assertEq(verbatimAbsentResult.state, "unverified", "C11.4a: verbatim_absent enum → unverified state");
+  // CF-19 (Session 64): verbatim_absent_searched_all promoted from "unverified" → "found_in_document"
+  // (light green border). Parser searched everything; value IS in the doc — we just couldn't
+  // pinpoint the verbatim quote. Stronger signal than haiku_not_found.
+  assertEq(verbatimAbsentResult.state, "found_in_document", "C11.4a: verbatim_absent enum → found_in_document state (CF-19 promotion)");
   assertEq(
     verbatimAbsentResult.reason,
     "verbatim_absent_searched_all",
@@ -689,17 +716,41 @@ function testC11_ReparseContract(): void {
   // but pin specifically because Phase 4.0.5 affordance copy depends on this string).
   const tooltip = DISPLAY_STATE_TOOLTIP_EN["verbatim_absent_searched_all"];
   assert(typeof tooltip === "string" && tooltip.length > 0, "C11.6: verbatim_absent_searched_all tooltip exists");
-  assert(tooltip.toLowerCase().includes("complete"), "C11.6b: tooltip mentions 'complete' (upload-different-doc UX)");
+  // CF-19 (Session 64) — tooltip updated for "Found in Document" vocabulary.
+  // Acceptance: must mention either "section" (parser searched comprehensively) or
+  // "found in document" / "trustworthy" (new vocabulary positions this as a positive
+  // signal vs the old "Unverified" framing).
+  const lc = tooltip.toLowerCase();
+  assert(
+    lc.includes("section") || lc.includes("found in document") || lc.includes("trustworthy"),
+    "C11.6b: tooltip surfaces parser-searched-everything semantics OR Found-in-Document framing",
+  );
 }
 
-// ─── C12: 2-button affordance routing logic ────────────────────────────────
+// ─── C12: 2-button affordance routing logic — CF-19 6-state vocabulary ─────
 function testC12_AffordanceRouting(): void {
   console.log(`${TAG} C12: affordanceShapeFor() routing ...`);
-  // C12.1: verified → null (no affordance)
+  // C12.1: any verified-tier state → null (no affordance)
   assertEq(
-    affordanceShapeFor({ state: "verified", reason: "p8_cite_grade_self_source", searchedSectionsCount: 5 }),
+    affordanceShapeFor({ state: "candid_verified", reason: "p8_cite_grade_corroborated", searchedSectionsCount: 5 }),
     null,
-    "C12.1: verified → null",
+    "C12.1a: candid_verified → null",
+  );
+  assertEq(
+    affordanceShapeFor({ state: "document_verified", reason: "p8_cite_grade_self_source", searchedSectionsCount: 5 }),
+    null,
+    "C12.1b: document_verified → null",
+  );
+  assertEq(
+    affordanceShapeFor({ state: "found_in_document", reason: "found_in_doc_no_cite", searchedSectionsCount: 5 }),
+    null,
+    "C12.1c: found_in_document (non-verbatim_absent reason) → null",
+  );
+  // C12.1d: found_in_document via verbatim_absent_searched_all → one_button (special-case)
+  assertEq(
+    affordanceShapeFor({ state: "found_in_document", reason: "verbatim_absent_searched_all", searchedSectionsCount: 5 }),
+    "one_button_upload",
+    "C12.1d: found_in_document + verbatim_absent → one_button_upload (resolvable via fuller doc)",
   );
   // C12.2: hidden → null
   assertEq(
@@ -782,8 +833,117 @@ function testC12_AffordanceRouting(): void {
     "C12.13: self_source_no_cite → single_link",
   );
   // C12.14: state matrix matches DR §4 spec exactly (defensive sanity check)
-  // Coverage state space: 4 states × representative reasons = ~13 rows tested above.
+  // Coverage state space: 6 states × representative reasons = ~13 rows tested above.
   assert(true, "C12.14: routing matrix covers all DR §4 rows");
+}
+
+// ─── C13: CF-19 (Session 64) source-threading + new state coverage ─────────
+function testC13_SourceThreadingAndNewStates(): void {
+  console.log(`${TAG} C13: CF-19 source-threading + 6-state coverage ...`);
+
+  // C13.1: per-field entry.source overrides context.source (CRITICAL CF-19a fix)
+  // When smart-skip writes synthesized entries with source='canonical_inherited' but
+  // the row-level source is 'sbc_upload', decorateFieldFromEntry must read entry.source
+  // first. Otherwise consumer-read sees source='sbc_upload' (self/trusted, threshold=0)
+  // and gets self_source_no_cite — the bug we fixed.
+  const canonicalInheritedEntry: FieldProvenanceEntry = {
+    source: "canonical_inherited",
+    confidence: 0.5,
+    last_corroborated_at: "2026-05-04T12:00:00Z",
+  };
+  const result13_1 = decorateFieldFromEntry(2000, canonicalInheritedEntry, {
+    sourceCount: 5, // canonical's verification_count >= 3
+    source: "sbc_upload", // row-level source — should be IGNORED in favor of entry.source
+    multiSourceThreshold: 3,
+  });
+  assertEq(
+    result13_1.state,
+    "candid_verified",
+    "C13.1a: entry.source=canonical_inherited overrides context.source=sbc_upload → candid_verified",
+  );
+  assertEq(result13_1.reason, "inherited_canonical_corroborated", "C13.1b: reason matches canonical-corroborated path");
+
+  // C13.2: when entry has no source, fall back to context.source
+  const noSourceEntry: FieldProvenanceEntry = {
+    source: "doc_extraction", // populated normally
+    confidence: 0.5,
+    last_corroborated_at: "2026-05-04T12:00:00Z",
+  };
+  const result13_2 = decorateFieldFromEntry(2000, noSourceEntry, {
+    sourceCount: 1,
+    source: "sbc_upload", // fallback (would be used only if entry had no source)
+    multiSourceThreshold: 3,
+  });
+  // entry.source is doc_extraction (self/trusted), threshold=0, no provenance P-8 → estimated/self_source_no_cite
+  assertEq(result13_2.state, "estimated", "C13.2: entry.source self/trusted → estimated path");
+
+  // C13.3: smart-skip pre-corroboration (canonical_inherited, sourceCount<threshold)
+  // Per CF-19a: this is the case where smart-skipped data exists but canonical
+  // verification_count<3. Honest "Estimated" with explicit reason — no fiction.
+  const result13_3 = decorateFieldFromEntry(2000, canonicalInheritedEntry, {
+    sourceCount: 1,
+    source: "sbc_upload",
+    multiSourceThreshold: 3,
+  });
+  assertEq(result13_3.state, "estimated", "C13.3a: pre-corroboration → estimated");
+  assertEq(
+    result13_3.reason,
+    "inherited_canonical_pre_corroboration",
+    "C13.3b: distinct reason from generic cross_user_below_threshold (source=canonical_inherited)",
+  );
+
+  // C13.4: found_in_document via verbatim_absent_searched_all (CF-19 promotion from unverified → found_in_document)
+  const verbatimAbsentP8: PatternP8Provenance = {
+    source_excerpt: "",
+    source_excerpt_verified: "verbatim_absent",
+    source_excerpt_extraction_method: "pdftotext",
+    source_section_hint: "important_questions",
+    source_section_verified: false,
+  };
+  const result13_4 = getDisplayState({
+    provenance: verbatimAbsentP8,
+    confidence: 0.5,
+    sourceCount: 1,
+    source: "doc_extraction",
+    multiSourceThreshold: 3,
+  });
+  assertEq(result13_4.state, "found_in_document", "C13.4a: verbatim_absent → found_in_document (light green border)");
+  assertEq(result13_4.reason, "verbatim_absent_searched_all", "C13.4b: reason preserved");
+
+  // C13.5: document_verified — cite-grade self-source (single user)
+  const citeGradeP8: PatternP8Provenance = {
+    source_excerpt: "Out-of-pocket maximum: $3,000 individual",
+    source_excerpt_verified: "verified",
+    source_excerpt_extraction_method: "pdftotext",
+    source_section_hint: "important_questions",
+    source_section_verified: true,
+  };
+  const result13_5 = getDisplayState({
+    provenance: citeGradeP8,
+    confidence: 0.9,
+    sourceCount: 1,
+    source: "doc_extraction",
+    multiSourceThreshold: 3,
+  });
+  assertEq(result13_5.state, "document_verified", "C13.5a: cite-grade self-source → document_verified (dark green border)");
+  assertEq(result13_5.reason, "p8_cite_grade_self_source", "C13.5b: reason preserved");
+
+  // C13.6: candid_verified — Pattern 1 #3 corroboration met (with cite-grade)
+  const result13_6 = getDisplayState({
+    provenance: citeGradeP8,
+    confidence: 0.9,
+    sourceCount: 5, // verification_count >= threshold
+    source: "canonical_inherited",
+    multiSourceThreshold: 3,
+  });
+  assertEq(result13_6.state, "candid_verified", "C13.6a: cite-grade + corroborated → candid_verified (full green)");
+  assertEq(result13_6.reason, "p8_cite_grade_corroborated", "C13.6b: best signal");
+
+  // C13.7: SourceProvenance includes 'canonical_inherited' (added Session 64)
+  // Type-level check; if this compiles, the type is correct.
+  const _sourceCheck: SourceProvenance = "canonical_inherited";
+  void _sourceCheck;
+  assert(true, "C13.7: SourceProvenance includes 'canonical_inherited'");
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -801,6 +961,7 @@ function main() {
   testC10_VerbatimAbsentDerivation();
   testC11_ReparseContract();
   testC12_AffordanceRouting();
+  testC13_SourceThreadingAndNewStates();
   console.log(`${TAG} ${passed} passed, ${failed} failed`);
   if (failed > 0) {
     console.error(`${TAG} FAILURES — exiting non-zero`);

@@ -98,7 +98,18 @@ export function VerifyAffordance({
   const router = useRouter();
 
   const effectiveState = optimisticState ?? state;
-  if (effectiveState === "verified" || effectiveState === "hidden") return null;
+  // CF-19 (Session 64) — 6-state vocabulary: any of the 3 verified-tier states
+  // (candid_verified / document_verified / found_in_document) means we have enough
+  // signal that we don't need the verify-affordance prompt; user can take action
+  // via the doc upload flow if they want stronger evidence.
+  if (
+    effectiveState === "candid_verified" ||
+    effectiveState === "document_verified" ||
+    effectiveState === "found_in_document" ||
+    effectiveState === "hidden"
+  ) {
+    return null;
+  }
 
   // Determine whether the "Re-check our analysis" button should appear.
   // Conditions (all required):
@@ -267,7 +278,24 @@ export function affordanceShapeFor(opts: {
   reason: DisplayStateReason;
   searchedSectionsCount: number | undefined;
 }): AffordanceShape {
-  if (opts.state === "verified" || opts.state === "hidden") return null;
+  // CF-19 (Session 64): any of the 3 verified-tier states has enough signal —
+  // user can take action via doc upload if they want stronger evidence; no inline prompt.
+  // Note: verbatim_absent_searched_all is now found_in_document state, NOT unverified —
+  // but the affordance routing still wants to show a one_button "upload more complete doc"
+  // prompt for it. Special-cased below (state-agnostic on reason).
+  if (
+    opts.state === "candid_verified" ||
+    opts.state === "document_verified" ||
+    opts.state === "found_in_document" ||
+    opts.state === "hidden"
+  ) {
+    // Exception: found_in_document via verbatim_absent_searched_all — still surface
+    // the one-button upload prompt because user can resolve the gap with a fuller doc.
+    if (opts.state === "found_in_document" && opts.reason === "verbatim_absent_searched_all") {
+      return "one_button_upload";
+    }
+    return null;
+  }
   if (opts.reason === "verbatim_absent_searched_all") return "one_button_upload";
   if (opts.reason === "haiku_not_found") {
     const c = opts.searchedSectionsCount;
