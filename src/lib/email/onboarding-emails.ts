@@ -38,13 +38,15 @@ export async function sendVerificationEmail(
 
   let verifyLink: string;
   try {
-    // continueUrl points at our Candid-styled landing page so the user lands
-    // on a Candid success card after Firebase processes the action — no flash
-    // of the generic Firebase action page as the final destination. (Firebase
-    // still hosts the action handler unless action URL is overridden in
-    // Firebase Console; the redirect makes the Candid page the resting state.)
+    // continueUrl points at our Candid-styled action handler so the user lands
+    // on a Candid success card after Firebase processes the action. To FULLY
+    // bypass the generic Firebase action page (the brief "Your email has been
+    // verified" Firebase-branded screen with a CONTINUE button), update
+    // Firebase Console → Authentication → Templates → "Customize action URL"
+    // to https://www.candidclaim.com/auth/action — the multi-mode handler at
+    // /auth/action processes the oobCode itself, no Firebase intermediate.
     verifyLink = await getAdminAuth().generateEmailVerificationLink(email, {
-      url: `${APP_URL}/auth/verify-email`,
+      url: `${APP_URL}/auth/action`,
     });
   } catch (err) {
     console.error("[onboarding-emails] generateEmailVerificationLink failed:", err);
