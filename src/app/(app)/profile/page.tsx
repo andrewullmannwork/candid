@@ -474,7 +474,7 @@ function ProfileContent() {
     } else {
       // Done
       if (isOnboarding) {
-        router.push("/dashboard");
+        router.push("/upload?need_sbc=1");
       } else {
         setEditMode(false);
         setHasExistingProfile(true);
@@ -490,7 +490,7 @@ function ProfileContent() {
     } else {
       // Last step — exit wizard
       if (isOnboarding) {
-        router.push("/dashboard");
+        router.push("/upload?need_sbc=1");
       } else {
         // Check if any data was entered during this session
         const hasSomeData = !!(profile.insurer || profile.plan_type || profile.state || profile.group_number || profile.member_id || profile.primary_concern || profile.in_deductible_individual || profile.copay_primary || profile.date_of_birth);
