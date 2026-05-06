@@ -474,7 +474,7 @@ function ProfileContent() {
     } else {
       // Done
       if (isOnboarding) {
-        router.push("/upload?need_sbc=1");
+        router.push("/dashboard");
       } else {
         setEditMode(false);
         setHasExistingProfile(true);
@@ -490,7 +490,7 @@ function ProfileContent() {
     } else {
       // Last step — exit wizard
       if (isOnboarding) {
-        router.push("/upload?need_sbc=1");
+        router.push("/dashboard");
       } else {
         // Check if any data was entered during this session
         const hasSomeData = !!(profile.insurer || profile.plan_type || profile.state || profile.group_number || profile.member_id || profile.primary_concern || profile.in_deductible_individual || profile.copay_primary || profile.date_of_birth);
@@ -1141,9 +1141,14 @@ function ProfileContent() {
           <div className="flex flex-col gap-2 pt-2">
             <button
               onClick={() => advance()}
-              className="w-full py-3 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 transition-colors"
+              disabled={!cardScanned}
+              className={`w-full py-3 rounded-xl text-sm font-semibold transition-colors ${
+                cardScanned
+                  ? "bg-blue-600 text-white hover:bg-blue-700"
+                  : "bg-gray-100 text-gray-400 cursor-not-allowed"
+              }`}
             >
-              {cardScanned ? "Continue with scanned details →" : "Continue →"}
+              {cardScanned ? "Continue with scanned details →" : "Upload a card above, or skip below"}
             </button>
             <button
               onClick={skip}
