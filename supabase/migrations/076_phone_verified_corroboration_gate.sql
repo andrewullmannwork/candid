@@ -68,16 +68,20 @@ COMMENT ON COLUMN users.phone_verified IS
 -- and only enforces the phone_number presence check on userAction='signup'.
 -- Flip ON post-deploy + Vercel build verification + Firebase Phone Auth flow
 -- smoke (matches S68 turnstile_enforcement_v1 rollout pattern).
+--
+-- Schema note: feature_flag_rules has (flag_key UNIQUE, enabled, description,
+-- target_type, config JSONB). target_type is the equivalent of "scope" with
+-- enum values 'global' | 'users' | 'percentage'. Matches mig 075 + mig 067.
 
-INSERT INTO feature_flag_rules (flag_key, scope, enabled, value, config)
+INSERT INTO feature_flag_rules (flag_key, enabled, description, target_type, config)
 VALUES (
   'phone_otp_enforcement_v1',
+  false,
+  'S69 (Session 69). Firebase Phone OTP at signup as Pattern 1 #15 structural identity-fraud defense. When enabled, /api/auth/sync rejects userAction=signup OR isNewUser requests where decoded.phone_number is null with 403 "Phone verification required...". Mirrors decoded.phone_number to users.phone_e164 + sets phone_verified=TRUE on every sync regardless of flag (so flipping flag ON enforces gate without re-syncing existing sessions). Combined with email_verified in evaluate_pattern1_corroboration AND filter for Pattern 1 #15 + mig 074 layered identity defense. Flip global ON post-deploy after smoke. Rollback: UPDATE feature_flag_rules SET enabled=false WHERE flag_key=''phone_otp_enforcement_v1''.',
   'global',
-  FALSE,
-  NULL,
-  '{"description": "S69 Firebase Phone OTP at signup. When enabled, /api/auth/sync rejects userAction=signup requests where decoded.phone_number is null with 403. Mirrors decoded.phone_number to users.phone_e164 + sets phone_verified=true on every sync regardless of flag (so flipping flag ON enforces gate without re-syncing existing sessions). Combined with email_verified in evaluate_pattern1_corroboration AND filter for Pattern 1 #15 + mig 074 layered identity defense."}'::JSONB
+  '{}'::JSONB
 )
-ON CONFLICT (flag_key, scope, value) DO NOTHING;
+ON CONFLICT (flag_key) DO NOTHING;
 
 -- ── 4. Update evaluate_pattern1_corroboration with phone_verified AND filter ─
 -- Both branches (plan-identity field via insurance_plans, per-service field via
