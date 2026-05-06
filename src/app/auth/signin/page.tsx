@@ -49,6 +49,10 @@ function SignInContent() {
         setError("Too many failed attempts. Please try again later.");
       } else if (code === "auth/turnstile-failed") {
         setError("Bot defense check failed. Please reload the page and try again.");
+      } else if (code === "auth/phone-verification-required") {
+        // Firebase user exists but Supabase row doesn't — orphan from prior
+        // abandoned signup. Route to /auth/signup which handles recovery.
+        router.push("/auth/signup");
       } else {
         setError("Sign in failed. Please try again.");
       }
@@ -91,12 +95,15 @@ function SignInContent() {
       return;
     }
     try {
-      await signInWithGoogle(undefined, turnstileToken);
+      await signInWithGoogle(turnstileToken);
       router.push("/dashboard");
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code;
       if (code === "auth/turnstile-failed") {
         setError("Bot defense check failed. Please reload the page and try again.");
+      } else if (code === "auth/phone-verification-required") {
+        // Brand-new account attempted via /auth/signin — needs phone OTP. Route to signup.
+        router.push("/auth/signup");
       } else {
         setError("Google sign-in failed");
       }

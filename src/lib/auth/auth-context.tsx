@@ -4,6 +4,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useRef,
   useState,
   useCallback,
   type ReactNode,
@@ -16,7 +17,10 @@ import {
   GoogleAuthProvider,
   signOut as firebaseSignOut,
   updateProfile,
+  linkWithPhoneNumber,
+  RecaptchaVerifier,
   type User as FirebaseUser,
+  type ConfirmationResult,
 } from "firebase/auth";
 import { getFirebaseAuth } from "@/lib/firebase/client";
 
@@ -25,6 +29,9 @@ export interface CandidUser {
   userId: string;
   email: string;
   stripeCustomerId: string;
+  emailVerified: boolean;
+  phoneE164: string | null;
+  phoneVerified: boolean;
 }
 
 interface ConsentPayload {
@@ -40,22 +47,43 @@ type UserAuthAction = "signup" | "signin";
 interface AuthContextValue {
   user: CandidUser | null;
   loading: boolean;
-  signUpWithEmail: (
+
+  // Two-phase signup flow (S69) — phone OTP step happens between start + finish:
+  //   1. signUpStart / signUpStartGoogle creates Firebase user; returns FirebaseUser
+  //   2. caller drives phone OTP step via startPhoneVerification + ConfirmationResult.confirm
+  //   3. signUpFinish syncs to Supabase with userAction="signup" + consents + Turnstile
+  signUpStart: (
     email: string,
     password: string,
-    consents?: ConsentPayload[],
     displayName?: string,
-    turnstileToken?: string,
+  ) => Promise<FirebaseUser>;
+  signUpStartGoogle: () => Promise<FirebaseUser>;
+  signUpFinish: (
+    firebaseUser: FirebaseUser,
+    consents: ConsentPayload[],
+    turnstileToken: string,
   ) => Promise<CandidUser>;
+
+  // Phone OTP primitive (S69). Confirmation is via the returned
+  // ConfirmationResult.confirm(code) method directly.
+  startPhoneVerification: (
+    firebaseUser: FirebaseUser,
+    phoneE164: string,
+  ) => Promise<ConfirmationResult>;
+
+  // R8 orphan recovery (S69) — re-signup with same email when Firebase user
+  // exists but Supabase row doesn't (user abandoned mid-OTP). Returns Firebase
+  // user without syncing so caller can check phoneNumber + resume OTP step.
+  recoverOrphanSignup: (email: string, password: string) => Promise<FirebaseUser>;
+
+  // Signin paths (single-call; no OTP step per Q-S69-5):
   signInWithEmail: (
     email: string,
     password: string,
     turnstileToken?: string,
   ) => Promise<void>;
-  signInWithGoogle: (
-    consents?: ConsentPayload[],
-    turnstileToken?: string,
-  ) => Promise<void>;
+  signInWithGoogle: (turnstileToken?: string) => Promise<void>;
+
   signOut: () => Promise<void>;
 }
 
@@ -88,6 +116,15 @@ async function syncWithBackend(
     const errBody = await res.json().catch(() => ({}));
     console.error("Auth sync failed:", res.status, errBody);
     if (res.status === 403) {
+      const msg: string = (errBody as { error?: string })?.error ?? "";
+      // Phone OTP gate (S69) returns 403 with a message about phone verification.
+      // Distinguish it from Turnstile 403 so caller surfaces the right UX.
+      if (msg.toLowerCase().includes("phone verification")) {
+        throw Object.assign(
+          new Error("Phone verification required. Please complete the OTP step."),
+          { code: "auth/phone-verification-required" },
+        );
+      }
       throw Object.assign(new Error("Bot defense check failed. Please reload and try again."), {
         code: "auth/turnstile-failed",
       });
@@ -95,33 +132,91 @@ async function syncWithBackend(
     throw new Error("Failed to sync auth");
   }
 
-  const data = await res.json();
+  const data = (await res.json()) as {
+    userId: string;
+    email: string;
+    stripeCustomerId: string;
+    emailVerified?: boolean;
+    phoneE164?: string | null;
+    phoneVerified?: boolean;
+  };
   return {
     firebaseUser,
     userId: data.userId,
     email: data.email,
     stripeCustomerId: data.stripeCustomerId,
+    emailVerified: data.emailVerified ?? firebaseUser.emailVerified,
+    phoneE164: data.phoneE164 ?? firebaseUser.phoneNumber ?? null,
+    phoneVerified: data.phoneVerified ?? firebaseUser.phoneNumber !== null,
   };
+}
+
+// Reusable invisible RecaptchaVerifier for Firebase Phone Auth. Firebase
+// requires a visible (or invisible) reCAPTCHA before any signInWithPhoneNumber
+// or linkWithPhoneNumber call. We mount the container once on demand and reuse
+// the verifier across resends within a single page session.
+const RECAPTCHA_CONTAINER_ID = "candid-firebase-recaptcha-container";
+
+function getOrCreateRecaptchaVerifier(): RecaptchaVerifier {
+  if (typeof window === "undefined") {
+    throw new Error("RecaptchaVerifier requires a browser environment");
+  }
+
+  // Reuse existing verifier on the window if present (Firebase caches it
+  // internally, but we want a stable reference across renders).
+  const existing = (window as unknown as { __candidRecaptchaVerifier?: RecaptchaVerifier })
+    .__candidRecaptchaVerifier;
+  if (existing) return existing;
+
+  // Ensure the container DIV exists in the DOM.
+  let container = document.getElementById(RECAPTCHA_CONTAINER_ID);
+  if (!container) {
+    container = document.createElement("div");
+    container.id = RECAPTCHA_CONTAINER_ID;
+    container.style.display = "none";
+    document.body.appendChild(container);
+  }
+
+  const verifier = new RecaptchaVerifier(getFirebaseAuth(), RECAPTCHA_CONTAINER_ID, {
+    size: "invisible",
+  });
+
+  (window as unknown as { __candidRecaptchaVerifier?: RecaptchaVerifier })
+    .__candidRecaptchaVerifier = verifier;
+  return verifier;
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<CandidUser | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Tracks Firebase users mid-signup (signUpStart called, signUpFinish not yet).
+  // The onAuthStateChanged listener checks this set and skips auto-sync to
+  // avoid 403 noise from the phone-OTP gate during the OTP window.
+  const pendingSignupUidsRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(getFirebaseAuth(), async (firebaseUser) => {
       if (firebaseUser) {
         try {
-          // Only sync if we don't already have a user set (avoids double sync after signup)
           if (!user || user.firebaseUser.uid !== firebaseUser.uid) {
+            if (pendingSignupUidsRef.current.has(firebaseUser.uid)) {
+              // Signup is in flight; signUpFinish will sync after OTP confirm.
+              return;
+            }
             const candidUser = await syncWithBackend(firebaseUser);
             setUser(candidUser);
           }
         } catch (err) {
           const code = (err as { code?: string })?.code;
           if (code === "auth/network-request-failed") {
-            // Transient network issue — keep existing user state if available, retry silently
             console.warn("Network issue during auth sync — will retry on next state change");
+          } else if (code === "auth/phone-verification-required") {
+            // Brand-new account without phone (likely a /auth/signin Google
+            // attempt for an account that doesn't exist). Caller should
+            // route through phone OTP via /auth/signup. Surface gracefully.
+            console.warn("Auth sync requires phone verification — sign up via /auth/signup");
+            setUser(null);
           } else {
             console.error("Auth sync failed:", err);
             setUser(null);
@@ -137,34 +232,69 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const signUpWithEmail = useCallback(
-    async (
-      email: string,
-      password: string,
-      consents?: ConsentPayload[],
-      displayName?: string,
-      turnstileToken?: string,
-    ): Promise<CandidUser> => {
+  const signUpStart = useCallback(
+    async (email: string, password: string, displayName?: string): Promise<FirebaseUser> => {
       const cred = await createUserWithEmailAndPassword(getFirebaseAuth(), email, password);
       if (displayName) {
         await updateProfile(cred.user, { displayName });
       }
-      // Sync immediately with consent + Turnstile token so the gate runs on
-      // the user-initiated signup action (passive resyncs skip).
-      const candidUser = await syncWithBackend(cred.user, consents, "signup", turnstileToken);
+      // Mark this UID as mid-signup so the listener doesn't try to sync before
+      // the OTP step completes.
+      pendingSignupUidsRef.current.add(cred.user.uid);
+      return cred.user;
+    },
+    [],
+  );
+
+  const signUpStartGoogle = useCallback(async (): Promise<FirebaseUser> => {
+    const provider = new GoogleAuthProvider();
+    const cred = await signInWithPopup(getFirebaseAuth(), provider);
+    // For Google signup we always defer sync until phone OTP confirms (or is
+    // skipped if Google user already has a linked phone). Caller checks
+    // cred.user.phoneNumber to decide whether to enter OTP step.
+    pendingSignupUidsRef.current.add(cred.user.uid);
+    return cred.user;
+  }, []);
+
+  const signUpFinish = useCallback(
+    async (
+      firebaseUser: FirebaseUser,
+      consents: ConsentPayload[],
+      turnstileToken: string,
+    ): Promise<CandidUser> => {
+      // Force a token refresh so the latest decoded.phone_number claim makes
+      // it to the server (Firebase doesn't auto-refresh after linkWithPhoneNumber).
+      await firebaseUser.getIdToken(true);
+      const candidUser = await syncWithBackend(firebaseUser, consents, "signup", turnstileToken);
+      pendingSignupUidsRef.current.delete(firebaseUser.uid);
       setUser(candidUser);
       return candidUser;
     },
-    []
+    [],
+  );
+
+  const startPhoneVerification = useCallback(
+    async (firebaseUser: FirebaseUser, phoneE164: string): Promise<ConfirmationResult> => {
+      const verifier = getOrCreateRecaptchaVerifier();
+      return await linkWithPhoneNumber(firebaseUser, phoneE164, verifier);
+    },
+    [],
+  );
+
+  const recoverOrphanSignup = useCallback(
+    async (email: string, password: string): Promise<FirebaseUser> => {
+      // Sign in via Firebase native (no syncWithBackend) so caller can inspect
+      // phoneNumber and decide whether to enter OTP step or push to dashboard.
+      const cred = await signInWithEmailAndPassword(getFirebaseAuth(), email, password);
+      pendingSignupUidsRef.current.add(cred.user.uid);
+      return cred.user;
+    },
+    [],
   );
 
   const signInWithEmail = useCallback(
     async (email: string, password: string, turnstileToken?: string) => {
       const cred = await signInWithEmailAndPassword(getFirebaseAuth(), email, password);
-      // Explicitly sync here (instead of letting onAuthStateChanged do it)
-      // so the Turnstile token threads into the same /api/auth/sync request
-      // that's gated as a "signin" user action. Setting user immediately
-      // makes the listener's guard skip its own sync.
       const candidUser = await syncWithBackend(cred.user, undefined, "signin", turnstileToken);
       setUser(candidUser);
     },
@@ -172,13 +302,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const signInWithGoogle = useCallback(
-    async (consents?: ConsentPayload[], turnstileToken?: string) => {
+    async (turnstileToken?: string) => {
       const provider = new GoogleAuthProvider();
       const cred = await signInWithPopup(getFirebaseAuth(), provider);
-      // Google flow covers both signup (consents passed) and signin (consents
-      // undefined). Server treats both the same for Turnstile; we pass
-      // "signin" uniformly since the gate doesn't distinguish.
-      const candidUser = await syncWithBackend(cred.user, consents, "signin", turnstileToken);
+      const candidUser = await syncWithBackend(cred.user, undefined, "signin", turnstileToken);
       setUser(candidUser);
     },
     [],
@@ -186,14 +313,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = useCallback(async () => {
     await firebaseSignOut(getFirebaseAuth());
-    // Clear the session cookie
     document.cookie = "candid_session=; path=/; max-age=0";
     setUser(null);
   }, []);
 
   return (
     <AuthContext.Provider
-      value={{ user, loading, signUpWithEmail, signInWithEmail, signInWithGoogle, signOut }}
+      value={{
+        user,
+        loading,
+        signUpStart,
+        signUpStartGoogle,
+        signUpFinish,
+        startPhoneVerification,
+        recoverOrphanSignup,
+        signInWithEmail,
+        signInWithGoogle,
+        signOut,
+      }}
     >
       {children}
     </AuthContext.Provider>
