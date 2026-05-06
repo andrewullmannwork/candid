@@ -24,8 +24,13 @@ export async function POST(req: NextRequest) {
 
   const supabase = createServerClient();
 
-  // Use the matching engine for fuzzy multi-signal search
-  const matches = await matchPlan(supabase, {
+  // Use the matching engine for fuzzy multi-signal search.
+  // First pass: narrow by user's saved insurer + state for ranking precision.
+  // Second pass (fallback): if narrow returned nothing — common in the
+  // update-insurance flow when the user's saved state/insurer over-restrict
+  // the catalog query — retry without those SQL filters so the trigram
+  // scorer can match across the full catalog.
+  let matches = await matchPlan(supabase, {
     planName: query.trim(),
     insurerName: insurer || undefined,
     state: state || undefined,
@@ -36,6 +41,18 @@ export async function POST(req: NextRequest) {
     limit: 15,
     minConfidence: 0.15, // Lower threshold for autocomplete — show more results
   });
+
+  if (matches.length === 0 && (insurer || state)) {
+    matches = await matchPlan(supabase, {
+      planName: query.trim(),
+      planType: planType || undefined,
+      metalLevel: metalLevel || undefined,
+      planSource: planSource || undefined,
+    }, {
+      limit: 15,
+      minConfidence: 0.15,
+    });
+  }
 
   // Format response
   const results = matches.map((m) => ({
