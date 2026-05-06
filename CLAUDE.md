@@ -3,14 +3,28 @@
 # Platform Context
 
 Before starting any work, review the platform context to understand WHY we're building:
+- **NORTH STAR (read first):** `/Users/andrewullmann/Desktop/du_weldenvarden/04_Professional/Airgetlam Labs LLC/Candid/Candid_10k.md` — 6-pillar spine + 4-service taxonomy (Benefits / Claim / Case / Care) + governance ritual. Every Subplan + commit + session traces to a pillar.
 - **Full context:** `/Users/andrewullmann/Desktop/du_weldenvarden/04_Professional/Airgetlam Labs LLC/Candid/Candid_Context.md`
-- **Foundational data principles:** `/Users/andrewullmann/Desktop/du_weldenvarden/04_Professional/Airgetlam Labs LLC/Candid/Candid_Data_Principles.md` — read FIRST before architectural decisions; the source of truth for canonical-write boundaries (Pattern 1 #14), corroboration thresholds (Pattern 1 #3), per-surface display gating (Pattern 1 #4), identity-fraud defense placement (Pattern 1 #15), and the data flywheel.
+- **Foundational data principles:** `/Users/andrewullmann/Desktop/du_weldenvarden/04_Professional/Airgetlam Labs LLC/Candid/Candid_Data_Principles.md` — read before architectural decisions; the source of truth for canonical-write boundaries (Pattern 1 #14), corroboration thresholds (Pattern 1 #3), per-surface display gating (Pattern 1 #4), identity-fraud defense placement (Pattern 1 #15), and the data flywheel.
 - **Initiative tracker:** `/Users/andrewullmann/Desktop/du_weldenvarden/04_Professional/Airgetlam Labs LLC/Candid/Candid_Todos.md`
 - **Detailed plans:** `/Users/andrewullmann/Desktop/du_weldenvarden/04_Professional/Airgetlam Labs LLC/Candid/plans/`
 
-Candid is "RocketMoney for medical debt" — audits overpayments, reveals hidden benefits, drafts dispute letters, connects to lawyers, surfaces where care is cheapest. Every implementation decision must serve one of the 17 platform flows defined in Candid_Context.md. If a feature doesn't map to a user need in that document, question whether it belongs.
+Candid creates certainty about healthcare costs through 4 services (Benefits / Claim / Case / Care) powered by a single data flywheel. Every implementation decision either improves the data we ingest (parser fidelity, cross-user corroboration), the UX/UI surfaces that turn that data into user value, or is required for the platform to legally exist and sustain itself — anything else is drift.
 
 Key principles: upload-first not form-first, show value before paywall, every interaction enriches the data flywheel, the user always sends their own letters (CROA), old plan data is never deleted (claims reference it).
+
+## Pillar Tag Rule (mandatory)
+
+Per Candid_10k §2 + Candid_Doc_Organization §3: every PR commit + Subplan + session traces to a pillar:
+
+- **P1** — Document Ingestion (parser fidelity, Pattern P-8, fixtures)
+- **P2** — Cross-Service Data Flow (Pattern 1 corroboration, canonical promotion, identity-fraud defense)
+- **P3** — UX/UI (visible state vocabulary, surface polish, navigation)
+- **P4** — Infra / Tech Debt / Security (auth, observability, performance, vuln defense)
+- **P5** — Legal / Compliance (CROA, ABA, CCPA/CPRA + WA MHMDA; HIPAA-out-of-scope confirmed Session 66)
+- **P6** — Monetization (Stripe, marketplace flat fees, paid-tier gating)
+
+PR titles + commit messages declare the primary pillar. Untaggable work is drift; redirect or restructure.
 
 # Candid Development Rules
 
