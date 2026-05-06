@@ -68,9 +68,20 @@ export async function POST(req: NextRequest) {
     // contribute to canonical promotion threshold.
     const emailVerified = decoded.email_verified === true;
 
+    // Account-link case: same email, different firebase_uid. Happens when an
+    // existing account is re-created (e.g., admin deleted the Firebase user but
+    // the Supabase users row stuck around) or when a user adds Google sign-in
+    // to an existing email-password account. We send a verification email in
+    // this case if not already verified — the user effectively just "signed up
+    // again" and needs to re-verify ownership of the email — but we do NOT
+    // re-send the welcome email (truly-new gate only).
+    const isAccountLink = !!(
+      existingByEmail && existingByEmail.firebase_uid !== uid
+    );
+
     let userId: string;
 
-    if (existingByEmail && existingByEmail.firebase_uid !== uid) {
+    if (isAccountLink) {
       // Same email, different Firebase UID — link the account by updating the UID
       console.log(`[auth/sync] Account linking: email ${email} exists with UID ${existingByEmail.firebase_uid}, updating to ${uid}`);
       const { error: linkError } = await supabase
@@ -168,15 +179,27 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 5. Fire onboarding emails on first signup (fail-soft — Resend errors don't block signup)
-    if (isNewUser) {
-      const provider = decoded.firebase?.sign_in_provider;
-      const alreadyVerified = decoded.email_verified === true || provider === "google.com";
-      console.log("[auth/sync] Step 5: Firing onboarding emails (new user, alreadyVerified=" + alreadyVerified + ")");
+    // 5. Fire onboarding emails (fail-soft — Resend errors don't block signup).
+    // Verification fires for new users + account-link re-signups when the
+    // email isn't already verified (Google OAuth provides verified=true, so
+    // those skip). Welcome email only fires for truly-new users — re-signups
+    // after deletion already had a Candid account.
+    const provider = decoded.firebase?.sign_in_provider;
+    const alreadyVerified = decoded.email_verified === true || provider === "google.com";
+    if (isNewUser || isAccountLink) {
+      console.log(
+        "[auth/sync] Step 5: Firing onboarding emails (isNewUser=" +
+          isNewUser +
+          ", isAccountLink=" +
+          isAccountLink +
+          ", alreadyVerified=" +
+          alreadyVerified +
+          ")"
+      );
       // Don't await — emails are best-effort and shouldn't gate the response
       void Promise.allSettled([
         alreadyVerified ? Promise.resolve() : sendVerificationEmail(email, name),
-        sendWelcomeEmail(email, name),
+        isNewUser ? sendWelcomeEmail(email, name) : Promise.resolve(),
       ]);
     }
 
