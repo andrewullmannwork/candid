@@ -19,6 +19,7 @@ function SignInContent() {
   const { signInWithEmail, signInWithGoogle } = useAuth();
 
   const existingAccount = searchParams.get("existing") === "true";
+  const justVerified = searchParams.get("verified") === "true";
   const prefillEmail = searchParams.get("email") || "";
 
   const [email, setEmail] = useState(prefillEmail);
@@ -97,6 +98,22 @@ function SignInContent() {
             <p className="text-sm text-blue-700 mt-1">
               Sign in below to continue where you left off.
             </p>
+          </div>
+        )}
+
+        {justVerified && !existingAccount && (
+          <div className="p-4 bg-green-50 border border-green-200 rounded-lg flex items-start gap-3">
+            <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center shrink-0">
+              <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-green-900">Email verified</p>
+              <p className="text-sm text-green-700 mt-0.5">
+                Sign in to finish setting up your Candid account.
+              </p>
+            </div>
           </div>
         )}
 

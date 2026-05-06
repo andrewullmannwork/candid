@@ -63,6 +63,11 @@ export async function POST(req: NextRequest) {
 
     const isNewUser = !existingByEmail && !existingByUid;
 
+    // Mirror the Firebase email_verified token claim on every sync. Drives the
+    // Pattern 1 #3 corroboration gate (mig 074) — only email-verified users
+    // contribute to canonical promotion threshold.
+    const emailVerified = decoded.email_verified === true;
+
     let userId: string;
 
     if (existingByEmail && existingByEmail.firebase_uid !== uid) {
@@ -70,7 +75,7 @@ export async function POST(req: NextRequest) {
       console.log(`[auth/sync] Account linking: email ${email} exists with UID ${existingByEmail.firebase_uid}, updating to ${uid}`);
       const { error: linkError } = await supabase
         .from("users")
-        .update({ firebase_uid: uid, display_name: name || undefined })
+        .update({ firebase_uid: uid, display_name: name || undefined, email_verified: emailVerified })
         .eq("id", existingByEmail.id);
       if (linkError) {
         console.error("[auth/sync] Account linking failed:", linkError);
@@ -83,7 +88,7 @@ export async function POST(req: NextRequest) {
       const { data: upsertedUser, error: upsertError } = await supabase
         .from("users")
         .upsert(
-          { firebase_uid: uid, email, display_name: name || null },
+          { firebase_uid: uid, email, display_name: name || null, email_verified: emailVerified },
           { onConflict: "firebase_uid" }
         )
         .select("id")
@@ -94,7 +99,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: `Failed to upsert user: ${upsertError?.message || "unknown"}` }, { status: 500 });
       }
       userId = upsertedUser.id;
-      console.log("[auth/sync] Step 2 OK — user:", userId);
+      console.log("[auth/sync] Step 2 OK — user:", userId, "(email_verified=" + emailVerified + ")");
     }
 
     // 3. Record consent events (server-side, service role bypasses RLS)

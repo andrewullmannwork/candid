@@ -5,6 +5,7 @@ const PUBLIC_ROUTES = [
   "/",
   "/auth/signin",
   "/auth/signup",
+  "/auth/verify-email",
   "/waitlist",
   "/privacy",
   "/terms",
