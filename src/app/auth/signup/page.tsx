@@ -195,6 +195,17 @@ export default function SignUpPage() {
         setAccountError("Password is too weak. Please use a stronger password.");
       } else if (code === "auth/turnstile-failed") {
         setAccountError("Bot defense check failed. Please reload the page and try again.");
+      } else if (
+        code === "auth/credential-already-in-use" ||
+        code === "auth/account-exists-with-different-credential"
+      ) {
+        // Phone X already linked to a different Firebase user. Fires from
+        // startPhoneVerification (linkWithPhoneNumber) BEFORE the OTP UI
+        // renders. Firebase user from signUpStart is now an orphan; if the
+        // user retries with a different phone, R8 orphan recovery picks up.
+        setAccountError(
+          "This phone number is already linked to another Candid account. Please use a different number.",
+        );
       } else {
         setAccountError("Failed to create account. Please try again.");
       }
@@ -279,7 +290,10 @@ export default function SignUpPage() {
       setGooglePhonePrompt(null);
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code;
-      if (code === "auth/account-exists-with-different-credential") {
+      if (
+        code === "auth/credential-already-in-use" ||
+        code === "auth/account-exists-with-different-credential"
+      ) {
         setGoogleError(
           "This phone number is already linked to another Candid account. Please use a different number.",
         );
