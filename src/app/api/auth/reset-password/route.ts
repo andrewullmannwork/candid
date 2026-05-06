@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { Resend } from "resend";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { verifyTurnstileToken, getRemoteIp } from "@/lib/security/turnstile";
 
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
@@ -8,13 +10,35 @@ const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KE
  * POST /api/auth/reset-password
  * Generates a Firebase password reset link and sends it via Resend
  * with branded Candid email template.
+ *
+ * Gated by Turnstile (S68) when `turnstile_enforcement_v1` flag is ON —
+ * the reset endpoint is a known bot-abuse vector for email enumeration.
  */
 export async function POST(req: NextRequest) {
   try {
-    const { email } = await req.json();
+    const { email, turnstileToken } = (await req.json()) as {
+      email?: string;
+      turnstileToken?: string;
+    };
 
     if (!email || typeof email !== "string") {
       return NextResponse.json({ error: "Email required" }, { status: 400 });
+    }
+
+    // Turnstile gate (S68 mig 075).
+    const turnstileEnforced = await isFeatureEnabled("turnstile_enforcement_v1");
+    if (turnstileEnforced) {
+      const verify = await verifyTurnstileToken(turnstileToken, getRemoteIp(req));
+      if (!verify.success) {
+        console.warn(
+          "[reset-password] Turnstile verification failed, errors=" +
+            JSON.stringify(verify.errorCodes ?? []),
+        );
+        return NextResponse.json(
+          { error: "Bot defense check failed. Please reload and try again." },
+          { status: 403 },
+        );
+      }
     }
 
     // Generate Firebase password reset link

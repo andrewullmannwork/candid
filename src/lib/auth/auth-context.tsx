@@ -33,6 +33,10 @@ interface ConsentPayload {
   hash: string;
 }
 
+// User-initiated auth actions that require Turnstile verification (S68).
+// Passive resyncs from onAuthStateChanged omit this and skip the gate.
+type UserAuthAction = "signup" | "signin";
+
 interface AuthContextValue {
   user: CandidUser | null;
   loading: boolean;
@@ -40,10 +44,18 @@ interface AuthContextValue {
     email: string,
     password: string,
     consents?: ConsentPayload[],
-    displayName?: string
+    displayName?: string,
+    turnstileToken?: string,
   ) => Promise<CandidUser>;
-  signInWithEmail: (email: string, password: string) => Promise<void>;
-  signInWithGoogle: (consents?: ConsentPayload[]) => Promise<void>;
+  signInWithEmail: (
+    email: string,
+    password: string,
+    turnstileToken?: string,
+  ) => Promise<void>;
+  signInWithGoogle: (
+    consents?: ConsentPayload[],
+    turnstileToken?: string,
+  ) => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -51,7 +63,9 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 async function syncWithBackend(
   firebaseUser: FirebaseUser,
-  consents?: ConsentPayload[]
+  consents?: ConsentPayload[],
+  userAction?: UserAuthAction,
+  turnstileToken?: string,
 ): Promise<CandidUser> {
   let idToken: string;
   try {
@@ -67,12 +81,17 @@ async function syncWithBackend(
   const res = await fetch("/api/auth/sync", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ idToken, consents }),
+    body: JSON.stringify({ idToken, consents, userAction, turnstileToken }),
   });
 
   if (!res.ok) {
     const errBody = await res.json().catch(() => ({}));
     console.error("Auth sync failed:", res.status, errBody);
+    if (res.status === 403) {
+      throw Object.assign(new Error("Bot defense check failed. Please reload and try again."), {
+        code: "auth/turnstile-failed",
+      });
+    }
     throw new Error("Failed to sync auth");
   }
 
@@ -119,29 +138,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signUpWithEmail = useCallback(
-    async (email: string, password: string, consents?: ConsentPayload[], displayName?: string): Promise<CandidUser> => {
+    async (
+      email: string,
+      password: string,
+      consents?: ConsentPayload[],
+      displayName?: string,
+      turnstileToken?: string,
+    ): Promise<CandidUser> => {
       const cred = await createUserWithEmailAndPassword(getFirebaseAuth(), email, password);
       if (displayName) {
         await updateProfile(cred.user, { displayName });
       }
-      // Sync immediately with consent data so everything is recorded server-side
-      const candidUser = await syncWithBackend(cred.user, consents);
+      // Sync immediately with consent + Turnstile token so the gate runs on
+      // the user-initiated signup action (passive resyncs skip).
+      const candidUser = await syncWithBackend(cred.user, consents, "signup", turnstileToken);
       setUser(candidUser);
       return candidUser;
     },
     []
   );
 
-  const signInWithEmail = useCallback(async (email: string, password: string) => {
-    await signInWithEmailAndPassword(getFirebaseAuth(), email, password);
-  }, []);
+  const signInWithEmail = useCallback(
+    async (email: string, password: string, turnstileToken?: string) => {
+      const cred = await signInWithEmailAndPassword(getFirebaseAuth(), email, password);
+      // Explicitly sync here (instead of letting onAuthStateChanged do it)
+      // so the Turnstile token threads into the same /api/auth/sync request
+      // that's gated as a "signin" user action. Setting user immediately
+      // makes the listener's guard skip its own sync.
+      const candidUser = await syncWithBackend(cred.user, undefined, "signin", turnstileToken);
+      setUser(candidUser);
+    },
+    [],
+  );
 
-  const signInWithGoogle = useCallback(async (consents?: ConsentPayload[]) => {
-    const provider = new GoogleAuthProvider();
-    const cred = await signInWithPopup(getFirebaseAuth(), provider);
-    const candidUser = await syncWithBackend(cred.user, consents);
-    setUser(candidUser);
-  }, []);
+  const signInWithGoogle = useCallback(
+    async (consents?: ConsentPayload[], turnstileToken?: string) => {
+      const provider = new GoogleAuthProvider();
+      const cred = await signInWithPopup(getFirebaseAuth(), provider);
+      // Google flow covers both signup (consents passed) and signin (consents
+      // undefined). Server treats both the same for Turnstile; we pass
+      // "signin" uniformly since the gate doesn't distinguish.
+      const candidUser = await syncWithBackend(cred.user, consents, "signin", turnstileToken);
+      setUser(candidUser);
+    },
+    [],
+  );
 
   const signOut = useCallback(async () => {
     await firebaseSignOut(getFirebaseAuth());

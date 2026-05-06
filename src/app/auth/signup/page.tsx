@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
+import { TurnstileWidget } from "@/components/security/TurnstileWidget";
 
 export default function SignUpPage() {
   const router = useRouter();
@@ -20,6 +21,7 @@ export default function SignUpPage() {
   const [privacyAccepted, setPrivacyAccepted] = useState(false);
   const [accountError, setAccountError] = useState("");
   const [accountLoading, setAccountLoading] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
 
   const [passwordErrors, setPasswordErrors] = useState<string[]>([]);
 
@@ -79,6 +81,10 @@ export default function SignUpPage() {
       setAccountError("You must accept both the Terms of Service and Privacy Policy.");
       return;
     }
+    if (!turnstileToken) {
+      setAccountError("Bot defense check still loading. Please wait a moment and try again.");
+      return;
+    }
     const pwErrors = validatePassword(password);
     if (pwErrors.length > 0) {
       setPasswordErrors(pwErrors);
@@ -93,7 +99,7 @@ export default function SignUpPage() {
         { type: "tos", version: tosDoc.version, hash: tosDoc.hash },
         { type: "privacy_policy", version: privacyDoc.version, hash: privacyDoc.hash },
       ];
-      await signUpWithEmail(email, password, consents, fullName);
+      await signUpWithEmail(email, password, consents, fullName, turnstileToken);
 
       // Send to profile with phone and DOB pre-set for the onboarding flow
       const params = new URLSearchParams({ onboarding: "true" });
@@ -110,6 +116,8 @@ export default function SignUpPage() {
         setAccountError("Please enter a valid email address.");
       } else if (code === "auth/weak-password") {
         setAccountError("Password is too weak. Please use a stronger password.");
+      } else if (code === "auth/turnstile-failed") {
+        setAccountError("Bot defense check failed. Please reload the page and try again.");
       } else {
         setAccountError("Failed to create account. Please try again.");
       }
@@ -133,16 +141,25 @@ export default function SignUpPage() {
   }
 
   async function doGoogleSignIn() {
+    if (!turnstileToken) {
+      setAccountError("Bot defense check still loading. Please wait a moment and try again.");
+      return;
+    }
     setGoogleLoading(true);
     try {
       const consents = [
         { type: "tos", version: tosDoc.version, hash: tosDoc.hash },
         { type: "privacy_policy", version: privacyDoc.version, hash: privacyDoc.hash },
       ];
-      await signInWithGoogle(consents);
+      await signInWithGoogle(consents, turnstileToken);
       router.push("/profile?onboarding=true");
-    } catch {
-      setAccountError("Google sign-up failed");
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      if (code === "auth/turnstile-failed") {
+        setAccountError("Bot defense check failed. Please reload the page and try again.");
+      } else {
+        setAccountError("Google sign-up failed");
+      }
     } finally {
       setGoogleLoading(false);
       setShowGoogleConsent(false);
@@ -324,9 +341,11 @@ export default function SignUpPage() {
             </label>
           </div>
 
+          <TurnstileWidget action="signup" onToken={setTurnstileToken} />
+
           <button
             type="submit"
-            disabled={accountLoading || !tosAccepted || !privacyAccepted || (password.length > 0 && passwordErrors.length > 0)}
+            disabled={accountLoading || !tosAccepted || !privacyAccepted || !turnstileToken || (password.length > 0 && passwordErrors.length > 0)}
             className="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors font-semibold"
           >
             {accountLoading ? "Creating account..." : "Create Account"}
