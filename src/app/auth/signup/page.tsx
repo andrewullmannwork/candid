@@ -341,14 +341,6 @@ export default function SignUpPage() {
     return await startPhoneVerification(progress.firebaseUser, progress.phoneE164);
   }
 
-  function handleEditPhone() {
-    // Drop OTP step + bring user back to form. The Firebase user is still
-    // alive; if they re-submit with the same email + a different phone we'll
-    // hit the orphan recovery path.
-    setMode("form");
-    setProgress(null);
-  }
-
   return (
     <div className="flex flex-col items-center justify-center min-h-screen px-4 bg-white">
       <div className="w-full max-w-sm space-y-6">
@@ -572,7 +564,6 @@ export default function SignUpPage() {
               confirmationResult={progress.confirmation}
               onVerified={handleOtpVerified}
               onResend={handleOtpResend}
-              onEditPhone={handleEditPhone}
             />
             {accountError && <p className="text-red-600 text-sm text-center">{accountError}</p>}
           </div>

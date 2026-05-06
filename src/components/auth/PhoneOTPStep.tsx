@@ -9,7 +9,6 @@ interface PhoneOTPStepProps {
   confirmationResult: ConfirmationResult;
   onVerified: () => void | Promise<void>;
   onResend: () => Promise<ConfirmationResult>;
-  onEditPhone: () => void;
 }
 
 const RESEND_COOLDOWN_SECONDS = 30;
@@ -19,7 +18,6 @@ export function PhoneOTPStep({
   confirmationResult: initialConfirmation,
   onVerified,
   onResend,
-  onEditPhone,
 }: PhoneOTPStepProps) {
   const [code, setCode] = useState("");
   const [confirmation, setConfirmation] = useState(initialConfirmation);
@@ -130,14 +128,7 @@ export function PhoneOTPStep({
 
       {error && <p className="text-red-600 text-sm text-center">{error}</p>}
 
-      <div className="flex items-center justify-between text-sm">
-        <button
-          type="button"
-          onClick={onEditPhone}
-          className="text-gray-500 hover:text-gray-700"
-        >
-          Edit phone number
-        </button>
+      <div className="flex items-center justify-end text-sm">
         <button
           type="button"
           onClick={handleResend}
