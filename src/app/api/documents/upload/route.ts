@@ -6,6 +6,8 @@ import { quickClassify } from "@/lib/classifier/quick-classify";
 import { notifyAdminForReview, notifyUserPendingReview } from "@/lib/notifications";
 import { enqueueChunk } from "@/lib/queue/qstash";
 import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { verifyTurnstileToken, getRemoteIp } from "@/lib/security/turnstile";
 import {
   computeFileHash,
   extractPlanIdentifiers,
@@ -65,9 +67,28 @@ export async function POST(req: NextRequest) {
   const formData = await req.formData();
   const file = formData.get("file") as File | null;
   const docType = (formData.get("docType") as string) || "eob";
+  const turnstileToken = (formData.get("turnstileToken") as string) || undefined;
 
   if (!file) {
     return NextResponse.json({ error: "No file provided" }, { status: 400 });
+  }
+
+  // Turnstile gate (S68 mig 075). Authenticated route, but bot defense still
+  // matters: a compromised account or spammy authenticated client can burn
+  // OCR/Haiku budget without it.
+  const turnstileEnforced = await isFeatureEnabled("turnstile_enforcement_v1");
+  if (turnstileEnforced) {
+    const verify = await verifyTurnstileToken(turnstileToken, getRemoteIp(req));
+    if (!verify.success) {
+      console.warn(
+        "[upload] Turnstile verification failed for user=" + user.id +
+          ", errors=" + JSON.stringify(verify.errorCodes ?? []),
+      );
+      return NextResponse.json(
+        { error: "Bot defense check failed. Please reload and try again." },
+        { status: 403 },
+      );
+    }
   }
 
   // Validate file

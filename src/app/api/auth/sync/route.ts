@@ -3,6 +3,8 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { getStripe } from "@/lib/stripe";
 import { sendVerificationEmail, sendWelcomeEmail } from "@/lib/email/onboarding-emails";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { verifyTurnstileToken, getRemoteIp } from "@/lib/security/turnstile";
 
 interface ConsentPayload {
   type: string;
@@ -10,14 +12,41 @@ interface ConsentPayload {
   hash: string;
 }
 
+// User-initiated auth actions that must satisfy the Turnstile gate (S68).
+// Passive syncs from onAuthStateChanged (page reload, token refresh) omit
+// userAction and skip the gate — the user isn't doing anything triggerable
+// by a bot, and requiring a token would break legitimate session restoration.
+type UserAuthAction = "signup" | "signin";
+
 export async function POST(req: NextRequest) {
   try {
-    const { idToken, consents } = (await req.json()) as {
+    const { idToken, consents, userAction, turnstileToken } = (await req.json()) as {
       idToken: string;
       consents?: ConsentPayload[];
+      userAction?: UserAuthAction;
+      turnstileToken?: string;
     };
     if (!idToken) {
       return NextResponse.json({ error: "Missing idToken" }, { status: 400 });
+    }
+
+    // Turnstile gate (S68 mig 075). Only enforced on user-initiated auth
+    // actions (signup, signin) — passive resyncs aren't bot-triggerable.
+    if (userAction) {
+      const turnstileEnforced = await isFeatureEnabled("turnstile_enforcement_v1");
+      if (turnstileEnforced) {
+        const verify = await verifyTurnstileToken(turnstileToken, getRemoteIp(req));
+        if (!verify.success) {
+          console.warn(
+            "[auth/sync] Turnstile verification failed for userAction=" + userAction +
+              ", errors=" + JSON.stringify(verify.errorCodes ?? []),
+          );
+          return NextResponse.json(
+            { error: "Bot defense check failed. Please reload and try again." },
+            { status: 403 },
+          );
+        }
+      }
     }
 
     // 1. Verify Firebase token

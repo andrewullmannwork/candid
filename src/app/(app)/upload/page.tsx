@@ -8,6 +8,7 @@ import { useAuth } from "@/lib/auth/auth-context";
 import { useConsent } from "@/lib/consent/use-consent";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { createBrowserClient } from "@/lib/supabase/client";
+import { TurnstileWidget, type TurnstileWidgetHandle } from "@/components/security/TurnstileWidget";
 
 // ─── Document type info ─────────────────────────────────────────────────────
 
@@ -142,6 +143,12 @@ function UploadForm() {
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const consentDoc = getConsentDocument("health_data_upload");
 
+  // Cloudflare Turnstile (S68) — bot defense on upload. Token is single-use,
+  // so widgetRef.current.reset() is called after each upload attempt to issue
+  // a fresh token for the next file.
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const turnstileRef = useRef<TurnstileWidgetHandle>(null);
+
   // Retry a failed or stuck document
   const retryDocument = useCallback(async (docId: string) => {
     if (!user || retrying) return;
@@ -275,6 +282,7 @@ function UploadForm() {
         const formData = new FormData();
         formData.append("file", file);
         formData.append("docType", docType);
+        if (turnstileToken) formData.append("turnstileToken", turnstileToken);
 
         // Use XHR for upload progress tracking
         setUploadProgress(0);
@@ -292,9 +300,14 @@ function UploadForm() {
           xhr.send(formData);
         });
 
+        // Reset Turnstile so the next upload gets a fresh token (single-use).
+        turnstileRef.current?.reset();
+
         if (!res.ok) {
           const errBody = await res.json().catch(() => ({}));
-          if (errBody.error?.includes("consent")) {
+          if (res.status === 403 && errBody.error?.includes("Bot defense")) {
+            setError("Bot defense check failed. Please reload the page and try again.");
+          } else if (errBody.error?.includes("consent")) {
             setError("Health data consent is required. Please try again.");
           } else {
             setError(errBody.error || "Upload failed. Please try again.");
@@ -348,7 +361,7 @@ function UploadForm() {
         setUploading(false);
       }
     },
-    [user, docType]
+    [user, docType, turnstileToken]
   );
 
   // Intercept drop: validate file, then check consent before uploading
@@ -1067,6 +1080,10 @@ function UploadForm() {
             </>
           )}
         </div>
+
+        {/* Cloudflare Turnstile — bot defense (S68). Managed mode is invisible
+            for legitimate users; high-risk traffic gets an interactive challenge. */}
+        <TurnstileWidget ref={turnstileRef} action="upload" onToken={setTurnstileToken} />
 
         {error && (
           <div className="p-3 bg-red-50 border border-red-100 rounded-xl">

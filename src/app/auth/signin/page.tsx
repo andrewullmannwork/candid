@@ -4,6 +4,7 @@ import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
+import { TurnstileWidget } from "@/components/security/TurnstileWidget";
 
 export default function SignInPage() {
   return (
@@ -27,13 +28,18 @@ function SignInContent() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [resetSent, setResetSent] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!turnstileToken) {
+      setError("Bot defense check still loading. Please wait a moment and try again.");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
-      await signInWithEmail(email, password);
+      await signInWithEmail(email, password, turnstileToken);
       router.push("/dashboard");
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code;
@@ -41,6 +47,8 @@ function SignInContent() {
         setError("Invalid email or password.");
       } else if (code === "auth/too-many-requests") {
         setError("Too many failed attempts. Please try again later.");
+      } else if (code === "auth/turnstile-failed") {
+        setError("Bot defense check failed. Please reload the page and try again.");
       } else {
         setError("Sign in failed. Please try again.");
       }
@@ -54,15 +62,21 @@ function SignInContent() {
       setError("Enter your email address first, then click Forgot password.");
       return;
     }
+    if (!turnstileToken) {
+      setError("Bot defense check still loading. Please wait a moment and try again.");
+      return;
+    }
     try {
       const res = await fetch("/api/auth/reset-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, turnstileToken }),
       });
       if (res.ok) {
         setResetSent(true);
         setError("");
+      } else if (res.status === 403) {
+        setError("Bot defense check failed. Please reload the page and try again.");
       } else {
         setError("Could not send reset email. Please check the address and try again.");
       }
@@ -72,11 +86,20 @@ function SignInContent() {
   }
 
   async function handleGoogle() {
+    if (!turnstileToken) {
+      setError("Bot defense check still loading. Please wait a moment and try again.");
+      return;
+    }
     try {
-      await signInWithGoogle();
+      await signInWithGoogle(undefined, turnstileToken);
       router.push("/dashboard");
-    } catch {
-      setError("Google sign-in failed");
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      if (code === "auth/turnstile-failed") {
+        setError("Bot defense check failed. Please reload the page and try again.");
+      } else {
+        setError("Google sign-in failed");
+      }
     }
   }
 
@@ -150,9 +173,11 @@ function SignInContent() {
             </div>
           )}
 
+          <TurnstileWidget action="signin" onToken={setTurnstileToken} />
+
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || !turnstileToken}
             className="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium"
           >
             {loading ? "Signing in..." : "Sign In"}
