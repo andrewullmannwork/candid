@@ -1167,6 +1167,7 @@ function ProfileContent() {
           saving={saving}
           onContinue={(data) => advance(data)}
           onSkip={skip}
+          onMatchedPlanData={(data) => setProfile((prev) => ({ ...prev, ...data }))}
         />
       )}
 
@@ -1237,11 +1238,13 @@ function PlanDetailsStep({
   saving,
   onContinue,
   onSkip,
+  onMatchedPlanData,
 }: {
   profile: ProfileData;
   saving: boolean;
   onContinue: (data: Partial<ProfileData>) => void;
   onSkip: () => void;
+  onMatchedPlanData?: (data: Partial<ProfileData>) => void;
 }) {
   const { user } = useAuth();
   const [insurer, setInsurer] = useState(profile.insurer);
@@ -1305,6 +1308,19 @@ function PlanDetailsStep({
     // Auto-fill plan type and state if available
     if (plan.type && !planType) setPlanType(plan.type);
     if (plan.state && !state) setState(plan.state);
+    // Auto-fill cost-share fields into parent profile state so Step 2 (Costs) pre-fills.
+    // Only fill non-empty values from the matched canonical plan; CostsStep useState
+    // initializers run on mount, so this pushes data through before navigation.
+    const updates: Partial<ProfileData> = {};
+    if (plan.deductible != null && plan.deductible > 0) {
+      updates.in_deductible_individual = String(plan.deductible);
+    }
+    if (plan.oopMax != null && plan.oopMax > 0) {
+      updates.in_oop_max_individual = String(plan.oopMax);
+    }
+    if (Object.keys(updates).length > 0) {
+      onMatchedPlanData?.(updates);
+    }
   }
 
   const hasAny = insurer || planType || planName || state || groupNumber || memberId;
@@ -2013,7 +2029,7 @@ function ConcernStep({
 }) {
   const [concern, setConcern] = useState(profile.primary_concern);
 
-  const doneLabel = isOnboarding ? "Finish & Upload Documents →" : "Save Profile";
+  const doneLabel = isOnboarding ? "Finish profile setup →" : "Save Profile";
 
   return (
     <div className="space-y-5">
@@ -2054,7 +2070,7 @@ function ConcernStep({
         </button>
         {isOnboarding && (
           <button onClick={onSkip} className="w-full py-2.5 text-sm text-gray-400 hover:text-gray-600 transition-colors">
-            Skip — go to upload
+            Skip — go to dashboard
           </button>
         )}
       </div>
