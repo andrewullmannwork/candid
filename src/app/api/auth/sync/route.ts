@@ -196,8 +196,14 @@ export async function POST(req: NextRequest) {
           alreadyVerified +
           ")"
       );
-      // Don't await — emails are best-effort and shouldn't gate the response
-      void Promise.allSettled([
+      // Await the sends so Vercel doesn't kill the function instance before
+      // Resend completes. Both helpers are fail-soft (errors logged, never
+      // thrown), so a Resend hiccup logs to Vercel but doesn't fail signup.
+      // Adds ~500-1000ms to signup latency, acceptable in the create-account
+      // mental state. Don't switch back to fire-and-forget without using
+      // @vercel/functions waitUntil() — bare void Promise.allSettled is killed
+      // when the response returns.
+      await Promise.allSettled([
         alreadyVerified ? Promise.resolve() : sendVerificationEmail(email, name),
         isNewUser ? sendWelcomeEmail(email, name) : Promise.resolve(),
       ]);
