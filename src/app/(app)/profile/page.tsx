@@ -1305,9 +1305,13 @@ function PlanDetailsStep({
     setMatchedPlanId(plan.id);
     setMatchedPlan(plan);
     setShowSuggestions(false);
-    // Auto-fill plan type and state if available
-    if (plan.type && !planType) setPlanType(plan.type);
-    if (plan.state && !state) setState(plan.state);
+    // Selecting a canonical plan is an authoritative action — overwrite local
+    // plan_type + state from the match, even if the user had typed something
+    // different (matters in the update-insurance edit flow). The autocomplete
+    // row shows the matched plan_type next to the name, so user sees what
+    // they're committing to.
+    if (plan.type) setPlanType(plan.type);
+    if (plan.state) setState(plan.state);
     // Auto-fill cost-share fields into parent profile state so Step 2 (Costs) pre-fills.
     // Only fill non-empty values from the matched canonical plan; CostsStep useState
     // initializers run on mount, so this pushes data through before navigation.
