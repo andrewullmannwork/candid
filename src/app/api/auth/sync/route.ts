@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { getStripe } from "@/lib/stripe";
+import { sendVerificationEmail, sendWelcomeEmail } from "@/lib/email/onboarding-emails";
 
 interface ConsentPayload {
   type: string;
@@ -50,7 +51,17 @@ export async function POST(req: NextRequest) {
       .from("users")
       .select("id, firebase_uid")
       .eq("email", email)
-      .single();
+      .maybeSingle();
+
+    // Check if this Firebase UID is already known. Combined with existingByEmail,
+    // this lets us detect first-time signups (used to gate transactional emails).
+    const { data: existingByUid } = await supabase
+      .from("users")
+      .select("id")
+      .eq("firebase_uid", uid)
+      .maybeSingle();
+
+    const isNewUser = !existingByEmail && !existingByUid;
 
     let userId: string;
 
@@ -152,7 +163,19 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 5. Set session indicator cookie so middleware allows protected routes
+    // 5. Fire onboarding emails on first signup (fail-soft — Resend errors don't block signup)
+    if (isNewUser) {
+      const provider = decoded.firebase?.sign_in_provider;
+      const alreadyVerified = decoded.email_verified === true || provider === "google.com";
+      console.log("[auth/sync] Step 5: Firing onboarding emails (new user, alreadyVerified=" + alreadyVerified + ")");
+      // Don't await — emails are best-effort and shouldn't gate the response
+      void Promise.allSettled([
+        alreadyVerified ? Promise.resolve() : sendVerificationEmail(email, name),
+        sendWelcomeEmail(email, name),
+      ]);
+    }
+
+    // 6. Set session indicator cookie so middleware allows protected routes
     const response = NextResponse.json({ userId, email, stripeCustomerId });
     response.cookies.set("candid_session", "1", {
       httpOnly: false,

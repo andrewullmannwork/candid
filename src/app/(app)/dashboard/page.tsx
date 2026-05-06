@@ -524,14 +524,14 @@ export default function DashboardPage() {
             if (ps === "manual") {
               return (
                 <p className="text-xs text-amber-700 mb-3 -mt-2">
-                  Results based on the insurance details you provided. <Link href="/upload" className="font-semibold underline">Upload your plan document</Link> for more complete results.
+                  Showing common benefits for your plan type — this isn&rsquo;t representative of your specific coverage. <Link href="/upload" className="font-semibold underline">Upload your plan document</Link> for accurate, complete results.
                 </p>
               );
             }
             // insurance_card or other unverified source
             return (
               <p className="text-xs text-amber-700 mb-3 -mt-2">
-                Results based on your insurance card. <Link href="/upload" className="font-semibold underline">Upload your plan document</Link> for more complete results.
+                Showing common benefits for your plan type — your insurance card alone doesn&rsquo;t reveal your specific coverage. <Link href="/upload" className="font-semibold underline">Upload your plan document</Link> for accurate, complete results.
               </p>
             );
           }

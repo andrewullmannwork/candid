@@ -9,13 +9,6 @@ import { getConsentDocument } from "@/lib/consent/consent-documents";
 export default function SignUpPage() {
   const router = useRouter();
   const { signUpWithEmail, signInWithGoogle } = useAuth();
-  const [step, setStep] = useState<"waitlist" | "create-account">("waitlist");
-
-  // Waitlist state
-  const [waitlistEmail, setWaitlistEmail] = useState("");
-  const [waitlistSubmitted, setWaitlistSubmitted] = useState(false);
-  const [waitlistError, setWaitlistError] = useState("");
-  const [waitlistLoading, setWaitlistLoading] = useState(false);
 
   // Account creation state
   const [email, setEmail] = useState("");
@@ -53,32 +46,6 @@ export default function SignUpPage() {
   function handlePasswordChange(pw: string) {
     setPassword(pw);
     setPasswordErrors(pw.length > 0 ? validatePassword(pw) : []);
-  }
-
-  async function handleWaitlist(e: React.FormEvent) {
-    e.preventDefault();
-    setWaitlistLoading(true);
-    setWaitlistError("");
-
-    try {
-      const res = await fetch("/api/waitlist", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: waitlistEmail }),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Something went wrong");
-      }
-
-      setWaitlistSubmitted(true);
-      setEmail(waitlistEmail);
-    } catch (err) {
-      setWaitlistError(err instanceof Error ? err.message : "Something went wrong");
-    } finally {
-      setWaitlistLoading(false);
-    }
   }
 
   async function handleCreateAccount(e: React.FormEvent) {
@@ -191,249 +158,182 @@ export default function SignUpPage() {
           </Link>
         </div>
 
-        {/* Step 1: Waitlist */}
-        {step === "waitlist" && !waitlistSubmitted && (
-          <>
-            <div className="text-center">
-              <h1 className="text-2xl font-bold text-gray-900">
-                We&apos;re currently invite-only
-              </h1>
-              <p className="mt-3 text-gray-500 leading-relaxed">
-                Candid is in early access. Join the waitlist and we&apos;ll get you in as soon as possible.
-              </p>
-            </div>
+        <div className="text-center">
+          <h1 className="text-2xl font-bold text-gray-900">
+            Create your account
+          </h1>
+          <p className="mt-2 text-sm text-gray-500 leading-relaxed">
+            Set up your profile and upload your bills to get started with Candid.
+          </p>
+        </div>
 
-            <form onSubmit={handleWaitlist} className="space-y-4">
+        {/* Google sign-up — always available, consent on click */}
+        <button
+          onClick={handleGoogle}
+          disabled={googleLoading}
+          className="w-full py-3 border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-50 font-medium flex items-center justify-center gap-2"
+        >
+          <svg className="w-5 h-5" viewBox="0 0 24 24">
+            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" />
+            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+            <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+          </svg>
+          {googleLoading ? "Connecting..." : "Continue with Google"}
+        </button>
+
+        <div className="relative">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t" />
+          </div>
+          <div className="relative flex justify-center text-sm">
+            <span className="px-2 bg-white text-gray-500">or</span>
+          </div>
+        </div>
+
+        <form onSubmit={handleCreateAccount} className="space-y-4">
+          <div>
+            <label htmlFor="signup-name" className="text-xs font-medium text-gray-600 mb-1 block">
+              Full legal name <span className="text-red-400">*</span>
+            </label>
+            <input
+              id="signup-name"
+              type="text"
+              required
+              autoComplete="name"
+              placeholder="First and last name"
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+          </div>
+          <div>
+            <label htmlFor="signup-email" className="text-xs font-medium text-gray-600 mb-1 block">
+              Email <span className="text-red-400">*</span>
+            </label>
+            <input
+              id="signup-email"
+              type="email"
+              required
+              autoComplete="email"
+              placeholder="you@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+          </div>
+          <div>
+            <label htmlFor="signup-phone" className="text-xs font-medium text-gray-600 mb-1 block">
+              Phone number <span className="text-red-400">*</span>
+            </label>
+            <input
+              id="signup-phone"
+              type="tel"
+              required
+              autoComplete="tel-national"
+              placeholder="(555) 123-4567"
+              value={phone}
+              onChange={(e) => setPhone(formatPhone(e.target.value))}
+              className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+          </div>
+          <div>
+            <label htmlFor="signup-dob" className="text-xs font-medium text-gray-600 mb-1 block">
+              Date of birth <span className="text-red-400">*</span>
+            </label>
+            <input
+              id="signup-dob"
+              type="date"
+              required
+              autoComplete="off"
+              value={dateOfBirth}
+              max={new Date(new Date().setFullYear(new Date().getFullYear() - 18)).toISOString().split("T")[0]}
+              min="1920-01-01"
+              onChange={(e) => setDateOfBirth(e.target.value)}
+              className={`w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${dateOfBirth ? "text-gray-900" : "text-gray-400"}`}
+            />
+            <p className="text-xs text-gray-400 mt-1">Must be 18 or older</p>
+          </div>
+          <div>
+            <label htmlFor="signup-password" className="text-xs font-medium text-gray-600 mb-1 block">
+              Password <span className="text-red-400">*</span>
+            </label>
+            <input
+              id="signup-password"
+              type="password"
+              required
+              minLength={10}
+              autoComplete="new-password"
+              placeholder="10+ characters"
+              value={password}
+              onChange={(e) => handlePasswordChange(e.target.value)}
+              className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                password.length > 0 && passwordErrors.length > 0
+                  ? "border-red-300"
+                  : "border-gray-200"
+              }`}
+            />
+          </div>
+          {password.length > 0 && (
+            <ul className="mt-2 space-y-1 text-xs">
+              {[
+                { label: "At least 10 characters", test: password.length >= 10 },
+                { label: "One uppercase letter", test: /[A-Z]/.test(password) },
+                { label: "One lowercase letter", test: /[a-z]/.test(password) },
+                { label: "One number", test: /[0-9]/.test(password) },
+                { label: "One special character (!@#$%...)", test: /[^A-Za-z0-9]/.test(password) },
+              ].map((rule) => (
+                <li key={rule.label} className={rule.test ? "text-green-600" : "text-gray-400"}>
+                  {rule.test ? "✓" : "○"} {rule.label}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div className="space-y-3 p-4 bg-gray-50 rounded-lg">
+            <label className="flex items-start gap-3 cursor-pointer">
               <input
-                type="email"
-                required
-                placeholder="Enter your email"
-                value={waitlistEmail}
-                onChange={(e) => setWaitlistEmail(e.target.value)}
-                className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                type="checkbox"
+                checked={tosAccepted}
+                onChange={(e) => setTosAccepted(e.target.checked)}
+                className="mt-1 h-4 w-4 rounded border-gray-300"
               />
-              <button
-                type="submit"
-                disabled={waitlistLoading}
-                className="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors font-semibold shadow-lg shadow-blue-600/20"
-              >
-                {waitlistLoading ? "Joining..." : "Join the Waitlist"}
-              </button>
-            </form>
+              <span className="text-sm text-gray-700">
+                I have read and agree to the{" "}
+                <Link href="/terms" target="_blank" className="text-blue-600 hover:underline">
+                  Terms of Service
+                </Link>{" "}
+                (v{tosDoc.version})
+              </span>
+            </label>
 
-            {waitlistError && <p className="text-red-600 text-sm text-center">{waitlistError}</p>}
-          </>
-        )}
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={privacyAccepted}
+                onChange={(e) => setPrivacyAccepted(e.target.checked)}
+                className="mt-1 h-4 w-4 rounded border-gray-300"
+              />
+              <span className="text-sm text-gray-700">
+                I have read and agree to the{" "}
+                <Link href="/privacy" target="_blank" className="text-blue-600 hover:underline">
+                  Privacy Policy
+                </Link>{" "}
+                (v{privacyDoc.version})
+              </span>
+            </label>
+          </div>
 
-        {/* Step 1.5: Waitlist confirmed — offer head start */}
-        {step === "waitlist" && waitlistSubmitted && (
-          <>
-            <div className="p-5 bg-green-50 border border-green-200 rounded-xl text-center">
-              <div className="text-lg font-semibold text-green-800 mb-1">You&apos;re on the list!</div>
-              <p className="text-sm text-green-700">
-                We&apos;ll send you an invite as soon as a spot opens up.
-              </p>
-            </div>
+          <button
+            type="submit"
+            disabled={accountLoading || !tosAccepted || !privacyAccepted || (password.length > 0 && passwordErrors.length > 0)}
+            className="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors font-semibold"
+          >
+            {accountLoading ? "Creating account..." : "Create Account"}
+          </button>
+        </form>
 
-            <div className="p-5 bg-blue-50 border border-blue-200 rounded-xl">
-              <h3 className="font-semibold text-blue-900 text-center">Explore Benefits Now</h3>
-              <p className="mt-2 text-sm text-blue-700 text-center leading-relaxed">
-                Create a profile, upload your insurance documents and get immediate access to the Candid Benefits Finder.
-              </p>
-              <p className="mt-3 text-xs text-blue-600 text-center font-medium">
-                Completed profiles may be approved for Audit Tool access more quickly.
-              </p>
-              <button
-                onClick={() => setStep("create-account")}
-                className="w-full mt-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-semibold shadow-lg shadow-blue-600/20"
-              >
-                Get Early Access
-              </button>
-            </div>
-          </>
-        )}
-
-        {/* Step 2: Create account */}
-        {step === "create-account" && (
-          <>
-            <div className="text-center">
-              <h1 className="text-2xl font-bold text-gray-900">
-                Create your account
-              </h1>
-              <p className="mt-2 text-sm text-gray-500 leading-relaxed">
-                Set up your profile and upload your bills so you&apos;re ready to go when your invite comes through.
-              </p>
-            </div>
-
-            {/* Google sign-up — always available, consent on click */}
-            <button
-              onClick={handleGoogle}
-              disabled={googleLoading}
-              className="w-full py-3 border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-50 font-medium flex items-center justify-center gap-2"
-            >
-              <svg className="w-5 h-5" viewBox="0 0 24 24">
-                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" />
-                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
-                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
-              </svg>
-              {googleLoading ? "Connecting..." : "Continue with Google"}
-            </button>
-
-            <div className="relative">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t" />
-              </div>
-              <div className="relative flex justify-center text-sm">
-                <span className="px-2 bg-white text-gray-500">or</span>
-              </div>
-            </div>
-
-            <form onSubmit={handleCreateAccount} className="space-y-4">
-              <div>
-                <label htmlFor="signup-name" className="text-xs font-medium text-gray-600 mb-1 block">
-                  Full legal name <span className="text-red-400">*</span>
-                </label>
-                <input
-                  id="signup-name"
-                  type="text"
-                  required
-                  autoComplete="name"
-                  placeholder="First and last name"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label htmlFor="signup-email" className="text-xs font-medium text-gray-600 mb-1 block">
-                  Email <span className="text-red-400">*</span>
-                </label>
-                <input
-                  id="signup-email"
-                  type="email"
-                  required
-                  autoComplete="email"
-                  placeholder="you@example.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label htmlFor="signup-phone" className="text-xs font-medium text-gray-600 mb-1 block">
-                  Phone number <span className="text-red-400">*</span>
-                </label>
-                <input
-                  id="signup-phone"
-                  type="tel"
-                  required
-                  autoComplete="tel-national"
-                  placeholder="(555) 123-4567"
-                  value={phone}
-                  onChange={(e) => setPhone(formatPhone(e.target.value))}
-                  className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label htmlFor="signup-dob" className="text-xs font-medium text-gray-600 mb-1 block">
-                  Date of birth <span className="text-red-400">*</span>
-                </label>
-                <input
-                  id="signup-dob"
-                  type="date"
-                  required
-                  autoComplete="off"
-                  value={dateOfBirth}
-                  max={new Date(new Date().setFullYear(new Date().getFullYear() - 18)).toISOString().split("T")[0]}
-                  min="1920-01-01"
-                  onChange={(e) => setDateOfBirth(e.target.value)}
-                  className={`w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${dateOfBirth ? "text-gray-900" : "text-gray-400"}`}
-                />
-                <p className="text-xs text-gray-400 mt-1">Must be 18 or older</p>
-              </div>
-              <div>
-                <label htmlFor="signup-password" className="text-xs font-medium text-gray-600 mb-1 block">
-                  Password <span className="text-red-400">*</span>
-                </label>
-                <input
-                  id="signup-password"
-                  type="password"
-                  required
-                  minLength={10}
-                  autoComplete="new-password"
-                  placeholder="10+ characters"
-                  value={password}
-                  onChange={(e) => handlePasswordChange(e.target.value)}
-                  className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                    password.length > 0 && passwordErrors.length > 0
-                      ? "border-red-300"
-                      : "border-gray-200"
-                  }`}
-                />
-              </div>
-              {password.length > 0 && (
-                <ul className="mt-2 space-y-1 text-xs">
-                  {[
-                    { label: "At least 10 characters", test: password.length >= 10 },
-                    { label: "One uppercase letter", test: /[A-Z]/.test(password) },
-                    { label: "One lowercase letter", test: /[a-z]/.test(password) },
-                    { label: "One number", test: /[0-9]/.test(password) },
-                    { label: "One special character (!@#$%...)", test: /[^A-Za-z0-9]/.test(password) },
-                  ].map((rule) => (
-                    <li key={rule.label} className={rule.test ? "text-green-600" : "text-gray-400"}>
-                      {rule.test ? "✓" : "○"} {rule.label}
-                    </li>
-                  ))}
-                </ul>
-              )}
-
-              <div className="space-y-3 p-4 bg-gray-50 rounded-lg">
-                <label className="flex items-start gap-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={tosAccepted}
-                    onChange={(e) => setTosAccepted(e.target.checked)}
-                    className="mt-1 h-4 w-4 rounded border-gray-300"
-                  />
-                  <span className="text-sm text-gray-700">
-                    I have read and agree to the{" "}
-                    <Link href="/terms" target="_blank" className="text-blue-600 hover:underline">
-                      Terms of Service
-                    </Link>{" "}
-                    (v{tosDoc.version})
-                  </span>
-                </label>
-
-                <label className="flex items-start gap-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={privacyAccepted}
-                    onChange={(e) => setPrivacyAccepted(e.target.checked)}
-                    className="mt-1 h-4 w-4 rounded border-gray-300"
-                  />
-                  <span className="text-sm text-gray-700">
-                    I have read and agree to the{" "}
-                    <Link href="/privacy" target="_blank" className="text-blue-600 hover:underline">
-                      Privacy Policy
-                    </Link>{" "}
-                    (v{privacyDoc.version})
-                  </span>
-                </label>
-              </div>
-
-              <button
-                type="submit"
-                disabled={accountLoading || !tosAccepted || !privacyAccepted || (password.length > 0 && passwordErrors.length > 0)}
-                className="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors font-semibold"
-              >
-                {accountLoading ? "Creating account..." : "Create Account"}
-              </button>
-            </form>
-
-            {accountError && <p className="text-red-600 text-sm text-center">{accountError}</p>}
-          </>
-        )}
+        {accountError && <p className="text-red-600 text-sm text-center">{accountError}</p>}
 
         <div className="text-center space-y-2">
           <p className="text-sm text-gray-500">

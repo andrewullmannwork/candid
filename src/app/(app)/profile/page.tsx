@@ -1141,9 +1141,14 @@ function ProfileContent() {
           <div className="flex flex-col gap-2 pt-2">
             <button
               onClick={() => advance()}
-              className="w-full py-3 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 transition-colors"
+              disabled={!cardScanned}
+              className={`w-full py-3 rounded-xl text-sm font-semibold transition-colors ${
+                cardScanned
+                  ? "bg-blue-600 text-white hover:bg-blue-700"
+                  : "bg-gray-100 text-gray-400 cursor-not-allowed"
+              }`}
             >
-              {cardScanned ? "Continue with scanned details →" : "Continue →"}
+              {cardScanned ? "Continue with scanned details →" : "Upload a card above, or skip below"}
             </button>
             <button
               onClick={skip}
@@ -1162,6 +1167,7 @@ function ProfileContent() {
           saving={saving}
           onContinue={(data) => advance(data)}
           onSkip={skip}
+          onMatchedPlanData={(data) => setProfile((prev) => ({ ...prev, ...data }))}
         />
       )}
 
@@ -1232,11 +1238,13 @@ function PlanDetailsStep({
   saving,
   onContinue,
   onSkip,
+  onMatchedPlanData,
 }: {
   profile: ProfileData;
   saving: boolean;
   onContinue: (data: Partial<ProfileData>) => void;
   onSkip: () => void;
+  onMatchedPlanData?: (data: Partial<ProfileData>) => void;
 }) {
   const { user } = useAuth();
   const [insurer, setInsurer] = useState(profile.insurer);
@@ -1297,9 +1305,26 @@ function PlanDetailsStep({
     setMatchedPlanId(plan.id);
     setMatchedPlan(plan);
     setShowSuggestions(false);
-    // Auto-fill plan type and state if available
-    if (plan.type && !planType) setPlanType(plan.type);
-    if (plan.state && !state) setState(plan.state);
+    // Selecting a canonical plan is an authoritative action — overwrite local
+    // plan_type + state from the match, even if the user had typed something
+    // different (matters in the update-insurance edit flow). The autocomplete
+    // row shows the matched plan_type next to the name, so user sees what
+    // they're committing to.
+    if (plan.type) setPlanType(plan.type);
+    if (plan.state) setState(plan.state);
+    // Auto-fill cost-share fields into parent profile state so Step 2 (Costs) pre-fills.
+    // Only fill non-empty values from the matched canonical plan; CostsStep useState
+    // initializers run on mount, so this pushes data through before navigation.
+    const updates: Partial<ProfileData> = {};
+    if (plan.deductible != null && plan.deductible > 0) {
+      updates.in_deductible_individual = String(plan.deductible);
+    }
+    if (plan.oopMax != null && plan.oopMax > 0) {
+      updates.in_oop_max_individual = String(plan.oopMax);
+    }
+    if (Object.keys(updates).length > 0) {
+      onMatchedPlanData?.(updates);
+    }
   }
 
   const hasAny = insurer || planType || planName || state || groupNumber || memberId;
@@ -2008,7 +2033,7 @@ function ConcernStep({
 }) {
   const [concern, setConcern] = useState(profile.primary_concern);
 
-  const doneLabel = isOnboarding ? "Finish & Upload Documents →" : "Save Profile";
+  const doneLabel = isOnboarding ? "Finish profile setup →" : "Save Profile";
 
   return (
     <div className="space-y-5">
@@ -2049,7 +2074,7 @@ function ConcernStep({
         </button>
         {isOnboarding && (
           <button onClick={onSkip} className="w-full py-2.5 text-sm text-gray-400 hover:text-gray-600 transition-colors">
-            Skip — go to upload
+            Skip — go to dashboard
           </button>
         )}
       </div>
