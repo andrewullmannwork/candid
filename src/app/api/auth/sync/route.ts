@@ -97,6 +97,34 @@ export async function POST(req: NextRequest) {
     // contribute to canonical promotion threshold.
     const emailVerified = decoded.email_verified === true;
 
+    // S69 mig 076 — Mirror the Firebase phone_number token claim on every sync.
+    // Layered with email_verified in evaluate_pattern1_corroboration AND filter
+    // (Pattern 1 #15 structural identity defense).
+    const phoneE164 = decoded.phone_number ?? null;
+    const phoneVerified = phoneE164 !== null;
+
+    // S69 phone-OTP gate (mig 076 phone_otp_enforcement_v1 flag). Fires for
+    // explicit signup OR for a brand-new account being created via any path
+    // (e.g., a /auth/signin Google attempt for a not-yet-existing account).
+    // Q-S69-5: signin path NOT gated for existing users without phone — they
+    // can sign in but won't contribute to corroboration (phone_verified=FALSE).
+    const isSignupAction = userAction === "signup" || isNewUser;
+    if (isSignupAction) {
+      const phoneOtpEnforced = await isFeatureEnabled("phone_otp_enforcement_v1");
+      if (phoneOtpEnforced && !phoneE164) {
+        console.warn(
+          "[auth/sync] Phone-OTP gate rejected userAction=" +
+            (userAction ?? "(undefined)") +
+            ", isNewUser=" + isNewUser +
+            ", uid=" + uid,
+        );
+        return NextResponse.json(
+          { error: "Phone verification required. Please complete the OTP step." },
+          { status: 403 },
+        );
+      }
+    }
+
     // Account-link case: same email, different firebase_uid. Happens when an
     // existing account is re-created (e.g., admin deleted the Firebase user but
     // the Supabase users row stuck around) or when a user adds Google sign-in
@@ -113,9 +141,19 @@ export async function POST(req: NextRequest) {
     if (isAccountLink) {
       // Same email, different Firebase UID — link the account by updating the UID
       console.log(`[auth/sync] Account linking: email ${email} exists with UID ${existingByEmail.firebase_uid}, updating to ${uid}`);
+      const linkUpdate: Record<string, unknown> = {
+        firebase_uid: uid,
+        display_name: name || undefined,
+        email_verified: emailVerified,
+        phone_verified: phoneVerified,
+      };
+      // Only overwrite phone_e164 when Firebase token provides one — preserves
+      // any value already on the row if a current signin happens to lack the
+      // claim (e.g., legacy session without phone-link).
+      if (phoneE164) linkUpdate.phone_e164 = phoneE164;
       const { error: linkError } = await supabase
         .from("users")
-        .update({ firebase_uid: uid, display_name: name || undefined, email_verified: emailVerified })
+        .update(linkUpdate)
         .eq("id", existingByEmail.id);
       if (linkError) {
         console.error("[auth/sync] Account linking failed:", linkError);
@@ -128,7 +166,14 @@ export async function POST(req: NextRequest) {
       const { data: upsertedUser, error: upsertError } = await supabase
         .from("users")
         .upsert(
-          { firebase_uid: uid, email, display_name: name || null, email_verified: emailVerified },
+          {
+            firebase_uid: uid,
+            email,
+            display_name: name || null,
+            email_verified: emailVerified,
+            phone_e164: phoneE164,
+            phone_verified: phoneVerified,
+          },
           { onConflict: "firebase_uid" }
         )
         .select("id")
@@ -139,7 +184,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: `Failed to upsert user: ${upsertError?.message || "unknown"}` }, { status: 500 });
       }
       userId = upsertedUser.id;
-      console.log("[auth/sync] Step 2 OK — user:", userId, "(email_verified=" + emailVerified + ")");
+      console.log("[auth/sync] Step 2 OK — user:", userId, "(email_verified=" + emailVerified + ", phone_verified=" + phoneVerified + ")");
     }
 
     // 3. Record consent events (server-side, service role bypasses RLS)
@@ -239,7 +284,14 @@ export async function POST(req: NextRequest) {
     }
 
     // 6. Set session indicator cookie so middleware allows protected routes
-    const response = NextResponse.json({ userId, email, stripeCustomerId });
+    const response = NextResponse.json({
+      userId,
+      email,
+      stripeCustomerId,
+      emailVerified,
+      phoneE164,
+      phoneVerified,
+    });
     response.cookies.set("candid_session", "1", {
       httpOnly: false,
       secure: process.env.NODE_ENV === "production",
