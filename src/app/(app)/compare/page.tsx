@@ -26,7 +26,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
-import { createBrowserClient } from "@/lib/supabase/client";
 import {
   TurnstileWidget,
   type TurnstileWidgetHandle,

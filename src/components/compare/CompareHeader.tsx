@@ -247,32 +247,6 @@ function FieldInlineEdit({
   );
 }
 
-function MetricRow({
-  plans,
-  label,
-  pick,
-  format,
-  sublabel,
-}: {
-  plans: ComparePlanPayload[];
-  label: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  pick: (p: ComparePlanPayload) => any;
-  format: (v: number | null) => string;
-  sublabel?: string;
-}) {
-  const columnsClass = colsClass(plans.length);
-  return (
-    <div className={`grid ${columnsClass} divide-x divide-slate-100 border-t border-slate-100`}>
-      <div className="p-4 flex flex-col justify-center">
-        <p className="text-sm font-medium text-slate-700">{label}</p>
-        {sublabel && <p className="text-[11px] text-slate-400 mt-0.5">{sublabel}</p>}
-      </div>
-      {plans.map((plan) => (
-        <div key={plan.ref.id} className="p-4">
-          <MetricCell decorated={pick(plan)} format={format} />
-        </div>
-      ))}
-    </div>
-  );
-}
+// MetricRow removed — superseded by EditableMetricRow which handles the
+// inline-edit-when-null branch on top of the original render flow. Restore
+// from git history if a non-editable variant is ever needed again.

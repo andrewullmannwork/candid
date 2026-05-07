@@ -145,7 +145,7 @@ function UploadForm() {
   }, [user, uploaded]);
 
   // Consent state — inline, not blocking
-  const { hasConsented, loading: consentLoading, grantConsent } = useConsent("health_data_upload");
+  const { hasConsented, grantConsent } = useConsent("health_data_upload");
   const [showConsentModal, setShowConsentModal] = useState(false);
   const [consentChecked, setConsentChecked] = useState(false);
   const [consentSubmitting, setConsentSubmitting] = useState(false);
