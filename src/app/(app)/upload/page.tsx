@@ -5,10 +5,10 @@ import { useDropzone } from "react-dropzone";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
-import { useConsent } from "@/lib/consent/use-consent";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { createBrowserClient } from "@/lib/supabase/client";
-import { TurnstileWidget, type TurnstileWidgetHandle } from "@/components/security/TurnstileWidget";
+import { TurnstileWidget } from "@/components/security/TurnstileWidget";
+import { useDocumentUpload, type DocType } from "@/lib/hooks/useDocumentUpload";
 
 // ─── Document type info ─────────────────────────────────────────────────────
 
@@ -61,19 +61,36 @@ function UploadForm() {
   const { user } = useAuth();
   const searchParams = useSearchParams();
   const needsSbc = searchParams.get("need_sbc") === "1";
-  const [docType, setDocType] = useState<"eob" | "itemized_bill" | "sbc" | "plan_document">(needsSbc ? "sbc" : "eob");
-  const [uploading, setUploading] = useState(false);
-  const [uploaded, setUploaded] = useState(false);
-  const [uploadStatus, setUploadStatus] = useState<"uploading" | "uploaded" | "auto_processed" | "pending_review" | "rejected" | null>(null);
-  const [error, setError] = useState("");
-  const [fileName, setFileName] = useState("");
+  const [docType, setDocType] = useState<DocType>(needsSbc ? "sbc" : "eob");
+
+  // Upload-flow state via shared hook (CF-30; replaces inline doUpload + polling)
+  const upload = useDocumentUpload({ defaultDocType: docType });
+  const {
+    uploading,
+    uploaded,
+    uploadStatus,
+    uploadProgress,
+    documentId,
+    processingProgress,
+    classification: classificationResult,
+    fileName,
+    error,
+    setError,
+    turnstileRef,
+    setTurnstileToken,
+    hasConsented,
+    showConsentModal,
+    consentChecked,
+    setConsentChecked,
+    pendingFile,
+    openConsentModal,
+    closeConsentModal,
+    grantConsentAndUpload,
+  } = upload;
+
+  // Page-local UI state (not upload-flow)
   const [showTips, setShowTips] = useState<"eob" | "itemized_bill" | "sbc" | "plan_document" | null>(null);
   const [profileMissing, setProfileMissing] = useState(false);
-  const [classificationResult, setClassificationResult] = useState<{
-    classifiedType: string;
-    confidence: number;
-    mismatch: boolean;
-  } | null>(null);
   const [sbcParsed, setSbcParsed] = useState<{
     planName?: string;
     inDeductible?: number;
@@ -81,18 +98,6 @@ function UploadForm() {
     inOopMax?: number;
     outOopMax?: number;
     servicesExtracted?: number;
-  } | null>(null);
-  const [documentId, setDocumentId] = useState<string | null>(null);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [processingProgress, setProcessingProgress] = useState<{
-    status: string;
-    step: string | null;
-    completedPages: number;
-    totalPages: number;
-    insurerMismatch?: { mismatch: boolean; type?: "insurer" | "plan_name"; existingInsurer?: string; parsedInsurer?: string; existingPlanName?: string; parsedPlanName?: string; pending_canonical_match?: { canonicalPlanId: string; matchedPlanName: string; confidence: number; sourceCount: number; insurerName: string }; year_rollover?: { currentYear: number; newYear: number } } | null;
-    processingError?: string | null;
-    retryCount?: number;
-    isStuck?: boolean;
   } | null>(null);
   const [retrying, setRetrying] = useState(false);
   const [yearRolloverEnabled, setYearRolloverEnabled] = useState(false);
@@ -138,19 +143,10 @@ function UploadForm() {
       .then(({ data }) => { if (data?.enabled) setYearRolloverEnabled(true); });
   }, [user, uploaded]);
 
-  // Consent state — inline, not blocking
-  const { hasConsented, loading: consentLoading, grantConsent } = useConsent("health_data_upload");
-  const [showConsentModal, setShowConsentModal] = useState(false);
-  const [consentChecked, setConsentChecked] = useState(false);
+  // Page-local consent UI state (modal-submit-in-flight indicator + static doc lookup)
+  // hasConsented + showConsentModal + consentChecked + pendingFile come from the hook.
   const [consentSubmitting, setConsentSubmitting] = useState(false);
-  const [pendingFile, setPendingFile] = useState<File | null>(null);
   const consentDoc = getConsentDocument("health_data_upload");
-
-  // Cloudflare Turnstile (S68) — bot defense on upload. Token is single-use,
-  // so widgetRef.current.reset() is called after each upload attempt to issue
-  // a fresh token for the next file.
-  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
-  const turnstileRef = useRef<TurnstileWidgetHandle>(null);
 
   // Retry a failed or stuck document
   const retryDocument = useCallback(async (docId: string) => {
@@ -164,11 +160,8 @@ function UploadForm() {
         body: JSON.stringify({ documentId: docId }),
       });
       if (res.ok) {
-        // Resume polling for the retried document
-        setDocumentId(docId);
-        setUploadStatus("auto_processed");
-        setProcessingProgress(null);
-        setUploaded(true);
+        // Resume polling for the retried document via the hook
+        upload.resumePolling(docId);
         // Refresh doc list
         const supabase = createBrowserClient();
         const { data } = await supabase
@@ -186,65 +179,11 @@ function UploadForm() {
     } finally {
       setRetrying(false);
     }
-  }, [user, retrying]);
+  }, [user, retrying, upload, setError]);
 
-  // Poll processing status and trigger chunks for large documents
-  useEffect(() => {
-    if (!documentId || uploadStatus !== "auto_processed") return;
-
-    let active = true;
-    const poll = async () => {
-      try {
-        const res = await fetch(`/api/documents/status?id=${documentId}`);
-        if (!res.ok || !active) return;
-        const data = await res.json();
-        setProcessingProgress(data);
-
-        if (data.status === "processed") {
-          active = false;
-          if (data.insurerMismatch?.mismatch || data.insurerMismatch?.pending_canonical_match) {
-            // Mismatch or canonical match confirmation needed — show prompt
-            setProcessingProgress(data);
-          } else {
-            // No mismatch — redirect based on doc type.
-            // Bills (eob, itemized_bill) → /claim (audit results live there).
-            // Plan docs (sbc, plan_document) → /plan (benefits live there).
-            const isBill = docType === "eob" || docType === "itemized_bill";
-            const destination = isBill ? "/claim" : "/plan";
-            setTimeout(() => { window.location.href = destination; }, 1500);
-          }
-          return;
-        }
-
-        if (data.status === "pending_review") {
-          active = false;
-          setUploadStatus("pending_review");
-          return;
-        }
-
-        if (data.status === "error" || data.isStuck) {
-          active = false;
-          return;
-        }
-
-        // If needs triggering, call the trigger endpoint
-        if (data.needsTrigger) {
-          await fetch("/api/documents/status", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ documentId }),
-          });
-        }
-      } catch {
-        // Silently retry on next interval
-      }
-    };
-
-    // Start immediately, then poll every 4 seconds
-    poll();
-    const interval = setInterval(poll, 4000);
-    return () => { active = false; clearInterval(interval); };
-  }, [documentId, uploadStatus]);
+  // Polling effect lives inside useDocumentUpload (CF-30); page-side onDrop
+  // awaits the hook's resolved promise + handles the auto-redirect on processed
+  // state. Replaces the inline polling effect that was here pre-CF-30.
 
   // Check if insurance profile is filled
   useEffect(() => {
@@ -268,103 +207,32 @@ function UploadForm() {
     checkProfile();
   }, [user]);
 
-  // Actual upload logic — called after consent is confirmed
-  const doUpload = useCallback(
-    async (file: File) => {
-      if (!user) return;
-      setUploading(true);
-      setUploaded(true); // Immediately show progress page
-      setUploadStatus("uploading");
-      setError("");
-      setFileName(file.name);
-
-      try {
-        const idToken = await user.firebaseUser.getIdToken();
-
-        // Upload file via API to bypass RLS
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("docType", docType);
-        if (turnstileToken) formData.append("turnstileToken", turnstileToken);
-
-        // Use XHR for upload progress tracking
-        setUploadProgress(0);
-        const res = await new Promise<Response>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.upload.addEventListener("progress", (e) => {
-            if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
-          });
-          xhr.addEventListener("load", () => {
-            resolve(new Response(xhr.responseText, { status: xhr.status, headers: { "content-type": "application/json" } }));
-          });
-          xhr.addEventListener("error", () => reject(new Error("Upload failed")));
-          xhr.open("POST", "/api/documents/upload");
-          xhr.setRequestHeader("Authorization", `Bearer ${idToken}`);
-          xhr.send(formData);
-        });
-
-        // Reset Turnstile so the next upload gets a fresh token (single-use).
-        turnstileRef.current?.reset();
-
-        if (!res.ok) {
-          const errBody = await res.json().catch(() => ({}));
-          if (res.status === 403 && errBody.error?.includes("Bot defense")) {
-            setError("Bot defense check failed. Please reload the page and try again.");
-          } else if (errBody.error?.includes("consent")) {
-            setError("Health data consent is required. Please try again.");
-          } else {
-            setError(errBody.error || "Upload failed. Please try again.");
-          }
-          setUploading(false);
-          setUploaded(false);
-          setUploadStatus(null);
-          return;
-        }
-
-        const uploadResult = await res.json();
-
-        // Save document ID for processing status polling
-        if (uploadResult.documentId) {
-          setDocumentId(uploadResult.documentId);
-        }
-
-        // Backend now handles confidence-gated processing automatically
-        if (uploadResult.classification) {
-          setClassificationResult(uploadResult.classification);
-        }
-
-        // Handle different processing outcomes
-        if (uploadResult.autoProcessed) {
-          // High confidence — processing triggered automatically
-          // Client-side polling will drive chunk processing and redirect when done
-          setUploadStatus("auto_processed");
-        } else if (uploadResult.status === "pending_review") {
-          // Medium confidence — queued for admin review
-          setUploadStatus("pending_review");
-        } else if (uploadResult.status === "rejected") {
-          // Low confidence — auto-declined
-          setUploadStatus("rejected");
-          setError(uploadResult.message || "This document could not be identified as a healthcare document.");
-          setUploading(false);
-          return;
-        } else {
-          // For EOB/bills that bypass classification, store for manual audit
-          sessionStorage.setItem(
-            "pendingAudit",
-            JSON.stringify({ documentId: uploadResult.documentId, billType: docType, fileName: file.name })
-          );
-          setUploadStatus("uploaded");
-        }
-
-        setUploaded(true);
-      } catch (err) {
-        console.error("Upload error:", err);
-        setError("Upload failed. Please try again.");
-      } finally {
-        setUploading(false);
+  // Auto-redirect on terminal "processed" state (replaces the redirect logic
+  // that lived inside the inline polling effect pre-CF-30). Mirrors original
+  // gate: redirect only when no mismatch + no pending canonical match. The
+  // year_rollover prompt is rendered separately and the user clicks through it.
+  const handleProcessed = useCallback(
+    (currentDocType: DocType, mm: { mismatch?: boolean; pending_canonical_match?: unknown } | null | undefined) => {
+      if (!mm?.mismatch && !mm?.pending_canonical_match) {
+        const isBill = currentDocType === "eob" || currentDocType === "itemized_bill";
+        const destination = isBill ? "/claim" : "/plan";
+        setTimeout(() => { window.location.href = destination; }, 1500);
       }
     },
-    [user, docType, turnstileToken]
+    []
+  );
+
+  // For EOB/bills that bypass classification (uploaded status without
+  // autoProcessed), store the audit-pending blob in sessionStorage. Mirrors
+  // pre-CF-30 behavior in doUpload's else-branch.
+  const stashPendingAudit = useCallback(
+    (uploadDocumentId: string, billType: DocType, uploadFileName: string) => {
+      sessionStorage.setItem(
+        "pendingAudit",
+        JSON.stringify({ documentId: uploadDocumentId, billType, fileName: uploadFileName })
+      );
+    },
+    []
   );
 
   // Intercept drop: validate file, then check consent before uploading
@@ -390,29 +258,42 @@ function UploadForm() {
         return;
       }
 
-      // If consent already granted, upload immediately
-      if (hasConsented) {
-        doUpload(file);
-      } else {
-        // Stash the file and show consent modal
-        setPendingFile(file);
-        setShowConsentModal(true);
+      if (!hasConsented) {
+        openConsentModal(file);
+        return;
+      }
+
+      try {
+        const result = await upload.doUpload(file, { docType });
+        // EOB/bill bypass-classification path needs a sessionStorage stash for
+        // audit continuity; only fires when uploadResult didn't autoProcess.
+        if (result.status === "uploaded" && result.documentId) {
+          stashPendingAudit(result.documentId, docType, file.name);
+        }
+        // Auto-redirect on processed is handled by the uploadStatus useEffect
+        // below (covers both onDrop's await path and the consent-then-upload
+        // path uniformly via state observation; avoids double-fire here).
+      } catch {
+        // Hook already set error state; nothing more to do here.
       }
     },
-    [user, hasConsented, doUpload]
+    [user, hasConsented, upload, docType, openConsentModal, setError, handleProcessed, stashPendingAudit]
   );
 
-  // After consent is granted, upload the pending file
+  // After consent is granted, upload the pending file via the hook
   async function handleConsentGrant() {
+    if (!pendingFile) return;
     setConsentSubmitting(true);
+    const fileForRedirect = pendingFile;
     try {
-      await grantConsent();
-      setShowConsentModal(false);
-      setConsentChecked(false);
-      if (pendingFile) {
-        doUpload(pendingFile);
-        setPendingFile(null);
-      }
+      // grantConsentAndUpload internally calls doUpload(pendingFile) with the
+      // hook's defaultDocType (which we pass as the page's docType state).
+      // We don't get the doUpload result back from this helper, so we await
+      // a separate observation of the hook's state to drive the redirect.
+      await grantConsentAndUpload();
+      // After the hook resolves, processingProgress reflects terminal state.
+      // Page-side useEffect below picks up auto-redirect on processed status.
+      void fileForRedirect;
     } catch (err) {
       console.error("Consent grant failed:", err);
       setError("Failed to record consent. Please try again.");
@@ -420,6 +301,16 @@ function UploadForm() {
       setConsentSubmitting(false);
     }
   }
+
+  // Auto-redirect when terminal "processed" status arrives via the hook
+  // (used by both onDrop's await result and the consent-then-upload path).
+  // Mirrors the original polling-effect's redirect block.
+  /* eslint-disable react-hooks/exhaustive-deps */
+  useEffect(() => {
+    if (uploadStatus !== "processed") return;
+    handleProcessed(docType, processingProgress?.insurerMismatch);
+  }, [uploadStatus]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -544,7 +435,7 @@ function UploadForm() {
         <div className="p-8 bg-white border border-gray-200 rounded-2xl glow-blue relative">
           {/* Close button */}
           <button
-            onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setProcessingProgress(null); setDocumentId(null); }}
+            onClick={() => upload.reset()}
             className="absolute top-4 left-4 w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 transition-colors text-gray-400 hover:text-gray-600"
             aria-label="Close"
           >
@@ -638,7 +529,7 @@ function UploadForm() {
                 We&apos;ll email you when your results are ready, or you can try uploading again.
               </p>
               <button
-                onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setProcessingProgress(null); setDocumentId(null); }}
+                onClick={() => upload.reset()}
                 className="mt-3 w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
               >
                 Try again
@@ -763,7 +654,7 @@ function UploadForm() {
                     Use this plan
                   </button>
                   <button
-                    onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setProcessingProgress(null); setDocumentId(null); }}
+                    onClick={() => upload.reset()}
                     className="w-full py-2.5 border border-gray-200 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
                   >
                     Keep my current plan
@@ -822,7 +713,7 @@ function UploadForm() {
                     Switch to {yr.newYear} plan
                   </button>
                   <button
-                    onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setProcessingProgress(null); setDocumentId(null); }}
+                    onClick={() => upload.reset()}
                     className="w-full py-2.5 border border-gray-200 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
                   >
                     Keep {yr.currentYear} plan
@@ -914,7 +805,7 @@ function UploadForm() {
             )}
             {(isComplete || isError || isStuck || isPendingReview) && (
               <button
-                onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setClassificationResult(null); setSbcParsed(null); setProcessingProgress(null); setDocumentId(null); setUploadProgress(0); }}
+                onClick={() => { upload.reset(); setSbcParsed(null); }}
                 className="w-full py-2.5 border border-gray-200 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
               >
                 Upload another document
@@ -1190,11 +1081,7 @@ function UploadForm() {
 
               <div className="flex gap-3 justify-end">
                 <button
-                  onClick={() => {
-                    setShowConsentModal(false);
-                    setConsentChecked(false);
-                    setPendingFile(null);
-                  }}
+                  onClick={closeConsentModal}
                   className="px-4 py-2 text-gray-600 hover:text-gray-800 transition-colors"
                 >
                   Cancel

@@ -273,7 +273,13 @@ function ModePicker({
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-2.5">
+      {/* Q-CF30-9: responsive inner-grid. 2-col on mobile (cards full-width)
+          and xl+ (cards ~427px+; buttons ~207px each); 1-col stacked at lg
+          (1024-1279px) where outer grid switches to 3-col making each card
+          ~310-340px and buttons in 2-col would shrink to ~140-160px and force
+          label-overflow into 4-6 cramped lines. Labels render cleanly in all
+          three breakpoint regimes after this change. */}
+      <div className="grid grid-cols-2 lg:grid-cols-1 xl:grid-cols-2 gap-2.5">
         <ModeButton
           icon={
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
