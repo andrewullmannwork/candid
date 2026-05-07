@@ -23,11 +23,15 @@
  * is OFF — surface a "Coming soon" state at submit time.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
 import { createBrowserClient } from "@/lib/supabase/client";
-import { TurnstileWidget } from "@/components/security/TurnstileWidget";
+import {
+  TurnstileWidget,
+  type TurnstileWidgetHandle,
+} from "@/components/security/TurnstileWidget";
+import { useConsent } from "@/lib/consent/use-consent";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { CompareHeader } from "@/components/compare/CompareHeader";
 import { CompareCategories } from "@/components/compare/CompareCategories";
@@ -41,7 +45,6 @@ import {
   type ParseDoc,
 } from "@/components/parsing/PlayfulParsingScreen";
 import type { ComparePlanPayload, PlanRef } from "@/lib/plan/compare";
-import { useDocumentUpload } from "@/lib/hooks/useDocumentUpload";
 
 type Mode = "build" | "parsing" | "results";
 
@@ -204,45 +207,19 @@ function CompareInterface() {
   const [parseDocs, setParseDocs] = useState<ParseDoc[]>([]);
   const [parseError, setParseError] = useState<string | null>(null);
 
-  // Active slot index during sequential upload loop — drives per-slot progress
-  // mirroring of upload.processingProgress into parseDocs (effect below).
-  const [activeSlotIdx, setActiveSlotIdx] = useState<number | null>(null);
-
-  // Page-local consent UI (compare uses an inline prompt, not a modal).
+  // Consent + Turnstile state (only used when at least one slot is upload).
+  const { hasConsented, grantConsent } = useConsent("health_data_upload");
   const consentDoc = getConsentDocument("health_data_upload");
   const [consentChecked, setConsentChecked] = useState(false);
   const [consentSubmitting, setConsentSubmitting] = useState(false);
   const [showConsent, setShowConsent] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const turnstileTokenRef = useRef<string | null>(null);
+  const turnstileRef = useRef<TurnstileWidgetHandle>(null);
 
-  // Resolver for linking an uploaded document → its insurance_plan_id row
-  // (compare needs this to build the user_plan PlanRef for the API call).
-  const resolveInsurancePlanId = useCallback(
-    async (documentId: string): Promise<string | null> => {
-      const supabase = createBrowserClient();
-      const { data: docRow } = await supabase
-        .from("documents")
-        .select("linked_insurance_plan_id")
-        .eq("id", documentId)
-        .single();
-      return (docRow?.linked_insurance_plan_id as string | null) ?? null;
-    },
-    [],
-  );
-
-  // Shared upload primitive (CF-30; replaces compare's bespoke processOneUpload
-  // — guarantees parity with /upload's proven flow + no per-slot drift).
-  const upload = useDocumentUpload({
-    defaultDocType: "sbc",
-    resolveInsurancePlanId,
-  });
-  const {
-    turnstileRef,
-    setTurnstileToken,
-    turnstileToken,
-    hasConsented,
-    grantConsent,
-    processingProgress: uploadProcessingProgress,
-  } = upload;
+  useEffect(() => {
+    turnstileTokenRef.current = turnstileToken;
+  }, [turnstileToken]);
 
   // ── Load user's active plan for slot-0 "current plan" affordance ──────
   useEffect(() => {
@@ -351,37 +328,32 @@ function CompareInterface() {
       });
       setParseDocs(initial);
 
-      // Process uploads sequentially via the shared useDocumentUpload hook
-      // (CF-30). Hook handles XHR + Turnstile reset + polling + insurance_plan_id
-      // resolution (via the resolveInsurancePlanId option). Per-slot progress is
-      // mirrored into parseDocs by the activeSlotIdx-watching effect below.
+      // Process uploads sequentially. Track per-slot insurance_plan_id locally
+      // (avoids fragile post-hoc filename re-query against the documents table).
       const uploadResults = new Map<number, string>();
       for (let n = 0; n < uploadIndexes.length; n++) {
         const idx = uploadIndexes[n];
         const slot = slots[idx];
         if (slot.kind !== "upload" || !slot.file) continue;
-        setActiveSlotIdx(idx);
-        try {
-          const result = await upload.doUpload(slot.file, { docType: "sbc" });
-          if (result.insurancePlanId) {
-            uploadResults.set(idx, result.insurancePlanId);
-            // Mark this slot complete + advance the next queued slot to uploading.
-            setParseDocs((prev) => {
-              const arr = [...prev];
-              const myEntry = arr.findIndex((d) => d.id === `slot-${idx}`);
-              if (myEntry >= 0) arr[myEntry] = { ...arr[myEntry], phase: "complete", progress: 100 };
-              const nextQueued = arr.findIndex((d) => d.phase === "queued");
-              if (nextQueued >= 0) {
-                arr[nextQueued] = { ...arr[nextQueued], phase: "uploading", progress: 5 };
-              }
-              return arr;
-            });
-          } else {
-            // Upload returned without an insurance_plan_id (rare — usually means
-            // the doc was rejected or pending review rather than auto-processed).
-            throw new Error("Couldn't link this document to a plan.");
-          }
-        } catch {
+        const insurancePlanId = await processOneUpload({
+          file: slot.file,
+          docId: `slot-${idx}`,
+          isFirst: n === 0,
+        });
+        if (insurancePlanId) {
+          uploadResults.set(idx, insurancePlanId);
+          // Mark next queued doc as uploading.
+          setParseDocs((prev) => {
+            const arr = [...prev];
+            const myEntry = arr.findIndex((d) => d.id === `slot-${idx}`);
+            if (myEntry >= 0) arr[myEntry] = { ...arr[myEntry], phase: "complete", progress: 100 };
+            const nextQueued = arr.findIndex((d) => d.phase === "queued");
+            if (nextQueued >= 0) {
+              arr[nextQueued] = { ...arr[nextQueued], phase: "uploading", progress: 5 };
+            }
+            return arr;
+          });
+        } else {
           setParseDocs((prev) => {
             const arr = [...prev];
             const myEntry = arr.findIndex((d) => d.id === `slot-${idx}`);
@@ -395,12 +367,10 @@ function CompareInterface() {
             return arr;
           });
           setParseError("One or more documents couldn't be processed. Switch them to search instead.");
-          setActiveSlotIdx(null);
           setMode("build");
           return;
         }
       }
-      setActiveSlotIdx(null);
 
       // Build refs in slot order, mixing canonical + user_plan kinds.
       const finalRefs: PlanRef[] = [];
@@ -426,40 +396,107 @@ function CompareInterface() {
     }
   }
 
-  // ── Per-slot progress mirroring effect (CF-30) ──────────────────────────
-  // The hook owns a single processingProgress state across the sequential
-  // upload loop. We mirror it into parseDocs[activeSlotIdx] so each slot's
-  // playful parsing card reflects the live page count, step, and phase.
-  useEffect(() => {
-    if (activeSlotIdx === null) return;
-    if (!uploadProcessingProgress) return;
-    const sb = uploadProcessingProgress;
-    const docId = `slot-${activeSlotIdx}`;
-    const phase: ParseDoc["phase"] =
-      sb.status === "processed"
-        ? "complete"
-        : sb.status === "error" || sb.isStuck
-          ? "error"
-          : sb.completedPages != null && sb.totalPages != null
-            ? "cross_referencing"
-            : "parsing";
-    const progress =
-      sb.completedPages && sb.totalPages
-        ? Math.min(95, 25 + Math.round((sb.completedPages / sb.totalPages) * 60))
-        : 50;
-    const detail =
-      sb.completedPages != null && sb.totalPages != null
-        ? `Page ${sb.completedPages} of ${sb.totalPages}`
-        : sb.step ?? undefined;
-    setParseDocs((prev) => {
-      const arr = [...prev];
-      const myEntry = arr.findIndex((d) => d.id === docId);
-      if (myEntry >= 0) {
-        arr[myEntry] = { ...arr[myEntry], phase, progress, detail };
+  async function processOneUpload(opts: {
+    file: File;
+    docId: string;
+    isFirst: boolean;
+  }): Promise<string | null> {
+    if (!user) return null;
+    const { file, docId, isFirst } = opts;
+
+    // Fresh Turnstile token between uploads.
+    if (!isFirst) {
+      turnstileRef.current?.reset();
+      setTurnstileToken(null);
+      turnstileTokenRef.current = null;
+      const start = Date.now();
+      while (Date.now() - start < 10000) {
+        if (turnstileTokenRef.current) break;
+        await new Promise((r) => setTimeout(r, 200));
       }
-      return arr;
-    });
-  }, [uploadProcessingProgress, activeSlotIdx]);
+    }
+
+    try {
+      const idToken = await user.firebaseUser.getIdToken();
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("docType", "sbc");
+      const tok = turnstileTokenRef.current;
+      if (tok) formData.append("turnstileToken", tok);
+
+      const uploadRes = await fetch("/api/documents/upload", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${idToken}` },
+        body: formData,
+      });
+      if (!uploadRes.ok) return null;
+      const uploadBody = (await uploadRes.json()) as { documentId?: string };
+      if (!uploadBody.documentId) return null;
+
+      setParseDocs((prev) => {
+        const arr = [...prev];
+        const myEntry = arr.findIndex((d) => d.id === docId);
+        if (myEntry >= 0) {
+          arr[myEntry] = { ...arr[myEntry], phase: "parsing", progress: 25 };
+        }
+        return arr;
+      });
+
+      const startedAt = Date.now();
+      while (true) {
+        await new Promise((r) => setTimeout(r, 4000));
+        const statusRes = await fetch(`/api/documents/status?id=${uploadBody.documentId}`);
+        if (!statusRes.ok) continue;
+        const statusBody = await statusRes.json();
+        if (statusBody.needsTrigger) {
+          await fetch("/api/documents/status", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ documentId: uploadBody.documentId }),
+          });
+        }
+
+        const phase: ParseDoc["phase"] =
+          statusBody.status === "processed"
+            ? "complete"
+            : statusBody.status === "error" || statusBody.isStuck
+              ? "error"
+              : statusBody.completedPages != null && statusBody.totalPages != null
+                ? "cross_referencing"
+                : "parsing";
+        const progress =
+          statusBody.completedPages && statusBody.totalPages
+            ? Math.min(95, 25 + Math.round((statusBody.completedPages / statusBody.totalPages) * 60))
+            : Math.min(85, 25 + Math.round((Date.now() - startedAt) / 1000));
+        const detail =
+          statusBody.completedPages != null && statusBody.totalPages != null
+            ? `Page ${statusBody.completedPages} of ${statusBody.totalPages}`
+            : statusBody.step ?? undefined;
+
+        setParseDocs((prev) => {
+          const arr = [...prev];
+          const myEntry = arr.findIndex((d) => d.id === docId);
+          if (myEntry >= 0) {
+            arr[myEntry] = { ...arr[myEntry], phase, progress, detail };
+          }
+          return arr;
+        });
+
+        if (statusBody.status === "processed") {
+          const supabase = createBrowserClient();
+          const { data: docRow } = await supabase
+            .from("documents")
+            .select("linked_insurance_plan_id")
+            .eq("id", uploadBody.documentId)
+            .single();
+          return (docRow?.linked_insurance_plan_id as string | null) ?? null;
+        }
+        if (statusBody.status === "error" || statusBody.isStuck) return null;
+      }
+    } catch {
+      return null;
+    }
+  }
 
   async function callCompareApi(planRefs: PlanRef[]) {
     if (!user || planRefs.length < 2) {
