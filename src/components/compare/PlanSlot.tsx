@@ -273,7 +273,9 @@ function ModePicker({
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-2.5">
+      {/* Stacked vertically — mode picker rendered inside narrow slot cards
+          (~320px on lg+ 3-col layout); horizontal split crowded labels. */}
+      <div className="space-y-2">
         <ModeButton
           icon={
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -319,15 +321,18 @@ function ModeButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="group flex items-start gap-2.5 p-3 rounded-xl bg-slate-50 hover:bg-blue-50 ring-1 ring-slate-200 hover:ring-blue-300 transition-all text-left disabled:opacity-50"
+      className="group flex items-center gap-3 w-full p-3 rounded-xl bg-slate-50 hover:bg-blue-50 ring-1 ring-slate-200 hover:ring-blue-300 transition-all text-left disabled:opacity-50"
     >
-      <div className="shrink-0 w-7 h-7 rounded-lg bg-white ring-1 ring-slate-200 group-hover:ring-blue-200 group-hover:text-blue-600 flex items-center justify-center text-slate-600 transition-colors">
+      <div className="shrink-0 w-9 h-9 rounded-lg bg-white ring-1 ring-slate-200 group-hover:ring-blue-200 group-hover:text-blue-600 flex items-center justify-center text-slate-600 transition-colors">
         {icon}
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-semibold text-slate-900 group-hover:text-blue-700 transition-colors">{label}</p>
-        <p className="text-[11px] text-slate-500 mt-0.5">{sublabel}</p>
+        <p className="text-sm font-semibold text-slate-900 group-hover:text-blue-700 transition-colors whitespace-nowrap">{label}</p>
+        <p className="text-[11px] text-slate-500 mt-0.5 truncate">{sublabel}</p>
       </div>
+      <svg className="w-4 h-4 text-slate-300 group-hover:text-blue-500 shrink-0 transition-colors" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+      </svg>
     </button>
   );
 }

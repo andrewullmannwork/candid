@@ -335,13 +335,13 @@ function CompareInterface() {
         const idx = uploadIndexes[n];
         const slot = slots[idx];
         if (slot.kind !== "upload" || !slot.file) continue;
-        const insurancePlanId = await processOneUpload({
+        const result = await processOneUpload({
           file: slot.file,
           docId: `slot-${idx}`,
           isFirst: n === 0,
         });
-        if (insurancePlanId) {
-          uploadResults.set(idx, insurancePlanId);
+        if (result.ok) {
+          uploadResults.set(idx, result.insurancePlanId);
           // Mark next queued doc as uploading.
           setParseDocs((prev) => {
             const arr = [...prev];
@@ -354,6 +354,9 @@ function CompareInterface() {
             return arr;
           });
         } else {
+          // STAY on parsing screen with explicit error — the previous behavior
+          // (auto-bounce to build) made the failure invisible. User can read the
+          // actual error message + click "Back to compare" to retry.
           setParseDocs((prev) => {
             const arr = [...prev];
             const myEntry = arr.findIndex((d) => d.id === `slot-${idx}`);
@@ -361,13 +364,13 @@ function CompareInterface() {
               arr[myEntry] = {
                 ...arr[myEntry],
                 phase: "error",
-                errorMessage: "Couldn't process this document.",
+                errorMessage: result.error,
               };
             }
             return arr;
           });
-          setParseError("One or more documents couldn't be processed. Switch them to search instead.");
-          setMode("build");
+          setParseError(result.error);
+          // Don't setMode("build") — stay on parsing so user sees the error.
           return;
         }
       }
@@ -396,12 +399,16 @@ function CompareInterface() {
     }
   }
 
+  type UploadResult =
+    | { ok: true; insurancePlanId: string }
+    | { ok: false; error: string };
+
   async function processOneUpload(opts: {
     file: File;
     docId: string;
     isFirst: boolean;
-  }): Promise<string | null> {
-    if (!user) return null;
+  }): Promise<UploadResult> {
+    if (!user) return { ok: false, error: "Not signed in." };
     const { file, docId, isFirst } = opts;
 
     // Fresh Turnstile token between uploads.
@@ -414,6 +421,18 @@ function CompareInterface() {
         if (turnstileTokenRef.current) break;
         await new Promise((r) => setTimeout(r, 200));
       }
+      if (!turnstileTokenRef.current) {
+        return { ok: false, error: "Bot defense check timed out. Reload the page and try again." };
+      }
+    }
+
+    // Even on the FIRST upload, double-check the token is present — the build-mode
+    // CTA already gates on this, but a stale state could slip through.
+    if (!turnstileTokenRef.current) {
+      return {
+        ok: false,
+        error: "Bot defense check didn't load. Disable ad blockers for candidclaim.com and reload.",
+      };
     }
 
     try {
@@ -421,17 +440,24 @@ function CompareInterface() {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("docType", "sbc");
-      const tok = turnstileTokenRef.current;
-      if (tok) formData.append("turnstileToken", tok);
+      formData.append("turnstileToken", turnstileTokenRef.current);
 
       const uploadRes = await fetch("/api/documents/upload", {
         method: "POST",
         headers: { Authorization: `Bearer ${idToken}` },
         body: formData,
       });
-      if (!uploadRes.ok) return null;
+      if (!uploadRes.ok) {
+        // Surface the actual error so the user can see WHY (Turnstile, consent,
+        // file size, type, etc.) — previously this was masked by a silent null.
+        const body = (await uploadRes.json().catch(() => ({}))) as { error?: string };
+        const reason = body.error ?? `Upload failed (HTTP ${uploadRes.status}).`;
+        return { ok: false, error: reason };
+      }
       const uploadBody = (await uploadRes.json()) as { documentId?: string };
-      if (!uploadBody.documentId) return null;
+      if (!uploadBody.documentId) {
+        return { ok: false, error: "Upload succeeded but no document ID returned." };
+      }
 
       setParseDocs((prev) => {
         const arr = [...prev];
@@ -489,12 +515,23 @@ function CompareInterface() {
             .select("linked_insurance_plan_id")
             .eq("id", uploadBody.documentId)
             .single();
-          return (docRow?.linked_insurance_plan_id as string | null) ?? null;
+          const ipid = (docRow?.linked_insurance_plan_id as string | null) ?? null;
+          if (!ipid) {
+            return {
+              ok: false,
+              error: "Document parsed but couldn't be linked to a plan record. Try a different SBC.",
+            };
+          }
+          return { ok: true, insurancePlanId: ipid };
         }
-        if (statusBody.status === "error" || statusBody.isStuck) return null;
+        if (statusBody.status === "error" || statusBody.isStuck) {
+          const reason = statusBody.processingError || "Document processing failed.";
+          return { ok: false, error: reason };
+        }
       }
-    } catch {
-      return null;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Network or client error.";
+      return { ok: false, error: msg };
     }
   }
 
@@ -561,17 +598,29 @@ function CompareInterface() {
       ) : mode === "parsing" ? (
         <PlayfulParsingScreen
           docs={parseDocs}
-          title="Reading your plan documents"
-          subtitle="We're extracting every detail — this usually takes 30-90 seconds per plan."
+          title={parseError ? "We hit a snag" : "Reading your plan documents"}
+          subtitle={
+            parseError
+              ? "Here's what happened — see below for the next step."
+              : "We're extracting every detail — this usually takes 30-90 seconds per plan."
+          }
           footer={
             parseError ? (
-              <div className="rounded-xl bg-rose-50 ring-1 ring-rose-200 p-4 text-center">
-                <p className="text-sm text-rose-700">{parseError}</p>
+              <div className="rounded-2xl bg-rose-50 ring-1 ring-rose-200 p-5 text-center">
+                <p className="text-sm font-semibold text-rose-900">Upload couldn&rsquo;t complete</p>
+                <p className="text-sm text-rose-700 mt-1.5 leading-relaxed">{parseError}</p>
                 <button
-                  onClick={() => setMode("build")}
-                  className="mt-3 text-sm font-semibold text-rose-700 underline"
+                  onClick={() => {
+                    setParseError(null);
+                    setParseDocs([]);
+                    setMode("build");
+                  }}
+                  className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-600 text-white text-sm font-semibold hover:bg-rose-700 transition-colors"
                 >
-                  Back
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+                  </svg>
+                  Back to compare
                 </button>
               </div>
             ) : undefined
