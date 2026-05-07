@@ -1,18 +1,26 @@
 "use client";
 
 /**
- * S70 — /compare page (Candid Compare).
+ * S70 + S70 follow-up — /compare page (Candid Compare).
  *
- * Up to 3 plans side-by-side via two entry paths:
- *   1. Search & pick — autocomplete via /api/plan/search → canonical plan IDs.
- *   2. Upload documents — multi-upload via /api/documents/upload → poll
- *      /api/documents/status → resolve to insurance_plans IDs.
+ * Unified per-slot UX: each of the (up to 3) plan slots independently supports
+ * three input modes — "Use my current plan" (slot 0 only, when user has an
+ * active insurance_plans row that resolves to a canonical), "Search by name",
+ * and "Upload a document". Modes can be mixed across slots.
+ *
+ * On submit ("Compare these plans"):
+ *   - Slots in "current" or "search-with-selection" mode resolve immediately
+ *     to canonical PlanRef.
+ *   - Slots in "upload-with-file" mode trigger sequential uploads via the
+ *     existing /api/documents/upload pipeline (single Turnstile widget reused
+ *     across uploads with reset between each), poll status until processed,
+ *     then resolve to user_plan PlanRef via documents.linked_insurance_plan_id.
  *
  * Auth-gated by (app) layout. Additional email-verified gate inside this page
  * (Q-S70-5 carrot — verify-email CTA renders if user.emailVerified=false).
  *
  * Backend gate: /api/plan/compare returns 503 when benefits_comparison_v1 flag
- * is OFF, in which case we surface a "Coming soon" state at submit time.
+ * is OFF — surface a "Coming soon" state at submit time.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -27,28 +35,18 @@ import { useConsent } from "@/lib/consent/use-consent";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { CompareHeader } from "@/components/compare/CompareHeader";
 import { CompareCategories } from "@/components/compare/CompareCategories";
-import { MultiDocUploader } from "@/components/compare/MultiDocUploader";
+import {
+  PlanSlot,
+  type SlotState,
+  type CurrentPlanSummary,
+} from "@/components/compare/PlanSlot";
 import {
   PlayfulParsingScreen,
   type ParseDoc,
 } from "@/components/parsing/PlayfulParsingScreen";
 import type { ComparePlanPayload, PlanRef } from "@/lib/plan/compare";
 
-// ── Types ────────────────────────────────────────────────────────────────
-
-interface PlanSearchResult {
-  id: string;
-  name: string;
-  type?: string;
-  state?: string;
-  metalLevel?: string;
-  deductible?: number | null;
-  oopMax?: number | null;
-  year?: number;
-  insurerName?: string;
-}
-
-type Mode = "search" | "upload" | "parsing" | "results";
+type Mode = "build" | "parsing" | "results";
 
 // ── Page ─────────────────────────────────────────────────────────────────
 
@@ -56,7 +54,11 @@ export default function ComparePage() {
   const { user, loading: authLoading } = useAuth();
 
   if (authLoading) {
-    return <PageShell><LoadingState /></PageShell>;
+    return (
+      <PageShell>
+        <LoadingState />
+      </PageShell>
+    );
   }
 
   if (!user) {
@@ -82,21 +84,19 @@ export default function ComparePage() {
   );
 }
 
-// ── Page shell ───────────────────────────────────────────────────────────
+// ── Shells & gates ──────────────────────────────────────────────────────
 
 function PageShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50/40">
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-12">
-        {children}
-      </div>
+    <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-blue-50/30">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-10 sm:py-14">{children}</div>
     </div>
   );
 }
 
 function LoadingState() {
   return (
-    <div className="flex items-center justify-center py-20">
+    <div className="flex items-center justify-center py-24">
       <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
     </div>
   );
@@ -105,13 +105,13 @@ function LoadingState() {
 function SignedOutState() {
   return (
     <div className="text-center py-20">
-      <h1 className="text-2xl font-semibold text-slate-900">Sign in to use Candid Compare</h1>
-      <p className="text-sm text-slate-600 mt-2">
+      <h1 className="text-3xl font-semibold text-slate-900">Sign in to use Candid Compare</h1>
+      <p className="text-sm text-slate-600 mt-3">
         Compare up to 3 plans side-by-side once you&rsquo;re signed in.
       </p>
       <Link
         href="/auth/signin"
-        className="inline-block mt-6 px-5 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700"
+        className="inline-block mt-6 px-6 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700"
       >
         Sign in
       </Link>
@@ -133,14 +133,10 @@ function EmailVerifyCarrot() {
       const idToken = await user.firebaseUser.getIdToken();
       const res = await fetch("/api/auth/resend-verification", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${idToken}`,
-        },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
       });
-      if (res.ok) {
-        setSent(true);
-      } else {
+      if (res.ok) setSent(true);
+      else {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
         setError(body.error ?? "Couldn't send the verification email. Try again in a moment.");
       }
@@ -161,24 +157,23 @@ function EmailVerifyCarrot() {
         </div>
         <h1 className="text-2xl font-semibold text-slate-900">Verify your email to unlock Candid Compare</h1>
         <p className="text-sm text-slate-600 mt-3 leading-relaxed">
-          We&rsquo;ll only enable side-by-side plan comparison for verified accounts so the cross-user
-          data we surface stays trustworthy. One quick click in your inbox is all it takes.
+          We&rsquo;ll only enable side-by-side plan comparison for verified accounts so the cross-user data we
+          surface stays trustworthy. One quick click in your inbox is all it takes.
         </p>
-
         <div className="mt-8">
           {sent ? (
             <div className="rounded-xl bg-emerald-50 ring-1 ring-emerald-200 px-4 py-3">
               <p className="text-sm font-medium text-emerald-800">
-                Sent! Check <span className="font-semibold">{user?.email}</span> (and your spam folder).
+                Sent! Check <span className="font-semibold">{user?.email}</span> (and spam).
               </p>
             </div>
           ) : (
             <button
               onClick={handleResend}
               disabled={sending}
-              className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm font-semibold shadow-md shadow-blue-200 hover:shadow-lg hover:shadow-blue-300 disabled:opacity-60"
+              className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm font-semibold shadow-md shadow-blue-200 hover:shadow-lg disabled:opacity-60"
             >
-              {sending ? "Sending…" : `Send verification email`}
+              {sending ? "Sending…" : "Send verification email"}
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
               </svg>
@@ -186,7 +181,6 @@ function EmailVerifyCarrot() {
           )}
           {error && <p className="text-sm text-rose-600 mt-3">{error}</p>}
         </div>
-
         <p className="text-xs text-slate-500 mt-8 leading-relaxed">
           Already verified? Refresh this page after clicking the link in your email.
         </p>
@@ -199,171 +193,37 @@ function EmailVerifyCarrot() {
 
 function CompareInterface() {
   const { user } = useAuth();
-  const [mode, setMode] = useState<Mode>("search");
+  const [mode, setMode] = useState<Mode>("build");
+  const [slots, setSlots] = useState<SlotState[]>([
+    { kind: "empty" },
+    { kind: "empty" },
+    { kind: "empty" },
+  ]);
+  const [currentPlan, setCurrentPlan] = useState<CurrentPlanSummary | null>(null);
   const [results, setResults] = useState<ComparePlanPayload[] | null>(null);
   const [resultsError, setResultsError] = useState<string | null>(null);
-  const [comparing, setComparing] = useState(false);
 
-  const callCompare = useCallback(
-    async (planRefs: PlanRef[]) => {
-      if (!user) return;
-      setComparing(true);
-      setResultsError(null);
-      try {
-        const idToken = await user.firebaseUser.getIdToken();
-        const res = await fetch("/api/plan/compare", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${idToken}`,
-          },
-          body: JSON.stringify({ planRefs }),
-        });
-        if (res.status === 503) {
-          setResultsError(
-            "Candid Compare isn't available yet. We're rolling it out to all users — check back shortly.",
-          );
-          setMode("results");
-          return;
-        }
-        if (res.status === 403) {
-          setResultsError("Verify your email to unlock Candid Compare.");
-          setMode("results");
-          return;
-        }
-        if (!res.ok) {
-          const body = (await res.json().catch(() => ({}))) as { error?: string };
-          setResultsError(body.error ?? "Couldn't load the comparison. Try again in a moment.");
-          setMode("results");
-          return;
-        }
-        const data = (await res.json()) as { plans: ComparePlanPayload[] };
-        setResults(data.plans.filter((p) => "planSummary" in p) as ComparePlanPayload[]);
-        setMode("results");
-      } catch {
-        setResultsError("Couldn't load the comparison. Try again in a moment.");
-        setMode("results");
-      } finally {
-        setComparing(false);
-      }
-    },
-    [user],
-  );
+  // Parsing-screen state for upload slots.
+  const [parseDocs, setParseDocs] = useState<ParseDoc[]>([]);
+  const [parseError, setParseError] = useState<string | null>(null);
 
-  function startOver() {
-    setMode("search");
-    setResults(null);
-    setResultsError(null);
-  }
+  // Consent + Turnstile state (only used when at least one slot is upload).
+  const { hasConsented, grantConsent } = useConsent("health_data_upload");
+  const consentDoc = getConsentDocument("health_data_upload");
+  const [consentChecked, setConsentChecked] = useState(false);
+  const [consentSubmitting, setConsentSubmitting] = useState(false);
+  const [showConsent, setShowConsent] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const turnstileTokenRef = useRef<string | null>(null);
+  const turnstileRef = useRef<TurnstileWidgetHandle>(null);
 
-  if (mode === "results") {
-    return (
-      <ResultsView
-        plans={results}
-        error={resultsError}
-        onStartOver={startOver}
-      />
-    );
-  }
-
-  if (mode === "parsing") {
-    return null; // UploadFlow renders PlayfulParsingScreen inline.
-  }
-
-  return (
-    <div>
-      <Header />
-      <ModeTabs mode={mode} setMode={setMode} />
-      <div className="mt-6">
-        {mode === "search" ? (
-          <SearchFlow comparing={comparing} onCompare={callCompare} />
-        ) : (
-          <UploadFlow
-            comparing={comparing}
-            onCompare={callCompare}
-            onModeChange={setMode}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
-
-function Header() {
-  return (
-    <div className="text-center mb-10">
-      <span className="inline-block text-[11px] font-semibold uppercase tracking-wider text-blue-600 bg-blue-50 px-3 py-1 rounded-full ring-1 ring-blue-100">
-        New · Candid Compare
-      </span>
-      <h1 className="text-3xl sm:text-4xl font-bold text-slate-900 mt-4">
-        Compare up to 3 plans, side by side.
-      </h1>
-      <p className="text-sm sm:text-base text-slate-600 mt-3 max-w-xl mx-auto leading-relaxed">
-        Premiums, deductibles, OOP max, service breadth, and depth — all in one view, with every
-        number traced back to the source document.
-      </p>
-    </div>
-  );
-}
-
-function ModeTabs({ mode, setMode }: { mode: Mode; setMode: (m: Mode) => void }) {
-  return (
-    <div className="flex justify-center">
-      <div className="inline-flex bg-white rounded-2xl ring-1 ring-slate-200 p-1 shadow-sm">
-        <TabButton
-          active={mode === "search"}
-          onClick={() => setMode("search")}
-          label="Search & pick"
-        />
-        <TabButton
-          active={mode === "upload"}
-          onClick={() => setMode("upload")}
-          label="Upload documents"
-        />
-      </div>
-    </div>
-  );
-}
-
-function TabButton({
-  active,
-  onClick,
-  label,
-}: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`px-4 py-2 text-sm font-semibold rounded-xl transition-all ${
-        active
-          ? "bg-gradient-to-br from-blue-600 to-indigo-600 text-white shadow"
-          : "text-slate-600 hover:text-slate-900"
-      }`}
-    >
-      {label}
-    </button>
-  );
-}
-
-// ── Search-and-pick flow ─────────────────────────────────────────────────
-
-function SearchFlow({
-  comparing,
-  onCompare,
-}: {
-  comparing: boolean;
-  onCompare: (refs: PlanRef[]) => void;
-}) {
-  const { user } = useAuth();
-  const [activePlanPrefilled, setActivePlanPrefilled] = useState(false);
-  const [slots, setSlots] = useState<Array<PlanSearchResult | null>>([null, null, null]);
-
-  // Pre-fill slot 0 with user's active plan when its canonical_plan_id resolves.
   useEffect(() => {
-    if (activePlanPrefilled || !user) return;
+    turnstileTokenRef.current = turnstileToken;
+  }, [turnstileToken]);
+
+  // ── Load user's active plan for slot-0 "current plan" affordance ──────
+  useEffect(() => {
+    if (!user) return;
     let cancelled = false;
     (async () => {
       try {
@@ -382,364 +242,172 @@ function SearchFlow({
         if (!profile?.active_insurance_plan_id) return;
         const { data: plan } = await supabase
           .from("insurance_plans")
-          .select("canonical_plan_id, plan_name, plan_type, state, plan_year, metal_level, insurer_name, in_deductible_individual, in_oop_max_individual")
+          .select("canonical_plan_id, plan_name, plan_type, state, plan_year, metal_level, insurer_name")
           .eq("id", profile.active_insurance_plan_id)
           .single();
         if (!plan?.canonical_plan_id || cancelled) return;
-        setSlots((prev) => {
-          if (prev[0]) return prev;
-          const next = [...prev];
-          next[0] = {
-            id: plan.canonical_plan_id as string,
-            name: plan.plan_name as string,
-            type: plan.plan_type as string,
-            state: plan.state as string,
-            metalLevel: plan.metal_level as string,
-            year: plan.plan_year as number,
-            insurerName: plan.insurer_name as string,
-            deductible: plan.in_deductible_individual as number | null,
-            oopMax: plan.in_oop_max_individual as number | null,
-          };
-          return next;
+        setCurrentPlan({
+          canonicalPlanId: plan.canonical_plan_id as string,
+          planName: (plan.plan_name as string) || "Your plan",
+          insurerName: (plan.insurer_name as string) || "",
+          planType: plan.plan_type as string | null,
+          state: plan.state as string | null,
+          metalLevel: plan.metal_level as string | null,
+          year: plan.plan_year as number | null,
         });
       } catch {
-        // Non-critical — skip prefill on failure.
-      } finally {
-        setActivePlanPrefilled(true);
+        // Non-critical — slot 0 just won't have the "current plan" option.
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [user, activePlanPrefilled]);
+  }, [user]);
 
-  function setSlot(idx: number, plan: PlanSearchResult | null) {
-    setSlots((prev) => {
-      const next = [...prev];
-      next[idx] = plan;
-      return next;
-    });
-  }
-
-  const filledCount = slots.filter(Boolean).length;
-  const canCompare = filledCount >= 2 && !comparing;
-
-  function handleCompare() {
-    const refs: PlanRef[] = slots
-      .filter((s): s is PlanSearchResult => Boolean(s))
-      .map((s) => ({ kind: "canonical", id: s.id }));
-    onCompare(refs);
-  }
-
-  return (
-    <div className="max-w-2xl mx-auto">
-      <div className="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-6">
-        <p className="text-xs uppercase tracking-wide font-semibold text-slate-500 mb-4">
-          Pick 2-3 plans to compare
-        </p>
-        <div className="space-y-3">
-          {slots.map((slot, idx) => (
-            <SearchPlanSlot
-              key={idx}
-              idx={idx}
-              slot={slot}
-              onSelect={(p) => setSlot(idx, p)}
-              onClear={() => setSlot(idx, null)}
-            />
-          ))}
-        </div>
-        <button
-          type="button"
-          onClick={handleCompare}
-          disabled={!canCompare}
-          className={`mt-6 w-full py-3 rounded-xl text-sm font-semibold transition-all ${
-            canCompare
-              ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-200 hover:shadow-lg hover:shadow-blue-300"
-              : "bg-slate-100 text-slate-400 cursor-not-allowed"
-          }`}
-        >
-          {comparing
-            ? "Loading comparison…"
-            : filledCount < 2
-              ? `Add at least 2 plans (${filledCount}/2)`
-              : `Compare ${filledCount} plan${filledCount === 1 ? "" : "s"}`}
-        </button>
-      </div>
-      <p className="text-xs text-slate-500 mt-4 text-center">
-        Can&rsquo;t find your plan? Switch to <span className="font-semibold">Upload documents</span> to add it.
-      </p>
-    </div>
+  // ── Slot helpers ──────────────────────────────────────────────────────
+  const setSlot = useCallback(
+    (idx: number, next: SlotState) => {
+      setSlots((prev) => {
+        const arr = [...prev];
+        arr[idx] = next;
+        return arr;
+      });
+    },
+    [],
   );
-}
 
-function SearchPlanSlot({
-  idx,
-  slot,
-  onSelect,
-  onClear,
-}: {
-  idx: number;
-  slot: PlanSearchResult | null;
-  onSelect: (p: PlanSearchResult) => void;
-  onClear: () => void;
-}) {
-  const { user } = useAuth();
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<PlanSearchResult[]>([]);
-  const [showResults, setShowResults] = useState(false);
-  const [searching, setSearching] = useState(false);
-  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const planLetter = String.fromCharCode(65 + idx);
+  const filledCount = slots.filter((s) => isResolved(s)).length;
+  const hasUploadSlot = slots.some((s) => s.kind === "upload" && s.file);
+  const canSubmit = filledCount >= 2;
 
-  useEffect(() => {
-    if (slot || !user || query.length < 3) {
-      setResults([]);
-      setShowResults(false);
+  // ── Submit flow ──────────────────────────────────────────────────────
+  async function handleSubmit() {
+    if (!user || !canSubmit) return;
+    setResultsError(null);
+    setParseError(null);
+
+    // Branch on consent if any upload slot is present.
+    if (hasUploadSlot && !hasConsented && !consentChecked) {
+      setShowConsent(true);
       return;
     }
-    if (debounce.current) clearTimeout(debounce.current);
-    debounce.current = setTimeout(async () => {
-      setSearching(true);
+    if (hasUploadSlot && !hasConsented) {
+      setConsentSubmitting(true);
       try {
-        const idToken = await user.firebaseUser.getIdToken();
-        const res = await fetch("/api/plan/search", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${idToken}`,
-          },
-          body: JSON.stringify({ query }),
-        });
-        if (res.ok) {
-          const { plans } = await res.json();
-          setResults(plans || []);
-          setShowResults((plans || []).length > 0);
-        }
+        await grantConsent();
       } catch {
-        // ignore
-      } finally {
-        setSearching(false);
+        setResultsError("Couldn't record your consent. Try again.");
+        setConsentSubmitting(false);
+        return;
       }
-    }, 350);
-    return () => {
-      if (debounce.current) clearTimeout(debounce.current);
-    };
-  }, [query, user, slot]);
-
-  if (slot) {
-    return (
-      <div className="flex items-center gap-3 p-3 rounded-xl bg-blue-50/50 ring-1 ring-blue-200">
-        <div className="w-9 h-9 rounded-lg bg-white ring-1 ring-blue-200 flex items-center justify-center shrink-0">
-          <span className="text-xs font-bold text-blue-700">Plan {planLetter}</span>
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-slate-900 truncate">{slot.name}</p>
-          <p className="text-xs text-slate-500 truncate">
-            {slot.insurerName ? `${slot.insurerName} · ` : ""}
-            {slot.type}
-            {slot.metalLevel ? ` · ${slot.metalLevel}` : ""}
-            {slot.state ? ` · ${slot.state}` : ""}
-          </p>
-        </div>
-        <button
-          onClick={onClear}
-          className="text-slate-400 hover:text-rose-600 transition-colors p-1"
-          aria-label="Remove this plan"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="relative">
-      <div className="flex items-center gap-3 p-3 rounded-xl bg-white ring-1 ring-slate-200 focus-within:ring-blue-300 focus-within:bg-slate-50/50 transition-all">
-        <div className="w-9 h-9 rounded-lg bg-slate-100 flex items-center justify-center shrink-0">
-          <span className="text-xs font-bold text-slate-500">Plan {planLetter}</span>
-        </div>
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onFocus={() => results.length > 0 && setShowResults(true)}
-          onBlur={() => setTimeout(() => setShowResults(false), 200)}
-          placeholder="Type a plan name…"
-          className="flex-1 bg-transparent text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none min-w-0"
-        />
-        {searching && (
-          <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin shrink-0" />
-        )}
-      </div>
-      {showResults && results.length > 0 && (
-        <div className="absolute z-20 left-0 right-0 top-full mt-1 bg-white rounded-xl ring-1 ring-slate-200 shadow-xl max-h-72 overflow-y-auto">
-          {results.map((plan) => (
-            <button
-              key={plan.id}
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => {
-                onSelect(plan);
-                setQuery("");
-                setShowResults(false);
-              }}
-              className="w-full text-left px-3 py-2.5 hover:bg-blue-50 border-b border-slate-100 last:border-b-0 transition-colors"
-            >
-              <p className="text-sm font-medium text-slate-900">{plan.name}</p>
-              <p className="text-xs text-slate-500 mt-0.5">
-                {plan.insurerName ? `${plan.insurerName} · ` : ""}
-                {plan.type ?? ""}
-                {plan.metalLevel ? ` · ${plan.metalLevel}` : ""}
-                {plan.state ? ` · ${plan.state}` : ""}
-                {plan.deductible != null ? ` · $${plan.deductible.toLocaleString()} deductible` : ""}
-              </p>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Upload flow ──────────────────────────────────────────────────────────
-
-interface UploadDoc {
-  id: string;
-  file: File;
-  documentId: string | null;
-  insurancePlanId: string | null;
-  phase: ParseDoc["phase"];
-  progress: number;
-  detail?: string;
-  errorMessage?: string;
-}
-
-function UploadFlow({
-  comparing,
-  onCompare,
-  onModeChange,
-}: {
-  comparing: boolean;
-  onCompare: (refs: PlanRef[]) => void;
-  onModeChange: (m: Mode) => void;
-}) {
-  const { user } = useAuth();
-  const [files, setFiles] = useState<File[]>([]);
-  const [uploadDocs, setUploadDocs] = useState<UploadDoc[]>([]);
-  const [stage, setStage] = useState<"select" | "consent" | "uploading">("select");
-  const [error, setError] = useState<string | null>(null);
-  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
-  const turnstileTokenRef = useRef<string | null>(null);
-  const turnstileRef = useRef<TurnstileWidgetHandle>(null);
-
-  useEffect(() => {
-    turnstileTokenRef.current = turnstileToken;
-  }, [turnstileToken]);
-
-  const { hasConsented, loading: consentLoading, grantConsent } = useConsent("health_data_upload");
-  const consentDoc = getConsentDocument("health_data_upload");
-  const [consentChecked, setConsentChecked] = useState(false);
-  const [consentSubmitting, setConsentSubmitting] = useState(false);
-
-  const allComplete = uploadDocs.length > 0 && uploadDocs.every((d) => d.phase === "complete");
-
-  // Once all docs are parsed, surface the compare CTA.
-  useEffect(() => {
-    if (allComplete && uploadDocs.length >= 2) {
-      const refs: PlanRef[] = uploadDocs
-        .filter((d) => d.insurancePlanId)
-        .map((d) => ({ kind: "user_plan" as const, id: d.insurancePlanId! }));
-      if (refs.length >= 2) {
-        onCompare(refs);
-      } else {
-        setError("We couldn't link these documents to plan records. Try uploading SBC PDFs.");
-      }
-    }
-  }, [allComplete, uploadDocs, onCompare]);
-
-  function handleSubmit() {
-    if (files.length < 2) return;
-    setError(null);
-    if (!hasConsented && !consentChecked) {
-      setStage("consent");
-      return;
-    }
-    beginUploads();
-  }
-
-  async function ensureConsent(): Promise<boolean> {
-    if (hasConsented) return true;
-    if (!consentChecked) return false;
-    setConsentSubmitting(true);
-    try {
-      await grantConsent();
-      return true;
-    } catch {
-      setError("Couldn't record your consent. Try again.");
-      return false;
-    } finally {
       setConsentSubmitting(false);
     }
-  }
 
-  async function beginUploads() {
-    if (!user) return;
-    const ok = await ensureConsent();
-    if (!ok) return;
-    const docs: UploadDoc[] = files.map((f, i) => ({
-      id: `${Date.now()}-${i}`,
-      file: f,
-      documentId: null,
-      insurancePlanId: null,
-      phase: i === 0 ? "uploading" : "queued",
-      progress: i === 0 ? 5 : 0,
-    }));
-    setUploadDocs(docs);
-    setStage("uploading");
-    // Sequential upload — single turnstile widget reused with reset between uploads.
-    for (let i = 0; i < docs.length; i++) {
-      const result = await uploadOne(docs[i], i);
-      if (!result) {
-        // Mark this doc as error; continue to the next.
-        setUploadDocs((prev) => {
-          const next = [...prev];
-          next[i] = {
-            ...next[i],
-            phase: "error",
-            errorMessage: "Upload or processing failed.",
-          };
-          // Promote next queued doc to uploading.
-          if (i + 1 < next.length && next[i + 1].phase === "queued") {
-            next[i + 1] = { ...next[i + 1], phase: "uploading", progress: 5 };
-          }
-          return next;
-        });
-        continue;
-      }
-      // Promote next doc when this one finishes uploading + parsing.
-      setUploadDocs((prev) => {
-        const next = [...prev];
-        if (i + 1 < next.length && next[i + 1].phase === "queued") {
-          next[i + 1] = { ...next[i + 1], phase: "uploading", progress: 5 };
-        }
-        return next;
+    setShowConsent(false);
+
+    // Build the planRefs list, processing uploads inline.
+    const refs: PlanRef[] = [];
+    const uploadIndexes: number[] = [];
+    slots.forEach((s, i) => {
+      if (s.kind === "upload" && s.file) uploadIndexes.push(i);
+    });
+
+    if (uploadIndexes.length > 0) {
+      // Switch to parsing UI; build initial parseDocs entries.
+      setMode("parsing");
+      const initial: ParseDoc[] = uploadIndexes.map((i, n) => {
+        const slot = slots[i];
+        const file = slot.kind === "upload" && slot.file ? slot.file : null;
+        return {
+          id: `slot-${i}`,
+          label: `Plan ${String.fromCharCode(65 + i)}`,
+          fileName: file?.name ?? "Unknown",
+          phase: n === 0 ? "uploading" : "queued",
+          progress: n === 0 ? 5 : 0,
+        };
       });
+      setParseDocs(initial);
+
+      // Process uploads sequentially.
+      for (let n = 0; n < uploadIndexes.length; n++) {
+        const idx = uploadIndexes[n];
+        const slot = slots[idx];
+        if (slot.kind !== "upload" || !slot.file) continue;
+        const insurancePlanId = await processOneUpload({
+          file: slot.file,
+          docId: `slot-${idx}`,
+          isFirst: n === 0,
+        });
+        if (insurancePlanId) {
+          // Mark next queued doc as uploading.
+          setParseDocs((prev) => {
+            const arr = [...prev];
+            const myEntry = arr.findIndex((d) => d.id === `slot-${idx}`);
+            if (myEntry >= 0) arr[myEntry] = { ...arr[myEntry], phase: "complete", progress: 100 };
+            const nextQueued = arr.findIndex((d) => d.phase === "queued");
+            if (nextQueued >= 0) {
+              arr[nextQueued] = { ...arr[nextQueued], phase: "uploading", progress: 5 };
+            }
+            return arr;
+          });
+        } else {
+          setParseDocs((prev) => {
+            const arr = [...prev];
+            const myEntry = arr.findIndex((d) => d.id === `slot-${idx}`);
+            if (myEntry >= 0) {
+              arr[myEntry] = {
+                ...arr[myEntry],
+                phase: "error",
+                errorMessage: "Couldn't process this document.",
+              };
+            }
+            return arr;
+          });
+          setParseError("One or more documents couldn't be processed. Switch them to search instead.");
+          setMode("build");
+          return;
+        }
+      }
+
+      // Re-collect refs in slot order, now with insurance_plan_ids populated
+      // for upload slots.
+      const uploadInsurancePlanIds = await collectUploadResults(uploadIndexes);
+      const finalRefs: PlanRef[] = [];
+      for (let i = 0; i < slots.length; i++) {
+        const s = slots[i];
+        if (s.kind === "current") {
+          finalRefs.push({ kind: "canonical", id: s.plan.canonicalPlanId });
+        } else if (s.kind === "search" && s.selected) {
+          finalRefs.push({ kind: "canonical", id: s.selected.id });
+        } else if (s.kind === "upload" && s.file) {
+          const ipid = uploadInsurancePlanIds.get(i);
+          if (ipid) finalRefs.push({ kind: "user_plan", id: ipid });
+        }
+      }
+      await callCompareApi(finalRefs);
+    } else {
+      // No uploads — refs resolve immediately.
+      slots.forEach((s) => {
+        if (s.kind === "current") refs.push({ kind: "canonical", id: s.plan.canonicalPlanId });
+        else if (s.kind === "search" && s.selected) refs.push({ kind: "canonical", id: s.selected.id });
+      });
+      await callCompareApi(refs);
     }
   }
 
-  async function uploadOne(doc: UploadDoc, idx: number): Promise<boolean> {
-    if (!user) return false;
+  async function processOneUpload(opts: {
+    file: File;
+    docId: string;
+    isFirst: boolean;
+  }): Promise<string | null> {
+    if (!user) return null;
+    const { file, docId, isFirst } = opts;
 
-    // Wait for a fresh turnstile token (reset between uploads). The first upload
-    // can use the initial token captured by the widget at mount; subsequent
-    // uploads need the widget reset to issue a new single-use token.
-    if (idx > 0) {
+    // Fresh Turnstile token between uploads.
+    if (!isFirst) {
       turnstileRef.current?.reset();
       setTurnstileToken(null);
       turnstileTokenRef.current = null;
-      // Wait up to 10s for token to arrive (Cloudflare typically issues in <2s).
       const start = Date.now();
       while (Date.now() - start < 10000) {
         if (turnstileTokenRef.current) break;
@@ -750,10 +418,7 @@ function UploadFlow({
     try {
       const idToken = await user.firebaseUser.getIdToken();
       const formData = new FormData();
-      formData.append("file", doc.file);
-      // Plan-document-or-SBC heuristic — let server classify. Pass "sbc" since
-      // users selecting compare-via-upload most often have SBCs; classifier will
-      // refine if needed.
+      formData.append("file", file);
       formData.append("docType", "sbc");
       const tok = turnstileTokenRef.current;
       if (tok) formData.append("turnstileToken", tok);
@@ -763,22 +428,19 @@ function UploadFlow({
         headers: { Authorization: `Bearer ${idToken}` },
         body: formData,
       });
-      if (!uploadRes.ok) return false;
+      if (!uploadRes.ok) return null;
       const uploadBody = (await uploadRes.json()) as { documentId?: string };
-      if (!uploadBody.documentId) return false;
+      if (!uploadBody.documentId) return null;
 
-      setUploadDocs((prev) => {
-        const next = [...prev];
-        next[idx] = {
-          ...next[idx],
-          documentId: uploadBody.documentId!,
-          phase: "parsing",
-          progress: 25,
-        };
-        return next;
+      setParseDocs((prev) => {
+        const arr = [...prev];
+        const myEntry = arr.findIndex((d) => d.id === docId);
+        if (myEntry >= 0) {
+          arr[myEntry] = { ...arr[myEntry], phase: "parsing", progress: 25 };
+        }
+        return arr;
       });
 
-      // Poll until processed.
       const startedAt = Date.now();
       while (true) {
         await new Promise((r) => setTimeout(r, 4000));
@@ -810,107 +472,140 @@ function UploadFlow({
             ? `Page ${statusBody.completedPages} of ${statusBody.totalPages}`
             : statusBody.step ?? undefined;
 
-        setUploadDocs((prev) => {
-          const next = [...prev];
-          next[idx] = { ...next[idx], phase, progress, detail };
-          return next;
+        setParseDocs((prev) => {
+          const arr = [...prev];
+          const myEntry = arr.findIndex((d) => d.id === docId);
+          if (myEntry >= 0) {
+            arr[myEntry] = { ...arr[myEntry], phase, progress, detail };
+          }
+          return arr;
         });
 
         if (statusBody.status === "processed") {
-          // Resolve the document → its insurance_plans row for compare.
           const supabase = createBrowserClient();
           const { data: docRow } = await supabase
             .from("documents")
             .select("linked_insurance_plan_id")
             .eq("id", uploadBody.documentId)
             .single();
-          const insurancePlanId = (docRow?.linked_insurance_plan_id as string | null) ?? null;
-          setUploadDocs((prev) => {
-            const next = [...prev];
-            next[idx] = {
-              ...next[idx],
-              phase: "complete",
-              progress: 100,
-              insurancePlanId,
-            };
-            return next;
-          });
-          return true;
+          return (docRow?.linked_insurance_plan_id as string | null) ?? null;
         }
-        if (statusBody.status === "error" || statusBody.isStuck) return false;
+        if (statusBody.status === "error" || statusBody.isStuck) return null;
       }
     } catch {
-      return false;
+      return null;
     }
   }
 
-  if (stage === "consent") {
-    return (
-      <div className="max-w-xl mx-auto bg-white rounded-2xl ring-1 ring-slate-200 p-6 shadow-sm">
-        <h2 className="text-base font-semibold text-slate-900">Quick consent before we read your plan documents</h2>
-        <p className="text-sm text-slate-600 mt-2 leading-relaxed">{consentDoc?.summary}</p>
-        <label className="flex items-start gap-3 mt-4 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={consentChecked}
-            onChange={(e) => setConsentChecked(e.target.checked)}
-            className="mt-1 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-          />
-          <span className="text-sm text-slate-700">
-            I&rsquo;ve read and agree to the {consentDoc?.title ?? "consent terms"} above.
-          </span>
-        </label>
-        <button
-          onClick={() => beginUploads()}
-          disabled={!consentChecked || consentSubmitting || consentLoading}
-          className="mt-6 w-full py-3 rounded-xl text-sm font-semibold bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-200 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {consentSubmitting ? "Saving consent…" : "Continue and upload"}
-        </button>
-        <button
-          onClick={() => onModeChange("search")}
-          className="mt-3 w-full text-xs text-slate-500 hover:text-slate-700"
-        >
-          Cancel
-        </button>
-      </div>
-    );
+  async function collectUploadResults(uploadIndexes: number[]): Promise<Map<number, string>> {
+    if (!user) return new Map();
+    const out = new Map<number, string>();
+    const supabase = createBrowserClient();
+    // We've already polled each to "complete" + populated linked_insurance_plan_id.
+    // Re-query each via documents.id is overkill — instead, walk through parseDocs and
+    // resolve each via a DB read.
+    const { data: u } = await supabase
+      .from("users")
+      .select("id")
+      .eq("firebase_uid", user.userId)
+      .single();
+    if (!u) return out;
+    const { data: docs } = await supabase
+      .from("documents")
+      .select("id, linked_insurance_plan_id, file_name, created_at")
+      .eq("user_id", u.id)
+      .order("created_at", { ascending: false })
+      .limit(uploadIndexes.length * 2);
+    if (!docs) return out;
+    // Match docs back to slot indexes by file name (best-effort heuristic).
+    for (const slotIdx of uploadIndexes) {
+      const slot = slots[slotIdx];
+      if (slot.kind !== "upload" || !slot.file) continue;
+      const match = docs.find(
+        (d) => (d.file_name as string) === slot.file?.name && d.linked_insurance_plan_id,
+      );
+      if (match) out.set(slotIdx, match.linked_insurance_plan_id as string);
+    }
+    return out;
   }
 
-  if (stage === "uploading") {
-    const parseDocs: ParseDoc[] = uploadDocs.map((d, i) => ({
-      id: d.id,
-      label: `Plan ${String.fromCharCode(65 + i)}`,
-      fileName: d.file.name,
-      phase: d.phase,
-      progress: d.progress,
-      detail: d.detail,
-      errorMessage: d.errorMessage,
-    }));
+  async function callCompareApi(planRefs: PlanRef[]) {
+    if (!user || planRefs.length < 2) {
+      setResultsError("Need at least 2 plans to compare.");
+      setMode("results");
+      return;
+    }
+    try {
+      const idToken = await user.firebaseUser.getIdToken();
+      const res = await fetch("/api/plan/compare", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({ planRefs }),
+      });
+      if (res.status === 503) {
+        setResultsError("Candid Compare isn't available yet. We're rolling it out — check back shortly.");
+        setMode("results");
+        return;
+      }
+      if (res.status === 403) {
+        setResultsError("Verify your email to unlock Candid Compare.");
+        setMode("results");
+        return;
+      }
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        setResultsError(body.error ?? "Couldn't load the comparison. Try again in a moment.");
+        setMode("results");
+        return;
+      }
+      const data = (await res.json()) as { plans: ComparePlanPayload[] };
+      setResults(data.plans.filter((p) => "planSummary" in p) as ComparePlanPayload[]);
+      setMode("results");
+    } catch {
+      setResultsError("Couldn't load the comparison. Try again in a moment.");
+      setMode("results");
+    }
+  }
+
+  function startOver() {
+    setMode("build");
+    setSlots([{ kind: "empty" }, { kind: "empty" }, { kind: "empty" }]);
+    setResults(null);
+    setResultsError(null);
+    setParseDocs([]);
+    setParseError(null);
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────
+  if (mode === "results") {
+    return <ResultsView plans={results} error={resultsError} onStartOver={startOver} />;
+  }
+
+  if (mode === "parsing") {
     return (
       <div>
         <PlayfulParsingScreen
           docs={parseDocs}
           title="Reading your plan documents"
-          subtitle={
-            comparing
-              ? "Loading the comparison…"
-              : "We're extracting every detail — this usually takes 30-90 seconds per plan."
-          }
+          subtitle="We're extracting every detail — this usually takes 30-90 seconds per plan."
           footer={
-            error ? (
+            parseError ? (
               <div className="rounded-xl bg-rose-50 ring-1 ring-rose-200 p-4 text-center">
-                <p className="text-sm text-rose-700">{error}</p>
+                <p className="text-sm text-rose-700">{parseError}</p>
                 <button
-                  onClick={() => onModeChange("search")}
+                  onClick={() => setMode("build")}
                   className="mt-3 text-sm font-semibold text-rose-700 underline"
                 >
-                  Switch to search
+                  Back
                 </button>
               </div>
             ) : undefined
           }
         />
+        {/* Hidden Turnstile widget — token feeds upload requests. */}
         <div className="hidden">
           <TurnstileWidget ref={turnstileRef} action="upload" onToken={setTurnstileToken} />
         </div>
@@ -918,26 +613,107 @@ function UploadFlow({
     );
   }
 
+  // Build mode
   return (
-    <div className="max-w-2xl mx-auto">
-      <div className="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-6">
-        <p className="text-xs uppercase tracking-wide font-semibold text-slate-500 mb-4">
-          Upload 2-3 plan PDFs (SBC or summary booklet)
-        </p>
-        <MultiDocUploader
-          selected={files}
-          onChange={setFiles}
-          max={3}
-          onSubmit={handleSubmit}
-          submitLabel={
-            files.length < 2
-              ? `Add at least 2 plans (${files.length}/2)`
-              : `Compare ${files.length} plan${files.length === 1 ? "" : "s"}`
-          }
-        />
-        <TurnstileWidget ref={turnstileRef} action="upload" onToken={setTurnstileToken} />
+    <div>
+      <Header />
+
+      <div className="max-w-2xl mx-auto space-y-4">
+        {slots.map((slot, idx) => (
+          <PlanSlot
+            key={idx}
+            index={idx}
+            optional={idx === 2}
+            currentPlan={currentPlan}
+            state={slot}
+            onChange={(next) => setSlot(idx, next)}
+            disabled={consentSubmitting}
+          />
+        ))}
       </div>
-      {error && <p className="text-sm text-rose-600 mt-4 text-center">{error}</p>}
+
+      {showConsent && (
+        <div className="max-w-2xl mx-auto mt-6 bg-white rounded-2xl ring-1 ring-amber-200 p-6 shadow-sm">
+          <div className="flex items-start gap-3">
+            <div className="shrink-0 w-9 h-9 rounded-xl bg-amber-100 flex items-center justify-center">
+              <svg className="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+              </svg>
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-slate-900">Quick consent before we read your plan documents</p>
+              <p className="text-sm text-slate-600 mt-1.5 leading-relaxed">{consentDoc?.summary}</p>
+              <label className="flex items-start gap-3 mt-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={consentChecked}
+                  onChange={(e) => setConsentChecked(e.target.checked)}
+                  className="mt-1 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-sm text-slate-700">
+                  I&rsquo;ve read and agree to the {consentDoc?.title ?? "consent terms"} above.
+                </span>
+              </label>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="max-w-2xl mx-auto mt-8">
+        <button
+          type="button"
+          onClick={handleSubmit}
+          disabled={!canSubmit || consentSubmitting || (showConsent && !consentChecked)}
+          className={`w-full py-4 rounded-2xl text-base font-semibold transition-all ${
+            canSubmit && !consentSubmitting && !(showConsent && !consentChecked)
+              ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-200 hover:shadow-xl hover:shadow-blue-300 hover:-translate-y-0.5"
+              : "bg-slate-100 text-slate-400 cursor-not-allowed"
+          }`}
+        >
+          {consentSubmitting
+            ? "Saving consent…"
+            : showConsent
+              ? "Continue and compare"
+              : filledCount < 2
+                ? `Add at least 2 plans to compare (${filledCount}/2)`
+                : `Compare ${filledCount} plan${filledCount === 1 ? "" : "s"}`}
+        </button>
+        {resultsError && <p className="text-sm text-rose-600 mt-3 text-center">{resultsError}</p>}
+      </div>
+
+      {/* Hidden Turnstile widget — only mounts in build mode so token is ready
+          when the user clicks Compare with at least one upload slot. */}
+      {hasUploadSlot && (
+        <div className="hidden">
+          <TurnstileWidget ref={turnstileRef} action="upload" onToken={setTurnstileToken} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function isResolved(s: SlotState): boolean {
+  if (s.kind === "current") return true;
+  if (s.kind === "search" && s.selected) return true;
+  if (s.kind === "upload" && s.file) return true;
+  return false;
+}
+
+function Header() {
+  return (
+    <div className="text-center mb-10 sm:mb-12">
+      <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-blue-700 bg-blue-50 px-3 py-1 rounded-full ring-1 ring-blue-100 mb-5">
+        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M12 2l2.39 7.36H22l-6.18 4.49 2.36 7.36L12 16.71l-6.18 4.5 2.36-7.36L2 9.36h7.61z" />
+        </svg>
+        New · Candid Compare
+      </span>
+      <h1 className="text-3xl sm:text-5xl font-bold text-slate-900 tracking-tight">
+        Compare 3 plans, side by side.
+      </h1>
+      <p className="text-base sm:text-lg text-slate-600 mt-4 max-w-xl mx-auto leading-relaxed">
+        Premiums, deductibles, OOP max, service breadth + depth — every number traced back to the source.
+      </p>
     </div>
   );
 }
@@ -956,8 +732,10 @@ function ResultsView({
   if (error) {
     return (
       <div className="max-w-xl mx-auto py-12 text-center">
-        <div className="bg-white rounded-2xl ring-1 ring-slate-200 p-8 shadow-sm">
-          <h2 className="text-xl font-semibold text-slate-900">{error.includes("Verify") ? error : "Something went wrong"}</h2>
+        <div className="bg-white rounded-3xl ring-1 ring-slate-200 p-8 shadow-sm">
+          <h2 className="text-xl font-semibold text-slate-900">
+            {error.includes("Verify") ? error : "Something went wrong"}
+          </h2>
           {!error.includes("Verify") && <p className="text-sm text-slate-600 mt-2">{error}</p>}
           <button
             onClick={onStartOver}
@@ -986,10 +764,10 @@ function ResultsView({
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-xl sm:text-2xl font-semibold text-slate-900">Your comparison</h1>
-          <p className="text-xs text-slate-500 mt-0.5">
+          <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">Your comparison</h1>
+          <p className="text-sm text-slate-500 mt-1">
             {plans.length} plan{plans.length === 1 ? "" : "s"} side-by-side
           </p>
         </div>
@@ -1001,7 +779,6 @@ function ResultsView({
         </button>
       </div>
 
-      {/* Mobile note */}
       <p className="sm:hidden text-xs text-slate-500 mb-3">
         Scroll horizontally to see all columns →
       </p>
@@ -1015,4 +792,3 @@ function ResultsView({
     </div>
   );
 }
-
