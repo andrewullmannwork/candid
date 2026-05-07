@@ -155,8 +155,19 @@ function UploadForm() {
   // Cloudflare Turnstile (S68) — bot defense on upload. Token is single-use,
   // so widgetRef.current.reset() is called after each upload attempt to issue
   // a fresh token for the next file.
+  // CF-34 (Session 72): widget render is deferred until the user picks a file
+  // (drag/drop or browse) so it doesn't visually clutter the upload form on
+  // page load AND we don't waste tokens on visitors who don't actually upload.
+  // userPickedFile flips true the moment a valid file is selected; mirror to a
+  // ref so doUpload's closure can poll the latest token without stale-deps.
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const turnstileTokenRef = useRef<string | null>(null);
   const turnstileRef = useRef<TurnstileWidgetHandle>(null);
+  const [userPickedFile, setUserPickedFile] = useState(false);
+
+  useEffect(() => {
+    turnstileTokenRef.current = turnstileToken;
+  }, [turnstileToken]);
 
   // Retry a failed or stuck document
   const retryDocument = useCallback(async (docId: string) => {
@@ -293,11 +304,22 @@ function UploadForm() {
       try {
         const idToken = await user.firebaseUser.getIdToken();
 
+        // CF-34 (Session 72): wait up to 12s for Turnstile token. Widget mounts
+        // on file-select (not page load) so it may not have issued a token by
+        // the time doUpload starts (especially when consent is already granted
+        // and onDrop calls doUpload immediately). Poll the ref because the
+        // widget callback updates state asynchronously.
+        const tokenWaitStart = Date.now();
+        while (!turnstileTokenRef.current && Date.now() - tokenWaitStart < 12000) {
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        const tokenForUpload = turnstileTokenRef.current;
+
         // Upload file via API to bypass RLS
         const formData = new FormData();
         formData.append("file", file);
         formData.append("docType", docType);
-        if (turnstileToken) formData.append("turnstileToken", turnstileToken);
+        if (tokenForUpload) formData.append("turnstileToken", tokenForUpload);
 
         // Use XHR for upload progress tracking
         setUploadProgress(0);
@@ -376,10 +398,14 @@ function UploadForm() {
         setUploading(false);
       }
     },
-    [user, docType, turnstileToken]
+    [user, docType]
   );
 
-  // Intercept drop: validate file, then check consent before uploading
+  // Intercept drop: validate file, then check consent before uploading.
+  // CF-34 (Session 72): also flips userPickedFile so the Turnstile widget
+  // mounts at this exact moment — the widget will load + capture a token
+  // while the user works through the consent modal (or immediately if already
+  // consented), keeping captcha out of the way until it's actually needed.
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
       if (!user || acceptedFiles.length === 0) return;
@@ -401,6 +427,11 @@ function UploadForm() {
         setError("File must be under 20MB.");
         return;
       }
+
+      // Mount Turnstile (CF-34): even though it takes ~3-5s to issue a token,
+      // the consent modal flow gives it that time naturally. doUpload polls
+      // the ref so the upload waits if the token isn't ready yet.
+      setUserPickedFile(true);
 
       // If consent already granted, upload immediately
       if (hasConsented) {
@@ -915,8 +946,12 @@ function UploadForm() {
           })()}
 
           {/* Premium prompt — SBCs don't include premium; ask the user before
-              they navigate away to /plan so total-cost projections work. */}
-          {isComplete && isPlanType && needsPremium && processingProgress?.linkedInsurancePlanId && user && (
+              they navigate away to /plan so total-cost projections work.
+              CF-35 (Session 72): premium is now optional — the inline prompt
+              has a Skip button so users who don't know their premium yet can
+              proceed without entering a value. They can edit it later from the
+              plan page. */}
+          {isComplete && isPlanType && needsPremium && processingProgress?.linkedInsurancePlanId && user && !premiumSaved && (
             <PremiumPromptInline
               planId={processingProgress.linkedInsurancePlanId}
               user={user}
@@ -926,6 +961,10 @@ function UploadForm() {
                 // 800ms-ish delay the no-prompt path uses; gives the user a
                 // beat to see the success state).
                 setTimeout(() => { window.location.href = "/plan"; }, 800);
+              }}
+              onSkip={() => {
+                setPremiumSaved(true);
+                window.location.href = "/plan";
               }}
             />
           )}
@@ -950,7 +989,7 @@ function UploadForm() {
             )}
             {(isComplete || isError || isStuck || isPendingReview) && (
               <button
-                onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setClassificationResult(null); setSbcParsed(null); setProcessingProgress(null); setDocumentId(null); setUploadProgress(0); }}
+                onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setClassificationResult(null); setSbcParsed(null); setProcessingProgress(null); setDocumentId(null); setUploadProgress(0); setUserPickedFile(false); setPremiumSaved(false); }}
                 className="w-full py-2.5 border border-gray-200 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
               >
                 Upload another document
@@ -1132,8 +1171,15 @@ function UploadForm() {
         </div>
 
         {/* Cloudflare Turnstile — bot defense (S68). Managed mode is invisible
-            for legitimate users; high-risk traffic gets an interactive challenge. */}
-        <TurnstileWidget ref={turnstileRef} action="upload" onToken={setTurnstileToken} />
+            for legitimate users; high-risk traffic gets an interactive challenge.
+            CF-34 (Session 72): widget only mounts after the user picks a file
+            so it doesn't visually clutter the upload form on page load and we
+            don't waste tokens on visitors who never upload. doUpload polls
+            turnstileTokenRef before sending the request, so a brief delay
+            between file-pick and token-issuance is handled gracefully. */}
+        {userPickedFile && (
+          <TurnstileWidget ref={turnstileRef} action="upload" onToken={setTurnstileToken} />
+        )}
 
         {error && (
           <div className="p-3 bg-red-50 border border-red-100 rounded-xl">
@@ -1273,10 +1319,12 @@ function PremiumPromptInline({
   planId,
   user,
   onSaved,
+  onSkip,
 }: {
   planId: string;
   user: { firebaseUser: { getIdToken(): Promise<string> } };
   onSaved: (premium: number) => void;
+  onSkip: () => void;
 }) {
   const [value, setValue] = useState("");
   const [saving, setSaving] = useState(false);
@@ -1343,6 +1391,14 @@ function PremiumPromptInline({
         </button>
       </div>
       {error && <p className="text-xs text-red-600 mt-2">{error}</p>}
+      <button
+        type="button"
+        onClick={onSkip}
+        disabled={saving}
+        className="mt-3 text-xs font-medium text-slate-500 hover:text-slate-900 underline disabled:opacity-50"
+      >
+        Skip for now — I&rsquo;ll add it later
+      </button>
     </div>
   );
 }

@@ -16,6 +16,16 @@ import {
   linkDocumentToCanonical,
 } from "@/lib/plan/extraction-dedup";
 
+// CF-36 (Session 72) — test account exemption from per-user document caps.
+// Hardcoded single-account escape hatch so MVP testing iterations aren't
+// blocked by upload limits. Revisit at OPS Sprint pre-OPS.1 to convert to a
+// proper admin role + flag (Phase 2 follow-up).
+const TEST_EXEMPT_EMAIL = "andrew.david.ullmann@gmail.com";
+
+function isTestExemptUser(decoded: { email?: string | null } | null): boolean {
+  return decoded?.email?.toLowerCase() === TEST_EXEMPT_EMAIL;
+}
+
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
   if (!authHeader?.startsWith("Bearer ")) return null;
@@ -118,37 +128,44 @@ export async function POST(req: NextRequest) {
     .eq("status", "processing")
     .lt("created_at", new Date(Date.now() - 5 * 60 * 1000).toISOString());
 
-  // Check per-user document limit (exclude errored/failed docs and card scan audit trail)
-  const { count: userDocCount } = await supabase
-    .from("documents")
-    .select("id", { count: "exact", head: true })
-    .eq("user_id", user.id)
-    .neq("doc_type", "insurance_card")
-    .in("status", ["uploaded", "queued", "processing", "processed"]);
+  // CF-36: test account is exempt from both per-user and daily caps.
+  const exemptFromCaps = isTestExemptUser(decoded);
 
-  if (userDocCount != null && userDocCount >= FLAGS.UPLOAD_MAX_PER_USER) {
-    return NextResponse.json(
-      { error: `You've reached the upload limit of ${FLAGS.UPLOAD_MAX_PER_USER} documents. Contact support if you need more.` },
-      { status: 429 }
-    );
-  }
+  if (!exemptFromCaps) {
+    // Check per-user document limit (exclude errored/failed docs and card scan audit trail)
+    const { count: userDocCount } = await supabase
+      .from("documents")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", user.id)
+      .neq("doc_type", "insurance_card")
+      .in("status", ["uploaded", "queued", "processing", "processed"]);
 
-  // Daily upload cap — 10 uploads per calendar day (excludes card scan audit trail)
-  const dayStart = new Date();
-  dayStart.setHours(0, 0, 0, 0);
-  const { count: todayCount } = await supabase
-    .from("documents")
-    .select("id", { count: "exact", head: true })
-    .eq("user_id", user.id)
-    .neq("doc_type", "insurance_card")
-    .gte("created_at", dayStart.toISOString());
+    if (userDocCount != null && userDocCount >= FLAGS.UPLOAD_MAX_PER_USER) {
+      return NextResponse.json(
+        { error: `You've reached the upload limit of ${FLAGS.UPLOAD_MAX_PER_USER} documents. Contact support if you need more.` },
+        { status: 429 }
+      );
+    }
 
-  const DAILY_UPLOAD_LIMIT = parseInt(process.env.DAILY_UPLOAD_LIMIT || "10", 10);
-  if (todayCount != null && todayCount >= DAILY_UPLOAD_LIMIT) {
-    return NextResponse.json(
-      { error: `You've reached the daily upload limit of ${DAILY_UPLOAD_LIMIT} documents. Try again tomorrow.` },
-      { status: 429 }
-    );
+    // Daily upload cap — 10 uploads per calendar day (excludes card scan audit trail)
+    const dayStart = new Date();
+    dayStart.setHours(0, 0, 0, 0);
+    const { count: todayCount } = await supabase
+      .from("documents")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", user.id)
+      .neq("doc_type", "insurance_card")
+      .gte("created_at", dayStart.toISOString());
+
+    const DAILY_UPLOAD_LIMIT = parseInt(process.env.DAILY_UPLOAD_LIMIT || "10", 10);
+    if (todayCount != null && todayCount >= DAILY_UPLOAD_LIMIT) {
+      return NextResponse.json(
+        { error: `You've reached the daily upload limit of ${DAILY_UPLOAD_LIMIT} documents. Try again tomorrow.` },
+        { status: 429 }
+      );
+    }
+  } else {
+    console.log("[upload] CF-36 test-account cap exemption applied for", decoded.email);
   }
 
   const documentId = crypto.randomUUID();
@@ -307,21 +324,25 @@ export async function POST(req: NextRequest) {
     await supabase.from("documents").update({ file_hash: fileHashComputed }).eq("id", documentId);
   }
 
-  const { count: hashCount } = await supabase
-    .from("documents")
-    .select("id", { count: "exact", head: true })
-    .eq("user_id", user.id)
-    .eq("file_hash", fileHashComputed);
+  // CF-36: test account also exempt from per-file-hash duplicate limit so
+  // testing the same SBC repeatedly doesn't trip the rate limiter.
+  if (!exemptFromCaps) {
+    const { count: hashCount } = await supabase
+      .from("documents")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", user.id)
+      .eq("file_hash", fileHashComputed);
 
-  if (hashCount != null && hashCount >= 3) {
-    await supabase.from("documents").update({
-      status: "error",
-      processing_error: "This file has been uploaded too many times.",
-    }).eq("id", documentId);
-    return NextResponse.json(
-      { error: "You've already uploaded this file 3 times. Use the retry button on your existing upload if you need to reprocess." },
-      { status: 429 }
-    );
+    if (hashCount != null && hashCount >= 3) {
+      await supabase.from("documents").update({
+        status: "error",
+        processing_error: "This file has been uploaded too many times.",
+      }).eq("id", documentId);
+      return NextResponse.json(
+        { error: "You've already uploaded this file 3 times. Use the retry button on your existing upload if you need to reprocess." },
+        { status: 429 }
+      );
+    }
   }
 
   // HIGH confidence — queue for processing via QStash (guaranteed delivery)

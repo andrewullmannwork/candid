@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ConfirmationResult } from "firebase/auth";
+import { AuthErrorMessage } from "@/components/auth/PhoneAlreadyLinkedError";
 
 interface PhoneOTPStepProps {
   phoneE164: string;
@@ -126,7 +127,8 @@ export function PhoneOTPStep({
         {loading ? "Verifying…" : "Verify and finish signup"}
       </button>
 
-      {error && <p className="text-red-600 text-sm text-center">{error}</p>}
+      <AuthErrorMessage error={error} />
+
 
       <div className="flex items-center justify-end text-sm">
         <button

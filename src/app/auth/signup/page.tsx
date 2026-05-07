@@ -8,6 +8,7 @@ import { useAuth } from "@/lib/auth/auth-context";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { TurnstileWidget } from "@/components/security/TurnstileWidget";
 import { PhoneOTPStep } from "@/components/auth/PhoneOTPStep";
+import { AuthErrorMessage } from "@/components/auth/PhoneAlreadyLinkedError";
 
 type SignUpMode = "form" | "otp-email" | "otp-google";
 
@@ -531,7 +532,7 @@ export default function SignUpPage() {
               </button>
             </form>
 
-            {accountError && <p className="text-red-600 text-sm text-center">{accountError}</p>}
+            <AuthErrorMessage error={accountError} />
 
             <div className="text-center space-y-2">
               <p className="text-sm text-gray-500">
@@ -565,7 +566,7 @@ export default function SignUpPage() {
               onVerified={handleOtpVerified}
               onResend={handleOtpResend}
             />
-            {accountError && <p className="text-red-600 text-sm text-center">{accountError}</p>}
+            <AuthErrorMessage error={accountError} />
           </div>
         )}
       </div>
@@ -654,7 +655,7 @@ export default function SignUpPage() {
                 onChange={(e) => setGooglePhoneInput(formatPhone(e.target.value))}
                 className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
-              {googleError && <p className="text-red-600 text-sm">{googleError}</p>}
+              <AuthErrorMessage error={googleError} className="text-red-600 text-sm" />
               <div className="flex gap-3">
                 <button
                   type="button"

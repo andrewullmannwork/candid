@@ -225,6 +225,10 @@ function CompareInterface() {
   // Server-side endpoint (bypasses RLS). The previous browser-Supabase-client
   // chain 406'd because Firebase auth isn't visible to RLS policies that gate
   // on auth.uid(). Now: single Bearer-token GET.
+  // CF-31 (Session 72): added diagnostic logging — Session 71 server logs
+  // showed endpoint returning plan data but client wasn't rendering the
+  // affordance. Logs help isolate fetch-failure vs. null-body vs. state-set
+  // race vs. PlanSlot render gating.
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
@@ -234,11 +238,32 @@ function CompareInterface() {
         const res = await fetch("/api/plan/current", {
           headers: { Authorization: `Bearer ${idToken}` },
         });
-        if (!res.ok || cancelled) return;
+        console.log("[/compare] /api/plan/current status:", res.status);
+        if (!res.ok) {
+          console.warn("[/compare] /api/plan/current non-ok:", res.status);
+          return;
+        }
+        if (cancelled) {
+          console.log("[/compare] /api/plan/current cancelled before parse");
+          return;
+        }
         const body = (await res.json()) as { plan: CurrentPlanSummary | null };
-        if (body.plan && !cancelled) setCurrentPlan(body.plan);
-      } catch {
-        // Non-critical — slot 0 just won't have the "current plan" option.
+        console.log("[/compare] /api/plan/current body:", body);
+        if (cancelled) {
+          console.log("[/compare] /api/plan/current cancelled after parse");
+          return;
+        }
+        if (body.plan) {
+          console.log("[/compare] setCurrentPlan(plan)", body.plan.planName);
+          setCurrentPlan(body.plan);
+        } else {
+          console.warn(
+            "[/compare] /api/plan/current returned plan=null — affordance won't render. " +
+              "Likely the user has no insurance_plans rows OR profile.active_insurance_plan_id is orphaned AND no fallback rows exist.",
+          );
+        }
+      } catch (err) {
+        console.error("[/compare] /api/plan/current fetch failed:", err);
       }
     })();
     return () => {
