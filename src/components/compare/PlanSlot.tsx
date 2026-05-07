@@ -21,7 +21,11 @@ import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 
 export interface PlanSearchResult {
+  /** plan_catalog.id (used for /upload's plan match flow). */
   id: string;
+  /** canonical_plans.id via plan_catalog_canonical_map. Required for /compare;
+   *  undefined if the plan_catalog row has no canonical mapping (legacy rows). */
+  canonicalPlanId?: string;
   name: string;
   type?: string;
   state?: string;
@@ -33,8 +37,11 @@ export interface PlanSearchResult {
 }
 
 export interface CurrentPlanSummary {
-  /** canonical_plan_id resolved from the user's active insurance_plan. */
-  canonicalPlanId: string;
+  /** insurance_plans.id (always set; user owns the plan). */
+  insurancePlanId: string;
+  /** canonical_plan_id when the user's plan is linked to a canonical row.
+   *  Null when the plan is user-only (e.g., uploaded SBC didn't match a canonical). */
+  canonicalPlanId: string | null;
   planName: string;
   insurerName: string;
   planType?: string | null;
@@ -273,7 +280,7 @@ function ModePicker({
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-2.5">
+      <div className="grid grid-cols-1 gap-2.5">
         <ModeButton
           icon={
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -444,9 +451,15 @@ function SearchActive({
         </div>
       )}
 
+      {query.length > 0 && query.length < 3 && (
+        <p className="text-xs text-slate-500 px-2">
+          Keep typing — at least 3 characters needed to search.
+        </p>
+      )}
+
       {query.length >= 3 && results.length === 0 && !searching && (
         <p className="text-xs text-slate-500 px-2">
-          No matches. Try a shorter query, or switch to{" "}
+          No matches. Try a different name, or switch to{" "}
           <button onClick={onCancel} className="underline font-medium hover:text-slate-700">
             upload a document
           </button>{" "}

@@ -271,15 +271,20 @@ function scoreLowRiskCeiling(plan: ComparePlanPayload, ctx: ScoringContext): { s
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
+// "Good for" instead of "Best for" — softer claim, less legally fraught (no
+// implicit superiority assertion), and clearer to users that the tag is a
+// directional fit not an absolute ranking. Same logic for "Lower" instead
+// of "Lowest" — implies relative direction, not an absolute superlative
+// claim against the universe of plans.
 const TAG_LABELS: Record<BestForTagKey, string> = {
-  low_everyday_costs: "Best for everyday care",
-  comprehensive_coverage: "Best for full coverage",
-  families: "Best for families",
-  ongoing_prescriptions: "Best for prescriptions",
-  emergencies: "Best for emergencies",
-  out_of_network_flexibility: "Best for flexibility",
-  low_monthly_cost: "Lowest monthly cost",
-  low_risk_ceiling: "Lowest risk ceiling",
+  low_everyday_costs: "Good for everyday care",
+  comprehensive_coverage: "Good for full coverage",
+  families: "Good for families",
+  ongoing_prescriptions: "Good for prescriptions",
+  emergencies: "Good for emergencies",
+  out_of_network_flexibility: "Good for flexibility",
+  low_monthly_cost: "Lower monthly cost",
+  low_risk_ceiling: "Lower risk ceiling",
 };
 
 const SCORE_THRESHOLD = 50; // Tags below this don't get surfaced even if top-N.

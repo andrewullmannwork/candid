@@ -61,8 +61,15 @@ export async function POST(req: NextRequest) {
 
   // Tier 1+2 results — format and return if we have any.
   if (matches.length > 0) {
+    const tier12CanonicalMap = await fetchCanonicalMap(
+      supabase,
+      matches.map((m) => m.planId),
+    );
     const results = matches.map((m) => ({
       id: m.planId,
+      // canonical_plan_id (via plan_catalog_canonical_map). Required for /compare;
+      // undefined if this plan_catalog row hasn't been mapped to a canonical plan.
+      canonicalPlanId: tier12CanonicalMap.get(m.planId),
       hiosId: m.plan.hios_id,
       name: m.planName,
       type: m.plan.plan_type,
@@ -121,24 +128,59 @@ export async function POST(req: NextRequest) {
       if (a.verifiedFirst !== b.verifiedFirst) return a.verifiedFirst - b.verifiedFirst;
       return (a.row.plan_name || "").localeCompare(b.row.plan_name || "");
     })
-    .slice(0, 15)
-    .map(({ row }) => ({
-      id: row.id,
-      hiosId: row.hios_id,
-      name: row.plan_name,
-      type: row.plan_type,
-      state: row.state,
-      metalLevel: row.metal_level,
-      premium: row.premium_individual,
-      deductible: (row.raw_data as Record<string, unknown>)?.deductible_individual,
-      oopMax: (row.raw_data as Record<string, unknown>)?.oop_max_individual,
-      year: row.year,
-      hasSbcUrl: !!row.sbc_document_url,
-      dataStatus: row.data_status,
-      confidence: 0.5,
-      matchedSignals: ["planNameSubstring"],
-      insurerName: insurerNameMap.get(row.insurer_id || "") || "",
-    }));
+    .slice(0, 15);
 
-  return NextResponse.json({ plans: ranked });
+  const tier3CanonicalMap = await fetchCanonicalMap(
+    supabase,
+    ranked.map(({ row }) => row.id),
+  );
+
+  const rankedResults = ranked.map(({ row }) => ({
+    id: row.id,
+    canonicalPlanId: tier3CanonicalMap.get(row.id),
+    hiosId: row.hios_id,
+    name: row.plan_name,
+    type: row.plan_type,
+    state: row.state,
+    metalLevel: row.metal_level,
+    premium: row.premium_individual,
+    deductible: (row.raw_data as Record<string, unknown>)?.deductible_individual,
+    oopMax: (row.raw_data as Record<string, unknown>)?.oop_max_individual,
+    year: row.year,
+    hasSbcUrl: !!row.sbc_document_url,
+    dataStatus: row.data_status,
+    confidence: 0.5,
+    matchedSignals: ["planNameSubstring"],
+    insurerName: insurerNameMap.get(row.insurer_id || "") || "",
+  }));
+
+  return NextResponse.json({ plans: rankedResults });
+}
+
+/**
+ * Look up canonical_plan_id for each plan_catalog row in `planCatalogIds`.
+ * Returns a Map keyed by plan_catalog.id with the corresponding
+ * canonical_plans.id when the row has been mapped (via mig 040 era migration).
+ *
+ * Plans without a canonical mapping (rare; legacy rows) won't appear in the map
+ * and their `canonicalPlanId` will be undefined in the search response — the
+ * /compare flow filters those out client-side since they can't be resolved.
+ */
+async function fetchCanonicalMap(
+  supabase: ReturnType<typeof createServerClient>,
+  planCatalogIds: string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (planCatalogIds.length === 0) return out;
+  const { data: rows } = await supabase
+    .from("plan_catalog_canonical_map")
+    .select("plan_catalog_id, canonical_plan_id")
+    .in("plan_catalog_id", planCatalogIds);
+  if (!rows) return out;
+  for (const r of rows) {
+    if (r.plan_catalog_id && r.canonical_plan_id) {
+      out.set(r.plan_catalog_id as string, r.canonical_plan_id as string);
+    }
+  }
+  return out;
 }

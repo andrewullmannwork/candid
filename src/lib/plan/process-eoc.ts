@@ -194,6 +194,15 @@ async function persistEOCPlanIdentity(
   documentId: string,
   parsed: EOCParseResult,
 ): Promise<ProcessPlanResult> {
+  // Mig 078 — comparison uploads via /compare must never overwrite the user's
+  // primary plan. Read documents.purpose and branch the activation behavior.
+  const { data: docMeta } = await supabase
+    .from("documents")
+    .select("purpose")
+    .eq("id", documentId)
+    .single();
+  const isComparisonUpload = docMeta?.purpose === "comparison";
+
   // Phase 3.2.1 Q-P3.2.1-2 — Pattern P-8 plan-identity provenance for EOC writes.
   // EOC plan_identity comes from regex parsePlanDocument (per Q-P3.1A-11) so there's
   // no patternP8 sub-keys; entries carry source="doc_extraction_eoc" + confidence +
@@ -215,18 +224,24 @@ async function persistEOCPlanIdentity(
     out_oop_max_individual: parsed.plan_identity.out_oop_max_individual,
     source: "eoc_upload" as const,
     source_document_id: documentId,
-    is_active: true,
+    // Comparison uploads start inactive (live in insurance_plans for the
+    // canonical-corroboration flywheel but never become primary).
+    is_active: !isComparisonUpload,
     verification_status: "document_verified" as const,
     ...(hasProvenanceEntries ? { field_provenance: eocPlanIdentityProvenance } : {}),
   };
 
-  // Check for existing active plan for this user.
-  const { data: existingActive } = await supabase
-    .from("insurance_plans")
-    .select("id, plan_name, insurer_name")
-    .eq("user_id", doc.user_id)
-    .eq("is_active", true)
-    .maybeSingle();
+  // Check for existing active plan for this user — comparison uploads SKIP
+  // the merge path entirely (a comparison plan is a separate plan, not an
+  // enrichment of the user's primary).
+  const { data: existingActive } = isComparisonUpload
+    ? { data: null }
+    : await supabase
+        .from("insurance_plans")
+        .select("id, plan_name, insurer_name")
+        .eq("user_id", doc.user_id)
+        .eq("is_active", true)
+        .maybeSingle();
 
   if (existingActive) {
     // Merge: update existing plan with EOC plan_identity (where EOC has values; preserve existing where EOC is null).
@@ -264,15 +279,18 @@ async function persistEOCPlanIdentity(
     return { success: false, error: `EOC plan insert failed: ${insertErr?.message ?? "unknown"}` };
   }
 
-  // Back-populate profile pointer.
-  await supabase
-    .from("profiles")
-    .update({
-      active_insurance_plan_id: newPlan.id,
-      ...(planFields.insurer_name ? { insurer: planFields.insurer_name } : {}),
-      ...(planFields.plan_name ? { plan_name: planFields.plan_name } : {}),
-    })
-    .eq("user_id", doc.user_id);
+  // Back-populate profile pointer — but NOT for comparison uploads (they
+  // must never become the user's active plan).
+  if (!isComparisonUpload) {
+    await supabase
+      .from("profiles")
+      .update({
+        active_insurance_plan_id: newPlan.id,
+        ...(planFields.insurer_name ? { insurer: planFields.insurer_name } : {}),
+        ...(planFields.plan_name ? { plan_name: planFields.plan_name } : {}),
+      })
+      .eq("user_id", doc.user_id);
+  }
 
   return { success: true, planId: newPlan.id };
 }

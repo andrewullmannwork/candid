@@ -58,8 +58,22 @@ function buildRows(plans: ComparePlanPayload[]): RowEntry[] {
       row.perPlan[planIdx] = benefit;
     }
   }
-  // Sort by category then by title.
+  // Sort priority:
+  //   1. Useful tier (≥1 plan covers the service) above non-useful tier (0 plans
+  //      cover) — keeps "covered/covered", "covered/not-covered", and
+  //      "covered/no-data" rows at the top; pushes "not-covered/not-covered",
+  //      "no-data/no-data", and "not-covered/no-data" rows to the bottom where
+  //      they're easy to skip.
+  //   2. Within the useful tier, more-covered first (covered/covered ahead of
+  //      covered/not-covered).
+  //   3. Tie-break by category + title for stable alphabetical ordering.
   return Array.from(slugMap.values()).sort((a, b) => {
+    const aCovered = a.perPlan.filter((p) => p?.covered === true).length;
+    const bCovered = b.perPlan.filter((p) => p?.covered === true).length;
+    const aUseful = aCovered > 0;
+    const bUseful = bCovered > 0;
+    if (aUseful !== bUseful) return aUseful ? -1 : 1;
+    if (aUseful && aCovered !== bCovered) return bCovered - aCovered;
     if (a.category !== b.category) return a.category.localeCompare(b.category);
     return a.title.localeCompare(b.title);
   });

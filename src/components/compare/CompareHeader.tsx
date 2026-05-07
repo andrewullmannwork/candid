@@ -7,12 +7,25 @@
  * DisplayState badges when consumer_read_filter_v1 is ON.
  */
 
+import { useState } from "react";
 import { decoratedShape, DisplayStateBadge } from "@/components/display-state";
 import { PlanColumn } from "@/components/compare/PlanColumn";
+import { useAuth } from "@/lib/auth/auth-context";
 import type { ComparePlanPayload } from "@/lib/plan/compare";
+
+type EditableField =
+  | "premium_monthly"
+  | "in_deductible_individual"
+  | "out_deductible_individual"
+  | "in_oop_max_individual"
+  | "out_oop_max_individual";
 
 interface CompareHeaderProps {
   plans: ComparePlanPayload[];
+  /** Optimistic update callback when a user saves a missing field on one of
+   *  their user_plan slots. Parent updates the matching plan's planSummary
+   *  with the new value so the cell re-renders without a round-trip. */
+  onFieldSaved?: (planId: string, field: EditableField, value: number) => void;
 }
 
 // Tailwind JIT requires literal class names — can't interpolate.
@@ -53,7 +66,7 @@ function MetricCell({
   );
 }
 
-export function CompareHeader({ plans }: CompareHeaderProps) {
+export function CompareHeader({ plans, onFieldSaved }: CompareHeaderProps) {
   const columnsClass = colsClass(plans.length);
   return (
     <section className="rounded-2xl bg-white ring-1 ring-slate-200 overflow-hidden">
@@ -69,17 +82,168 @@ export function CompareHeader({ plans }: CompareHeaderProps) {
         ))}
       </div>
 
-      {/* Premium row — top of metrics so it anchors as the "what does this cost me?" question. */}
-      <MetricRow plans={plans} label="Monthly premium" pick={(p) => p.planSummary.premiumMonthly} format={formatUsd} sublabel="Out of pocket from your paycheck" />
-      {/* In-network deductible */}
-      <MetricRow plans={plans} label="In-network deductible" pick={(p) => p.planSummary.inDeductible} format={formatUsd} />
-      {/* Out-of-network deductible */}
-      <MetricRow plans={plans} label="Out-of-network deductible" pick={(p) => p.planSummary.outDeductible} format={formatUsd} />
-      {/* In-network OOP max */}
-      <MetricRow plans={plans} label="In-network OOP max" pick={(p) => p.planSummary.inOopMax} format={formatUsd} />
-      {/* Out-of-network OOP max */}
-      <MetricRow plans={plans} label="Out-of-network OOP max" pick={(p) => p.planSummary.outOopMax} format={formatUsd} />
+      {/* All five top-line metrics route through EditableMetricRow — when the
+          plan is a user_plan and the value is null, the cell renders an inline
+          "Add yours" form so the user can fill in a missing field without
+          re-uploading their SBC. */}
+      <EditableMetricRow
+        plans={plans}
+        label="Monthly premium"
+        sublabel="Out of pocket from your paycheck"
+        pick={(p) => p.planSummary.premiumMonthly}
+        editField="premium_monthly"
+        onFieldSaved={onFieldSaved}
+      />
+      <EditableMetricRow
+        plans={plans}
+        label="In-network deductible"
+        pick={(p) => p.planSummary.inDeductible}
+        editField="in_deductible_individual"
+        onFieldSaved={onFieldSaved}
+      />
+      <EditableMetricRow
+        plans={plans}
+        label="Out-of-network deductible"
+        pick={(p) => p.planSummary.outDeductible}
+        editField="out_deductible_individual"
+        onFieldSaved={onFieldSaved}
+      />
+      <EditableMetricRow
+        plans={plans}
+        label="In-network OOP max"
+        pick={(p) => p.planSummary.inOopMax}
+        editField="in_oop_max_individual"
+        onFieldSaved={onFieldSaved}
+      />
+      <EditableMetricRow
+        plans={plans}
+        label="Out-of-network OOP max"
+        pick={(p) => p.planSummary.outOopMax}
+        editField="out_oop_max_individual"
+        onFieldSaved={onFieldSaved}
+      />
     </section>
+  );
+}
+
+function EditableMetricRow({
+  plans,
+  label,
+  sublabel,
+  pick,
+  editField,
+  onFieldSaved,
+}: {
+  plans: ComparePlanPayload[];
+  label: string;
+  sublabel?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  pick: (p: ComparePlanPayload) => any;
+  editField: EditableField;
+  onFieldSaved?: (planId: string, field: EditableField, value: number) => void;
+}) {
+  const columnsClass = colsClass(plans.length);
+  return (
+    <div className={`grid ${columnsClass} divide-x divide-slate-100 border-t border-slate-100`}>
+      <div className="p-4 flex flex-col justify-center">
+        <p className="text-sm font-medium text-slate-700">{label}</p>
+        {sublabel && <p className="text-[11px] text-slate-400 mt-0.5">{sublabel}</p>}
+      </div>
+      {plans.map((plan) => {
+        const decorated = pick(plan);
+        const { value } = decoratedShape<number | null>(decorated);
+        const isUserPlan = plan.ref.kind === "user_plan";
+        const isMissing = value == null;
+        return (
+          <div key={plan.ref.id} className="p-4">
+            {isMissing && isUserPlan ? (
+              <FieldInlineEdit
+                planId={plan.ref.id}
+                field={editField}
+                onSaved={(v) => onFieldSaved?.(plan.ref.id, editField, v)}
+              />
+            ) : (
+              <MetricCell decorated={decorated} format={formatUsd} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function FieldInlineEdit({
+  planId,
+  field,
+  onSaved,
+}: {
+  planId: string;
+  field: EditableField;
+  onSaved: (value: number) => void;
+}) {
+  const { user } = useAuth();
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleSave() {
+    if (!user) return;
+    const num = parseFloat(value);
+    if (!Number.isFinite(num) || num < 0 || num > 1_000_000) {
+      setError("Enter a valid amount");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const idToken = await user.firebaseUser.getIdToken();
+      const res = await fetch("/api/plan/field", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({ planId, field, value: num }),
+      });
+      if (!res.ok) throw new Error("save failed");
+      onSaved(num);
+    } catch {
+      setError("Couldn't save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="text-center">
+      <p className="text-[10px] uppercase tracking-wide font-semibold text-blue-600 mb-1.5">
+        Add yours
+      </p>
+      <div className="flex items-center justify-center gap-1">
+        <span className="text-slate-500 text-sm">$</span>
+        <input
+          type="number"
+          inputMode="decimal"
+          step="0.01"
+          min="0"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") handleSave(); }}
+          placeholder="0"
+          disabled={saving}
+          className="w-20 px-2 py-1 rounded-lg border border-slate-200 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:opacity-50"
+        />
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={!value || saving}
+          className="px-2.5 py-1 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 disabled:opacity-50"
+        >
+          {saving ? "…" : "Save"}
+        </button>
+      </div>
+      {error && <p className="text-[10px] text-red-600 mt-1">{error}</p>}
+    </div>
   );
 }
 

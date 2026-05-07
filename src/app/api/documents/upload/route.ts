@@ -68,6 +68,12 @@ export async function POST(req: NextRequest) {
   const file = formData.get("file") as File | null;
   const docType = (formData.get("docType") as string) || "eob";
   const turnstileToken = (formData.get("turnstileToken") as string) || undefined;
+  // purpose (mig 078): "primary" (default; replaces user's active plan) vs
+  // "comparison" (via /compare; persists for flywheel but does NOT touch the
+  // user's active plan). Validate the input so an attacker can't smuggle
+  // arbitrary values into a CHECK-constrained column.
+  const rawPurpose = (formData.get("purpose") as string) || "primary";
+  const purpose: "primary" | "comparison" = rawPurpose === "comparison" ? "comparison" : "primary";
 
   if (!file) {
     return NextResponse.json({ error: "No file provided" }, { status: 400 });
@@ -164,7 +170,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 
-  // Insert document record
+  // Insert document record. NOTE: `purpose` is set in a follow-up UPDATE
+  // (rather than included in this insert) so the upload route still works
+  // before mig 078 is applied — if the documents.purpose column doesn't exist,
+  // the UPDATE errors silently and the upload falls back to primary behavior
+  // downstream. Once mig 078 is applied, the UPDATE persists purpose and the
+  // processing pipeline branches correctly for comparison uploads.
   const { error: dbError } = await supabase.from("documents").insert({
     id: documentId,
     user_id: user.id,
@@ -179,6 +190,24 @@ export async function POST(req: NextRequest) {
   if (dbError) {
     console.error("Document insert error:", dbError);
     return NextResponse.json({ error: "Failed to save document record." }, { status: 500 });
+  }
+
+  // Mig 078 (additive) — set purpose only when it differs from the default
+  // "primary". Wrapped to swallow errors silently so the upload still works
+  // if the column doesn't exist yet (pre-mig DB falls back to primary
+  // treatment downstream — i.e., comparison uploads will overwrite until
+  // the migration is applied).
+  if (purpose === "comparison") {
+    const { error: purposeErr } = await supabase
+      .from("documents")
+      .update({ purpose: "comparison" })
+      .eq("id", documentId);
+    if (purposeErr) {
+      console.warn(
+        "[upload] Could not set documents.purpose=comparison — has mig 078 been applied?",
+        purposeErr.message,
+      );
+    }
   }
 
   // ── Confidence-gated processing ─────────────────────────────────────────

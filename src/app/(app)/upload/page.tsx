@@ -9,6 +9,7 @@ import { useConsent } from "@/lib/consent/use-consent";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { createBrowserClient } from "@/lib/supabase/client";
 import { TurnstileWidget, type TurnstileWidgetHandle } from "@/components/security/TurnstileWidget";
+import { ShareCandidCard } from "@/components/share/ShareCandidCard";
 
 // ─── Document type info ─────────────────────────────────────────────────────
 
@@ -93,7 +94,12 @@ function UploadForm() {
     processingError?: string | null;
     retryCount?: number;
     isStuck?: boolean;
+    linkedInsurancePlanId?: string | null;
+    linkedPlanPremium?: number | null;
   } | null>(null);
+  // Track whether the user has saved a premium for the just-uploaded plan
+  // (suppresses re-prompting after save + lets the redirect proceed).
+  const [premiumSaved, setPremiumSaved] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [yearRolloverEnabled, setYearRolloverEnabled] = useState(false);
 
@@ -206,12 +212,18 @@ function UploadForm() {
             // Mismatch or canonical match confirmation needed — show prompt
             setProcessingProgress(data);
           } else {
-            // No mismatch — redirect based on doc type.
+            // No mismatch — decide between auto-redirect or premium prompt.
             // Bills (eob, itemized_bill) → /claim (audit results live there).
             // Plan docs (sbc, plan_document) → /plan (benefits live there).
             const isBill = docType === "eob" || docType === "itemized_bill";
-            const destination = isBill ? "/claim" : "/plan";
-            setTimeout(() => { window.location.href = destination; }, 1500);
+            const isPlanType = docType === "sbc" || docType === "plan_document";
+            // SBCs don't include premium — if it's missing, hold the redirect
+            // and let the user fill it in via the inline premium prompt.
+            const needsPremium = isPlanType && data.linkedPlanPremium == null;
+            if (!needsPremium) {
+              const destination = isBill ? "/claim" : "/plan";
+              setTimeout(() => { window.location.href = destination; }, 1500);
+            }
           }
           return;
         }
@@ -450,6 +462,14 @@ function UploadForm() {
     const hasYearRollover = yearRolloverEnabled && processingProgress?.status === "processed" && !processingProgress?.insurerMismatch?.mismatch && !!processingProgress?.insurerMismatch?.year_rollover;
     const hasCanonicalMatch = processingProgress?.status === "processed" && !processingProgress?.insurerMismatch?.mismatch && !hasYearRollover && !!processingProgress?.insurerMismatch?.pending_canonical_match;
     const isPlanType = docType === "sbc" || docType === "plan_document";
+    // Premium prompt: SBCs don't include premium. When parse completes for a
+    // plan-type doc with no premium on the linked insurance_plans row, hold
+    // the auto-redirect (handled in polling) and surface an inline prompt.
+    const needsPremium =
+      isPlanType
+      && processingProgress?.status === "processed"
+      && processingProgress?.linkedPlanPremium == null
+      && !premiumSaved;
 
     // Calculate unified progress: upload (0-30%), analysis (30-100%)
     const getOverallProgress = () => {
@@ -464,33 +484,33 @@ function UploadForm() {
       return 30 + Math.round((processingProgress.completedPages / processingProgress.totalPages) * 50);
     };
 
-    // S70 \u2014 playful rotating messages, interleaved with educational microcopy
-    // about what the platform is doing + why it matters. Cycles every 4.5s.
+    // Whimsical doctor's-office vignettes \u2014 keep the wait feel intentional
+    // and light without revealing mechanics. Cycles every 4.5s.
     const READING_MESSAGES = [
-      "Picking up your document\u2026",
-      "Getting my reading glasses\u2026",
-      "Turning on the bedside light\u2026",
-      "Reading every page carefully\u2026",
-      "Did you know? An average SBC packs 30+ cost-sharing rules into 8 dense pages.",
-      "Still reading \u2014 this is a long one\u2026",
-      "Highlighting the important parts\u2026",
-      "Taking notes in the margins\u2026",
-      "Cite-grade extraction \u2014 quoting the document, not paraphrasing.",
-      "Almost done reading\u2026",
+      "Picking up your document.",
+      "Sliding our glasses down to the tip of our nose.",
+      "Turning on the desk lamp.",
+      "Reading carefully \u2014 page by page.",
+      "Doodling a tiny stethoscope in the margin.",
+      "Adding a sticky note for later.",
+      "Highlighting the important bits in yellow.",
+      "Underlining the fine print twice.",
+      "Sharpening the #2 pencil. Just the way we like it.",
+      "Almost through the stack.",
     ];
     const EXTRACTING_MESSAGES = [
-      "Pulling out the good stuff\u2026",
-      "Cross-referencing 35+ benefit categories\u2026",
-      "Checking the fine print\u2026",
-      "Tagging out-of-network costs separately \u2014 most tools ignore these.",
-      "Looking for prior-authorization requirements\u2026",
-      "Organizing what we found\u2026",
-      "Each plan you upload helps every other Candid user on the same plan.",
+      "Taking notes on the clipboard.",
+      "Cross-referencing with the big binder on the shelf.",
+      "Stamping a smiley face in the corner.",
+      "Tapping the desk thoughtfully.",
+      "Drawing a little arrow next to an important number.",
+      "Stacking the pages neatly.",
+      "Just polishing the apple on the desk.",
     ];
     const INIT_MESSAGES = [
-      "Getting your document ready\u2026",
-      "Getting on my reading glasses\u2026",
-      "Warming up the scanner\u2026",
+      "Pouring a fresh cup of office coffee.",
+      "Getting our reading glasses.",
+      "Clearing a spot on the desk.",
     ];
 
     const getStepLabel = () => {
@@ -894,6 +914,22 @@ function UploadForm() {
             );
           })()}
 
+          {/* Premium prompt — SBCs don't include premium; ask the user before
+              they navigate away to /plan so total-cost projections work. */}
+          {isComplete && isPlanType && needsPremium && processingProgress?.linkedInsurancePlanId && user && (
+            <PremiumPromptInline
+              planId={processingProgress.linkedInsurancePlanId}
+              user={user}
+              onSaved={() => {
+                setPremiumSaved(true);
+                // Auto-redirect once premium is captured (matches the same
+                // 800ms-ish delay the no-prompt path uses; gives the user a
+                // beat to see the success state).
+                setTimeout(() => { window.location.href = "/plan"; }, 800);
+              }}
+            />
+          )}
+
           {/* Action buttons */}
           <div className="flex flex-col gap-2">
             {isComplete && isPlanType && (
@@ -922,6 +958,11 @@ function UploadForm() {
             )}
           </div>
         </div>
+
+        {/* "Help us grow" share card — only on successful completion. Hidden
+            on error/stuck/pending so the user isn't asked to invite friends
+            while their own upload is in a bad state. */}
+        {isComplete && <ShareCandidCard surface="upload_complete" />}
       </div>
     );
   }
@@ -1160,6 +1201,12 @@ function UploadForm() {
         </div>
       )}
 
+      {/* "Help us grow" share card — placed on the form view (before upload)
+          per user feedback so it's visible while users are deciding whether
+          to upload, not only after they've completed one. Also rendered on
+          the completion screen below. */}
+      <ShareCandidCard surface="upload_form" />
+
       {/* ── Inline consent modal — shown on first upload attempt ─────────── */}
       {showConsentModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -1211,6 +1258,91 @@ function UploadForm() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Premium prompt (post-parse, pre-redirect on plan_doc/SBC) ──────────────
+//
+// Renders in the /upload completion state when SBC parse succeeded but the
+// user's insurance_plans row has no premium_monthly. Posts to /api/plan/premium
+// (RLS-scoped, ownership-checked). On save, the parent triggers redirect to
+// /plan so the new premium powers benefits + comparison views immediately.
+
+function PremiumPromptInline({
+  planId,
+  user,
+  onSaved,
+}: {
+  planId: string;
+  user: { firebaseUser: { getIdToken(): Promise<string> } };
+  onSaved: (premium: number) => void;
+}) {
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleSave() {
+    const num = parseFloat(value);
+    if (!Number.isFinite(num) || num < 0 || num > 100000) {
+      setError("Enter a valid monthly amount.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const idToken = await user.firebaseUser.getIdToken();
+      const res = await fetch("/api/plan/premium", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({ planId, premiumMonthly: num }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error ?? "Save failed");
+      }
+      onSaved(num);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't save. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-2xl">
+      <p className="text-sm font-semibold text-slate-900">What&rsquo;s your monthly premium?</p>
+      <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+        SBCs don&rsquo;t include the premium — adding it here unlocks total-cost projections
+        and powers Candid Compare. You can always edit this later.
+      </p>
+      <div className="mt-3 flex items-center gap-2">
+        <span className="text-slate-500 text-sm">$</span>
+        <input
+          type="number"
+          inputMode="decimal"
+          step="0.01"
+          min="0"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder="350.00"
+          disabled={saving}
+          className="flex-1 px-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:opacity-50"
+        />
+        <span className="text-slate-500 text-xs">/ month</span>
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={!value || saving}
+          className="px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </div>
+      {error && <p className="text-xs text-red-600 mt-2">{error}</p>}
     </div>
   );
 }

@@ -313,6 +313,15 @@ export async function linkDocumentToCanonical(
   identifiers: PlanIdentifiers
 ): Promise<ProcessPlanResult> {
   try {
+    // Mig 078 — comparison uploads via /compare must never overwrite primary.
+    // Smart-skip path also writes to insurance_plans + active_insurance_plan_id;
+    // branch on purpose so comparison uploads stay isolated.
+    const { data: docMetaForPurpose } = await supabase
+      .from("documents")
+      .select("purpose")
+      .eq("id", doc.id)
+      .single();
+    const isComparisonUpload = docMetaForPurpose?.purpose === "comparison";
     // Parse plan metadata from OCR preview (deductibles, OOP, etc.).
     // Phase 3.2.1: legacy parseSBCText removed; parsePlanDocument handles both SBC
     // and full-plan-document text via regex on shared field shapes.
@@ -427,13 +436,17 @@ export async function linkDocumentToCanonical(
     const finalInDed = inDedIndividual ?? canonical.deductible_individual ?? null;
     const finalInOop = inOopIndividual ?? canonical.oop_max_individual ?? null;
 
-    // Check for existing active plan to merge into
-    const { data: existingPlan } = await supabase
-      .from("insurance_plans")
-      .select("id, field_provenance")
-      .eq("user_id", doc.user_id)
-      .eq("is_active", true)
-      .single();
+    // Check for existing active plan to merge into. Comparison uploads SKIP
+    // the merge path entirely (a comparison plan is a separate plan, not an
+    // enrichment of the user's primary).
+    const { data: existingPlan } = isComparisonUpload
+      ? { data: null }
+      : await supabase
+          .from("insurance_plans")
+          .select("id, field_provenance")
+          .eq("user_id", doc.user_id)
+          .eq("is_active", true)
+          .single();
 
     // Build the canonical_inherited provenance for any plan-identity field WITHOUT
     // Haiku-extracted provenance. Pattern 1 #14 honored — written to user-scoped table
@@ -489,12 +502,15 @@ export async function linkDocumentToCanonical(
         field_provenance: mergedProv,
       }).eq("id", targetPlanId);
     } else {
-      // Create new plan linked to canonical
-      // Deactivate old plans
-      await supabase.from("insurance_plans")
-        .update({ is_active: false })
-        .eq("user_id", doc.user_id)
-        .eq("is_active", true);
+      // Create new plan linked to canonical.
+      // Comparison uploads: skip deactivating the user's existing active plan
+      // (their primary stays primary) and insert with is_active=false.
+      if (!isComparisonUpload) {
+        await supabase.from("insurance_plans")
+          .update({ is_active: false })
+          .eq("user_id", doc.user_id)
+          .eq("is_active", true);
+      }
 
       const { data: newPlan, error: planError } = await supabase
         .from("insurance_plans")
@@ -514,7 +530,7 @@ export async function linkDocumentToCanonical(
           out_oop_max_family: outOopFamily,
           source: "sbc_upload",
           source_document_id: doc.id,
-          is_active: true,
+          is_active: !isComparisonUpload,
           canonical_plan_id: canonicalPlanId,
           verification_status: "document_verified",
           field_provenance: mergedPlanFieldProvenance,
@@ -528,11 +544,14 @@ export async function linkDocumentToCanonical(
       }
       targetPlanId = newPlan.id;
 
-      // Update profile
-      const profileUpdate: Record<string, unknown> = { active_insurance_plan_id: targetPlanId };
-      if (identifiers.insurer) profileUpdate.insurer = identifiers.insurer;
-      if (identifiers.planName) profileUpdate.plan_name = identifiers.planName;
-      await supabase.from("profiles").update(profileUpdate).eq("user_id", doc.user_id);
+      // Update profile — but NOT for comparison uploads (their plan must
+      // never become the active plan, even via the smart-skip path).
+      if (!isComparisonUpload) {
+        const profileUpdate: Record<string, unknown> = { active_insurance_plan_id: targetPlanId };
+        if (identifiers.insurer) profileUpdate.insurer = identifiers.insurer;
+        if (identifiers.planName) profileUpdate.plan_name = identifiers.planName;
+        await supabase.from("profiles").update(profileUpdate).eq("user_id", doc.user_id);
+      }
     }
 
     // Copy canonical_plan_services → plan_covered_services

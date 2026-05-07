@@ -20,12 +20,25 @@ export async function GET(req: NextRequest) {
   const supabase = createServerClient();
   const { data: doc } = await supabase
     .from("documents")
-    .select("status, processing_step, processing_completed_pages, processing_total_pages, insurer_mismatch, processing_error, retry_count, processing_started_at")
+    .select("status, processing_step, processing_completed_pages, processing_total_pages, insurer_mismatch, processing_error, retry_count, processing_started_at, linked_insurance_plan_id")
     .eq("id", documentId)
     .single();
 
   if (!doc) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  // For processed plan-document/SBC uploads, surface premium_monthly so the
+  // /upload completion UI can prompt the user when it's null (premiums aren't
+  // in SBC documents — must be user-supplied to power /plan + /compare).
+  let linkedPlanPremium: number | null = null;
+  if (doc.linked_insurance_plan_id && doc.status === "processed") {
+    const { data: plan } = await supabase
+      .from("insurance_plans")
+      .select("premium_monthly")
+      .eq("id", doc.linked_insurance_plan_id)
+      .single();
+    linkedPlanPremium = (plan?.premium_monthly as number | null) ?? null;
   }
 
   // Determine if the client should trigger a chunk
@@ -50,6 +63,12 @@ export async function GET(req: NextRequest) {
     processingError: doc.processing_error || null,
     retryCount: doc.retry_count || 0,
     isStuck: isStuck || false,
+    // Surfaced so /compare can build user_plan PlanRefs without a separate
+    // browser-client Supabase query (which 406s under RLS for new docs).
+    linkedInsurancePlanId: doc.linked_insurance_plan_id || null,
+    // Null when premium hasn't been collected yet (SBCs don't include premium —
+    // user must supply it post-parse via the prompt on /upload completion).
+    linkedPlanPremium,
   });
 }
 
