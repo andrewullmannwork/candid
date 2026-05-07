@@ -97,14 +97,17 @@ function UploadForm() {
   const [retrying, setRetrying] = useState(false);
   const [yearRolloverEnabled, setYearRolloverEnabled] = useState(false);
 
-  // Rotating status message index — increments every 15s during processing
+  // Rotating status message index — S70 cadence bump from 15s → 4.5s with
+  // educational microcopy interleaved per phase (see READING_MESSAGES /
+  // EXTRACTING_MESSAGES / INIT_MESSAGES in the progress JSX). Faster cadence
+  // makes the long parse latency feel intentional rather than stalled.
   const [messageIndex, setMessageIndex] = useState(0);
   const messageTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     const isProcessing = uploaded && uploadStatus === "auto_processed" && !processingProgress?.step?.includes("saving") && processingProgress?.status !== "processed";
     if (isProcessing) {
-      messageTimerRef.current = setInterval(() => setMessageIndex((i) => i + 1), 15000);
+      messageTimerRef.current = setInterval(() => setMessageIndex((i) => i + 1), 4500);
       return () => { if (messageTimerRef.current) clearInterval(messageTimerRef.current); };
     } else {
       if (messageTimerRef.current) clearInterval(messageTimerRef.current);
@@ -461,27 +464,33 @@ function UploadForm() {
       return 30 + Math.round((processingProgress.completedPages / processingProgress.totalPages) * 50);
     };
 
-    // Playful rotating messages per processing phase
+    // S70 \u2014 playful rotating messages, interleaved with educational microcopy
+    // about what the platform is doing + why it matters. Cycles every 4.5s.
     const READING_MESSAGES = [
-      "Picking up your document...",
-      "Getting my reading glasses...",
-      "Turning on the bedside light...",
-      "Reading every page carefully...",
-      "Still reading \u2014 this is a long one...",
-      "Highlighting the important parts...",
-      "Taking notes in the margins...",
-      "Almost done reading...",
+      "Picking up your document\u2026",
+      "Getting my reading glasses\u2026",
+      "Turning on the bedside light\u2026",
+      "Reading every page carefully\u2026",
+      "Did you know? An average SBC packs 30+ cost-sharing rules into 8 dense pages.",
+      "Still reading \u2014 this is a long one\u2026",
+      "Highlighting the important parts\u2026",
+      "Taking notes in the margins\u2026",
+      "Cite-grade extraction \u2014 quoting the document, not paraphrasing.",
+      "Almost done reading\u2026",
     ];
     const EXTRACTING_MESSAGES = [
-      "Pulling out the good stuff...",
-      "Cross-referencing your benefits...",
-      "Checking the fine print...",
-      "Organizing what we found...",
+      "Pulling out the good stuff\u2026",
+      "Cross-referencing 35+ benefit categories\u2026",
+      "Checking the fine print\u2026",
+      "Tagging out-of-network costs separately \u2014 most tools ignore these.",
+      "Looking for prior-authorization requirements\u2026",
+      "Organizing what we found\u2026",
+      "Each plan you upload helps every other Candid user on the same plan.",
     ];
     const INIT_MESSAGES = [
-      "Getting your document ready...",
-      "Getting on my reading glasses...",
-      "Warming up the scanner...",
+      "Getting your document ready\u2026",
+      "Getting on my reading glasses\u2026",
+      "Warming up the scanner\u2026",
     ];
 
     const getStepLabel = () => {
