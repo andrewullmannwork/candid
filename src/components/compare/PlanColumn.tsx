@@ -31,8 +31,22 @@ export function PlanColumn({ plan, fallbackLabel = "Couldn't load" }: PlanColumn
     );
   }
   return (
-    <div className="p-4 bg-slate-50">
-      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide truncate">
+    // h-full + flex-col + mt-auto on the tags row keeps best-for tags
+    // bottom-aligned across columns even when one plan's name wraps to 2
+    // lines or has metadata (BRONZE · 2026) and another doesn't. Per user
+    // feedback: "vertically aligned even if that means extra space".
+    <div className="relative p-4 bg-slate-50 h-full flex flex-col">
+      {/* "Your plan" badge — absolute top-right per Q-S78-3 visual cleanup
+          (was inline with metal/year, made the row feel cluttered). */}
+      {plan.sourceLabel === "user_plan" && (
+        <span className="absolute top-3 right-3 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-gradient-to-r from-emerald-500 to-teal-500 text-white shadow-sm">
+          <svg className="w-2.5 h-2.5" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+          </svg>
+          Your plan
+        </span>
+      )}
+      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide truncate pr-20">
         {plan.insurerName || "—"}
       </p>
       <p className="text-sm font-semibold text-slate-900 mt-0.5 truncate" title={plan.planName}>
@@ -44,21 +58,16 @@ export function PlanColumn({ plan, fallbackLabel = "Couldn't load" }: PlanColumn
         )}
         {plan.planSummary.metalLevel && plan.planSummary.year && <span>·</span>}
         {plan.planSummary.year && <span>{plan.planSummary.year}</span>}
-        {plan.sourceLabel === "user_plan" && (
-          <span className="ml-auto inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">
-            Your plan
-          </span>
-        )}
       </div>
       {plan.bestForTags && plan.bestForTags.length > 0 && (
-        <div className="mt-2.5 flex flex-wrap gap-1">
+        <div className="mt-auto pt-3 flex flex-wrap gap-1.5">
           {plan.bestForTags.map((tag) => (
             <span
               key={tag.key}
               title={tag.why}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-50 text-blue-700 ring-1 ring-blue-200"
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium text-blue-700 ring-1 ring-blue-200/70 bg-white"
             >
-              <svg className="w-2.5 h-2.5" fill="currentColor" viewBox="0 0 24 24">
+              <svg className="w-2.5 h-2.5 text-blue-500" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M12 2l2.39 7.36H22l-6.18 4.49 2.36 7.36L12 16.71l-6.18 4.5 2.36-7.36L2 9.36h7.61z" />
               </svg>
               {tag.label}

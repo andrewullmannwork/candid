@@ -122,6 +122,18 @@ export async function processPlanDocumentData(
     const isFullPlanDoc = classification.classifiedType === "plan_document"
       || (classification.classifiedType !== "sbc" && ocrText.length > 50000);
 
+    // Mig 078 — read documents.purpose to know if this is a "primary" upload
+    // (default: replaces user's active plan) or a "comparison" upload via
+    // /compare (must NEVER overwrite primary; still feeds canonical
+    // corroboration via Pattern 1 #14). NULL purpose (pre-mig-078 rows) is
+    // treated as "primary" so behavior is unchanged for legacy data.
+    const { data: docMeta } = await supabase
+      .from("documents")
+      .select("purpose")
+      .eq("id", documentId)
+      .single();
+    const isComparisonUpload = docMeta?.purpose === "comparison";
+
     // ── Phase 3.2: Haiku-first SBC parser dispatch (behind sbc_parser_v1 flag) ─
     // Per Q-P3.2-2 LOCK = REPLACE: when flag ON + !isFullPlanDoc, use new
     // src/lib/sbc/ Haiku-first parser (Pattern P-8 + DR-3D + DR-3C voting).
@@ -350,7 +362,10 @@ export async function processPlanDocumentData(
       user_id: doc.user_id,
       source: (isFullPlanDoc ? "plan_doc_upload" : "sbc_upload") as string,
       source_document_id: documentId,
-      is_active: true,
+      // Comparison uploads start inactive — they live in insurance_plans (so
+      // they feed canonical corroboration) but never become the user's
+      // primary plan. is_active=true only for "primary" purpose uploads.
+      is_active: !isComparisonUpload,
       verification_status: "document_verified" as const,
       ...(planIdentityProvenance ? { field_provenance: planIdentityProvenance } : {}),
     };
@@ -440,9 +455,11 @@ export async function processPlanDocumentData(
     }
 
     // If no mismatch and an active plan exists, MERGE services into it
-    // (SBC + plan document are complementary sources for the same plan)
+    // (SBC + plan document are complementary sources for the same plan).
+    // Comparison uploads SKIP merging — they're a separate plan the user
+    // wants to evaluate, not an enrichment of their primary.
     let mergeIntoExistingPlan: string | null = null;
-    if (!mismatchData && !yearRollover) {
+    if (!mismatchData && !yearRollover && !isComparisonUpload) {
       const { data: existingActivePlan } = await supabase
         .from("insurance_plans")
         .select("id")
@@ -482,7 +499,10 @@ export async function processPlanDocumentData(
       if (planInsert.plan_name) profileUpdate.plan_name = planInsert.plan_name;
       await supabase.from("profiles").update(profileUpdate).eq("user_id", doc.user_id);
     } else {
-      if (!mismatchData) {
+      // For comparison uploads: never deactivate the user's existing primary
+      // plan. The new comparison row inserts with is_active=false (per planInsert
+      // above), so coexistence is automatic.
+      if (!mismatchData && !isComparisonUpload) {
         // Deactivate old plans (but don't delete — data stays for platform)
         await supabase
           .from("insurance_plans")
@@ -505,7 +525,9 @@ export async function processPlanDocumentData(
 
       targetPlanId = newPlan.id;
 
-      if (!mismatchData) {
+      // Comparison uploads must NOT touch the profile's active_insurance_plan_id —
+      // the user's existing primary plan stays the active one.
+      if (!mismatchData && !isComparisonUpload) {
         // Back-populate profile with plan info from document
         const profileUpdate: Record<string, unknown> = { active_insurance_plan_id: newPlan.id };
         if (planInsert.insurer_name) profileUpdate.insurer = planInsert.insurer_name;

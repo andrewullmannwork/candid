@@ -26,7 +26,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
-import { createBrowserClient } from "@/lib/supabase/client";
 import {
   TurnstileWidget,
   type TurnstileWidgetHandle,
@@ -45,6 +44,7 @@ import {
   type ParseDoc,
 } from "@/components/parsing/PlayfulParsingScreen";
 import type { ComparePlanPayload, PlanRef } from "@/lib/plan/compare";
+import { ShareCandidCard } from "@/components/share/ShareCandidCard";
 
 type Mode = "build" | "parsing" | "results";
 
@@ -221,40 +221,22 @@ function CompareInterface() {
     turnstileTokenRef.current = turnstileToken;
   }, [turnstileToken]);
 
-  // ── Load user's active plan for slot-0 "current plan" affordance ──────
+  // ── Load user's active plan via /api/plan/current ──────────────────────
+  // Server-side endpoint (bypasses RLS). The previous browser-Supabase-client
+  // chain 406'd because Firebase auth isn't visible to RLS policies that gate
+  // on auth.uid(). Now: single Bearer-token GET.
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
     (async () => {
       try {
-        const supabase = createBrowserClient();
-        const { data: u } = await supabase
-          .from("users")
-          .select("id")
-          .eq("firebase_uid", user.userId)
-          .single();
-        if (!u) return;
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select("active_insurance_plan_id")
-          .eq("user_id", u.id)
-          .single();
-        if (!profile?.active_insurance_plan_id) return;
-        const { data: plan } = await supabase
-          .from("insurance_plans")
-          .select("canonical_plan_id, plan_name, plan_type, state, plan_year, metal_level, insurer_name")
-          .eq("id", profile.active_insurance_plan_id)
-          .single();
-        if (!plan?.canonical_plan_id || cancelled) return;
-        setCurrentPlan({
-          canonicalPlanId: plan.canonical_plan_id as string,
-          planName: (plan.plan_name as string) || "Your plan",
-          insurerName: (plan.insurer_name as string) || "",
-          planType: plan.plan_type as string | null,
-          state: plan.state as string | null,
-          metalLevel: plan.metal_level as string | null,
-          year: plan.plan_year as number | null,
+        const idToken = await user.firebaseUser.getIdToken();
+        const res = await fetch("/api/plan/current", {
+          headers: { Authorization: `Bearer ${idToken}` },
         });
+        if (!res.ok || cancelled) return;
+        const body = (await res.json()) as { plan: CurrentPlanSummary | null };
+        if (body.plan && !cancelled) setCurrentPlan(body.plan);
       } catch {
         // Non-critical — slot 0 just won't have the "current plan" option.
       }
@@ -377,9 +359,16 @@ function CompareInterface() {
       for (let i = 0; i < slots.length; i++) {
         const s = slots[i];
         if (s.kind === "current") {
-          finalRefs.push({ kind: "canonical", id: s.plan.canonicalPlanId });
-        } else if (s.kind === "search" && s.selected) {
-          finalRefs.push({ kind: "canonical", id: s.selected.id });
+          // Prefer canonical ref when available (richer cross-user-corroborated
+          // values); fall back to user_plan ref for plans without canonical link.
+          finalRefs.push(
+            s.plan.canonicalPlanId
+              ? { kind: "canonical", id: s.plan.canonicalPlanId }
+              : { kind: "user_plan", id: s.plan.insurancePlanId },
+          );
+        } else if (s.kind === "search" && s.selected && s.selected.canonicalPlanId) {
+          // Search returns plan_catalog.id; we need canonical_plans.id (via map).
+          finalRefs.push({ kind: "canonical", id: s.selected.canonicalPlanId });
         } else if (s.kind === "upload" && s.file) {
           const ipid = uploadResults.get(i);
           if (ipid) finalRefs.push({ kind: "user_plan", id: ipid });
@@ -389,8 +378,16 @@ function CompareInterface() {
     } else {
       // No uploads — refs resolve immediately.
       slots.forEach((s) => {
-        if (s.kind === "current") refs.push({ kind: "canonical", id: s.plan.canonicalPlanId });
-        else if (s.kind === "search" && s.selected) refs.push({ kind: "canonical", id: s.selected.id });
+        if (s.kind === "current") {
+          refs.push(
+            s.plan.canonicalPlanId
+              ? { kind: "canonical", id: s.plan.canonicalPlanId }
+              : { kind: "user_plan", id: s.plan.insurancePlanId },
+          );
+        } else if (s.kind === "search" && s.selected && s.selected.canonicalPlanId) {
+          // Search returns plan_catalog.id; we need canonical_plans.id (via map).
+          refs.push({ kind: "canonical", id: s.selected.canonicalPlanId });
+        }
       });
       await callCompareApi(refs);
     }
@@ -421,6 +418,11 @@ function CompareInterface() {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("docType", "sbc");
+      // Mig 078 — comparison uploads must never overwrite the user's primary
+      // plan (they live in insurance_plans for the canonical-corroboration
+      // flywheel but stay is_active=false; profile.active_insurance_plan_id
+      // is left untouched).
+      formData.append("purpose", "comparison");
       const tok = turnstileTokenRef.current;
       if (tok) formData.append("turnstileToken", tok);
 
@@ -483,13 +485,11 @@ function CompareInterface() {
         });
 
         if (statusBody.status === "processed") {
-          const supabase = createBrowserClient();
-          const { data: docRow } = await supabase
-            .from("documents")
-            .select("linked_insurance_plan_id")
-            .eq("id", uploadBody.documentId)
-            .single();
-          return (docRow?.linked_insurance_plan_id as string | null) ?? null;
+          // Read linked_insurance_plan_id from the status endpoint response
+          // (server-side, bypasses RLS). Replaces a browser-client Supabase
+          // query that 406'd because RLS blocked the user from reading
+          // their own newly-created documents row.
+          return (statusBody.linkedInsurancePlanId as string | null) ?? null;
         }
         if (statusBody.status === "error" || statusBody.isStuck) return null;
       }
@@ -557,12 +557,43 @@ function CompareInterface() {
   return (
     <>
       {mode === "results" ? (
-        <ResultsView plans={results} error={resultsError} onStartOver={startOver} />
+        <ResultsView
+          plans={results}
+          error={resultsError}
+          onStartOver={startOver}
+          onFieldSaved={(planId, field, value) => {
+            // Optimistic update: drop the new value into the matching user_plan
+            // slot's planSummary so the cell re-renders without a full API
+            // round-trip. decoratedShape() unwraps either raw `number` or
+            // `DecoratedValue`, so a plain number is fine here.
+            const dbToSummaryKey: Record<string, keyof ComparePlanPayload["planSummary"]> = {
+              premium_monthly: "premiumMonthly",
+              in_deductible_individual: "inDeductible",
+              out_deductible_individual: "outDeductible",
+              in_oop_max_individual: "inOopMax",
+              out_oop_max_individual: "outOopMax",
+            };
+            const summaryKey = dbToSummaryKey[field];
+            if (!summaryKey) return;
+            setResults((prev) => {
+              if (!prev) return prev;
+              return prev.map((p) => {
+                if (p.ref.kind === "user_plan" && p.ref.id === planId) {
+                  return {
+                    ...p,
+                    planSummary: { ...p.planSummary, [summaryKey]: value },
+                  };
+                }
+                return p;
+              });
+            });
+          }}
+        />
       ) : mode === "parsing" ? (
         <PlayfulParsingScreen
           docs={parseDocs}
           title="Reading your plan documents"
-          subtitle="We're extracting every detail — this usually takes 30-90 seconds per plan."
+          subtitle="Sit tight — this usually takes 30-90 seconds per plan."
           footer={
             parseError ? (
               <div className="rounded-xl bg-rose-50 ring-1 ring-rose-200 p-4 text-center">
@@ -705,10 +736,21 @@ function ResultsView({
   plans,
   error,
   onStartOver,
+  onFieldSaved,
 }: {
   plans: ComparePlanPayload[] | null;
   error: string | null;
   onStartOver: () => void;
+  onFieldSaved?: (
+    planId: string,
+    field:
+      | "premium_monthly"
+      | "in_deductible_individual"
+      | "out_deductible_individual"
+      | "in_oop_max_individual"
+      | "out_oop_max_individual",
+    value: number,
+  ) => void;
 }) {
   if (error) {
     return (
@@ -766,10 +808,12 @@ function ResultsView({
 
       <div className="space-y-6 overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
         <div className="min-w-[680px] space-y-6">
-          <CompareHeader plans={plans} />
+          <CompareHeader plans={plans} onFieldSaved={onFieldSaved} />
           <CompareCategories plans={plans} />
         </div>
       </div>
+
+      <ShareCandidCard surface="compare_results" />
     </div>
   );
 }

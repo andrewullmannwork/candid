@@ -60,20 +60,25 @@ interface PlayfulParsingScreenProps {
   footer?: React.ReactNode;
 }
 
-// Curated rotating microcopy — "what's happening" + "why it matters" framing.
-// Avoid marketing speak; favor concrete details that tell a real story.
+// Whimsical doctor's-office vignettes — playful, never reveal mechanics.
+// Goal: keep the wait feel intentional + light, not "here's what we're doing
+// under the hood." Add new lines anywhere; keep them concrete + visual.
 const ROTATING_MICROCOPY: string[] = [
-  "Reading every page of your plan document…",
-  "Cross-referencing 35+ benefit categories.",
-  "Did you know? An average SBC packs ~30 distinct cost-sharing rules into 8 dense pages.",
-  "Verifying every number traces back to a verbatim quote in the document.",
-  "Matching against 13,500+ canonical plan-service rows from CMS.",
-  "Looking for prior-authorization requirements that often go unnoticed.",
-  "Tagging out-of-network costs separately — most tools ignore these.",
-  "Building your benefits view from the document itself, not a generic template.",
-  "Each plan you upload helps every other Candid user on the same plan.",
-  "Cite-grade extraction — quotes the document, not a paraphrase.",
-  "Almost there. Assembling the final coverage picture.",
+  "Taking a pen from behind our ear to make notes.",
+  "Adjusting the reading lamp on the desk.",
+  "Sliding our glasses down to the tip of our nose.",
+  "Doodling a tiny stethoscope in the margin.",
+  "Sharpening a #2 pencil. Just the way we like it.",
+  "Highlighting the important bits in yellow.",
+  "Adding a sticky note for later.",
+  "Pouring a fresh cup of office coffee.",
+  "Stacking the pages neatly on the clipboard.",
+  "Underlining the fine print twice.",
+  "Tapping the desk thoughtfully.",
+  "Cross-referencing with the big binder on the shelf.",
+  "Drawing a little arrow next to the most important number.",
+  "Stamping a smiley face in the corner.",
+  "Almost done. Just polishing the apple on the desk.",
 ];
 
 const MICROCOPY_INTERVAL_MS = 4000;
