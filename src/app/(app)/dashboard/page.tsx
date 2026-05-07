@@ -57,7 +57,12 @@ export default function DashboardPage() {
   const [planResult, setPlanResult] = useState<PlanAnalysisResult | null>(null);
   const [currentYear] = useState(() => new Date().getFullYear());
   const [yearRolloverEnabled, setYearRolloverEnabled] = useState(false);
-  const [compareEnabled, setCompareEnabled] = useState(false);
+  // S70 follow-up: render the Compare card unconditionally for all signed-in
+  // users. The /compare route + /api/plan/compare endpoint both gate on the
+  // benefits_comparison_v1 flag + email_verified server-side, so the only loss
+  // when flag is OFF is one click landing on a 404 — acceptable trade for
+  // reliability vs. flaky client-side flag-fetch race conditions.
+  const compareEnabled = true;
   const [loading, setLoading] = useState(true);
   const [usedBenefits, setUsedBenefits] = useState<Set<string>>(() => {
     if (typeof window === "undefined") return new Set();
@@ -127,15 +132,6 @@ export default function DashboardPage() {
         .eq("target_type", "global")
         .single()
         .then(({ data }) => { if (data?.enabled) setYearRolloverEnabled(true); });
-
-      // S70 — show the Compare Plans card when benefits_comparison_v1 is ON.
-      supabase
-        .from("feature_flag_rules")
-        .select("enabled")
-        .eq("flag_key", "benefits_comparison_v1")
-        .eq("target_type", "global")
-        .single()
-        .then(({ data }) => { if (data?.enabled) setCompareEnabled(true); });
 
       setLoading(false);
     }
