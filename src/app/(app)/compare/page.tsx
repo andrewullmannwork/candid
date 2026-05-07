@@ -89,7 +89,7 @@ export default function ComparePage() {
 function PageShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-blue-50/30">
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-10 sm:py-14">{children}</div>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-10 sm:py-14">{children}</div>
     </div>
   );
 }
@@ -328,7 +328,9 @@ function CompareInterface() {
       });
       setParseDocs(initial);
 
-      // Process uploads sequentially.
+      // Process uploads sequentially. Track per-slot insurance_plan_id locally
+      // (avoids fragile post-hoc filename re-query against the documents table).
+      const uploadResults = new Map<number, string>();
       for (let n = 0; n < uploadIndexes.length; n++) {
         const idx = uploadIndexes[n];
         const slot = slots[idx];
@@ -339,6 +341,7 @@ function CompareInterface() {
           isFirst: n === 0,
         });
         if (insurancePlanId) {
+          uploadResults.set(idx, insurancePlanId);
           // Mark next queued doc as uploading.
           setParseDocs((prev) => {
             const arr = [...prev];
@@ -369,9 +372,7 @@ function CompareInterface() {
         }
       }
 
-      // Re-collect refs in slot order, now with insurance_plan_ids populated
-      // for upload slots.
-      const uploadInsurancePlanIds = await collectUploadResults(uploadIndexes);
+      // Build refs in slot order, mixing canonical + user_plan kinds.
       const finalRefs: PlanRef[] = [];
       for (let i = 0; i < slots.length; i++) {
         const s = slots[i];
@@ -380,7 +381,7 @@ function CompareInterface() {
         } else if (s.kind === "search" && s.selected) {
           finalRefs.push({ kind: "canonical", id: s.selected.id });
         } else if (s.kind === "upload" && s.file) {
-          const ipid = uploadInsurancePlanIds.get(i);
+          const ipid = uploadResults.get(i);
           if (ipid) finalRefs.push({ kind: "user_plan", id: ipid });
         }
       }
@@ -497,38 +498,6 @@ function CompareInterface() {
     }
   }
 
-  async function collectUploadResults(uploadIndexes: number[]): Promise<Map<number, string>> {
-    if (!user) return new Map();
-    const out = new Map<number, string>();
-    const supabase = createBrowserClient();
-    // We've already polled each to "complete" + populated linked_insurance_plan_id.
-    // Re-query each via documents.id is overkill — instead, walk through parseDocs and
-    // resolve each via a DB read.
-    const { data: u } = await supabase
-      .from("users")
-      .select("id")
-      .eq("firebase_uid", user.userId)
-      .single();
-    if (!u) return out;
-    const { data: docs } = await supabase
-      .from("documents")
-      .select("id, linked_insurance_plan_id, file_name, created_at")
-      .eq("user_id", u.id)
-      .order("created_at", { ascending: false })
-      .limit(uploadIndexes.length * 2);
-    if (!docs) return out;
-    // Match docs back to slot indexes by file name (best-effort heuristic).
-    for (const slotIdx of uploadIndexes) {
-      const slot = slots[slotIdx];
-      if (slot.kind !== "upload" || !slot.file) continue;
-      const match = docs.find(
-        (d) => (d.file_name as string) === slot.file?.name && d.linked_insurance_plan_id,
-      );
-      if (match) out.set(slotIdx, match.linked_insurance_plan_id as string);
-    }
-    return out;
-  }
-
   async function callCompareApi(planRefs: PlanRef[]) {
     if (!user || planRefs.length < 2) {
       setResultsError("Need at least 2 plans to compare.");
@@ -580,13 +549,16 @@ function CompareInterface() {
   }
 
   // ── Render ────────────────────────────────────────────────────────────
-  if (mode === "results") {
-    return <ResultsView plans={results} error={resultsError} onStartOver={startOver} />;
-  }
-
-  if (mode === "parsing") {
-    return (
-      <div>
+  // Single return wraps body + persistent Turnstile mount. Keeping the widget
+  // in a stable JSX position across mode transitions lets Cloudflare maintain
+  // its iframe/token lifecycle without remount-thrashing — required for the
+  // multi-upload reset() flow AND prevents the "display:none" iframe-not-loaded
+  // bug that bit single-upload submission in the prior revision.
+  return (
+    <>
+      {mode === "results" ? (
+        <ResultsView plans={results} error={resultsError} onStartOver={startOver} />
+      ) : mode === "parsing" ? (
         <PlayfulParsingScreen
           docs={parseDocs}
           title="Reading your plan documents"
@@ -605,90 +577,99 @@ function CompareInterface() {
             ) : undefined
           }
         />
-        {/* Hidden Turnstile widget — token feeds upload requests. */}
-        <div className="hidden">
-          <TurnstileWidget ref={turnstileRef} action="upload" onToken={setTurnstileToken} />
-        </div>
-      </div>
-    );
-  }
+      ) : (
+        // Build mode
+        <div>
+          <Header />
 
-  // Build mode
-  return (
-    <div>
-      <Header />
+          {/* Side-by-side on lg+; stacked on mobile/tablet. */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-5">
+            {slots.map((slot, idx) => (
+              <PlanSlot
+                key={idx}
+                index={idx}
+                optional={idx === 2}
+                currentPlan={currentPlan}
+                state={slot}
+                onChange={(next) => setSlot(idx, next)}
+                disabled={consentSubmitting}
+              />
+            ))}
+          </div>
 
-      <div className="max-w-2xl mx-auto space-y-4">
-        {slots.map((slot, idx) => (
-          <PlanSlot
-            key={idx}
-            index={idx}
-            optional={idx === 2}
-            currentPlan={currentPlan}
-            state={slot}
-            onChange={(next) => setSlot(idx, next)}
-            disabled={consentSubmitting}
-          />
-        ))}
-      </div>
-
-      {showConsent && (
-        <div className="max-w-2xl mx-auto mt-6 bg-white rounded-2xl ring-1 ring-amber-200 p-6 shadow-sm">
-          <div className="flex items-start gap-3">
-            <div className="shrink-0 w-9 h-9 rounded-xl bg-amber-100 flex items-center justify-center">
-              <svg className="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
-              </svg>
+          {showConsent && (
+            <div className="max-w-3xl mx-auto mt-6 bg-white rounded-2xl ring-1 ring-amber-200 p-6 shadow-sm">
+              <div className="flex items-start gap-3">
+                <div className="shrink-0 w-9 h-9 rounded-xl bg-amber-100 flex items-center justify-center">
+                  <svg className="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                  </svg>
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm font-semibold text-slate-900">Quick consent before we read your plan documents</p>
+                  <p className="text-sm text-slate-600 mt-1.5 leading-relaxed">{consentDoc?.summary}</p>
+                  <label className="flex items-start gap-3 mt-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={consentChecked}
+                      onChange={(e) => setConsentChecked(e.target.checked)}
+                      className="mt-1 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <span className="text-sm text-slate-700">
+                      I&rsquo;ve read and agree to the {consentDoc?.title ?? "consent terms"} above.
+                    </span>
+                  </label>
+                </div>
+              </div>
             </div>
-            <div className="flex-1">
-              <p className="text-sm font-semibold text-slate-900">Quick consent before we read your plan documents</p>
-              <p className="text-sm text-slate-600 mt-1.5 leading-relaxed">{consentDoc?.summary}</p>
-              <label className="flex items-start gap-3 mt-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={consentChecked}
-                  onChange={(e) => setConsentChecked(e.target.checked)}
-                  className="mt-1 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                />
-                <span className="text-sm text-slate-700">
-                  I&rsquo;ve read and agree to the {consentDoc?.title ?? "consent terms"} above.
-                </span>
-              </label>
-            </div>
+          )}
+
+          <div className="max-w-3xl mx-auto mt-8">
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={!canSubmit || consentSubmitting || (showConsent && !consentChecked) || (hasUploadSlot && !turnstileToken)}
+              className={`w-full py-4 rounded-2xl text-base font-semibold transition-all ${
+                canSubmit && !consentSubmitting && !(showConsent && !consentChecked) && !(hasUploadSlot && !turnstileToken)
+                  ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-200 hover:shadow-xl hover:shadow-blue-300 hover:-translate-y-0.5"
+                  : "bg-slate-100 text-slate-400 cursor-not-allowed"
+              }`}
+            >
+              {consentSubmitting
+                ? "Saving consent…"
+                : showConsent
+                  ? "Continue and compare"
+                  : filledCount < 2
+                    ? `Add at least 2 plans to compare (${filledCount}/2)`
+                    : hasUploadSlot && !turnstileToken
+                      ? "Verifying you're human…"
+                      : `Compare ${filledCount} plan${filledCount === 1 ? "" : "s"}`}
+            </button>
+            {resultsError && <p className="text-sm text-rose-600 mt-3 text-center">{resultsError}</p>}
           </div>
         </div>
       )}
 
-      <div className="max-w-2xl mx-auto mt-8">
-        <button
-          type="button"
-          onClick={handleSubmit}
-          disabled={!canSubmit || consentSubmitting || (showConsent && !consentChecked)}
-          className={`w-full py-4 rounded-2xl text-base font-semibold transition-all ${
-            canSubmit && !consentSubmitting && !(showConsent && !consentChecked)
-              ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-200 hover:shadow-xl hover:shadow-blue-300 hover:-translate-y-0.5"
-              : "bg-slate-100 text-slate-400 cursor-not-allowed"
-          }`}
-        >
-          {consentSubmitting
-            ? "Saving consent…"
-            : showConsent
-              ? "Continue and compare"
-              : filledCount < 2
-                ? `Add at least 2 plans to compare (${filledCount}/2)`
-                : `Compare ${filledCount} plan${filledCount === 1 ? "" : "s"}`}
-        </button>
-        {resultsError && <p className="text-sm text-rose-600 mt-3 text-center">{resultsError}</p>}
-      </div>
-
-      {/* Hidden Turnstile widget — only mounts in build mode so token is ready
-          when the user clicks Compare with at least one upload slot. */}
+      {/* Persistent Turnstile mount — stays in DOM across mode transitions so
+          the Cloudflare iframe lifecycle works (token capture + reset()).
+          Visible + labeled in build mode (centered below CTA); fixed-position
+          subtle treatment during parsing/results so it doesn't visually
+          dominate while remaining mounted. */}
       {hasUploadSlot && (
-        <div className="hidden">
+        <div
+          className={
+            mode === "build"
+              ? "max-w-3xl mx-auto mt-5 flex flex-col items-center gap-2"
+              : "fixed bottom-4 right-4 z-50 opacity-60 hover:opacity-100 transition-opacity scale-90 origin-bottom-right"
+          }
+        >
+          {mode === "build" && (
+            <p className="text-xs text-slate-500">Bot defense check (one-time)</p>
+          )}
           <TurnstileWidget ref={turnstileRef} action="upload" onToken={setTurnstileToken} />
         </div>
       )}
-    </div>
+    </>
   );
 }
 

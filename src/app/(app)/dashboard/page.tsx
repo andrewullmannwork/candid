@@ -218,6 +218,59 @@ export default function DashboardPage() {
         </p>
       </div>
 
+      {/* ── Candid Compare hero (S70) — top placement per PROD feedback ──── */}
+      {compareEnabled && (
+        <section>
+          <Link
+            href="/compare"
+            className="group block relative overflow-hidden rounded-3xl bg-gradient-to-br from-blue-600 via-indigo-600 to-violet-600 p-6 sm:p-8 shadow-xl shadow-blue-200/50 hover:shadow-2xl hover:shadow-blue-300/50 transition-all"
+          >
+            {/* Decorative blurred orbs */}
+            <div className="pointer-events-none absolute -top-12 -right-12 w-48 h-48 rounded-full bg-white/20 blur-3xl" />
+            <div className="pointer-events-none absolute -bottom-16 -left-16 w-56 h-56 rounded-full bg-violet-300/30 blur-3xl" />
+
+            <div className="relative flex flex-col sm:flex-row items-start sm:items-center gap-6">
+              <div className="flex-1 min-w-0">
+                <span className="inline-block text-[10px] font-bold uppercase tracking-wider text-white bg-white/20 backdrop-blur px-2 py-1 rounded-full ring-1 ring-white/30">
+                  New · Candid Compare
+                </span>
+                <h3 className="text-xl sm:text-2xl font-bold text-white mt-3 leading-tight">
+                  Compare your plan to others, side by side.
+                </h3>
+                <p className="text-sm text-blue-50/90 mt-2 max-w-md leading-relaxed">
+                  Premiums, deductibles, OOP max, service breadth + depth — up to 3 plans, every number
+                  traced back to the source.
+                </p>
+                <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-white mt-4 group-hover:gap-2 transition-all">
+                  Open Candid Compare
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                  </svg>
+                </span>
+              </div>
+
+              {/* Mini visual: 3-column comparison stack */}
+              <div className="hidden sm:flex shrink-0 gap-1.5 transform group-hover:scale-105 transition-transform">
+                {[0, 1, 2].map((i) => (
+                  <div
+                    key={i}
+                    className="w-14 sm:w-16 h-24 rounded-xl bg-white/15 backdrop-blur-sm ring-1 ring-white/30 p-2 flex flex-col gap-1.5"
+                  >
+                    <div className="h-1.5 w-full rounded-full bg-white/40" />
+                    <div className={`h-1 ${i === 1 ? "w-full" : "w-3/4"} rounded-full bg-white/30`} />
+                    <div className="h-1 w-1/2 rounded-full bg-white/30" />
+                    <div className="mt-auto space-y-1">
+                      <div className={`h-2 ${i === 0 ? "w-3/4" : i === 1 ? "w-full" : "w-2/3"} rounded bg-white/50`} />
+                      <div className="h-1 w-1/3 rounded bg-white/40" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </Link>
+        </section>
+      )}
+
       {/* ── Dispute follow-up banners ────────────────────────────────────── */}
       <FollowupBanner />
 
@@ -720,59 +773,6 @@ export default function DashboardPage() {
           </div>
         )}
       </section>
-
-      {/* ── Candid Compare (S70) ────────────────────────────────────────── */}
-      {compareEnabled && (
-        <section>
-          <Link
-            href="/compare"
-            className="group block relative overflow-hidden rounded-3xl bg-gradient-to-br from-blue-600 via-indigo-600 to-violet-600 p-6 sm:p-8 shadow-xl shadow-blue-200/50 hover:shadow-2xl hover:shadow-blue-300/50 transition-all"
-          >
-            {/* Decorative blurred orbs */}
-            <div className="pointer-events-none absolute -top-12 -right-12 w-48 h-48 rounded-full bg-white/20 blur-3xl" />
-            <div className="pointer-events-none absolute -bottom-16 -left-16 w-56 h-56 rounded-full bg-violet-300/30 blur-3xl" />
-
-            <div className="relative flex flex-col sm:flex-row items-start sm:items-center gap-6">
-              <div className="flex-1 min-w-0">
-                <span className="inline-block text-[10px] font-bold uppercase tracking-wider text-white bg-white/20 backdrop-blur px-2 py-1 rounded-full ring-1 ring-white/30">
-                  New · Candid Compare
-                </span>
-                <h3 className="text-xl sm:text-2xl font-bold text-white mt-3 leading-tight">
-                  Compare your plan to others, side by side.
-                </h3>
-                <p className="text-sm text-blue-50/90 mt-2 max-w-md leading-relaxed">
-                  Premiums, deductibles, OOP max, service breadth + depth — up to 3 plans, every number
-                  traced back to the source.
-                </p>
-                <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-white mt-4 group-hover:gap-2 transition-all">
-                  Open Candid Compare
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                  </svg>
-                </span>
-              </div>
-
-              {/* Mini visual: 3-column comparison stack */}
-              <div className="hidden sm:flex shrink-0 gap-1.5 transform group-hover:scale-105 transition-transform">
-                {[0, 1, 2].map((i) => (
-                  <div
-                    key={i}
-                    className="w-14 sm:w-16 h-24 rounded-xl bg-white/15 backdrop-blur-sm ring-1 ring-white/30 p-2 flex flex-col gap-1.5"
-                  >
-                    <div className="h-1.5 w-full rounded-full bg-white/40" />
-                    <div className={`h-1 ${i === 1 ? "w-full" : "w-3/4"} rounded-full bg-white/30`} />
-                    <div className="h-1 w-1/2 rounded-full bg-white/30" />
-                    <div className="mt-auto space-y-1">
-                      <div className={`h-2 ${i === 0 ? "w-3/4" : i === 1 ? "w-full" : "w-2/3"} rounded bg-white/50`} />
-                      <div className="h-1 w-1/3 rounded bg-white/40" />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </Link>
-        </section>
-      )}
 
       {/* ── Coming Soon Services ─────────────────────────────────────────── */}
       <section>
