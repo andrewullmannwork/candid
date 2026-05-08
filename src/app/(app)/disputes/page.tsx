@@ -322,6 +322,48 @@ function DisputesContent() {
     if (disputeId) await fetchDispute(disputeId);
   };
 
+  // S71 hotfix #4 (Session 73) — Re-draft button. Calls the dedicated
+  // /api/disputes/[disputeId]/redraft endpoint which re-resolves evidence,
+  // runs CF-20 re-parse-on-flag against any no-cite per-service rows, then
+  // regenerates the letter body via rerenderDisputeLetter. Use case: user
+  // uploaded an additional plan document after the dispute was drafted, OR
+  // wants to re-attempt cite-grade upgrade for a no-cite field whose
+  // un-searched sections might now have available data.
+  const [redrafting, setRedrafting] = useState(false);
+  const [redraftToast, setRedraftToast] = useState<string | null>(null);
+  const handleRedraft = async () => {
+    if (!user || !disputeId || redrafting) return;
+    setRedrafting(true);
+    setRedraftToast(null);
+    try {
+      const token = await user.firebaseUser.getIdToken();
+      const res = await fetch(`/api/disputes/${disputeId}/redraft`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `redraft failed (${res.status})`);
+      }
+      const data = await res.json();
+      const upgrades = data?.cf20?.upgrades ?? 0;
+      const targets = data?.cf20?.targets ?? 0;
+      setRedraftToast(
+        targets === 0
+          ? "Letter re-drafted with current plan + evidence."
+          : upgrades > 0
+            ? `Letter re-drafted — ${upgrades} of ${targets} citation${targets === 1 ? "" : "s"} upgraded to cite-grade.`
+            : `Letter re-drafted — ${targets} citation${targets === 1 ? "" : "s"} attempted; none upgraded this run.`,
+      );
+      await fetchDispute(disputeId);
+    } catch (err) {
+      setRedraftToast(err instanceof Error ? err.message : "Re-draft failed");
+    } finally {
+      setRedrafting(false);
+      setTimeout(() => setRedraftToast(null), 6000);
+    }
+  };
+
   if (!letter) {
     if (disputeFetching) {
       return (
@@ -465,6 +507,11 @@ function DisputesContent() {
               label={isEditing ? "Preview" : "Edit"}
             />
             <ToolbarButton
+              onClick={handleRedraft}
+              icon="redraft"
+              label={redrafting ? "Re-drafting…" : "Re-draft"}
+            />
+            <ToolbarButton
               onClick={handleCopy}
               icon="copy"
               label={copied ? "Copied" : "Copy"}
@@ -477,6 +524,11 @@ function DisputesContent() {
             />
           </div>
         </div>
+        {redraftToast && (
+          <div className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+            {redraftToast}
+          </div>
+        )}
       </div>
 
       {/* Letter body — paper card, serif, letter-style */}
@@ -628,9 +680,17 @@ function NameMismatchIcon() {
 }
 
 // Small icon set (stroke-based, matches Lucide aesthetic without the dep).
-function ToolbarIcon({ name }: { name: "edit" | "preview" | "copy" | "letter" | "casefile" }) {
+function ToolbarIcon({ name }: { name: "edit" | "preview" | "copy" | "letter" | "casefile" | "redraft" }) {
   const common = { className: "h-4 w-4", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, viewBox: "0 0 24 24" };
   switch (name) {
+    case "redraft":
+      return (
+        <svg {...common}>
+          <polyline points="23 4 23 10 17 10" />
+          <polyline points="1 20 1 14 7 14" />
+          <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
+        </svg>
+      );
     case "edit":
       return (
         <svg {...common}>
