@@ -345,7 +345,40 @@ export async function POST(req: NextRequest) {
 
       const isCardScan = plan_source === "insurance_card";
 
-      // Fetch existing plan source for isCardAfterDoc detection
+      // CF-25 (Session 73, S71) — orphan-discovery for active insurance_plans rows
+      // when profile.active_insurance_plan_id is null. The smart-skip path on a
+      // fresh SBC upload calls profiles.UPDATE to set the pointer, but if no
+      // profile row existed at upload time the UPDATE silently no-ops (no rows
+      // matched). Result: an orphan is_active=true SBC-extracted row with
+      // cite-grade provenance, plus a profile that thinks the user has no plan.
+      // When the user then fills the onboarding form, the else-branch below
+      // INSERTs a manual plan with is_active=true → two active rows + the
+      // profile points at the manual one (no provenance, no badges).
+      //
+      // Fix: before deciding insert-vs-update, check for any orphan active row.
+      // If found, repoint the profile to it and treat it as the existing plan.
+      // The user's form values then flow through the update branch +
+      // isFormAfterDoc preserves SBC cost data while updating identity fields.
+      if (existingProfile && !existingProfile.active_insurance_plan_id) {
+        const { data: orphanedActive } = await supabase
+          .from("insurance_plans")
+          .select("id")
+          .eq("user_id", user.id)
+          .eq("is_active", true)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (orphanedActive) {
+          existingProfile.active_insurance_plan_id = orphanedActive.id;
+          await supabase
+            .from("profiles")
+            .update({ active_insurance_plan_id: orphanedActive.id })
+            .eq("user_id", user.id);
+          console.log(`[profile] CF-25 orphan-discovery: repointed profile.active_insurance_plan_id → ${orphanedActive.id} for user ${user.id}`);
+        }
+      }
+
+      // Fetch existing plan source for isFormAfterDoc detection
       let existingPlan: { insurer_name: string | null; source: string | null } | null = null;
       if (existingProfile?.active_insurance_plan_id) {
         const { data: plan } = await supabase
@@ -380,15 +413,22 @@ export async function POST(req: NextRequest) {
       }
 
       {
-        // ── Card-after-SBC merge: only update identity fields, preserve benefit data ──
+        // ── Form-after-doc merge: only update identity fields, preserve benefit data ──
+        // CF-25 (Session 73, S71) — broadened from isCardAfterDoc to isFormAfterDoc.
+        // Both card scans AND manual onboarding-form submissions are now treated as
+        // identity-update-only when an existing plan came from a doc upload (SBC or
+        // plan_document). Doc-extracted values carry cite-grade Pattern P-8 provenance;
+        // manual-form / card values do not. If user wants to override doc values they
+        // use /api/plan/field (inline-edit), which writes user_correction provenance
+        // with confidence=1.0 — that's the strong-signal override path.
         const existingIsFromDoc = existingPlan?.source === "sbc_upload" || existingPlan?.source === "plan_doc_upload";
-        const isCardAfterDoc = isCardScan && existingProfile?.active_insurance_plan_id && existingIsFromDoc;
+        const isFormAfterDoc = existingProfile?.active_insurance_plan_id && existingIsFromDoc;
 
         let planUpdate: Record<string, unknown>;
 
-        if (isCardAfterDoc) {
-          // Card scan after SBC: only update identity fields (card is authoritative for these)
-          // Do NOT overwrite cost fields — SBC data is more complete
+        if (isFormAfterDoc) {
+          // Form (card scan or manual) after a doc upload: only update identity fields.
+          // Do NOT overwrite cost fields — doc data has cite-grade provenance.
           planUpdate = { user_id: user.id };
           if (insurer !== undefined) planUpdate.insurer_name = insurer || null;
           if (plan_name !== undefined) planUpdate.plan_name = plan_name || null;
@@ -396,7 +436,7 @@ export async function POST(req: NextRequest) {
           if (state !== undefined) planUpdate.state = state || null;
           if (group_number !== undefined) planUpdate.group_number = group_number || null;
           if (member_id !== undefined) planUpdate.member_id = member_id || null;
-          // Don't overwrite deductibles, OOP, copays, coinsurance from SBC
+          // Don't overwrite deductibles, OOP, copays, coinsurance from doc-extracted values
         } else {
           // Normal flow: write all fields
           planUpdate = {
@@ -453,6 +493,17 @@ export async function POST(req: NextRequest) {
             .update(planUpdate)
             .eq("id", existingProfile.active_insurance_plan_id);
         } else {
+          // CF-25 (Session 73, S71) defense-in-depth — orphan-discovery above
+          // should have repointed if any active rows existed, but a race
+          // (concurrent SBC upload between discovery and insert) could still
+          // leave one. Deactivate any other active rows before inserting.
+          // Mirrors extraction-dedup.ts:508-512.
+          await supabase
+            .from("insurance_plans")
+            .update({ is_active: false })
+            .eq("user_id", user.id)
+            .eq("is_active", true);
+
           // Create new plan
           const { data: newPlan } = await supabase
             .from("insurance_plans")
@@ -476,7 +527,7 @@ export async function POST(req: NextRequest) {
         }
 
         // If updating existing plan, also sync copays (skip for card-after-doc — SBC copays are more complete)
-        if (!isCardAfterDoc && existingProfile?.active_insurance_plan_id && (copay_primary !== undefined || copay_specialist !== undefined || copay_er !== undefined || copay_urgent_care !== undefined || copay_rx !== undefined)) {
+        if (!isFormAfterDoc && existingProfile?.active_insurance_plan_id && (copay_primary !== undefined || copay_specialist !== undefined || copay_er !== undefined || copay_urgent_care !== undefined || copay_rx !== undefined)) {
           await syncCopayServices(supabase, existingProfile.active_insurance_plan_id, { copay_primary, copay_specialist, copay_er, copay_urgent_care, copay_rx });
         }
 
