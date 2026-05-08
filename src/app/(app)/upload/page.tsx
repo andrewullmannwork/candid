@@ -111,6 +111,83 @@ function UploadForm() {
   const [messageIndex, setMessageIndex] = useState(0);
   const messageTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // S71 hotfix (Session 73) — minimum-display-time floor for PlayfulParsingScreen.
+  // Smart-skip re-uploads complete in 1-3s end-to-end, which made the playful
+  // screen flash through without registering. User direction: keep the playful
+  // screen visible for every upload, even fast ones. Floor engages when active
+  // processing first appears and holds the screen for at least MIN_PLAYFUL_MS
+  // total, regardless of how quickly the underlying state transitions to
+  // complete. The completion JSX still renders below — just delayed.
+  const MIN_PLAYFUL_MS = 4000;
+  const [playfulFloorActive, setPlayfulFloorActive] = useState(false);
+  const playfulShownAtRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!uploaded) return;
+    // Mirror the render-time derivation of inActiveProcessing so the floor
+    // engages/releases on the same signal the render uses.
+    const isPendingReview = uploadStatus === "pending_review";
+    const isUploadingNow = uploadStatus === "uploading";
+    const isProcessingNow = uploadStatus === "auto_processed"
+      && processingProgress?.status !== "processed"
+      && processingProgress?.status !== "error"
+      && !processingProgress?.isStuck;
+    const isCompleteNow = processingProgress?.status === "processed"
+      && !processingProgress?.insurerMismatch?.mismatch
+      && !(yearRolloverEnabled && processingProgress?.insurerMismatch?.year_rollover)
+      && !processingProgress?.insurerMismatch?.pending_canonical_match;
+    const isErrorNow = processingProgress?.status === "error";
+    const isStuckNow = !!processingProgress?.isStuck;
+    const hasMismatchNow = processingProgress?.status === "processed" && processingProgress?.insurerMismatch?.mismatch;
+    const hasYearRolloverNow = yearRolloverEnabled
+      && processingProgress?.status === "processed"
+      && !processingProgress?.insurerMismatch?.mismatch
+      && !!processingProgress?.insurerMismatch?.year_rollover;
+    const hasCanonicalMatchNow = processingProgress?.status === "processed"
+      && !processingProgress?.insurerMismatch?.mismatch
+      && !hasYearRolloverNow
+      && !!processingProgress?.insurerMismatch?.pending_canonical_match;
+    const inActiveNow = (isUploadingNow || isProcessingNow)
+      && !isCompleteNow && !isErrorNow && !isStuckNow
+      && !hasMismatchNow && !hasYearRolloverNow && !hasCanonicalMatchNow
+      && !isPendingReview;
+
+    // Error/mismatch/canonical-match/year-rollover bypass the floor — these
+    // need to surface immediately so the user can act, not be buried under 4s
+    // of "Cross-referencing your plan…" animation.
+    if (isErrorNow || isStuckNow || hasMismatchNow || hasCanonicalMatchNow || hasYearRolloverNow) {
+      if (playfulFloorActive) {
+        setPlayfulFloorActive(false);
+        playfulShownAtRef.current = null;
+      }
+      return;
+    }
+
+    // Engage floor on first active state of this upload session.
+    if (inActiveNow && playfulShownAtRef.current === null) {
+      playfulShownAtRef.current = Date.now();
+      setPlayfulFloorActive(true);
+      return;
+    }
+
+    // When active processing ends but floor is still on, schedule its release
+    // when the minimum window elapses.
+    if (!inActiveNow && playfulFloorActive && playfulShownAtRef.current !== null) {
+      const elapsed = Date.now() - playfulShownAtRef.current;
+      const remaining = MIN_PLAYFUL_MS - elapsed;
+      if (remaining <= 0) {
+        setPlayfulFloorActive(false);
+        playfulShownAtRef.current = null;
+        return;
+      }
+      const t = setTimeout(() => {
+        setPlayfulFloorActive(false);
+        playfulShownAtRef.current = null;
+      }, remaining);
+      return () => clearTimeout(t);
+    }
+  }, [uploaded, uploadStatus, processingProgress, yearRolloverEnabled, playfulFloorActive]);
+
   useEffect(() => {
     const isProcessing = uploaded && uploadStatus === "auto_processed" && !processingProgress?.step?.includes("saving") && processingProgress?.status !== "processed";
     if (isProcessing) {
@@ -525,6 +602,11 @@ function UploadForm() {
     // falls through to the existing completion/error/mismatch JSX once any
     // terminal state lands (premium prompt, action buttons, error retry, etc.
     // all stay on the existing layout).
+    //
+    // S71 hotfix (Session 73) — also keep the screen visible while
+    // playfulFloorActive holds the minimum-display-time floor (smart-skip
+    // re-uploads complete in 1-3s otherwise; floor ensures every user sees
+    // the playful animation even on fast paths).
     const inActiveProcessing =
       (isUploading || isProcessing)
       && !isComplete
@@ -534,21 +616,30 @@ function UploadForm() {
       && !hasYearRollover
       && !hasCanonicalMatch
       && !isPendingReview;
-    if (inActiveProcessing) {
-      const phase: ParseDocPhase = isUploading
-        ? "uploading"
-        : processingProgress?.completedPages != null && processingProgress?.totalPages != null
-          ? processingProgress?.step?.includes("extracting") || processingProgress?.step?.includes("saving")
-            ? "cross_referencing"
-            : "parsing"
-          : "queued";
-      const playfulProgress = isUploading
-        ? Math.max(5, uploadProgress)
-        : processingProgress?.completedPages != null && processingProgress?.totalPages && processingProgress.totalPages > 0
-          ? Math.min(95, 25 + Math.round((processingProgress.completedPages / processingProgress.totalPages) * 60))
-          : 25;
-      const playfulDetail =
-        processingProgress?.completedPages != null && processingProgress?.totalPages
+    if (inActiveProcessing || playfulFloorActive) {
+      // Floor-only case (active state ended, floor holding screen): present as
+      // "cross_referencing" at 95% so it animates as "almost done" rather than
+      // freezing at the last upload-progress value.
+      const floorOnly = !inActiveProcessing && playfulFloorActive;
+      const phase: ParseDocPhase = floorOnly
+        ? "cross_referencing"
+        : isUploading
+          ? "uploading"
+          : processingProgress?.completedPages != null && processingProgress?.totalPages != null
+            ? processingProgress?.step?.includes("extracting") || processingProgress?.step?.includes("saving")
+              ? "cross_referencing"
+              : "parsing"
+            : "queued";
+      const playfulProgress = floorOnly
+        ? 95
+        : isUploading
+          ? Math.max(5, uploadProgress)
+          : processingProgress?.completedPages != null && processingProgress?.totalPages && processingProgress.totalPages > 0
+            ? Math.min(95, 25 + Math.round((processingProgress.completedPages / processingProgress.totalPages) * 60))
+            : 25;
+      const playfulDetail = floorOnly
+        ? "Cross-referencing your plan…"
+        : processingProgress?.completedPages != null && processingProgress?.totalPages
           ? `Page ${processingProgress.completedPages} of ${processingProgress.totalPages}`
           : processingProgress?.step ?? undefined;
       return (
