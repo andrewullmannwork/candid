@@ -221,10 +221,35 @@ function CompareInterface() {
     turnstileTokenRef.current = turnstileToken;
   }, [turnstileToken]);
 
+  // Session 72: Browser-back history handling. The build → parsing → results
+  // transitions all happen inside this single component on the same URL, so the
+  // browser's history stack doesn't naturally track them — clicking Back would
+  // jump straight to whatever page preceded /compare (typically /dashboard).
+  // Push a sentinel history entry whenever we leave "build" so the user's Back
+  // returns them to the slot picker instead of leaving /compare entirely.
+  useEffect(() => {
+    if (mode === "build") return;
+    window.history.pushState({ candidCompareMode: mode }, "");
+    const handler = () => {
+      // Back from results/parsing → reset slots to build view (no page nav).
+      setMode("build");
+      setResults(null);
+      setResultsError(null);
+      setParseDocs([]);
+      setParseError(null);
+    };
+    window.addEventListener("popstate", handler);
+    return () => window.removeEventListener("popstate", handler);
+  }, [mode]);
+
   // ── Load user's active plan via /api/plan/current ──────────────────────
   // Server-side endpoint (bypasses RLS). The previous browser-Supabase-client
   // chain 406'd because Firebase auth isn't visible to RLS policies that gate
   // on auth.uid(). Now: single Bearer-token GET.
+  // CF-31 (Session 72): added diagnostic logging — Session 71 server logs
+  // showed endpoint returning plan data but client wasn't rendering the
+  // affordance. Logs help isolate fetch-failure vs. null-body vs. state-set
+  // race vs. PlanSlot render gating.
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
@@ -234,11 +259,32 @@ function CompareInterface() {
         const res = await fetch("/api/plan/current", {
           headers: { Authorization: `Bearer ${idToken}` },
         });
-        if (!res.ok || cancelled) return;
+        console.log("[/compare] /api/plan/current status:", res.status);
+        if (!res.ok) {
+          console.warn("[/compare] /api/plan/current non-ok:", res.status);
+          return;
+        }
+        if (cancelled) {
+          console.log("[/compare] /api/plan/current cancelled before parse");
+          return;
+        }
         const body = (await res.json()) as { plan: CurrentPlanSummary | null };
-        if (body.plan && !cancelled) setCurrentPlan(body.plan);
-      } catch {
-        // Non-critical — slot 0 just won't have the "current plan" option.
+        console.log("[/compare] /api/plan/current body:", body);
+        if (cancelled) {
+          console.log("[/compare] /api/plan/current cancelled after parse");
+          return;
+        }
+        if (body.plan) {
+          console.log("[/compare] setCurrentPlan(plan)", body.plan.planName);
+          setCurrentPlan(body.plan);
+        } else {
+          console.warn(
+            "[/compare] /api/plan/current returned plan=null — affordance won't render. " +
+              "Likely the user has no insurance_plans rows OR profile.active_insurance_plan_id is orphaned AND no fallback rows exist.",
+          );
+        }
+      } catch (err) {
+        console.error("[/compare] /api/plan/current fetch failed:", err);
       }
     })();
     return () => {
@@ -359,13 +405,13 @@ function CompareInterface() {
       for (let i = 0; i < slots.length; i++) {
         const s = slots[i];
         if (s.kind === "current") {
-          // Prefer canonical ref when available (richer cross-user-corroborated
-          // values); fall back to user_plan ref for plans without canonical link.
-          finalRefs.push(
-            s.plan.canonicalPlanId
-              ? { kind: "canonical", id: s.plan.canonicalPlanId }
-              : { kind: "user_plan", id: s.plan.insurancePlanId },
-          );
+          // CF-31 follow-up (Session 72): prefer the user_plan ref so the user's
+          // own SBC-parsed values show up (deductible / OOP / premium / etc.).
+          // The previous "prefer canonical" rule meant any canonical with sparse
+          // cross-user data wiped out the user's actual plan numbers ("—").
+          // resolveUserPlan inherits canonical fields via field_provenance when
+          // they're richer, so canonical data still bubbles up where useful.
+          finalRefs.push({ kind: "user_plan", id: s.plan.insurancePlanId });
         } else if (s.kind === "search" && s.selected && s.selected.canonicalPlanId) {
           // Search returns plan_catalog.id; we need canonical_plans.id (via map).
           finalRefs.push({ kind: "canonical", id: s.selected.canonicalPlanId });
@@ -379,11 +425,10 @@ function CompareInterface() {
       // No uploads — refs resolve immediately.
       slots.forEach((s) => {
         if (s.kind === "current") {
-          refs.push(
-            s.plan.canonicalPlanId
-              ? { kind: "canonical", id: s.plan.canonicalPlanId }
-              : { kind: "user_plan", id: s.plan.insurancePlanId },
-          );
+          // CF-31 follow-up: prefer user_plan so the user's own SBC-parsed
+          // values render (canonical with sparse cross-user data wiped them
+          // to "—" / "Estimated"). Mirrors the upload-branch fix above.
+          refs.push({ kind: "user_plan", id: s.plan.insurancePlanId });
         } else if (s.kind === "search" && s.selected && s.selected.canonicalPlanId) {
           // Search returns plan_catalog.id; we need canonical_plans.id (via map).
           refs.push({ kind: "canonical", id: s.selected.canonicalPlanId });
@@ -683,21 +728,19 @@ function CompareInterface() {
 
       {/* Persistent Turnstile mount — stays in DOM across mode transitions so
           the Cloudflare iframe lifecycle works (token capture + reset()).
-          Visible + labeled in build mode (centered below CTA); fixed-position
-          subtle treatment during parsing/results so it doesn't visually
-          dominate while remaining mounted. */}
+          CF-34 (Session 72): appearance="execute" keeps the widget invisible
+          when Cloudflare silently issues a token (no visible Success badge);
+          the interactive challenge UI only renders when Cloudflare actually
+          wants to challenge — and is positioned discretely. */}
       {hasUploadSlot && (
         <div
           className={
             mode === "build"
-              ? "max-w-3xl mx-auto mt-5 flex flex-col items-center gap-2"
+              ? "max-w-3xl mx-auto mt-5 flex flex-col items-center"
               : "fixed bottom-4 right-4 z-50 opacity-60 hover:opacity-100 transition-opacity scale-90 origin-bottom-right"
           }
         >
-          {mode === "build" && (
-            <p className="text-xs text-slate-500">Bot defense check (one-time)</p>
-          )}
-          <TurnstileWidget ref={turnstileRef} action="upload" onToken={setTurnstileToken} />
+          <TurnstileWidget ref={turnstileRef} action="upload" onToken={setTurnstileToken} appearance="execute" />
         </div>
       )}
     </>
@@ -806,8 +849,12 @@ function ResultsView({
         Scroll horizontally to see all columns →
       </p>
 
+      {/* Session 72 v3: removed min-w forcing horizontal scroll; mobile uses
+          overflow-x-auto with a smaller floor so wide laptops fit naturally
+          and narrow phones still scroll if columns get too tight. Plan names
+          wrap (line-clamp-2) inside columns so they don't push width. */}
       <div className="space-y-6 overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
-        <div className="min-w-[680px] space-y-6">
+        <div className="min-w-[480px] sm:min-w-0 space-y-6">
           <CompareHeader plans={plans} onFieldSaved={onFieldSaved} />
           <CompareCategories plans={plans} />
         </div>

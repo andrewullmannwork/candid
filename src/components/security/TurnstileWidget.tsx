@@ -37,6 +37,13 @@ interface TurnstileApi {
       "error-callback"?: () => void;
       theme?: "light" | "dark" | "auto";
       size?: "normal" | "flexible" | "compact";
+      // Cloudflare appearance modes:
+      //  - "always" (default): widget UI always visible (Success badge + Cloudflare branding)
+      //  - "execute": widget hidden when Cloudflare silently issues a token; only renders
+      //    the interactive challenge UI if a challenge is required. Best for upload flows
+      //    where the visible Success badge is intrusive.
+      //  - "interaction-only": only render during interaction (similar to execute).
+      appearance?: "always" | "execute" | "interaction-only";
     },
   ) => string;
   reset: (widgetId?: string) => void;
@@ -103,6 +110,14 @@ export interface TurnstileWidgetProps {
   /** Free-form action label for telemetry inside Cloudflare's dashboard. */
   action?: string;
   className?: string;
+  /**
+   * Cloudflare appearance mode. Default "always" preserves the visible
+   * Success badge for auth flows where the bot-defense disclosure is desirable.
+   * Pass "execute" for upload-style flows where the widget should be invisible
+   * when Cloudflare silently passes the user (only the interactive challenge UI
+   * renders if Cloudflare actually wants to challenge).
+   */
+  appearance?: "always" | "execute" | "interaction-only";
 }
 
 /**
@@ -115,7 +130,7 @@ export interface TurnstileWidgetHandle {
 }
 
 export const TurnstileWidget = forwardRef<TurnstileWidgetHandle, TurnstileWidgetProps>(
-  function TurnstileWidget({ onToken, action, className }, ref) {
+  function TurnstileWidget({ onToken, action, className, appearance = "always" }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
     const widgetIdRef = useRef<string | null>(null);
     const onTokenRef = useRef(onToken);
@@ -164,6 +179,7 @@ export const TurnstileWidget = forwardRef<TurnstileWidgetHandle, TurnstileWidget
             "error-callback": () => onTokenRef.current(null),
             theme: "light",
             size: "flexible",
+            appearance,
           });
         })
         .catch((err) => {
@@ -184,7 +200,7 @@ export const TurnstileWidget = forwardRef<TurnstileWidgetHandle, TurnstileWidget
           }
         }
       };
-    }, [action]);
+    }, [action, appearance]);
 
     return <div ref={containerRef} id={`turnstile-${id}`} className={className} />;
   },

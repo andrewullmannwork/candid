@@ -29,13 +29,18 @@ interface CompareHeaderProps {
 }
 
 // Tailwind JIT requires literal class names — can't interpolate.
+// Session 72 v3: label column = `minmax(120px,160px)` (was 180px max) so plan
+// columns get more breathing room across viewports. Critical: this MUST match
+// CompareCategories' grid template exactly so the two sections align. Plan
+// names wrap (line-clamp-2) inside PlanColumn — they never force the column
+// to push wider than the data cells below.
 const COL_GRID_CLASS: Record<number, string> = {
-  3: "grid-cols-[200px_1fr_1fr]",
-  4: "grid-cols-[200px_1fr_1fr_1fr]",
+  3: "grid-cols-[minmax(120px,160px)_1fr_1fr]",
+  4: "grid-cols-[minmax(120px,160px)_1fr_1fr_1fr]",
 };
 
 function colsClass(planCount: number): string {
-  return COL_GRID_CLASS[planCount + 1] ?? "grid-cols-[200px_1fr_1fr]";
+  return COL_GRID_CLASS[planCount + 1] ?? "grid-cols-[minmax(120px,160px)_1fr_1fr]";
 }
 
 function formatUsd(value: number | null): string {
@@ -78,7 +83,7 @@ export function CompareHeader({ plans, onFieldSaved }: CompareHeaderProps) {
           </p>
         </div>
         {plans.map((plan) => (
-          <PlanColumn key={plan.ref.id} plan={plan} />
+          <PlanColumn key={plan.ref.id} plan={plan} planCount={plans.length} />
         ))}
       </div>
 

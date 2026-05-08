@@ -28,6 +28,7 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { needsUploadCTA } from "@/lib/parser/consumer-read";
 import type {
   DecoratedValue,
   DisplayState,
@@ -91,10 +92,11 @@ export function VerifyAffordance({
   const router = useRouter();
 
   const effectiveState = optimisticState ?? state;
-  // CF-19 v2 (Session 64): only Estimated state shows the inline upload affordance.
-  // Verified-tier (candid_verified / verified) is trusted; hidden (parser_failure)
-  // surfaces via page-level banner instead.
-  if (effectiveState !== "estimated") return null;
+  // Session 72 v2: only Community + Public Data show the inline upload affordance
+  // (i.e., needsUploadCTA() — values where uploading the user's doc would improve
+  // the signal). Verified / Upload / User Verified are trusted; Hidden surfaces
+  // via the page-level banner instead.
+  if (!needsUploadCTA(effectiveState)) return null;
 
   // CF-20 (Session 65 fast-follow): re-parse-on-flag for dispute-letter cite-grade
   // deferred. The PR #39 inline re-parse button (haiku_not_found) is now hidden by
@@ -110,7 +112,7 @@ export function VerifyAffordance({
     if (!planId || !fieldName) return;
     setReparseInflight(true);
     setToast(null);
-    setOptimisticState("estimated"); // intermediate state — pending verification result
+    setOptimisticState("community"); // intermediate state — pending verification result
     try {
       const res = await fetch("/api/plan/reparse-field", {
         method: "POST",
@@ -255,14 +257,13 @@ export function affordanceShapeFor(opts: {
   reason: DisplayStateReason;
   searchedSectionsCount: number | undefined;
 }): AffordanceShape {
-  // CF-19 v2 (Session 64): only Estimated triggers the inline upload affordance.
-  // Verified-tier (candid_verified / verified) doesn't need a prompt — user trusts it.
-  // Hidden (parser_failure / boilerplate) is handled by the page-level error banner.
-  if (opts.state !== "estimated") return null;
-  // Estimated: single one-button-upload affordance ("Upload your plan document").
-  // Backend reasons (canonical_below_threshold / cms_marketplace / provider_attestation_below_threshold)
-  // all share the same UX path: encourage user to upload SBC for the real story.
-  // searchedSectionsCount kept as input parameter for future re-parse routing (CF-20).
+  // Session 72 v2: only Community + Public Data trigger the inline upload affordance.
+  // Verified / Upload / User Verified don't need a prompt — user trusts them.
+  // Hidden (parser_failure / boilerplate) handled by the page-level error banner.
+  if (!needsUploadCTA(opts.state)) return null;
+  // Community + Public Data: single one-button-upload affordance ("Upload your plan
+  // document"). Backend reasons all share the same UX path: encourage user to upload
+  // SBC for the real story.
   void opts.reason;
   void opts.searchedSectionsCount;
   return "one_button_upload";

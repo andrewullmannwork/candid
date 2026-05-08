@@ -9,6 +9,7 @@ import { useConsent } from "@/lib/consent/use-consent";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { createBrowserClient } from "@/lib/supabase/client";
 import { TurnstileWidget, type TurnstileWidgetHandle } from "@/components/security/TurnstileWidget";
+import { PlayfulParsingScreen, type ParseDocPhase } from "@/components/parsing/PlayfulParsingScreen";
 import { ShareCandidCard } from "@/components/share/ShareCandidCard";
 
 // ─── Document type info ─────────────────────────────────────────────────────
@@ -155,8 +156,19 @@ function UploadForm() {
   // Cloudflare Turnstile (S68) — bot defense on upload. Token is single-use,
   // so widgetRef.current.reset() is called after each upload attempt to issue
   // a fresh token for the next file.
+  // CF-34 (Session 72): widget render is deferred until the user picks a file
+  // (drag/drop or browse) so it doesn't visually clutter the upload form on
+  // page load AND we don't waste tokens on visitors who don't actually upload.
+  // userPickedFile flips true the moment a valid file is selected; mirror to a
+  // ref so doUpload's closure can poll the latest token without stale-deps.
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const turnstileTokenRef = useRef<string | null>(null);
   const turnstileRef = useRef<TurnstileWidgetHandle>(null);
+  const [userPickedFile, setUserPickedFile] = useState(false);
+
+  useEffect(() => {
+    turnstileTokenRef.current = turnstileToken;
+  }, [turnstileToken]);
 
   // Retry a failed or stuck document
   const retryDocument = useCallback(async (docId: string) => {
@@ -213,16 +225,24 @@ function UploadForm() {
             setProcessingProgress(data);
           } else {
             // No mismatch — decide between auto-redirect or premium prompt.
-            // Bills (eob, itemized_bill) → /claim (audit results live there).
-            // Plan docs (sbc, plan_document) → /plan (benefits live there).
-            const isBill = docType === "eob" || docType === "itemized_bill";
+            // Session 72 user direction: ALL auto-redirects go to /dashboard
+            // (the user's preferred landing surface). The dashboard exposes
+            // links to /plan (benefits) and /claim (audit) so this also works
+            // for both bill + plan-doc paths uniformly.
             const isPlanType = docType === "sbc" || docType === "plan_document";
             // SBCs don't include premium — if it's missing, hold the redirect
             // and let the user fill it in via the inline premium prompt.
             const needsPremium = isPlanType && data.linkedPlanPremium == null;
+            console.log("[upload] processed branch:", {
+              docType,
+              isPlanType,
+              linkedPlanPremium: data.linkedPlanPremium,
+              linkedInsurancePlanId: data.linkedInsurancePlanId,
+              needsPremium,
+              willAutoRedirect: !needsPremium,
+            });
             if (!needsPremium) {
-              const destination = isBill ? "/claim" : "/plan";
-              setTimeout(() => { window.location.href = destination; }, 1500);
+              setTimeout(() => { window.location.href = "/dashboard"; }, 1500);
             }
           }
           return;
@@ -285,19 +305,39 @@ function UploadForm() {
     async (file: File) => {
       if (!user) return;
       setUploading(true);
-      setUploaded(true); // Immediately show progress page
-      setUploadStatus("uploading");
       setError("");
       setFileName(file.name);
+      // CF-34 (Session 72) FIX v2: do NOT set uploaded=true yet. The form view
+      // hosts the TurnstileWidget render (it lives inside the form return; the
+      // `if (uploaded)` early-return at line ~484 jumps to the progress view
+      // which doesn't render the widget). If we flip uploaded=true now, React
+      // unmounts the form → widget never mounts → no token issued → server
+      // returns 403 "missing-input-response". Wait for the token BEFORE the
+      // flip so the widget has a chance to issue.
 
       try {
+        // Poll up to 12s for Turnstile token. With appearance="execute" + the
+        // dev test key the widget issues a token in ~200-800ms; PROD with a
+        // real Managed key is similar. The form view stays visible during this
+        // wait (dropzone shows the 0% progress bar from setUploading(true)
+        // above, so the user sees feedback even while the captcha runs).
+        const tokenWaitStart = Date.now();
+        while (!turnstileTokenRef.current && Date.now() - tokenWaitStart < 12000) {
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        const tokenForUpload = turnstileTokenRef.current;
+
+        // Now safe to flip to progress view — token (if any) is captured.
+        setUploaded(true);
+        setUploadStatus("uploading");
+
         const idToken = await user.firebaseUser.getIdToken();
 
         // Upload file via API to bypass RLS
         const formData = new FormData();
         formData.append("file", file);
         formData.append("docType", docType);
-        if (turnstileToken) formData.append("turnstileToken", turnstileToken);
+        if (tokenForUpload) formData.append("turnstileToken", tokenForUpload);
 
         // Use XHR for upload progress tracking
         setUploadProgress(0);
@@ -376,10 +416,14 @@ function UploadForm() {
         setUploading(false);
       }
     },
-    [user, docType, turnstileToken]
+    [user, docType]
   );
 
-  // Intercept drop: validate file, then check consent before uploading
+  // Intercept drop: validate file, then check consent before uploading.
+  // CF-34 (Session 72): also flips userPickedFile so the Turnstile widget
+  // mounts at this exact moment — the widget will load + capture a token
+  // while the user works through the consent modal (or immediately if already
+  // consented), keeping captcha out of the way until it's actually needed.
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
       if (!user || acceptedFiles.length === 0) return;
@@ -401,6 +445,11 @@ function UploadForm() {
         setError("File must be under 20MB.");
         return;
       }
+
+      // Mount Turnstile (CF-34): even though it takes ~3-5s to issue a token,
+      // the consent modal flow gives it that time naturally. doUpload polls
+      // the ref so the upload waits if the token isn't ready yet.
+      setUserPickedFile(true);
 
       // If consent already granted, upload immediately
       if (hasConsented) {
@@ -470,6 +519,57 @@ function UploadForm() {
       && processingProgress?.status === "processed"
       && processingProgress?.linkedPlanPremium == null
       && !premiumSaved;
+
+    // Session 72 bonus: PlayfulParsingScreen for the active upload + parsing
+    // phases. Mirrors /compare's progress UX (cleaner shared component) and
+    // falls through to the existing completion/error/mismatch JSX once any
+    // terminal state lands (premium prompt, action buttons, error retry, etc.
+    // all stay on the existing layout).
+    const inActiveProcessing =
+      (isUploading || isProcessing)
+      && !isComplete
+      && !isError
+      && !isStuck
+      && !hasMismatch
+      && !hasYearRollover
+      && !hasCanonicalMatch
+      && !isPendingReview;
+    if (inActiveProcessing) {
+      const phase: ParseDocPhase = isUploading
+        ? "uploading"
+        : processingProgress?.completedPages != null && processingProgress?.totalPages != null
+          ? processingProgress?.step?.includes("extracting") || processingProgress?.step?.includes("saving")
+            ? "cross_referencing"
+            : "parsing"
+          : "queued";
+      const playfulProgress = isUploading
+        ? Math.max(5, uploadProgress)
+        : processingProgress?.completedPages != null && processingProgress?.totalPages && processingProgress.totalPages > 0
+          ? Math.min(95, 25 + Math.round((processingProgress.completedPages / processingProgress.totalPages) * 60))
+          : 25;
+      const playfulDetail =
+        processingProgress?.completedPages != null && processingProgress?.totalPages
+          ? `Page ${processingProgress.completedPages} of ${processingProgress.totalPages}`
+          : processingProgress?.step ?? undefined;
+      return (
+        <div className="max-w-2xl mx-auto">
+          <PlayfulParsingScreen
+            docs={[
+              {
+                id: documentId ?? "single",
+                label: "Your document",
+                fileName: fileName || "document.pdf",
+                phase,
+                progress: playfulProgress,
+                detail: playfulDetail,
+              },
+            ]}
+            title="Reading your document"
+            subtitle="Sit tight — this usually takes 30-90 seconds."
+          />
+        </div>
+      );
+    }
 
     // Calculate unified progress: upload (0-30%), analysis (30-100%)
     const getOverallProgress = () => {
@@ -915,20 +1015,39 @@ function UploadForm() {
           })()}
 
           {/* Premium prompt — SBCs don't include premium; ask the user before
-              they navigate away to /plan so total-cost projections work. */}
-          {isComplete && isPlanType && needsPremium && processingProgress?.linkedInsurancePlanId && user && (
-            <PremiumPromptInline
-              planId={processingProgress.linkedInsurancePlanId}
-              user={user}
-              onSaved={() => {
-                setPremiumSaved(true);
-                // Auto-redirect once premium is captured (matches the same
-                // 800ms-ish delay the no-prompt path uses; gives the user a
-                // beat to see the success state).
-                setTimeout(() => { window.location.href = "/plan"; }, 800);
-              }}
-            />
-          )}
+              they navigate away to /plan so total-cost projections work.
+              CF-35 (Session 72): premium is now optional — the inline prompt
+              has a Skip button so users who don't know their premium yet can
+              proceed without entering a value. They can edit it later from the
+              plan page. */}
+          {(() => {
+            const showPrompt = isComplete && isPlanType && needsPremium && processingProgress?.linkedInsurancePlanId && user && !premiumSaved;
+            console.log("[upload] PremiumPromptInline render check:", {
+              isComplete,
+              isPlanType,
+              needsPremium,
+              linkedInsurancePlanId: processingProgress?.linkedInsurancePlanId,
+              hasUser: !!user,
+              premiumSaved,
+              showPrompt,
+            });
+            return showPrompt ? (
+              <PremiumPromptInline
+                planId={processingProgress!.linkedInsurancePlanId!}
+                user={user!}
+                onSaved={() => {
+                  setPremiumSaved(true);
+                  // Session 72 user direction: post-action redirects also go to
+                  // /dashboard (consistency with the no-prompt auto-redirect).
+                  setTimeout(() => { window.location.href = "/dashboard"; }, 800);
+                }}
+                onSkip={() => {
+                  setPremiumSaved(true);
+                  window.location.href = "/dashboard";
+                }}
+              />
+            ) : null;
+          })()}
 
           {/* Action buttons */}
           <div className="flex flex-col gap-2">
@@ -950,7 +1069,7 @@ function UploadForm() {
             )}
             {(isComplete || isError || isStuck || isPendingReview) && (
               <button
-                onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setClassificationResult(null); setSbcParsed(null); setProcessingProgress(null); setDocumentId(null); setUploadProgress(0); }}
+                onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setClassificationResult(null); setSbcParsed(null); setProcessingProgress(null); setDocumentId(null); setUploadProgress(0); setUserPickedFile(false); setPremiumSaved(false); }}
                 className="w-full py-2.5 border border-gray-200 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
               >
                 Upload another document
@@ -1132,8 +1251,17 @@ function UploadForm() {
         </div>
 
         {/* Cloudflare Turnstile — bot defense (S68). Managed mode is invisible
-            for legitimate users; high-risk traffic gets an interactive challenge. */}
-        <TurnstileWidget ref={turnstileRef} action="upload" onToken={setTurnstileToken} />
+            for legitimate users; high-risk traffic gets an interactive challenge.
+            CF-34 (Session 72): widget mounts after the user picks a file AND
+            uses appearance="execute" so it stays invisible when Cloudflare
+            silently issues a token. The interactive challenge UI only renders
+            if Cloudflare actually wants to challenge — never the green Success
+            badge that was visually intrusive. doUpload polls turnstileTokenRef
+            before sending so a brief delay between mount and token-issuance is
+            handled gracefully. */}
+        {userPickedFile && (
+          <TurnstileWidget ref={turnstileRef} action="upload" onToken={setTurnstileToken} appearance="execute" />
+        )}
 
         {error && (
           <div className="p-3 bg-red-50 border border-red-100 rounded-xl">
@@ -1273,10 +1401,12 @@ function PremiumPromptInline({
   planId,
   user,
   onSaved,
+  onSkip,
 }: {
   planId: string;
   user: { firebaseUser: { getIdToken(): Promise<string> } };
   onSaved: (premium: number) => void;
+  onSkip: () => void;
 }) {
   const [value, setValue] = useState("");
   const [saving, setSaving] = useState(false);
@@ -1343,6 +1473,14 @@ function PremiumPromptInline({
         </button>
       </div>
       {error && <p className="text-xs text-red-600 mt-2">{error}</p>}
+      <button
+        type="button"
+        onClick={onSkip}
+        disabled={saving}
+        className="mt-3 text-xs font-medium text-slate-500 hover:text-slate-900 underline disabled:opacity-50"
+      >
+        Skip for now — I&rsquo;ll add it later
+      </button>
     </div>
   );
 }
