@@ -16,7 +16,7 @@
 import { createHash } from "crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { jsonrepair } from "jsonrepair";
-import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
+// matchInsurerCatalog import removed (CF-40 v2 — Path B semantic-match smart-skip eliminated).
 import type { ProcessPlanResult } from "@/lib/plan/process-plan";
 import { extractImportantQuestions } from "@/lib/sbc/haiku-prompts/important-questions";
 import { verifySBCSourceExcerpts } from "@/lib/sbc/verify-source-excerpts";
@@ -199,17 +199,37 @@ ${headerText}`,
 }
 
 // ── 4. Decision Function ───────────────────────────────────────────────────────
+//
+// CF-40 v2 (Session 74) — per-document smart-skip eligibility.
+//
+// Smart-skip eligibility is now per `(canonical_plan_id, file_hash)` tuple,
+// tracked in the canonical_document_stability table (mig 081). Each unique
+// document hash must prove its own stability via 3 consecutive identical
+// Haiku runs before that hash gets smart-skip eligibility on the canonical.
+//
+// Key behavior changes from CF-40 v1:
+//   - Path A (file_hash match): instead of checking canonical-wide
+//     `extraction_stable`, we check canonical_document_stability for THIS
+//     specific (canonical, hash) pair. A new hash on a stable canonical is
+//     NOT skipped — it must build its own stability via fresh Haiku runs.
+//   - Path B (semantic-match smart-skip on first-time hash): REMOVED. New
+//     hashes always run Haiku — even on canonicals stable via other docs —
+//     because they may carry additional services / corrections.
+//
+// Per Pattern 1 #14 + user direction: "If a different document for the same
+// plan is uploaded for the first time, we should parse it. It may have
+// additional services or data and we want as robust a data picture as possible."
 
 export async function shouldSkipExtraction(
   supabase: SupabaseClient,
   documentId: string,
   fileHash: string,
-  identifiers: PlanIdentifiers,
+  _identifiers: PlanIdentifiers, // CF-40 v2: unused after Path B removal; kept in signature for caller stability
   _userId: string
 ): Promise<DedupResult> {
   const NO_SKIP = (reason: string): DedupResult => ({ skip: false, reason });
 
-  // Step 1: Exact file hash match
+  // Step 1: Exact file hash match → trace to canonical → check per-(canonical, hash) stability
   if (fileHash) {
     const { data: hashMatches } = await supabase
       .from("documents")
@@ -228,78 +248,30 @@ export async function shouldSkipExtraction(
         .single();
 
       if (linkedPlan?.canonical_plan_id) {
-        const { data: canonical } = await supabase
-          .from("canonical_plans")
-          .select("id, extraction_count, extraction_stable")
-          .eq("id", linkedPlan.canonical_plan_id)
-          .single();
+        // CF-40 v2: per-(canonical, hash) stability, not per-canonical.
+        const { data: stability } = await supabase
+          .from("canonical_document_stability")
+          .select("haiku_output_stable, identical_parse_count")
+          .eq("canonical_plan_id", linkedPlan.canonical_plan_id)
+          .eq("file_hash", fileHash)
+          .maybeSingle();
 
-        if (canonical?.extraction_stable) {
-          console.log(`[extraction-dedup] File hash match → canonical ${canonical.id} is stable. SKIP.`);
-          return { skip: true, canonicalPlanId: canonical.id, reason: "exact_file_hash_stable" };
+        if (stability?.haiku_output_stable) {
+          console.log(`[extraction-dedup] (canonical=${linkedPlan.canonical_plan_id}, hash=${fileHash.slice(0, 12)}…) is stable (count=${stability.identical_parse_count}). SKIP.`);
+          return { skip: true, canonicalPlanId: linkedPlan.canonical_plan_id, reason: "doc_stable_per_canonical_hash" };
         }
-        console.log(`[extraction-dedup] File hash match but canonical not stable (count=${canonical?.extraction_count}). EXTRACT.`);
-        return NO_SKIP("file_hash_match_not_stable");
+        console.log(`[extraction-dedup] (canonical=${linkedPlan.canonical_plan_id}, hash=${fileHash.slice(0, 12)}…) NOT YET stable (count=${stability?.identical_parse_count ?? 0}). EXTRACT.`);
+        return NO_SKIP("doc_not_yet_stable");
       }
     }
   }
 
-  // Step 2: Need identifiers for semantic matching
-  if (!identifiers.insurer || !identifiers.planName) {
-    return NO_SKIP("identifiers_incomplete");
-  }
-
-  // Step 3: Match insurer → insurer_catalog → canonical_plans
-  const insurerMatch = await matchInsurerCatalog(supabase, identifiers.insurer);
-  if (!insurerMatch) {
-    return NO_SKIP("insurer_not_in_catalog");
-  }
-
-  const planYear = identifiers.planYear || new Date().getFullYear();
-
-  // Query canonical plans for this insurer + year
-  const { data: candidates } = await supabase
-    .from("canonical_plans")
-    .select("id, plan_name, extraction_count, extraction_stable, plan_year")
-    .eq("insurer_id", insurerMatch.id)
-    .eq("plan_year", planYear);
-
-  if (!candidates || candidates.length === 0) {
-    return NO_SKIP("no_canonical_for_insurer_year");
-  }
-
-  // Fuzzy match plan name — normalize and check containment
-  const normalize = (s: string) =>
-    s.toLowerCase().replace(/\s*(insurance|company|inc|corp|health\s*plan)\s*/gi, "").trim();
-  const targetName = normalize(identifiers.planName);
-
-  const match = candidates.find((c) => {
-    const candidateName = normalize(c.plan_name);
-    return (
-      candidateName === targetName ||
-      candidateName.includes(targetName) ||
-      targetName.includes(candidateName)
-    );
-  });
-
-  if (!match) {
-    return NO_SKIP("no_plan_name_match");
-  }
-
-  // Step 4: Sampling policy
-  if (match.extraction_count < 3) {
-    console.log(`[extraction-dedup] Canonical ${match.id} has ${match.extraction_count} extractions (< 3). EXTRACT.`);
-    return NO_SKIP(`needs_more_extractions_${match.extraction_count}`);
-  }
-
-  if (!match.extraction_stable) {
-    console.log(`[extraction-dedup] Canonical ${match.id} not stable despite ${match.extraction_count} extractions. EXTRACT.`);
-    return NO_SKIP("canonical_not_stable");
-  }
-
-  // All checks passed — skip extraction
-  console.log(`[extraction-dedup] Canonical ${match.id} is stable (${match.extraction_count} extractions). SKIP.`);
-  return { skip: true, canonicalPlanId: match.id, reason: "canonical_stable" };
+  // Step 2: First-time hash on this canonical — always run Haiku (CF-40 v2 user direction).
+  // Pre-CF-40-v2 had a Path B "semantic-match smart-skip" that fired when identifiers
+  // (insurer + plan_name + plan_year) matched a stable canonical, smart-skipping new
+  // file hashes. That path was REMOVED — new docs may carry additional services or
+  // value corrections, and we want the most robust data picture per upload.
+  return NO_SKIP("first_time_hash_always_extracts");
 }
 
 // ── 5. Link Document to Canonical (Skip Path) ─────────────────────────────────
@@ -462,6 +434,11 @@ export async function linkDocumentToCanonical(
     // which the consumer-read filter then routed to "Community" badge state on a
     // null cell. The right behavior is: when neither Haiku nor canonical has the
     // value, write nothing → consumer-read renders Hidden + page-level upload prompt.
+    // CF-40 (Session 74): smart-skip path — user uploaded a document that hashed to a
+    // 3-parse-stable canonical. Synthesized provenance gets `source='doc_extraction_smart_skip'`
+    // (NEW v4 source value) so getDisplayState routes to user_verified_community dual-badge
+    // instead of plain Community. Honors Pattern 1 #14 (writes to user-scoped only) and
+    // gives the user credit for their upload contribution. See [[Candid_10k]] §3.1 §6.
     const canonicalInheritedFallback = buildCanonicalInheritedProvenance(
       "insurance_plans",
       [
@@ -482,9 +459,10 @@ export async function linkDocumentToCanonical(
         ...(planIdentityProvenanceFromHaiku.out_oop_max_individual ? [] : outOopIndividual != null ? [["out_oop_max_individual", outOopIndividual] as [string, unknown]] : []),
         ...(planIdentityProvenanceFromHaiku.out_oop_max_family ? [] : outOopFamily != null ? [["out_oop_max_family", outOopFamily] as [string, unknown]] : []),
       ],
+      "doc_extraction_smart_skip", // CF-40 source: smart-skip on stable canonical, user contributed via upload
     );
 
-    // Merged plan-identity field_provenance: Haiku-extracted + canonical_inherited fallback.
+    // Merged plan-identity field_provenance: Haiku-extracted + smart-skip fallback.
     const mergedPlanFieldProvenance: Record<string, FieldProvenanceEntry> = {
       ...canonicalInheritedFallback,
       ...planIdentityProvenanceFromHaiku, // Haiku entries take precedence (cite-grade)
@@ -593,7 +571,10 @@ export async function linkDocumentToCanonical(
         .map((s) => {
           // Build per-row field_provenance: prefer canonical's existing entries (which
           // may include cite-grade Pattern P-8 from past promotion events) over fresh
-          // canonical_inherited synthesis.
+          // smart-skip synthesis.
+          // CF-40 (Session 74): smart-skip synthesis now writes `source='doc_extraction_smart_skip'`
+          // (NEW v4 source value) so getDisplayState routes user-side rows to the
+          // user_verified_community dual-badge tier. See [[Candid_10k]] §3.1 §6.
           const canonicalProvenance = (s.field_provenance as Record<string, FieldProvenanceEntry> | null) ?? null;
           const provenance = canonicalProvenance && Object.keys(canonicalProvenance).length > 0
             ? canonicalProvenance
@@ -608,7 +589,7 @@ export async function linkDocumentToCanonical(
                 ["out_copay", s.out_copay],
                 ["out_coinsurance", s.out_coinsurance],
                 ["out_deductible_applies", s.out_deductible_applies],
-              ]);
+              ], "doc_extraction_smart_skip");
 
           return {
             insurance_plan_id: targetPlanId,
@@ -686,6 +667,18 @@ export async function linkDocumentToCanonical(
 
 // ── 6. Post-Extraction Tracking ────────────────────────────────────────────────
 
+/**
+ * CF-40 (Session 74): plan-identity cost values used for parse-event stability comparison.
+ * 4 fields define "Haiku output stability" — counter increments when these match the prior
+ * snapshot, resets to 1 when they diverge. See [[Candid_10k]] §3.1 §6.
+ */
+export interface HaikuPlanIdentityValues {
+  in_deductible_individual: number | null;
+  in_deductible_family: number | null;
+  in_oop_max_individual: number | null;
+  in_oop_max_family: number | null;
+}
+
 export async function recordExtractionResult(
   supabase: SupabaseClient,
   documentId: string,
@@ -693,6 +686,7 @@ export async function recordExtractionResult(
   userId: string,
   fileHash: string | null,
   extractedServiceSlugs: string[],
+  haikuPlanIdentityValues?: HaikuPlanIdentityValues,
 ): Promise<void> {
   try {
     // Get existing canonical service slugs BEFORE this extraction merged
@@ -720,7 +714,10 @@ export async function recordExtractionResult(
       new_services_found: newServicesFound,
     });
 
-    // Increment extraction count
+    // Increment canonical-level extraction telemetry (count + last_extraction_at).
+    // CF-40 v2: per-canonical identical_parse_count + last_haiku_extracted_values
+    // are DEPRECATED (mig 081 comments) — replaced by canonical_document_stability
+    // per-(canonical, hash). Skip writes to those columns.
     const { data: canonical } = await supabase
       .from("canonical_plans")
       .select("extraction_count")
@@ -734,27 +731,204 @@ export async function recordExtractionResult(
       last_extraction_at: new Date().toISOString(),
     }).eq("id", canonicalPlanId);
 
-    // Check stability: last 3 full extractions all found 0 new services
-    if (newCount >= 3) {
-      const { data: recentLogs } = await supabase
-        .from("document_extraction_log")
-        .select("new_services_found")
-        .eq("canonical_plan_id", canonicalPlanId)
-        .eq("action", "full_extraction")
-        .order("created_at", { ascending: false })
-        .limit(3);
+    // ── CF-40 v3: per-(canonical, hash) stability tracking with multi-slot ──
+    // candidate array + outlier-elimination eviction + services-drift NO_OP guard.
+    //
+    // Skip if no file_hash (can't track stability per hash) or no plan-identity values.
+    if (!fileHash || !haikuPlanIdentityValues) {
+      return;
+    }
 
-      const allStable = recentLogs
-        && recentLogs.length >= 3
-        && recentLogs.every((l) => l.new_services_found === 0);
+    const { data: existingStability } = await supabase
+      .from("canonical_document_stability")
+      .select("identical_parse_count, last_haiku_extracted_values, candidate_slots, upload_count")
+      .eq("canonical_plan_id", canonicalPlanId)
+      .eq("file_hash", fileHash)
+      .maybeSingle();
 
-      if (allStable) {
-        await supabase.from("canonical_plans")
-          .update({ extraction_stable: true })
-          .eq("id", canonicalPlanId);
-        console.log(`[extraction-dedup] Canonical ${canonicalPlanId} marked stable after ${newCount} extractions`);
+    const planIdentityEqual = (a: HaikuPlanIdentityValues | null, b: HaikuPlanIdentityValues | null): boolean => {
+      if (!a || !b) return false;
+      return (a.in_deductible_individual ?? null) === (b.in_deductible_individual ?? null)
+        && (a.in_deductible_family ?? null) === (b.in_deductible_family ?? null)
+        && (a.in_oop_max_individual ?? null) === (b.in_oop_max_individual ?? null)
+        && (a.in_oop_max_family ?? null) === (b.in_oop_max_family ?? null);
+    };
+
+    // CF-40 v3: SlotEntry shape stored in canonical_document_stability.candidate_slots[].
+    interface SlotEntry {
+      values: HaikuPlanIdentityValues;
+      services_count: number;
+      match_count: number;
+      first_seen_at: string;
+      last_seen_at: string;
+    }
+
+    // Distance metric (lex: mismatches primary, services_delta secondary).
+    // Per user direction Session 74: count of mismatches across the 4 plan-identity
+    // cost fields (Hamming-like) + |services_count delta| as secondary tiebreaker.
+    const slotDistance = (a: SlotEntry, b: SlotEntry): number => {
+      let mismatches = 0;
+      if ((a.values.in_deductible_individual ?? null) !== (b.values.in_deductible_individual ?? null)) mismatches++;
+      if ((a.values.in_deductible_family ?? null) !== (b.values.in_deductible_family ?? null)) mismatches++;
+      if ((a.values.in_oop_max_individual ?? null) !== (b.values.in_oop_max_individual ?? null)) mismatches++;
+      if ((a.values.in_oop_max_family ?? null) !== (b.values.in_oop_max_family ?? null)) mismatches++;
+      const servicesDelta = Math.abs(a.services_count - b.services_count);
+      return mismatches * 1000 + servicesDelta;
+    };
+
+    // CF-40 v3 eviction — drop the candidate with HIGHEST isolation (sum of
+    // distances to other candidates). Cluster of consensus survives; isolated
+    // outlier dropped. Tiebreakers: lower match_count → older last_seen_at.
+    const evictOutlier = (slots: SlotEntry[]): SlotEntry[] => {
+      if (slots.length <= 2) return slots;
+      const ranked = slots.map((c, i) => ({
+        idx: i,
+        slot: c,
+        isolation: slots.reduce((sum, other, j) => i === j ? sum : sum + slotDistance(c, other), 0),
+      }));
+      // Sort to find the candidate to DROP (highest isolation; tiebreak by lower
+      // match_count; final tiebreak by older last_seen_at).
+      ranked.sort((a, b) => {
+        if (b.isolation !== a.isolation) return b.isolation - a.isolation;
+        if (a.slot.match_count !== b.slot.match_count) return a.slot.match_count - b.slot.match_count;
+        return a.slot.last_seen_at < b.slot.last_seen_at ? -1 : 1;
+      });
+      const dropIdx = ranked[0].idx;
+      return slots.filter((_, i) => i !== dropIdx);
+    };
+
+    const nowIso = new Date().toISOString();
+
+    let nextStability: {
+      identical_parse_count: number;
+      last_haiku_extracted_values: HaikuPlanIdentityValues | null;
+      candidate_slots: SlotEntry[];
+      haiku_output_stable: boolean;
+      upload_count: number;
+    };
+
+    if (!existingStability) {
+      // First parse of this (canonical, hash) — establish baseline at count=1.
+      nextStability = {
+        identical_parse_count: 1,
+        last_haiku_extracted_values: haikuPlanIdentityValues,
+        candidate_slots: [],
+        haiku_output_stable: false,
+        upload_count: 1,
+      };
+      console.log(`[extraction-dedup] CF-40v3 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) baseline established (count=1).`);
+    } else {
+      const baseline = (existingStability.last_haiku_extracted_values as HaikuPlanIdentityValues | null) ?? null;
+      const slots = ((existingStability.candidate_slots as SlotEntry[] | null) ?? []);
+
+      // ── Services-drift NO_OP guard ───────────────────────────────────────
+      // newServicesFound > 0 means this Haiku run discovered services not yet
+      // on canonical. Per user spec: "counter increments only when Haiku returns
+      // no additional items or corrections" — services drift = informative for
+      // canonical's service-set growth but not for hash-stability. Preserve all
+      // stability state; bump only upload_count + last_seen_at.
+      if (newServicesFound > 0) {
+        nextStability = {
+          identical_parse_count: existingStability.identical_parse_count,
+          last_haiku_extracted_values: baseline,
+          candidate_slots: slots,
+          haiku_output_stable: existingStability.identical_parse_count >= 3,
+          upload_count: existingStability.upload_count + 1,
+        };
+        console.log(`[extraction-dedup] CF-40v3 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) services-drift run (newServicesFound=${newServicesFound}) → all stability state preserved.`);
+      } else if (planIdentityEqual(haikuPlanIdentityValues, baseline)) {
+        // Baseline match — increment counter; clear all candidates (consensus around baseline).
+        const nextCount = existingStability.identical_parse_count + 1;
+        nextStability = {
+          identical_parse_count: nextCount,
+          last_haiku_extracted_values: baseline,
+          candidate_slots: [],
+          haiku_output_stable: nextCount >= 3,
+          upload_count: existingStability.upload_count + 1,
+        };
+        console.log(
+          nextStability.haiku_output_stable
+            ? `[extraction-dedup] CF-40v3 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) STABLE (count=${nextCount}, smart-skip eligible from next upload).`
+            : `[extraction-dedup] CF-40v3 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) baseline match (count=${nextCount}, need ${3 - nextCount} more).`,
+        );
+      } else {
+        // Doesn't match baseline. Check candidate slots for value match.
+        const matchingSlotIdx = slots.findIndex((s) => planIdentityEqual(haikuPlanIdentityValues, s.values));
+
+        if (matchingSlotIdx !== -1) {
+          // Existing candidate corroborates — bump match_count.
+          const updatedSlot: SlotEntry = {
+            ...slots[matchingSlotIdx],
+            match_count: slots[matchingSlotIdx].match_count + 1,
+            last_seen_at: nowIso,
+          };
+          const updatedSlots = slots.map((s, i) => (i === matchingSlotIdx ? updatedSlot : s));
+
+          if (updatedSlot.match_count >= 3) {
+            // PROMOTE — this slot's values become new baseline; all candidates cleared.
+            nextStability = {
+              identical_parse_count: updatedSlot.match_count,
+              last_haiku_extracted_values: updatedSlot.values,
+              candidate_slots: [],
+              haiku_output_stable: true,
+              upload_count: existingStability.upload_count + 1,
+            };
+            console.log(`[extraction-dedup] CF-40v3 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) CANDIDATE PROMOTED to baseline (slot ${matchingSlotIdx}, count=${updatedSlot.match_count}). Stable; all candidates cleared.`);
+          } else {
+            nextStability = {
+              identical_parse_count: existingStability.identical_parse_count,
+              last_haiku_extracted_values: baseline,
+              candidate_slots: updatedSlots,
+              haiku_output_stable: existingStability.identical_parse_count >= 3,
+              upload_count: existingStability.upload_count + 1,
+            };
+            console.log(`[extraction-dedup] CF-40v3 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) candidate corroborated (slot ${matchingSlotIdx}, count=${updatedSlot.match_count}, need ${3 - updatedSlot.match_count} more to promote).`);
+          }
+        } else {
+          // New distinct value — append candidate slot. Eviction if > 2 slots.
+          const newSlot: SlotEntry = {
+            values: haikuPlanIdentityValues,
+            services_count: extractedServiceSlugs.length,
+            match_count: 1,
+            first_seen_at: nowIso,
+            last_seen_at: nowIso,
+          };
+          const appended = [...slots, newSlot];
+          const evicted = evictOutlier(appended);
+
+          nextStability = {
+            identical_parse_count: existingStability.identical_parse_count,
+            last_haiku_extracted_values: baseline,
+            candidate_slots: evicted,
+            haiku_output_stable: existingStability.identical_parse_count >= 3,
+            upload_count: existingStability.upload_count + 1,
+          };
+
+          if (appended.length > evicted.length) {
+            console.log(`[extraction-dedup] CF-40v3 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) new candidate appended; outlier-eliminated (slots: ${appended.length} → ${evicted.length}; baseline preserved at count=${existingStability.identical_parse_count}).`);
+          } else {
+            console.log(`[extraction-dedup] CF-40v3 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) new candidate registered (slots: ${evicted.length}; baseline preserved at count=${existingStability.identical_parse_count}).`);
+          }
+        }
       }
     }
+
+    await supabase
+      .from("canonical_document_stability")
+      .upsert(
+        {
+          canonical_plan_id: canonicalPlanId,
+          file_hash: fileHash,
+          identical_parse_count: nextStability.identical_parse_count,
+          last_haiku_extracted_values: nextStability.last_haiku_extracted_values,
+          candidate_slots: nextStability.candidate_slots,
+          haiku_output_stable: nextStability.haiku_output_stable,
+          upload_count: nextStability.upload_count,
+          last_seen_at: nowIso,
+          updated_at: nowIso,
+        },
+        { onConflict: "canonical_plan_id,file_hash" },
+      );
   } catch (err) {
     // Non-fatal — don't break the main pipeline
     console.error("[extraction-dedup] recordExtractionResult error (non-fatal):", err);

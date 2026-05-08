@@ -50,6 +50,12 @@ interface VerifyAffordanceProps {
    *  when undefined (forward-only fallback per Q-P4.0.5-7), the 2-button affordance
    *  is suppressed in favor of single-link upload-different-doc. */
   searchedSectionsCount?: number;
+  /** S71.5-BADGE-VERIFY (Session 74): when true, the user has an active SBC or
+   *  plan_doc upload — copy reads "Upload a more complete plan document" so the
+   *  prompt acknowledges they already uploaded. When false/undefined, cold-start
+   *  framing "Upload your plan document". Codified in [[Candid_10k]] §3.1
+   *  Display State Achievement & Graduation Rules §8 (page-level prompt rule). */
+  userHasDoc?: boolean;
   /** Optional callback when re-parse succeeds — parent can update its own state. */
   onReparseSuccess?: (decoratedValue: DecoratedValue<unknown>, finalVerifiedState: string) => void;
 }
@@ -59,19 +65,28 @@ interface VerifyAffordanceProps {
 // inline affordance — moves to dispute-letter generation flow per CF-20 (Session 65). Constant
 // retained as 5 for documentation; unused at runtime now.
 
-function reasonMessage(reason: DisplayStateReason): string {
+function reasonMessage(reason: DisplayStateReason, userHasDoc: boolean | undefined): string {
   // CF-19 v2 (Session 64): Estimated reasons all encourage doc upload. Tooltip-text
   // distinction kept lightweight — backend reason routes to message; user sees one
   // upload CTA regardless.
+  // S71.5-BADGE-VERIFY (Session 74): when userHasDoc is true, copy acknowledges
+  // the user already uploaded — "your document didn't include this field" instead
+  // of cold-start framing. Codified in Candid_10k §3.1 graduation rules §9.
   switch (reason) {
     case "canonical_below_threshold":
-      return "We have data on this plan from other Candid users, but we're still gathering confirmations.";
+      return userHasDoc
+        ? "Other Candid users on this plan reported a value here, but your document didn't include it."
+        : "We have data on this plan from other Candid users, but we're still gathering confirmations.";
     case "cms_marketplace":
-      return "Estimated from public CMS marketplace data based on your insurance card.";
+      return userHasDoc
+        ? "This is a public-marketplace estimate — your uploaded document didn't include this field."
+        : "Estimated from public CMS marketplace data based on your insurance card.";
     case "provider_attestation_below_threshold":
       return "Estimated from provider-reported data; still being verified.";
     default:
-      return "We're estimating this value. Upload your plan document for the real story.";
+      return userHasDoc
+        ? "Your uploaded document didn't include this field."
+        : "We're estimating this value. Upload your plan document for the real story.";
   }
 }
 
@@ -83,6 +98,7 @@ export function VerifyAffordance({
   fieldName,
   serviceSlug,
   searchedSectionsCount,
+  userHasDoc,
   onReparseSuccess,
 }: VerifyAffordanceProps) {
   const [pending, startTransition] = useTransition();
@@ -174,8 +190,12 @@ export function VerifyAffordance({
     }
   }
 
-  const message = reasonMessage(reason);
-  const linkLabel = "Upload your plan document";
+  const message = reasonMessage(reason, userHasDoc);
+  // S71.5-BADGE-VERIFY (Session 74): cold-start vs already-uploaded framing.
+  // Codified in [[Candid_10k]] §3.1 Display State Achievement & Graduation Rules §9.
+  const linkLabel = userHasDoc
+    ? "Upload a more complete plan document"
+    : "Upload your plan document";
 
   return (
     <div className="rounded-xl border border-amber-200 bg-amber-50/60 px-4 py-3">

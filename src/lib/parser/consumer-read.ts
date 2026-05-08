@@ -84,8 +84,19 @@ import type { FieldProvenanceEntry, SourceProvenance } from "./field-categories"
 // signal whenever their own data backs a value. Backend `reason` codes still
 // preserve the cite-grade vs no-cite distinction inside the user_verified state
 // so dispute-letter logic can gate blockquotes on from_user_document_cite_grade only.
+// v4 vocabulary (Session 74 — CF-40):
+//   candid_verified         → "Verified"      (≥3 distinct EMAIL+PHONE-verified users; trumps all)
+//   user_verified_community → dual badge      (smart-skip on 3-parse-stable canonical, distinct-users < 3)
+//   user_verified           → "User Verified" (Haiku ran on YOUR doc OR you typed)
+//   community               → "Community"     (canonical inheritance; user has NOT uploaded)
+//   public_data             → "Public Data"   (CMS / public dataset; no user-doc backing)
+//   hidden                  → no badge        (boilerplate / parser failure)
+//
+// Aggregation order (worst → best):
+//   public_data < community < user_verified < user_verified_community < candid_verified
 export type DisplayState =
   | "candid_verified"
+  | "user_verified_community" // CF-40 v4: dual badge "User Verified + Community"
   | "user_verified"
   | "community"
   | "public_data"
@@ -97,6 +108,8 @@ export type DisplayState =
 export type DisplayStateReason =
   // candid_verified
   | "community_corroborated"              // ≥3 distinct users on the canonical confirm this value (Pattern 1 #3 met)
+  // user_verified_community (CF-40 v4 — dual badge tier)
+  | "from_user_document_smart_skip"       // CF-40 (Session 74): user uploaded a doc that matched a 3-parse-stable canonical (haiku_output_stable=TRUE + identical_parse_count >= 3, distinct-users < 3). User contributed via upload; canonical's stability is community-derived. Renders dual badge "User Verified + Community".
   // upload (from THIS user's own document)
   | "from_user_document_cite_grade"       // Pattern P-8 cite-grade — load-bearing for dispute letter blockquotes
   | "from_user_document_no_cite"          // Doc-extracted but verbatim absent OR section misattribution; CF-20 re-parse on dispute-letter trigger
@@ -214,6 +227,15 @@ export function getDisplayState(input: DisplayStateInput): DisplayStateResult {
     return { state: "user_verified", reason: "card_scan" };
   }
 
+  // Tier 2.5 (CF-40 Session 74): User Verified + Community (dual-badge) —
+  // smart-skip fired on a 3-parse-stable canonical with distinct-users < 3.
+  // User uploaded a doc whose hash matched the stable canonical (Haiku didn't
+  // run on their doc, but the canonical's data is what the user's doc would
+  // have produced). Renders dual badge per v4 vocabulary.
+  if (source === "doc_extraction_smart_skip") {
+    return { state: "user_verified_community", reason: "from_user_document_smart_skip" };
+  }
+
   // Tier 3: User Verified (your-document branch) — extracted from THIS user's
   // uploaded plan document (cite-grade OR no-cite; backend reason distinguishes
   // for dispute-letter logic). Merged with the user-typed branch into the same
@@ -309,27 +331,30 @@ export function isVisibleState(s: DisplayState | null | undefined): boolean {
 
 /** States that should pair with an "Upload your plan document" CTA to improve
  *  the signal — Community + Public Data both lack the user's own contribution.
- *  Verified + User Verified don't need an upload CTA. */
+ *  Verified + User Verified + User Verified+Community don't need an upload CTA. */
 export function needsUploadCTA(s: DisplayState | null | undefined): boolean {
   return s === "community" || s === "public_data";
 }
 
 /** Values where the user (or aggregated users) is the source of trust — covers
- *  Verified (≥3 users), User Verified (your doc OR your own typed/confirmed
- *  value), and Community (someone else's parse on this canonical). Public Data
- *  is the only "no human in the loop" state. */
+ *  Verified (≥3 users), User Verified+Community (smart-skip + canonical-stable),
+ *  User Verified (your doc OR your own typed/confirmed value), and Community
+ *  (someone else's parse on this canonical). Public Data is the only "no human
+ *  in the loop" state. */
 export function isDocumentBacked(s: DisplayState | null | undefined): boolean {
-  return s === "candid_verified" || s === "user_verified" || s === "community";
+  return s === "candid_verified" || s === "user_verified_community" || s === "user_verified" || s === "community";
 }
 
 export function aggregateRowState(states: Array<DisplayState | null>): DisplayState | null {
   const visible = states.filter((s): s is DisplayState => s !== null && s !== "hidden");
   if (visible.length === 0) return null;
-  // Worst → best: public_data → community → user_verified → candid_verified.
+  // Worst → best (CF-40 v4):
+  //   public_data → community → user_verified → user_verified_community → candid_verified.
   // Row badge surfaces the worst-quality cell so the user sees the weakest link.
   if (visible.some((s) => s === "public_data")) return "public_data";
   if (visible.some((s) => s === "community")) return "community";
   if (visible.some((s) => s === "user_verified")) return "user_verified";
+  if (visible.some((s) => s === "user_verified_community")) return "user_verified_community";
   return "candid_verified";
 }
 
@@ -482,6 +507,10 @@ export const DISPLAY_STATE_TOOLTIP_EN: Record<DisplayStateReason, string> = {
   // Verified — solid green: ≥3 users corroborated (Pattern 1 #3 met)
   community_corroborated:
     "Verified — multiple Candid users on this plan have confirmed this value.",
+
+  // User Verified + Community (CF-40 v4) — dual badge: smart-skip on stable canonical
+  from_user_document_smart_skip:
+    "User Verified + Community — your uploaded document matches a plan we've already analyzed multiple times. The value comes from the consensus of those prior parses; uploading more details could push it to fully Verified.",
 
   // User Verified (your-document branch) — green border, white fill: from THIS user's own document parse
   from_user_document_cite_grade:
