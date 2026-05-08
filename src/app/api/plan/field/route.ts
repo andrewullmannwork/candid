@@ -96,7 +96,7 @@ export async function POST(req: NextRequest) {
   // ── Verify the plan belongs to the caller (defense in depth on top of RLS) ─
   const { data: plan } = await supabase
     .from("insurance_plans")
-    .select("id, user_id")
+    .select("id, user_id, field_provenance")
     .eq("id", planId)
     .single();
   if (!plan || plan.user_id !== userRow.id) {
@@ -106,10 +106,25 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Session 72 v2: write field_provenance with source="user_correction" so
+  // the consumer-read filter can render a "User Verified" badge for fields
+  // the caller explicitly typed via inline-edit. Merge into existing provenance
+  // (preserve other fields' entries; overwrite this field's entry).
+  const existingProv =
+    (plan.field_provenance as Record<string, Record<string, unknown>> | null) ?? {};
+  const mergedProv: Record<string, Record<string, unknown>> = {
+    ...existingProv,
+    [field]: {
+      source: "user_correction",
+      confidence: 1.0, // user-typed → highest confidence
+      last_corroborated_at: new Date().toISOString(),
+    },
+  };
+
   // ── Update ──────────────────────────────────────────────────────────────
   const { error: updateErr } = await supabase
     .from("insurance_plans")
-    .update({ [field]: value })
+    .update({ [field]: value, field_provenance: mergedProv })
     .eq("id", planId);
   if (updateErr) {
     return NextResponse.json(

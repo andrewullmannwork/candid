@@ -83,11 +83,19 @@ export async function GET(req: NextRequest) {
   // their data still resolves via resolveUserPlan). Both IDs returned so the
   // /compare flow can pick the richer reference (canonical when available;
   // user_plan otherwise).
-  let { data: plan } = await supabase
+  // Session 72 (CF-31 root-cause fix): `metal_level` is a canonical_plans
+  // column only — selecting it on insurance_plans triggers PostgREST 42703
+  // and `maybeSingle()` returns null, masking the row's existence and
+  // making the affordance never render. Read metal_level from canonical_plans
+  // separately when canonical_plan_id is set.
+  let { data: plan, error: planErr } = await supabase
     .from("insurance_plans")
-    .select("canonical_plan_id, plan_name, plan_type, state, plan_year, metal_level, insurer_name")
+    .select("canonical_plan_id, plan_name, plan_type, state, plan_year, insurer_name")
     .eq("id", planId)
     .maybeSingle();
+  if (planErr) {
+    console.warn("[/api/plan/current] insurance_plans select error:", planErr.message);
+  }
 
   // Orphaned-pointer recovery: profile.active_insurance_plan_id points to a
   // row that doesn't exist (deleted plan, stale FK, etc.). Fall back to the
@@ -100,13 +108,16 @@ export async function GET(req: NextRequest) {
       ") — falling back to latest plan for user",
       userRow.id,
     );
-    const { data: latest } = await supabase
+    const { data: latest, error: latestErr } = await supabase
       .from("insurance_plans")
-      .select("id, canonical_plan_id, plan_name, plan_type, state, plan_year, metal_level, insurer_name")
+      .select("id, canonical_plan_id, plan_name, plan_type, state, plan_year, insurer_name")
       .eq("user_id", userRow.id)
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
+    if (latestErr) {
+      console.warn("[/api/plan/current] fallback select error:", latestErr.message);
+    }
     if (latest) {
       planId = latest.id as string;
       plan = latest;
@@ -116,6 +127,18 @@ export async function GET(req: NextRequest) {
   if (!plan) {
     console.warn("[/api/plan/current] no active insurance_plans row for user (post-fallback)", userRow.id);
     return NextResponse.json({ plan: null });
+  }
+
+  // metal_level lives on canonical_plans only — fetch it separately when the
+  // user plan is linked to a canonical (otherwise null).
+  let metalLevel: string | null = null;
+  if (plan.canonical_plan_id) {
+    const { data: canon } = await supabase
+      .from("canonical_plans")
+      .select("metal_level")
+      .eq("id", plan.canonical_plan_id as string)
+      .maybeSingle();
+    metalLevel = (canon?.metal_level as string | null) ?? null;
   }
 
   console.log("[/api/plan/current] returning plan", {
@@ -132,7 +155,7 @@ export async function GET(req: NextRequest) {
       insurerName: (plan.insurer_name as string) || "",
       planType: (plan.plan_type as string | null) ?? null,
       state: (plan.state as string | null) ?? null,
-      metalLevel: (plan.metal_level as string | null) ?? null,
+      metalLevel,
       year: (plan.plan_year as number | null) ?? null,
     },
   });

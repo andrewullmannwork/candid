@@ -9,6 +9,7 @@ import { useConsent } from "@/lib/consent/use-consent";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { createBrowserClient } from "@/lib/supabase/client";
 import { TurnstileWidget, type TurnstileWidgetHandle } from "@/components/security/TurnstileWidget";
+import { PlayfulParsingScreen, type ParseDocPhase } from "@/components/parsing/PlayfulParsingScreen";
 import { ShareCandidCard } from "@/components/share/ShareCandidCard";
 
 // ─── Document type info ─────────────────────────────────────────────────────
@@ -224,16 +225,24 @@ function UploadForm() {
             setProcessingProgress(data);
           } else {
             // No mismatch — decide between auto-redirect or premium prompt.
-            // Bills (eob, itemized_bill) → /claim (audit results live there).
-            // Plan docs (sbc, plan_document) → /plan (benefits live there).
-            const isBill = docType === "eob" || docType === "itemized_bill";
+            // Session 72 user direction: ALL auto-redirects go to /dashboard
+            // (the user's preferred landing surface). The dashboard exposes
+            // links to /plan (benefits) and /claim (audit) so this also works
+            // for both bill + plan-doc paths uniformly.
             const isPlanType = docType === "sbc" || docType === "plan_document";
             // SBCs don't include premium — if it's missing, hold the redirect
             // and let the user fill it in via the inline premium prompt.
             const needsPremium = isPlanType && data.linkedPlanPremium == null;
+            console.log("[upload] processed branch:", {
+              docType,
+              isPlanType,
+              linkedPlanPremium: data.linkedPlanPremium,
+              linkedInsurancePlanId: data.linkedInsurancePlanId,
+              needsPremium,
+              willAutoRedirect: !needsPremium,
+            });
             if (!needsPremium) {
-              const destination = isBill ? "/claim" : "/plan";
-              setTimeout(() => { window.location.href = destination; }, 1500);
+              setTimeout(() => { window.location.href = "/dashboard"; }, 1500);
             }
           }
           return;
@@ -296,24 +305,33 @@ function UploadForm() {
     async (file: File) => {
       if (!user) return;
       setUploading(true);
-      setUploaded(true); // Immediately show progress page
-      setUploadStatus("uploading");
       setError("");
       setFileName(file.name);
+      // CF-34 (Session 72) FIX v2: do NOT set uploaded=true yet. The form view
+      // hosts the TurnstileWidget render (it lives inside the form return; the
+      // `if (uploaded)` early-return at line ~484 jumps to the progress view
+      // which doesn't render the widget). If we flip uploaded=true now, React
+      // unmounts the form → widget never mounts → no token issued → server
+      // returns 403 "missing-input-response". Wait for the token BEFORE the
+      // flip so the widget has a chance to issue.
 
       try {
-        const idToken = await user.firebaseUser.getIdToken();
-
-        // CF-34 (Session 72): wait up to 12s for Turnstile token. Widget mounts
-        // on file-select (not page load) so it may not have issued a token by
-        // the time doUpload starts (especially when consent is already granted
-        // and onDrop calls doUpload immediately). Poll the ref because the
-        // widget callback updates state asynchronously.
+        // Poll up to 12s for Turnstile token. With appearance="execute" + the
+        // dev test key the widget issues a token in ~200-800ms; PROD with a
+        // real Managed key is similar. The form view stays visible during this
+        // wait (dropzone shows the 0% progress bar from setUploading(true)
+        // above, so the user sees feedback even while the captcha runs).
         const tokenWaitStart = Date.now();
         while (!turnstileTokenRef.current && Date.now() - tokenWaitStart < 12000) {
           await new Promise((r) => setTimeout(r, 200));
         }
         const tokenForUpload = turnstileTokenRef.current;
+
+        // Now safe to flip to progress view — token (if any) is captured.
+        setUploaded(true);
+        setUploadStatus("uploading");
+
+        const idToken = await user.firebaseUser.getIdToken();
 
         // Upload file via API to bypass RLS
         const formData = new FormData();
@@ -501,6 +519,57 @@ function UploadForm() {
       && processingProgress?.status === "processed"
       && processingProgress?.linkedPlanPremium == null
       && !premiumSaved;
+
+    // Session 72 bonus: PlayfulParsingScreen for the active upload + parsing
+    // phases. Mirrors /compare's progress UX (cleaner shared component) and
+    // falls through to the existing completion/error/mismatch JSX once any
+    // terminal state lands (premium prompt, action buttons, error retry, etc.
+    // all stay on the existing layout).
+    const inActiveProcessing =
+      (isUploading || isProcessing)
+      && !isComplete
+      && !isError
+      && !isStuck
+      && !hasMismatch
+      && !hasYearRollover
+      && !hasCanonicalMatch
+      && !isPendingReview;
+    if (inActiveProcessing) {
+      const phase: ParseDocPhase = isUploading
+        ? "uploading"
+        : processingProgress?.completedPages != null && processingProgress?.totalPages != null
+          ? processingProgress?.step?.includes("extracting") || processingProgress?.step?.includes("saving")
+            ? "cross_referencing"
+            : "parsing"
+          : "queued";
+      const playfulProgress = isUploading
+        ? Math.max(5, uploadProgress)
+        : processingProgress?.completedPages != null && processingProgress?.totalPages && processingProgress.totalPages > 0
+          ? Math.min(95, 25 + Math.round((processingProgress.completedPages / processingProgress.totalPages) * 60))
+          : 25;
+      const playfulDetail =
+        processingProgress?.completedPages != null && processingProgress?.totalPages
+          ? `Page ${processingProgress.completedPages} of ${processingProgress.totalPages}`
+          : processingProgress?.step ?? undefined;
+      return (
+        <div className="max-w-2xl mx-auto">
+          <PlayfulParsingScreen
+            docs={[
+              {
+                id: documentId ?? "single",
+                label: "Your document",
+                fileName: fileName || "document.pdf",
+                phase,
+                progress: playfulProgress,
+                detail: playfulDetail,
+              },
+            ]}
+            title="Reading your document"
+            subtitle="Sit tight — this usually takes 30-90 seconds."
+          />
+        </div>
+      );
+    }
 
     // Calculate unified progress: upload (0-30%), analysis (30-100%)
     const getOverallProgress = () => {
@@ -951,23 +1020,34 @@ function UploadForm() {
               has a Skip button so users who don't know their premium yet can
               proceed without entering a value. They can edit it later from the
               plan page. */}
-          {isComplete && isPlanType && needsPremium && processingProgress?.linkedInsurancePlanId && user && !premiumSaved && (
-            <PremiumPromptInline
-              planId={processingProgress.linkedInsurancePlanId}
-              user={user}
-              onSaved={() => {
-                setPremiumSaved(true);
-                // Auto-redirect once premium is captured (matches the same
-                // 800ms-ish delay the no-prompt path uses; gives the user a
-                // beat to see the success state).
-                setTimeout(() => { window.location.href = "/plan"; }, 800);
-              }}
-              onSkip={() => {
-                setPremiumSaved(true);
-                window.location.href = "/plan";
-              }}
-            />
-          )}
+          {(() => {
+            const showPrompt = isComplete && isPlanType && needsPremium && processingProgress?.linkedInsurancePlanId && user && !premiumSaved;
+            console.log("[upload] PremiumPromptInline render check:", {
+              isComplete,
+              isPlanType,
+              needsPremium,
+              linkedInsurancePlanId: processingProgress?.linkedInsurancePlanId,
+              hasUser: !!user,
+              premiumSaved,
+              showPrompt,
+            });
+            return showPrompt ? (
+              <PremiumPromptInline
+                planId={processingProgress!.linkedInsurancePlanId!}
+                user={user!}
+                onSaved={() => {
+                  setPremiumSaved(true);
+                  // Session 72 user direction: post-action redirects also go to
+                  // /dashboard (consistency with the no-prompt auto-redirect).
+                  setTimeout(() => { window.location.href = "/dashboard"; }, 800);
+                }}
+                onSkip={() => {
+                  setPremiumSaved(true);
+                  window.location.href = "/dashboard";
+                }}
+              />
+            ) : null;
+          })()}
 
           {/* Action buttons */}
           <div className="flex flex-col gap-2">
@@ -1172,13 +1252,15 @@ function UploadForm() {
 
         {/* Cloudflare Turnstile — bot defense (S68). Managed mode is invisible
             for legitimate users; high-risk traffic gets an interactive challenge.
-            CF-34 (Session 72): widget only mounts after the user picks a file
-            so it doesn't visually clutter the upload form on page load and we
-            don't waste tokens on visitors who never upload. doUpload polls
-            turnstileTokenRef before sending the request, so a brief delay
-            between file-pick and token-issuance is handled gracefully. */}
+            CF-34 (Session 72): widget mounts after the user picks a file AND
+            uses appearance="execute" so it stays invisible when Cloudflare
+            silently issues a token. The interactive challenge UI only renders
+            if Cloudflare actually wants to challenge — never the green Success
+            badge that was visually intrusive. doUpload polls turnstileTokenRef
+            before sending so a brief delay between mount and token-issuance is
+            handled gracefully. */}
         {userPickedFile && (
-          <TurnstileWidget ref={turnstileRef} action="upload" onToken={setTurnstileToken} />
+          <TurnstileWidget ref={turnstileRef} action="upload" onToken={setTurnstileToken} appearance="execute" />
         )}
 
         {error && (

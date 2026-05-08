@@ -64,15 +64,15 @@ interface PlayfulParsingScreenProps {
 // Goal: keep the wait feel intentional + light, not "here's what we're doing
 // under the hood." Add new lines anywhere; keep them concrete + visual.
 const ROTATING_MICROCOPY: string[] = [
-  "Taking a pen from behind our ear to make notes.",
-  "Adjusting the reading lamp on the desk.",
-  "Sliding our glasses down to the tip of our nose.",
+  "Taking a pen from behind our ear.",
+  "Adjusting the reading lamp on our desk.",
+  "Sliding glasses down to the tip of our nose.",
   "Doodling a tiny stethoscope in the margin.",
   "Sharpening a #2 pencil. Just the way we like it.",
   "Highlighting the important bits in yellow.",
   "Adding a sticky note for later.",
-  "Pouring a fresh cup of office coffee.",
-  "Stacking the pages neatly on the clipboard.",
+  "Pouring a fresh cup of coffee.",
+  "Stacking the pages. Aligning pens.",
   "Underlining the fine print twice.",
   "Tapping the desk thoughtfully.",
   "Cross-referencing with the big binder on the shelf.",

@@ -70,27 +70,46 @@ import type { FieldProvenanceEntry, SourceProvenance } from "./field-categories"
 // reads the reason, not the state, to decide blockquote rendering. CF-20 (Session 65 fast-follow)
 // will add a re-parse-on-cite-grade-fail prompt when user clicks "Generate dispute letter"
 // against a `from_user_document_no_cite` field.
+// Session 72 v3 — 4 active states + hidden:
+//   candid_verified → "Verified"      (≥3 users corroborated; only solid-green badge)
+//   user_verified   → "User Verified" (your SBC/plan_doc parse, OR you typed/confirmed
+//                                       via inline-edit / card scan / profile form —
+//                                       i.e., anything where YOU contributed the value)
+//   community       → "Community"     (canonical from another user's parse, sub-3 corroborated)
+//   public_data     → "Public Data"   (CMS bulk ingest / state APCDs / NPPES — no user parse)
+//   hidden          → no badge        (boilerplate / parser failure → page-level banner)
+//
+// v3 collapse rationale (Session 72 same-day evolution): "Upload" + "User Verified"
+// both signal "the user is the source"; merging them gives the user one consistent
+// signal whenever their own data backs a value. Backend `reason` codes still
+// preserve the cite-grade vs no-cite distinction inside the user_verified state
+// so dispute-letter logic can gate blockquotes on from_user_document_cite_grade only.
 export type DisplayState =
   | "candid_verified"
-  | "verified"
-  | "estimated"
+  | "user_verified"
+  | "community"
+  | "public_data"
   | "hidden";
 
-// Reasons surface to UI as tooltip keys + backend routing keys (Q-DR-4A-2 LOCK = enum,
-// not literal text). Reasons are richer than states so backend logic (affordance routing,
-// dispute-letter cite-grade gating, sample-state detection) can differentiate.
+// Reasons surface to UI as tooltip keys + backend routing keys. Richer than
+// states so backend logic (affordance routing, dispute-letter cite-grade
+// gating, sample-state detection) can differentiate fields that share a badge.
 export type DisplayStateReason =
-  // candid_verified family
-  | "community_corroborated"              // Pattern 1 #3 met — multiple distinct users on the canonical confirm this value (with or without cite-grade)
-  // verified family — both render with same badge; backend routes via reason
-  | "from_user_document_cite_grade"       // Pattern P-8 cite-grade from user's own doc — load-bearing for dispute letter blockquotes
-  | "from_user_document_no_cite"          // Extracted from user's doc but verbatim absent OR section misattribution. NOT cite-grade for legal surfaces. Triggers CF-20 re-parse prompt on dispute-letter generation.
-  // estimated family — paired with "Upload your plan document" CTA
-  | "canonical_below_threshold"           // Canonical exists but verification_count < threshold (Pattern 1 #3 not yet met)
+  // candid_verified
+  | "community_corroborated"              // ≥3 distinct users on the canonical confirm this value (Pattern 1 #3 met)
+  // upload (from THIS user's own document)
+  | "from_user_document_cite_grade"       // Pattern P-8 cite-grade — load-bearing for dispute letter blockquotes
+  | "from_user_document_no_cite"          // Doc-extracted but verbatim absent OR section misattribution; CF-20 re-parse on dispute-letter trigger
+  // community (canonical entry derived from another user's parse, sub-3)
+  | "canonical_below_threshold"           // Canonical exists but verification_count < threshold
+  | "provider_attestation_below_threshold" // Provider portal data with <2 user corroborations (Phase 4.5b territory) — folded into Community
+  // public_data (CMS / state APCD / NPPES bulk ingest, no user-doc backing yet)
   | "cms_marketplace"                     // CMS public-marketplace data (county-resolved premium, plan-catalog match from card scan)
-  | "provider_attestation_below_threshold" // Provider portal data with <2 user corroborations (Phase 4.5b territory)
-  // hidden family — no value rendered to user
-  | "parser_failure"                      // Parser hallucination, OCR failure, low confidence, or null provenance — triggers page-level error banner ("Document upload failed. Try again or upload a different document.")
+  // user_verified (caller explicitly entered/confirmed)
+  | "user_correction"                     // User typed value via /api/plan/field inline-edit
+  | "card_scan"                           // Extracted from a user's insurance card scan (member ID, group #, plan name)
+  // hidden — no value rendered
+  | "parser_failure"                      // Parser hallucination, OCR failure, low confidence, or null provenance
   | "boilerplate";                        // DO_NOT_EXTRACT section
 
 // Sources that require cross-user corroboration before they render as verified.
@@ -177,60 +196,62 @@ export function getDisplayState(input: DisplayStateInput): DisplayStateResult {
 
   const citeGrade = isCitationGrade(provenance);
   const requiredCount = corroborationThreshold(source, multiSourceThreshold);
-  // Cross-user sources need sourceCount >= configured threshold.
   const meetsCrossUserThreshold = requiredCount > 0 && sourceCount >= requiredCount;
 
-  // Tier 1: candid_verified — Pattern 1 #3 corroboration met (community-confirmed).
-  // Both cite-grade-corroborated and no-cite-but-corroborated paths land here.
+  // Tier 1: Verified — ≥3 distinct users corroborated (Pattern 1 #3 met).
+  // Trumps everything else regardless of source.
   if (meetsCrossUserThreshold) {
     return { state: "candid_verified", reason: "community_corroborated" };
   }
 
-  // Tier 2: verified — extracted from user's uploaded document.
-  // Backend distinguishes cite-grade (load-bearing for dispute letters) vs no-cite
-  // (CF-20 will trigger re-parse-on-flag when user generates a dispute letter).
-  if (citeGrade) {
-    return { state: "verified", reason: "from_user_document_cite_grade" };
+  // Tier 2: User Verified — caller explicitly typed/confirmed the value.
+  // Sources here are authoritative-by-direct-action: inline-edit (user_correction)
+  // or card scan (card_scan). No corroboration needed.
+  if (source === "user_correction") {
+    return { state: "user_verified", reason: "user_correction" };
   }
-  // Doc extraction with verbatim_absent (Phase 4.0.5: parser searched all sections + value
-  // wasn't located) OR section-misattribution (verified=true but section_verified=false) —
-  // both are "from user's doc but no cite-grade". Backend routes both to the same reason
-  // since dispute-letter logic only cares about cite-grade vs not-cite-grade.
+  if (source === "card_scan") {
+    return { state: "user_verified", reason: "card_scan" };
+  }
+
+  // Tier 3: User Verified (your-document branch) — extracted from THIS user's
+  // uploaded plan document (cite-grade OR no-cite; backend reason distinguishes
+  // for dispute-letter logic). Merged with the user-typed branch into the same
+  // visible state per Session 72 v3 — "you contributed this value either way."
+  if (citeGrade) {
+    return { state: "user_verified", reason: "from_user_document_cite_grade" };
+  }
   if (
     provenance?.source_excerpt_verified === "verbatim_absent" ||
     (provenance &&
       (source === "doc_extraction" || source === "doc_extraction_eoc") &&
       provenance.source_excerpt_verified === "verified")
   ) {
-    return { state: "verified", reason: "from_user_document_no_cite" };
+    return { state: "user_verified", reason: "from_user_document_no_cite" };
   }
 
-  // Tier 3: estimated — non-doc source.
-  // Cross-user below threshold takes precedence over generic estimated.
+  // Tier 4: Community — canonical entry derived from another user's parse on
+  // this canonical, not yet ≥3-user corroborated. provider_attestation also
+  // folds in here (provider portal data sub-2-corroboration).
   if (requiredCount > 0 && sourceCount < requiredCount) {
-    if (source === "canonical_inherited" || source === "canonical_fallback") {
-      // Canonical-fallback subsumes today's "inherited_canonical_pre_corroboration"
-      // — both fire when canonical exists but verification_count < threshold.
-      // Distinguish by source: canonical_fallback (CMS-marketplace pre-doc) vs
-      // canonical_inherited (smart-skip with canonical < threshold).
-      if (source === "canonical_fallback") {
-        return { state: "estimated", reason: "cms_marketplace" };
-      }
-      return { state: "estimated", reason: "canonical_below_threshold" };
+    if (source === "canonical_inherited") {
+      return { state: "community", reason: "canonical_below_threshold" };
     }
-    return { state: "estimated", reason: "provider_attestation_below_threshold" };
-  }
-  // Pure CMS marketplace source (no canonical match yet, e.g., insurance card scan with
-  // plan-catalog lookup but no parsed SBC).
-  if (source === "cms_marketplace") {
-    return { state: "estimated", reason: "cms_marketplace" };
+    if (source === "canonical_fallback") {
+      return { state: "public_data", reason: "cms_marketplace" };
+    }
+    return { state: "community", reason: "provider_attestation_below_threshold" };
   }
 
-  // Tier 4: hidden — parser failure.
-  // Includes haiku_not_found (early-exit hallucination), ocr_unverifiable (scanned doc
-  // verifier limitation), low_confidence (parser self-reported), and null-provenance
-  // (legacy rows pre-mig-063 OR smart-skip pre-fix). Page-level banner aggregates all
-  // parser-failure reasons → user gets ONE re-upload CTA, not N hidden values.
+  // Tier 5: Public Data — pure CMS marketplace source (no canonical inheritance,
+  // no doc parse). Card-scan + plan-catalog lookup before SBC upload typically.
+  if (source === "cms_marketplace") {
+    return { state: "public_data", reason: "cms_marketplace" };
+  }
+
+  // Tier 6: Hidden — parser failure (hallucination / OCR limit / low-confidence
+  // / null provenance). Page-level banner aggregates → one re-upload CTA, not N
+  // hidden values per row.
   return { state: "hidden", reason: "parser_failure" };
 }
 
@@ -270,16 +291,45 @@ export function decorateForDisplay<T>(value: T, input: DisplayStateInput): Decor
  * Picks the worst signal so the user sees the weakest link.
  *
  * Tier order (worst → best for surfacing):
- *   estimated > verified > candid_verified
- * Hidden states are filtered out (boilerplate / parser_failure don't contribute to
- * the row badge — parser_failure is surfaced via page-level banner instead).
- * Returns null when no decorated fields are present (flag OFF or all hidden).
+ * Session 72 v3 worst-to-best ordering:
+ *   public_data < community < user_verified < candid_verified
+ * "Verified" trumps everything (gold-standard cross-user signal). Hidden
+ * filters out (boilerplate / parser_failure → page-level banner). Returns
+ * null when no decorated fields are present (flag OFF or all hidden).
  */
+/**
+ * Session 72 helpers — centralize common state-equality patterns so the
+ * 4-state vocabulary doesn't force every caller to enumerate states inline.
+ */
+
+/** Any state that should render a value + badge to the user (everything except "hidden"). */
+export function isVisibleState(s: DisplayState | null | undefined): boolean {
+  return s != null && s !== "hidden";
+}
+
+/** States that should pair with an "Upload your plan document" CTA to improve
+ *  the signal — Community + Public Data both lack the user's own contribution.
+ *  Verified + User Verified don't need an upload CTA. */
+export function needsUploadCTA(s: DisplayState | null | undefined): boolean {
+  return s === "community" || s === "public_data";
+}
+
+/** Values where the user (or aggregated users) is the source of trust — covers
+ *  Verified (≥3 users), User Verified (your doc OR your own typed/confirmed
+ *  value), and Community (someone else's parse on this canonical). Public Data
+ *  is the only "no human in the loop" state. */
+export function isDocumentBacked(s: DisplayState | null | undefined): boolean {
+  return s === "candid_verified" || s === "user_verified" || s === "community";
+}
+
 export function aggregateRowState(states: Array<DisplayState | null>): DisplayState | null {
   const visible = states.filter((s): s is DisplayState => s !== null && s !== "hidden");
   if (visible.length === 0) return null;
-  if (visible.some((s) => s === "estimated")) return "estimated";
-  if (visible.some((s) => s === "verified")) return "verified";
+  // Worst → best: public_data → community → user_verified → candid_verified.
+  // Row badge surfaces the worst-quality cell so the user sees the weakest link.
+  if (visible.some((s) => s === "public_data")) return "public_data";
+  if (visible.some((s) => s === "community")) return "community";
+  if (visible.some((s) => s === "user_verified")) return "user_verified";
   return "candid_verified";
 }
 
@@ -429,25 +479,33 @@ export function decorateRowsWithDisplayState<
  * i18n replaces this with a t() function call keyed on DisplayStateReason.
  */
 export const DISPLAY_STATE_TOOLTIP_EN: Record<DisplayStateReason, string> = {
-  // candid_verified family — fully green
+  // Verified — solid green: ≥3 users corroborated (Pattern 1 #3 met)
   community_corroborated:
-    "Candid Verified — multiple Candid users on this plan have confirmed this value.",
+    "Verified — multiple Candid users on this plan have confirmed this value.",
 
-  // verified family — green outline (cite-grade vs no-cite differ at backend; user sees one badge)
+  // User Verified (your-document branch) — green border, white fill: from THIS user's own document parse
   from_user_document_cite_grade:
-    "Verified — we pulled this directly from your uploaded plan document with a verbatim citation.",
+    "User Verified — pulled directly from your uploaded plan document with a verbatim citation.",
   from_user_document_no_cite:
-    "Verified — extracted from your uploaded plan document. (We couldn't pinpoint the exact verbatim quote, so this isn't citation-grade for dispute letters yet.)",
+    "User Verified — extracted from your uploaded plan document. (We couldn't pinpoint the exact verbatim quote yet, so this isn't citation-grade for dispute letters.)",
 
-  // estimated family — amber + Upload-CTA
+  // Community — green border, white fill: canonical entry from another user's parse, sub-3
   canonical_below_threshold:
-    "Estimated — we have data on this plan from other Candid users, but we're still gathering enough confirmations. Upload your plan document for the real story.",
-  cms_marketplace:
-    "Estimated — drawn from public CMS marketplace data based on your insurance card. Upload your plan document for accurate values.",
+    "Community — extracted from another Candid user's plan document on this canonical. Once a few more users confirm, this is promoted to Verified.",
   provider_attestation_below_threshold:
-    "Estimated — provider-reported data still being verified. Upload your plan document to check it against your real plan.",
+    "Community — provider-reported data still being corroborated. Upload your plan document to check it against your real plan.",
 
-  // hidden family — page-level banner handles parser_failure
+  // Public Data — green border, white fill: CMS bulk ingest, no user-doc backing yet
+  cms_marketplace:
+    "Public Data — sourced from CMS marketplace and other public datasets, based on your insurance card. Upload your plan document to confirm against your real plan.",
+
+  // User Verified — green border, white fill: caller explicitly typed/confirmed
+  user_correction:
+    "User Verified — you typed this value yourself.",
+  card_scan:
+    "User Verified — extracted from your insurance card scan and confirmed.",
+
+  // Hidden — page-level banner handles parser_failure
   parser_failure:
     "We couldn't fully extract this from your document.",
   boilerplate:

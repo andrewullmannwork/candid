@@ -13,6 +13,9 @@ import {
   VerifyAffordance,
   decoratedShape,
   aggregateRowState,
+  isVisibleState,
+  needsUploadCTA,
+  isDocumentBacked,
   type DecoratedValue,
   type DisplayState,
 } from "@/components/display-state";
@@ -359,10 +362,7 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
           {/* CF-19 (Session 64): summary-card aggregate badge.
               Per user direction: only render for verified-tier states. Estimated/
               unverified summary-card values hide individually below. */}
-          {summaryAggState && summaryAggReason && (
-            summaryAggState === "candid_verified" ||
-            summaryAggState === "verified"
-          ) && (
+          {summaryAggState && summaryAggReason && isVisibleState(summaryAggState) && (
             <DisplayStateBadge state={summaryAggState} reason={summaryAggReason} size="xs" />
           )}
           {planSummary.verificationStatus && (
@@ -394,7 +394,7 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
           (parser_failure) values show "—" + page-level banner aggregates failures. */}
       {(() => {
         const isVisible = (s: typeof inDed.state): boolean =>
-          s === null || s === "candid_verified" || s === "verified" || s === "estimated";
+          s === null || isVisibleState(s);
         const renderValue = (
           field: typeof inDed,
           placeholder: string,
@@ -442,7 +442,7 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
         // CF-19 v2: only Estimated state shows the upload affordance. Verified-tier states
         // get no inline prompt — value is trusted. Hidden states (parser_failure) get the
         // page-level banner instead.
-        const worst = candidates.find((c) => c.state === "estimated") ?? null;
+        const worst = candidates.find((c) => needsUploadCTA(c.state)) ?? null;
         if (!worst || !worst.state || !worst.reason) return null;
         return (
           <div className="mt-3">
@@ -487,9 +487,7 @@ function computeRowDisplay(item: any): {
   // CF-19 (Session 64) — 6-state vocabulary: any of the 3 verified-tier states
   // (candid_verified / document_verified / found_in_document) gets the same
   // "show source quote if cite-grade else surface reason" treatment.
-  const isVerifiedTier =
-    aggState === "candid_verified" ||
-    aggState === "verified";
+  const isVerifiedTier = isDocumentBacked(aggState);
   if (isVerifiedTier) {
     // Prefer a field at this exact state that ALSO has an excerpt (cite-grade) so
     // the row's SourceQuote in expanded view has substance. Fall back to any field
@@ -853,7 +851,7 @@ export default function CandidPlanPage() {
             ? benefits
             : benefits.filter((_, i) => {
                 const s = rowDisplays[i]?.state;
-                return s === "candid_verified" || s === "verified" || s === "estimated";
+                return isVisibleState(s);
               });
           if (visibleBenefits.length === 0) return null;
           const usedInCategory = visibleBenefits.filter((b) => usedBenefits.has(b.benefit.id)).length;
@@ -861,7 +859,7 @@ export default function CandidPlanPage() {
             ? rowDisplays
             : rowDisplays.filter((r) => {
                 const s = r?.state;
-                return s === "candid_verified" || s === "verified" || s === "estimated";
+                return isVisibleState(s);
               });
           const categoryAggState = aggregateRowState(visibleRowDisplays.map((r) => r?.state ?? null));
           const worstRowDisplay = visibleRowDisplays.find((r) => r?.state === categoryAggState);
@@ -880,7 +878,7 @@ export default function CandidPlanPage() {
                       verified) — and Estimated when category mostly has data from non-doc
                       sources (CMS marketplace etc.). Hidden categories (all parser_failure)
                       already filtered out by visibleBenefits.length === 0 check above. */}
-                  {categoryAggState && categoryAggReason && (categoryAggState === "candid_verified" || categoryAggState === "verified" || categoryAggState === "estimated") && (
+                  {categoryAggState && categoryAggReason && isVisibleState(categoryAggState) && (
                     <DisplayStateBadge state={categoryAggState} reason={categoryAggReason} size="xs" />
                   )}
                 </div>
@@ -910,10 +908,7 @@ export default function CandidPlanPage() {
                   // (parser_failure / boilerplate) rows are skipped — page-level banner
                   // surfaces the parser_failure aggregate.
                   const isRenderable =
-                    rowDisplay === null ||
-                    rowDisplay.state === "candid_verified" ||
-                    rowDisplay.state === "verified" ||
-                    rowDisplay.state === "estimated";
+                    rowDisplay === null || isVisibleState(rowDisplay.state);
                   if (!isRenderable) return null;
                   return (
                     <div key={item.benefit.id} className={`transition-colors ${isUsed ? "bg-green-50/30" : "bg-white"}`}>
@@ -1039,7 +1034,7 @@ export default function CandidPlanPage() {
                           {rowDisplay && rowDisplay.excerpt && (rowDisplay.reason === "from_user_document_cite_grade" || rowDisplay.reason === "community_corroborated") && (
                             <SourceQuote excerpt={rowDisplay.excerpt} />
                           )}
-                          {rowDisplay && rowDisplay.state === "estimated" && (
+                          {rowDisplay && needsUploadCTA(rowDisplay.state) && (
                             <VerifyAffordance
                               state={rowDisplay.state}
                               reason={rowDisplay.reason}

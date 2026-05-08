@@ -173,7 +173,7 @@ function testC3_GetDisplayState() {
     source: "doc_extraction",
     multiSourceThreshold: 3,
   });
-  assertEq(r2.state, "verified", "C3.3.state");
+  assertEq(r2.state, "user_verified", "C3.3.state");
   assertEq(r2.reason, "from_user_document_cite_grade", "C3.3.reason");
 
   // Tier 1 (candid_verified) — corroborated multi-user (canonical with verification_count >= threshold)
@@ -199,7 +199,7 @@ function testC3_GetDisplayState() {
   assertEq(r4.state, "hidden", "C3.5.state");
   assertEq(r4.reason, "parser_failure", "C3.5.reason");
 
-  // Tier 3 (estimated) — canonical_inherited below threshold
+  // Session 72 v3: canonical_inherited (sub-3) → "community" state (was "verified" in v1).
   const r5 = getDisplayState({
     provenance: null,
     confidence: 0.7,
@@ -207,7 +207,7 @@ function testC3_GetDisplayState() {
     source: "canonical_inherited",
     multiSourceThreshold: 3,
   });
-  assertEq(r5.state, "estimated", "C3.6.state");
+  assertEq(r5.state, "community", "C3.6.state");
   assertEq(r5.reason, "canonical_below_threshold", "C3.6.reason");
 
   // Tier 3 (estimated) — canonical_fallback below threshold (CMS marketplace)
@@ -218,10 +218,10 @@ function testC3_GetDisplayState() {
     source: "canonical_fallback",
     multiSourceThreshold: 3,
   });
-  assertEq(r6.state, "estimated", "C3.7.state");
+  assertEq(r6.state, "public_data", "C3.7.state");
   assertEq(r6.reason, "cms_marketplace", "C3.7.reason");
 
-  // Tier 3 (estimated) — provider_submitted below threshold (needs 2)
+  // Session 72 v3: provider_submitted below threshold → "community" state.
   const r7 = getDisplayState({
     provenance: null,
     confidence: 0.5,
@@ -229,7 +229,7 @@ function testC3_GetDisplayState() {
     source: "provider_submitted",
     multiSourceThreshold: 3, // ignored; provider has hardcoded 2
   });
-  assertEq(r7.state, "estimated", "C3.8.state");
+  assertEq(r7.state, "community", "C3.8.state");
   assertEq(r7.reason, "provider_attestation_below_threshold", "C3.8.reason");
 
   // Tier 1 (candid_verified) — provider_submitted ABOVE threshold (sourceCount=2)
@@ -290,7 +290,7 @@ function testC4_DecorateForDisplay() {
   };
   const result = decorateForDisplay({ deductible: 1500 }, input);
   assertEq(result.value.deductible, 1500, "C4.1: value preserved");
-  assertEq(result.state, "verified", "C4.2: state (CF-19 v2 4-state: cite-grade self-source)");
+  assertEq(result.state, "user_verified", "C4.2: state (Session 72 v3: cite-grade self-source → upload)");
   assertEq(result.reason, "from_user_document_cite_grade", "C4.3: reason");
   assertEq(result.hasExcerpt, true, "C4.4: hasExcerpt true");
   assertEq(result.excerpt, "Deductible: $1,500 individual", "C4.5: excerpt extracted");
@@ -338,9 +338,10 @@ function testC5_DecorateRows() {
   assertEq(decorated.length, 3, "C5.1: row count preserved");
   assertEq(decorated[0].id, "row1", "C5.2: row1 id preserved");
   assertEq(decorated[0].copay, 25, "C5.3: row1 copay preserved");
-  assertEq(decorated[0].displayState, "verified", "C5.4: row1 verified (self-source cite-grade)");
+  assertEq(decorated[0].displayState, "user_verified", "C5.4: row1 upload (self-source cite-grade)");
   assertEq(decorated[0].displayReason, "from_user_document_cite_grade", "C5.5: row1 reason");
-  assertEq(decorated[1].displayState, "estimated", "C5.6: row2 estimated (canonical below threshold)");
+  // Session 72 v3: canonical_below_threshold → "community" badge.
+  assertEq(decorated[1].displayState, "community", "C5.6: row2 community (canonical below threshold)");
   assertEq(decorated[1].displayReason, "canonical_below_threshold", "C5.7: row2 reason");
   assertEq(decorated[2].displayState, "candid_verified", "C5.8: row3 candid_verified (canonical above threshold)");
   assertEq(decorated[2].displayReason, "community_corroborated", "C5.9: row3 reason");
@@ -422,7 +423,7 @@ function testC7_ExtractAndDecorateFromEntry() {
     multiSourceThreshold: 3,
   });
   assertEq(decorated.value, 1500, "C7.9: value preserved");
-  assertEq(decorated.state, "verified", "C7.10: state from P-8 cite-grade (CF-19 v2 4-state)");
+  assertEq(decorated.state, "user_verified", "C7.10: state from P-8 cite-grade (Session 72 v3 → upload)");
   assertEq(decorated.reason, "from_user_document_cite_grade", "C7.11: reason from cite-grade self-source");
   assertEq(decorated.excerpt, "Deductible: $1,500 individual", "C7.12: excerpt extracted from entry");
   assertEq(decorated.hasExcerpt, true, "C7.13: hasExcerpt true");
@@ -438,13 +439,13 @@ function testC7_ExtractAndDecorateFromEntry() {
   assertEq(nullEntryDecorated.state, "candid_verified", "C7.15: state = candid_verified (corroborated cross-user)");
   assertEq(nullEntryDecorated.reason, "community_corroborated", "C7.16: CF-19 v2: canonical_inherited above threshold → community_corroborated");
 
-  // C7.17: decorateFieldFromEntry with canonical_inherited below threshold → estimated
+  // C7.17: Session 72 v3 — canonical_inherited below threshold → "community" state.
   const belowThreshold = decorateFieldFromEntry(450, null, {
     sourceCount: 1,
     source: "canonical_inherited",
     multiSourceThreshold: 3,
   });
-  assertEq(belowThreshold.state, "estimated", "C7.17: below threshold → estimated");
+  assertEq(belowThreshold.state, "community", "C7.17: below threshold → community");
   assertEq(belowThreshold.reason, "canonical_below_threshold", "C7.18: reason = canonical_below_threshold");
 
   // C7.19: decorateFieldFromEntry confidence sourced from entry, not fallback
@@ -509,31 +510,34 @@ function testC9_AggregateRowState(): void {
   // All-null array → null (no decorated fields on this row)
   assertEq(aggregateRowState([null, null, null]), null, "C9.2: all null → null");
 
-  // Single field, single state — CF-19 v2 4-state vocabulary
+  // Single field, single state — Session 72 v3 5-state vocabulary
   assertEq(aggregateRowState(["candid_verified"]), "candid_verified", "C9.3a: single candid_verified");
-  assertEq(aggregateRowState(["verified"]), "verified", "C9.3b: single verified");
-  assertEq(aggregateRowState(["estimated"]), "estimated", "C9.4: single estimated");
+  assertEq(aggregateRowState(["user_verified"]), "user_verified", "C9.3b: single user_verified");
+  assertEq(aggregateRowState(["community"]), "community", "C9.3c: single community");
+  assertEq(aggregateRowState(["public_data"]), "public_data", "C9.3d: single public_data");
+  assertEq(aggregateRowState(["user_verified"]), "user_verified", "C9.3e: single user_verified");
 
   // hidden filtered out (boilerplate / parser_failure; not contributing to row signal)
   assertEq(aggregateRowState(["hidden", "candid_verified"]), "candid_verified", "C9.6: hidden filtered");
   assertEq(aggregateRowState(["hidden"]), null, "C9.7: only hidden → null");
 
-  // Worst-state wins (priority: estimated > verified > candid_verified)
+  // Worst-state wins (priority: public_data < community < user_verified < user_verified < candid_verified)
   assertEq(aggregateRowState(["candid_verified", "candid_verified"]), "candid_verified", "C9.8: all candid_verified");
-  assertEq(aggregateRowState(["candid_verified", "estimated"]), "estimated", "C9.9: any estimated drags down");
-  assertEq(aggregateRowState(["verified", "estimated"]), "estimated", "C9.10: estimated > verified");
-  assertEq(aggregateRowState(["candid_verified", "verified"]), "verified", "C9.12a: verified < candid");
+  assertEq(aggregateRowState(["candid_verified", "public_data"]), "public_data", "C9.9: any public_data drags down");
+  assertEq(aggregateRowState(["user_verified", "community"]), "community", "C9.10: community < user_verified");
+  assertEq(aggregateRowState(["candid_verified", "user_verified"]), "user_verified", "C9.12a: user_verified < candid_verified");
+  assertEq(aggregateRowState(["user_verified", "community"]), "community", "C9.12b: community < user_verified");
 
-  // Real-world row: mostly candid_verified, one estimated
+  // Real-world row: mostly candid_verified, one public_data drags down
   const realisticRow: Array<DisplayState | null> = [
     "candid_verified",
     "candid_verified",
     null,
     null,
     "candid_verified",
-    "estimated",
+    "public_data",
   ];
-  assertEq(aggregateRowState(realisticRow), "estimated", "C9.13: realistic row → worst signal");
+  assertEq(aggregateRowState(realisticRow), "public_data", "C9.13: realistic row → worst signal");
 }
 
 // ─── C10: verbatim_absent enum derivation (Phase 4.0.5) ────────────────────
@@ -670,7 +674,7 @@ function testC11_ReparseContract(): void {
   // CF-19 v2 (Session 64): verbatim_absent now lands in `verified` state with
   // `from_user_document_no_cite` reason (collapsed from found_in_document tier).
   // Backend reason still discriminates for dispute-letter cite-grade gating.
-  assertEq(verbatimAbsentResult.state, "verified", "C11.4a: verbatim_absent → verified state (collapsed in v2)");
+  assertEq(verbatimAbsentResult.state, "user_verified", "C11.4a: verbatim_absent → upload state (Session 72 v3)");
   assertEq(
     verbatimAbsentResult.reason,
     "from_user_document_no_cite",
@@ -708,14 +712,14 @@ function testC12_AffordanceRouting(): void {
     "C12.1: candid_verified → null",
   );
   assertEq(
-    affordanceShapeFor({ state: "verified", reason: "from_user_document_cite_grade", searchedSectionsCount: 5 }),
+    affordanceShapeFor({ state: "user_verified", reason: "from_user_document_cite_grade", searchedSectionsCount: 5 }),
     null,
-    "C12.2: verified (cite-grade) → null",
+    "C12.2: user_verified (cite-grade) → null",
   );
   assertEq(
-    affordanceShapeFor({ state: "verified", reason: "from_user_document_no_cite", searchedSectionsCount: 5 }),
+    affordanceShapeFor({ state: "user_verified", reason: "from_user_document_no_cite", searchedSectionsCount: 5 }),
     null,
-    "C12.3: verified (no-cite) → null",
+    "C12.3: user_verified (no-cite) → null",
   );
   assertEq(
     affordanceShapeFor({ state: "hidden", reason: "boilerplate", searchedSectionsCount: undefined }),
@@ -727,20 +731,26 @@ function testC12_AffordanceRouting(): void {
     null,
     "C12.5: hidden (parser_failure) → null (handled by page-level banner)",
   );
+  // Session 72 v3: needsUploadCTA() returns true for community + public_data only.
   assertEq(
-    affordanceShapeFor({ state: "estimated", reason: "canonical_below_threshold", searchedSectionsCount: undefined }),
+    affordanceShapeFor({ state: "community", reason: "canonical_below_threshold", searchedSectionsCount: undefined }),
     "one_button_upload",
-    "C12.6: estimated (canonical_below_threshold) → one_button_upload",
+    "C12.6: community (canonical_below_threshold) → one_button_upload",
   );
   assertEq(
-    affordanceShapeFor({ state: "estimated", reason: "cms_marketplace", searchedSectionsCount: undefined }),
+    affordanceShapeFor({ state: "public_data", reason: "cms_marketplace", searchedSectionsCount: undefined }),
     "one_button_upload",
-    "C12.7: estimated (cms_marketplace) → one_button_upload",
+    "C12.7: public_data (cms_marketplace) → one_button_upload",
   );
   assertEq(
-    affordanceShapeFor({ state: "estimated", reason: "provider_attestation_below_threshold", searchedSectionsCount: undefined }),
+    affordanceShapeFor({ state: "community", reason: "provider_attestation_below_threshold", searchedSectionsCount: undefined }),
     "one_button_upload",
-    "C12.8: estimated (provider_attestation_below_threshold) → one_button_upload",
+    "C12.8: community (provider_attestation_below_threshold) → one_button_upload",
+  );
+  assertEq(
+    affordanceShapeFor({ state: "user_verified", reason: "user_correction", searchedSectionsCount: undefined }),
+    null,
+    "C12.9: user_verified → null (no upload CTA needed; user typed it)",
   );
 }
 
@@ -782,12 +792,13 @@ function testC13_SourceThreadingAndNewStates(): void {
   assertEq(result13_2.reason, "parser_failure", "C13.2b: reason = parser_failure");
 
   // C13.3: smart-skip pre-corroboration (canonical_inherited below threshold)
+  // Session 72 v3: routes to "community" state.
   const result13_3 = decorateFieldFromEntry(2000, canonicalInheritedEntry, {
     sourceCount: 1,
     source: "sbc_upload",
     multiSourceThreshold: 3,
   });
-  assertEq(result13_3.state, "estimated", "C13.3a: pre-corroboration → estimated");
+  assertEq(result13_3.state, "community", "C13.3a: pre-corroboration → community");
   assertEq(result13_3.reason, "canonical_below_threshold", "C13.3b: reason = canonical_below_threshold");
 
   // C13.4: verbatim_absent → verified state with from_user_document_no_cite reason
@@ -807,7 +818,7 @@ function testC13_SourceThreadingAndNewStates(): void {
     source: "doc_extraction",
     multiSourceThreshold: 3,
   });
-  assertEq(result13_4.state, "verified", "C13.4a: verbatim_absent → verified (collapsed in v2)");
+  assertEq(result13_4.state, "user_verified", "C13.4a: verbatim_absent → upload (Session 72 v3)");
   assertEq(result13_4.reason, "from_user_document_no_cite", "C13.4b: reason discriminates for dispute-letter");
 
   // C13.5: cite-grade self-source → verified + cite-grade reason
@@ -825,7 +836,7 @@ function testC13_SourceThreadingAndNewStates(): void {
     source: "doc_extraction",
     multiSourceThreshold: 3,
   });
-  assertEq(result13_5.state, "verified", "C13.5a: cite-grade self-source → verified");
+  assertEq(result13_5.state, "user_verified", "C13.5a: cite-grade self-source → upload (Session 72 v3)");
   assertEq(result13_5.reason, "from_user_document_cite_grade", "C13.5b: cite-grade reason preserved");
 
   // C13.6: candid_verified — corroboration met (with or without cite-grade)

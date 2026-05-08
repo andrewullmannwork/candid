@@ -277,7 +277,7 @@ function scoreLowRiskCeiling(plan: ComparePlanPayload, ctx: ScoringContext): { s
 // of "Lowest" — implies relative direction, not an absolute superlative
 // claim against the universe of plans.
 const TAG_LABELS: Record<BestForTagKey, string> = {
-  low_everyday_costs: "Good for everyday care",
+  low_everyday_costs: "Good for preventative care",
   comprehensive_coverage: "Good for full coverage",
   families: "Good for families",
   ongoing_prescriptions: "Good for prescriptions",

@@ -220,8 +220,10 @@ export function buildSBCPlanIdentityProvenance(
  * only as inheritance pointer; canonical untouched.
  *
  * NO Pattern P-8 sub-keys — smart-skip didn't run Haiku, no source_excerpt.
- * Display layer threshold-promotes to "Candid Verified" when canonical's
- * verification_count >= multiSourceThreshold (compute-on-read in analyze/route.ts).
+ * Display layer renders this as "Document Confirmed" (sub-3 corroboration) and
+ * promotes to fully "Verified" when canonical's verification_count meets the
+ * multiSourceThreshold (compute-on-read in analyze/route.ts). Both states are
+ * now in the Session 72 vocabulary — see Candid_10k §3.1.
  *
  * Caller passes (column, value) pairs for fields with non-null values; this helper
  * writes one entry per non-null pair using `source = 'canonical_inherited'`.

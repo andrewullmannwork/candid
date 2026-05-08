@@ -10,6 +10,12 @@
  * Per [[plans/mvp_friday_master]] §S70 + [[Candid_10k]] §3.1:
  *   - Service breadth ("Plan A covers 48; Plan B covers 53")
  *   - Service depth ("Plan A: $30 PCP copay; Plan B: $40 + after deductible")
+ *
+ * Session 72 v2 (per user direction): per-row badges are NOISY at the service
+ * level (dozens of rows × 5 badge variants = visual chatter). Replaced with a
+ * single bottom-aligned aggregate badge cluster per plan column showing the
+ * UNIQUE sources represented across that plan's services. Verified trumps —
+ * if any service hits Verified, only that badge shows.
  */
 
 import { useMemo, useState } from "react";
@@ -18,19 +24,42 @@ import {
   DisplayStateBadge,
   unwrapValue,
 } from "@/components/display-state";
+import type { DisplayState, DisplayStateReason } from "@/components/display-state";
 import type { ComparePlanPayload, CompareBenefit } from "@/lib/plan/compare";
 
 interface CompareCategoriesProps {
   plans: ComparePlanPayload[];
 }
 
+// Representative reason per state, used for tooltip hover on the aggregate
+// cluster badges (the cluster doesn't have a single canonical reason since
+// it represents many services).
+const REPRESENTATIVE_REASON: Record<DisplayState, DisplayStateReason | null> = {
+  candid_verified: "community_corroborated",
+  user_verified: "from_user_document_cite_grade",
+  community: "canonical_below_threshold",
+  public_data: "cms_marketplace",
+  hidden: null,
+};
+
+const AGGREGATE_TOOLTIP: Record<DisplayState, string> = {
+  candid_verified: "Some services on this plan are Verified — corroborated by ≥3 Candid users.",
+  user_verified: "Some services on this plan came from your uploaded plan document or values you typed/confirmed yourself.",
+  community: "Some services on this plan came from another Candid user's parse on this canonical.",
+  public_data: "Some services on this plan came from public datasets (CMS, etc.) — upload your SBC for the real story.",
+  hidden: "",
+};
+
+// MUST match CompareHeader's COL_GRID_CLASS exactly so top + service-section
+// grids align column-for-column across viewports. Session 72 v3: tightened to
+// minmax(120px,160px) so plan columns get more horizontal real estate.
 const COL_GRID_CLASS: Record<number, string> = {
-  3: "grid-cols-[220px_1fr_1fr]",
-  4: "grid-cols-[220px_1fr_1fr_1fr]",
+  3: "grid-cols-[minmax(120px,160px)_1fr_1fr]",
+  4: "grid-cols-[minmax(120px,160px)_1fr_1fr_1fr]",
 };
 
 function colsClass(planCount: number): string {
-  return COL_GRID_CLASS[planCount + 1] ?? "grid-cols-[220px_1fr_1fr]";
+  return COL_GRID_CLASS[planCount + 1] ?? "grid-cols-[minmax(120px,160px)_1fr_1fr]";
 }
 
 interface RowEntry {
@@ -86,33 +115,46 @@ function CostCell({ benefit }: { benefit: CompareBenefit | null }) {
   if (benefit.covered === false) {
     return <p className="text-sm font-medium text-slate-500">Not covered</p>;
   }
-  // Use the in-network cost description for the dominant signal.
   const inDescription = benefit.costInNetworkDescription;
-  // Pull state from the in-network copay decoration as a representative signal.
-  const copayShape = decoratedShape(benefit.costSharing.inNetwork.copay);
-  const coinShape = decoratedShape(benefit.costSharing.inNetwork.coinsurance);
-  // Use whichever has a state populated (copay first).
-  const state = copayShape.state ?? coinShape.state;
-  const reason = copayShape.reason ?? coinShape.reason;
   const priorAuth = unwrapValue(benefit.costSharing.priorAuthRequired);
+  // Session 72 v2: per-cell badge removed — aggregated at section bottom.
+  // Prior-auth pill stays inline since it's per-service, not source-related.
   return (
     <div>
       <p className="text-sm font-medium text-slate-900">{inDescription}</p>
       <p className="text-xs text-slate-500 mt-0.5">
         OON: {benefit.costOutOfNetworkDescription}
       </p>
-      {(state || priorAuth) && (
-        <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
-          {state && reason && <DisplayStateBadge state={state} reason={reason} size="xs" />}
-          {priorAuth && (
-            <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 ring-1 ring-amber-200">
-              Prior auth
-            </span>
-          )}
+      {priorAuth && (
+        <div className="mt-1.5">
+          <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 ring-1 ring-amber-200">
+            Prior auth
+          </span>
         </div>
       )}
     </div>
   );
+}
+
+/**
+ * Compute the unique set of display states across all of a single plan's
+ * service-row decorations. Returns the set ordered worst → best so that the
+ * bottom cluster reads consistently. If any service is candid_verified
+ * ("Verified"), it trumps and is the only badge surfaced.
+ */
+function aggregatePlanStates(plan: ComparePlanPayload): DisplayState[] {
+  const set = new Set<DisplayState>();
+  for (const benefit of plan.benefits) {
+    const copayShape = decoratedShape(benefit.costSharing.inNetwork.copay);
+    const coinShape = decoratedShape(benefit.costSharing.inNetwork.coinsurance);
+    const state = copayShape.state ?? coinShape.state;
+    if (state && state !== "hidden") set.add(state);
+  }
+  if (set.has("candid_verified")) return ["candid_verified"];
+  // Order: worst (public_data) → best (user_verified). Reads left-to-right
+  // in increasing trust.
+  const ORDER: DisplayState[] = ["public_data", "community", "user_verified"];
+  return ORDER.filter((s) => set.has(s));
 }
 
 export function CompareCategories({ plans }: CompareCategoriesProps) {
@@ -123,6 +165,11 @@ export function CompareCategories({ plans }: CompareCategoriesProps) {
 
   // Service breadth headline.
   const coveredCounts = plans.map((p) => p.coveredServiceCount);
+
+  // Pre-compute per-plan source aggregates so the "Where this data comes from"
+  // row (rendered right after the breadth headline) shows ALL unique non-Hidden
+  // states represented across each plan's services. Verified trumps everything.
+  const planAggregates = plans.map((plan) => aggregatePlanStates(plan));
 
   return (
     <section className="rounded-2xl bg-white ring-1 ring-slate-200 overflow-hidden">
@@ -142,6 +189,47 @@ export function CompareCategories({ plans }: CompareCategoriesProps) {
             <p className="text-xs text-slate-500 mt-0.5">covered services on file</p>
           </div>
         ))}
+      </div>
+
+      {/* Session 72 v3: aggregate badge cluster RIGHT AFTER the breadth row
+          (was at the bottom of the services section). Shows unique sources
+          represented across each plan's services. Verified trumps — single
+          Verified badge if any service hits ≥3-user corroboration; otherwise
+          all unique non-Hidden state badges show. */}
+      <div className={`grid ${columnsClass} divide-x divide-slate-100 border-t border-slate-100 bg-slate-50/60`}>
+        <div className="p-4">
+          <p className="text-[10px] uppercase tracking-wide font-semibold text-slate-500">
+            Where this data comes from
+          </p>
+          <p className="text-xs text-slate-500 mt-1">Sources represented across services</p>
+        </div>
+        {plans.map((plan, idx) => {
+          const states = planAggregates[idx];
+          return (
+            <div
+              key={`agg-${plan.ref.id}`}
+              className="p-4 flex flex-wrap items-center gap-1.5"
+            >
+              {states.length === 0 ? (
+                <p className="text-xs text-slate-400 italic">—</p>
+              ) : (
+                states.map((s) => {
+                  const reason = REPRESENTATIVE_REASON[s];
+                  if (!reason) return null;
+                  return (
+                    <DisplayStateBadge
+                      key={s}
+                      state={s}
+                      reason={reason}
+                      size="xs"
+                      tooltip={AGGREGATE_TOOLTIP[s]}
+                    />
+                  );
+                })
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {/* Per-service rows */}
@@ -181,6 +269,7 @@ export function CompareCategories({ plans }: CompareCategoriesProps) {
           </button>
         </div>
       )}
+
     </section>
   );
 }

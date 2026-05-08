@@ -245,30 +245,20 @@ function ModePicker({
           type="button"
           onClick={() => onPickCurrent(currentPlan)}
           disabled={disabled}
-          className="group w-full text-left p-4 rounded-2xl bg-gradient-to-br from-emerald-50 via-white to-emerald-50 ring-2 ring-emerald-200 hover:ring-emerald-400 hover:shadow-md transition-all disabled:opacity-50"
+          className="group w-full text-left p-3 rounded-xl bg-gradient-to-br from-emerald-50 via-white to-emerald-50 ring-2 ring-emerald-200 hover:ring-emerald-400 hover:shadow-md transition-all disabled:opacity-50"
         >
-          <div className="flex items-start gap-3">
-            <div className="shrink-0 w-9 h-9 rounded-xl bg-emerald-500 flex items-center justify-center shadow-sm">
-              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+          <div className="flex items-center gap-2 mb-1.5">
+            <div className="shrink-0 w-5 h-5 rounded-md bg-emerald-500 flex items-center justify-center shadow-sm">
+              <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
               </svg>
             </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2">
-                <p className="text-sm font-semibold text-emerald-900">Use my current plan</p>
-                <span className="inline-flex items-center text-[10px] font-bold uppercase tracking-wider bg-emerald-600 text-white px-1.5 py-0.5 rounded-full">
-                  1-click
-                </span>
-              </div>
-              <p className="text-sm text-slate-700 mt-1 truncate">{currentPlan.planName}</p>
-              <p className="text-xs text-slate-500 mt-0.5 truncate">
-                {[currentPlan.insurerName, currentPlan.planType, currentPlan.metalLevel].filter(Boolean).join(" · ")}
-              </p>
-            </div>
-            <svg className="w-4 h-4 text-emerald-600 shrink-0 mt-1 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-            </svg>
+            <p className="text-sm font-semibold text-emerald-900 truncate">Use my current plan</p>
           </div>
+          <p className="text-sm text-slate-800 truncate" title={currentPlan.planName}>{currentPlan.planName}</p>
+          <p className="text-xs text-slate-500 mt-0.5 truncate">
+            {[currentPlan.insurerName, currentPlan.planType, currentPlan.metalLevel].filter(Boolean).join(" · ")}
+          </p>
         </button>
       )}
 

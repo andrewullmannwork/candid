@@ -33,13 +33,16 @@ import {
   DISPLAY_STATE_TOOLTIP_EN,
   isDecoratedValue,
   aggregateRowState,
+  isVisibleState,
+  needsUploadCTA,
+  isDocumentBacked,
 } from "@/lib/parser/consumer-read";
 // Phase 4.0.5 Task 4.0.5-F: smart 2-button affordance moved to dedicated Client
 // Component file. Re-export from here preserves existing imports across the codebase
 // (`import { VerifyAffordance } from "@/components/display-state"`).
 import { VerifyAffordance } from "@/components/verify-affordance";
 
-export { isDecoratedValue, aggregateRowState, VerifyAffordance };
+export { isDecoratedValue, aggregateRowState, isVisibleState, needsUploadCTA, isDocumentBacked, VerifyAffordance };
 export type { DecoratedValue, DisplayState, DisplayStateReason };
 
 /**
@@ -110,11 +113,20 @@ interface BadgeStyle {
   icon: React.ReactNode;
 }
 
-// CF-19 v2 (Session 64) — 3 visible badge variants per user direction simplification.
-//   candid_verified  → fully green pill              (Pattern 1 #3 corroboration met)
-//   verified         → green outline                 (extracted from user's uploaded doc)
-//   estimated        → amber pill + Upload CTA       (non-doc source)
+// Session 72 v3 vocabulary — 4 visible badge variants:
+//   candid_verified  → solid green pill   "Verified"      (≥3 distinct users corroborated — Pattern 1 #3)
+//   user_verified    → green-bordered white pill  "User Verified" (your SBC/plan_doc parse OR you typed/confirmed)
+//   community        → green-bordered white pill  "Community"     (canonical entry from another user's parse, sub-3)
+//   public_data      → green-bordered white pill  "Public Data"   (CMS bulk ingest / state APCDs / NPPES — no user parse yet)
 //   hidden           → no render (page-level banner for parser_failure aggregates)
+//
+// All 3 non-Verified badges share the same green-bordered white pill style
+// (only label distinguishes); "Verified" is the only solid-green badge —
+// reserves the strongest visual signal for cross-user corroboration.
+//
+// v3 collapse note: "Upload" merged into "User Verified" since both signal
+// "you contributed this." Backend reasons (from_user_document_*) preserve the
+// cite-grade vs no-cite distinction for dispute-letter logic.
 
 const CHECKMARK_ICON = (
   <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
@@ -122,39 +134,36 @@ const CHECKMARK_ICON = (
   </svg>
 );
 
+// Solid green — corroborated cross-user (Pattern 1 #3 met).
 const CANDID_VERIFIED_STYLE: BadgeStyle = {
   bg: "bg-emerald-600",
   text: "text-white",
   ring: "ring-emerald-700",
-  label: "Candid Verified",
-  icon: CHECKMARK_ICON,
-};
-
-const VERIFIED_STYLE: BadgeStyle = {
-  bg: "bg-emerald-50",
-  text: "text-emerald-700",
-  ring: "ring-emerald-400",
   label: "Verified",
   icon: CHECKMARK_ICON,
 };
 
-const ESTIMATED_STYLE: BadgeStyle = {
-  bg: "bg-amber-50",
-  text: "text-amber-700",
-  ring: "ring-amber-200",
-  label: "Estimated",
-  icon: (
-    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="6" />
-    </svg>
-  ),
-};
+// Green border + white fill — single-source signals (3 variants, label is the only differentiator).
+const OUTLINE_BASE = {
+  bg: "bg-white",
+  text: "text-emerald-700",
+  ring: "ring-emerald-500",
+  icon: CHECKMARK_ICON,
+} as const;
+
+const COMMUNITY_STYLE: BadgeStyle = { ...OUTLINE_BASE, label: "Community" };
+const PUBLIC_DATA_STYLE: BadgeStyle = { ...OUTLINE_BASE, label: "Public Data" };
+const USER_VERIFIED_STYLE: BadgeStyle = { ...OUTLINE_BASE, label: "User Verified" };
 
 function styleFor(state: DisplayState): BadgeStyle | null {
-  if (state === "candid_verified") return CANDID_VERIFIED_STYLE;
-  if (state === "verified") return VERIFIED_STYLE;
-  if (state === "estimated") return ESTIMATED_STYLE;
-  return null; // "hidden" → component returns null upstream
+  switch (state) {
+    case "candid_verified": return CANDID_VERIFIED_STYLE;
+    case "user_verified":   return USER_VERIFIED_STYLE;
+    case "community":       return COMMUNITY_STYLE;
+    case "public_data":     return PUBLIC_DATA_STYLE;
+    case "hidden":          return null;
+    default:                return null;
+  }
 }
 
 interface DisplayStateBadgeProps {
