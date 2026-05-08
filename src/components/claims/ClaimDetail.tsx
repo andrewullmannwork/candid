@@ -712,6 +712,11 @@ function DisputeRow({
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<DisputeDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  // S71 hotfix #4 (Session 73) — Re-draft inline on the claim-detail dispute card.
+  // Same handler as /disputes page; allows users to re-draft without leaving the
+  // claim view. CF-20 re-parse-on-flag fires server-side; toast surfaces outcome.
+  const [redrafting, setRedrafting] = useState(false);
+  const [redraftToast, setRedraftToast] = useState<string | null>(null);
 
   const statusLabel = DISPUTE_STATUS_LABEL[dispute.status] || dispute.status;
   const statusBadgeClass = DISPUTE_STATUS_BADGE[dispute.status] || "text-gray-700 bg-gray-100";
@@ -737,6 +742,43 @@ function DisputeRow({
       console.error("Failed to load dispute detail:", err);
     }
     setDetailLoading(false);
+  }
+
+  async function handleRedraft() {
+    if (!user || redrafting) return;
+    setRedrafting(true);
+    setRedraftToast(null);
+    try {
+      const token = await user.firebaseUser.getIdToken();
+      const res = await fetch(`/api/disputes/${dispute.id}/redraft`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `redraft failed (${res.status})`);
+      }
+      const data = await res.json();
+      const upgrades = data?.cf20?.upgrades ?? 0;
+      const targets = data?.cf20?.targets ?? 0;
+      setRedraftToast(
+        targets === 0
+          ? "Letter re-drafted with current plan + evidence."
+          : upgrades > 0
+            ? `Letter re-drafted — ${upgrades} of ${targets} citation${targets === 1 ? "" : "s"} upgraded.`
+            : `Letter re-drafted — ${targets} citation${targets === 1 ? "" : "s"} attempted; none upgraded this run.`,
+      );
+      // Refetch the dispute detail to show the updated letter content.
+      const refetch = await fetch(`/api/disputes/${dispute.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (refetch.ok) setDetail(await refetch.json());
+    } catch (err) {
+      setRedraftToast(err instanceof Error ? err.message : "Re-draft failed");
+    } finally {
+      setRedrafting(false);
+      setTimeout(() => setRedraftToast(null), 6000);
+    }
   }
 
   const hasLetter = !!detail?.letterContent;
@@ -819,14 +861,30 @@ function DisputeRow({
                 Dispute letter
               </p>
               {hasLetter && isPro && (
-                <a
-                  href={`/disputes?dispute=${dispute.id}`}
-                  className="text-[10px] font-semibold text-blue-600 hover:text-blue-700"
-                >
-                  View full letter →
-                </a>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleRedraft}
+                    disabled={redrafting}
+                    className="text-[10px] font-semibold text-blue-600 hover:text-blue-700 disabled:text-gray-400"
+                  >
+                    {redrafting ? "Re-drafting…" : "Re-draft"}
+                  </button>
+                  <span className="text-[10px] text-gray-300">·</span>
+                  <a
+                    href={`/disputes?dispute=${dispute.id}`}
+                    className="text-[10px] font-semibold text-blue-600 hover:text-blue-700"
+                  >
+                    View full letter →
+                  </a>
+                </div>
               )}
             </div>
+            {redraftToast && (
+              <div className="mb-1 rounded-md bg-emerald-50 px-2 py-1 text-[10px] text-emerald-800">
+                {redraftToast}
+              </div>
+            )}
             {hasLetter && isPro ? (
               <pre className="p-2 bg-white border border-gray-100 rounded-lg text-[11px] text-gray-700 whitespace-pre-wrap font-sans line-clamp-4">
                 {detail!.letterContent}
