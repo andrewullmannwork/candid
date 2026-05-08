@@ -731,7 +731,9 @@ export async function recordExtractionResult(
       last_extraction_at: new Date().toISOString(),
     }).eq("id", canonicalPlanId);
 
-    // ── CF-40 v2: per-(canonical, hash) stability tracking with competing-baselines ──
+    // ── CF-40 v3: per-(canonical, hash) stability tracking with multi-slot ──
+    // candidate array + outlier-elimination eviction + services-drift NO_OP guard.
+    //
     // Skip if no file_hash (can't track stability per hash) or no plan-identity values.
     if (!fileHash || !haikuPlanIdentityValues) {
       return;
@@ -739,7 +741,7 @@ export async function recordExtractionResult(
 
     const { data: existingStability } = await supabase
       .from("canonical_document_stability")
-      .select("identical_parse_count, last_haiku_extracted_values, candidate_values, candidate_match_count, upload_count")
+      .select("identical_parse_count, last_haiku_extracted_values, candidate_slots, upload_count")
       .eq("canonical_plan_id", canonicalPlanId)
       .eq("file_hash", fileHash)
       .maybeSingle();
@@ -752,11 +754,55 @@ export async function recordExtractionResult(
         && (a.in_oop_max_family ?? null) === (b.in_oop_max_family ?? null);
     };
 
+    // CF-40 v3: SlotEntry shape stored in canonical_document_stability.candidate_slots[].
+    interface SlotEntry {
+      values: HaikuPlanIdentityValues;
+      services_count: number;
+      match_count: number;
+      first_seen_at: string;
+      last_seen_at: string;
+    }
+
+    // Distance metric (lex: mismatches primary, services_delta secondary).
+    // Per user direction Session 74: count of mismatches across the 4 plan-identity
+    // cost fields (Hamming-like) + |services_count delta| as secondary tiebreaker.
+    const slotDistance = (a: SlotEntry, b: SlotEntry): number => {
+      let mismatches = 0;
+      if ((a.values.in_deductible_individual ?? null) !== (b.values.in_deductible_individual ?? null)) mismatches++;
+      if ((a.values.in_deductible_family ?? null) !== (b.values.in_deductible_family ?? null)) mismatches++;
+      if ((a.values.in_oop_max_individual ?? null) !== (b.values.in_oop_max_individual ?? null)) mismatches++;
+      if ((a.values.in_oop_max_family ?? null) !== (b.values.in_oop_max_family ?? null)) mismatches++;
+      const servicesDelta = Math.abs(a.services_count - b.services_count);
+      return mismatches * 1000 + servicesDelta;
+    };
+
+    // CF-40 v3 eviction — drop the candidate with HIGHEST isolation (sum of
+    // distances to other candidates). Cluster of consensus survives; isolated
+    // outlier dropped. Tiebreakers: lower match_count → older last_seen_at.
+    const evictOutlier = (slots: SlotEntry[]): SlotEntry[] => {
+      if (slots.length <= 2) return slots;
+      const ranked = slots.map((c, i) => ({
+        idx: i,
+        slot: c,
+        isolation: slots.reduce((sum, other, j) => i === j ? sum : sum + slotDistance(c, other), 0),
+      }));
+      // Sort to find the candidate to DROP (highest isolation; tiebreak by lower
+      // match_count; final tiebreak by older last_seen_at).
+      ranked.sort((a, b) => {
+        if (b.isolation !== a.isolation) return b.isolation - a.isolation;
+        if (a.slot.match_count !== b.slot.match_count) return a.slot.match_count - b.slot.match_count;
+        return a.slot.last_seen_at < b.slot.last_seen_at ? -1 : 1;
+      });
+      const dropIdx = ranked[0].idx;
+      return slots.filter((_, i) => i !== dropIdx);
+    };
+
+    const nowIso = new Date().toISOString();
+
     let nextStability: {
       identical_parse_count: number;
       last_haiku_extracted_values: HaikuPlanIdentityValues | null;
-      candidate_values: HaikuPlanIdentityValues | null;
-      candidate_match_count: number;
+      candidate_slots: SlotEntry[];
       haiku_output_stable: boolean;
       upload_count: number;
     };
@@ -766,82 +812,107 @@ export async function recordExtractionResult(
       nextStability = {
         identical_parse_count: 1,
         last_haiku_extracted_values: haikuPlanIdentityValues,
-        candidate_values: null,
-        candidate_match_count: 0,
+        candidate_slots: [],
         haiku_output_stable: false,
         upload_count: 1,
       };
-      console.log(`[extraction-dedup] CF-40v2 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) baseline established (count=1).`);
+      console.log(`[extraction-dedup] CF-40v3 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) baseline established (count=1).`);
     } else {
       const baseline = (existingStability.last_haiku_extracted_values as HaikuPlanIdentityValues | null) ?? null;
-      const candidate = (existingStability.candidate_values as HaikuPlanIdentityValues | null) ?? null;
+      const slots = ((existingStability.candidate_slots as SlotEntry[] | null) ?? []);
 
-      // User's spec: "counter increments only when Haiku returns no additional items
-      // or corrections" → require BOTH (a) baseline value match AND (b) zero new
-      // services on canonical. newServicesFound > 0 means this Haiku run added to
-      // canonical's service set → not yet "no additional items" → don't increment.
-      const baselineMatches = planIdentityEqual(haikuPlanIdentityValues, baseline) && newServicesFound === 0;
-      const candidateMatches = candidate !== null
-        && planIdentityEqual(haikuPlanIdentityValues, candidate)
-        && newServicesFound === 0;
-
-      if (baselineMatches) {
-        // Strict match — counter increments + stale candidate clears.
+      // ── Services-drift NO_OP guard ───────────────────────────────────────
+      // newServicesFound > 0 means this Haiku run discovered services not yet
+      // on canonical. Per user spec: "counter increments only when Haiku returns
+      // no additional items or corrections" — services drift = informative for
+      // canonical's service-set growth but not for hash-stability. Preserve all
+      // stability state; bump only upload_count + last_seen_at.
+      if (newServicesFound > 0) {
+        nextStability = {
+          identical_parse_count: existingStability.identical_parse_count,
+          last_haiku_extracted_values: baseline,
+          candidate_slots: slots,
+          haiku_output_stable: existingStability.identical_parse_count >= 3,
+          upload_count: existingStability.upload_count + 1,
+        };
+        console.log(`[extraction-dedup] CF-40v3 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) services-drift run (newServicesFound=${newServicesFound}) → all stability state preserved.`);
+      } else if (planIdentityEqual(haikuPlanIdentityValues, baseline)) {
+        // Baseline match — increment counter; clear all candidates (consensus around baseline).
         const nextCount = existingStability.identical_parse_count + 1;
         nextStability = {
           identical_parse_count: nextCount,
           last_haiku_extracted_values: baseline,
-          candidate_values: null,
-          candidate_match_count: 0,
+          candidate_slots: [],
           haiku_output_stable: nextCount >= 3,
           upload_count: existingStability.upload_count + 1,
         };
         console.log(
           nextStability.haiku_output_stable
-            ? `[extraction-dedup] CF-40v2 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) STABLE (count=${nextCount}, smart-skip eligible from next upload).`
-            : `[extraction-dedup] CF-40v2 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) baseline match (count=${nextCount}, need ${3 - nextCount} more).`,
+            ? `[extraction-dedup] CF-40v3 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) STABLE (count=${nextCount}, smart-skip eligible from next upload).`
+            : `[extraction-dedup] CF-40v3 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) baseline match (count=${nextCount}, need ${3 - nextCount} more).`,
         );
-      } else if (candidateMatches) {
-        // Candidate corroborates — bump candidate counter; promote to baseline at threshold.
-        const nextCandidateCount = existingStability.candidate_match_count + 1;
-        if (nextCandidateCount >= 3) {
-          // Promote: candidate becomes new baseline + carries its match count.
-          nextStability = {
-            identical_parse_count: nextCandidateCount,
-            last_haiku_extracted_values: candidate,
-            candidate_values: null,
-            candidate_match_count: 0,
-            haiku_output_stable: true,
-            upload_count: existingStability.upload_count + 1,
+      } else {
+        // Doesn't match baseline. Check candidate slots for value match.
+        const matchingSlotIdx = slots.findIndex((s) => planIdentityEqual(haikuPlanIdentityValues, s.values));
+
+        if (matchingSlotIdx !== -1) {
+          // Existing candidate corroborates — bump match_count.
+          const updatedSlot: SlotEntry = {
+            ...slots[matchingSlotIdx],
+            match_count: slots[matchingSlotIdx].match_count + 1,
+            last_seen_at: nowIso,
           };
-          console.log(`[extraction-dedup] CF-40v2 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) CANDIDATE PROMOTED to baseline (count=${nextCandidateCount}). Stable.`);
+          const updatedSlots = slots.map((s, i) => (i === matchingSlotIdx ? updatedSlot : s));
+
+          if (updatedSlot.match_count >= 3) {
+            // PROMOTE — this slot's values become new baseline; all candidates cleared.
+            nextStability = {
+              identical_parse_count: updatedSlot.match_count,
+              last_haiku_extracted_values: updatedSlot.values,
+              candidate_slots: [],
+              haiku_output_stable: true,
+              upload_count: existingStability.upload_count + 1,
+            };
+            console.log(`[extraction-dedup] CF-40v3 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) CANDIDATE PROMOTED to baseline (slot ${matchingSlotIdx}, count=${updatedSlot.match_count}). Stable; all candidates cleared.`);
+          } else {
+            nextStability = {
+              identical_parse_count: existingStability.identical_parse_count,
+              last_haiku_extracted_values: baseline,
+              candidate_slots: updatedSlots,
+              haiku_output_stable: existingStability.identical_parse_count >= 3,
+              upload_count: existingStability.upload_count + 1,
+            };
+            console.log(`[extraction-dedup] CF-40v3 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) candidate corroborated (slot ${matchingSlotIdx}, count=${updatedSlot.match_count}, need ${3 - updatedSlot.match_count} more to promote).`);
+          }
         } else {
+          // New distinct value — append candidate slot. Eviction if > 2 slots.
+          const newSlot: SlotEntry = {
+            values: haikuPlanIdentityValues,
+            services_count: extractedServiceSlugs.length,
+            match_count: 1,
+            first_seen_at: nowIso,
+            last_seen_at: nowIso,
+          };
+          const appended = [...slots, newSlot];
+          const evicted = evictOutlier(appended);
+
           nextStability = {
             identical_parse_count: existingStability.identical_parse_count,
             last_haiku_extracted_values: baseline,
-            candidate_values: candidate,
-            candidate_match_count: nextCandidateCount,
+            candidate_slots: evicted,
             haiku_output_stable: existingStability.identical_parse_count >= 3,
             upload_count: existingStability.upload_count + 1,
           };
-          console.log(`[extraction-dedup] CF-40v2 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) candidate corroborated (count=${nextCandidateCount}, need ${3 - nextCandidateCount} more to promote).`);
+
+          if (appended.length > evicted.length) {
+            console.log(`[extraction-dedup] CF-40v3 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) new candidate appended; outlier-eliminated (slots: ${appended.length} → ${evicted.length}; baseline preserved at count=${existingStability.identical_parse_count}).`);
+          } else {
+            console.log(`[extraction-dedup] CF-40v3 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) new candidate registered (slots: ${evicted.length}; baseline preserved at count=${existingStability.identical_parse_count}).`);
+          }
         }
-      } else {
-        // Neither baseline nor candidate match — record as new candidate.
-        // Baseline + identical_parse_count UNCHANGED (noise protection).
-        nextStability = {
-          identical_parse_count: existingStability.identical_parse_count,
-          last_haiku_extracted_values: baseline,
-          candidate_values: haikuPlanIdentityValues,
-          candidate_match_count: 1,
-          haiku_output_stable: existingStability.identical_parse_count >= 3,
-          upload_count: existingStability.upload_count + 1,
-        };
-        console.log(`[extraction-dedup] CF-40v2 (canonical=${canonicalPlanId}, hash=${fileHash.slice(0, 12)}…) divergent run → candidate registered (baseline preserved at count=${existingStability.identical_parse_count}).`);
       }
     }
 
-    const nowIso = new Date().toISOString();
     await supabase
       .from("canonical_document_stability")
       .upsert(
@@ -850,8 +921,7 @@ export async function recordExtractionResult(
           file_hash: fileHash,
           identical_parse_count: nextStability.identical_parse_count,
           last_haiku_extracted_values: nextStability.last_haiku_extracted_values,
-          candidate_values: nextStability.candidate_values,
-          candidate_match_count: nextStability.candidate_match_count,
+          candidate_slots: nextStability.candidate_slots,
           haiku_output_stable: nextStability.haiku_output_stable,
           upload_count: nextStability.upload_count,
           last_seen_at: nowIso,
