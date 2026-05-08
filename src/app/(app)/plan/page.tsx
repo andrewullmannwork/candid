@@ -308,14 +308,6 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
 }) {
   if (!planSummary || dataSource === "static_catalog") return null;
 
-  const verificationLabels: Record<string, string> = {
-    unverified: "Unverified",
-    document_verified: "Document verified",
-    user_confirmed: "User confirmed",
-    cms_matched: "CMS matched",
-    multi_user_verified: "Verified",
-  };
-
   // Phase 4 Task 4-D: each P-8-eligible field unwraps to {value, state, reason}.
   // When flag OFF, state is null and DisplayStateBadge renders nothing.
   const inDed = decoratedShape<number | null>(planSummary.inDeductible);
@@ -325,19 +317,21 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
   const planType = decoratedShape<string | null>(planSummary.planType);
   const premium = decoratedShape<number | null>(planSummary.premiumMonthly);
 
-  // CF-19 (Session 64): aggregate state badge for the plan summary card —
-  // ONE badge in the card header replaces N per-field pills (less noisy per user
-  // direction). Tooltip surfaces "applies to all summary values" semantics.
+  // S71 hotfix #3 (Session 73) — card-level aggregate now excludes `premium`
+  // and `planType` from the aggregation set. Premium is structurally not on
+  // an SBC (CMS marketplace is the canonical source); planType inherits from
+  // canonical when not on the user's doc. Including them in worst-trumps
+  // aggregation made the card show "Public Data" / "Community" even when all
+  // 4 cost-sharing fields were cite-grade User Verified — incoherent for users
+  // who uploaded their plan ("the badge says Public Data but I uploaded my
+  // document?"). Per-cell badges still display each field's own state below.
   const summaryAggState = aggregateRowState([
     inDed.state,
     outDed.state,
     inOop.state,
     outOop.state,
-    planType.state,
-    premium.state,
   ]);
-  // Pick representative reason — worst field's reason for tooltip clarity.
-  const summaryFields = [inDed, outDed, inOop, outOop, planType, premium];
+  const summaryFields = [inDed, outDed, inOop, outOop];
   const summaryWorstField = summaryFields.find((f) => f.state === summaryAggState);
   const summaryAggReason = summaryWorstField?.reason ?? null;
 
@@ -361,18 +355,14 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
         <div className="flex items-center gap-1.5 shrink-0">
           {/* CF-19 (Session 64): summary-card aggregate badge.
               Per user direction: only render for verified-tier states. Estimated/
-              unverified summary-card values hide individually below. */}
+              unverified summary-card values hide individually below.
+              S71 hotfix #3 (Session 73): legacy `verification_status` badge
+              ("Document verified" / "Unverified") removed — superseded by the
+              v3 Display State vocabulary above. The two badges co-rendering
+              gave users mixed signals ("Public Data + Document verified" on
+              the same card). */}
           {summaryAggState && summaryAggReason && isVisibleState(summaryAggState) && (
             <DisplayStateBadge state={summaryAggState} reason={summaryAggReason} size="xs" />
-          )}
-          {planSummary.verificationStatus && (
-            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
-              planSummary.verificationStatus === "unverified"
-                ? "bg-amber-50 text-amber-700"
-                : "bg-green-50 text-green-700"
-            }`}>
-              {verificationLabels[planSummary.verificationStatus] || planSummary.verificationStatus}
-            </span>
           )}
         </div>
       </div>
