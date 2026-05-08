@@ -88,14 +88,18 @@ export async function GET(req: NextRequest) {
   // and `maybeSingle()` returns null, masking the row's existence and
   // making the affordance never render. Read metal_level from canonical_plans
   // separately when canonical_plan_id is set.
-  let { data: plan, error: planErr } = await supabase
+  // Split the destructuring: `plan` reassigned in the orphan-recovery branch
+  // below (must be `let`); `planErr` only read here (must be `const` per
+  // eslint prefer-const). Separate bindings keep both rules happy.
+  const planQuery = await supabase
     .from("insurance_plans")
     .select("canonical_plan_id, plan_name, plan_type, state, plan_year, insurer_name")
     .eq("id", planId)
     .maybeSingle();
-  if (planErr) {
-    console.warn("[/api/plan/current] insurance_plans select error:", planErr.message);
+  if (planQuery.error) {
+    console.warn("[/api/plan/current] insurance_plans select error:", planQuery.error.message);
   }
+  let plan = planQuery.data;
 
   // Orphaned-pointer recovery: profile.active_insurance_plan_id points to a
   // row that doesn't exist (deleted plan, stale FK, etc.). Fall back to the
