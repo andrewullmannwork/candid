@@ -17,7 +17,6 @@ import { createHash } from "crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { jsonrepair } from "jsonrepair";
 import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
-import { parsePlanDocument } from "@/lib/plan/plan-doc-parser";
 import type { ProcessPlanResult } from "@/lib/plan/process-plan";
 import { extractImportantQuestions } from "@/lib/sbc/haiku-prompts/important-questions";
 import { verifySBCSourceExcerpts } from "@/lib/sbc/verify-source-excerpts";
@@ -322,10 +321,6 @@ export async function linkDocumentToCanonical(
       .eq("id", doc.id)
       .single();
     const isComparisonUpload = docMetaForPurpose?.purpose === "comparison";
-    // Parse plan metadata from OCR preview (deductibles, OOP, etc.).
-    // Phase 3.2.1: legacy parseSBCText removed; parsePlanDocument handles both SBC
-    // and full-plan-document text via regex on shared field shapes.
-    const parseResult = parsePlanDocument(ocrText);
 
     // CF-19a + CF-19c (Session 64) — HYBRID HAIKU FOR PLAN-IDENTITY:
     // Smart-skip used to copy canonical → user without running Haiku on the user's
@@ -337,8 +332,9 @@ export async function linkDocumentToCanonical(
     // Result: plan-identity scalars (deductible/OOP both networks + plan_name +
     // plan_year + plan_type) get cite-grade Pattern P-8 path → "Document Verified"
     // when verifier confirms verbatim; "Found in Document" when verbatim_absent.
-    // Replaces the regex output for these fields (parsePlanDocument's output is used
-    // only for fields Haiku couldn't extract).
+    // CF-19 (Session 73, S71) — when Haiku misses a field, we no longer fall back
+    // to regex parsePlanDocument; field stays null + renders Hidden + page-level
+    // re-upload prompt fires (Display State v3 vocabulary).
     let importantQuestionsHaiku: SBCPlanIdentity | null = null;
     let importantQuestionsCostUsd = 0;
     try {
@@ -374,7 +370,9 @@ export async function linkDocumentToCanonical(
       importantQuestionsCostUsd = iqResult.haiku_cost_usd;
       console.log(`[extraction-dedup] Hybrid Haiku Important Questions: $${importantQuestionsCostUsd.toFixed(4)}`);
     } catch (iqErr) {
-      // Non-fatal — fall through to regex parsePlanDocument output
+      // Non-fatal — plan-identity fields will fall back to canonical values
+      // where available; otherwise render Hidden + page-level upload prompt
+      // (CF-19, Session 73 — no longer falls through to regex parsePlanDocument).
       console.warn("[extraction-dedup] Hybrid Haiku Important Questions failed (non-fatal):", iqErr);
     }
 
@@ -384,7 +382,20 @@ export async function linkDocumentToCanonical(
       ? buildSBCPlanIdentityProvenance(importantQuestionsHaiku, "doc_extraction", ["important_questions"])
       : {};
 
-    // Resolve plan-identity field values: Haiku-extracted wins; regex fallback; null.
+    // Resolve plan-identity field values.
+    //
+    // CF-19 (Session 73, S71) — IN-network deductible/OOP chains used to fall back
+    // to `parseResult.plan.in_*` (regex parsePlanDocument output) when Haiku missed
+    // the field. That regex was designed for plan_documents (49% recall floor; F.14)
+    // and produces unreliable values on SBCs — and worse, because Haiku didn't emit
+    // the field, the provenance synthesizer downstream tagged the row as
+    // `canonical_inherited` while the value came from the regex. The result was a
+    // value/provenance mismatch that degraded data quality on every SBC re-upload.
+    //
+    // Fix: remove the regex fallback. IN-network now follows the same shape as OON
+    // — Haiku or null. Canonical fallback (further down) still applies on the IN
+    // side because canonical may carry plan-identity from prior corroboration; OON
+    // on canonical is null until promotion events populate it.
     const haikuVal = <T,>(field: { value: T } | undefined): T | null =>
       field?.value !== undefined && field.value !== null ? field.value : (null as T | null);
     const planNameValue = haikuVal(importantQuestionsHaiku?.planName)
@@ -396,18 +407,10 @@ export async function linkDocumentToCanonical(
     const planYearValue = haikuVal(importantQuestionsHaiku?.planYear)
       ?? identifiers.planYear
       ?? null;
-    const inDedIndividual = haikuVal(importantQuestionsHaiku?.deductibleIndividual)
-      ?? parseResult.plan.in_deductible_individual
-      ?? null;
-    const inDedFamily = haikuVal(importantQuestionsHaiku?.deductibleFamily)
-      ?? parseResult.plan.in_deductible_family
-      ?? null;
-    const inOopIndividual = haikuVal(importantQuestionsHaiku?.oopMaxIndividual)
-      ?? parseResult.plan.in_oop_max_individual
-      ?? null;
-    const inOopFamily = haikuVal(importantQuestionsHaiku?.oopMaxFamily)
-      ?? parseResult.plan.in_oop_max_family
-      ?? null;
+    const inDedIndividual = haikuVal(importantQuestionsHaiku?.deductibleIndividual);
+    const inDedFamily = haikuVal(importantQuestionsHaiku?.deductibleFamily);
+    const inOopIndividual = haikuVal(importantQuestionsHaiku?.oopMaxIndividual);
+    const inOopFamily = haikuVal(importantQuestionsHaiku?.oopMaxFamily);
     const outDedIndividual = haikuVal(importantQuestionsHaiku?.outDeductibleIndividual);
     const outDedFamily = haikuVal(importantQuestionsHaiku?.outDeductibleFamily);
     const outOopIndividual = haikuVal(importantQuestionsHaiku?.outOopMaxIndividual);
@@ -451,25 +454,33 @@ export async function linkDocumentToCanonical(
     // Build the canonical_inherited provenance for any plan-identity field WITHOUT
     // Haiku-extracted provenance. Pattern 1 #14 honored — written to user-scoped table
     // only as inheritance pointer; canonical untouched.
+    //
+    // CF-19 (Session 73, S71) — every entry now gates on `value !== null`, matching
+    // the OON pattern. Previous IN-network entries unconditionally added a
+    // canonical_inherited row even when value was null — that produced phantom
+    // provenance entries (source = "canonical_inherited" with no actual value),
+    // which the consumer-read filter then routed to "Community" badge state on a
+    // null cell. The right behavior is: when neither Haiku nor canonical has the
+    // value, write nothing → consumer-read renders Hidden + page-level upload prompt.
     const canonicalInheritedFallback = buildCanonicalInheritedProvenance(
       "insurance_plans",
       [
-        // Only include fields where Haiku didn't already produce provenance
-        ...(planIdentityProvenanceFromHaiku.plan_name ? [] : [["plan_name", planNameValue ?? canonical.plan_name] as [string, unknown]]),
-        ...(planIdentityProvenanceFromHaiku.insurer_name ? [] : [["insurer_name", insurer?.name ?? identifiers.insurer] as [string, unknown]]),
-        ...(planIdentityProvenanceFromHaiku.plan_type ? [] : [["plan_type", planTypeValue ?? canonical.plan_type] as [string, unknown]]),
-        ...(planIdentityProvenanceFromHaiku.plan_year ? [] : [["plan_year", planYearValue] as [string, unknown]]),
-        ...(planIdentityProvenanceFromHaiku.in_deductible_individual ? [] : [["in_deductible_individual", finalInDed] as [string, unknown]]),
-        ...(planIdentityProvenanceFromHaiku.in_deductible_family ? [] : [["in_deductible_family", inDedFamily] as [string, unknown]]),
-        ...(planIdentityProvenanceFromHaiku.in_oop_max_individual ? [] : [["in_oop_max_individual", finalInOop] as [string, unknown]]),
-        ...(planIdentityProvenanceFromHaiku.in_oop_max_family ? [] : [["in_oop_max_family", inOopFamily] as [string, unknown]]),
-        // OON: only canonical_inherited fallback is meaningful when Haiku didn't extract;
-        // canonical doesn't carry OON values today (CF-19c forward-looking — mig 071 added cols
+        // Only include fields where Haiku didn't already produce provenance AND
+        // a non-null value is available (from canonical fallback or directly).
+        ...(planIdentityProvenanceFromHaiku.plan_name ? [] : (planNameValue ?? canonical.plan_name) != null ? [["plan_name", planNameValue ?? canonical.plan_name] as [string, unknown]] : []),
+        ...(planIdentityProvenanceFromHaiku.insurer_name ? [] : (insurer?.name ?? identifiers.insurer) != null ? [["insurer_name", insurer?.name ?? identifiers.insurer] as [string, unknown]] : []),
+        ...(planIdentityProvenanceFromHaiku.plan_type ? [] : (planTypeValue ?? canonical.plan_type) != null ? [["plan_type", planTypeValue ?? canonical.plan_type] as [string, unknown]] : []),
+        ...(planIdentityProvenanceFromHaiku.plan_year ? [] : planYearValue != null ? [["plan_year", planYearValue] as [string, unknown]] : []),
+        ...(planIdentityProvenanceFromHaiku.in_deductible_individual ? [] : finalInDed != null ? [["in_deductible_individual", finalInDed] as [string, unknown]] : []),
+        ...(planIdentityProvenanceFromHaiku.in_deductible_family ? [] : inDedFamily != null ? [["in_deductible_family", inDedFamily] as [string, unknown]] : []),
+        ...(planIdentityProvenanceFromHaiku.in_oop_max_individual ? [] : finalInOop != null ? [["in_oop_max_individual", finalInOop] as [string, unknown]] : []),
+        ...(planIdentityProvenanceFromHaiku.in_oop_max_family ? [] : inOopFamily != null ? [["in_oop_max_family", inOopFamily] as [string, unknown]] : []),
+        // OON: canonical doesn't carry OON values today (CF-19c forward-looking — mig 071 added cols
         // but legacy canonicals are unpopulated until promotion events fire post-corroboration).
-        ...(planIdentityProvenanceFromHaiku.out_deductible_individual ? [] : outDedIndividual !== null ? [["out_deductible_individual", outDedIndividual] as [string, unknown]] : []),
-        ...(planIdentityProvenanceFromHaiku.out_deductible_family ? [] : outDedFamily !== null ? [["out_deductible_family", outDedFamily] as [string, unknown]] : []),
-        ...(planIdentityProvenanceFromHaiku.out_oop_max_individual ? [] : outOopIndividual !== null ? [["out_oop_max_individual", outOopIndividual] as [string, unknown]] : []),
-        ...(planIdentityProvenanceFromHaiku.out_oop_max_family ? [] : outOopFamily !== null ? [["out_oop_max_family", outOopFamily] as [string, unknown]] : []),
+        ...(planIdentityProvenanceFromHaiku.out_deductible_individual ? [] : outDedIndividual != null ? [["out_deductible_individual", outDedIndividual] as [string, unknown]] : []),
+        ...(planIdentityProvenanceFromHaiku.out_deductible_family ? [] : outDedFamily != null ? [["out_deductible_family", outDedFamily] as [string, unknown]] : []),
+        ...(planIdentityProvenanceFromHaiku.out_oop_max_individual ? [] : outOopIndividual != null ? [["out_oop_max_individual", outOopIndividual] as [string, unknown]] : []),
+        ...(planIdentityProvenanceFromHaiku.out_oop_max_family ? [] : outOopFamily != null ? [["out_oop_max_family", outOopFamily] as [string, unknown]] : []),
       ],
     );
 
@@ -654,12 +665,16 @@ export async function linkDocumentToCanonical(
       planId: targetPlanId,
       servicesCreated: canonicalServices?.length || 0,
       planData: {
-        planName: identifiers.planName || canonical.plan_name,
-        planType: identifiers.planType || canonical.plan_type,
-        inDeductible: parseResult.plan.in_deductible_individual ?? canonical.deductible_individual,
-        outDeductible: parseResult.plan.out_deductible_individual,
-        inOopMax: parseResult.plan.in_oop_max_individual ?? canonical.oop_max_individual,
-        outOopMax: parseResult.plan.out_oop_max_individual,
+        // CF-19 (S71) — return Haiku-resolved values (with canonical fallback for
+        // IN-network only) instead of regex parsePlanDocument output. Mirrors the
+        // values written to insurance_plans so the upload UI display matches the
+        // persisted state.
+        planName: planNameValue ?? canonical.plan_name,
+        planType: planTypeValue ?? canonical.plan_type,
+        inDeductible: finalInDed,
+        outDeductible: outDedIndividual,
+        inOopMax: finalInOop,
+        outOopMax: outOopIndividual,
         servicesExtracted: canonicalServices?.length || 0,
       },
     };

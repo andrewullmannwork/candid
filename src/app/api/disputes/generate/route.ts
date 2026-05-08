@@ -9,6 +9,8 @@ import { resolvePlanContext } from "@/lib/disputes/plan-context";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
 import { persistDisputeLetter } from "@/lib/disputes/persist";
 import { createServerClient } from "@/lib/supabase/server";
+import { reparseField } from "@/lib/plan/reparse-field";
+import { loadDecorationContext } from "@/lib/plan/analyze-decoration";
 import type { AuditReport, DisputeLetterType } from "@/lib/billing/types";
 
 export async function POST(req: NextRequest) {
@@ -67,6 +69,106 @@ export async function POST(req: NextRequest) {
         }
       } catch (err) {
         console.error("[disputes] evidence resolve failed (non-fatal):", err);
+      }
+
+      // CF-20 (Session 73, S71) — cite-grade re-parse-on-flag for dispute letters.
+      //
+      // Per Display State v3, per-service rows whose `planBenefit.sbcExcerptVerified
+      // === false` had Haiku miss the verbatim or fail section verification.
+      // Without re-parse, the letter falls into Q-DR-4E-2 LOCK Case 2 (bullet,
+      // no blockquote) — losing the strongest dispute signal. CF-20 dispatches
+      // a targeted Haiku re-parse on un-searched sections for each affected row;
+      // if the re-parse upgrades the row to cite-grade, evidence is re-resolved
+      // and the letter ships with the verbatim blockquote (Case 1). If re-parse
+      // fails or the cost cap is hit, the letter still generates as before
+      // (graceful degradation).
+      //
+      // Bounded by reparseField's existing cost caps (per-reparse + per-plan
+      // daily; admin-tunable via consumer_read_filter_v1.config). Only fires
+      // when the consumer-read filter flag is on (gate evaluated below).
+      if (evidence && planContext?.plan?.id) {
+        try {
+          const { isFeatureEnabled: isFlagEnabledForReparse } = await import("@/lib/config/product-flags");
+          const flagOn = await isFlagEnabledForReparse("consumer_read_filter_v1");
+          if (flagOn) {
+            const planIdForReparse: string = planContext.plan.id;
+            // Collect distinct (serviceSlug, fieldName) tuples from no-cite rows.
+            // Per evidence-resolver primaryField logic: in_copay when copay non-null;
+            // else in_coinsurance. Q-P3.2.1-5 LOCK ensures the row's patternP8 is
+            // shared, so re-parsing one cost-sharing field upgrades the entire row.
+            const targets = new Map<string, { serviceSlug: string; fieldName: string }>();
+            for (const claim of evidence.claims) {
+              for (const li of claim.lineItemEvidence) {
+                if (
+                  li.planBenefit &&
+                  !li.planBenefit.sbcExcerptVerified &&
+                  li.serviceSlug
+                ) {
+                  const fieldName = li.planBenefit.copay !== null ? "in_copay" : "in_coinsurance";
+                  const key = `${li.serviceSlug}|${fieldName}`;
+                  if (!targets.has(key)) {
+                    targets.set(key, { serviceSlug: li.serviceSlug, fieldName });
+                  }
+                }
+              }
+            }
+
+            if (targets.size > 0) {
+              const { data: userRow } = await supabase
+                .from("users")
+                .select("email")
+                .eq("id", auditReport.userId)
+                .single();
+              const decoration = await loadDecorationContext(
+                supabase,
+                userRow?.email ?? null,
+                { canonical_plan_id: planContext.plan.canonicalPlanId ?? null },
+              );
+              if (decoration) {
+                const reparseResults = await Promise.allSettled(
+                  Array.from(targets.values()).map((t) =>
+                    reparseField(
+                      supabase,
+                      auditReport.userId,
+                      { planId: planIdForReparse, fieldName: t.fieldName, serviceSlug: t.serviceSlug },
+                      decoration,
+                    ),
+                  ),
+                );
+                const upgrades = reparseResults.filter(
+                  (r) => r.status === "fulfilled" && r.value.success,
+                ).length;
+                console.log(
+                  `[disputes] CF-20 re-parse-on-flag: ${targets.size} target(s), ${upgrades} upgraded to cite-grade`,
+                );
+                if (upgrades > 0) {
+                  // Re-resolve evidence so the letter sees the upgraded rows.
+                  try {
+                    const claimIds = body.claimId ? [body.claimId as string] : [];
+                    const lineItemIds = (body.claimLineItemIds as string[] | undefined) ?? undefined;
+                    if (claimIds.length > 0) {
+                      evidence = await resolveEvidence(supabase, {
+                        userId: auditReport.userId,
+                        claimIds,
+                        lineItemIds,
+                        planContext,
+                        letterType: letterType ?? "overcharge",
+                      });
+                    }
+                  } catch (reErr) {
+                    console.error(
+                      "[disputes] CF-20 evidence re-resolve failed (non-fatal):",
+                      reErr,
+                    );
+                  }
+                }
+              }
+            }
+          }
+        } catch (cf20Err) {
+          // Non-fatal — letter still generates with original evidence.
+          console.error("[disputes] CF-20 re-parse-on-flag failed (non-fatal):", cf20Err);
+        }
       }
 
       // Fetch plan benefit evidence if insurancePlanId provided (legacy path)
