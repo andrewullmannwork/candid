@@ -955,6 +955,18 @@ export async function processPlanDocumentData(
           .filter((s) => s.confidence >= 0.5)
           .map((s) => s.serviceSlug);
 
+        // CF-40 (Session 74): pass plan-identity cost values for parse-event stability
+        // counter. recordExtractionResult compares against canonical's
+        // last_haiku_extracted_values snapshot; match → counter++; mismatch → reset to 1.
+        // Smart-skip (next upload on this canonical) gates on haiku_output_stable=TRUE
+        // which flips when counter >= 3.
+        const haikuPlanIdentityValues = {
+          in_deductible_individual: (planInsert.in_deductible_individual as number | null | undefined) ?? null,
+          in_deductible_family: (planInsert.in_deductible_family as number | null | undefined) ?? null,
+          in_oop_max_individual: (planInsert.in_oop_max_individual as number | null | undefined) ?? null,
+          in_oop_max_family: (planInsert.in_oop_max_family as number | null | undefined) ?? null,
+        };
+
         await recordExtractionResult(
           supabase,
           documentId,
@@ -962,6 +974,7 @@ export async function processPlanDocumentData(
           doc.user_id,
           docForHash?.file_hash || null,
           extractedSlugs,
+          haikuPlanIdentityValues,
         );
       } catch (trackErr) {
         console.error("[process-plan] Extraction tracking error (non-fatal):", trackErr);

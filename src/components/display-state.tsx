@@ -157,12 +157,13 @@ const USER_VERIFIED_STYLE: BadgeStyle = { ...OUTLINE_BASE, label: "User Verified
 
 function styleFor(state: DisplayState): BadgeStyle | null {
   switch (state) {
-    case "candid_verified": return CANDID_VERIFIED_STYLE;
-    case "user_verified":   return USER_VERIFIED_STYLE;
-    case "community":       return COMMUNITY_STYLE;
-    case "public_data":     return PUBLIC_DATA_STYLE;
-    case "hidden":          return null;
-    default:                return null;
+    case "candid_verified":          return CANDID_VERIFIED_STYLE;
+    case "user_verified":            return USER_VERIFIED_STYLE;
+    case "user_verified_community":  return null; // CF-40: dual-badge — DisplayStateBadge renders TWO pills (handled inline below)
+    case "community":                return COMMUNITY_STYLE;
+    case "public_data":              return PUBLIC_DATA_STYLE;
+    case "hidden":                   return null;
+    default:                         return null;
   }
 }
 
@@ -182,13 +183,37 @@ export function DisplayStateBadge({
   tooltip,
 }: DisplayStateBadgeProps) {
   if (state === "hidden") return null;
-  const style = styleFor(state);
-  if (!style) return null;
-  const tipText = tooltip ?? DISPLAY_STATE_TOOLTIP_EN[reason];
+
   const sizing =
     size === "xs"
       ? "text-[10px] px-1.5 py-0.5 gap-0.5"
       : "text-xs px-2 py-0.5 gap-1";
+
+  // CF-40 (Session 74) — dual-badge tier: render TWO pills side-by-side.
+  // Codified in [[Candid_10k]] §3.1 *Display State Achievement & Graduation Rules* §6.
+  if (state === "user_verified_community") {
+    const tipText = tooltip ?? DISPLAY_STATE_TOOLTIP_EN[reason];
+    return (
+      <span title={tipText} className="inline-flex items-center gap-1">
+        <span
+          className={`inline-flex items-center font-semibold rounded-full ring-1 ${sizing} ${USER_VERIFIED_STYLE.bg} ${USER_VERIFIED_STYLE.text} ${USER_VERIFIED_STYLE.ring}`}
+        >
+          {USER_VERIFIED_STYLE.icon}
+          {USER_VERIFIED_STYLE.label}
+        </span>
+        <span
+          className={`inline-flex items-center font-semibold rounded-full ring-1 ${sizing} ${COMMUNITY_STYLE.bg} ${COMMUNITY_STYLE.text} ${COMMUNITY_STYLE.ring}`}
+        >
+          {COMMUNITY_STYLE.icon}
+          {COMMUNITY_STYLE.label}
+        </span>
+      </span>
+    );
+  }
+
+  const style = styleFor(state);
+  if (!style) return null;
+  const tipText = tooltip ?? DISPLAY_STATE_TOOLTIP_EN[reason];
   return (
     <span
       title={tipText}

@@ -299,12 +299,13 @@ function DataSourceBanner({ dataSource, planName, planType, insurer, verificatio
 
 // ── Plan Summary Card ──────────────────────────────────────────────────────────
 
-function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insurancePlanId }: {
+function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insurancePlanId, userHasDoc }: {
   planName?: string;
   planYear?: number | null;
   planSummary?: AnalyzeResponse["planSummary"];
   dataSource: string;
   insurancePlanId?: string;
+  userHasDoc?: boolean;
 }) {
   if (!planSummary || dataSource === "static_catalog") return null;
 
@@ -442,6 +443,7 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
               planId={insurancePlanId}
               fieldName={worst.fieldName}
               searchedSectionsCount={worst.count}
+              userHasDoc={userHasDoc}
             />
           </div>
         );
@@ -700,6 +702,18 @@ export default function CandidPlanPage() {
 
   const isGeneric = result.dataSource === "static_catalog";
 
+  // S71.5-BADGE-VERIFY (Session 74): page-level signal "the user already uploaded
+  // a plan document on this canonical." When true, inline VerifyAffordance copy
+  // acknowledges the upload ("Upload a more complete plan document") instead of
+  // cold-start framing. Codified in [[Candid_10k]] §3.1 Display State Achievement
+  // & Graduation Rules §8 (page-level prompt rule).
+  const planSourceVal = (result as unknown as Record<string, unknown>).planSource as string | undefined;
+  const verificationStatusVal = result.planSummary?.verificationStatus;
+  const userHasDoc =
+    planSourceVal === "sbc_upload" ||
+    planSourceVal === "plan_doc_upload" ||
+    (verificationStatusVal != null && verificationStatusVal !== "unverified");
+
   // Separate covered vs not-covered benefits, then group covered by category
   const notCoveredItems: AnalyzedBenefit[] = [];
   const grouped = new Map<string, AnalyzedBenefit[]>();
@@ -747,6 +761,7 @@ export default function CandidPlanPage() {
         planSummary={result.planSummary}
         dataSource={result.dataSource}
         insurancePlanId={result.insurancePlanId}
+        userHasDoc={userHasDoc}
       />
 
       {/* Profile completeness — contextual, non-blocking */}
@@ -1030,6 +1045,7 @@ export default function CandidPlanPage() {
                               fieldName="in_copay"
                               serviceSlug={item.serviceSlug || item.benefit.id}
                               searchedSectionsCount={rowDisplay.searchedSectionsCount}
+                              userHasDoc={userHasDoc}
                             />
                           )}
 

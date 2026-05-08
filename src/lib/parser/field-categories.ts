@@ -37,7 +37,8 @@ export type SourceProvenance =
   | "irs_990_h"
   | "doc_extraction"
   | "doc_extraction_eoc" // Phase 3.1A: EOC parser distinct from SBC/plan_document doc_extraction
-  | "canonical_inherited" // CF-19a (Session 64): smart-skip copies canonical → user; per-field source recorded so analyze layer routes through cross-user threshold check (Pattern 1 #4) and tooltip surfaces "from another Candid user's upload" semantics. Pattern 1 #14 honored — written to user-scoped tables only as inheritance pointer; canonical untouched.
+  | "doc_extraction_smart_skip" // CF-40 (Session 74): smart-skip path copies canonical → user when canonical's haiku_output_stable=TRUE AND identical_parse_count >= 3. Semantic claim: user uploaded a document whose hash matches a 3-parse-stable canonical, so user contributed to the data flywheel even though Haiku didn't run on their doc. Renders as User Verified + Community dual-badge per v4 vocabulary. Distinct from canonical_inherited (which is non-upload card-scan inheritance); see [[Candid_10k]] §3.1 §6 parse-event counter mechanic.
+  | "canonical_inherited" // CF-19a (Session 64): card-scan / non-upload inheritance from canonical to user-side row. Pattern 1 #14 honored — written to user-scoped tables only as inheritance pointer; canonical untouched. Renders as Community per Tier 5 in getDisplayState (user has NOT uploaded a document on this canonical).
   | "card_corroboration"
   | "bill_observed"
   | "user_reported_outcome"
@@ -63,6 +64,7 @@ export const SOURCE_DEFAULT_CONFIDENCE: Record<SourceProvenance, number> = {
   irs_990_h: 0.8,
   doc_extraction: 0.5,
   doc_extraction_eoc: 0.5, // Phase 3.1A: same baseline as doc_extraction; cross-source corroboration boosts via Pattern 1 #3
+  doc_extraction_smart_skip: 0.5, // CF-40 Session 74: same baseline as doc_extraction; user uploaded a doc that matched a 3-parse-stable canonical
   canonical_inherited: 0.5, // CF-19a Session 64: same baseline as doc_extraction; threshold-promotion happens compute-on-read via canonical_plans.verification_count
   card_corroboration: 0.6,
   bill_observed: 0.5,

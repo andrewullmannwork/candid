@@ -462,6 +462,11 @@ export async function linkDocumentToCanonical(
     // which the consumer-read filter then routed to "Community" badge state on a
     // null cell. The right behavior is: when neither Haiku nor canonical has the
     // value, write nothing → consumer-read renders Hidden + page-level upload prompt.
+    // CF-40 (Session 74): smart-skip path — user uploaded a document that hashed to a
+    // 3-parse-stable canonical. Synthesized provenance gets `source='doc_extraction_smart_skip'`
+    // (NEW v4 source value) so getDisplayState routes to user_verified_community dual-badge
+    // instead of plain Community. Honors Pattern 1 #14 (writes to user-scoped only) and
+    // gives the user credit for their upload contribution. See [[Candid_10k]] §3.1 §6.
     const canonicalInheritedFallback = buildCanonicalInheritedProvenance(
       "insurance_plans",
       [
@@ -482,9 +487,10 @@ export async function linkDocumentToCanonical(
         ...(planIdentityProvenanceFromHaiku.out_oop_max_individual ? [] : outOopIndividual != null ? [["out_oop_max_individual", outOopIndividual] as [string, unknown]] : []),
         ...(planIdentityProvenanceFromHaiku.out_oop_max_family ? [] : outOopFamily != null ? [["out_oop_max_family", outOopFamily] as [string, unknown]] : []),
       ],
+      "doc_extraction_smart_skip", // CF-40 source: smart-skip on stable canonical, user contributed via upload
     );
 
-    // Merged plan-identity field_provenance: Haiku-extracted + canonical_inherited fallback.
+    // Merged plan-identity field_provenance: Haiku-extracted + smart-skip fallback.
     const mergedPlanFieldProvenance: Record<string, FieldProvenanceEntry> = {
       ...canonicalInheritedFallback,
       ...planIdentityProvenanceFromHaiku, // Haiku entries take precedence (cite-grade)
@@ -593,7 +599,10 @@ export async function linkDocumentToCanonical(
         .map((s) => {
           // Build per-row field_provenance: prefer canonical's existing entries (which
           // may include cite-grade Pattern P-8 from past promotion events) over fresh
-          // canonical_inherited synthesis.
+          // smart-skip synthesis.
+          // CF-40 (Session 74): smart-skip synthesis now writes `source='doc_extraction_smart_skip'`
+          // (NEW v4 source value) so getDisplayState routes user-side rows to the
+          // user_verified_community dual-badge tier. See [[Candid_10k]] §3.1 §6.
           const canonicalProvenance = (s.field_provenance as Record<string, FieldProvenanceEntry> | null) ?? null;
           const provenance = canonicalProvenance && Object.keys(canonicalProvenance).length > 0
             ? canonicalProvenance
@@ -608,7 +617,7 @@ export async function linkDocumentToCanonical(
                 ["out_copay", s.out_copay],
                 ["out_coinsurance", s.out_coinsurance],
                 ["out_deductible_applies", s.out_deductible_applies],
-              ]);
+              ], "doc_extraction_smart_skip");
 
           return {
             insurance_plan_id: targetPlanId,
@@ -686,6 +695,18 @@ export async function linkDocumentToCanonical(
 
 // ── 6. Post-Extraction Tracking ────────────────────────────────────────────────
 
+/**
+ * CF-40 (Session 74): plan-identity cost values used for parse-event stability comparison.
+ * 4 fields define "Haiku output stability" — counter increments when these match the prior
+ * snapshot, resets to 1 when they diverge. See [[Candid_10k]] §3.1 §6.
+ */
+export interface HaikuPlanIdentityValues {
+  in_deductible_individual: number | null;
+  in_deductible_family: number | null;
+  in_oop_max_individual: number | null;
+  in_oop_max_family: number | null;
+}
+
 export async function recordExtractionResult(
   supabase: SupabaseClient,
   documentId: string,
@@ -693,6 +714,7 @@ export async function recordExtractionResult(
   userId: string,
   fileHash: string | null,
   extractedServiceSlugs: string[],
+  haikuPlanIdentityValues?: HaikuPlanIdentityValues,
 ): Promise<void> {
   try {
     // Get existing canonical service slugs BEFORE this extraction merged
@@ -720,40 +742,57 @@ export async function recordExtractionResult(
       new_services_found: newServicesFound,
     });
 
-    // Increment extraction count
+    // Increment extraction count + read parse-event stability state in one query
     const { data: canonical } = await supabase
       .from("canonical_plans")
-      .select("extraction_count")
+      .select("extraction_count, identical_parse_count, last_haiku_extracted_values")
       .eq("id", canonicalPlanId)
       .single();
 
     const newCount = (canonical?.extraction_count || 0) + 1;
 
+    // CF-40 (Session 74) — parse-event stability counter for Haiku-output convergence.
+    // Compare current Haiku extraction vs canonical's last_haiku_extracted_values snapshot.
+    // Match → identical_parse_count++; flip haiku_output_stable=TRUE when >= 3.
+    // Mismatch → re-baseline (counter=1, snapshot=current values, haiku_output_stable=FALSE).
+    let nextIdenticalParseCount: number;
+    let nextHaikuOutputStable: boolean;
+    let nextSnapshot: HaikuPlanIdentityValues | null;
+
+    if (haikuPlanIdentityValues) {
+      const priorSnapshot = canonical?.last_haiku_extracted_values as HaikuPlanIdentityValues | null;
+      const matches = priorSnapshot
+        && (priorSnapshot.in_deductible_individual ?? null) === (haikuPlanIdentityValues.in_deductible_individual ?? null)
+        && (priorSnapshot.in_deductible_family ?? null) === (haikuPlanIdentityValues.in_deductible_family ?? null)
+        && (priorSnapshot.in_oop_max_individual ?? null) === (haikuPlanIdentityValues.in_oop_max_individual ?? null)
+        && (priorSnapshot.in_oop_max_family ?? null) === (haikuPlanIdentityValues.in_oop_max_family ?? null);
+
+      if (matches) {
+        nextIdenticalParseCount = (canonical?.identical_parse_count ?? 0) + 1;
+      } else {
+        nextIdenticalParseCount = 1;
+      }
+      nextHaikuOutputStable = nextIdenticalParseCount >= 3;
+      nextSnapshot = haikuPlanIdentityValues;
+    } else {
+      // Caller didn't pass plan-identity values (e.g., legacy callsite); preserve state.
+      nextIdenticalParseCount = canonical?.identical_parse_count ?? 0;
+      nextHaikuOutputStable = nextIdenticalParseCount >= 3;
+      nextSnapshot = (canonical?.last_haiku_extracted_values as HaikuPlanIdentityValues | null) ?? null;
+    }
+
     await supabase.from("canonical_plans").update({
       extraction_count: newCount,
       last_extraction_at: new Date().toISOString(),
+      identical_parse_count: nextIdenticalParseCount,
+      haiku_output_stable: nextHaikuOutputStable,
+      last_haiku_extracted_values: nextSnapshot,
     }).eq("id", canonicalPlanId);
 
-    // Check stability: last 3 full extractions all found 0 new services
-    if (newCount >= 3) {
-      const { data: recentLogs } = await supabase
-        .from("document_extraction_log")
-        .select("new_services_found")
-        .eq("canonical_plan_id", canonicalPlanId)
-        .eq("action", "full_extraction")
-        .order("created_at", { ascending: false })
-        .limit(3);
-
-      const allStable = recentLogs
-        && recentLogs.length >= 3
-        && recentLogs.every((l) => l.new_services_found === 0);
-
-      if (allStable) {
-        await supabase.from("canonical_plans")
-          .update({ extraction_stable: true })
-          .eq("id", canonicalPlanId);
-        console.log(`[extraction-dedup] Canonical ${canonicalPlanId} marked stable after ${newCount} extractions`);
-      }
+    if (nextHaikuOutputStable && haikuPlanIdentityValues) {
+      console.log(`[extraction-dedup] Canonical ${canonicalPlanId} CF-40 stable: identical_parse_count=${nextIdenticalParseCount} (smart-skip eligible from next upload)`);
+    } else if (haikuPlanIdentityValues) {
+      console.log(`[extraction-dedup] Canonical ${canonicalPlanId} CF-40 counter=${nextIdenticalParseCount} (need ${3 - nextIdenticalParseCount} more identical Haiku runs to enable smart-skip)`);
     }
   } catch (err) {
     // Non-fatal — don't break the main pipeline

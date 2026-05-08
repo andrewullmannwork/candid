@@ -226,11 +226,18 @@ export function buildSBCPlanIdentityProvenance(
  * now in the Session 72 vocabulary — see Candid_10k §3.1.
  *
  * Caller passes (column, value) pairs for fields with non-null values; this helper
- * writes one entry per non-null pair using `source = 'canonical_inherited'`.
+ * writes one entry per non-null pair using the supplied `source`.
+ *
+ * Source values per CF-40 (Session 74):
+ *   - 'doc_extraction_smart_skip' — user uploaded a document that smart-skipped on
+ *     a 3-parse-stable canonical. Renders as User Verified + Community dual-badge.
+ *   - 'canonical_inherited' — non-upload card-scan inheritance from canonical (no
+ *     user document was uploaded). Renders as Community per Tier 5 in getDisplayState.
  */
 export function buildCanonicalInheritedProvenance(
   table: string,
   fields: Array<[string, unknown]>,
+  source: "canonical_inherited" | "doc_extraction_smart_skip" = "canonical_inherited",
 ): Record<string, FieldProvenanceEntry> {
   const provenance: Record<string, FieldProvenanceEntry> = {};
   for (const [column, value] of fields) {
@@ -238,7 +245,7 @@ export function buildCanonicalInheritedProvenance(
     const entry = buildProvenanceEntry(
       table,
       column,
-      "canonical_inherited",
+      source,
       undefined, // no haiku confidence — we didn't run Haiku
       undefined, // no Pattern P-8 sub-keys — no source_excerpt
       undefined, // no searched_sections — no Haiku dispatch

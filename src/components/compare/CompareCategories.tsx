@@ -36,6 +36,7 @@ interface CompareCategoriesProps {
 // it represents many services).
 const REPRESENTATIVE_REASON: Record<DisplayState, DisplayStateReason | null> = {
   candid_verified: "community_corroborated",
+  user_verified_community: "from_user_document_smart_skip", // CF-40 v4 dual-badge tier
   user_verified: "from_user_document_cite_grade",
   community: "canonical_below_threshold",
   public_data: "cms_marketplace",
@@ -44,6 +45,7 @@ const REPRESENTATIVE_REASON: Record<DisplayState, DisplayStateReason | null> = {
 
 const AGGREGATE_TOOLTIP: Record<DisplayState, string> = {
   candid_verified: "Some services on this plan are Verified — corroborated by ≥3 Candid users.",
+  user_verified_community: "Some services on this plan match a multi-parse-stable canonical — your upload contributed; community parses corroborate.",
   user_verified: "Some services on this plan came from your uploaded plan document or values you typed/confirmed yourself.",
   community: "Some services on this plan came from another Candid user's parse on this canonical.",
   public_data: "Some services on this plan came from public datasets (CMS, etc.) — upload your SBC for the real story.",
