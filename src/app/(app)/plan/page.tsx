@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
 import { createBrowserClient } from "@/lib/supabase/client";
@@ -614,18 +614,17 @@ export default function CandidPlanPage() {
     });
   }
 
-  // Cache result to avoid re-fetching on navigation
-  const cachedResult = useRef<AnalyzeResponse | null>(null);
-
+  // S71 follow-up (Session 73) — REMOVED in-memory cache. The previous
+  // `cachedResult` useRef bailed out of re-fetching whenever it had a prior
+  // response, but on Next.js App Router the component instance can persist
+  // across soft navigations (back-nav from /upload → /plan, sibling route
+  // shifts, prefetch warmups). Result: after a user re-uploaded their SBC,
+  // navigating to /plan served the pre-upload analyze response indefinitely
+  // until a hard refresh. Same hazard on profile edits, dispute outcomes, any
+  // path that mutates plan-shaped data. Always re-fetch on user change —
+  // /api/plan/analyze is dynamic + cheap (no Haiku calls; just DB reads).
   useEffect(() => {
     if (!user) return;
-
-    // Use cached result if available (avoids re-fetch on back-navigation)
-    if (cachedResult.current) {
-      setResult(cachedResult.current);
-      setLoading(false);
-      return;
-    }
 
     async function analyze() {
       try {
@@ -641,7 +640,6 @@ export default function CandidPlanPage() {
         }
 
         const data: AnalyzeResponse = await res.json();
-        cachedResult.current = data;
         setResult(data);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Something went wrong");
