@@ -401,7 +401,12 @@ export async function parseEOC(
     out_oop_max_individual: null,
   };
   try {
-    const planParse = parsePlanDocument(ocrText);
+    // Per Q-S72-2 (b) LOCK: parsePlanDocument is now an async flag-gated dispatcher.
+    // When `plan_doc_parser_v2` OFF → legacy regex (Q-P3.1A-11 LOCK behavior unchanged).
+    // When ON → Haiku-first plan-identity extraction (~49% → ~80%+ recall lift for EOC).
+    // Subplan §5 mitigation: Blue Shield Silver 70 PPO EOC fixture regression check
+    // before flag flips global ON.
+    const planParse = await parsePlanDocument(ocrText, { documentId, extractionMethod });
     planIdentity = {
       insurer_name: planParse.plan.insurer_name ?? null,
       plan_name: planParse.plan.plan_name ?? null,

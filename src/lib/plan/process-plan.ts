@@ -195,11 +195,18 @@ export async function processPlanDocumentData(
         `[process-plan] sbc_parser_v1: ${haikuResult.services.length} services + ${haikuResult.otherCoveredServices.length} other-covered + voting=${haikuResult.votingMetadata.triggered ? `triggered (n=${haikuResult.votingMetadata.successfulAttempts}/${haikuResult.votingMetadata.n})` : "skipped"} + cost=$${haikuResult.costUsd.toFixed(4)}`,
       );
     } else if (isFullPlanDoc) {
-      // plan_document classification → regex parsePlanDocument + Haiku augmentation
-      // (extractServicesWithClaude below). No flag dependency; this path is unchanged.
-      // Future Phase 3.4 candidate: migrate this path to a Haiku-first parser too,
-      // at which point claude-extractor.ts becomes droppable per F.14 fast-follow.
-      parseResult = parsePlanDocument(ocrText);
+      // plan_document classification → flag-gated dispatcher (S72 commit 3).
+      // When `plan_doc_parser_v2` flag OFF (default), routes to legacy regex
+      // parsePlanDocumentRegex (~49% recall) — same behavior as pre-S72.
+      // When flag ON, routes to NEW Haiku-first parsePlanDocumentHaiku per Phase 3.1A
+      // architectural template (~80%+ recall). Q-S72-2 (b) LOCK — EOC parser
+      // plan-identity reuse at eoc/parser.ts also flips when flag flips.
+      // F.14 fast-follow (claude-extractor.ts deletion) becomes possible once flag
+      // is global ON for ~30 days post-S72 with no regressions.
+      parseResult = await parsePlanDocument(ocrText, {
+        documentId: doc.id,
+        extractionMethod: "pdftotext",
+      });
     } else {
       // SBC classification with sbc_parser_v1 OFF — explicit failure.
       // The flag stays in code as a kill-switch for debugging; flipping a specific
