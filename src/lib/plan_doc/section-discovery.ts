@@ -35,13 +35,18 @@ const PRIORITY_SECTIONS: PlanDocSectionHint[] = [
  * Each heading variant SHOULD be observed in production fixtures before being added.
  *
  * Plan-identity section: typically appears at the start as "Plan Information",
- * "Plan Summary", "Schedule of Benefits", or similar.
+ * "Important Questions" (federal SBC template), "Cost Share Summary", or similar.
  *
- * Services + cost-sharing section: typically appears as "Schedule of Benefits",
- * "Covered Services", "Benefits Summary", or similar — often a long table.
+ * Services + cost-sharing section: typically appears as "Common Medical Events"
+ * (federal SBC template), "Schedule of Benefits", "MEDICAL BENEFITS", or similar.
  *
  * Access-instructions section: typically appears near the end as "Member Services",
- * "Customer Service", "How to Access Care", or "Contact Information".
+ * "Customer Service", "Important Phone Numbers", or "How to Access Care".
+ *
+ * S72 commit 6 (Session 75) — pattern set extended after empirical efficacy harness
+ * surfaced 4 of 5 fixtures had plan_identity section UNDETECTED by initial regex set.
+ * Patterns added based on observed real headings in BSCA EOC + Aetna Medicare EOC +
+ * Kaiser Permanente EOC + Cigna Plan Benefits + Cigna current SBC.
  */
 const SECTION_PATTERNS: SectionPattern[] = [
   {
@@ -51,6 +56,13 @@ const SECTION_PATTERNS: SectionPattern[] = [
       /^\s*Plan\s+Summary\b/im,
       /^\s*Coverage\s+Information\b/im,
       /^\s*Plan\s+Identification\b/im,
+      // S72 commit 6 additions (insurer-agnostic from empirical fixtures):
+      /^\s*Important\s+Questions\b/im, // federal SBC template — Important Questions section has plan-identity scalars (Cigna SBC, Ambetter SBC, BSCA EOC observed)
+      /^\s*Cost\s+Share\s+Summary\b/im, // Kaiser EOC — Cost Share Summary Tables include deductibles + OOP
+      /^\s*Deductibles\s+and\s+Out[-\s]of[-\s]Pocket\b/im, // Kaiser EOC literal heading
+      /^\s*Schedule\s+of\s+Cost[-\s]Sharing\b/im, // common variant
+      /^\s*Accumulation\s+Period\b/im, // Kaiser EOC — accumulation period section has plan-year + deductible reset rules
+      /^\s*Member\s+Coverage\b/im, // common variant
     ],
   },
   {
@@ -62,6 +74,13 @@ const SECTION_PATTERNS: SectionPattern[] = [
       /^\s*Cost[-\s]Sharing\s+Details\b/im,
       /^\s*Schedule\s+of\s+Medical\s+Benefits\b/im,
       /^\s*Medical\s+Benefits\s+Schedule\b/im,
+      // S72 commit 6 additions:
+      /^\s*Common\s+Medical\s+Events?\b/im, // federal SBC template — services + per-service cost-sharing
+      /^\s*Common\s+Healthcare\s+Events?\b/im, // SBC variant (Ambetter)
+      /^\s*MEDICAL\s+BENEFITS\b/m, // Cigna plan_benefits pattern (all-caps; literal section title)
+      /^\s*Cost\s+Share\s+Summary\s+Tables?\s+by\s+Benefit\b/im, // Kaiser EOC literal heading
+      /^\s*The\s+Schedule\b/im, // Cigna plan_benefits pattern — "The Schedule" is the plan's services schedule
+      /^\s*What\s+You\s+Will\s+Pay\b/im, // common variant in SBC + EOC tables
     ],
   },
   {
@@ -72,6 +91,11 @@ const SECTION_PATTERNS: SectionPattern[] = [
       /^\s*Customer\s+Service\b/im,
       /^\s*Contact\s+Information\b/im,
       /^\s*Accessing\s+Your\s+Benefits\b/im,
+      // S72 commit 6 additions:
+      /^\s*Important\s+Phone\s+Numbers\b/im, // Aetna Medicare EOC — "Important phone numbers and resources"
+      /^\s*Member\s+Resources\b/im, // common variant
+      /^\s*Getting\s+Help\b/im, // common variant
+      /^\s*How\s+to\s+Reach\s+Us\b/im, // common variant
     ],
   },
   {
