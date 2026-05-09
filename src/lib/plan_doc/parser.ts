@@ -28,6 +28,7 @@ import {
   segmentPlanDocSections,
   sliceSection,
 } from "./section-discovery";
+import { cleanupBoilerplate } from "./subtractive-cleanup";
 import type {
   PlanDocAccessInstructions,
   PlanDocHaikuParseResult,
@@ -126,18 +127,36 @@ export async function parsePlanDocumentHaiku(
   const warnings: string[] = [];
   const costTracker: CostTracker = { totalUsd: 0 };
 
-  // Step 1: Section segmentation (regex first)
-  let sectionRanges: SectionRanges = segmentPlanDocSections(ocrText);
+  // Step 0 (S72 commit 7): Subtractive boilerplate cleanup. Strips TOC region +
+  // repeating page furniture so per-section dispatch sees denser semantic content.
+  // Per S72-COMMIT-7 user direction: invert regex usage from "find data" to "remove
+  // boilerplate" — Haiku does all semantic discovery + extraction. Conservative bias
+  // (when in doubt, KEEP); legal boilerplate that matters for disputes is preserved.
+  // ALL downstream operations (segmentation + per-section dispatch + Pattern P-8
+  // verification) operate in cleaned-text coordinate space.
+  const cleanup = cleanupBoilerplate(ocrText);
+  const workingText = cleanup.cleanedText;
+  warnings.push(...cleanup.warnings);
+  warnings.push(
+    `subtractive_cleanup:stripped_${cleanup.strippedLineCount}_of_${cleanup.originalLineCount}_lines:${(
+      (cleanup.strippedLineCount / Math.max(cleanup.originalLineCount, 1)) *
+      100
+    ).toFixed(1)}%`,
+  );
+
+  // Step 1: Section segmentation (regex first, on cleaned text)
+  let sectionRanges: SectionRanges = segmentPlanDocSections(workingText);
   let segmentationUsed: PlanDocHaikuParseResult["segmentationUsed"] = "regex_only";
 
-  // Step 2: Haiku-discovery fallback per Phase 3.1A Q-P3.1A-4 LOCK pattern
-  // (discoverPlanDocSectionsViaHaiku is currently a stub — full implementation lands
-  // in S73 verbatim quality lift; commit-2 MVP exercises the control flow only)
+  // Step 2: Haiku-discovery fallback per Phase 3.1A Q-P3.1A-4 LOCK pattern.
+  // S72 commit 7: now a real Haiku call (was stub pre-commit-7) — asks Haiku for
+  // distinctive opening phrases per section, then string-search to derive offsets
+  // in cleaned text. Bias: more Haiku work for higher fidelity per S72-COMMIT-7.
   const regexCount = countPriorityPlanDocSections(sectionRanges);
   if (regexCount < 2) {
     warnings.push(`plan_doc_section_discovery_fallback:${documentId}:regex_found_${regexCount}`);
     try {
-      const discovered = await discoverPlanDocSectionsViaHaiku(ocrText);
+      const discovered = await discoverPlanDocSectionsViaHaiku(workingText);
       sectionRanges = mergeSegmentations(sectionRanges, discovered);
       const postFallbackCount = countPriorityPlanDocSections(sectionRanges);
       if (postFallbackCount > regexCount) {
@@ -157,26 +176,26 @@ export async function parsePlanDocumentHaiku(
     segmentationUsed = "preamble_only";
   }
 
-  // Step 3: Build per-section dispatch plans
+  // Step 3: Build per-section dispatch plans (operating on cleaned working text)
   const planIdentityRange = sectionRanges.plan_identity?.[0] ?? null;
   const servicesCostSharingRange = sectionRanges.services_cost_sharing?.[0] ?? null;
   const accessInstructionsRange = sectionRanges.access_instructions?.[0] ?? null;
 
   const planIdentityPlan: SectionDispatchPlan<PlanDocPlanIdentity> = {
     hint: "plan_identity",
-    sectionText: sliceSection(ocrText, sectionRanges, "plan_identity"),
+    sectionText: sliceSection(workingText, sectionRanges, "plan_identity"),
     sectionRange: planIdentityRange,
     fn: extractPlanIdentity,
   };
   const servicesCostSharingPlan: SectionDispatchPlan<{ services: PlanDocService[] }> = {
     hint: "services_cost_sharing",
-    sectionText: sliceSection(ocrText, sectionRanges, "services_cost_sharing"),
+    sectionText: sliceSection(workingText, sectionRanges, "services_cost_sharing"),
     sectionRange: servicesCostSharingRange,
     fn: extractServicesCostSharing,
   };
   const accessInstructionsPlan: SectionDispatchPlan<PlanDocAccessInstructions> = {
     hint: "access_instructions",
-    sectionText: sliceSection(ocrText, sectionRanges, "access_instructions"),
+    sectionText: sliceSection(workingText, sectionRanges, "access_instructions"),
     sectionRange: accessInstructionsRange,
     fn: extractAccessInstructions,
   };
@@ -252,8 +271,13 @@ export async function parsePlanDocumentHaiku(
     );
   }
 
-  // Step 7: Pattern P-8 verification (insurer-agnostic; uses shared verifier)
-  const verifiedResult = verifyPlanDocSourceExcerpts(ocrText, preVerificationResult, sectionRanges);
+  // Step 7: Pattern P-8 verification (insurer-agnostic; uses shared verifier).
+  // Per S72 commit 7: verifier uses workingText (cleaned) since per-section dispatch
+  // operated in cleaned-text coordinate space. Excerpts that Haiku emitted came from
+  // cleaned content; verifier substring-matches against cleaned text. Stripped
+  // boilerplate isn't expected to be extracted (per Pattern P-8 hard rule + cleanup
+  // conservative bias) so verifier doesn't need to handle it.
+  const verifiedResult = verifyPlanDocSourceExcerpts(workingText, preVerificationResult, sectionRanges);
 
   return verifiedResult;
 }

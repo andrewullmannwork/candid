@@ -18,6 +18,7 @@
 
 import type { SectionRanges } from "../parser/types";
 import type { PlanDocSectionHint } from "./types";
+import { callHaikuWithCache } from "./haiku-prompts/_shared";
 
 interface SectionPattern {
   hint: PlanDocSectionHint;
@@ -186,14 +187,108 @@ export function sliceSection(
  * Haiku-discovery fallback per Phase 3.1A Q-P3.1A-4 LOCK pattern. Fires when regex
  * finds <2 priority sections.
  *
- * MVP commit-2 scaffolding: stub-returns empty SectionRanges so the orchestrator's
- * regex+fallback control flow is exercised but Haiku-discovery is no-op until S73
- * (Phase 3.1A.1 verbatim quality lift) ships the full implementation per EOC pattern.
+ * S72 commit 7 implementation (per S72-COMMIT-7 user direction "let Haiku do more
+ * work; fidelity > cost"): instead of asking Haiku for character offsets directly
+ * (brittle — Haiku is bad at counting chars), ask Haiku for distinctive OPENING
+ * PHRASES per section, then use string-search to derive offsets. Cleaner contract;
+ * verbatim-substring constraint guarantees the offset is real.
+ *
+ * Cost-discipline: for documents > DISCOVERY_MAX_INPUT_CHARS (~25K tokens), sample
+ * the first 60K + last 30K chars (where plan-identity / access-instructions tend to
+ * live) so the discovery call stays cheap (~$0.02-0.05) regardless of doc size.
  */
+
+const DISCOVERY_INSTRUCTIONS = `You are identifying section boundaries in a health plan document. Return distinctive opening phrases (≤80 chars verbatim) for each of these 3 priority sections, OR null if not present.
+
+## SECTIONS TO IDENTIFY
+
+1. **plan_identity**: section containing plan-level scalars — carrier name, plan name, plan year, deductibles, out-of-pocket maximums, group number, network type. Often labeled "Plan Information", "Important Questions", "The Schedule", "Cost Share Summary", "Schedule of Benefits", or similar.
+
+2. **services_cost_sharing**: section with per-service cost-sharing rows — primary care visit copay, specialist visit, ER, hospital stay, drugs, etc. Often labeled "Common Medical Events", "Schedule of Benefits", "MEDICAL BENEFITS", "Cost Share Summary Tables", or similar.
+
+3. **access_instructions**: section with member services contact info — customer service phone, network finder URL, how to access care. Often labeled "Member Services", "Customer Service", "Important Phone Numbers", "Contact Information", or similar.
+
+## CRITICAL RULES
+
+1. **Verbatim opener** (≤80 chars): the opening line/phrase MUST be a CHARACTER-FOR-CHARACTER substring of the document text (matching exactly, including capitalization, punctuation, whitespace). NEVER paraphrase. If you can't find a clear opener for a section, return null for that section — null is preferred over a wrong opener.
+
+2. **Opener uniqueness**: pick a phrase that's likely UNIQUE to this section (avoid generic phrases that appear multiple times in the doc, like "deductible" or "copay" alone).
+
+3. **Section boundaries**: the opener marks the START of the section. The end is implicit (next section's opener OR end of document).
+
+## RESPONSE SCHEMA
+
+{
+  "plan_identity_opener": "Important Questions" (or null),
+  "services_cost_sharing_opener": "Common Medical Events" (or null),
+  "access_instructions_opener": "Member Services" (or null)
+}
+
+## NOW IDENTIFY FROM THIS DOCUMENT TEXT:`;
+
+interface DiscoveryResponse {
+  plan_identity_opener?: string | null;
+  services_cost_sharing_opener?: string | null;
+  access_instructions_opener?: string | null;
+}
+
+const DISCOVERY_MAX_INPUT_CHARS = 100_000; // ~25K tokens; cheap discovery call
+
+function sampleForDiscovery(text: string): string {
+  if (text.length <= DISCOVERY_MAX_INPUT_CHARS) return text;
+  // Take first 60K + last 30K chars (plan-identity tends to be early; access-instructions late).
+  const firstPart = text.slice(0, 60_000);
+  const lastPart = text.slice(text.length - 30_000);
+  return firstPart + "\n\n[...DOCUMENT TRUNCATED FOR DISCOVERY; FULL DOC PROCESSED PER-SECTION DOWNSTREAM...]\n\n" + lastPart;
+}
+
+function findOpenerOffset(text: string, opener: string | null | undefined): number | null {
+  if (!opener || typeof opener !== "string" || opener.length < 3) return null;
+  const trimmed = opener.trim();
+  if (trimmed.length < 3) return null;
+  const idx = text.indexOf(trimmed);
+  return idx >= 0 ? idx : null;
+}
+
 export async function discoverPlanDocSectionsViaHaiku(text: string): Promise<SectionRanges> {
-  // S73 deferred: full Haiku-discovery implementation per Phase 3.1A pattern.
-  void text;
-  return {};
+  const sampled = sampleForDiscovery(text);
+
+  let result;
+  try {
+    result = await callHaikuWithCache<DiscoveryResponse>({
+      systemPrompt: DISCOVERY_INSTRUCTIONS,
+      userContent: sampled,
+      sectionLabel: "plan_doc_section_discovery",
+    });
+  } catch (err) {
+    void err;
+    return {};
+  }
+
+  // Map openers to offsets in the FULL text (not the sampled excerpt; sampled
+  // is just for Haiku's discovery context — actual offsets are derived from full).
+  const openers: Array<{ hint: PlanDocSectionHint; offset: number }> = [];
+  const piOffset = findOpenerOffset(text, result.data.plan_identity_opener);
+  const scsOffset = findOpenerOffset(text, result.data.services_cost_sharing_opener);
+  const aiOffset = findOpenerOffset(text, result.data.access_instructions_opener);
+
+  if (piOffset !== null) openers.push({ hint: "plan_identity", offset: piOffset });
+  if (scsOffset !== null) openers.push({ hint: "services_cost_sharing", offset: scsOffset });
+  if (aiOffset !== null) openers.push({ hint: "access_instructions", offset: aiOffset });
+
+  // Sort by offset and compute end as next opener's start.
+  openers.sort((a, b) => a.offset - b.offset);
+
+  const ranges: SectionRanges = {};
+  for (let i = 0; i < openers.length; i++) {
+    const cur = openers[i];
+    const next = openers[i + 1];
+    const end = next?.offset ?? text.length;
+    if (!ranges[cur.hint]) ranges[cur.hint] = [];
+    ranges[cur.hint].push({ start: cur.offset, end });
+  }
+
+  return ranges;
 }
 
 /**
