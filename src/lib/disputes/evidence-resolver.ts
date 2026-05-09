@@ -437,6 +437,43 @@ async function loadCoverage(
   const byServiceSlug = new Map<string, PlanBenefitDetail>();
   if (!insurancePlanId) return byServiceSlug;
 
+  // S72 commit 4: pre-load canonical_haiku_extractions cite-grade citations for this
+  // plan's canonical. Used as fallback in the loop below when user's own row's
+  // Pattern P-8 field_provenance lacks excerpt (smart-skip case post-CF-40 v3).
+  // One query per loadCoverage call (cheap; ~30 services per plan typical) → O(1)
+  // lookup per row in the loop. Closes CF-20 cite-grade gap for smart-skipped users.
+  const { data: planRow } = await supabase
+    .from("insurance_plans")
+    .select("canonical_plan_id")
+    .eq("id", insurancePlanId)
+    .maybeSingle();
+  const canonicalPlanId = (planRow?.canonical_plan_id as string | null | undefined) ?? null;
+
+  const canonicalCiteGradeBySlug = new Map<string, { sourceExcerpt: string; sourceSectionHint: string }>();
+  if (canonicalPlanId) {
+    const { data: extractions } = await supabase
+      .from("canonical_haiku_extractions")
+      .select("service_slug, source_excerpt, source_section_hint, created_at")
+      .eq("canonical_plan_id", canonicalPlanId)
+      .eq("field_name", "services_cost_sharing_row")
+      .eq("source_excerpt_verified", "verified")
+      .eq("source_section_verified", true)
+      .order("created_at", { ascending: false });
+
+    if (extractions) {
+      for (const ext of extractions as Array<{ service_slug: string | null; source_excerpt: string | null; source_section_hint: string | null }>) {
+        if (!ext.service_slug || !ext.source_excerpt) continue;
+        // Most-recent wins (DESC ordering above + first-set semantics).
+        if (!canonicalCiteGradeBySlug.has(ext.service_slug)) {
+          canonicalCiteGradeBySlug.set(ext.service_slug, {
+            sourceExcerpt: ext.source_excerpt,
+            sourceSectionHint: ext.source_section_hint ?? "",
+          });
+        }
+      }
+    }
+  }
+
   // plan_covered_services rows; service_catalog.slug is the natural join key.
   // sbc_excerpt/sbc_page exist after migration 050 (Phase 4.5).
   // field_provenance JSONB exists after migration 056 (Phase 3 — per-field P-8 storage).
@@ -474,8 +511,20 @@ async function loadCoverage(
     const primaryField = r.in_copay !== null ? "in_copay" : "in_coinsurance";
     const p8Entry = r.field_provenance?.[primaryField];
     const p8 = extractPatternP8FromEntry(p8Entry);
-    const sbcExcerptVerified = isCitationGrade(p8);
-    const preferredExcerpt = p8?.source_excerpt ?? r.sbc_excerpt ?? null;
+    const userRowCiteGrade = isCitationGrade(p8);
+
+    // S72 commit 4: when user's own row lacks cite-grade Pattern P-8 excerpt,
+    // fall back to canonical_haiku_extractions (cite-grade citations from any prior
+    // cite-grade Haiku run on the same canonical+service). Closes CF-20 cite-grade
+    // gap for smart-skipped users (post-CF-40 v3 dependency). Canonical fallback
+    // is cite-grade by query construction (only verified+section_verified rows).
+    const canonicalFallback = !userRowCiteGrade
+      ? canonicalCiteGradeBySlug.get(cat.slug) ?? null
+      : null;
+
+    const preferredExcerpt =
+      p8?.source_excerpt ?? canonicalFallback?.sourceExcerpt ?? r.sbc_excerpt ?? null;
+    const sbcExcerptVerified = userRowCiteGrade || canonicalFallback !== null;
 
     byServiceSlug.set(cat.slug, {
       covered: r.covered !== false,

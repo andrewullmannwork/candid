@@ -32,6 +32,11 @@ import {
   commitUploadAndEvaluateCorroboration,
   PHASE_4_0_6_PLAN_IDENTITY_FIELDS_EOC,
 } from "@/lib/parser/commit-and-evaluate";
+import {
+  writeCanonicalHaikuExtractions,
+  generateHaikuRunId,
+  extractRowsFromEOCParseResult,
+} from "@/lib/parser/canonical-haiku-extractions";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
@@ -139,6 +144,38 @@ export async function processEOCDocumentData(
       if (result.errors.length > 0) {
         console.error("[canonical-promotion] [eoc] errors:", result.errors);
         parseWarnings.push(...result.errors.map((e) => `canonical_promotion_eoc:${e}`));
+      }
+
+      // ── S72 commit 4: canonical_haiku_extractions cite-grade write ──
+      // Per-section cite-grade Pattern P-8 source_excerpts from EOC parser
+      // (prior_auth_codes / medical_necessity / appeals / cob / eligibility /
+      // definitions). Closes CF-20 cite-grade gap for EOC dispute-letter citations.
+      // Plan-identity rows excluded — EOC plan_identity is regex-extracted (no P-8).
+      // Non-fatal on insert error.
+      try {
+        const userId = (planRow?.user_id as string | undefined) ?? doc.user_id;
+        const { data: docMeta } = await supabase
+          .from("documents")
+          .select("file_hash")
+          .eq("id", documentId)
+          .maybeSingle();
+        const sourceUserDocHash = (docMeta?.file_hash as string | null | undefined) ?? null;
+
+        const eocRows = extractRowsFromEOCParseResult(parsed);
+        const eocWrite = await writeCanonicalHaikuExtractions(supabase, {
+          canonicalPlanId,
+          userId,
+          documentId,
+          sourceUserDocHash,
+          haikuRunId: generateHaikuRunId("eoc", documentId),
+          parserKind: "eoc",
+          rows: eocRows,
+        });
+        console.log(
+          `[canonical-haiku-extractions] eoc canonical=${canonicalPlanId} cite_grade_rows_written=${eocWrite.rowsWritten}`,
+        );
+      } catch (err) {
+        console.error("[canonical-haiku-extractions] [eoc] non-fatal write error:", err);
       }
     }
   } catch (err) {

@@ -10,6 +10,7 @@ import type { ExtractionMethod } from "@/lib/parser/types";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { parsePlanDocumentHaiku } from "@/lib/plan_doc/parser";
 import { toLegacyPlanDocResult } from "@/lib/plan_doc/legacy-adapter";
+import type { PlanDocHaikuParseResult } from "@/lib/plan_doc/types";
 
 // Re-export the same result type for consistency
 export type PlanDocParseResult = SBCParseResult;
@@ -51,6 +52,31 @@ export async function parsePlanDocument(
     return toLegacyPlanDocResult(haikuResult);
   }
   return parsePlanDocumentRegex(ocrText);
+}
+
+/**
+ * Same dispatcher as `parsePlanDocument` but EXPOSES the rich Haiku result
+ * alongside the legacy parse result when the flag is ON. Used by process-plan.ts
+ * (S72 commit 4) to write canonical_haiku_extractions cite-grade rows post-canonical-
+ * resolution. EOC parser caller uses the legacy `parsePlanDocument` (it doesn't
+ * need the rich haiku result for plan-identity reuse).
+ *
+ * Returns `{ legacy, haiku: undefined }` when flag OFF (legacy regex path).
+ */
+export async function parsePlanDocumentWithMeta(
+  ocrText: string,
+  opts?: ParsePlanDocumentOptions,
+): Promise<{ legacy: PlanDocParseResult; haiku: PlanDocHaikuParseResult | null }> {
+  const flagEnabled = await isFeatureEnabled("plan_doc_parser_v2");
+  if (flagEnabled) {
+    const haiku = await parsePlanDocumentHaiku({
+      ocrText,
+      extractionMethod: opts?.extractionMethod ?? "pdftotext",
+      documentId: opts?.documentId ?? "unknown",
+    });
+    return { legacy: toLegacyPlanDocResult(haiku), haiku };
+  }
+  return { legacy: parsePlanDocumentRegex(ocrText), haiku: null };
 }
 
 // ── Non-service terms blocklist ────────────────────────────────────────────

@@ -5,7 +5,14 @@
  */
 
 import { createServerClient } from "@/lib/supabase/server";
-import { parsePlanDocument } from "@/lib/plan/plan-doc-parser";
+import { parsePlanDocumentWithMeta } from "@/lib/plan/plan-doc-parser";
+import type { PlanDocHaikuParseResult } from "@/lib/plan_doc/types";
+import {
+  writeCanonicalHaikuExtractions,
+  generateHaikuRunId,
+  extractRowsFromSBCHaikuResult,
+  extractRowsFromPlanDocHaikuResult,
+} from "@/lib/parser/canonical-haiku-extractions";
 import { extractServicesWithClaude } from "@/lib/plan/claude-extractor";
 import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
 import { matchInsurerWithPlanFallback } from "@/lib/plan/insurer-match";
@@ -163,6 +170,10 @@ export async function processPlanDocumentData(
     let parseResult: SBCParseResult;
     let usedNewSBCParser = false;
     let haikuResult: VotedParseSBCResult | null = null;
+    // S72 commit 4: captured rich Haiku result from plan_doc parser when flag ON.
+    // Used post-canonical-resolution to write cite-grade citations to
+    // canonical_haiku_extractions table.
+    let planDocHaikuResult: PlanDocHaikuParseResult | null = null;
     let haikuFirstAppealsContact: ReturnType<typeof translateHaikuToLegacy>["appealsContact"] = null;
 
     if (sbcParserV1Enabled) {
@@ -203,10 +214,16 @@ export async function processPlanDocumentData(
       // plan-identity reuse at eoc/parser.ts also flips when flag flips.
       // F.14 fast-follow (claude-extractor.ts deletion) becomes possible once flag
       // is global ON for ~30 days post-S72 with no regressions.
-      parseResult = await parsePlanDocument(ocrText, {
+      //
+      // S72 commit 4: use parsePlanDocumentWithMeta to capture rich Haiku result
+      // for canonical_haiku_extractions cite-grade citations write below
+      // (post-canonical-resolution).
+      const planDocResult = await parsePlanDocumentWithMeta(ocrText, {
         documentId: doc.id,
         extractionMethod: "pdftotext",
       });
+      parseResult = planDocResult.legacy;
+      planDocHaikuResult = planDocResult.haiku;
     } else {
       // SBC classification with sbc_parser_v1 OFF — explicit failure.
       // The flag stays in code as a kill-switch for debugging; flipping a specific
@@ -855,6 +872,58 @@ export async function processPlanDocumentData(
           }
         } catch (err) {
           console.error("[canonical-promotion] Helper error (non-fatal):", err);
+        }
+
+        // ── S72 commit 4: canonical_haiku_extractions cite-grade citations write ──
+        // Closes CF-20 cite-grade gap for smart-skipped users (post-CF-40 v3).
+        // Writes per-field cite-grade Pattern P-8 source_excerpts to canonical-side
+        // append-only table. Dispute-letter logic (evidence-resolver.ts) falls back
+        // here when user's own row lacks excerpt. Non-fatal on insert error.
+        try {
+          const userId = userForFlagCheck?.id ?? doc.user_id;
+          // Look up document file_hash for source_user_doc_hash provenance trail.
+          const { data: docMeta } = await supabase
+            .from("documents")
+            .select("file_hash")
+            .eq("id", doc.id)
+            .maybeSingle();
+          const sourceUserDocHash = (docMeta?.file_hash as string | null | undefined) ?? null;
+
+          // SBC Haiku-first path (when sbc_parser_v1 flag ON + usedNewSBCParser=true)
+          if (haikuResult) {
+            const sbcRows = extractRowsFromSBCHaikuResult(haikuResult);
+            const sbcWrite = await writeCanonicalHaikuExtractions(supabase, {
+              canonicalPlanId,
+              userId,
+              documentId: doc.id,
+              sourceUserDocHash,
+              haikuRunId: generateHaikuRunId("sbc", doc.id),
+              parserKind: "sbc",
+              rows: sbcRows,
+            });
+            console.log(
+              `[canonical-haiku-extractions] sbc canonical=${canonicalPlanId} cite_grade_rows_written=${sbcWrite.rowsWritten}`,
+            );
+          }
+
+          // Plan_doc Haiku-first path (when plan_doc_parser_v2 flag ON)
+          if (planDocHaikuResult) {
+            const planDocRows = extractRowsFromPlanDocHaikuResult(planDocHaikuResult);
+            const planDocWrite = await writeCanonicalHaikuExtractions(supabase, {
+              canonicalPlanId,
+              userId,
+              documentId: doc.id,
+              sourceUserDocHash,
+              haikuRunId: generateHaikuRunId("plan_doc", doc.id),
+              parserKind: "plan_doc",
+              rows: planDocRows,
+            });
+            console.log(
+              `[canonical-haiku-extractions] plan_doc canonical=${canonicalPlanId} cite_grade_rows_written=${planDocWrite.rowsWritten}`,
+            );
+          }
+        } catch (err) {
+          console.error("[canonical-haiku-extractions] non-fatal write error:", err);
         }
       }
     }
