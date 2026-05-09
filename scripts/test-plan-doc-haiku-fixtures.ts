@@ -5,8 +5,13 @@
  *   - 3 EOC fixtures (Blue Shield CA Silver 70 PPO / Aetna Medicare PPO / Kaiser
  *     Permanente CA Traditional HMO) — proxy for plan_doc shape per Subplan §5
  *     EOC regression check (Q-S72-2 (b) mitigation).
- *   - 2 Cigna plan-document text inputs from /tmp/s72-test-fixtures/ (pdftotext
- *     of /Users/andrewullmann/Downloads/{Cigna Plan Benefits,current_cigna_plan}.pdf).
+ *   - 2 Cigna plan-document text inputs from `tests/fixtures/plan_documents_local/`
+ *     (gitignored — contains Andrew's PHI; pdftotext from
+ *     /Users/andrewullmann/Downloads/{Cigna Plan Benefits,current_cigna_plan}.pdf).
+ *     Re-extract these on a fresh checkout via:
+ *       mkdir -p tests/fixtures/plan_documents_local/cigna-{plan-benefits,current}
+ *       pdftotext "/path/to/Cigna Plan Benefits.pdf" tests/fixtures/plan_documents_local/cigna-plan-benefits/source.txt
+ *       pdftotext "/path/to/current_cigna_plan.pdf" tests/fixtures/plan_documents_local/cigna-current/source.txt
  *
  * Reports per-fixture:
  *   - segmentationUsed (regex_only / regex_plus_haiku_discovery / haiku_discovery_only / preamble_only)
@@ -56,15 +61,15 @@ const FIXTURES: Fixture[] = [
     path: "tests/fixtures/eocs/kaiser-permanente-ca-2025-traditional-hmo/source.txt",
     kind: "eoc_proxy",
   },
-  // Cigna plan-doc real (user PROD slate)
+  // Cigna plan-doc real (user PROD slate; gitignored — Andrew's PHI)
   {
     id: "cigna-plan-benefits",
-    path: "/tmp/s72-test-fixtures/cigna-plan-benefits.txt",
+    path: "tests/fixtures/plan_documents_local/cigna-plan-benefits/source.txt",
     kind: "plan_doc_real",
   },
   {
     id: "cigna-current",
-    path: "/tmp/s72-test-fixtures/cigna-current.txt",
+    path: "tests/fixtures/plan_documents_local/cigna-current/source.txt",
     kind: "plan_doc_real",
   },
 ];

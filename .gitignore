@@ -13,6 +13,12 @@
 # testing
 /coverage
 
+# local-only test fixtures with PHI (e.g., Andrew's actual Cigna plan documents)
+# Per S72-COMMIT-7 user direction: real plan_doc fixtures are needed for empirical
+# efficacy harness (scripts/test-plan-doc-haiku-fixtures.ts) but contain user PHI
+# so are gitignored. Re-extract via pdftotext from local source PDFs as needed.
+/tests/fixtures/plan_documents_local/
+
 # next.js
 /.next/
 /out/
