@@ -5,7 +5,14 @@
  */
 
 import { createServerClient } from "@/lib/supabase/server";
-import { parsePlanDocument } from "@/lib/plan/plan-doc-parser";
+import { parsePlanDocumentWithMeta } from "@/lib/plan/plan-doc-parser";
+import type { PlanDocHaikuParseResult } from "@/lib/plan_doc/types";
+import {
+  writeCanonicalHaikuExtractions,
+  generateHaikuRunId,
+  extractRowsFromSBCHaikuResult,
+  extractRowsFromPlanDocHaikuResult,
+} from "@/lib/parser/canonical-haiku-extractions";
 import { extractServicesWithClaude } from "@/lib/plan/claude-extractor";
 import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
 import { matchInsurerWithPlanFallback } from "@/lib/plan/insurer-match";
@@ -163,6 +170,10 @@ export async function processPlanDocumentData(
     let parseResult: SBCParseResult;
     let usedNewSBCParser = false;
     let haikuResult: VotedParseSBCResult | null = null;
+    // S72 commit 4: captured rich Haiku result from plan_doc parser when flag ON.
+    // Used post-canonical-resolution to write cite-grade citations to
+    // canonical_haiku_extractions table.
+    let planDocHaikuResult: PlanDocHaikuParseResult | null = null;
     let haikuFirstAppealsContact: ReturnType<typeof translateHaikuToLegacy>["appealsContact"] = null;
 
     if (sbcParserV1Enabled) {
@@ -195,11 +206,24 @@ export async function processPlanDocumentData(
         `[process-plan] sbc_parser_v1: ${haikuResult.services.length} services + ${haikuResult.otherCoveredServices.length} other-covered + voting=${haikuResult.votingMetadata.triggered ? `triggered (n=${haikuResult.votingMetadata.successfulAttempts}/${haikuResult.votingMetadata.n})` : "skipped"} + cost=$${haikuResult.costUsd.toFixed(4)}`,
       );
     } else if (isFullPlanDoc) {
-      // plan_document classification → regex parsePlanDocument + Haiku augmentation
-      // (extractServicesWithClaude below). No flag dependency; this path is unchanged.
-      // Future Phase 3.4 candidate: migrate this path to a Haiku-first parser too,
-      // at which point claude-extractor.ts becomes droppable per F.14 fast-follow.
-      parseResult = parsePlanDocument(ocrText);
+      // plan_document classification → flag-gated dispatcher (S72 commit 3).
+      // When `plan_doc_parser_v2` flag OFF (default), routes to legacy regex
+      // parsePlanDocumentRegex (~49% recall) — same behavior as pre-S72.
+      // When flag ON, routes to NEW Haiku-first parsePlanDocumentHaiku per Phase 3.1A
+      // architectural template (~80%+ recall). Q-S72-2 (b) LOCK — EOC parser
+      // plan-identity reuse at eoc/parser.ts also flips when flag flips.
+      // F.14 fast-follow (claude-extractor.ts deletion) becomes possible once flag
+      // is global ON for ~30 days post-S72 with no regressions.
+      //
+      // S72 commit 4: use parsePlanDocumentWithMeta to capture rich Haiku result
+      // for canonical_haiku_extractions cite-grade citations write below
+      // (post-canonical-resolution).
+      const planDocResult = await parsePlanDocumentWithMeta(ocrText, {
+        documentId: doc.id,
+        extractionMethod: "pdftotext",
+      });
+      parseResult = planDocResult.legacy;
+      planDocHaikuResult = planDocResult.haiku;
     } else {
       // SBC classification with sbc_parser_v1 OFF — explicit failure.
       // The flag stays in code as a kill-switch for debugging; flipping a specific
@@ -820,6 +844,73 @@ export async function processPlanDocumentData(
         else servicesCreated = serviceInserts.length;
       }
 
+      // ── S72 commit 5: Plan_doc per-service access-instructions persistence ──
+      // Plan_doc Haiku extracts howToAccess per service (e.g., "Find a covered home
+      // health agency at mycigna.com/find-care"). Legacy adapter drops howToAccess at
+      // the SBCParseResult boundary (commit 2 design); commit 5 wires it into
+      // coverage_rules.how_to_access JSONB on plan_covered_services. UI render priority
+      // chain in /api/plan/analyze/route.ts: per-service coverage_rules.how_to_access
+      // → plan-level customerServicePhone → generic boilerplate fallback. SBC equivalent
+      // (Limitations column extraction) deferred to Phase 2 follow-up — SBCParsedService
+      // doesn't carry howToAccess today; SBC users get plan-level fallback instead.
+      if (planDocHaikuResult && planDocHaikuResult.services.length > 0) {
+        try {
+          for (const svc of planDocHaikuResult.services) {
+            if (!svc.howToAccess) continue;
+            const serviceId = slugToId.get(svc.serviceSlug);
+            if (!serviceId) continue;
+            const { data: existing } = await supabase
+              .from("plan_covered_services")
+              .select("coverage_rules")
+              .eq("insurance_plan_id", targetPlanId)
+              .eq("service_id", serviceId)
+              .maybeSingle();
+            const existingRules = (existing?.coverage_rules as Record<string, unknown> | null) ?? {};
+            await supabase
+              .from("plan_covered_services")
+              .update({ coverage_rules: { ...existingRules, how_to_access: svc.howToAccess } })
+              .eq("insurance_plan_id", targetPlanId)
+              .eq("service_id", serviceId);
+          }
+        } catch (err) {
+          console.error("[plan-doc-access-instructions] non-fatal write error:", err);
+        }
+      }
+
+      // ── S72 commit 5: Plan_doc plan-level access-instructions persistence ──
+      // Plan_doc Haiku extracts plan-level customer service phone + network finder URL
+      // + per-domain contacts. Stored on insurance_plans.metadata.plan_doc_access_instructions
+      // for UI render-priority-chain fallback. Pattern 1 #14 user-scoped (this is a
+      // user-side row, not canonical); Pattern 1 #9 JSONB-first (no schema change yet —
+      // promotes to columns if 3+ services need indexed access).
+      if (planDocHaikuResult?.accessInstructions) {
+        try {
+          const ai = planDocHaikuResult.accessInstructions;
+          const accessInstructionsMetadata = {
+            customer_service_phone: ai.customerServicePhone.value,
+            network_finder_url: ai.networkFinderUrl.value,
+            domain_contacts: ai.domainContacts,
+          };
+          const { data: planRow } = await supabase
+            .from("insurance_plans")
+            .select("metadata")
+            .eq("id", targetPlanId)
+            .single();
+          const existingMetadata = (planRow?.metadata as Record<string, unknown>) ?? {};
+          await supabase
+            .from("insurance_plans")
+            .update({
+              metadata: {
+                ...existingMetadata,
+                plan_doc_access_instructions: accessInstructionsMetadata,
+              },
+            })
+            .eq("id", targetPlanId);
+        } catch (err) {
+          console.error("[plan-doc-plan-level-access] non-fatal write error:", err);
+        }
+      }
+
       // ── Canonical promotion event — Phase 4.0.6 single code path ────────
       // Per Engineering North Star #1 (Candid_Data_Principles §1) + Pattern 1
       // #14 (§2): user data writes user-scoped only; canonical promotion happens
@@ -848,6 +939,58 @@ export async function processPlanDocumentData(
           }
         } catch (err) {
           console.error("[canonical-promotion] Helper error (non-fatal):", err);
+        }
+
+        // ── S72 commit 4: canonical_haiku_extractions cite-grade citations write ──
+        // Closes CF-20 cite-grade gap for smart-skipped users (post-CF-40 v3).
+        // Writes per-field cite-grade Pattern P-8 source_excerpts to canonical-side
+        // append-only table. Dispute-letter logic (evidence-resolver.ts) falls back
+        // here when user's own row lacks excerpt. Non-fatal on insert error.
+        try {
+          const userId = userForFlagCheck?.id ?? doc.user_id;
+          // Look up document file_hash for source_user_doc_hash provenance trail.
+          const { data: docMeta } = await supabase
+            .from("documents")
+            .select("file_hash")
+            .eq("id", doc.id)
+            .maybeSingle();
+          const sourceUserDocHash = (docMeta?.file_hash as string | null | undefined) ?? null;
+
+          // SBC Haiku-first path (when sbc_parser_v1 flag ON + usedNewSBCParser=true)
+          if (haikuResult) {
+            const sbcRows = extractRowsFromSBCHaikuResult(haikuResult);
+            const sbcWrite = await writeCanonicalHaikuExtractions(supabase, {
+              canonicalPlanId,
+              userId,
+              documentId: doc.id,
+              sourceUserDocHash,
+              haikuRunId: generateHaikuRunId("sbc", doc.id),
+              parserKind: "sbc",
+              rows: sbcRows,
+            });
+            console.log(
+              `[canonical-haiku-extractions] sbc canonical=${canonicalPlanId} cite_grade_rows_written=${sbcWrite.rowsWritten}`,
+            );
+          }
+
+          // Plan_doc Haiku-first path (when plan_doc_parser_v2 flag ON)
+          if (planDocHaikuResult) {
+            const planDocRows = extractRowsFromPlanDocHaikuResult(planDocHaikuResult);
+            const planDocWrite = await writeCanonicalHaikuExtractions(supabase, {
+              canonicalPlanId,
+              userId,
+              documentId: doc.id,
+              sourceUserDocHash,
+              haikuRunId: generateHaikuRunId("plan_doc", doc.id),
+              parserKind: "plan_doc",
+              rows: planDocRows,
+            });
+            console.log(
+              `[canonical-haiku-extractions] plan_doc canonical=${canonicalPlanId} cite_grade_rows_written=${planDocWrite.rowsWritten}`,
+            );
+          }
+        } catch (err) {
+          console.error("[canonical-haiku-extractions] non-fatal write error:", err);
         }
       }
     }

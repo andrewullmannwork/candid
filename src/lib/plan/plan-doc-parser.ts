@@ -6,9 +6,78 @@
 
 import type { InsurancePlanInsert, PlanCoveredServiceInsert } from "@/lib/supabase/types";
 import type { SBCParseResult, SBCParsedService } from "@/lib/sbc/types";
+import type { ExtractionMethod } from "@/lib/parser/types";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { parsePlanDocumentHaiku } from "@/lib/plan_doc/parser";
+import { toLegacyPlanDocResult } from "@/lib/plan_doc/legacy-adapter";
+import type { PlanDocHaikuParseResult } from "@/lib/plan_doc/types";
 
 // Re-export the same result type for consistency
 export type PlanDocParseResult = SBCParseResult;
+
+// ── Public dispatcher: flag-gated between legacy regex + Haiku-first (S72) ──
+
+export interface ParsePlanDocumentOptions {
+  documentId?: string;
+  extractionMethod?: ExtractionMethod;
+}
+
+/**
+ * Plan-document parser dispatcher.
+ *
+ * Flag-gated between legacy regex (`parsePlanDocumentRegex`, ~49% recall) and
+ * Haiku-first (`parsePlanDocumentHaiku` per Phase 3.1A architectural template,
+ * ~80%+ recall on per-section dispatch) via `plan_doc_parser_v2` flag (mig 083).
+ *
+ * Per Q-S72-2 (b) LOCK (Subplan §2): when flag ON, EOC parser plan-identity
+ * reuse at eoc/parser.ts also routes through Haiku-first (free recall lift).
+ * Mitigation: Blue Shield Silver 70 PPO EOC fixture regression check mid-S72
+ * per Subplan §5.
+ *
+ * `opts.documentId` + `opts.extractionMethod` are used only on the Haiku-first
+ * path (legacy regex doesn't need them). Defaults preserve backward-compat for
+ * any caller that doesn't yet pass options.
+ */
+export async function parsePlanDocument(
+  ocrText: string,
+  opts?: ParsePlanDocumentOptions,
+): Promise<PlanDocParseResult> {
+  const flagEnabled = await isFeatureEnabled("plan_doc_parser_v2");
+  if (flagEnabled) {
+    const haikuResult = await parsePlanDocumentHaiku({
+      ocrText,
+      extractionMethod: opts?.extractionMethod ?? "pdftotext",
+      documentId: opts?.documentId ?? "unknown",
+    });
+    return toLegacyPlanDocResult(haikuResult);
+  }
+  return parsePlanDocumentRegex(ocrText);
+}
+
+/**
+ * Same dispatcher as `parsePlanDocument` but EXPOSES the rich Haiku result
+ * alongside the legacy parse result when the flag is ON. Used by process-plan.ts
+ * (S72 commit 4) to write canonical_haiku_extractions cite-grade rows post-canonical-
+ * resolution. EOC parser caller uses the legacy `parsePlanDocument` (it doesn't
+ * need the rich haiku result for plan-identity reuse).
+ *
+ * Returns `{ legacy, haiku: undefined }` when flag OFF (legacy regex path).
+ */
+export async function parsePlanDocumentWithMeta(
+  ocrText: string,
+  opts?: ParsePlanDocumentOptions,
+): Promise<{ legacy: PlanDocParseResult; haiku: PlanDocHaikuParseResult | null }> {
+  const flagEnabled = await isFeatureEnabled("plan_doc_parser_v2");
+  if (flagEnabled) {
+    const haiku = await parsePlanDocumentHaiku({
+      ocrText,
+      extractionMethod: opts?.extractionMethod ?? "pdftotext",
+      documentId: opts?.documentId ?? "unknown",
+    });
+    return { legacy: toLegacyPlanDocResult(haiku), haiku };
+  }
+  return { legacy: parsePlanDocumentRegex(ocrText), haiku: null };
+}
 
 // ── Non-service terms blocklist ────────────────────────────────────────────
 // These are section headers, column labels, and plan structure terms that the
@@ -374,9 +443,13 @@ function matchServiceSlug(serviceName: string): { slug: string; place: string; f
   return null;
 }
 
-// ── Main parser ─────────────────────────────────────────────────────────────
+// ── Legacy regex parser (private; reached via parsePlanDocument when flag OFF) ──
+// Renamed from `parsePlanDocument` per S72 commit 3 (Q-S72-2 (b) LOCK). The new
+// public `parsePlanDocument` dispatcher above flag-gates between this regex
+// implementation and the Haiku-first parser. Implementation unchanged from
+// pre-S72 — recall ~49% baseline; see Subplan §1 for replacement rationale.
 
-export function parsePlanDocument(text: string): PlanDocParseResult {
+function parsePlanDocumentRegex(text: string): PlanDocParseResult {
   const warnings: string[] = [];
   const plan: Partial<InsurancePlanInsert> = {};
 
