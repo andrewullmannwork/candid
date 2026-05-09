@@ -844,6 +844,73 @@ export async function processPlanDocumentData(
         else servicesCreated = serviceInserts.length;
       }
 
+      // ── S72 commit 5: Plan_doc per-service access-instructions persistence ──
+      // Plan_doc Haiku extracts howToAccess per service (e.g., "Find a covered home
+      // health agency at mycigna.com/find-care"). Legacy adapter drops howToAccess at
+      // the SBCParseResult boundary (commit 2 design); commit 5 wires it into
+      // coverage_rules.how_to_access JSONB on plan_covered_services. UI render priority
+      // chain in /api/plan/analyze/route.ts: per-service coverage_rules.how_to_access
+      // → plan-level customerServicePhone → generic boilerplate fallback. SBC equivalent
+      // (Limitations column extraction) deferred to Phase 2 follow-up — SBCParsedService
+      // doesn't carry howToAccess today; SBC users get plan-level fallback instead.
+      if (planDocHaikuResult && planDocHaikuResult.services.length > 0) {
+        try {
+          for (const svc of planDocHaikuResult.services) {
+            if (!svc.howToAccess) continue;
+            const serviceId = slugToId.get(svc.serviceSlug);
+            if (!serviceId) continue;
+            const { data: existing } = await supabase
+              .from("plan_covered_services")
+              .select("coverage_rules")
+              .eq("insurance_plan_id", targetPlanId)
+              .eq("service_id", serviceId)
+              .maybeSingle();
+            const existingRules = (existing?.coverage_rules as Record<string, unknown> | null) ?? {};
+            await supabase
+              .from("plan_covered_services")
+              .update({ coverage_rules: { ...existingRules, how_to_access: svc.howToAccess } })
+              .eq("insurance_plan_id", targetPlanId)
+              .eq("service_id", serviceId);
+          }
+        } catch (err) {
+          console.error("[plan-doc-access-instructions] non-fatal write error:", err);
+        }
+      }
+
+      // ── S72 commit 5: Plan_doc plan-level access-instructions persistence ──
+      // Plan_doc Haiku extracts plan-level customer service phone + network finder URL
+      // + per-domain contacts. Stored on insurance_plans.metadata.plan_doc_access_instructions
+      // for UI render-priority-chain fallback. Pattern 1 #14 user-scoped (this is a
+      // user-side row, not canonical); Pattern 1 #9 JSONB-first (no schema change yet —
+      // promotes to columns if 3+ services need indexed access).
+      if (planDocHaikuResult?.accessInstructions) {
+        try {
+          const ai = planDocHaikuResult.accessInstructions;
+          const accessInstructionsMetadata = {
+            customer_service_phone: ai.customerServicePhone.value,
+            network_finder_url: ai.networkFinderUrl.value,
+            domain_contacts: ai.domainContacts,
+          };
+          const { data: planRow } = await supabase
+            .from("insurance_plans")
+            .select("metadata")
+            .eq("id", targetPlanId)
+            .single();
+          const existingMetadata = (planRow?.metadata as Record<string, unknown>) ?? {};
+          await supabase
+            .from("insurance_plans")
+            .update({
+              metadata: {
+                ...existingMetadata,
+                plan_doc_access_instructions: accessInstructionsMetadata,
+              },
+            })
+            .eq("id", targetPlanId);
+        } catch (err) {
+          console.error("[plan-doc-plan-level-access] non-fatal write error:", err);
+        }
+      }
+
       // ── Canonical promotion event — Phase 4.0.6 single code path ────────
       // Per Engineering North Star #1 (Candid_Data_Principles §1) + Pattern 1
       // #14 (§2): user data writes user-scoped only; canonical promotion happens

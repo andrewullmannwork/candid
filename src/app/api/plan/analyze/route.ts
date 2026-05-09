@@ -94,6 +94,31 @@ export async function POST(request: Request) {
           .eq("insurance_plan_id", userPlan.id)
           .is("service_catalog.merged_into_id", null);
 
+        // ── S72 commit 5: plan-level access-instructions fallback ──
+        // When plan_doc Haiku extracted plan-level customer service phone / network
+        // finder URL (commit 5 persistence writes to insurance_plans.metadata.plan_doc_access_instructions),
+        // surface as fallback in the howToAccess render-priority chain when per-service
+        // coverage_rules.how_to_access is null. Replaces generic "Contact your insurer
+        // for details" boilerplate with plan-specific copy where available.
+        const planDocAccessMeta = (
+          (userPlan.metadata as Record<string, unknown> | null)?.plan_doc_access_instructions as
+            | Record<string, unknown>
+            | undefined
+        );
+        const planLevelCustomerServicePhone =
+          typeof planDocAccessMeta?.customer_service_phone === "string"
+            ? (planDocAccessMeta.customer_service_phone as string)
+            : null;
+        const planLevelNetworkFinderUrl =
+          typeof planDocAccessMeta?.network_finder_url === "string"
+            ? (planDocAccessMeta.network_finder_url as string)
+            : null;
+        const planLevelAccessFallback: string | null = planLevelCustomerServicePhone
+          ? `Call ${planLevelCustomerServicePhone} to confirm coverage${planLevelNetworkFinderUrl ? ` or find a provider at ${planLevelNetworkFinderUrl}` : ""}.`
+          : planLevelNetworkFinderUrl
+            ? `Find a covered provider at ${planLevelNetworkFinderUrl}.`
+            : null;
+
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         function formatCost(s: any): string {
           const parts: string[] = [];
@@ -217,7 +242,19 @@ export async function POST(request: Request) {
                 title: name,
                 description: buildServiceDescription(s),
                 whyUnderutilized: catalogBenefit?.whyUnderutilized || "",
-                howToAccess: isNotCovered ? "" : (catalogBenefit?.howToAccess || "Contact your insurer for details."),
+                // S72 commit 5: per-service access-instructions render priority chain
+                // (master plan §S72): per-service coverage_rules.how_to_access (extracted
+                // by plan_doc Haiku) → plan-level customerServicePhone / networkFinderUrl
+                // (extracted by plan_doc Haiku; stored in insurance_plans.metadata) →
+                // catalog-curated howToAccess → generic boilerplate fallback.
+                howToAccess: isNotCovered
+                  ? ""
+                  : (
+                      ((s.coverage_rules as Record<string, unknown> | null)?.how_to_access as string | undefined) ||
+                      planLevelAccessFallback ||
+                      catalogBenefit?.howToAccess ||
+                      "Contact your insurer for details."
+                    ),
                 hsaFsaEligible: isNotCovered ? false : (catalogBenefit?.hsaFsaEligible || false),
                 planTypes: [userPlan.plan_type || ""],
               },
