@@ -409,25 +409,19 @@ export async function parseEOC(
   // (plan-identity reuse + segmentation + per-section dispatch + verifier) operate
   // in cleaned-text coordinate space.
   //
-  // Env-gated default-OFF for safety: `EOC_SUBTRACTIVE_CLEANUP_ENABLED=true` opts in.
-  // Next session validates the adoption via parse-harness EOC regression check on
-  // Blue Shield + Aetna + Kaiser fixtures (Phase 3.1A.1 baseline ~97-100% must
-  // hold). If validation passes, follow-up commit removes the env gate + makes
-  // unconditional. Until then, EOC parser preserves original ocrText-throughout
-  // behavior to eliminate regression risk on production EOC parsing.
-  const eocCleanupEnabled = process.env.EOC_SUBTRACTIVE_CLEANUP_ENABLED === "true";
-  let workingText: string = ocrText;
-  if (eocCleanupEnabled) {
-    const cleanup = cleanupBoilerplate(ocrText);
-    workingText = cleanup.cleanedText;
-    warnings.push(...cleanup.warnings);
-    warnings.push(
-      `eoc_subtractive_cleanup:stripped_${cleanup.strippedLineCount}_of_${cleanup.originalLineCount}_lines:${(
-        (cleanup.strippedLineCount / Math.max(cleanup.originalLineCount, 1)) *
-        100
-      ).toFixed(1)}%`,
-    );
-  }
+  // S78: env gate `EOC_SUBTRACTIVE_CLEANUP_ENABLED` REMOVED. Session 78 parse-harness
+  // regression check confirmed Phase 3.1A.1 baseline preserved (Aetna excerpt 96%→96%
+  // no-op; Blue Shield excerpt 97%→98% +1pt with 8 more fields citing; Kaiser
+  // 98%→98% with 1 more field citing). Cleanup is now unconditional.
+  const cleanup = cleanupBoilerplate(ocrText);
+  const workingText = cleanup.cleanedText;
+  warnings.push(...cleanup.warnings);
+  warnings.push(
+    `eoc_subtractive_cleanup:stripped_${cleanup.strippedLineCount}_of_${cleanup.originalLineCount}_lines:${(
+      (cleanup.strippedLineCount / Math.max(cleanup.originalLineCount, 1)) *
+      100
+    ).toFixed(1)}%`,
+  );
 
   // 1. Plan identity REUSE per Q-P3.1A-11.
   let planIdentity: EOCPlanIdentity = {
