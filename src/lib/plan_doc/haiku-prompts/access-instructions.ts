@@ -13,20 +13,23 @@ import type {
   PlanDocAccessInstructions,
   PlanDocSectionResult,
   PlanDocPatternP8Provenance,
+  PlanDocSectionHint,
 } from "../types";
 import { callHaikuWithCache } from "./_shared";
 
-const INSTRUCTIONS = `You are extracting plan-level access instructions from a Plan Document section. Return a single JSON object with customer service contact + network finder + per-domain contacts.
+const INSTRUCTIONS = `You are extracting plan-level access instructions from a section of a health plan document. Access-instructions scalars (customer service phone, network finder URL, per-domain contacts) may appear in dedicated access sections OR scattered through services schedules / cover preambles / plan-identity sections. Extract every contact you can find in THIS chunk; the system runs this prompt on multiple sections and merges results.
 
 ## CRITICAL EXTRACTION RULES
 
 1. **Verbatim source_excerpt per field** (≤200 chars): CHARACTER-FOR-CHARACTER substring of section text. NEVER paraphrase. Set to "" if unable (graceful 'not_found').
 
-2. **customerServicePhone**: the primary member services phone number. Extract verbatim including format (e.g., "1-800-244-6224" or "(800) 244-6224"). null if not specified.
+2. **NULL is preferred over guessing.** If a scalar is NOT present in this chunk, return value=null + source_excerpt="". The system runs this prompt on other sections; field-merge across chunks recovers values you don't find here.
 
-3. **networkFinderUrl**: URL to find in-network providers (e.g., "cigna.com/find-care", "mycigna.com/find-care"). null if not specified.
+3. **customerServicePhone**: the primary member services phone number. Extract verbatim including format (e.g., "1-800-244-6224" or "(800) 244-6224"). null if not specified.
 
-4. **domainContacts**: per-domain customer service phone numbers when separately listed (e.g., behavioral health, prescription benefits, dental). Keys: snake_case domain names. Values: verbatim phone numbers. {} (empty object) when no domain-specific contacts present.
+4. **networkFinderUrl**: URL to find in-network providers (e.g., "cigna.com/find-care", "mycigna.com/find-care"). null if not specified.
+
+5. **domainContacts**: per-domain customer service phone numbers when separately listed (e.g., behavioral health, prescription benefits, dental). Keys: snake_case domain names. Values: verbatim phone numbers. {} (empty object) when no domain-specific contacts present.
 
 ## RESPONSE SCHEMA
 
@@ -62,6 +65,7 @@ interface RawResponse {
 function buildField(
   raw: RawField<string> | undefined,
   extractionMethod: ExtractionMethod,
+  sectionHint: PlanDocSectionHint,
 ): { value: string | null; patternP8: PlanDocPatternP8Provenance; haikuConfidence?: number } {
   const value = typeof raw?.value === "string" && raw.value.length > 0 ? raw.value : null;
   const sourceExcerpt = typeof raw?.source_excerpt === "string" ? raw.source_excerpt.slice(0, 200) : "";
@@ -71,17 +75,26 @@ function buildField(
       source_excerpt: sourceExcerpt,
       source_excerpt_verified: "not_found",
       source_excerpt_extraction_method: extractionMethod,
-      source_section_hint: "access_instructions",
+      source_section_hint: sectionHint,
       source_section_verified: false,
     },
     haikuConfidence: typeof raw?.haiku_confidence === "number" ? raw.haiku_confidence : undefined,
   };
 }
 
+/**
+ * Extract plan-level access instructions from a section's text.
+ *
+ * S73 (Session 76): caller passes sectionHint so the Pattern P-8 provenance reflects
+ * the actual section the excerpt came from. Multi-section dispatch (this fn called
+ * on access_instructions + services_cost_sharing + preamble "other" + plan_identity)
+ * uses field-merge to combine results.
+ */
 export async function extractAccessInstructions(
   sectionText: string,
   sectionRange: { start: number; end: number },
   extractionMethod: ExtractionMethod,
+  sectionHint: PlanDocSectionHint = "access_instructions",
 ): Promise<PlanDocSectionResult<PlanDocAccessInstructions>> {
   const result = await callHaikuWithCache<RawResponse>({
     systemPrompt: INSTRUCTIONS,
@@ -90,8 +103,8 @@ export async function extractAccessInstructions(
   });
 
   const data: PlanDocAccessInstructions = {
-    customerServicePhone: buildField(result.data.customerServicePhone, extractionMethod),
-    networkFinderUrl: buildField(result.data.networkFinderUrl, extractionMethod),
+    customerServicePhone: buildField(result.data.customerServicePhone, extractionMethod, sectionHint),
+    networkFinderUrl: buildField(result.data.networkFinderUrl, extractionMethod, sectionHint),
     domainContacts:
       result.data.domainContacts && typeof result.data.domainContacts === "object"
         ? result.data.domainContacts
@@ -101,7 +114,7 @@ export async function extractAccessInstructions(
           source_excerpt: String(result.data.domainContacts_source_excerpt).slice(0, 200),
           source_excerpt_verified: "not_found",
           source_excerpt_extraction_method: extractionMethod,
-          source_section_hint: "access_instructions",
+          source_section_hint: sectionHint,
           source_section_verified: false,
         }
       : null,

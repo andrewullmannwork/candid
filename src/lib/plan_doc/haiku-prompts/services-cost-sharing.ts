@@ -12,6 +12,7 @@ import type {
   PlanDocService,
   PlanDocSectionResult,
   PlanDocPatternP8Provenance,
+  PlanDocSectionHint,
 } from "../types";
 import { callHaikuWithCache } from "./_shared";
 
@@ -19,7 +20,24 @@ const INSTRUCTIONS = `You are extracting per-service cost-sharing from a Plan Do
 
 ## CRITICAL EXTRACTION RULES
 
-1. **Verbatim source_excerpt per service** (≤200 chars): the literal table row or paragraph in the document containing this service's cost-sharing values. CHARACTER-FOR-CHARACTER substring of section text. NEVER paraphrase. If unable, set to "" (graceful 'not_found').
+1. **Verbatim source_excerpt per service** (≤200 chars): a CONTIGUOUS substring of the section text that appears CHARACTER-FOR-CHARACTER in the source. NEVER paraphrase, summarize, reorder, or join non-contiguous pieces. Partial quotes are PERFECTLY ACCEPTABLE — you do NOT need to include both the service name and the cost values. Quote the MOST INFORMATIVE contiguous span ≤200 chars you can find verbatim. Quality over completeness.
+
+**CORRECT** (any of these acceptable — pick the most informative contiguous span you can find verbatim):
+- Just the costs: \`"$30 copay/visit"\` or \`"35% coinsurance"\`
+- Just the service name line: \`"Primary Care Visit to treat an injury or illness"\`
+- A multi-line span including the literal line breaks as they appear in source: \`"$30 copay/visit\\n40% coinsurance"\`
+- A complete row ONLY if service name and costs literally appear adjacent in the source text: \`"Primary Care Visit: $30 copay/visit; 40% coinsurance"\`
+
+**INCORRECT** (paraphrased — would fail verification):
+> \`"Primary care office visits cost $30 copay in-network with 40% coinsurance out-of-network"\` (synthesized wording)
+
+**INCORRECT** (joined non-contiguous pieces — would fail):
+> \`"Primary Care ... $30 copay/visit ... 40% coinsurance"\` (ellipsis or text between costs that's not literally adjacent in source)
+
+**INCORRECT** (added punctuation like pipes or colons that aren't in source):
+> \`"Service: $30 | 40%"\` (if the source has these values on separate lines without pipes/colons added by you)
+
+If you genuinely cannot find ANY contiguous verbatim span containing useful information for this service, set source_excerpt to "" (graceful 'not_found' state). Prefer SHORT but verifiable over LONG but synthesized.
 
 2. **serviceSlug**: snake_case lowercase identifier matching the service category. Use existing canonical slugs where possible: "primary_care", "specialist_visit", "emergency_room", "urgent_care", "preventive_care", "generic_drugs", "preferred_brand_drugs", "non_preferred_brand_drugs", "specialty_drugs", "outpatient_mental_health", "inpatient_mental_health", "outpatient_substance_use", "inpatient_substance_use", "inpatient_hospital_stay", "outpatient_surgery", "imaging_advanced", "imaging_basic", "lab_outpatient", "skilled_nursing_facility", "home_health_care", "hospice", "physical_therapy", "occupational_therapy", "speech_therapy", "chiropractic", "acupuncture", "durable_medical_equipment", "maternity_prenatal", "delivery", "well_baby", "vision_exam", "vision_hardware", "dental_basic", "dental_orthodontic". For uncategorized services, use snake_case based on the service name.
 
@@ -102,10 +120,24 @@ interface RawResponse {
   services?: RawService[];
 }
 
+/**
+ * Extract per-service cost-sharing rows from a section's text.
+ *
+ * S73 (Session 76): accepts sectionHint param for parity with extractPlanIdentity +
+ * extractAccessInstructions (multi-section dispatch consistency). For services, the
+ * hint is always "services_cost_sharing" — services rows don't appear in other
+ * sections by design. Default arg preserved for backward compat.
+ *
+ * Sub-segmentation: caller (parsePlanDocumentHaiku) splits the services section into
+ * line-granularity chunks (max 1200 tokens each) and dispatches sequentially. Each
+ * chunk's services array is concatenated + slug-deduped by the combine layer. Fixes
+ * Kaiser-style 102+ services token-truncation (Haiku's 8K output budget cap).
+ */
 export async function extractServicesCostSharing(
   sectionText: string,
   sectionRange: { start: number; end: number },
   extractionMethod: ExtractionMethod,
+  sectionHint: PlanDocSectionHint = "services_cost_sharing",
 ): Promise<PlanDocSectionResult<{ services: PlanDocService[] }>> {
   const result = await callHaikuWithCache<RawResponse>({
     systemPrompt: INSTRUCTIONS,
@@ -122,7 +154,7 @@ export async function extractServicesCostSharing(
         source_excerpt: sourceExcerpt,
         source_excerpt_verified: "not_found",
         source_excerpt_extraction_method: extractionMethod,
-        source_section_hint: "services_cost_sharing",
+        source_section_hint: sectionHint,
         source_section_verified: false,
       };
       return {

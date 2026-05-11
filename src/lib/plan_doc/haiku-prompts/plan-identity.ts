@@ -5,6 +5,15 @@
  * group number / network type) + in-network and out-of-network deductibles + OOP maxes
  * (individual + family). Pattern P-8 source_excerpt per field for cite-grade dispute
  * letter resolution.
+ *
+ * S73 (Session 76) — recall lift to ≥90% HARD GATE:
+ *   - Explicit instruction that plan-identity scalars may be SCATTERED across
+ *     non-plan-identity sections (services schedule, preamble cover page, etc.)
+ *   - Few-shot examples covering common variants (Cigna "The Schedule", Kaiser
+ *     "Cost Share Summary", Aetna preamble cover, federal SBC template)
+ *   - Explicit instruction that NULL is preferred over a wrong guess when a field
+ *     is genuinely not present in THIS chunk (field-merge across multi-section
+ *     dispatch will recover the value from another chunk)
  */
 
 import type { ExtractionMethod } from "../../parser/types";
@@ -12,23 +21,68 @@ import type {
   PlanDocPlanIdentity,
   PlanDocSectionResult,
   PlanDocPatternP8Provenance,
+  PlanDocSectionHint,
 } from "../types";
 import { callHaikuWithCache } from "./_shared";
 
-const INSTRUCTIONS = `You are extracting plan identity from a Plan Document section. Return a single JSON object with all fields.
+const INSTRUCTIONS = `You are extracting plan identity scalars from a section of a health plan document. Plan-identity scalars (deductibles, OOP max, plan name, etc.) may appear ANYWHERE — on cover pages, in plan-summary sections, in services-schedule headers, in narrative paragraphs of any section. Extract every scalar you can find in THIS chunk; the system runs this prompt on multiple sections and merges results across chunks.
 
 ## CRITICAL EXTRACTION RULES
 
-1. **Verbatim source_excerpt per field** (≤200 chars): include a CHARACTER-FOR-CHARACTER substring of the document section text where this field's value appears. NEVER paraphrase, summarize, or normalize whitespace/punctuation. If you cannot find a verbatim ≤200-char span, set source_excerpt to "" — verifier marks empty as 'not_found' (graceful degradation), preferred over a wrong excerpt.
+1. **Verbatim source_excerpt per field** (≤200 chars): a CONTIGUOUS substring of THIS chunk's text that appears CHARACTER-FOR-CHARACTER in the source. NEVER paraphrase, summarize, or join non-contiguous pieces. Partial quotes are PERFECTLY ACCEPTABLE — even a short span containing just the value is fine. Quote the most informative contiguous span ≤200 chars you can find verbatim.
 
-2. **Field types**:
+**CORRECT** (any of these acceptable — pick the most informative contiguous verbatim span):
+- Just the value: \`"$500"\` or \`"$1,500 individual / $3,000 family"\`
+- A full sentence IF it appears verbatim: \`"What is the overall deductible? $500 individual / $1,000 family"\`
+- A multi-line span including the literal line breaks as they appear in source: \`"$1,500 individual\\n$3,000 family"\`
+- A short label-value pair IF literally adjacent: \`"Deductible: $1,500"\` or \`"Plan Year: 2025"\`
+
+**INCORRECT** (paraphrased — would fail verification):
+> \`"Individual in-network deductible is $500 with $1,000 family deductible"\` (synthesized wording)
+
+**INCORRECT** (joined non-contiguous pieces — would fail):
+> \`"deductible ... $500 individual ... in-network"\` (ellipsis indicates skipped text)
+
+**INCORRECT** (added punctuation / pipes / brackets that aren't in source):
+> \`"[In-Network] $500 | $1,000"\` (if source has these values on separate lines without bracket/pipe markup)
+
+If you genuinely cannot find a contiguous verbatim span containing the field's value, set source_excerpt to "". Prefer SHORT but verifiable over LONG but synthesized.
+
+2. **NULL is preferred over guessing.** If a scalar is NOT present in this chunk, return value=null + source_excerpt="". Do NOT infer / interpolate / guess from context. The system runs this same prompt on other sections of the document; field-merge across chunks recovers values you don't find here.
+
+3. **Field types**:
    - planName, insurerName, planType, metalTier, groupNumber, networkType: string | null
    - planYear: integer | null
    - All deductibles + OOP maxes: integer (USD, no commas/symbols) | null
 
-3. **planType** values: "PPO" | "HMO" | "EPO" | "POS" | "HDHP" | "Other" — null if not specified.
-4. **metalTier** values: "Bronze" | "Silver" | "Gold" | "Platinum" | "Catastrophic" — null if not specified.
-5. **out_** values are MANDATORY when document includes OON columns. If document is HMO-only with no OON coverage, set out_* fields to null. DO NOT default OON to in-network values.
+4. **planType** values: "PPO" | "HMO" | "EPO" | "POS" | "HDHP" | "Other" — null if not specified.
+5. **metalTier** values: "Bronze" | "Silver" | "Gold" | "Platinum" | "Catastrophic" — null if not specified.
+6. **out_** values are MANDATORY when document includes OON columns. If document is HMO-only with no OON coverage, set out_* fields to null. DO NOT default OON to in-network values.
+
+## SCATTERED-FIELD EXAMPLES (recall-maximize bias)
+
+Plan-identity scalars commonly appear in non-obvious places. Examples:
+
+**Cigna "The Schedule" section** (a services-schedule header containing plan-identity inline):
+> "Plan: Open Access Plus | Plan Year: 2025 | Calendar-Year Deductible: $1,500 individual / $3,000 family | Out-of-Pocket Maximum: $6,500 individual / $13,000 family"
+
+Even though this section is labeled "The Schedule" and contains per-service rows, it ALSO contains plan-identity scalars (planName, planYear, deductibleIndividual, deductibleFamily, oopMaxIndividual, oopMaxFamily). Extract them all.
+
+**Kaiser "Cost Share Summary Tables by Benefit"** (often the only place deductibles appear):
+> "Calendar Year Plan Deductible: $250 individual, $500 family ... Calendar Year Out-of-Pocket Maximum: $3,000 individual, $6,000 family"
+
+**Aetna preamble cover page** (plan name + plan year often appear before any section heading):
+> "AETNA MEDICARE PPO PLAN — 2025 Evidence of Coverage"
+
+→ planName="AETNA MEDICARE PPO PLAN", planYear=2025, planType="PPO"
+
+**Federal SBC "Important Questions" template**:
+> "What is the overall deductible? $500 individual / $1,000 family for in-network providers; $1,500 individual / $3,000 family out-of-network."
+
+→ deductibleIndividual=500, deductibleFamily=1000, outDeductibleIndividual=1500, outDeductibleFamily=3000
+
+**Blue Shield "Deductibles and Out-of-Pocket Maximums" section**:
+> "Your in-network calendar year deductible is $1,500 per individual / $3,000 per family. Your maximum out-of-pocket is $7,000 per individual / $14,000 per family."
 
 ## RESPONSE SCHEMA
 
@@ -79,6 +133,7 @@ interface RawResponse {
 function buildField<T>(
   raw: RawField<T> | undefined,
   extractionMethod: ExtractionMethod,
+  sectionHint: PlanDocSectionHint,
 ): { value: T | null; patternP8: PlanDocPatternP8Provenance; haikuConfidence?: number } {
   const value = (raw?.value ?? null) as T | null;
   const sourceExcerpt = typeof raw?.source_excerpt === "string" ? raw.source_excerpt.slice(0, 200) : "";
@@ -88,17 +143,28 @@ function buildField<T>(
       source_excerpt: sourceExcerpt,
       source_excerpt_verified: "not_found",
       source_excerpt_extraction_method: extractionMethod,
-      source_section_hint: "plan_identity",
+      source_section_hint: sectionHint,
       source_section_verified: false,
     },
     haikuConfidence: typeof raw?.haiku_confidence === "number" ? raw.haiku_confidence : undefined,
   };
 }
 
+/**
+ * Extract plan-identity scalars from a section's text. Used by the parser's
+ * multi-section dispatch — same prompt runs on plan_identity + services_cost_sharing
+ * + preamble "other" + access_instructions sections; field-merge across chunks
+ * recovers scalars wherever they appear.
+ *
+ * S73 (Session 76): caller passes sectionHint so the Pattern P-8 provenance reflects
+ * the actual section the excerpt came from (not always "plan_identity"). Field-merge
+ * preserves the winning chunk's section hint.
+ */
 export async function extractPlanIdentity(
   sectionText: string,
   sectionRange: { start: number; end: number },
   extractionMethod: ExtractionMethod,
+  sectionHint: PlanDocSectionHint = "plan_identity",
 ): Promise<PlanDocSectionResult<PlanDocPlanIdentity>> {
   const result = await callHaikuWithCache<RawResponse>({
     systemPrompt: INSTRUCTIONS,
@@ -107,21 +173,21 @@ export async function extractPlanIdentity(
   });
 
   const data: PlanDocPlanIdentity = {
-    planName: buildField<string>(result.data.planName, extractionMethod),
-    insurerName: buildField<string>(result.data.insurerName, extractionMethod),
-    planType: buildField<string>(result.data.planType, extractionMethod),
-    metalTier: buildField<string>(result.data.metalTier, extractionMethod),
-    planYear: buildField<number>(result.data.planYear, extractionMethod),
-    groupNumber: buildField<string>(result.data.groupNumber, extractionMethod),
-    networkType: buildField<string>(result.data.networkType, extractionMethod),
-    deductibleIndividual: buildField<number>(result.data.deductibleIndividual, extractionMethod),
-    deductibleFamily: buildField<number>(result.data.deductibleFamily, extractionMethod),
-    oopMaxIndividual: buildField<number>(result.data.oopMaxIndividual, extractionMethod),
-    oopMaxFamily: buildField<number>(result.data.oopMaxFamily, extractionMethod),
-    outDeductibleIndividual: buildField<number>(result.data.outDeductibleIndividual, extractionMethod),
-    outDeductibleFamily: buildField<number>(result.data.outDeductibleFamily, extractionMethod),
-    outOopMaxIndividual: buildField<number>(result.data.outOopMaxIndividual, extractionMethod),
-    outOopMaxFamily: buildField<number>(result.data.outOopMaxFamily, extractionMethod),
+    planName: buildField<string>(result.data.planName, extractionMethod, sectionHint),
+    insurerName: buildField<string>(result.data.insurerName, extractionMethod, sectionHint),
+    planType: buildField<string>(result.data.planType, extractionMethod, sectionHint),
+    metalTier: buildField<string>(result.data.metalTier, extractionMethod, sectionHint),
+    planYear: buildField<number>(result.data.planYear, extractionMethod, sectionHint),
+    groupNumber: buildField<string>(result.data.groupNumber, extractionMethod, sectionHint),
+    networkType: buildField<string>(result.data.networkType, extractionMethod, sectionHint),
+    deductibleIndividual: buildField<number>(result.data.deductibleIndividual, extractionMethod, sectionHint),
+    deductibleFamily: buildField<number>(result.data.deductibleFamily, extractionMethod, sectionHint),
+    oopMaxIndividual: buildField<number>(result.data.oopMaxIndividual, extractionMethod, sectionHint),
+    oopMaxFamily: buildField<number>(result.data.oopMaxFamily, extractionMethod, sectionHint),
+    outDeductibleIndividual: buildField<number>(result.data.outDeductibleIndividual, extractionMethod, sectionHint),
+    outDeductibleFamily: buildField<number>(result.data.outDeductibleFamily, extractionMethod, sectionHint),
+    outOopMaxIndividual: buildField<number>(result.data.outOopMaxIndividual, extractionMethod, sectionHint),
+    outOopMaxFamily: buildField<number>(result.data.outOopMaxFamily, extractionMethod, sectionHint),
   };
 
   return {
