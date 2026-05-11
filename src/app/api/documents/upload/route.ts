@@ -367,10 +367,22 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ documentId, storagePath, status: "error", error: "Failed to enqueue" }, { status: 500 });
       }
 
+      // S78 — async ingestion gate: large PDFs (>30 pages) get the async splash
+      // + parse-complete email + banner UX. Sub-30 page docs keep the existing
+      // sync PlayfulParsingScreen flow. Gated behind `async_ingestion_ux_v1`
+      // feature flag (mig 085, default OFF in dev). Page-count gate is purely
+      // PDF-based — HEIC / JPEG cards are 1 "page" and always sync.
+      const asyncIngestionEnabled = await isFeatureEnabled("async_ingestion_ux_v1", userEmail);
+      const isLargeDoc =
+        asyncIngestionEnabled &&
+        classification.pageCount > 30 &&
+        contentType === "application/pdf";
+
       return NextResponse.json({
         documentId,
         storagePath,
         autoProcessed: true,
+        isLargeDoc,
         classification: {
           classifiedType: classification.classifiedType,
           confidence: classification.confidence,

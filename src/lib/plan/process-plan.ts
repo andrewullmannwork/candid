@@ -1136,6 +1136,16 @@ export async function processPlanDocumentData(
       processing_extracted_services: null,
     }).eq("id", documentId);
 
+    // S78 — async ingestion: fire parse-complete email for large plan_doc/SBC.
+    // Helper internally gates on pageCount > 30 + Resend idempotency key prevents
+    // double-sends on QStash retry. Fail-soft.
+    try {
+      const { sendParseCompleteEmail } = await import("@/lib/email/onboarding-emails");
+      await sendParseCompleteEmail(supabase, documentId);
+    } catch (err) {
+      console.error("[process-plan] parse-complete email (non-fatal):", err);
+    }
+
     console.log(`[process-plan] Done. Plan=${targetPlanId}, services=${servicesCreated}, mismatch=${mismatchData?.type || "none"}, merged=${!!mergeIntoExistingPlan}`);
 
     return {

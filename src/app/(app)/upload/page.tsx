@@ -85,6 +85,12 @@ function UploadForm() {
     servicesExtracted?: number;
   } | null>(null);
   const [documentId, setDocumentId] = useState<string | null>(null);
+  // S78 — async ingestion gate: backend sets isLargeDoc=true for PDFs > 30 pages
+  // when async_ingestion_ux_v1 feature flag is ON. Drives the large-doc splash
+  // copy (personalized page count + duration tier + "Continue browsing" CTA)
+  // vs the existing sync PlayfulParsingScreen messaging.
+  const [isLargeDoc, setIsLargeDoc] = useState(false);
+  const [largeDocPageCount, setLargeDocPageCount] = useState<number | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [processingProgress, setProcessingProgress] = useState<{
     status: string;
@@ -462,6 +468,13 @@ function UploadForm() {
           setClassificationResult(uploadResult.classification);
         }
 
+        // S78 — capture large-doc flag for async UX splash. Backend sets to true
+        // only when feature flag is ON, PDF, and pageCount > 30.
+        if (uploadResult.isLargeDoc) {
+          setIsLargeDoc(true);
+          setLargeDocPageCount(uploadResult.classification?.pageCount ?? null);
+        }
+
         // Handle different processing outcomes
         if (uploadResult.autoProcessed) {
           // High confidence — processing triggered automatically
@@ -642,6 +655,38 @@ function UploadForm() {
         : processingProgress?.completedPages != null && processingProgress?.totalPages
           ? `Page ${processingProgress.completedPages} of ${processingProgress.totalPages}`
           : processingProgress?.step ?? undefined;
+      // S78 — large-doc async UX: customize title/subtitle/footer when backend
+      // flagged the doc as >30-page PDF (and async_ingestion_ux_v1 is ON).
+      // Sub-30-page docs continue using the existing sync copy + no footer CTA.
+      const largeDocTitle = isLargeDoc
+        ? "Thanks — we're reading your plan"
+        : "Reading your document";
+      const largeDocSubtitle = isLargeDoc
+        ? (() => {
+            const pages = largeDocPageCount ?? 0;
+            const durationTier =
+              pages >= 100 ? "5-8 minutes" : pages >= 50 ? "3-5 minutes" : "1-2 minutes";
+            const pagesPhrase = pages > 0 ? `${pages} pages of` : "";
+            return `${pagesPhrase ? pagesPhrase + " " : ""}careful extraction takes about ${durationTier}. Hang tight, browse the rest of Candid, or close the tab — we'll email you the moment it's ready.`;
+          })()
+        : "Sit tight — this usually takes 30-90 seconds.";
+      const largeDocFooter = isLargeDoc ? (
+        <div className="text-center">
+          <Link
+            href="/dashboard"
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium transition-colors"
+          >
+            Browse Candid while we work
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+          </Link>
+          <p className="text-xs text-slate-500 mt-3">
+            You can leave this tab. We&rsquo;ll email when your plan is ready.
+          </p>
+        </div>
+      ) : undefined;
+
       return (
         <div className="max-w-2xl mx-auto">
           <PlayfulParsingScreen
@@ -655,8 +700,9 @@ function UploadForm() {
                 detail: playfulDetail,
               },
             ]}
-            title="Reading your document"
-            subtitle="Sit tight — this usually takes 30-90 seconds."
+            title={largeDocTitle}
+            subtitle={largeDocSubtitle}
+            footer={largeDocFooter}
           />
         </div>
       );
