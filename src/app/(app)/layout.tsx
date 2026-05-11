@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useState, useEffect, type ReactNode } from "react";
 import { EmailVerifyBanner } from "@/components/auth/EmailVerifyBanner";
+import { ParseCompleteBanner } from "@/components/notifications/ParseCompleteBanner";
 
 const navItems = [
   {
@@ -228,6 +229,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       <main className="flex-1 min-w-0">
         <div className="max-w-5xl mx-auto px-6 sm:px-8 py-8 pt-20 md:pt-8">
           <EmailVerifyBanner />
+          <ParseCompleteBanner />
           {children}
         </div>
       </main>

@@ -1,14 +1,21 @@
 /**
- * Transactional email helpers for first-time-user onboarding.
- * Both functions are fail-soft: a Resend failure logs but does not throw,
- * so signup never blocks on email delivery.
+ * Transactional email helpers for first-time-user onboarding +
+ * post-parse async ingestion notification (S78).
+ * All functions are fail-soft: a Resend failure logs but does not throw,
+ * so signup / parse-completion never block on email delivery.
  */
 
 import { Resend } from "resend";
 import { getAdminAuth } from "@/lib/firebase/admin";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://www.candidclaim.com";
 const FROM = "Candid <noreply@candidclaim.com>";
+
+// S78 — large-doc cutoff matches upload-route + frontend gating. Page count
+// at or below this threshold uses the existing sync PlayfulParsingScreen UX;
+// above it triggers the async splash + email + banner notification.
+const LARGE_DOC_PAGE_THRESHOLD = 30;
 
 function getResend(): Resend | null {
   return process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
@@ -161,5 +168,155 @@ export async function sendWelcomeEmail(
     });
   } catch (err) {
     console.error("[onboarding-emails] Resend welcome send failed:", err);
+  }
+}
+
+/**
+ * S78 — async ingestion: send the parse-complete email after a large plan_doc
+ * finishes async processing in the background. Fail-soft (Resend failure logs
+ * but doesn't throw + doesn't block the parse pipeline). Idempotent by
+ * `idempotencyKey: parse-complete:{documentId}` so QStash retries of the
+ * upstream process-chunk endpoint never trigger a duplicate send.
+ *
+ * Guardrails:
+ *   - Only fires when `processing_total_pages > LARGE_DOC_PAGE_THRESHOLD` (30)
+ *     OR when pageCount is unknown but file_size is heuristically large.
+ *     Small documents already finish during the sync PlayfulParsingScreen flow
+ *     and don't need a separate completion email.
+ *   - Looks up the user's verified email via Firebase admin SDK (so we can
+ *     send even when the user's session has expired).
+ *   - Skipped silently if Resend isn't configured (local dev without RESEND_API_KEY).
+ *
+ * Caller pattern (process-chunk + process-plan success exit):
+ *   await sendParseCompleteEmail(supabase, documentId);
+ *   // Fire-and-forget; status='processed' has already been set on the doc.
+ */
+export async function sendParseCompleteEmail(
+  supabase: SupabaseClient,
+  documentId: string,
+): Promise<void> {
+  const resend = getResend();
+  if (!resend) {
+    console.warn("[onboarding-emails] RESEND_API_KEY missing — skipping parse-complete email");
+    return;
+  }
+
+  // S78 — gate behind feature flag. When OFF (default in dev), no parse-complete
+  // emails fire. Dynamic import keeps this helper usable from contexts that
+  // don't statically import the flag system (e.g., process-plan.ts).
+  try {
+    const { isFeatureEnabled } = await import("@/lib/config/product-flags");
+    const enabled = await isFeatureEnabled("async_ingestion_ux_v1");
+    if (!enabled) return;
+  } catch (err) {
+    console.warn("[onboarding-emails] parse-complete: flag check failed (skipping send):", err);
+    return;
+  }
+
+  // Fetch the document + owning user in a single round-trip.
+  const { data: doc, error: docErr } = await supabase
+    .from("documents")
+    .select("id, user_id, file_name, processing_total_pages, status, users(firebase_uid, email_verified)")
+    .eq("id", documentId)
+    .single();
+
+  if (docErr || !doc) {
+    console.warn(
+      `[onboarding-emails] parse-complete: doc lookup failed for ${documentId}:`,
+      docErr?.message ?? "no doc",
+    );
+    return;
+  }
+
+  // Only fire for "large" docs that actually went through the async UX path.
+  const pageCount = typeof doc.processing_total_pages === "number" ? doc.processing_total_pages : 0;
+  if (pageCount <= LARGE_DOC_PAGE_THRESHOLD) {
+    return; // small docs use sync PlayfulParsingScreen; no email needed
+  }
+
+  if (doc.status !== "processed") {
+    console.warn(
+      `[onboarding-emails] parse-complete: doc ${documentId} not 'processed' (status=${doc.status}) — skipping send`,
+    );
+    return;
+  }
+
+  // Pull user's email via Firebase (Supabase users row only stores verification
+  // state + firebase_uid, not the raw email).
+  const userRow = Array.isArray(doc.users) ? doc.users[0] : doc.users;
+  const firebaseUid = userRow?.firebase_uid as string | undefined;
+  if (!firebaseUid) {
+    console.warn(`[onboarding-emails] parse-complete: missing firebase_uid for doc ${documentId}`);
+    return;
+  }
+
+  let userRecord: { email?: string | null; displayName?: string | null } | null = null;
+  try {
+    const fbUser = await getAdminAuth().getUser(firebaseUid);
+    userRecord = { email: fbUser.email ?? null, displayName: fbUser.displayName ?? null };
+  } catch (err) {
+    console.warn(
+      `[onboarding-emails] parse-complete: Firebase getUser failed for ${firebaseUid}:`,
+      err instanceof Error ? err.message : err,
+    );
+    return;
+  }
+
+  if (!userRecord?.email) {
+    console.warn(`[onboarding-emails] parse-complete: no email on Firebase user ${firebaseUid}`);
+    return;
+  }
+
+  const greeting = firstNameOf(userRecord.displayName);
+  const fileName = typeof doc.file_name === "string" ? doc.file_name : "your plan document";
+  const planUrl = `${APP_URL}/plan`;
+
+  try {
+    await resend.emails.send(
+      {
+        from: FROM,
+        to: userRecord.email,
+        subject: `Your ${fileName} is ready on Candid`,
+        html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 480px; margin: 0 auto; padding: 40px 20px;">
+          <div style="text-align: center; margin-bottom: 32px;">
+            <h1 style="font-size: 28px; font-weight: 700; color: #1d4ed8; margin: 0;">Candid</h1>
+          </div>
+
+          <h2 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0 0 12px;">Great news, ${greeting} — your plan is ready.</h2>
+
+          <p style="font-size: 15px; color: #4b5563; line-height: 1.6; margin: 0 0 16px;">
+            We&rsquo;ve finished reading every page of <strong>${fileName}</strong> — copays, deductibles, prior-auth quirks, the works.
+          </p>
+
+          <p style="font-size: 15px; color: #4b5563; line-height: 1.6; margin: 0 0 24px;">
+            Hop back in and take a look at what your plan actually covers.
+          </p>
+
+          <div style="text-align: center; margin: 32px 0;">
+            <a href="${planUrl}" style="display: inline-block; padding: 14px 32px; background-color: #2563eb; color: #ffffff; font-size: 15px; font-weight: 600; text-decoration: none; border-radius: 10px;">
+              See your plan
+            </a>
+          </div>
+
+          <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 32px 0;" />
+
+          <p style="font-size: 13px; color: #9ca3af; line-height: 1.5; margin: 0 0 8px;">
+            Questions? Just reply to this email and we&rsquo;ll get back to you.
+          </p>
+
+          <p style="font-size: 12px; color: #d1d5db; margin: 24px 0 0; text-align: center;">
+            From, The Candid Team<br />
+            Candid is an Airgetlam Labs LLC company.
+          </p>
+        </div>
+      `,
+      },
+      {
+        idempotencyKey: `parse-complete:${documentId}`,
+      },
+    );
+  } catch (err) {
+    console.error("[onboarding-emails] Resend parse-complete send failed:", err);
   }
 }

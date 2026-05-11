@@ -261,6 +261,16 @@ async function processBillDocument(
   // Update document status
   await supabase.from("documents").update({ status: "processed" }).eq("id", documentId);
 
+  // S78 — async ingestion: fire parse-complete email for large docs. Fail-soft;
+  // the helper internally gates on pageCount > 30 + uses Resend idempotency key
+  // (parse-complete:{documentId}) so QStash retries can't double-send.
+  try {
+    const { sendParseCompleteEmail } = await import("@/lib/email/onboarding-emails");
+    await sendParseCompleteEmail(supabase, documentId);
+  } catch (err) {
+    console.error("[process-chunk] parse-complete email (non-fatal):", err);
+  }
+
   return {
     success: true,
     claimId: claimId || undefined,
