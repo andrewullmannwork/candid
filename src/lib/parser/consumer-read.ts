@@ -113,6 +113,7 @@ export type DisplayStateReason =
   // upload (from THIS user's own document)
   | "from_user_document_cite_grade"       // Pattern P-8 cite-grade — load-bearing for dispute letter blockquotes
   | "from_user_document_no_cite"          // Doc-extracted but verbatim absent OR section misattribution; CF-20 re-parse on dispute-letter trigger
+  | "from_user_document_conditional_context" // Session 77: value=null but cite-grade verbatim source_excerpt is a CONDITIONAL plan rule (e.g., "Deductible: Waived for emergencies", "$0 after deductible"). UI renders the excerpt as the field's display text rather than hiding.
   // community (canonical entry derived from another user's parse, sub-3)
   | "canonical_below_threshold"           // Canonical exists but verification_count < threshold
   | "provider_attestation_below_threshold" // Provider portal data with <2 user corroborations (Phase 4.5b territory) — folded into Community
@@ -298,11 +299,36 @@ export interface DecoratedValue<T> {
 export function decorateForDisplay<T>(value: T, input: DisplayStateInput): DecoratedValue<T> {
   const { state, reason } = getDisplayState(input);
   const excerpt = input.provenance?.source_excerpt ?? null;
+  const hasExcerpt = !!excerpt && excerpt.length > 0;
+
+  // Conditional-context surfacing (Session 77):
+  // When a cite-grade extraction has a verbatim source_excerpt but the parser
+  // could NOT reduce the cell to a single number (e.g., "Deductible: Waived for
+  // emergencies", "$0 after deductible"), the value is null but the excerpt is
+  // meaningful user-facing context. Override reason to surface this case
+  // explicitly downstream — UI renders the verbatim phrase as the field display
+  // rather than hiding the field. Visible badge stays "User Verified" (the data
+  // IS user-verified cite-grade); only the rendering branch differs.
+  if (
+    value === null &&
+    hasExcerpt &&
+    state === "user_verified" &&
+    reason === "from_user_document_cite_grade"
+  ) {
+    return {
+      value,
+      state,
+      reason: "from_user_document_conditional_context",
+      hasExcerpt,
+      excerpt,
+    };
+  }
+
   return {
     value,
     state,
     reason,
-    hasExcerpt: !!excerpt && excerpt.length > 0,
+    hasExcerpt,
     excerpt,
   };
 }
@@ -517,6 +543,8 @@ export const DISPLAY_STATE_TOOLTIP_EN: Record<DisplayStateReason, string> = {
     "User Verified — pulled directly from your uploaded plan document with a verbatim citation.",
   from_user_document_no_cite:
     "User Verified — extracted from your uploaded plan document. (We couldn't pinpoint the exact verbatim quote yet, so this isn't citation-grade for dispute letters.)",
+  from_user_document_conditional_context:
+    "User Verified — your plan document states a conditional rule rather than a simple dollar amount. The verbatim text from your plan document is shown.",
 
   // Community — green border, white fill: canonical entry from another user's parse, sub-3
   canonical_below_threshold:

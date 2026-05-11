@@ -32,6 +32,7 @@ import { extractExcludedServices } from "./haiku-prompts/excluded-services";
 import { extractAppealsGrievances } from "./haiku-prompts/appeals-grievances";
 import { validateServiceSlugs, type SlugEnqueueContext } from "./concept-resolver";
 import { verifySBCSourceExcerpts } from "./verify-source-excerpts";
+import { isSBCSelfCheckEnabled, selfCheckSBCExcerpts } from "./self-check";
 
 const COST_HARD_CAP_USD = 2.0;
 const COST_GUARD_THRESHOLD_USD = 0.9; // 90% of hard cap; pre-dispatch chunk-skip guard
@@ -256,7 +257,22 @@ export async function parseSBC(input: ParseSBCInput): Promise<SBCHaikuParseResul
   };
 
   // Step 7: Pattern P-8 verification (insurer-agnostic; uses shared verifier)
-  const verifiedResult = verifySBCSourceExcerpts(ocrText, preVerificationResult, sectionRanges);
+  let verifiedResult = verifySBCSourceExcerpts(ocrText, preVerificationResult, sectionRanges);
+
+  // Step 8: Self-check loop (Iter 2 contingency) — env-var gated
+  // Fires when SBC_SELF_CHECK_ENABLED=true. For each Pattern P-8 field with
+  // source_excerpt_verified='not_found' AND non-empty excerpt, re-prompt Haiku
+  // to emit a corrected verbatim substring. Mirrors Phase 3.1A.1 EOC + S77
+  // plan_doc self-check patterns.
+  //
+  // Per-parser policy (Session 77): SBC self-check enabled in PROD because
+  // multi-column tabular SBC layouts produce pdftotext column-wrap garbling
+  // that first-pass verbatim verification rejects despite correct extraction.
+  // Empirical (Kaiser Gold 80): services cite-grade 74.5% → 97.9% with self-check.
+  if (isSBCSelfCheckEnabled()) {
+    const { updatedResult } = await selfCheckSBCExcerpts(verifiedResult, ocrText, sectionRanges);
+    verifiedResult = verifySBCSourceExcerpts(ocrText, updatedResult, sectionRanges);
+  }
 
   return verifiedResult;
 }

@@ -88,6 +88,14 @@ const ALL_FIXTURES: Fixture[] = [
     path: "tests/fixtures/plan_documents_local/cigna-current/source.txt",
     kind: "plan_doc_real",
   },
+  // Session 77: Kaiser Permanente Covered CA Gold 80 HMO Coinsurance 2026
+  // (marketplace SBC; tests universal applicability vs same-carrier-different-format
+  // — different from existing Kaiser NorCal employer EOC fixture)
+  {
+    id: "kaiser-ca-2026-gold-80-hmo-coinsurance",
+    path: "tests/fixtures/plan_documents_local/kaiser-ca-2026-gold-80-hmo-coinsurance/source.txt",
+    kind: "plan_doc_real",
+  },
 ];
 
 /**
