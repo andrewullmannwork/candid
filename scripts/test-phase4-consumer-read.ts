@@ -299,6 +299,35 @@ function testC4_DecorateForDisplay() {
   const nullProvResult = decorateForDisplay("test", { ...input, provenance: null });
   assertEq(nullProvResult.hasExcerpt, false, "C4.6: null provenance hasExcerpt false");
   assertEq(nullProvResult.excerpt, null, "C4.7: null provenance excerpt null");
+
+  // Session 77: conditional-context surfacing.
+  // When value is null but a cite-grade verbatim source_excerpt is present
+  // (e.g., "Deductible: Waived for emergencies"), the reason flips to
+  // from_user_document_conditional_context so UI renders the verbatim phrase
+  // instead of hiding the field behind a placeholder.
+  const condInput: DisplayStateInput = {
+    provenance: {
+      source_excerpt: "Deductible: Waived for emergencies",
+      source_excerpt_verified: "verified",
+      source_excerpt_extraction_method: "pdftotext",
+      source_section_hint: "plan_identity",
+      source_section_verified: true,
+    },
+    confidence: 0.9,
+    sourceCount: 1,
+    source: "doc_extraction",
+    multiSourceThreshold: 3,
+  };
+  const condResult = decorateForDisplay(null, condInput);
+  assertEq(condResult.value, null, "C4.8: conditional-context value stays null");
+  assertEq(condResult.state, "user_verified", "C4.9: conditional-context state stays user_verified");
+  assertEq(condResult.reason, "from_user_document_conditional_context", "C4.10: conditional-context reason override");
+  assertEq(condResult.hasExcerpt, true, "C4.11: conditional-context hasExcerpt true");
+  assertEq(condResult.excerpt, "Deductible: Waived for emergencies", "C4.12: conditional-context excerpt preserved");
+
+  // Negative case: value present (non-null) → reason stays cite-grade (no override)
+  const numericResult = decorateForDisplay(1500, condInput);
+  assertEq(numericResult.reason, "from_user_document_cite_grade", "C4.13: numeric value keeps cite-grade reason (no override)");
 }
 
 // ─── C5: decorateRowsWithDisplayState preserves rows + adds annotations ─────
@@ -351,16 +380,24 @@ function testC5_DecorateRows() {
 function testC6_TooltipMapComplete() {
   console.log(`${TAG} C6: DISPLAY_STATE_TOOLTIP_EN coverage ...`);
   // CF-19 v2 (Session 64): collapsed 14 reasons → 8.
+  // Session 72 v3 + CF-40 v4 added smart_skip + user_correction + card_scan.
+  // Session 77 added conditional_context.
   const expectedReasons: DisplayStateReason[] = [
     // candid_verified family
     "community_corroborated",
-    // verified family
+    // user_verified_community (CF-40 v4 — dual badge)
+    "from_user_document_smart_skip",
+    // user_verified family
     "from_user_document_cite_grade",
     "from_user_document_no_cite",
-    // estimated family
+    "from_user_document_conditional_context", // S77 — conditional plan rule, value=null + verbatim excerpt
+    "user_correction",
+    "card_scan",
+    // community family
     "canonical_below_threshold",
-    "cms_marketplace",
     "provider_attestation_below_threshold",
+    // public_data family
+    "cms_marketplace",
     // hidden family
     "parser_failure",
     "boilerplate",

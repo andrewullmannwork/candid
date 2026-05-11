@@ -391,6 +391,26 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
           placeholder: string,
         ): React.ReactNode => {
           if (!isVisible(field.state)) return <span className="text-gray-300">&mdash;</span>;
+          // Session 77: conditional-context surfacing. When parser captured a
+          // cite-grade verbatim quote describing a conditional plan rule (e.g.,
+          // "Deductible: Waived for emergencies") but couldn't reduce it to a
+          // single number, render the verbatim phrase as the field's display
+          // text instead of hiding behind the placeholder. The text is already
+          // verified by Pattern P-8 — it's a citable plan-document quote.
+          if (
+            field.value == null &&
+            field.reason === "from_user_document_conditional_context" &&
+            field.excerpt
+          ) {
+            return (
+              <span
+                className="text-xs italic text-slate-700 leading-snug"
+                title="From your plan document"
+              >
+                &ldquo;{field.excerpt.trim()}&rdquo;
+              </span>
+            );
+          }
           if (field.value == null) return <span className="text-gray-300">{placeholder}</span>;
           return `$${field.value.toLocaleString()}`;
         };
