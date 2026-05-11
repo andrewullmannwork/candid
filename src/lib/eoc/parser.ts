@@ -1,9 +1,15 @@
 /**
  * EOC parser main orchestrator per Phase 3.1A Subplan + DR-3.1A-C, refactored
- * for Phase 3.1A.1 sub-segmentation per DR-3.1A.1-B v3.
+ * for Phase 3.1A.1 sub-segmentation per DR-3.1A.1-B v3 (Phase 2 EOC
+ * subtractive-cleanup adoption — S73 Session 76).
  *
- * Architecture (Phase 3.1A.1 v3):
- *   1. Plan identity REUSE — invokes parsePlanDocument() (Q-P3.1A-11)
+ * Architecture (Phase 3.1A.1 v3 + S73 subtractive-cleanup):
+ *   0. Subtractive boilerplate cleanup — strip TOC + repeated page furniture
+ *      (NEW S73 — adopted from plan_doc parser per S72-COMMIT-7 BSCA EOC services
+ *      19 → 89 lift). Conservative bias (when in doubt, KEEP). Definitions section
+ *      protected — TOC detector requires ≥5 consecutive TOC-pattern lines; alphabetical
+ *      definitions are typically prose paragraphs, not TOC patterns.
+ *   1. Plan identity REUSE — invokes parsePlanDocument() (Q-P3.1A-11) on CLEANED text
  *   2. Section segmentation — regex first; Haiku discovery fallback if <2 of 6 priority
  *   3. Preamble synthesis (Phase 3.1B.1 universal pattern)
  *   4. Per-section sub-segmentation — line/paragraph/term granularity per Q-P3.1A.1-1
@@ -13,15 +19,23 @@
  *      single-block sections field-merge per Q-P3.1A.1-6 v3
  *   7. full_text for single-blocks = sectionText (per DR-3.1A.1-B-3)
  *   8. Pattern P-8 verification (whitespace-normalized fallback per Phase 3.1B.1)
+ *      operates on CLEANED text (downstream dispatch + verifier coordinate space
+ *      preserved)
  *   9. Self-check loop (Iter 2 contingency) — env-var gated per DR-3.1A.1-B-4
  *  10. Cost hard cap $1/EOC (Q-P3.1A-6 LOCK)
  *
  * Recall-maximize bias per `feedback_candid_recall_over_precision`. Citation-grade
  * strictness preserved at consumer-read layer (Pattern P-8 hard rule unchanged).
+ *
+ * S73 (Session 76) regression check: Blue Shield + Aetna + Kaiser EOC fixtures
+ * must preserve Phase 3.1A.1 baseline (97-100% Pattern P-8 verified rate) after
+ * subtractive-cleanup adoption. Run via `npx tsx scripts/parse-harness.ts
+ * --fixtures-dir tests/fixtures/eocs --run-id session_76_s73_eoc_cleanup_baseline`.
  */
 
 import { parsePlanDocument } from "../plan/plan-doc-parser";
 import type { ExtractionMethod, SectionRanges } from "../parser/types";
+import { cleanupBoilerplate } from "../plan_doc/subtractive-cleanup";
 import {
   countPrioritySections,
   discoverSectionsViaHaiku,
@@ -390,6 +404,31 @@ export async function parseEOC(
   const warnings: string[] = [];
   const parseErrors: Array<{ section: EOCSectionHint; error: string }> = [];
 
+  // 0. Subtractive boilerplate cleanup (S73 — Phase 2 EOC adoption per master plan §S73).
+  // Strips TOC region + repeating page furniture. All downstream operations
+  // (plan-identity reuse + segmentation + per-section dispatch + verifier) operate
+  // in cleaned-text coordinate space.
+  //
+  // Env-gated default-OFF for safety: `EOC_SUBTRACTIVE_CLEANUP_ENABLED=true` opts in.
+  // Next session validates the adoption via parse-harness EOC regression check on
+  // Blue Shield + Aetna + Kaiser fixtures (Phase 3.1A.1 baseline ~97-100% must
+  // hold). If validation passes, follow-up commit removes the env gate + makes
+  // unconditional. Until then, EOC parser preserves original ocrText-throughout
+  // behavior to eliminate regression risk on production EOC parsing.
+  const eocCleanupEnabled = process.env.EOC_SUBTRACTIVE_CLEANUP_ENABLED === "true";
+  let workingText: string = ocrText;
+  if (eocCleanupEnabled) {
+    const cleanup = cleanupBoilerplate(ocrText);
+    workingText = cleanup.cleanedText;
+    warnings.push(...cleanup.warnings);
+    warnings.push(
+      `eoc_subtractive_cleanup:stripped_${cleanup.strippedLineCount}_of_${cleanup.originalLineCount}_lines:${(
+        (cleanup.strippedLineCount / Math.max(cleanup.originalLineCount, 1)) *
+        100
+      ).toFixed(1)}%`,
+    );
+  }
+
   // 1. Plan identity REUSE per Q-P3.1A-11.
   let planIdentity: EOCPlanIdentity = {
     insurer_name: null,
@@ -404,9 +443,9 @@ export async function parseEOC(
     // Per Q-S72-2 (b) LOCK: parsePlanDocument is now an async flag-gated dispatcher.
     // When `plan_doc_parser_v2` OFF → legacy regex (Q-P3.1A-11 LOCK behavior unchanged).
     // When ON → Haiku-first plan-identity extraction (~49% → ~80%+ recall lift for EOC).
-    // Subplan §5 mitigation: Blue Shield Silver 70 PPO EOC fixture regression check
-    // before flag flips global ON.
-    const planParse = await parsePlanDocument(ocrText, { documentId, extractionMethod });
+    // Plan-doc parser internally applies its own subtractive cleanup; passing cleanedText
+    // is idempotent (second cleanup pass finds nothing to strip — same input shape).
+    const planParse = await parsePlanDocument(workingText, { documentId, extractionMethod });
     planIdentity = {
       insurer_name: planParse.plan.insurer_name ?? null,
       plan_name: planParse.plan.plan_name ?? null,
@@ -420,8 +459,8 @@ export async function parseEOC(
     warnings.push(`plan_identity_extraction_failed:${documentId}:${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // 2. Section segmentation — regex first.
-  let sectionRanges = segmentEOCSections(ocrText);
+  // 2. Section segmentation — regex first (on cleaned text).
+  let sectionRanges = segmentEOCSections(workingText);
   let segmentationUsed: EOCParseResult["segmentation_used"] = "regex_only";
 
   // 3. Section-discovery Haiku fallback (Q-P3.1A-4 LOCK).
@@ -429,7 +468,7 @@ export async function parseEOC(
   if (regexCount < 2) {
     warnings.push(`eoc_section_discovery_fallback:${documentId}:regex_found_${regexCount}`);
     try {
-      const discovered = await discoverSectionsViaHaiku(ocrText);
+      const discovered = await discoverSectionsViaHaiku(workingText);
       sectionRanges = mergeSegmentations(sectionRanges, discovered);
       segmentationUsed = regexCount === 0 ? "haiku_discovery_only" : "regex_plus_haiku_discovery";
     } catch (err) {
@@ -458,7 +497,7 @@ export async function parseEOC(
     if (!range) return { result: null, warnings: [] };
     const config = SECTION_CONFIGS[hint];
     if (!config) return { result: null, warnings: [] };
-    const sectionText = sliceSection(ocrText, range);
+    const sectionText = sliceSection(workingText, range);
     const { chunkResults, warnings: chunkWarnings } = await dispatchChunksSequentially(
       hint,
       config,
@@ -586,14 +625,14 @@ export async function parseEOC(
     dispatched_sections,
   };
 
-  let final = verifyEOCSourceExcerpts(ocrText, preliminary, sectionRanges);
+  let final = verifyEOCSourceExcerpts(workingText, preliminary, sectionRanges);
 
   // 8. Self-check loop (Iter 2 contingency) — env-var gated per DR-3.1A.1-B-4.
   if (isSelfCheckEnabled()) {
-    const { updatedResult } = await selfCheckExcerpts(final, ocrText, sectionRanges);
+    const { updatedResult } = await selfCheckExcerpts(final, workingText, sectionRanges);
     // Re-run verifier on corrected excerpts to refresh source_excerpt_verified +
     // source_section_verified flags.
-    final = verifyEOCSourceExcerpts(ocrText, updatedResult, sectionRanges);
+    final = verifyEOCSourceExcerpts(workingText, updatedResult, sectionRanges);
     // Hard cap re-check (self-check could push us over).
     if (final.total_cost_usd > COST_HARD_CAP_USD) {
       throw new Error(`eoc_cost_hard_cap_breached_post_self_check:${documentId}:cost=${final.total_cost_usd.toFixed(4)}`);
