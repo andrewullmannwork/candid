@@ -24,7 +24,23 @@
  *
  * Aggregate summary at the end: total cost, time, avg recall, cost-per-fixture.
  *
- * Usage: npx tsx scripts/test-plan-doc-haiku-fixtures.ts
+ * Usage:
+ *   npx tsx scripts/test-plan-doc-haiku-fixtures.ts                    # all 5 fixtures
+ *   npx tsx scripts/test-plan-doc-haiku-fixtures.ts --fixture blue     # single fixture (substring match)
+ *   npx tsx scripts/test-plan-doc-haiku-fixtures.ts --fixture eoc-kaiser-permanente-traditional-hmo  # exact id
+ *
+ * S73 (Session 76) — iteration-cost flags:
+ *   --fixture <id-or-substring>      Run a subset of fixtures (5x cheaper per cycle)
+ *   HAIKU_SNAPSHOT_REPLAY=true       Disk-cache Haiku responses (free re-runs for
+ *                                    verifier-only iteration; misses still hit API + record)
+ *   HAIKU_SNAPSHOT_RECORD=true       Record Haiku responses without replay (seed cache)
+ *   HAIKU_SNAPSHOT_DIR=path          Override snapshot directory (default .haiku_snapshots/)
+ *
+ * Recommended iteration cycle:
+ *   1. Full 5-fixture HARD GATE run with HAIKU_SNAPSHOT_RECORD=true to seed cache
+ *   2. For each verifier/cleanup iteration: HAIKU_SNAPSHOT_REPLAY=true (free)
+ *   3. For prompt-tuning iterations: --fixture <diagnostic-id> for 5x savings
+ *   4. Final validation: full 5-fixture HARD GATE (no env flags)
  */
 
 import { config } from "dotenv";
@@ -44,7 +60,7 @@ interface Fixture {
   kind: "eoc_proxy" | "plan_doc_real";
 }
 
-const FIXTURES: Fixture[] = [
+const ALL_FIXTURES: Fixture[] = [
   // EOC proxies (Subplan §5 Q-S72-2 (b) regression check)
   {
     id: "eoc-blue-shield-ca-silver-70-ppo",
@@ -73,6 +89,28 @@ const FIXTURES: Fixture[] = [
     kind: "plan_doc_real",
   },
 ];
+
+/**
+ * Parse CLI flag `--fixture <id-or-substring>` and filter fixtures. Substring match
+ * is case-insensitive; allows `--fixture blue` to match `eoc-blue-shield-ca-silver-70-ppo`.
+ * Returns full set when flag omitted. Returns empty + warns when filter matches nothing.
+ */
+function getFilteredFixtures(): Fixture[] {
+  const args = process.argv.slice(2);
+  const idx = args.indexOf("--fixture");
+  if (idx < 0 || idx + 1 >= args.length) return ALL_FIXTURES;
+  const filter = args[idx + 1].toLowerCase();
+  const matched = ALL_FIXTURES.filter((f) => f.id.toLowerCase().includes(filter));
+  if (matched.length === 0) {
+    console.warn(`[harness] --fixture "${filter}" matched no fixtures. Available ids:`);
+    for (const f of ALL_FIXTURES) console.warn(`  - ${f.id}`);
+  } else {
+    console.log(`[harness] --fixture "${filter}" matched ${matched.length} of ${ALL_FIXTURES.length}: ${matched.map((f) => f.id).join(", ")}`);
+  }
+  return matched;
+}
+
+const FIXTURES: Fixture[] = getFilteredFixtures();
 
 const PLAN_IDENTITY_FIELD_KEYS = [
   "planName",

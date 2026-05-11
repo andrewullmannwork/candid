@@ -45,3 +45,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# S73 (Session 76) — Haiku snapshot cache for free-replay iteration cycles.
+# Snapshots contain Haiku responses keyed by sha256(systemPrompt + userContent + sectionLabel).
+# Contain real document text echoed in source_excerpt fields (potential PHI).
+.haiku_snapshots/
