@@ -280,7 +280,7 @@ export async function POST(req: NextRequest) {
         // Save hash to document record
         await supabase.from("documents").update({ file_hash: fileHashComputed }).eq("id", documentId);
 
-        const dedupResult = await shouldSkipExtraction(supabase, documentId, fileHashComputed, identifiers, user.id);
+        const dedupResult = await shouldSkipExtraction(supabase, documentId, fileHashComputed, identifiers, user.id, classification.classifiedType);
         console.log(`[upload] Dedup check: skip=${dedupResult.skip}, reason=${dedupResult.reason}, identifiers=${identifiers.source}`);
 
         if (dedupResult.skip && dedupResult.canonicalPlanId) {
