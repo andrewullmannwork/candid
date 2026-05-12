@@ -26,6 +26,31 @@ import {
 } from "@/lib/parser/provenance-builders";
 import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import type { SBCPlanIdentity } from "@/lib/sbc/types";
+import type { ClassifiedDocType } from "@/lib/classifier";
+
+// ── CF-40 v4 (S73.5 D1) — Plan-document-only smart-skip whitelist ─────────────
+//
+// Smart-skip is structurally restricted to plan documents (SBC, EOC, plan_doc).
+// Bills, EOBs, insurance cards, and "other" docs MUST always extract — they
+// carry per-transaction or per-card data that cannot be inherited from a
+// canonical plan. Today's call site at /api/documents/upload already gates on
+// classifiedType ∈ {"sbc", "plan_document"}, but this guard inside the function
+// makes the invariant structural rather than implicit. See [[Candid_10k]] §3.1
+// #6 + [[Candid_Parse_Patterns]] Pattern P-8 + [[Candid_Data_Patterns]] Pattern
+// 1 #16.
+//
+// `education_doc` is intentionally NOT on this whitelist — Phase 2 per Subplan
+// §2.4(c). Add when education_doc is added to the doc_type CHECK constraint.
+export const PLAN_DOCUMENT_TYPES: readonly ClassifiedDocType[] = [
+  "sbc",
+  "plan_document",
+  "eoc",
+] as const;
+
+export function isPlanDocumentType(docType: string | null | undefined): boolean {
+  if (!docType) return false;
+  return (PLAN_DOCUMENT_TYPES as readonly string[]).includes(docType);
+}
 
 type SupabaseClient = ReturnType<typeof import("@/lib/supabase/server").createServerClient>;
 
@@ -225,9 +250,29 @@ export async function shouldSkipExtraction(
   documentId: string,
   fileHash: string,
   _identifiers: PlanIdentifiers, // CF-40 v2: unused after Path B removal; kept in signature for caller stability
-  _userId: string
+  _userId: string,
+  docType?: ClassifiedDocType | null,
 ): Promise<DedupResult> {
   const NO_SKIP = (reason: string): DedupResult => ({ skip: false, reason });
+
+  // ── CF-40 v4 (S73.5 D1) — Plan-document-only structural guard ──────────────
+  // Codifies the invariant that smart-skip applies ONLY to plan documents (SBC,
+  // EOC, plan_doc). Bills, EOBs, insurance cards carry per-transaction or
+  // per-card data and never inherit from a canonical plan — they MUST extract.
+  // If docType wasn't passed (legacy callers), fetch from documents row.
+  let resolvedDocType: string | null | undefined = docType;
+  if (resolvedDocType === undefined) {
+    const { data: docRow } = await supabase
+      .from("documents")
+      .select("doc_type")
+      .eq("id", documentId)
+      .maybeSingle();
+    resolvedDocType = docRow?.doc_type ?? null;
+  }
+  if (!isPlanDocumentType(resolvedDocType)) {
+    console.log(`[extraction-dedup] CF-40v4 guard — docType=${resolvedDocType ?? "<null>"} not in plan-document whitelist; smart-skip refused.`);
+    return NO_SKIP("not_a_plan_document");
+  }
 
   // Step 1: Exact file hash match → trace to canonical → check per-(canonical, hash) stability
   if (fileHash) {
