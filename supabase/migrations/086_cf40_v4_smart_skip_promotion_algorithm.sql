@@ -109,6 +109,10 @@ COMMENT ON COLUMN canonical_doctype_promotion_state.re_baseline_required IS
 CREATE TABLE IF NOT EXISTS canonical_field_corroboration (
   canonical_plan_id UUID NOT NULL REFERENCES canonical_plans(id) ON DELETE CASCADE,
   service_slug TEXT,
+  -- Materialized COALESCE for use in PRIMARY KEY (PG disallows expressions in
+  -- PK definitions but allows them in stored generated columns; downstream
+  -- ON CONFLICT references this column directly).
+  service_slug_key TEXT GENERATED ALWAYS AS (COALESCE(service_slug, '')) STORED,
   field_name TEXT NOT NULL,
   -- SHA-256 of canonicalized JSONB value (stable key — same value → same hash).
   extracted_value_hash TEXT NOT NULL,
@@ -117,9 +121,9 @@ CREATE TABLE IF NOT EXISTS canonical_field_corroboration (
   distinct_document_count INT NOT NULL DEFAULT 0,
   first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  -- COALESCE wraps NULL service_slug for plan-identity-level fields so PK is
-  -- unique across the (canonical, '', field_name) plan-identity tuple.
-  PRIMARY KEY (canonical_plan_id, COALESCE(service_slug, ''), field_name, extracted_value_hash)
+  -- PK uses the generated coalesce key so plan-identity rows (service_slug
+  -- NULL) and per-service rows are mutually unique across their key tuple.
+  PRIMARY KEY (canonical_plan_id, service_slug_key, field_name, extracted_value_hash)
 );
 
 CREATE INDEX IF NOT EXISTS idx_canonical_field_corroboration_lookup
@@ -314,7 +318,7 @@ BEGIN
     NEW.created_at,
     NEW.created_at
   )
-  ON CONFLICT (canonical_plan_id, COALESCE(service_slug, ''), field_name, extracted_value_hash)
+  ON CONFLICT (canonical_plan_id, service_slug_key, field_name, extracted_value_hash)
   DO UPDATE SET
     -- Distinct-user count: increment only if this user_id hasn't contributed
     -- to this tuple before. Probe via a count-existing-rows-with-this-user
