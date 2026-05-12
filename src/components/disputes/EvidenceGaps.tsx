@@ -2,19 +2,29 @@
  * EvidenceGaps — surfaces missing-evidence prompts with actionable CTAs.
  *
  * Rendered below the EvidenceBlock on /disputes when the resolver flagged
- * signals we couldn't populate. Each gap is either:
+ * signals we couldn't populate. Each gap is one of:
  *   - a navigation CTA (Link to /upload?planYear=...&returnTo=...)
- *   - an inline action (audit_findings_missing → POST rerun-audit endpoint
- *     and refresh the dispute in place; no navigation needed).
+ *   - an inline action — audit_findings_missing → POST rerun-audit endpoint;
+ *     cite_grade_incomplete → POST redraft endpoint;
+ *     provider_address_missing → inline ProviderAddressForm POSTs to
+ *     /api/disputes/[disputeId]/provider-contact.
  *
- * The /disputes page already refetches on window focus AND awaits the
- * onAuditRerun callback, so dynamic state hydrates either way.
+ * The /disputes page refetches on window focus AND awaits each callback,
+ * so dynamic state hydrates either way.
  */
 "use client";
 
 import { useState } from "react";
 import Link from "next/link";
 import type { EvidenceGap } from "@/lib/disputes/evidence-resolver";
+import { ProviderAddressForm } from "./ProviderAddressForm";
+
+interface ProviderContactSeed {
+  name: string | null;
+  address: string | null;
+  phone: string | null;
+  npi: string | null;
+}
 
 interface Props {
   gaps: EvidenceGap[];
@@ -24,10 +34,34 @@ interface Props {
    * refetch the dispute. The component handles its own loading state.
    */
   onAuditRerun?: () => Promise<void>;
+  /**
+   * S74 — called when the user clicks "Re-draft" on the `cite_grade_incomplete`
+   * gap. Should POST to /api/disputes/[disputeId]/redraft and then refetch.
+   */
+  onRedraft?: () => Promise<void>;
+  /**
+   * S74 — disputeId + auth helper + seed values are required for the inline
+   * ProviderAddressForm rendered under the `provider_address_missing` gap.
+   */
+  disputeId?: string | null;
+  providerSeed?: ProviderContactSeed | null;
+  getAuthToken?: () => Promise<string | null>;
+  /** Called after a provider-contact save succeeds so parent can refetch. */
+  onProviderContactSaved?: () => Promise<void>;
 }
 
-export function EvidenceGaps({ gaps, onAuditRerun }: Props) {
+export function EvidenceGaps({
+  gaps,
+  onAuditRerun,
+  onRedraft,
+  disputeId,
+  providerSeed,
+  getAuthToken,
+  onProviderContactSaved,
+}: Props) {
   const [rerunStatus, setRerunStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [redraftStatus, setRedraftStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [providerFormOpen, setProviderFormOpen] = useState(false);
 
   if (!gaps || gaps.length === 0) return null;
 
@@ -39,6 +73,17 @@ export function EvidenceGaps({ gaps, onAuditRerun }: Props) {
       setRerunStatus("done");
     } catch {
       setRerunStatus("error");
+    }
+  };
+
+  const handleRedraft = async () => {
+    if (!onRedraft || redraftStatus === "running") return;
+    setRedraftStatus("running");
+    try {
+      await onRedraft();
+      setRedraftStatus("done");
+    } catch {
+      setRedraftStatus("error");
     }
   };
 
@@ -54,25 +99,54 @@ export function EvidenceGaps({ gaps, onAuditRerun }: Props) {
         </p>
       </div>
       <ul className="space-y-3">
-        {gaps.map((gap, i) => (
-          <li
-            key={`${gap.kind}-${i}`}
-            className="flex flex-col gap-3 rounded-xl border border-slate-100 bg-slate-50/50 px-4 py-3 md:flex-row md:items-center md:justify-between"
-          >
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <GapIcon />
-                <div className="font-semibold text-slate-900">{gap.title}</div>
+        {gaps.map((gap, i) => {
+          const expandedForm =
+            gap.kind === "provider_address_missing" &&
+            providerFormOpen &&
+            disputeId &&
+            getAuthToken;
+          return (
+            <li
+              key={`${gap.kind}-${i}`}
+              className="rounded-xl border border-slate-100 bg-slate-50/50 px-4 py-3"
+            >
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <GapIcon />
+                    <div className="font-semibold text-slate-900">{gap.title}</div>
+                  </div>
+                  <p className="mt-1 pl-6 text-sm text-slate-600">{gap.description}</p>
+                </div>
+                {renderCta(gap, {
+                  onAuditRerun: handleAuditRerun,
+                  onRedraft: handleRedraft,
+                  rerunStatus,
+                  redraftStatus,
+                  hasAuditCallback: !!onAuditRerun,
+                  hasRedraftCallback: !!onRedraft,
+                  onOpenProviderForm: () => setProviderFormOpen(true),
+                  providerFormOpen,
+                  hasProviderContext: !!disputeId && !!getAuthToken,
+                })}
               </div>
-              <p className="mt-1 pl-6 text-sm text-slate-600">{gap.description}</p>
-            </div>
-            {renderCta(gap, {
-              onAuditRerun: handleAuditRerun,
-              rerunStatus,
-              hasAuditCallback: !!onAuditRerun,
-            })}
-          </li>
-        ))}
+              {expandedForm ? (
+                <ProviderAddressForm
+                  disputeId={disputeId}
+                  initialName={providerSeed?.name ?? null}
+                  initialAddress={providerSeed?.address ?? null}
+                  initialPhone={providerSeed?.phone ?? null}
+                  initialNpi={providerSeed?.npi ?? null}
+                  getAuthToken={getAuthToken}
+                  onSaved={async () => {
+                    await onProviderContactSaved?.();
+                    setProviderFormOpen(false);
+                  }}
+                />
+              ) : null}
+            </li>
+          );
+        })}
       </ul>
     </section>
   );
@@ -82,8 +156,14 @@ function renderCta(
   gap: EvidenceGap,
   ctx: {
     onAuditRerun: () => void;
+    onRedraft: () => void;
     rerunStatus: "idle" | "running" | "done" | "error";
+    redraftStatus: "idle" | "running" | "done" | "error";
     hasAuditCallback: boolean;
+    hasRedraftCallback: boolean;
+    onOpenProviderForm: () => void;
+    providerFormOpen: boolean;
+    hasProviderContext: boolean;
   },
 ) {
   if (gap.kind === "audit_findings_missing" && ctx.hasAuditCallback) {
@@ -103,6 +183,41 @@ function renderCta(
         className="inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow disabled:cursor-wait disabled:opacity-70 md:ml-4"
       >
         {label}
+      </button>
+    );
+  }
+
+  // S74 — cite-grade incomplete: invoke the toolbar Re-draft via callback.
+  if (gap.kind === "cite_grade_incomplete" && ctx.hasRedraftCallback) {
+    const label =
+      ctx.redraftStatus === "running"
+        ? "Re-drafting…"
+        : ctx.redraftStatus === "done"
+        ? "Re-draft complete ✓"
+        : ctx.redraftStatus === "error"
+        ? "Try again"
+        : (gap.ctaLabel ?? "Re-draft letter");
+    return (
+      <button
+        type="button"
+        onClick={ctx.onRedraft}
+        disabled={ctx.redraftStatus === "running"}
+        className="inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow disabled:cursor-wait disabled:opacity-70 md:ml-4"
+      >
+        {label}
+      </button>
+    );
+  }
+
+  // S74 — provider address missing: open the inline form.
+  if (gap.kind === "provider_address_missing" && ctx.hasProviderContext) {
+    return (
+      <button
+        type="button"
+        onClick={ctx.onOpenProviderForm}
+        className="inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow md:ml-4"
+      >
+        {ctx.providerFormOpen ? "Form open below" : "Add provider address"}
       </button>
     );
   }

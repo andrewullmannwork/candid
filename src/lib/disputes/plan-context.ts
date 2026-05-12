@@ -52,11 +52,42 @@ export interface ResolvedPlan {
   canonicalPlanId: string | null;
 }
 
+/**
+ * Provider mailing contact resolved from the linked claim's `claims.metadata.provider`
+ * JSONB. Populated by `resolvePlanContext` when called with a `claimId`. Used as the
+ * recipient block for non-appeal letter types (overcharge, balance billing, duplicate
+ * charge, itemized request, negotiation) where the letter is mailed to the provider
+ * billing department rather than the insurer.
+ *
+ * `source` discriminates how the address was captured:
+ *   - 'doc_extraction'  → bill parser pulled it from the EOB/itemized bill
+ *   - 'user_correction' → user typed/edited via /api/disputes/[disputeId]/provider-contact
+ *   - 'unknown'         → legacy claims without a recorded source (treat as doc_extraction)
+ *
+ * Address may be null even when the provider name is known (e.g., legacy EOBs that
+ * parsed name only). The UI surfaces a Pillar-3 EvidenceGap prompting the user to
+ * fill it in before printing.
+ */
+export interface ProviderContact {
+  name: string | null;
+  address: string | null;
+  phone: string | null;
+  npi: string | null;
+  source: "doc_extraction" | "user_correction" | "unknown";
+}
+
 export interface PlanContext {
   plan: ResolvedPlan | null;
   insurer: InsurerContext | null;
   missingForYear: number | null;
   fallbackPlan: ResolvedPlan | null;
+  /**
+   * Resolved from the linked claim's `claims.metadata.provider`. Null when
+   * resolvePlanContext is called without a claimId, or when the claim row
+   * carries no provider metadata. Pillar-1 plumbing for the recipient block
+   * of non-appeal dispute letters.
+   */
+  providerContact: ProviderContact | null;
 }
 
 const STALE_THRESHOLD_DAYS = 180;
@@ -73,18 +104,20 @@ export async function resolvePlanContext(
 ): Promise<PlanContext> {
   const { userId, claimId } = params;
   let { planYear, dateOfService } = params;
+  let providerContact: ProviderContact | null = null;
 
-  // If given a claim, hydrate year + DOS from the claim row.
-  if (claimId && (planYear == null || !dateOfService)) {
+  // If given a claim, hydrate year + DOS + provider contact from the claim row.
+  if (claimId) {
     const { data: claim } = await supabase
       .from("claims")
-      .select("plan_year, date_of_service, insurance_plan_id")
+      .select("plan_year, date_of_service, insurance_plan_id, metadata")
       .eq("id", claimId)
       .eq("user_id", userId)
       .maybeSingle();
     if (claim) {
       if (planYear == null) planYear = claim.plan_year ?? null;
       if (!dateOfService) dateOfService = claim.date_of_service ?? null;
+      providerContact = extractProviderContact(claim.metadata);
     }
   }
 
@@ -165,7 +198,50 @@ export async function resolvePlanContext(
     insurer,
     missingForYear,
     fallbackPlan: toResolved(fallbackPlan),
+    providerContact,
   };
+}
+
+/**
+ * Pull a ProviderContact out of `claims.metadata.provider` JSONB. The bill parser
+ * (`src/lib/billing/haiku-bill-parser.ts`) extracts `name + npi + address` directly
+ * into this shape; we read it back without further normalization. `phone` is not
+ * captured by the bill parser today but the field exists for future enrichment
+ * (admin tooling, provider directory join, user correction).
+ *
+ * Returns null when `metadata.provider` is absent or has no usable fields — the
+ * caller surfaces a Pillar-3 EvidenceGap prompting the user to fill it in.
+ */
+function extractProviderContact(metadata: unknown): ProviderContact | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  const provider = (metadata as { provider?: unknown }).provider;
+  if (!provider || typeof provider !== "object") return null;
+  const p = provider as {
+    name?: unknown;
+    address?: unknown;
+    phone?: unknown;
+    npi?: unknown;
+    source?: unknown;
+  };
+  const name = typeof p.name === "string" && p.name.trim() ? p.name.trim() : null;
+  const address = typeof p.address === "string" && p.address.trim() ? p.address.trim() : null;
+  const phone = typeof p.phone === "string" && p.phone.trim() ? p.phone.trim() : null;
+  const npi = typeof p.npi === "string" && p.npi.trim() ? p.npi.trim() : null;
+  // Source defaults to 'doc_extraction' for legacy rows (bill parser writes provider
+  // metadata at parse time). Only set 'user_correction' when the provider-contact
+  // endpoint stamps the source explicitly.
+  const rawSource = typeof p.source === "string" ? p.source : null;
+  const source: ProviderContact["source"] =
+    rawSource === "user_correction"
+      ? "user_correction"
+      : rawSource === "doc_extraction"
+      ? "doc_extraction"
+      : name || address || phone || npi
+      ? "doc_extraction"
+      : "unknown";
+
+  if (!name && !address && !phone && !npi) return null;
+  return { name, address, phone, npi, source };
 }
 
 async function resolveInsurer(

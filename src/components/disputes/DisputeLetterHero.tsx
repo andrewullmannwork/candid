@@ -7,8 +7,14 @@
  *   - Title: "Appeal — {provider} · {service date}"
  *   - Subtitle: one-line summary of the ask
  *   - Right pill: +${recovery} potential recovery (when > 0)
+ *
+ * S74 Pillar 2: letter quality summary chip below the title shows how many of
+ * the plan-benefit citations are cite-grade verified ("X of Y verified") plus
+ * a "Re-draft to upgrade" hint when at least one is not. Wires to the toolbar
+ * Re-draft callback so the user can act from the hero rather than scrolling.
  */
 import type { DisputeLetter } from "@/lib/billing/types";
+import type { DisputeEvidence } from "@/lib/disputes/evidence-resolver";
 
 interface Props {
   letter: DisputeLetter;
@@ -16,6 +22,13 @@ interface Props {
   serviceDate: string | null;
   askSummary: string | null;
   potentialRecovery: number | null;
+  /** S74 — drives the cite-grade quality summary. */
+  evidence?: DisputeEvidence | null;
+  /** S74 — called when the user clicks the "Re-draft to upgrade" link in the
+   *  quality summary chip. Should run the same redraft POST as the toolbar. */
+  onRedraft?: () => void;
+  /** Disables the redraft link while a redraft is already in flight. */
+  redraftInFlight?: boolean;
 }
 
 const LETTER_TYPE_EYEBROW: Record<DisputeLetter["letterType"], string> = {
@@ -33,6 +46,9 @@ export function DisputeLetterHero({
   serviceDate,
   askSummary,
   potentialRecovery,
+  evidence,
+  onRedraft,
+  redraftInFlight,
 }: Props) {
   const title = [
     titleForType(letter.letterType),
@@ -41,6 +57,8 @@ export function DisputeLetterHero({
   ]
     .filter(Boolean)
     .join(" · ");
+
+  const qualitySummary = computeQualitySummary(evidence);
 
   return (
     <div className="relative overflow-hidden rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-50 via-indigo-50 to-white px-6 py-7 shadow-sm md:px-8">
@@ -57,6 +75,35 @@ export function DisputeLetterHero({
               {askSummary}
             </p>
           ) : null}
+          {qualitySummary ? (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${
+                  qualitySummary.allVerified
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                    : qualitySummary.verified === 0
+                    ? "border-amber-200 bg-amber-50 text-amber-800"
+                    : "border-indigo-200 bg-indigo-50 text-indigo-700"
+                }`}
+                title={qualitySummary.allVerified
+                  ? "Every plan-benefit citation in this letter is backed by a verbatim quote from your plan document (or a corroborating member's parse)."
+                  : "Some plan-benefit citations don't yet have a verbatim plan-document quote. Re-draft attempts a cite-grade upgrade via a bounded re-parse."}
+              >
+                <QualityDot allVerified={qualitySummary.allVerified} />
+                {qualitySummary.verified} of {qualitySummary.total} citation{qualitySummary.total === 1 ? "" : "s"} verified
+              </span>
+              {!qualitySummary.allVerified && onRedraft ? (
+                <button
+                  type="button"
+                  onClick={onRedraft}
+                  disabled={redraftInFlight}
+                  className="text-xs font-medium text-blue-700 underline-offset-2 hover:underline disabled:opacity-50"
+                >
+                  {redraftInFlight ? "Re-drafting…" : "Re-draft to upgrade"}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         {potentialRecovery != null && potentialRecovery > 0 ? (
           <div className="shrink-0">
@@ -68,6 +115,25 @@ export function DisputeLetterHero({
         ) : null}
       </div>
     </div>
+  );
+}
+
+function computeQualitySummary(
+  evidence: DisputeEvidence | null | undefined,
+): { verified: number; total: number; allVerified: boolean } | null {
+  if (!evidence) return null;
+  const rows = evidence.claims.flatMap((c) => c.lineItemEvidence).filter((li) => li.planBenefit);
+  if (rows.length === 0) return null;
+  const verified = rows.filter((li) => li.planBenefit?.sbcExcerptVerified).length;
+  return { verified, total: rows.length, allVerified: verified === rows.length };
+}
+
+function QualityDot({ allVerified }: { allVerified: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={`h-1.5 w-1.5 rounded-full ${allVerified ? "bg-emerald-500" : "bg-amber-500"}`}
+    />
   );
 }
 
