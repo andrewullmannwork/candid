@@ -101,14 +101,15 @@ async function main() {
     if (consentErr || !consentEvent) {
       throw new Error(`Consent event insert failed: ${consentErr?.message}`);
     }
-    console.log(`  Created consent_event id=${consentEvent.id}\n`);
+    const consentEventId: string = consentEvent.id;
+    console.log(`  Created consent_event id=${consentEventId}\n`);
 
     async function createDoc(docType: string | null, label: string): Promise<string> {
       const { data, error } = await supabase
         .from("documents")
         .insert({
           user_id: userId,
-          consent_event_id: consentEvent.id,
+          consent_event_id: consentEventId,
           file_name: `${label}-${stamp}.pdf`,
           storage_path: `test/d1-guard/${label}-${stamp}.pdf`,
           file_size: 100_000,
