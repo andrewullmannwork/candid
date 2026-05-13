@@ -793,7 +793,7 @@ async function main() {
   console.log(`[seed-zero-cost-share] starting; ${ALL_ROWS.length} rows queued`);
 
   let inserted = 0;
-  let updated = 0;
+  const updated = 0;
   let failed = 0;
 
   for (const row of ALL_ROWS) {
