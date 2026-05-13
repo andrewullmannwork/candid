@@ -156,14 +156,29 @@ export default function CandidClaimPage() {
   useEffect(() => {
     if (!user) return;
 
-    // Load disputes
-    fetch(`/api/disputes/outcome?userId=${user.userId}`)
-      .then((res) => res.json())
-      .then((result) => {
-        setDisputeData(result);
+    // Load disputes. S74 (PR #66) hardened the endpoint to require a Firebase
+    // bearer token + derive userId from the decoded claims; the legacy `?userId=`
+    // query param is ignored server-side. Drop the param, send the token, and
+    // only commit the response when it has the expected shape (otherwise we
+    // crash later trying to read `.disputes.length` on the error body).
+    (async () => {
+      try {
+        const token = await user.firebaseUser.getIdToken();
+        const res = await fetch(`/api/disputes/outcome`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const result = await res.json();
+          if (result && Array.isArray(result.disputes)) {
+            setDisputeData(result);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load disputes:", err);
+      } finally {
         setDisputesLoading(false);
-      })
-      .catch(() => setDisputesLoading(false));
+      }
+    })();
 
     // Load claims + discrepancies
     async function loadData() {
@@ -499,9 +514,14 @@ export default function CandidClaimPage() {
 
   async function handleOutcomeUpdate(disputeId: string, update: { status: string; amountRecovered?: number }) {
     try {
+      if (!user) return;
+      const token = await user.firebaseUser.getIdToken();
       const res = await fetch("/api/disputes/outcome", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
           disputeId,
           status: update.status,
@@ -510,8 +530,15 @@ export default function CandidClaimPage() {
         }),
       });
       if (res.ok) {
-        const refreshed = await fetch(`/api/disputes/outcome?userId=${user?.userId}`).then((r) => r.json());
-        setDisputeData(refreshed);
+        const refreshedRes = await fetch(`/api/disputes/outcome`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (refreshedRes.ok) {
+          const refreshed = await refreshedRes.json();
+          if (refreshed && Array.isArray(refreshed.disputes)) {
+            setDisputeData(refreshed);
+          }
+        }
       }
     } catch (err) {
       console.error("Failed to update dispute:", err);
