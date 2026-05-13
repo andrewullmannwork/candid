@@ -3,6 +3,8 @@
 import type { AuditReport, ParsedBill, AuditFinding } from "../billing/types";
 import { lookupCMSRatesBatch } from "../cms/ppl";
 import { ALL_RULES } from "./rules";
+import { runZeroCostShareCheck } from "./zero-cost-share";
+import { runClaimHeaderArithmeticCheck } from "./claim-header-arithmetic";
 import { randomUUID } from "crypto";
 
 export async function runAudit(bill: ParsedBill): Promise<AuditReport> {
@@ -21,6 +23,17 @@ export async function runAudit(bill: ParsedBill): Promise<AuditReport> {
     const findings = rule(bill, benchmarks);
     allFindings.push(...findings);
   }
+
+  // Step 2b: S74.5 D13 — Zero-cost-share registry check (ACA preventive + ACIP
+  // vaccine). Runs BEFORE plan-coverage check semantically; fires only when
+  // s74_5_categorization_flywheel_v1 flag is ON.
+  const zeroCostFindings = await runZeroCostShareCheck(bill);
+  allFindings.push(...zeroCostFindings);
+
+  // Step 2c: S74.5 D15 — Claim-header arithmetic check. Catches unallocated
+  // balance between header total and itemized lines. Gated on same flag.
+  const headerFindings = await runClaimHeaderArithmeticCheck(bill);
+  allFindings.push(...headerFindings);
 
   // Step 3: Deduplicate findings that flag the same line items
   const deduped = deduplicateFindings(allFindings);

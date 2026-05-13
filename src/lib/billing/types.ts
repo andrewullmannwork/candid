@@ -166,7 +166,9 @@ export type FindingType =
   | "upcoding" // Higher-complexity code than warranted
   | "balance_billing" // Billing beyond allowed amount (illegal in some states)
   | "missing_adjustment" // Insurance adjustment not applied
-  | "stale_claim"; // Claim filed after timely filing deadline
+  | "stale_claim" // Claim filed after timely filing deadline
+  | "zero_cost_share_overcharge" // S74.5 D13 — code is ACA preventive or ACIP vaccine; should be $0 patient cost
+  | "unallocated_balance"; // S74.5 D15 — bill header patient_resp exceeds SUM(line patient_resp); ask for itemization
 
 export type FindingSeverity = "low" | "medium" | "high" | "critical";
 

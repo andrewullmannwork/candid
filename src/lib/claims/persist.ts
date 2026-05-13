@@ -12,6 +12,8 @@ import { mapLineItemsToServices, inferBillingCodeType } from "@/lib/claims/servi
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { notifyUnmappedLineItems } from "@/lib/notifications";
 import { buildProvenanceEntry, type FieldProvenanceEntry } from "@/lib/parser/field-categories";
+import { categorizeLineItem } from "@/lib/parser/code-identity";
+import { inferProcedureCodeType } from "@/lib/billing/code-type-inference";
 
 /**
  * Build a field_provenance JSONB payload for a parsed bill line item per DR-3B
@@ -201,6 +203,59 @@ export async function persistAuditResults(
       }
     }
 
+    // S74.5 D4 — composite-key categorization flywheel (gated). When ON, runs
+    // ALONGSIDE the legacy service-mapper: D2 result wins for slug + sets
+    // billing_code_identity_id; legacy mapping is fallback when D2 returns null.
+    const flywheelEnabled = await isFeatureEnabled("s74_5_categorization_flywheel_v1");
+    const identityMappings = new Map<
+      number,
+      { slug: string | null; confidence: number; identityId: string | null; needsReview: boolean }
+    >();
+
+    if (flywheelEnabled && parsedBill.lineItems.length > 0) {
+      try {
+        const results = await Promise.all(
+          parsedBill.lineItems.map(async (item) => {
+            const code = item.procedureCode || "";
+            if (!code) return null;
+            // Use the new ProcedureCodeType namespace for billing_code_identity writes;
+            // legacy claim_line_items.billing_code_type stays in BillingCodeType.
+            const codeType =
+              item.procedureCodeType ?? inferProcedureCodeType(code) ?? undefined;
+            const description = item.description || item.category || "";
+            try {
+              const r = await categorizeLineItem({
+                code,
+                codeType,
+                description,
+                userId,
+              });
+              return { lineNumber: item.lineNumber, ...r };
+            } catch (err) {
+              console.warn("[claims-persist] flywheel categorize failed for line", item.lineNumber, err);
+              return null;
+            }
+          })
+        );
+        for (const r of results) {
+          if (!r) continue;
+          identityMappings.set(r.lineNumber, {
+            slug: r.serviceSlug,
+            confidence: r.confidence,
+            identityId: r.identityId,
+            needsReview: r.needsReview,
+          });
+        }
+        console.log(
+          `[claims-persist] flywheel: ${identityMappings.size} line items processed (${
+            Array.from(identityMappings.values()).filter((m) => m.slug).length
+          } with slug)`
+        );
+      } catch (err) {
+        console.error("[claims-persist] flywheel categorization failed (non-blocking):", err);
+      }
+    }
+
     // Insert claim_line_items
     const lineItemInserts = parsedBill.lineItems.map((item, idx) => {
       const findings = findingsByLine.get(item.lineNumber) || [];
@@ -218,13 +273,22 @@ export async function persistAuditResults(
         : {};
 
       const mapping = serviceMappings.get(item.lineNumber);
+      const identity = identityMappings.get(item.lineNumber);
+      // D4: flywheel slug wins when present; legacy mapping is fallback
+      const resolvedSlug = identity?.slug ?? mapping?.slug ?? null;
+      const resolvedSlugSource = identity?.slug
+        ? "flywheel"
+        : mapping?.slug
+          ? "service_mapper"
+          : null;
 
       const baseRow: Record<string, unknown> = {
         claim_id: claim.id,
         line_number: item.lineNumber,
         billing_code: item.procedureCode || null,
         billing_code_type: item.procedureCode ? inferBillingCodeType(item.procedureCode) : null,
-        service_slug: mapping?.slug || null,
+        service_slug: resolvedSlug,
+        billing_code_identity_id: identity?.identityId ?? null,
         description: item.description || item.category || null,
         units: item.quantity || 1,
         billed_amount: item.billedAmount,
@@ -237,6 +301,17 @@ export async function persistAuditResults(
         metadata: {
           ...findingMeta,
           ...(mapping ? { serviceMapping: { slug: mapping.slug, confidence: mapping.confidence } } : {}),
+          ...(identity
+            ? {
+                codeIdentity: {
+                  identityId: identity.identityId,
+                  slug: identity.slug,
+                  confidence: identity.confidence,
+                  needsReview: identity.needsReview,
+                },
+                slugSource: resolvedSlugSource,
+              }
+            : {}),
         },
       };
 

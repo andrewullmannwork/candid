@@ -3,6 +3,7 @@
 
 import type { ParsedBill, BillLineItem } from "./types";
 import type { OCRResult } from "../ocr/types";
+import { inferProcedureCodeType } from "./code-type-inference";
 import { randomUUID } from "crypto";
 
 // CPT code pattern: 5 digits, optionally followed by a modifier
@@ -315,6 +316,7 @@ function extractLineItems(
       const item: BillLineItem = {
         lineNumber,
         procedureCode,
+        procedureCodeType: inferProcedureCodeType(procedureCode),
         modifier,
         description: extractDescription(line, cptMatch.index || 0),
         category: categorizeProcedureCode(procedureCode),
