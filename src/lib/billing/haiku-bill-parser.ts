@@ -24,7 +24,7 @@ import { randomUUID } from "crypto";
 import type { Accumulator, BillLineItem, ExCode, ParsedBill, ProcedureCodeType } from "./types";
 import type { ExtractionMethod } from "../parser/types";
 import { categorizeProcedureCode } from "./parser";
-import { inferProcedureCodeType } from "./code-type-inference";
+import { reconcileHaikuCodeType } from "./code-type-inference";
 import { applyEOBPostProcess } from "./eob-postprocess";
 
 const MODEL = "claude-haiku-4-5-20251001";
@@ -418,9 +418,10 @@ export async function parseBillWithHaiku(
         lineNumber: idx + 1,
         line_number_in_eob: item.line_number_in_eob ? String(item.line_number_in_eob) : undefined,
         procedureCode,
-        procedureCodeType:
-          ((item.procedureCodeType ?? item.procedure_code_type) as ProcedureCodeType | undefined) ??
-          inferProcedureCodeType(procedureCode),
+        procedureCodeType: reconcileHaikuCodeType(
+          procedureCode,
+          (item.procedureCodeType ?? item.procedure_code_type) as ProcedureCodeType | undefined,
+        ),
         revenueCode: item.revenue_code as string | undefined ?? item.revenueCode as string | undefined,
         description: String(item.description ?? "Medical service"),
         category: procedureCode ? categorizeProcedureCode(procedureCode) : "Medical Service",

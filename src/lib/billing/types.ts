@@ -187,6 +187,25 @@ export interface AuditFinding {
   actionable: boolean; // Whether a dispute letter can be generated
 }
 
+// Persisted shape on claim.metadata.auditSummary.claimLevelFindings.
+// Mirrors the minimal shape that gets written to claim_line_items.metadata.auditFindings
+// for line-level findings (so consumers can dismiss via the unified endpoint
+// regardless of attachment).
+export interface ClaimLevelFindingMeta {
+  id: string;
+  type: FindingType;
+  severity: FindingSeverity;
+  estimatedOvercharge: number;
+  title: string;
+  description?: string;
+  benchmarkSource?: string;
+  actionable: boolean;
+  dismissed?: boolean;
+  dismissed_at?: string;
+  dismissed_reason?: string;
+  dismissed_note?: string | null;
+}
+
 export interface AuditReport {
   id: string;
   documentId: string;
@@ -198,6 +217,11 @@ export interface AuditReport {
     totalEstimatedOvercharge: number;
     highSeverityCount: number;
     actionableCount: number;
+    // S74.5c §1.7 — claim-header findings (lineItems: []) persisted here so
+    // they survive the reaudit write loop (which keys by lineNumber) and are
+    // available to ClaimDetail's claim-level findings render section + the
+    // dismiss-finding endpoint's claim-level fallback branch.
+    claimLevelFindings?: ClaimLevelFindingMeta[];
   };
   createdAt: string;
 }

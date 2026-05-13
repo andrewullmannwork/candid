@@ -329,24 +329,46 @@ export async function haikuNearestSignature(
 // ============================================================================
 // Per-user-day Haiku budget cap (Q6 LOCK = 100 calls/user/day)
 // ============================================================================
-// Process-local map; resets on serverless cold-start. Sufficient for v1 cold-
-// start scale where no single user uploads >100 distinct unknown signatures
-// per day. Future: persist to Redis/DB for cross-instance enforcement.
+// §3.2 (Session 84) — durable Postgres counter via mig 091's
+// reserve_haiku_budget(p_user_id, p_cap) RPC. Replaces the process-local Map
+// which reset on every serverless cold-start, making the cap effectively
+// unbounded under Vercel traffic patterns.
+//
+// Edge: anonymous callers (userId = null) bypass the cap. Real ingestion
+// pipelines always carry userId; the anonymous path is for tests/scripts.
 
-const HAIKU_DAILY_CAP_BY_USER = new Map<string, { day: string; count: number }>();
 const DEFAULT_DAILY_CAP = 100;
 
-export function reserveHaikuBudget(userId: string, capOverride?: number): boolean {
+export async function reserveHaikuBudget(
+  userId: string | null,
+  capOverride?: number,
+): Promise<boolean> {
+  if (!userId || userId === "anonymous") return true;
   const cap = capOverride ?? DEFAULT_DAILY_CAP;
-  const today = new Date().toISOString().slice(0, 10);
-  const entry = HAIKU_DAILY_CAP_BY_USER.get(userId);
-  if (!entry || entry.day !== today) {
-    HAIKU_DAILY_CAP_BY_USER.set(userId, { day: today, count: 1 });
+  const supabase = createServerClient();
+  const { data, error } = await supabase.rpc("reserve_haiku_budget", {
+    p_user_id: userId,
+    p_cap: cap,
+  });
+  if (error) {
+    // C-10 — structured telemetry log so monitoring can alert on RPC
+    // failures. Falling back to "allow" preserves graceful degradation
+    // (Haiku still fires; cap is effectively disabled during the outage)
+    // but the warning surfaces the silent-disable so it gets caught.
+    console.warn(
+      "[code-identity][telemetry] reserve_haiku_budget_rpc_failed",
+      JSON.stringify({
+        userId,
+        cap,
+        errorCode: (error as { code?: string }).code ?? null,
+        errorMessage: error.message ?? String(error),
+        fallback: "allow",
+        impact: "haiku_cap_disabled_for_this_call",
+      }),
+    );
     return true;
   }
-  if (entry.count >= cap) return false;
-  entry.count += 1;
-  return true;
+  return Boolean(data);
 }
 
 // ============================================================================
@@ -377,27 +399,33 @@ export async function categorizeLineItem(opts: {
     return { identityId: null, serviceSlug: null, confidence: 0.3, needsReview: true, matchKind: "skipped" };
   }
 
+  // §1.5 — always return identityId when found, even when service_slug is
+  // null. The caller (persist.ts) uses identityId to link claim_line_items
+  // for backfill targeting + parser-path observation recording. service_slug
+  // staying null means the row renders "Needs review" until promotion fires
+  // (§1.1 — slug only set at promotion time).
   const exact = await lookupExactSignature(opts.code, codeType, signature);
-  if (exact && exact.serviceSlug) {
+  if (exact) {
     return {
       identityId: exact.identityId,
       serviceSlug: exact.serviceSlug,
       confidence: exact.confidence,
-      needsReview: exact.promotionState === "proposed",
+      needsReview:
+        exact.serviceSlug == null || exact.promotionState === "proposed",
       matchKind: "exact",
     };
   }
 
-  const userIdForCap = opts.userId ?? "anonymous";
-  if (reserveHaikuBudget(userIdForCap)) {
+  if (await reserveHaikuBudget(opts.userId)) {
     const nearest = await haikuNearestSignature(opts.code, codeType, signature, opts.description);
-    if (nearest && nearest.serviceSlug) {
+    if (nearest) {
       await addDescriptionExample(nearest.identityId, opts.description);
       return {
         identityId: nearest.identityId,
         serviceSlug: nearest.serviceSlug,
         confidence: nearest.confidence,
-        needsReview: nearest.promotionState === "proposed",
+        needsReview:
+          nearest.serviceSlug == null || nearest.promotionState === "proposed",
         matchKind: "haiku_nearest",
       };
     }

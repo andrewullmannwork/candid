@@ -25,6 +25,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { logAdminAction } from "@/lib/admin/audit-log";
+import { backfillCorroboratedMapping } from "@/lib/parser/code-identity-promotion";
 
 async function verifyAdmin(req: NextRequest): Promise<
   | { authorized: false }
@@ -87,10 +88,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // If admin provided a slug, validate against service_catalog and update the
-  // row BEFORE the promotion RPC fires. The RPC reads the row inside the
-  // advisory lock; the slug must be set when the event fires so the
-  // mapping_promotion_events row records the correct promoted_slug.
+  // If admin provided a slug, validate against service_catalog. The actual
+  // slug-write happens atomically inside the promote_with_slug RPC below
+  // (under the advisory lock) per S74.5c C-6 — eliminates the race window
+  // where a concurrent corroborator-upsert could land between a separate
+  // UPDATE and apply_mapping_promotion call.
   if (slug) {
     const { data: slugRow } = await supabase
       .from("service_catalog")
@@ -103,15 +105,6 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       );
     }
-    if (identity.service_slug !== slug) {
-      const { error: updateErr } = await supabase
-        .from("billing_code_identity")
-        .update({ service_slug: slug })
-        .eq("id", identityId);
-      if (updateErr) {
-        return NextResponse.json({ error: updateErr.message }, { status: 500 });
-      }
-    }
   } else if (!identity.service_slug) {
     return NextResponse.json(
       { error: "Cannot promote a row with no service_slug; provide slug" },
@@ -119,13 +112,16 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Fire the RPC. Uses an advisory lock per composite key inside the function
-  // so concurrent admin/community promotions can't race.
+  // Fire the atomic RPC. promote_with_slug acquires the advisory lock, writes
+  // the slug if provided, then delegates to apply_mapping_promotion under the
+  // same lock — single continuous critical section.
+  const slugToWrite = slug && identity.service_slug !== slug ? slug : null;
   const { data: rpcData, error: rpcErr } = await supabase.rpc(
-    "apply_mapping_promotion",
+    "promote_with_slug",
     {
       p_identity_id: identityId,
       p_new_state: "admin_verified",
+      p_set_slug: slugToWrite,
       p_fire_source: "admin-ui",
       p_actor_user_id: auth.adminUserId,
     },
@@ -135,18 +131,47 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: rpcErr.message }, { status: 500 });
   }
 
+  // §1.2 — propagate the admin-attested slug across peer claim_line_items.
+  // Without this, admin attestation is half-functional: the identity row flips
+  // to admin_verified but other users' claim_line_items keep their stale slug.
+  // backfillCorroboratedMapping respects user_correction_locked_at (G4 LOCK)
+  // and snapshots prior slugs into metadata for G4 conflict-modal handling.
+  const finalSlug = slug || (identity.service_slug as string | null);
+  let backfillUpdated = 0;
+  let backfillConflicts: string[] = [];
+  if (finalSlug) {
+    try {
+      const backfillResult = await backfillCorroboratedMapping(
+        identityId,
+        finalSlug,
+      );
+      backfillUpdated = backfillResult.updatedRowCount;
+      backfillConflicts = backfillResult.conflictingUserIds;
+    } catch (err) {
+      // Non-fatal: the promotion succeeded; backfill failure is a follow-up
+      // operational concern (admin can re-trigger via a future admin tool or
+      // wait for affected users' next /claim view to surface stale rows).
+      console.warn(
+        "[admin/code-identity/promote] backfill failed (non-fatal)",
+        err,
+      );
+    }
+  }
+
   await logAdminAction({
     adminUserId: auth.adminUserId,
     adminEmail: auth.adminEmail,
     action: "code_identity_admin_attested",
     targetTable: "billing_code_identity",
-    details: `Promoted ${identityId} to admin_verified — code=${identity.billing_code}, type=${identity.billing_code_type}, slug=${slug || identity.service_slug}`,
+    details: `Promoted ${identityId} to admin_verified — code=${identity.billing_code}, type=${identity.billing_code_type}, slug=${finalSlug ?? "<unset>"}; backfilled ${backfillUpdated} peer line items (${backfillConflicts.length} users with locked corrections preserved)`,
   });
 
   return NextResponse.json({
     ok: true,
     eventId: rpcData,
     identityId,
-    promotedSlug: slug || identity.service_slug,
+    promotedSlug: finalSlug,
+    backfillUpdatedRowCount: backfillUpdated,
+    backfillConflictingUserCount: backfillConflicts.length,
   });
 }

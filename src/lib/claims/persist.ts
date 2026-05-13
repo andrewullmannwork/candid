@@ -13,7 +13,8 @@ import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { notifyUnmappedLineItems } from "@/lib/notifications";
 import { buildProvenanceEntry, type FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import { categorizeLineItem } from "@/lib/parser/code-identity";
-import { inferProcedureCodeType } from "@/lib/billing/code-type-inference";
+import { recordParserObservation } from "@/lib/parser/code-identity-promotion";
+import { reconcileHaikuCodeType } from "@/lib/billing/code-type-inference";
 
 /**
  * Build a field_provenance JSONB payload for a parsed bill line item per DR-3B
@@ -218,10 +219,12 @@ export async function persistAuditResults(
           parsedBill.lineItems.map(async (item) => {
             const code = item.procedureCode || "";
             if (!code) return null;
-            // Use the new ProcedureCodeType namespace for billing_code_identity writes;
-            // legacy claim_line_items.billing_code_type stays in BillingCodeType.
+            // S74.5c §2.4 — reconcile Haiku-emitted codeType against
+            // format-inference; G_CODE and CAT_II are unambiguous from regex
+            // and override any Haiku misclassification (Rule #12 prompt
+            // ordering risks emitting HCPCS_L2 for G0008 / CPT for 3074F).
             const codeType =
-              item.procedureCodeType ?? inferProcedureCodeType(code) ?? undefined;
+              reconcileHaikuCodeType(code, item.procedureCodeType) ?? undefined;
             const description = item.description || item.category || "";
             try {
               const r = await categorizeLineItem({
@@ -230,6 +233,28 @@ export async function persistAuditResults(
                 description,
                 userId,
               });
+              // §1.5 — parser-path observation. Counts toward
+              // distinct_user_count without casting a slug vote (proposed_slug
+              // stays null in the SourceEntry). Pattern 1 #15 gate is checked
+              // inside recordParserObservation; non-verified users no-op.
+              // lineItemId is null at this stage (line items aren't INSERTed
+              // yet); forensic linkage degrades gracefully.
+              if (r.identityId && userId) {
+                try {
+                  await recordParserObservation({
+                    identityId: r.identityId,
+                    userId,
+                    rawDescription: description,
+                    lineItemId: null,
+                  });
+                } catch (obsErr) {
+                  console.warn(
+                    "[claims-persist] parser observation failed for line",
+                    item.lineNumber,
+                    obsErr,
+                  );
+                }
+              }
               return { lineNumber: item.lineNumber, ...r };
             } catch (err) {
               console.warn("[claims-persist] flywheel categorize failed for line", item.lineNumber, err);

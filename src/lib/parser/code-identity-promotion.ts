@@ -4,9 +4,24 @@
 // Q4 LOCK (event log mirrors canonical_promotion_events) + G4 LOCK (sticky
 // per-account user_correction_locked_at).
 //
+// Session 84 (S74.5c) refactor per plans/findings/s74.5_skeptical_review.md:
+//   §1.1 — per-slug vote tracking: SourceEntry carries `proposed_slug` + `source`;
+//          evaluateMappingPromotion tallies votes per slug and promotes only when
+//          a single slug has >= threshold votes. service_slug stays NULL on the
+//          identity row until promotion fires.
+//   §1.5 — parser-path observation: recordParserObservation appends a
+//          bill_observed SourceEntry (proposed_slug=null) so parser-path
+//          ingestion counts toward distinct_user_count without casting a vote.
+//   §3.5 — advisory lock: both write paths (user_correction + bill_observed)
+//          go through apply_corrector_upsert RPC which holds pg_advisory_xact_lock
+//          for the composite key — eliminates the read-modify-write race.
+//   §3.6 — D5 captures optional `reason` + `note` on user correction; passed
+//          through to flywheel telemetry log.
+//
 // Exports:
-//   - recordUserCorrection() — user clicks "confirm" in correction modal (D5 endpoint)
-//   - evaluateMappingPromotion() — Pattern 1 #3 evaluator; fires after each correction
+//   - recordUserCorrection()   — D5 endpoint flow
+//   - recordParserObservation() — D4 parser flow (§1.5)
+//   - evaluateMappingPromotion() — Pattern 1 #3 vote-tally evaluator (§1.1)
 //   - backfillCorroboratedMapping() — propagate promoted slug to peer rows
 //   - getConflictedUsersForIdentity() — surface to D6 conflict modal flow
 //   - isUserFullyVerified() — Pattern 1 #15 gate helper
@@ -22,7 +37,6 @@ import type { ProcedureCodeType } from "../billing/types";
 import * as crypto from "crypto";
 
 const DEFAULT_PROMOTION_THRESHOLD = 3;
-const DEFAULT_MAX_SOURCES = 5;
 
 // ============================================================================
 // Pattern 1 #15 verification gate
@@ -41,19 +55,23 @@ export async function isUserFullyVerified(userId: string): Promise<boolean> {
 }
 
 // ============================================================================
-// Identity row mutation (race-tolerant: append-to-sources, dedup by user hash)
+// SourceEntry shape (§1.1 + §1.5 extended)
 // ============================================================================
 
-interface SourceEntry {
+export type CorroboratorSource = "user_correction" | "bill_observed";
+
+export interface SourceEntry {
   user_id_hash: string;
+  source: CorroboratorSource;
+  proposed_slug: string | null;
   raw_description: string;
-  claim_line_item_id: string;
+  claim_line_item_id: string | null;
   recorded_at: string;
 }
 
 function hashUserForIdentity(userId: string, identityId: string): string {
-  // Stable per (user, identity) — same user submitting same identity twice
-  // collapses to one source entry. Cross-identity reuse would re-hash.
+  // Stable per (user, identity) — same user re-recording on the same identity
+  // collapses to one source entry. Cross-identity reuse re-hashes.
   return crypto
     .createHash("sha256")
     .update(`${userId}:${identityId}`)
@@ -66,93 +84,57 @@ interface UpsertCorrectorResult {
   distinctUserCount: number;
   servedSlug: string | null;
   currentPromotionState: "proposed" | "corroborated" | "admin_verified";
+  skippedReason?: string;
 }
 
-/**
- * Append the corrector as a source on the identity row. Dedup by user_id_hash.
- * If user is a new contributor, increment distinct_user_count.
- * If the identity row has no slug yet, set it to the user's proposed slug.
- *
- * Race tolerance: read-modify-write with concurrent-writer-tolerated semantics
- * (sources array merge is set-union; counter increment is monotonic). At small
- * scale (S74.5 cold-start) collisions are rare; an advisory-lock RPC can be
- * added if telemetry surfaces issues.
- */
-async function upsertCorrectorOnIdentity(opts: {
+interface UpsertRpcResponse {
+  is_new_contributor?: boolean;
+  distinct_user_count?: number;
+  service_slug?: string | null;
+  promotion_state?: "proposed" | "corroborated" | "admin_verified";
+  skipped_reason?: string;
+}
+
+async function applyCorrectorUpsert(opts: {
   identityId: string;
   userId: string;
+  proposedSlug: string | null;
+  source: CorroboratorSource;
   rawDescription: string;
-  lineItemId: string;
-  proposedSlug: string;
+  lineItemId: string | null;
 }): Promise<UpsertCorrectorResult | null> {
   const supabase = createServerClient();
-  const { data: row, error: readErr } = await supabase
-    .from("billing_code_identity")
-    .select("id, service_slug, corroborator_sources, distinct_user_count, promotion_state, description_examples")
-    .eq("id", opts.identityId)
-    .maybeSingle();
-
-  if (readErr || !row) return null;
-
   const userHash = hashUserForIdentity(opts.userId, opts.identityId);
-  const existingSources = (row.corroborator_sources as SourceEntry[]) ?? [];
-  const isNewContributor = !existingSources.some((s) => s.user_id_hash === userHash);
 
-  const newEntry: SourceEntry = {
-    user_id_hash: userHash,
-    raw_description: opts.rawDescription,
-    claim_line_item_id: opts.lineItemId,
-    recorded_at: new Date().toISOString(),
-  };
+  const { data, error } = await supabase.rpc("apply_corrector_upsert", {
+    p_identity_id: opts.identityId,
+    p_user_id_hash: userHash,
+    p_proposed_slug: opts.proposedSlug,
+    p_source: opts.source,
+    p_raw_description: opts.rawDescription,
+    p_claim_line_item_id: opts.lineItemId,
+  });
 
-  // Merge: replace this user's entry (if any) with the new one; keep others.
-  const merged: SourceEntry[] = [
-    ...existingSources.filter((s) => s.user_id_hash !== userHash),
-    newEntry,
-  ].slice(0, DEFAULT_MAX_SOURCES);
-
-  const existingExamples = (row.description_examples as string[]) ?? [];
-  const updatedExamples = existingExamples.includes(opts.rawDescription)
-    ? existingExamples
-    : [opts.rawDescription, ...existingExamples].slice(0, 5);
-
-  // If row has no slug yet, take the user's proposed slug. If row already has a
-  // slug (from earlier corrections or auto-mapping), DON'T overwrite — the
-  // promotion evaluator decides who wins via Pattern 1 #3 vote on this user's
-  // contribution counting toward the existing slug's tally.
-  const updates: Record<string, unknown> = {
-    corroborator_sources: merged,
-    description_examples: updatedExamples,
-    last_corroborated_at: new Date().toISOString(),
-  };
-
-  if (isNewContributor) {
-    updates.distinct_user_count = (row.distinct_user_count as number) + 1;
-  }
-  if (!row.service_slug) {
-    updates.service_slug = opts.proposedSlug;
+  if (error || !data) {
+    console.warn("[code-identity-promotion] apply_corrector_upsert RPC failed", error);
+    return null;
   }
 
-  const { data: updated, error: writeErr } = await supabase
-    .from("billing_code_identity")
-    .update(updates)
-    .eq("id", opts.identityId)
-    .select("service_slug, distinct_user_count, promotion_state")
-    .maybeSingle();
-
-  if (writeErr || !updated) return null;
-
+  const r = data as UpsertRpcResponse;
   return {
     identityId: opts.identityId,
-    isNewContributor,
-    distinctUserCount: updated.distinct_user_count as number,
-    servedSlug: updated.service_slug as string | null,
-    currentPromotionState: updated.promotion_state as UpsertCorrectorResult["currentPromotionState"],
+    isNewContributor: Boolean(r.is_new_contributor),
+    distinctUserCount: Number(r.distinct_user_count ?? 0),
+    servedSlug: (r.service_slug as string | null) ?? null,
+    currentPromotionState:
+      (r.promotion_state as UpsertCorrectorResult["currentPromotionState"]) ??
+      "proposed",
+    skippedReason: r.skipped_reason,
   };
 }
 
 // ============================================================================
-// Pattern 1 #3 promotion evaluator
+// Pattern 1 #3 promotion evaluator (§1.1 vote-tally)
 // ============================================================================
 
 export interface PromotionEvaluation {
@@ -161,6 +143,7 @@ export interface PromotionEvaluation {
   newPromotionState: "proposed" | "corroborated" | "admin_verified";
   promotedSlug: string | null;
   distinctUserCount: number;
+  winningVoteCount: number;
   threshold: number;
   reason: string;
   backfillResult?: BackfillResult;
@@ -177,10 +160,48 @@ async function getPromotionThreshold(): Promise<number> {
   return cfg?.promotion_threshold ?? DEFAULT_PROMOTION_THRESHOLD;
 }
 
+interface TallyResult {
+  winningSlug: string | null;
+  winningCount: number;
+  totalVotes: number;
+  distinctSlugs: number;
+}
+
+function tallySlugVotes(sources: SourceEntry[]): TallyResult {
+  const tally = new Map<string, number>();
+  for (const s of sources) {
+    if (s.source !== "user_correction") continue;
+    if (!s.proposed_slug) continue;
+    tally.set(s.proposed_slug, (tally.get(s.proposed_slug) ?? 0) + 1);
+  }
+  // S74.5c C-2 — deterministic tie-breaking. When two or more slugs reach
+  // the same vote count, sort by slug name ascending so the choice is
+  // reproducible (replaying the same source set always produces the same
+  // winner). Without this, Map iteration order would silently make
+  // "first-to-reach-threshold" the winner, which is correct semantically
+  // but undocumented and dependent on insertion order. Alphabetical fallback
+  // is arbitrary but stable + observable in test fixtures.
+  const tallyEntries = Array.from(tally.entries()).sort((a, b) => {
+    if (b[1] !== a[1]) return b[1] - a[1]; // desc by count
+    return a[0].localeCompare(b[0]); // asc by slug name as tiebreaker
+  });
+  let totalVotes = 0;
+  for (const [, n] of tallyEntries) totalVotes += n;
+  const top = tallyEntries[0] ?? null;
+  return {
+    winningSlug: top ? top[0] : null,
+    winningCount: top ? top[1] : 0,
+    totalVotes,
+    distinctSlugs: tally.size,
+  };
+}
+
 /**
- * Check if (code, codeType, sig) has crossed the Pattern 1 #3 threshold and
- * promote via the apply_mapping_promotion RPC if so. Idempotent: re-running
- * after promotion advances the event_type to "corroboration_added".
+ * §1.1 vote-tally promotion. Reads corroborator_sources, tallies user_correction
+ * votes per slug, and promotes when one slug reaches the threshold. service_slug
+ * is set ONLY at promotion time (by apply_mapping_promotion below — we set it
+ * via a separate UPDATE before the RPC fires so the RPC's event log records the
+ * winning slug correctly).
  */
 export async function evaluateMappingPromotion(
   identityId: string,
@@ -192,7 +213,7 @@ export async function evaluateMappingPromotion(
 
   const { data: row, error } = await supabase
     .from("billing_code_identity")
-    .select("id, service_slug, promotion_state, distinct_user_count")
+    .select("id, service_slug, promotion_state, distinct_user_count, corroborator_sources")
     .eq("id", identityId)
     .maybeSingle();
 
@@ -203,55 +224,65 @@ export async function evaluateMappingPromotion(
       newPromotionState: "proposed",
       promotedSlug: null,
       distinctUserCount: 0,
+      winningVoteCount: 0,
       threshold,
       reason: "identity_row_not_found",
     };
   }
 
-  const distinctUserCount = row.distinct_user_count as number;
+  const distinctUserCount = Number(row.distinct_user_count ?? 0);
   const currentState = row.promotion_state as PromotionEvaluation["newPromotionState"];
-  const slug = row.service_slug as string | null;
-
-  if (!slug) {
-    return {
-      identityId,
-      promoted: false,
-      newPromotionState: currentState,
-      promotedSlug: null,
-      distinctUserCount,
-      threshold,
-      reason: "no_slug_proposed",
-    };
-  }
+  const currentSlug = row.service_slug as string | null;
+  const sources = (row.corroborator_sources as SourceEntry[] | null) ?? [];
 
   if (currentState === "admin_verified") {
     return {
       identityId,
       promoted: false,
       newPromotionState: currentState,
-      promotedSlug: slug,
+      promotedSlug: currentSlug,
       distinctUserCount,
+      winningVoteCount: 0,
       threshold,
       reason: "already_admin_verified",
     };
   }
 
-  if (distinctUserCount < threshold) {
+  const tally = tallySlugVotes(sources);
+  if (!tally.winningSlug || tally.winningCount < threshold) {
+    // No slug has reached the threshold yet. If multiple distinct slugs have
+    // votes but none won, signal disagreement (admin can disambiguate).
+    const reason =
+      tally.totalVotes === 0
+        ? "no_slug_votes"
+        : tally.distinctSlugs > 1
+          ? `slug_disagreement (top=${tally.winningCount}/${threshold}, ${tally.distinctSlugs} distinct slugs)`
+          : `below_threshold (${tally.winningCount}/${threshold})`;
     return {
       identityId,
       promoted: false,
       newPromotionState: currentState,
-      promotedSlug: slug,
+      promotedSlug: currentSlug,
       distinctUserCount,
+      winningVoteCount: tally.winningCount,
       threshold,
-      reason: `below_threshold (${distinctUserCount}/${threshold})`,
+      reason,
     };
   }
 
-  // Threshold met — call RPC to atomically advance state + log event
-  const { error: rpcErr } = await supabase.rpc("apply_mapping_promotion", {
+  // Threshold met for tally.winningSlug. Two cases:
+  //  (a) currentState === 'corroborated' and slug matches — emit event log
+  //      ("corroboration_added") but no state advance.
+  //  (b) currentState === 'proposed' — set service_slug to winning slug
+  //      AND advance state in a SINGLE atomic RPC (promote_with_slug)
+  //      so the slug-write + state advance + event log all happen under
+  //      one advisory lock. Per S74.5c C-3 — eliminates the race window
+  //      between a separate UPDATE and apply_mapping_promotion call.
+  const slugToWrite = currentSlug !== tally.winningSlug ? tally.winningSlug : null;
+  const { error: rpcErr } = await supabase.rpc("promote_with_slug", {
     p_identity_id: identityId,
     p_new_state: "corroborated",
+    p_set_slug: slugToWrite,
     p_fire_source: fireSource,
     p_actor_user_id: actorUserId,
   });
@@ -262,22 +293,26 @@ export async function evaluateMappingPromotion(
       identityId,
       promoted: false,
       newPromotionState: currentState,
-      promotedSlug: slug,
+      promotedSlug: tally.winningSlug,
       distinctUserCount,
+      winningVoteCount: tally.winningCount,
       threshold,
       reason: `rpc_error: ${rpcErr.message}`,
     };
   }
 
-  // Backfill peer rows
-  const backfillResult = await backfillCorroboratedMapping(identityId, slug);
+  const backfillResult = await backfillCorroboratedMapping(
+    identityId,
+    tally.winningSlug,
+  );
 
   return {
     identityId,
     promoted: true,
     newPromotionState: "corroborated",
-    promotedSlug: slug,
+    promotedSlug: tally.winningSlug,
     distinctUserCount,
+    winningVoteCount: tally.winningCount,
     threshold,
     reason: "promoted",
     backfillResult,
@@ -426,8 +461,53 @@ export async function getConflictedRowsForIdentity(
 }
 
 // ============================================================================
+// §1.5 — Parser-path observation (bill_observed; no slug vote)
+// ============================================================================
+
+/**
+ * Append a bill_observed source entry on an identity row that the parser just
+ * categorized for this user's bill. Counts toward distinct_user_count but
+ * NOT toward any slug's vote tally (§1.1 separation).
+ *
+ * Pattern 1 #15 gated: skipped silently for users without verified email+phone
+ * (the audit pipeline keeps running; the flywheel just doesn't accumulate
+ * their observations).
+ *
+ * Idempotent — re-running for the same (user, identity) is a no-op via the
+ * RPC's source-priority rule. If the user has an existing user_correction
+ * entry for this identity, the parser observation is dropped (user_correction
+ * takes precedence; passive observation cannot displace explicit correction).
+ */
+export async function recordParserObservation(opts: {
+  identityId: string;
+  userId: string;
+  rawDescription: string;
+  lineItemId?: string | null;
+}): Promise<UpsertCorrectorResult | null> {
+  if (!opts.userId) return null;
+  const verified = await isUserFullyVerified(opts.userId);
+  if (!verified) return null;
+
+  return applyCorrectorUpsert({
+    identityId: opts.identityId,
+    userId: opts.userId,
+    proposedSlug: null,
+    source: "bill_observed",
+    rawDescription: opts.rawDescription,
+    lineItemId: opts.lineItemId ?? null,
+  });
+}
+
+// ============================================================================
 // recordUserCorrection — full flow called by D5 API endpoint
 // ============================================================================
+
+export type CorrectionReason =
+  | "wrong_service"
+  | "wrong_code_type"
+  | "missing_modifier"
+  | "ambiguous_description"
+  | "other";
 
 export interface RecordCorrectionResult {
   ok: boolean;
@@ -444,6 +524,8 @@ export async function recordUserCorrection(opts: {
   billingCode: string;
   billingCodeType: ProcedureCodeType | undefined;
   description: string;
+  correctionReason?: CorrectionReason;
+  correctionNote?: string;
 }): Promise<RecordCorrectionResult> {
   const supabase = createServerClient();
   const codeType = opts.billingCodeType ?? inferProcedureCodeType(opts.billingCode);
@@ -453,11 +535,33 @@ export async function recordUserCorrection(opts: {
 
   // Always update the user's own claim_line_items row immediately, regardless
   // of Pattern 1 #15 verification — they own their data per Pattern 1 #14.
+  // §3.6 — capture correction reason + note on the row so D5 telemetry can mine.
+  const liMetaUpdate: Record<string, unknown> = {};
+  if (opts.correctionReason) {
+    liMetaUpdate.last_correction_reason = opts.correctionReason;
+  }
+  if (opts.correctionNote) {
+    liMetaUpdate.last_correction_note = opts.correctionNote;
+  }
+
+  // Read existing metadata so we don't blow away other keys (auditFindings, etc.)
+  const { data: existingLi } = await supabase
+    .from("claim_line_items")
+    .select("metadata")
+    .eq("id", opts.lineItemId)
+    .maybeSingle();
+  const mergedMeta = {
+    ...((existingLi?.metadata as Record<string, unknown> | null) ?? {}),
+    ...liMetaUpdate,
+    last_correction_at: new Date().toISOString(),
+  };
+
   const { error: userRowErr } = await supabase
     .from("claim_line_items")
     .update({
       service_slug: opts.newSlug,
       user_corrected_at: new Date().toISOString(),
+      metadata: mergedMeta,
     })
     .eq("id", opts.lineItemId);
 
@@ -484,12 +588,15 @@ export async function recordUserCorrection(opts: {
 
   let identity = await lookupExactSignature(opts.billingCode, codeType, signature);
   if (!identity) {
+    // §1.1 — newly proposed rows ALWAYS start with service_slug=null. The
+    // user's chosen slug becomes their vote in the SourceEntry below; the
+    // row's slug is set only when promotion fires.
     identity = await proposeNewSignature({
       code: opts.billingCode,
       codeType,
       signature,
       rawDescription: opts.description,
-      proposedSlug: opts.newSlug,
+      proposedSlug: null,
       proposedByUserId: opts.userId,
     });
   }
@@ -503,16 +610,29 @@ export async function recordUserCorrection(opts: {
     .update({ billing_code_identity_id: identity.identityId })
     .eq("id", opts.lineItemId);
 
-  // Add corrector source + maybe increment distinct_user_count
-  await upsertCorrectorOnIdentity({
+  // §3.5 — advisory-locked atomic source upsert
+  await applyCorrectorUpsert({
     identityId: identity.identityId,
     userId: opts.userId,
+    proposedSlug: opts.newSlug,
+    source: "user_correction",
     rawDescription: opts.description,
     lineItemId: opts.lineItemId,
-    proposedSlug: opts.newSlug,
   });
 
-  // Fire Pattern 1 #3 evaluator
+  // §3.6 — telemetry log on the correction (structured; downstream Pattern P-9 candidate)
+  if (opts.correctionReason) {
+    console.log("[code-identity-promotion] user_correction_with_reason", {
+      identityId: identity.identityId,
+      userId: opts.userId,
+      lineItemId: opts.lineItemId,
+      reason: opts.correctionReason,
+      hasNote: Boolean(opts.correctionNote),
+      proposedSlug: opts.newSlug,
+    });
+  }
+
+  // §1.1 — Pattern 1 #3 vote-tally evaluator
   const promotion = await evaluateMappingPromotion(identity.identityId, opts.userId);
 
   return {

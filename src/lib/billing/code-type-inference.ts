@@ -36,3 +36,23 @@ export function inferProcedureCodeType(rawCode: string): ProcedureCodeType | und
 
   return undefined;
 }
+
+// S74.5c §2.4 — Reconcile Haiku's emitted procedureCodeType with format-based
+// inference. The Haiku Rule #12 prompt orders "letter+4digit = HCPCS_L2"
+// before "G+4digit = G_CODE" + "4-digit ending in F = CAT_II"; Haiku may match
+// the broader rule first and emit HCPCS_L2 for a G-code (G0008 → HCPCS_L2 vs
+// the correct G_CODE) or CPT for a Category II code (3074F → CPT). When the
+// format-inference says G_CODE or CAT_II, that override is unambiguous (regex
+// distinctions are sharp) — prefer it over Haiku's emission.
+//
+// Other code types: Haiku has document context (column headers, surrounding
+// rows) and is generally trusted over format alone.
+export function reconcileHaikuCodeType(
+  code: string,
+  haikuEmitted: ProcedureCodeType | undefined,
+): ProcedureCodeType | undefined {
+  const inferred = inferProcedureCodeType(code);
+  if (inferred === "G_CODE" && haikuEmitted !== "G_CODE") return "G_CODE";
+  if (inferred === "CAT_II" && haikuEmitted !== "CAT_II") return "CAT_II";
+  return haikuEmitted ?? inferred;
+}

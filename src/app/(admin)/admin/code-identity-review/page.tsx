@@ -148,11 +148,15 @@ export default function CodeIdentityReviewPage() {
         throw new Error(body.error || `Promote failed (${res.status})`);
       }
       const result = await res.json();
+      const backfillSuffix =
+        typeof result.backfillUpdatedRowCount === "number"
+          ? ` · backfilled ${result.backfillUpdatedRowCount} peer ${result.backfillUpdatedRowCount === 1 ? "line item" : "line items"}`
+          : "";
       setSuccessMessage(
-        `Promoted ${row.billing_code} (${row.billing_code_type}) → ${result.promotedSlug}`,
+        `Promoted ${row.billing_code} (${row.billing_code_type}) → ${result.promotedSlug}${backfillSuffix}`,
       );
       setEditingSlugForId(null);
-      await refreshRows();
+      await Promise.all([refreshRows(), refreshCounts()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Promote failed");
     } finally {
@@ -160,12 +164,51 @@ export default function CodeIdentityReviewPage() {
     }
   }
 
-  const tabCounts = useMemo(() => {
-    // Counts are tab-local since we only load one tab at a time. The label
-    // shows the loaded count to avoid an extra round-trip for the cross-tab
-    // totals; refreshes when the tab changes.
-    return { [tab]: rows.length };
-  }, [tab, rows.length]);
+  // S74.5c §3.11 — cross-tab counts via /api/admin/code-identity/counts.
+  // Fired on mount + after each promotion landing (refreshCounts in
+  // handlePromote) so the admin can see "5 proposed, 12 corroborated, 30
+  // admin-verified" at a glance without switching tabs.
+  const [crossTabCounts, setCrossTabCounts] = useState<Record<Tab, number | null>>({
+    proposed: null,
+    corroborated: null,
+    admin_verified: null,
+  });
+
+  async function refreshCounts() {
+    if (!user) return;
+    try {
+      const token = await user.firebaseUser.getIdToken();
+      const res = await fetch("/api/admin/code-identity/counts", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const body = (await res.json()) as { counts?: Record<string, number> };
+      if (!body.counts) return;
+      setCrossTabCounts({
+        proposed: body.counts.proposed ?? 0,
+        corroborated: body.counts.corroborated ?? 0,
+        admin_verified: body.counts.admin_verified ?? 0,
+      });
+    } catch {
+      // non-fatal — counts simply stay null and the badge falls back to the
+      // active-tab row.length below.
+    }
+  }
+
+  useEffect(() => {
+    void refreshCounts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  const tabCounts: Record<Tab, number> = useMemo(() => {
+    return {
+      proposed: crossTabCounts.proposed ?? (tab === "proposed" ? rows.length : 0),
+      corroborated:
+        crossTabCounts.corroborated ?? (tab === "corroborated" ? rows.length : 0),
+      admin_verified:
+        crossTabCounts.admin_verified ?? (tab === "admin_verified" ? rows.length : 0),
+    };
+  }, [crossTabCounts, tab, rows.length]);
 
   return (
     <div>
@@ -211,11 +254,9 @@ export default function CodeIdentityReviewPage() {
               }`}
             >
               {label}
-              {tab === key && (
-                <span className="ml-1.5 text-gray-400">
-                  ({tabCounts[key] ?? 0})
-                </span>
-              )}
+              <span className="ml-1.5 text-gray-400">
+                ({tabCounts[key]})
+              </span>
             </button>
           ))}
         </div>

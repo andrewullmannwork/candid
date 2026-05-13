@@ -208,16 +208,20 @@ export async function GET(
     const identityId = item.billing_code_identity_id as string | null;
     const identity = identityId ? identityMap.get(identityId) ?? null : null;
     const communitySlug = identity?.service_slug ?? null;
-    const isPromoted =
-      identity?.promotion_state === "corroborated" ||
-      identity?.promotion_state === "admin_verified";
+    // S74.5c §1.3 — conflict modal trigger is "snapshot present" not
+    // "slug mismatch". After backfillCorroboratedMapping runs, the user's
+    // service_slug has already been replaced with the community value, so a
+    // mismatch check would NEVER fire for the case the modal was designed
+    // for. Instead, fire when the backfill snapshot exists in metadata
+    // (semantic: "user has a pending acknowledgment of a community
+    // auto-switch"). resolve-conflict endpoint clears the snapshot keys on
+    // either action ("revert" or "accept"), so the modal stops surfacing
+    // once consumed.
+    const itemMetadata = (item.metadata as Record<string, unknown> | null) ?? null;
     const conflictsWithCommunity =
       flywheelEnabled &&
-      isPromoted &&
-      communitySlug !== null &&
-      item.service_slug !== null &&
-      item.service_slug !== communitySlug &&
-      !item.user_correction_locked_at;
+      !item.user_correction_locked_at &&
+      itemMetadata?.user_correction_pre_backfill_slug != null;
 
     return {
       ...item,

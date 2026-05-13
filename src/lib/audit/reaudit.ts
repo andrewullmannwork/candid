@@ -24,12 +24,37 @@ import type {
   ParsedBill,
   BillLineItem,
   AuditFinding,
+  ClaimLevelFindingMeta,
   ProcedureCodeType,
 } from "../billing/types";
 import { inferProcedureCodeType } from "../billing/code-type-inference";
 
 const ONE_MINUTE_MS = 60 * 1000;
 const DAILY_CAP = 5;
+
+// S74.5c §1.4 — dismissal preservation key. Findings get new UUIDs each
+// re-audit (audit/index.ts:51 + zero-cost-share.ts:129 etc), but the SAME
+// audit rule firing on the SAME line for the SAME amount should preserve
+// the user's prior dismissal flags. Stable key: `(type, lineNumber|null, amount_cents)`.
+function dismissPreservationKey(opts: {
+  type: string;
+  lineNumber: number | null;
+  amountCents: number;
+}): string {
+  return `${opts.type}|${opts.lineNumber == null ? "null" : opts.lineNumber}|${opts.amountCents}`;
+}
+
+interface PriorDismissal {
+  dismissed: true;
+  dismissed_at: string;
+  dismissed_reason: string;
+  dismissed_note?: string | null;
+}
+
+interface DismissedSourceEntry extends PriorDismissal {
+  type?: string;
+  estimatedOvercharge?: number;
+}
 
 interface ClaimRow {
   id: string;
@@ -108,16 +133,83 @@ export async function maybeReauditClaim(
     return { reaudited: false, reason: "no_line_items" };
   }
 
+  // S74.5c §1.4 — collect prior dismissals BEFORE re-audit so we can copy
+  // dismissed flags onto matching new findings (which carry fresh UUIDs).
+  // Two sources: per-line `auditFindings` (line-level) + `auditSummary.claimLevelFindings`
+  // (claim-header findings persisted via §1.7).
+  const priorDismissals = new Map<string, PriorDismissal>();
+  for (const li of lineItems) {
+    const liMeta = (li.metadata as Record<string, unknown> | null) ?? {};
+    const findings = (liMeta.auditFindings as DismissedSourceEntry[] | undefined) ?? [];
+    for (const f of findings) {
+      if (!f.dismissed) continue;
+      const key = dismissPreservationKey({
+        type: String(f.type ?? "unknown"),
+        lineNumber: li.line_number,
+        amountCents: Math.round(Number(f.estimatedOvercharge ?? 0) * 100),
+      });
+      priorDismissals.set(key, {
+        dismissed: true,
+        dismissed_at: f.dismissed_at,
+        dismissed_reason: f.dismissed_reason,
+        dismissed_note: f.dismissed_note ?? null,
+      });
+    }
+  }
+  const priorClaimLevel = (meta.auditSummary as
+    | { claimLevelFindings?: DismissedSourceEntry[] }
+    | undefined)?.claimLevelFindings ?? [];
+  for (const f of priorClaimLevel) {
+    if (!f.dismissed) continue;
+    const key = dismissPreservationKey({
+      type: String(f.type ?? "unknown"),
+      lineNumber: null,
+      amountCents: Math.round(Number(f.estimatedOvercharge ?? 0) * 100),
+    });
+    priorDismissals.set(key, {
+      dismissed: true,
+      dismissed_at: f.dismissed_at,
+      dismissed_reason: f.dismissed_reason,
+      dismissed_note: f.dismissed_note ?? null,
+    });
+  }
+
   const parsedBill = reconstructParsedBill(claim, lineItems);
   const auditReport = await runAudit(parsedBill);
 
-  // Group findings by line_number for per-row metadata writes.
+  // Group LINE-LEVEL findings by line_number for per-row metadata writes.
+  // Claim-level findings (lineItems=[]) are persisted to
+  // claim.metadata.auditSummary.claimLevelFindings via the §1.7 path below.
   const findingsByLine = new Map<number, AuditFinding[]>();
   for (const f of auditReport.findings) {
+    if (!Array.isArray(f.lineItems) || f.lineItems.length === 0) continue;
     for (const ln of f.lineItems) {
       if (!findingsByLine.has(ln)) findingsByLine.set(ln, []);
       findingsByLine.get(ln)!.push(f);
     }
+  }
+
+  // Helper: rehydrate a fresh finding with prior dismissal flags if the
+  // (type, lineNumber, amount) tuple matches a previously-dismissed finding.
+  function attachPriorDismissal(
+    base: Record<string, unknown>,
+    finding: AuditFinding,
+    lineNumber: number | null,
+  ): Record<string, unknown> {
+    const key = dismissPreservationKey({
+      type: finding.type,
+      lineNumber,
+      amountCents: Math.round(finding.estimatedOvercharge * 100),
+    });
+    const prior = priorDismissals.get(key);
+    if (!prior) return base;
+    return {
+      ...base,
+      dismissed: true,
+      dismissed_at: prior.dismissed_at,
+      dismissed_reason: prior.dismissed_reason,
+      dismissed_note: prior.dismissed_note,
+    };
   }
 
   // Write refreshed findings into each line item's metadata.auditFindings.
@@ -132,24 +224,64 @@ export async function maybeReauditClaim(
       .update({
         metadata: {
           ...liMeta,
-          auditFindings: findings.map((f) => ({
-            id: f.id,
-            type: f.type,
-            severity: f.severity,
-            estimatedOvercharge: f.estimatedOvercharge,
-            title: f.title,
-            actionable: f.actionable,
-          })),
+          auditFindings: findings.map((f) =>
+            attachPriorDismissal(
+              {
+                id: f.id,
+                type: f.type,
+                severity: f.severity,
+                estimatedOvercharge: f.estimatedOvercharge,
+                title: f.title,
+                actionable: f.actionable,
+              },
+              f,
+              li.line_number,
+            ),
+          ),
         },
       })
       .eq("id", li.id);
   });
   await Promise.allSettled(writes);
 
+  // S74.5c §1.7 — re-attach prior dismissals onto the claim-level findings
+  // before persisting them to claim.metadata.auditSummary.
+  const claimLevelOut: ClaimLevelFindingMeta[] = (
+    auditReport.summary.claimLevelFindings ?? []
+  ).map((f) => {
+    const base = {
+      id: f.id,
+      type: f.type,
+      severity: f.severity,
+      estimatedOvercharge: f.estimatedOvercharge,
+      title: f.title,
+      description: f.description,
+      benchmarkSource: f.benchmarkSource,
+      actionable: f.actionable,
+    };
+    // attachPriorDismissal needs the AuditFinding shape; we have the
+    // ClaimLevelFindingMeta shape (lacks lineItems). Build a minimal
+    // synthetic AuditFinding-shaped object — only `type` + estimatedOvercharge
+    // are read by the helper.
+    const synthetic: AuditFinding = {
+      ...f,
+      lineItems: [],
+      description: f.description ?? "",
+      benchmarkSource: f.benchmarkSource ?? "",
+      billedAmount: 0,
+      confidence: 0,
+    };
+    return attachPriorDismissal(base, synthetic, null) as unknown as ClaimLevelFindingMeta;
+  });
+
   // Clear stale flag + record throttle state on claim. Status flips to
   // 'flagged' or 'processed' based on whether any findings remain.
   todayAudits.push(now.toISOString());
   const nextStatus = auditReport.findings.length > 0 ? "flagged" : "processed";
+  const persistedSummary = {
+    ...auditReport.summary,
+    claimLevelFindings: claimLevelOut,
+  };
   await supabase
     .from("claims")
     .update({
@@ -159,7 +291,7 @@ export async function maybeReauditClaim(
         audit_refreshed_at: now.toISOString(),
         last_re_audit_at: now.toISOString(),
         re_audits_today: todayAudits,
-        auditSummary: auditReport.summary,
+        auditSummary: persistedSummary,
       },
       status: nextStatus,
     })

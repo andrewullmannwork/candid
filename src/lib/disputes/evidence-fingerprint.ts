@@ -48,31 +48,62 @@ export async function loadFingerprintInputForClaim(
 
   const claimMeta = (claim.metadata as Record<string, unknown> | null) ?? {};
   const auditSummary =
-    (claimMeta.auditSummary as { totalEstimatedOvercharge?: number } | undefined) ??
-    null;
+    (claimMeta.auditSummary as
+      | {
+          totalEstimatedOvercharge?: number;
+          claimLevelFindings?: Array<{
+            type?: string;
+            estimatedOvercharge?: number;
+            dismissed?: boolean;
+          }>;
+        }
+      | undefined) ?? null;
   const totalRecoveryEstimate = Number(
     auditSummary?.totalEstimatedOvercharge ?? 0,
   );
 
-  // Findings live on each line_item.metadata.auditFindings; flatten + dedup.
-  // The fingerprint cares about distinct (type, slug, amount) tuples.
+  // S74.5c §2.5 + §1.7 + §2.7 — flatten findings from BOTH per-line metadata
+  // and claim-level metadata. Filter out dismissed findings (§2.5) so a
+  // dispute letter regenerates when the user signals "this evidence isn't
+  // real." Dedup by kind-prefixed (kind, type, slug, amount) — C-9 fix
+  // prevents a slug-less line-level finding from colliding with a
+  // structurally-identical claim-level finding (both would compute the same
+  // bare `type||amount` key; the "line" / "claim" prefix disambiguates them).
+  type FindingShape = {
+    type?: string;
+    estimatedOvercharge?: number;
+    dismissed?: boolean;
+  };
   const findings: FingerprintInput["findings"] = [];
   const seen = new Set<string>();
+
   for (const li of lineItems ?? []) {
     const liMeta = (li.metadata as Record<string, unknown> | null) ?? {};
     const items =
-      (liMeta.auditFindings as
-        | Array<{ type?: string; estimatedOvercharge?: number }>
-        | undefined) ?? [];
+      (liMeta.auditFindings as FindingShape[] | undefined) ?? [];
     for (const f of items) {
+      if (f.dismissed) continue;
       const type = f.type ?? "unknown";
       const slug = (li.service_slug as string | null) ?? null;
       const amount = Number(f.estimatedOvercharge ?? 0);
-      const key = `${type}|${slug ?? ""}|${amount}`;
+      const key = `line|${type}|${slug ?? ""}|${amount}`;
       if (seen.has(key)) continue;
       seen.add(key);
       findings.push({ type: type as AuditFinding["type"], slug, amount });
     }
+  }
+
+  // §1.7 — claim-level findings (D15 unallocated_balance + future claim-header
+  // findings). slug=null since they don't attach to any single line.
+  const claimLevel = auditSummary?.claimLevelFindings ?? [];
+  for (const f of claimLevel) {
+    if (f.dismissed) continue;
+    const type = f.type ?? "unknown";
+    const amount = Number(f.estimatedOvercharge ?? 0);
+    const key = `claim|${type}|${amount}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    findings.push({ type: type as AuditFinding["type"], slug: null, amount });
   }
 
   return {

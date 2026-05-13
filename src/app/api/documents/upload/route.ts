@@ -120,13 +120,24 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `File must be under ${Math.round(FLAGS.UPLOAD_MAX_FILE_SIZE / 1024 / 1024)}MB.` }, { status: 400 });
   }
 
-  // Recover stuck documents — reset any "processing" docs older than 5 minutes to "error"
+  // Recover stuck documents — reset any "processing" docs older than 5 min
+  // OR "queued" docs older than 10 min (longer threshold for queued because
+  // QStash delivery has built-in retries; we wait longer before declaring
+  // stuck) to "error". Per S74.5c C-7 — closes the dedup-to-stuck-queued
+  // gap where §1.6's whitelist would otherwise return an infinitely-pending
+  // doc on re-upload.
   await supabase
     .from("documents")
     .update({ status: "error", processing_error: "Processing timed out. Please try uploading again." })
     .eq("user_id", user.id)
     .eq("status", "processing")
     .lt("created_at", new Date(Date.now() - 5 * 60 * 1000).toISOString());
+  await supabase
+    .from("documents")
+    .update({ status: "error", processing_error: "Processing did not start in time. Please try uploading again." })
+    .eq("user_id", user.id)
+    .eq("status", "queued")
+    .lt("created_at", new Date(Date.now() - 10 * 60 * 1000).toISOString());
 
   // CF-36: test account is exempt from both per-user and daily caps.
   const exemptFromCaps = isTestExemptUser(decoded);
@@ -187,11 +198,19 @@ export async function POST(req: NextRequest) {
   // /compare flow needs distinct documents rows per slot.
   const fileHash = computeFileHash(buffer);
   if (purpose !== "comparison") {
+    // S74.5c §1.6 — only dedup against docs that have actually entered the
+    // processing pipeline. `uploaded` is the limbo state before quick-classify
+    // wires the doc up; if a prior upload got stuck there (transient classify
+    // failure, server crash mid-flight, etc.), deduping to it leaves the user
+    // staring at an infinite spinner. The recovery block above (line ~124)
+    // already auto-resets long-stuck `processing` docs to `error`, which
+    // correctly excludes them from this whitelist via the .in() filter.
     const { data: existingDoc } = await supabase
       .from("documents")
       .select("id, doc_type, status, file_name, created_at")
       .eq("user_id", user.id)
       .eq("file_hash", fileHash)
+      .in("status", ["queued", "processing", "processed"])
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();

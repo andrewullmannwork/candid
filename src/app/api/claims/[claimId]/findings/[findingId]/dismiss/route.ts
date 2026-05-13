@@ -96,28 +96,37 @@ export async function POST(
 
   const { data: claim } = await supabase
     .from("claims")
-    .select("id, user_id")
+    .select("id, user_id, metadata")
     .eq("id", claimId)
     .single();
   if (!claim || claim.user_id !== user.id) {
     return NextResponse.json({ error: "Claim not found" }, { status: 404 });
   }
 
-  // Findings can live on multiple line items if the audit finding spans
-  // multiple lines (rare but possible for claim-header findings). Update
-  // every line item that has this finding in its metadata.
+  // Findings can live in three places:
+  //   1. claim_line_items.metadata.auditFindings — line-level (per-line audit rules)
+  //   2. claim_line_items.metadata.auditFindings on multiple lines — multi-line finding
+  //   3. claim.metadata.auditSummary.claimLevelFindings — claim-header findings (§1.7)
+  // Walk all three; touch every match.
   const { data: lineItems } = await supabase
     .from("claim_line_items")
-    .select("id, metadata")
+    .select("id, line_number, metadata")
     .eq("claim_id", claimId);
-
-  if (!lineItems || lineItems.length === 0) {
-    return NextResponse.json({ error: "No line items found" }, { status: 404 });
-  }
 
   let touched = 0;
   const dismissedAt = new Date().toISOString();
-  for (const li of lineItems) {
+  // Telemetry capture: track which finding (type + amount + line_number) was dismissed
+  // for the finding_dismissals table write below.
+  let touchedFindingType: string | null = null;
+  let touchedFindingAmount: number | null = null;
+  // S74.5c C-5 — multi-line findings (e.g., duplicate detection spanning
+  // lines 2 + 3) dismiss on EVERY line they appear. Track all line numbers
+  // touched; for the telemetry table write below, NULL means "spans multiple
+  // lines" so analytics queries don't have to GROUP-BY the last-iterated line.
+  const touchedLineNumbers: number[] = [];
+
+  // Pass 1 — line-level findings
+  for (const li of lineItems ?? []) {
     const meta = (li.metadata as Record<string, unknown> | null) ?? {};
     const findings =
       (meta.auditFindings as Array<Record<string, unknown>> | undefined) ?? [];
@@ -125,6 +134,8 @@ export async function POST(
     const next = findings.map((f) => {
       if (f.id !== findingId) return f;
       mutated = true;
+      touchedFindingType = String(f.type ?? "unknown");
+      touchedFindingAmount = Number(f.estimatedOvercharge ?? 0);
       return {
         ...f,
         dismissed: true,
@@ -134,23 +145,97 @@ export async function POST(
       };
     });
     if (!mutated) continue;
+    touchedLineNumbers.push(li.line_number as number);
     await supabase
       .from("claim_line_items")
       .update({ metadata: { ...meta, auditFindings: next } })
       .eq("id", li.id);
     touched += 1;
   }
+  // C-5 — single-line: store the one line_number. Multi-line: NULL — telemetry
+  // analytics treat NULL as "span" (vs claim-level which is also NULL but has
+  // finding_type explicitly claim-header). Disambiguation via finding_type.
+  const touchedFindingLineNumber: number | null =
+    touchedLineNumbers.length === 1 ? touchedLineNumbers[0] : null;
+
+  // Pass 2 — claim-level findings (§1.7)
+  if (touched === 0) {
+    const claimMeta = (claim.metadata as Record<string, unknown> | null) ?? {};
+    const auditSummary =
+      (claimMeta.auditSummary as
+        | { claimLevelFindings?: Array<Record<string, unknown>> }
+        | null
+        | undefined) ?? null;
+    const claimLevel =
+      (auditSummary?.claimLevelFindings as Array<Record<string, unknown>> | undefined) ??
+      [];
+    let mutated = false;
+    const next = claimLevel.map((f) => {
+      if (f.id !== findingId) return f;
+      mutated = true;
+      touchedFindingType = String(f.type ?? "unknown");
+      touchedFindingAmount = Number(f.estimatedOvercharge ?? 0);
+      // line_number stays null for claim-level findings — already correct in
+      // touchedFindingLineNumber default + the C-5 single/multi-line branch
+      // doesn't fire since we never push to touchedLineNumbers here.
+      return {
+        ...f,
+        dismissed: true,
+        dismissed_at: dismissedAt,
+        dismissed_reason: reason,
+        dismissed_note: note || null,
+      };
+    });
+    if (mutated) {
+      await supabase
+        .from("claims")
+        .update({
+          metadata: {
+            ...claimMeta,
+            auditSummary: {
+              ...(auditSummary ?? {}),
+              claimLevelFindings: next,
+            },
+          },
+        })
+        .eq("id", claimId);
+      touched += 1;
+    }
+  }
 
   if (touched === 0) {
     return NextResponse.json({ error: "Finding not found" }, { status: 404 });
   }
 
-  // Telemetry log line for downstream analysis (Pattern P-9 candidate).
-  // Dedicated table is a follow-up — for v1, structured logging is enough.
+  // §3.12 — durable telemetry insert. Non-fatal: dismiss is the user-visible
+  // action and must succeed even if the telemetry write fails (table may not
+  // exist on pre-mig-091 DBs).
+  try {
+    await supabase.from("finding_dismissals").insert({
+      user_id: user.id,
+      claim_id: claimId,
+      finding_id: findingId,
+      finding_type: touchedFindingType,
+      finding_amount: touchedFindingAmount,
+      finding_line_number: touchedFindingLineNumber,
+      reason,
+      note: note || null,
+    });
+  } catch (err) {
+    console.warn(
+      "[finding-dismiss] finding_dismissals insert failed (non-fatal)",
+      err,
+    );
+  }
+
+  // Structured log alongside the table (preserved for log-stream-only deploys).
   console.log("[finding-dismiss] dismissed", {
     claimId,
     findingId,
     userId: user.id,
+    findingType: touchedFindingType,
+    findingAmount: touchedFindingAmount,
+    findingLineNumber: touchedFindingLineNumber,
     reason,
     hasNote: note.length > 0,
     touchedLines: touched,

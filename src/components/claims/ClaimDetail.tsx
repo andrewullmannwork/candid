@@ -7,6 +7,7 @@ import { useSubscription } from "@/lib/subscription/use-subscription";
 import { Disclaimer } from "@/components/shared/Disclaimer";
 import { disputeUrlForResult } from "@/lib/disputes/url";
 import { CategoryCorrectionModal } from "@/components/claims/CategoryCorrectionModal";
+import { legacyCategoryReviewHint } from "@/lib/billing/code-categories";
 
 interface CodeIdentityState {
   identityId: string | null;
@@ -67,6 +68,8 @@ interface AuditFinding {
   estimatedOvercharge: number;
   title: string;
   actionable: boolean;
+  description?: string;
+  benchmarkSource?: string;
   // S74.5 D15 Q-E LOCK — set by /api/claims/[claimId]/findings/[findingId]/dismiss.
   // Dismissed findings are filtered out of the default display; reason corpus
   // analyzed for false-positive pattern detection (Pattern P-9 candidate).
@@ -74,6 +77,20 @@ interface AuditFinding {
   dismissed_at?: string;
   dismissed_reason?: string;
   dismissed_note?: string | null;
+}
+
+// S74.5c §1.7 — claim-level findings persisted to
+// claim.metadata.auditSummary.claimLevelFindings. Same dismiss-flag shape as
+// AuditFinding so the dismiss modal can take a synthetic AuditFinding cast.
+interface ClaimLevelFindingMeta extends AuditFinding {
+  description?: string;
+  benchmarkSource?: string;
+}
+
+// S74.5c §3.8 — re-audit throttle outcome shape surfaced by /api/claims/[claimId].
+interface ReauditOutcome {
+  reaudited: boolean;
+  reason: string;
 }
 
 interface ClaimData {
@@ -93,6 +110,7 @@ interface ClaimData {
   flags?: {
     categorizationFlywheelV1?: boolean;
   };
+  reaudit?: ReauditOutcome | null;
 }
 
 interface DisputeDetail {
@@ -221,10 +239,22 @@ export function ClaimDetail({
   const nudgeStorageKey = `claim-${claimId}-plan-doc-nudge-dismissed`;
   const [nudgeDismissed, setNudgeDismissed] = useState(false);
   // G4 LOCK — community-vs-user conflict modal queue.
-  // snoozedConflicts is a Set of line IDs the user clicked "Later" on; we
-  // suppress those for the rest of the page mount and surface them again on
-  // the next page load if still unresolved.
-  const [snoozedConflicts, setSnoozedConflicts] = useState<Set<string>>(new Set());
+  // S74.5c §3.9 — 24-hour snooze backed by localStorage. Map<lineId, expiryMs>.
+  // Loaded on mount; expired entries are filtered on read. Updates persist.
+  const conflictSnoozeStorageKey = `claim-${claimId}-conflict-snooze`;
+  const [snoozedConflicts, setSnoozedConflicts] = useState<Map<string, number>>(
+    new Map(),
+  );
+  // S74.5c §3.8 — throttle dismissal state for the re-audit toast. localStorage
+  // is overkill (toast should re-appear if user navigates back); keep in-memory
+  // and re-derive from the API response on each load.
+  const [throttleToastDismissed, setThrottleToastDismissed] = useState(false);
+  // C-8 — stable callback ref so ThrottleToast's useEffect doesn't restart
+  // the 8s auto-dismiss timer on every parent re-render.
+  const dismissThrottleToast = useCallback(
+    () => setThrottleToastDismissed(true),
+    [],
+  );
 
   // D15 Q-E LOCK — dismiss-finding modal state.
   // dismissTarget = the finding to dismiss; null when modal closed.
@@ -242,7 +272,35 @@ export function ClaimDetail({
     setNudgeDismissed(
       window.localStorage.getItem(nudgeStorageKey) === "1",
     );
-  }, [looksRightStorageKey, nudgeStorageKey]);
+    // §3.9 — restore 24-hour conflict snooze map; drop expired entries.
+    try {
+      const raw = window.localStorage.getItem(conflictSnoozeStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Record<string, number>;
+      const now = Date.now();
+      const live = new Map<string, number>();
+      for (const [lineId, expiry] of Object.entries(parsed)) {
+        if (typeof expiry === "number" && expiry > now) live.set(lineId, expiry);
+      }
+      if (live.size > 0) setSnoozedConflicts(live);
+    } catch {
+      // Corrupt JSON in localStorage; skip silently.
+    }
+  }, [looksRightStorageKey, nudgeStorageKey, conflictSnoozeStorageKey]);
+
+  // §3.9 — persist snooze map whenever it changes.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (snoozedConflicts.size === 0) {
+      window.localStorage.removeItem(conflictSnoozeStorageKey);
+      return;
+    }
+    const obj: Record<string, number> = {};
+    for (const [lineId, expiry] of snoozedConflicts.entries()) {
+      obj[lineId] = expiry;
+    }
+    window.localStorage.setItem(conflictSnoozeStorageKey, JSON.stringify(obj));
+  }, [snoozedConflicts, conflictSnoozeStorageKey]);
 
   const flywheelEnabled = Boolean(data?.flags?.categorizationFlywheelV1);
 
@@ -436,17 +494,58 @@ export function ClaimDetail({
   // G4 conflict-modal queue: any line items where codeIdentity flagged a
   // community-vs-user mismatch (post-promotion backfill) that hasn't been
   // resolved yet (no user_correction_locked_at) AND hasn't been snoozed
-  // this session.
-  const conflictingLines = primaryLineItems.filter(
-    (li) =>
-      li.codeIdentity?.conflictsWithCommunity === true &&
-      !snoozedConflicts.has(li.id),
-  );
+  // within the last 24 hours (§3.9 — Map<lineId, expiryMs> in localStorage).
+  const nowMs = Date.now();
+  const conflictingLines = primaryLineItems.filter((li) => {
+    if (li.codeIdentity?.conflictsWithCommunity !== true) return false;
+    const expiry = snoozedConflicts.get(li.id);
+    return !expiry || expiry <= nowMs;
+  });
   const activeConflictLine = conflictingLines[0] ?? null;
   const modalLineItem =
     correctionModalLineId != null
       ? primaryLineItems.find((li) => li.id === correctionModalLineId) ?? null
       : null;
+
+  // §3.10 — human-readable slug name map (client-side; uses already-prefetched
+  // catalog so no extra server round-trip). Falls back to the raw slug when
+  // the catalog hasn't loaded yet or the slug isn't in the catalog.
+  const slugNameMap = new Map<string, string>(
+    (catalog ?? []).map((c) => [c.slug, c.name]),
+  );
+  const humanizeSlug = (slug: string | null): string =>
+    slug ? slugNameMap.get(slug) ?? slug : "";
+
+  // §1.7 — claim-level findings live on claim.metadata.auditSummary.claimLevelFindings.
+  // Same dismiss filter as line-level (showDismissed toggles visibility).
+  const claimMetadata = (claim.metadata as Record<string, unknown> | null) ?? null;
+  const auditSummary =
+    (claimMetadata?.auditSummary as
+      | { claimLevelFindings?: ClaimLevelFindingMeta[] }
+      | undefined
+      | null) ?? null;
+  const allClaimLevelFindings = (auditSummary?.claimLevelFindings ?? []) as ClaimLevelFindingMeta[];
+  const visibleClaimLevelFindings = showDismissed
+    ? allClaimLevelFindings
+    : allClaimLevelFindings.filter((f) => !f.dismissed);
+  const dismissedClaimLevelCount =
+    allClaimLevelFindings.length - visibleClaimLevelFindings.length;
+
+  // §3.8 — throttle toast state. /api/claims/[claimId] surfaces re-audit
+  // outcome reasons; we surface a friendly toast for the two throttle paths
+  // so the user understands why their changes "didn't refresh."
+  const reauditReason = data.reaudit?.reason ?? null;
+  const throttleMinuteRemainingMatch = reauditReason?.match(
+    /^throttle_per_minute \((\d+)s remaining\)$/,
+  );
+  const throttleMinuteSecondsRemaining = throttleMinuteRemainingMatch
+    ? Number(throttleMinuteRemainingMatch[1])
+    : null;
+  const throttleDailyExceeded = reauditReason === "throttle_daily_cap_5";
+  const showThrottleToast =
+    !throttleToastDismissed &&
+    flywheelEnabled &&
+    (throttleMinuteSecondsRemaining !== null || throttleDailyExceeded);
 
   return (
     <div>
@@ -461,6 +560,18 @@ export function ClaimDetail({
           {claim.date_of_service as string || "Unknown date"} · {data.lineItems.length} line items · Total: ${((claim.total_billed as number) || 0).toLocaleString()}
         </p>
       </div>
+
+      {/* S74.5c §3.8 — re-audit throttle toast. Two cases:
+          (a) per-minute cooldown: short auto-dismiss after 8s.
+          (b) daily cap (5/day): persists until manual dismiss; surfaces a
+              support link for exception requests. */}
+      {showThrottleToast && (
+        <ThrottleToast
+          minuteSecondsRemaining={throttleMinuteSecondsRemaining}
+          dailyExceeded={throttleDailyExceeded}
+          onDismiss={dismissThrottleToast}
+        />
+      )}
 
       {/* Related claims */}
       {data.relatedClaims.length > 0 && (
@@ -536,6 +647,91 @@ export function ClaimDetail({
                 Yes
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* S74.5c §1.7 — Claim-level issues (lineItems=[] findings). D15
+          unallocated_balance lives here; future claim-header findings (cross-
+          claim aggregation, frequency violations) will too. Filtered by the
+          same showDismissed toggle as the line-level findings list. */}
+      {flywheelEnabled && (visibleClaimLevelFindings.length > 0 || dismissedClaimLevelCount > 0) && (
+        <div className="mb-4 rounded-xl border border-gray-100 bg-white p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-gray-900">
+              Claim-level issues
+              {visibleClaimLevelFindings.length > 0 && (
+                <span className="ml-2 inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-50 px-1.5 text-[10px] font-semibold text-red-700">
+                  {visibleClaimLevelFindings.length}
+                </span>
+              )}
+            </h3>
+            {dismissedClaimLevelCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowDismissed((s) => !s)}
+                className="text-[10px] text-gray-500 hover:text-gray-700"
+              >
+                {showDismissed
+                  ? "Hide dismissed"
+                  : `Show ${dismissedClaimLevelCount} dismissed`}
+              </button>
+            )}
+          </div>
+          <div className="space-y-2">
+            {visibleClaimLevelFindings.map((f) => (
+              <div
+                key={f.id}
+                className={`p-3 rounded-lg border text-xs ${
+                  f.dismissed
+                    ? "text-gray-500 bg-gray-100 border-gray-200 opacity-70"
+                    : SEVERITY_COLORS[f.severity] ||
+                      "text-gray-700 bg-gray-50 border-gray-200"
+                }`}
+              >
+                <div className="flex justify-between items-start gap-2">
+                  <div className="min-w-0">
+                    <p className="font-semibold">{f.title}</p>
+                    {f.description && (
+                      <p className="mt-1 opacity-80">{f.description}</p>
+                    )}
+                    <p className="mt-1 opacity-60">
+                      {f.type.replace(/_/g, " ")} · {f.severity}
+                      {f.dismissed && f.dismissed_reason && (
+                        <>
+                          {" "}· dismissed:{" "}
+                          <span className="italic">
+                            {f.dismissed_reason.replace(/_/g, " ")}
+                          </span>
+                        </>
+                      )}
+                    </p>
+                  </div>
+                  <div className="flex items-start gap-2 shrink-0">
+                    {f.estimatedOvercharge > 0 && (
+                      <p className="font-bold">
+                        -${f.estimatedOvercharge.toLocaleString()}
+                      </p>
+                    )}
+                    {!f.dismissed && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          // Cast to AuditFinding shape; DismissFindingModal
+                          // reads only id/title/type/severity/estimatedOvercharge.
+                          setDismissTarget(f as unknown as AuditFinding);
+                        }}
+                        className="rounded border border-current px-2 py-0.5 text-[10px] font-medium opacity-70 hover:opacity-100"
+                        title="Hide this finding with a reason"
+                      >
+                        Dismiss
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -662,8 +858,18 @@ export function ClaimDetail({
                         {pillLabel}
                       </button>
                       {item.service_slug && (
-                        <span className="font-mono text-[10px] text-gray-400">
-                          {item.service_slug}
+                        <span className="text-[10px] text-gray-500">
+                          {humanizeSlug(item.service_slug)}
+                        </span>
+                      )}
+                      {/* S74.5c §2.3 — Subplan §5 fallback hint: when the
+                          flywheel hasn't yet resolved a service_slug, show
+                          the legacy prefix-based category with a "review
+                          needed" suffix so the user still has a category
+                          anchor. */}
+                      {!item.service_slug && item.billing_code && (
+                        <span className="text-[10px] italic text-gray-500">
+                          {legacyCategoryReviewHint(item.billing_code)}
                         </span>
                       )}
                     </div>
@@ -1058,8 +1264,10 @@ export function ClaimDetail({
           lineItem={activeConflictLine}
           onClose={() =>
             setSnoozedConflicts((prev) => {
-              const next = new Set(prev);
-              next.add(activeConflictLine.id);
+              const next = new Map(prev);
+              // §3.9 — 24-hour snooze. Long enough to skip a single workday
+              // session; short enough that unresolved conflicts resurface next day.
+              next.set(activeConflictLine.id, Date.now() + 24 * 60 * 60 * 1000);
               return next;
             })
           }
@@ -1817,6 +2025,84 @@ function DismissFindingModal({
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+// ── S74.5c §3.8 — Re-audit throttle toast ─────────────────────────────────
+//
+// Surfaces the two G3 LOCK throttle paths (1/min + 5/day per claim) so the
+// user understands why their last category correction didn't refresh the
+// audit. Per-minute case auto-dismisses after 8s; daily-cap case persists
+// until manual dismiss (+ surfaces support link for exception requests).
+
+function ThrottleToast({
+  minuteSecondsRemaining,
+  dailyExceeded,
+  onDismiss,
+}: {
+  minuteSecondsRemaining: number | null;
+  dailyExceeded: boolean;
+  onDismiss: () => void;
+}) {
+  useEffect(() => {
+    if (minuteSecondsRemaining == null) return;
+    const t = setTimeout(onDismiss, 8000);
+    return () => clearTimeout(t);
+  }, [minuteSecondsRemaining, onDismiss]);
+
+  if (dailyExceeded) {
+    return (
+      <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-amber-900">
+              You&apos;ve reached today&apos;s re-audit limit (5/day).
+            </p>
+            <p className="mt-0.5 text-xs text-amber-800">
+              Your changes are saved. Findings will refresh tomorrow, or{" "}
+              <a
+                href="mailto:support@candidclaim.com"
+                className="underline hover:text-amber-900"
+              >
+                reach out to support
+              </a>{" "}
+              for an exception.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="shrink-0 text-xs text-amber-700 hover:text-amber-900"
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-3 rounded-xl border border-blue-100 bg-blue-50 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold text-blue-900">
+            Just a moment — we&apos;re applying your last change.
+          </p>
+          <p className="mt-0.5 text-xs text-blue-800">
+            Findings will refresh in {minuteSecondsRemaining}s.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="shrink-0 text-xs text-blue-700 hover:text-blue-900"
+          aria-label="Dismiss"
+        >
+          ✕
+        </button>
       </div>
     </div>
   );

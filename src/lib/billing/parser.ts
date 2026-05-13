@@ -18,98 +18,14 @@ const DATE_PATTERN =
 // NPI pattern: 10-digit number
 const NPI_PATTERN = /\bNPI[:\s]*(\d{10})\b/i;
 
-// Plain-English category mapping for common CPT ranges
-// No AMA-licensed descriptions — only generic categories
-//
-// S74 hotfix #3 — prefix corrections for codes that were mis-categorized:
-//   - 993XX was labelled "Hospital Care" — it's preventive medicine
-//     (99381-99397 periodic preventive E&M).
-//   - 904XX, 905XX, 906XX, 907XX (immunization admin + vaccine products)
-//     previously fell through to "Medicine — Misc"; now route to explicit
-//     Vaccine / Immunization labels.
-//   - 913XX (COVID-19 vaccine products, 91300-91322) was missing entirely
-//     and fell to "Medicine — Misc"; now routes to "Vaccine — COVID-19".
-//
-// Bigger flywheel work (Pattern 1 #3 promotion of code+description pairs,
-// user category overrides, ACA preventive code registry) lives in the
-// next-session subplan; this is the smallest-viable correctness patch.
-const CPT_CATEGORIES: Record<string, string> = {
-  "992": "Office/Outpatient Visit",
-  "993": "Preventive Visit",
-  "994": "Consultation",
-  "995": "Emergency Department",
-  "996": "Critical Care",
-  "997": "Inpatient Procedures",
-  // 99221-99239 are inpatient hospital E&M codes (prefix 992); kept under
-  // Office/Outpatient Visit for now since the prefix table is 3-char wide.
-  // The flywheel sprint will subdivide these properly.
-  "700": "Radiology — Diagnostic",
-  "710": "Radiology — Radiation Therapy",
-  "712": "Radiology — Nuclear Medicine",
-  "800": "Pathology/Lab",
-  "810": "Pathology/Lab",
-  "820": "Pathology/Lab",
-  "830": "Pathology/Lab",
-  "840": "Pathology/Lab",
-  "850": "Pathology/Lab",
-  "860": "Pathology/Lab",
-  "870": "Pathology/Lab",
-  "880": "Pathology/Lab",
-  "890": "Pathology/Lab",
-  "100": "Surgery — Integumentary",
-  "200": "Surgery — Musculoskeletal",
-  "300": "Surgery — Respiratory/Cardiovascular",
-  "400": "Surgery — Digestive",
-  "500": "Surgery — Urinary/Reproductive",
-  "600": "Surgery — Nervous System/Eye/Ear",
-  // Vaccine / immunization (CPT 90471-90756 admin + product) — split out from
-  // generic "Medicine — Misc" so /audit + dispute logic can recognize
-  // preventive immunizations.
-  "904": "Immunization Administration",
-  "905": "Vaccine",
-  "906": "Vaccine",
-  "907": "Vaccine",
-  // COVID-19 vaccines (91300-91322) — added post-pandemic; previously absent.
-  "913": "Vaccine — COVID-19",
-  "900": "Medicine — Misc",
-  "960": "Anesthesia",
-  "A00": "Transport/DME",
-  "J00": "Drug Administration",
-  "L00": "Orthotics/Prosthetics",
-};
-
-export function categorizeProcedureCode(code: string): string {
-  const normalized = code.toUpperCase();
-
-  // CPT Category II reporting codes end in "F" (e.g., 3074F, 3078F). They're
-  // $0 quality-reporting placeholders, not billable services. Route them to
-  // an explicit label so /audit doesn't surface them as "Surgery —
-  // Respiratory/Cardiovascular" (which is what the 3XX prefix would otherwise
-  // produce).
-  if (/^\d{4}F$/.test(normalized)) {
-    return "Quality Reporting (Cat II)";
-  }
-  // HCPCS Level II G-codes (G0000-G9999) — Medicare-specific quality + admin
-  // codes. Most are $0 reporting placeholders. Bigger HCPCS mapping deferred
-  // to the categorization flywheel sprint.
-  if (/^G\d{4}$/.test(normalized)) {
-    return "Medicare Service";
-  }
-
-  // Try first 3 digits
-  const prefix3 = normalized.substring(0, 3);
-  if (CPT_CATEGORIES[prefix3]) return CPT_CATEGORIES[prefix3];
-
-  // Try first 2 digits + "0"
-  const prefix2 = normalized.substring(0, 2) + "0";
-  if (CPT_CATEGORIES[prefix2]) return CPT_CATEGORIES[prefix2];
-
-  // Try first character + "00"
-  const prefix1 = normalized.substring(0, 1) + "00";
-  if (CPT_CATEGORIES[prefix1]) return CPT_CATEGORIES[prefix1];
-
-  return "Medical Service";
-}
+// S74.5c §2.3 — moved the legacy categorization map + lookup to a client-safe
+// module (no `crypto` import) so ClaimDetail.tsx can surface a
+// "<category> — review needed" hint per Subplan §5. Re-exported here so the
+// existing server-side import surface (haiku-bill-parser, persist, audit
+// rules) is unchanged. Local imports keep the function callable within
+// this module too.
+import { categorizeProcedureCode } from "./code-categories";
+export { categorizeProcedureCode };
 
 export function parseBillFromOCR(
   ocrResult: OCRResult,

@@ -46,6 +46,25 @@ export async function runAudit(bill: ParsedBill): Promise<AuditReport> {
     return b.estimatedOvercharge - a.estimatedOvercharge;
   });
 
+  // S74.5c §1.7 — partition findings into line-level and claim-level. The
+  // reaudit + persist write loops key per-line findings by lineNumber; findings
+  // with lineItems=[] (claim-header findings like D15 unallocated_balance)
+  // would be silently dropped. Persist them on claim.metadata.auditSummary
+  // so ClaimDetail renders them in a dedicated "Claim-level issues" section
+  // and the dismiss endpoint can target them via a claim-level fallback path.
+  const claimLevelFindings = deduped
+    .filter((f) => !Array.isArray(f.lineItems) || f.lineItems.length === 0)
+    .map((f) => ({
+      id: f.id,
+      type: f.type,
+      severity: f.severity,
+      estimatedOvercharge: f.estimatedOvercharge,
+      title: f.title,
+      description: f.description,
+      benchmarkSource: f.benchmarkSource,
+      actionable: f.actionable,
+    }));
+
   // Step 5: Build report
   return {
     id: randomUUID(),
@@ -63,6 +82,7 @@ export async function runAudit(bill: ParsedBill): Promise<AuditReport> {
         (f) => f.severity === "high" || f.severity === "critical"
       ).length,
       actionableCount: deduped.filter((f) => f.actionable).length,
+      claimLevelFindings,
     },
     createdAt: new Date().toISOString(),
   };

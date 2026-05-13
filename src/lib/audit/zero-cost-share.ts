@@ -8,16 +8,140 @@
 // finding type "zero_cost_share_overcharge" with source_url for dispute
 // evidence citation.
 //
-// Demographic-based eligibility filtering (age/sex windows) is deferred to v2:
-// user profile data needs to be threaded through audit pipeline. For v1, the
-// row's source_label + age_min/age_max are surfaced in the finding description
-// so user can self-dismiss if not applicable.
+// S74.5c §2.2 — demographic eligibility filter wired. We fetch the user's
+// date_of_birth + sex from profiles (already collected at signup; see mig
+// 0041_profile_demographics.sql) and skip findings whose row's age_min /
+// age_max / sex don't match. When profile data is missing we fall back to
+// the v1 "fire-and-let-user-dismiss" behavior — better to over-surface a
+// dismissable finding than to silently miss one.
 
 import { createServerClient } from "../supabase/server";
 import { isFeatureEnabled } from "../config/product-flags";
 import type { ParsedBill, AuditFinding, BillLineItem } from "../billing/types";
 import { inferProcedureCodeType } from "../billing/code-type-inference";
 import { randomUUID } from "crypto";
+
+interface UserDemographics {
+  age: number | null;
+  sex: "M" | "F" | null;
+}
+
+interface DependentRecord {
+  name?: string;
+  date_of_birth?: string;
+  sex?: string;
+  relationship?: string;
+  on_same_plan?: boolean;
+}
+
+function normalizeName(name: string | undefined | null): string {
+  if (!name) return "";
+  return name
+    .toLowerCase()
+    .replace(/[.,'"()]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// S74.5c C-4 — calendar-age computation. Server runs in UTC; we use UTC date
+// parts for year/month/day extraction so the answer is consistent regardless
+// of the requester's local timezone. Users near midnight in non-UTC zones may
+// see their age compute as +1 day older than their wallclock for a few hours
+// — for ACA coverage eligibility (age windows like 21-65) that 1-day drift
+// is immaterial.
+function computeAgeFromDOB(dobString: string | null | undefined): number | null {
+  if (!dobString) return null;
+  const dobMs = Date.parse(dobString);
+  if (!Number.isFinite(dobMs)) return null;
+  const now = new Date();
+  const birth = new Date(dobMs);
+  let years = now.getUTCFullYear() - birth.getUTCFullYear();
+  const monthDelta = now.getUTCMonth() - birth.getUTCMonth();
+  const beforeBirthday =
+    monthDelta < 0 ||
+    (monthDelta === 0 && now.getUTCDate() < birth.getUTCDate());
+  if (beforeBirthday) years -= 1;
+  if (Number.isFinite(years) && years >= 0 && years < 130) return years;
+  return null;
+}
+
+function mapSexToMF(sexRaw: string | null | undefined): "M" | "F" | null {
+  // profiles.sex enum is 'male' | 'female' | 'prefer_not_to_say'; the
+  // zero_cost_share_codes.sex column uses 'M' | 'F'.
+  if (sexRaw === "male") return "M";
+  if (sexRaw === "female") return "F";
+  return null;
+}
+
+// S74.5c C-1 — resolve demographics for the PATIENT on the bill, not just
+// the bill UPLOADER. If the patient name matches a profile.dependents entry,
+// use that dependent's DOB + sex. Falls back to the user's own profile when
+// the patient is the account holder or no dependent match exists.
+//
+// Why this matters: a parent uploading a child's pediatric vaccine bill
+// wouldn't want the adult-eligibility-window filter to suppress findings.
+// And conversely, a male user uploading his daughter's HPV-vaccine bill
+// should see the ACA preventive finding fire under the daughter's sex.
+async function fetchPatientDemographics(
+  userId: string,
+  patientNameFromBill: string | null | undefined,
+): Promise<UserDemographics> {
+  if (!userId) return { age: null, sex: null };
+  const supabase = createServerClient();
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("date_of_birth, sex, display_name, dependents")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (!profile) return { age: null, sex: null };
+
+  const billPatient = normalizeName(patientNameFromBill);
+  const accountHolder = normalizeName(profile.display_name as string | null);
+
+  // No bill-side patient name OR matches the account holder → use account demographics.
+  if (!billPatient || (accountHolder && billPatient === accountHolder)) {
+    return {
+      age: computeAgeFromDOB(profile.date_of_birth as string | null),
+      sex: mapSexToMF(profile.sex as string | null),
+    };
+  }
+
+  // Search dependents for a name match. Pattern 1 #14 storage discipline:
+  // dependents JSONB is user-scoped; we only read this user's array.
+  const dependents = (profile.dependents as DependentRecord[] | null) ?? [];
+  const matchingDependent = dependents.find(
+    (d) => normalizeName(d.name) === billPatient,
+  );
+  if (matchingDependent) {
+    return {
+      age: computeAgeFromDOB(matchingDependent.date_of_birth),
+      sex: mapSexToMF(matchingDependent.sex),
+    };
+  }
+
+  // No match — patient on the bill is neither the account holder nor a
+  // listed dependent. Could be a misspelling, a recently-added dependent
+  // not yet entered, or a billed-under-a-friend's-account scenario. Fall
+  // back to user's demographics + accept some false-positives (user can
+  // dismiss via D15 with reason='other').
+  return {
+    age: computeAgeFromDOB(profile.date_of_birth as string | null),
+    sex: mapSexToMF(profile.sex as string | null),
+  };
+}
+
+function demographicEligible(
+  row: { age_min: number | null; age_max: number | null; sex: "M" | "F" | null },
+  user: UserDemographics,
+): boolean {
+  // Row's filter narrows; if the row has no constraint (null), every user
+  // matches. If the user has no profile data (null), we can't disprove
+  // eligibility → fall through to the v1 fire behavior.
+  if (row.age_min != null && user.age != null && user.age < row.age_min) return false;
+  if (row.age_max != null && user.age != null && user.age > row.age_max) return false;
+  if (row.sex != null && user.sex != null && row.sex !== user.sex) return false;
+  return true;
+}
 
 interface ZeroCostShareRow {
   id: string;
@@ -99,12 +223,30 @@ export async function runZeroCostShareCheck(
 
   const rowsTyped = rows as ZeroCostShareRow[];
 
+  // §2.2 + C-1 — fetch PATIENT demographics once per audit run. Resolves
+  // against profile.dependents when bill.patient.name doesn't match the
+  // account holder. Falls back to user's own demographics for unrecognized
+  // patient names; demographicEligible() treats null as "can't disprove →
+  // eligible" so we don't regress v1 behavior.
+  const demographics = await fetchPatientDemographics(
+    bill.userId,
+    bill.patient?.name ?? null,
+  );
+
   for (const k of lookupKeys) {
     if (!k.codeType) continue;
     const matchingRows = rowsTyped.filter(
       (r) =>
         r.billing_code === k.code &&
-        r.billing_code_type === k.codeType,
+        r.billing_code_type === k.codeType &&
+        demographicEligible(
+          {
+            age_min: r.age_min,
+            age_max: r.age_max,
+            sex: r.sex,
+          },
+          demographics,
+        ),
     );
     if (matchingRows.length === 0) continue;
 

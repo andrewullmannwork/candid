@@ -25,8 +25,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
-import { recordUserCorrection } from "@/lib/parser/code-identity-promotion";
+import {
+  recordUserCorrection,
+  type CorrectionReason,
+} from "@/lib/parser/code-identity-promotion";
 import type { ProcedureCodeType } from "@/lib/billing/types";
+
+const VALID_REASONS = new Set<CorrectionReason>([
+  "wrong_service",
+  "wrong_code_type",
+  "missing_modifier",
+  "ambiguous_description",
+  "other",
+]);
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -58,7 +69,7 @@ export async function POST(
   const { claimId, lineId } = await params;
 
   // Validate body
-  let body: { slug?: unknown };
+  let body: { slug?: unknown; reason?: unknown; note?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -67,6 +78,28 @@ export async function POST(
   const slug = typeof body.slug === "string" ? body.slug.trim() : "";
   if (!slug) {
     return NextResponse.json({ error: "slug required" }, { status: 400 });
+  }
+  // §3.6 — optional correction-reason + free-text note. When reason='other'
+  // we require a note; for other reasons note is optional.
+  const reasonRaw = typeof body.reason === "string" ? body.reason : "";
+  const noteRaw = typeof body.note === "string" ? body.note.trim() : "";
+  let correctionReason: CorrectionReason | undefined;
+  if (reasonRaw) {
+    if (!VALID_REASONS.has(reasonRaw as CorrectionReason)) {
+      return NextResponse.json(
+        {
+          error: `reason must be one of: ${Array.from(VALID_REASONS).join(", ")}`,
+        },
+        { status: 400 },
+      );
+    }
+    correctionReason = reasonRaw as CorrectionReason;
+    if (correctionReason === "other" && !noteRaw) {
+      return NextResponse.json(
+        { error: "Free-text note is required when reason is 'other'" },
+        { status: 400 },
+      );
+    }
   }
 
   const supabase = createServerClient();
@@ -147,6 +180,8 @@ export async function POST(
     billingCode,
     billingCodeType,
     description,
+    correctionReason,
+    correctionNote: noteRaw || undefined,
   });
 
   // Mark claim audit_status stale so D7 re-runs on next fetch

@@ -63,7 +63,26 @@ function UploadForm() {
   const { user } = useAuth();
   const searchParams = useSearchParams();
   const needsSbc = searchParams.get("need_sbc") === "1";
-  const [docType, setDocType] = useState<"eob" | "itemized_bill" | "sbc" | "plan_document">(needsSbc ? "sbc" : "eob");
+  // S74.5c §3.1 — consume `?type=<plan|sbc|eob|itemized_bill>` so nudge
+  // buttons (e.g., the Case C/D banner on /claim → "Upload plan") pre-select
+  // the right doc type. `?type=plan` maps to plan_document; unknown values
+  // fall through to the existing `need_sbc` / default branches.
+  const typeParam = searchParams.get("type");
+  const initialDocType: "eob" | "itemized_bill" | "sbc" | "plan_document" =
+    typeParam === "plan"
+      ? "plan_document"
+      : typeParam === "plan_document"
+        ? "plan_document"
+        : typeParam === "sbc"
+          ? "sbc"
+          : typeParam === "eob"
+            ? "eob"
+            : typeParam === "itemized_bill"
+              ? "itemized_bill"
+              : needsSbc
+                ? "sbc"
+                : "eob";
+  const [docType, setDocType] = useState<"eob" | "itemized_bill" | "sbc" | "plan_document">(initialDocType);
   const [uploading, setUploading] = useState(false);
   const [uploaded, setUploaded] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<"uploading" | "uploaded" | "auto_processed" | "pending_review" | "rejected" | null>(null);
