@@ -19,6 +19,12 @@ import { resolvePlanContext } from "@/lib/disputes/plan-context";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
 import { resolveAccountName } from "@/lib/disputes/rerender";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import {
+  computeEvidenceFingerprint,
+  decideDriftAction,
+  loadFingerprintInputForClaim,
+  type DriftDecision,
+} from "@/lib/disputes/evidence-fingerprint";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -93,6 +99,22 @@ export async function GET(
   // recipient block from regressing for legacy dispute_type vocab.
   const resolvedLetterType = resolveLetterTypeFromDispute(dispute);
 
+  // S74.5 D16 — sent_letter immutability + drift detection.
+  // sent_at non-null means user clicked Mark-as-Sent; the sent_letter
+  // snapshot becomes the immutable legal chain-of-custody record. We must
+  // NOT regenerate letter_content in that case. Drift state is surfaced to
+  // the client via driftDecision so the UI can render the banner + cooldown
+  // CTA.
+  const flywheelOn = await isFeatureEnabled(
+    "s74_5_categorization_flywheel_v1",
+  );
+  const sentAt = dispute.sent_at ? new Date(dispute.sent_at as string) : null;
+  const cooldownUntil = dispute.cooldown_until
+    ? new Date(dispute.cooldown_until as string)
+    : null;
+  let driftDecision: DriftDecision | null = null;
+  let currentEvidenceFingerprint: string | null = null;
+
   // Phase 1 + 7: live-resolve plan context from the linked claim, and
   // regenerate letter body if the user has uploaded new plan data since
   // the dispute was drafted.
@@ -101,6 +123,29 @@ export async function GET(
   let regeneratedLetterContent: string | null = null;
   try {
     if (dispute.claim_id) {
+      // S74.5 D16 — compute current evidence fingerprint + drift decision
+      // BEFORE deciding whether to regenerate the letter. Always logged for
+      // observability; only acted on when flag is ON.
+      if (flywheelOn) {
+        const fpInput = await loadFingerprintInputForClaim(
+          supabase,
+          dispute.claim_id as string,
+        );
+        if (fpInput) {
+          currentEvidenceFingerprint = computeEvidenceFingerprint(fpInput);
+          driftDecision = decideDriftAction({
+            storedFingerprint:
+              (dispute.evidence_fingerprint as string | null) ?? null,
+            currentFingerprint: currentEvidenceFingerprint,
+            sentAt,
+            cooldownUntil,
+            lastRefreshAt: dispute.last_refresh_at
+              ? new Date(dispute.last_refresh_at as string)
+              : null,
+          });
+        }
+      }
+
       planContext = await resolvePlanContext(supabase, {
         userId: user.id,
         claimId: dispute.claim_id,
@@ -128,8 +173,28 @@ export async function GET(
         fallbackPlanYear: planContext.fallbackPlan?.planYear,
       });
 
-      // Always regenerate on load. Templating is cheap, and the letter must
-      // reflect the latest plan context, profile name, and evidence signals.
+      // S74.5 D16 — sent_letter immutability guard. Once user clicks
+      // Mark-as-Sent, sent_letter is the legal chain-of-custody record.
+      // Skip regeneration entirely; the client surfaces drift via
+      // driftDecision and renders the (immutable) sent_letter content.
+      // Pre-S74.5 behavior (always regenerate) is preserved when sent_at
+      // is null OR when flag is OFF (sentAt won't gate anything since we
+      // only compute the drift decision when flag is on).
+      const skipRegenerateForSent = flywheelOn && sentAt != null;
+
+      // For drafts: per Subplan §7.5, debounce regeneration when
+      // last_refresh_at within 5 min. Pre-S74.5 always-regenerate behavior
+      // is preserved when flag OFF.
+      const skipRegenerateForDebounce =
+        flywheelOn &&
+        sentAt == null &&
+        driftDecision?.action === "serve_cached_within_debounce";
+
+      const shouldRegenerate = !skipRegenerateForSent && !skipRegenerateForDebounce;
+
+      // Always regenerate on load (unless guarded above). Templating is
+      // cheap, and the letter must reflect the latest plan context,
+      // profile name, and evidence signals.
       //
       // CAREFUL: dispute_outcomes.dispute_type is a vocab category
       // (internal_appeal | negotiation | complaint). LETTER_TEMPLATES is
@@ -138,40 +203,50 @@ export async function GET(
       // letter_type is stashed on metadata.letterType at persist time;
       // fall back to a dispute_type → letter_type mapping for legacy rows.
       const fingerprint = buildFingerprint(planContext, evidence);
-      const { rerenderDisputeLetter } = await import("@/lib/disputes/rerender");
-      regeneratedLetterContent = await rerenderDisputeLetter(supabase, {
-        disputeId: dispute.id,
-        userId: user.id,
-        letterType: resolvedLetterType,
-        claimId: dispute.claim_id,
-        lineItemIds: allLineItemIds,
-        planContext,
-        evidence,
-      });
-      if (regeneratedLetterContent) {
-        console.log("[disputes/[disputeId]] regenerated letter body", {
+      if (shouldRegenerate) {
+        const { rerenderDisputeLetter } = await import("@/lib/disputes/rerender");
+        regeneratedLetterContent = await rerenderDisputeLetter(supabase, {
           disputeId: dispute.id,
-          bodyLength: regeneratedLetterContent.length,
-          snippet: regeneratedLetterContent.slice(0, 120),
-        });
-        await supabase
-          .from("dispute_outcomes")
-          .update({
-            letter_content: regeneratedLetterContent,
-            metadata: {
-              ...(dispute.metadata ?? {}),
-              planContextFingerprint: fingerprint,
-              planContextUpdatedAt: new Date().toISOString(),
-            },
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", dispute.id);
-      } else {
-        console.warn("[disputes/[disputeId]] rerender returned empty body — keeping stored letter", {
-          disputeId: dispute.id,
-          letterType: dispute.dispute_type,
+          userId: user.id,
+          letterType: resolvedLetterType,
           claimId: dispute.claim_id,
+          lineItemIds: allLineItemIds,
+          planContext,
+          evidence,
         });
+        if (regeneratedLetterContent) {
+          console.log("[disputes/[disputeId]] regenerated letter body", {
+            disputeId: dispute.id,
+            bodyLength: regeneratedLetterContent.length,
+            snippet: regeneratedLetterContent.slice(0, 120),
+          });
+          await supabase
+            .from("dispute_outcomes")
+            .update({
+              letter_content: regeneratedLetterContent,
+              metadata: {
+                ...(dispute.metadata ?? {}),
+                planContextFingerprint: fingerprint,
+                planContextUpdatedAt: new Date().toISOString(),
+              },
+              // S74.5 D16 — fingerprint + debounce timer refresh on every
+              // successful regenerate. Cooldown_until is set only at
+              // Mark-as-Sent time.
+              evidence_fingerprint:
+                flywheelOn && currentEvidenceFingerprint
+                  ? currentEvidenceFingerprint
+                  : (dispute.evidence_fingerprint as string | null) ?? null,
+              last_refresh_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", dispute.id);
+        } else {
+          console.warn("[disputes/[disputeId]] rerender returned empty body — keeping stored letter", {
+            disputeId: dispute.id,
+            letterType: dispute.dispute_type,
+            claimId: dispute.claim_id,
+          });
+        }
       }
     }
   } catch (err) {
@@ -215,7 +290,16 @@ export async function GET(
     filedDate: dispute.filed_date,
     resolutionDate: dispute.resolution_date,
     claimId: dispute.claim_id,
-    letterContent: regeneratedLetterContent ?? dispute.letter_content,
+    // S74.5 D16 — if sent_at is set, serve the immutable sent_letter as the
+    // letter content; UI surfaces drift banner via driftState when current
+    // findings differ.
+    letterContent:
+      flywheelOn && sentAt && dispute.sent_letter
+        ? typeof dispute.sent_letter === "string"
+          ? (dispute.sent_letter as string)
+          : ((dispute.sent_letter as Record<string, unknown>).body as string) ??
+            (regeneratedLetterContent ?? dispute.letter_content)
+        : regeneratedLetterContent ?? dispute.letter_content,
     evidencePackage: dispute.evidence_package,
     lineItems,
     planContext: planContext
@@ -231,6 +315,18 @@ export async function GET(
     evidence,
     patientNameMismatch,
     gateUnverified,
+    // S74.5 D16 — drift state for the client to render the banner +
+    // cooldown-gated follow-up CTA. Null when flag OFF.
+    driftState: flywheelOn
+      ? {
+          decision: driftDecision,
+          sentAt: dispute.sent_at as string | null,
+          cooldownUntil: dispute.cooldown_until as string | null,
+          currentFingerprint: currentEvidenceFingerprint,
+          storedFingerprint:
+            (dispute.evidence_fingerprint as string | null) ?? null,
+        }
+      : null,
   });
 }
 

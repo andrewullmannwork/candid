@@ -1,11 +1,22 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useSubscription } from "@/lib/subscription/use-subscription";
 import { Disclaimer } from "@/components/shared/Disclaimer";
 import { disputeUrlForResult } from "@/lib/disputes/url";
+import { CategoryCorrectionModal } from "@/components/claims/CategoryCorrectionModal";
+
+interface CodeIdentityState {
+  identityId: string | null;
+  communitySlug: string | null;
+  promotionState: "proposed" | "corroborated" | "admin_verified" | null;
+  confidence: number | null;
+  conflictsWithCommunity: boolean;
+  userCorrectedAt: string | null;
+  userCorrectionLockedAt: string | null;
+}
 
 interface LineItem {
   id: string;
@@ -13,6 +24,9 @@ interface LineItem {
   billing_code: string | null;
   billing_code_type: string | null;
   service_slug: string | null;
+  billing_code_identity_id: string | null;
+  user_corrected_at: string | null;
+  user_correction_locked_at: string | null;
   description: string | null;
   units: number;
   billed_amount: number | null;
@@ -37,6 +51,13 @@ interface LineItem {
     refundComponent: number;
     forgivenessComponent: number;
   };
+  codeIdentity?: CodeIdentityState | null;
+}
+
+interface CatalogSlug {
+  slug: string;
+  name: string;
+  category: string;
 }
 
 interface AuditFinding {
@@ -46,6 +67,13 @@ interface AuditFinding {
   estimatedOvercharge: number;
   title: string;
   actionable: boolean;
+  // S74.5 D15 Q-E LOCK — set by /api/claims/[claimId]/findings/[findingId]/dismiss.
+  // Dismissed findings are filtered out of the default display; reason corpus
+  // analyzed for false-positive pattern detection (Pattern P-9 candidate).
+  dismissed?: boolean;
+  dismissed_at?: string;
+  dismissed_reason?: string;
+  dismissed_note?: string | null;
 }
 
 interface ClaimData {
@@ -61,6 +89,9 @@ interface ClaimData {
     potentialRecovery: number;
     refundComponent: number;
     forgivenessComponent: number;
+  };
+  flags?: {
+    categorizationFlywheelV1?: boolean;
   };
 }
 
@@ -174,6 +205,139 @@ export function ClaimDetail({
   const [expandedItem, setExpandedItem] = useState<string | null>(focusLineItemId || null);
   const [disputeLoading, setDisputeLoading] = useState(false);
 
+  // S74.5 D6 — CategoryCorrectionModal state.
+  // Catalog fetched lazily on first modal open + cached for subsequent opens.
+  const [catalog, setCatalog] = useState<CatalogSlug[] | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [correctionModalLineId, setCorrectionModalLineId] = useState<string | null>(null);
+  // G5 LOCK — bill-wide "Looks right?" prompt; localStorage-keyed per claim so
+  // it never reappears once dismissed. Dismissal-only — never logs corroboration.
+  const looksRightStorageKey = `claim-${claimId}-looks-right-dismissed`;
+  const [looksRightDismissed, setLooksRightDismissed] = useState(false);
+  // G5 LOCK — when user clicks "No", expand correction affordance to ALL
+  // line items on the bill (not just needsReview ones).
+  const [expandCorrectionToAll, setExpandCorrectionToAll] = useState(false);
+  // Case C/D LOCK (§7.2) — nudge banner dismissal also keyed per claim.
+  const nudgeStorageKey = `claim-${claimId}-plan-doc-nudge-dismissed`;
+  const [nudgeDismissed, setNudgeDismissed] = useState(false);
+  // G4 LOCK — community-vs-user conflict modal queue.
+  // snoozedConflicts is a Set of line IDs the user clicked "Later" on; we
+  // suppress those for the rest of the page mount and surface them again on
+  // the next page load if still unresolved.
+  const [snoozedConflicts, setSnoozedConflicts] = useState<Set<string>>(new Set());
+
+  // D15 Q-E LOCK — dismiss-finding modal state.
+  // dismissTarget = the finding to dismiss; null when modal closed.
+  const [dismissTarget, setDismissTarget] = useState<AuditFinding | null>(null);
+  // Show-dismissed toggle so users can see hidden findings if they want to
+  // un-dismiss (un-dismiss is a Phase 2 follow-up; for now this is read-only).
+  const [showDismissed, setShowDismissed] = useState(false);
+
+  // Read localStorage once on mount per claim.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setLooksRightDismissed(
+      window.localStorage.getItem(looksRightStorageKey) === "1",
+    );
+    setNudgeDismissed(
+      window.localStorage.getItem(nudgeStorageKey) === "1",
+    );
+  }, [looksRightStorageKey, nudgeStorageKey]);
+
+  const flywheelEnabled = Boolean(data?.flags?.categorizationFlywheelV1);
+
+  // Prefetch catalog as soon as flywheel flag is detected as ON, so the
+  // modal opens without a loading delay on the first click. Idempotent —
+  // ensureCatalog short-circuits if catalog already populated.
+  useEffect(() => {
+    if (flywheelEnabled && !catalog && !catalogLoading) {
+      void (async () => {
+        setCatalogLoading(true);
+        try {
+          const res = await fetch("/api/service-catalog");
+          if (res.ok) {
+            const json = (await res.json()) as { items?: CatalogSlug[] };
+            setCatalog(json.items ?? []);
+          } else {
+            setCatalog([]);
+          }
+        } catch {
+          setCatalog([]);
+        } finally {
+          setCatalogLoading(false);
+        }
+      })();
+    }
+  }, [flywheelEnabled, catalog, catalogLoading]);
+
+  // Lazy-load service_catalog on first modal open (kept as fallback for
+  // the rare race where prefetch hasn't completed yet).
+  const ensureCatalog = useCallback(async () => {
+    if (catalog || catalogLoading) return;
+    setCatalogLoading(true);
+    try {
+      const res = await fetch("/api/service-catalog");
+      if (res.ok) {
+        const json = (await res.json()) as { items?: CatalogSlug[] };
+        setCatalog(json.items ?? []);
+      } else {
+        setCatalog([]);
+      }
+    } catch {
+      setCatalog([]);
+    } finally {
+      setCatalogLoading(false);
+    }
+  }, [catalog, catalogLoading]);
+
+  const openCorrectionModal = useCallback(
+    (lineId: string) => {
+      setCorrectionModalLineId(lineId);
+      void ensureCatalog();
+    },
+    [ensureCatalog],
+  );
+
+  const getAuthToken = useCallback(async () => {
+    if (!user) return null;
+    return user.firebaseUser.getIdToken();
+  }, [user]);
+
+  // Refetch claim after a correction lands so the row reflects new slug + the
+  // audit-status=stale mark triggers D7 re-audit on next view (separate todo).
+  const refetchClaim = useCallback(async () => {
+    if (!user) return;
+    try {
+      const token = await user.firebaseUser.getIdToken();
+      const res = await fetch(`/api/claims/${claimId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        setData(await res.json());
+      }
+    } catch (err) {
+      console.error("Refetch after correction failed:", err);
+    }
+  }, [user, claimId]);
+
+  const handleCorrectionSubmitted = useCallback(async () => {
+    await refetchClaim();
+  }, [refetchClaim]);
+
+  const dismissLooksRight = useCallback(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(looksRightStorageKey, "1");
+    }
+    setLooksRightDismissed(true);
+  }, [looksRightStorageKey]);
+
+  const dismissNudge = useCallback(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(nudgeStorageKey, "1");
+    }
+    setNudgeDismissed(true);
+  }, [nudgeStorageKey]);
+
   // When a focus line item is provided, scroll it into view after data loads.
   // The expanded state is already initialized from focusLineItemId via useState,
   // so we only need the scroll side-effect here (no setState needed).
@@ -195,7 +359,23 @@ export function ClaimDetail({
         const res = await fetch(`/api/claims/${claimId}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
-        if (res.ok) {
+        // S74.5 D11 — 410 Gone with mergedIntoClaimId means the URL points
+        // to a merge-loser; the API tells us the canonical winner id.
+        // Re-fetch under the winner id; preserves any in-flight focusLineItemId
+        // because line items themselves stay attached to the loser, but the
+        // user-visible row resolves to the winner.
+        if (res.status === 410) {
+          const body = (await res.json().catch(() => ({}))) as {
+            mergedIntoClaimId?: string;
+          };
+          if (body.mergedIntoClaimId) {
+            const retry = await fetch(
+              `/api/claims/${body.mergedIntoClaimId}`,
+              { headers: { Authorization: `Bearer ${token}` } },
+            );
+            if (retry.ok) setData(await retry.json());
+          }
+        } else if (res.ok) {
           setData(await res.json());
         }
       } catch (err) {
@@ -228,6 +408,46 @@ export function ClaimDetail({
     else primaryLineItems.push(item);
   }
 
+  // S74.5 D6 — detect triggers for surface elements.
+  //
+  // G5 "Looks right?" trigger: at least one primary line item has a
+  // promoted (corroborated or admin_verified) identity row + bill not yet
+  // dismissed. Per Subplan §3 Layer C — surfaces a single bill-level prompt.
+  const hasPromotedLineItem = primaryLineItems.some(
+    (li) =>
+      li.codeIdentity?.promotionState === "corroborated" ||
+      li.codeIdentity?.promotionState === "admin_verified",
+  );
+  const showLooksRightPrompt =
+    flywheelEnabled && !looksRightDismissed && hasPromotedLineItem;
+
+  // Case C/D nudge trigger: flag ON + primary line items exist + NONE have
+  // planCoverage (plan_covered_services empty for this insurance_plan_id, or
+  // claim has no insurance_plan_id at all → Case D).
+  const hasAnyPlanCoverage = primaryLineItems.some(
+    (li) => li.planCoverage !== null,
+  );
+  const showCaseCDNudge =
+    flywheelEnabled &&
+    !nudgeDismissed &&
+    primaryLineItems.length > 0 &&
+    !hasAnyPlanCoverage;
+
+  // G4 conflict-modal queue: any line items where codeIdentity flagged a
+  // community-vs-user mismatch (post-promotion backfill) that hasn't been
+  // resolved yet (no user_correction_locked_at) AND hasn't been snoozed
+  // this session.
+  const conflictingLines = primaryLineItems.filter(
+    (li) =>
+      li.codeIdentity?.conflictsWithCommunity === true &&
+      !snoozedConflicts.has(li.id),
+  );
+  const activeConflictLine = conflictingLines[0] ?? null;
+  const modalLineItem =
+    correctionModalLineId != null
+      ? primaryLineItems.find((li) => li.id === correctionModalLineId) ?? null
+      : null;
+
   return (
     <div>
       {/* Back button + header */}
@@ -251,6 +471,75 @@ export function ClaimDetail({
         </div>
       )}
 
+      {/* S74.5 D6 — Case C/D plan-doc nudge banner. Soft prompt for /claim
+          per Q-C LOCK; HARD gate for dispute generation lives elsewhere. */}
+      {showCaseCDNudge && (
+        <div className="mb-3 rounded-xl border border-amber-100 bg-amber-50 p-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold text-amber-900">
+                We can&apos;t audit what we can&apos;t see.
+              </p>
+              <p className="mt-0.5 text-xs text-amber-800">
+                Upload a Plan Document or Summary of Benefits and we&apos;ll find
+                what you&apos;re owed.
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => router.push("/upload?type=plan")}
+                className="rounded bg-amber-700 px-3 py-1 text-xs font-semibold text-white hover:bg-amber-800"
+              >
+                Upload plan
+              </button>
+              <button
+                type="button"
+                onClick={dismissNudge}
+                className="text-xs text-amber-700 hover:text-amber-900"
+                aria-label="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* S74.5 D6 G5 LOCK — bill-wide "Looks right?" prompt. Triggers when at
+          least one line item has a promoted identity row (corroborated or
+          admin_verified). Yes-click is dismissal-only — NEVER logs a
+          corroboration signal. No-click expands inline category editing to
+          every line on the bill. */}
+      {showLooksRightPrompt && (
+        <div className="mb-3 rounded-xl border border-blue-100 bg-blue-50 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs font-semibold text-blue-900">
+              Does this categorization look right?
+            </p>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  dismissLooksRight();
+                  setExpandCorrectionToAll(true);
+                }}
+                className="rounded border border-blue-300 bg-white px-3 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+              >
+                No, let me fix it
+              </button>
+              <button
+                type="button"
+                onClick={dismissLooksRight}
+                className="rounded bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-700"
+              >
+                Yes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Line items table — 7-col layout per user preference.
           Code, Coverage, Flags each get their own column. Numbers right-aligned. */}
       <div className="bg-white border border-gray-100 rounded-xl overflow-hidden mb-4">
@@ -265,7 +554,14 @@ export function ClaimDetail({
         </div>
 
         {primaryLineItems.map((item) => {
-          const findings = ((item.metadata?.auditFindings || []) as AuditFinding[]);
+          const allFindings = ((item.metadata?.auditFindings || []) as AuditFinding[]);
+          // S74.5 D15 Q-E LOCK — filter dismissed findings unless user
+          // toggled showDismissed. Dismissed entries are preserved on the
+          // row metadata for flywheel telemetry but hidden from default view.
+          const findings = showDismissed
+            ? allFindings
+            : allFindings.filter((f) => !f.dismissed);
+          const dismissedCount = allFindings.length - findings.length;
           const isExpanded = expandedItem === item.id;
           const coverageBadge = item.coverageStatus ? COVERAGE_BADGE[item.coverageStatus] : null;
 
@@ -285,14 +581,93 @@ export function ClaimDetail({
           const hasGap = billed > 0 && rawInsurancePaid === 0 && owed === 0;
           const gapRelevant = hasGap && item.coverageStatus !== "not_covered";
 
+          // S74.5 D6 — category pill state per Subplan §3 Layer C. Only
+          // renders when flywheel flag ON. Click opens correction modal
+          // without bubbling to the row-expand toggle.
+          const showCategoryPill =
+            flywheelEnabled &&
+            (item.codeIdentity != null ||
+              expandCorrectionToAll ||
+              item.user_corrected_at != null);
+          const pillState: "user_corrected" | "needs_review" | "auto" =
+            item.user_corrected_at
+              ? "user_corrected"
+              : item.codeIdentity?.promotionState === "proposed" ||
+                  (item.codeIdentity != null &&
+                    item.codeIdentity.identityId == null)
+                ? "needs_review"
+                : "auto";
+          const pillClass =
+            pillState === "user_corrected"
+              ? "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100"
+              : pillState === "needs_review"
+                ? "bg-yellow-50 text-yellow-800 border-yellow-200 hover:bg-yellow-100"
+                : "bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100";
+          const pillLabel =
+            pillState === "user_corrected"
+              ? "Your update"
+              : pillState === "needs_review"
+                ? "Needs review"
+                : "Edit category";
+
           return (
             <div key={item.id} data-line-item-id={item.id}>
-              <button
+              <div
+                role="button"
+                tabIndex={0}
                 onClick={() => setExpandedItem(isExpanded ? null : item.id)}
-                className="w-full grid grid-cols-12 gap-4 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 hover:bg-gray-50"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setExpandedItem(isExpanded ? null : item.id);
+                  }
+                }}
+                className="w-full grid grid-cols-12 gap-4 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
               >
-                <div className="col-span-4 text-xs text-gray-900 truncate">
-                  {item.description || item.service_slug?.replace(/_/g, " ") || "Unknown"}
+                <div className="col-span-4 text-xs text-gray-900">
+                  <div className="truncate">
+                    {item.description || item.service_slug?.replace(/_/g, " ") || "Unknown"}
+                  </div>
+                  {showCategoryPill && (
+                    <div className="mt-1 flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openCorrectionModal(item.id);
+                        }}
+                        className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors ${pillClass}`}
+                        title={
+                          pillState === "user_corrected"
+                            ? "You changed this category. Click to edit again."
+                            : pillState === "needs_review"
+                              ? "We couldn't auto-categorize this. Click to set."
+                              : "Click to change category"
+                        }
+                      >
+                        <svg
+                          className="h-2.5 w-2.5"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                          aria-hidden
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                          />
+                        </svg>
+                        {pillLabel}
+                      </button>
+                      {item.service_slug && (
+                        <span className="font-mono text-[10px] text-gray-400">
+                          {item.service_slug}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div className="col-span-2 text-xs text-gray-500 font-mono truncate">
                   {item.billing_code || "—"}
@@ -325,7 +700,7 @@ export function ClaimDetail({
                     </span>
                   )}
                 </div>
-              </button>
+              </div>
 
               {/* Inline gap explanation when expanded and there's a gap.
                   Amber replaced with white per user preference — colors were
@@ -457,25 +832,70 @@ export function ClaimDetail({
               )}
 
               {/* Expanded: show findings */}
-              {isExpanded && findings.length > 0 && (
+              {isExpanded && (findings.length > 0 || (showDismissed && dismissedCount > 0)) && (
                 <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 space-y-2">
+                  {/* S74.5 D15 Q-E LOCK — dismissed count + show/hide toggle */}
+                  {flywheelEnabled && dismissedCount > 0 && (
+                    <div className="flex items-center justify-between text-[10px] text-gray-500 px-1">
+                      <span>
+                        {dismissedCount} dismissed finding{dismissedCount === 1 ? "" : "s"} hidden
+                      </span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowDismissed((v) => !v);
+                        }}
+                        className="text-blue-600 hover:text-blue-700"
+                      >
+                        {showDismissed ? "Hide dismissed" : "Show dismissed"}
+                      </button>
+                    </div>
+                  )}
                   {findings.map((f) => (
                     <div
                       key={f.id}
-                      className={`p-3 rounded-lg border text-xs ${SEVERITY_COLORS[f.severity] || "text-gray-700 bg-gray-50 border-gray-200"}`}
+                      className={`p-3 rounded-lg border text-xs ${
+                        f.dismissed
+                          ? "text-gray-500 bg-gray-100 border-gray-200 opacity-70"
+                          : SEVERITY_COLORS[f.severity] || "text-gray-700 bg-gray-50 border-gray-200"
+                      }`}
                     >
-                      <div className="flex justify-between items-start">
-                        <div>
+                      <div className="flex justify-between items-start gap-2">
+                        <div className="min-w-0">
                           <p className="font-semibold">{f.title}</p>
                           <p className="mt-0.5 opacity-80">
                             {f.type.replace(/_/g, " ")} · {f.severity}
+                            {f.dismissed && f.dismissed_reason && (
+                              <>
+                                {" "}· dismissed:{" "}
+                                <span className="italic">
+                                  {f.dismissed_reason.replace(/_/g, " ")}
+                                </span>
+                              </>
+                            )}
                           </p>
                         </div>
-                        {f.estimatedOvercharge > 0 && (
-                          <p className="font-bold shrink-0">
-                            -${f.estimatedOvercharge.toLocaleString()}
-                          </p>
-                        )}
+                        <div className="flex items-start gap-2 shrink-0">
+                          {f.estimatedOvercharge > 0 && (
+                            <p className="font-bold">
+                              -${f.estimatedOvercharge.toLocaleString()}
+                            </p>
+                          )}
+                          {flywheelEnabled && !f.dismissed && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDismissTarget(f);
+                              }}
+                              className="rounded border border-current px-2 py-0.5 text-[10px] font-medium opacity-70 hover:opacity-100"
+                              title="Hide this finding with a reason"
+                            >
+                              Dismiss
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -609,6 +1029,187 @@ export function ClaimDetail({
       )}
 
       <Disclaimer variant="coverage_check" />
+
+      {/* S74.5 D6 — Category correction modal. Lazy-renders when
+          correctionModalLineId is set AND catalog is loaded. Catalog is
+          pre-fetched on data load (useEffect above) so first-click delay
+          is rare. */}
+      {flywheelEnabled && modalLineItem && catalog && (
+        <CategoryCorrectionModal
+          open={true}
+          claimId={claimId}
+          lineItemId={modalLineItem.id}
+          billingCode={modalLineItem.billing_code}
+          description={modalLineItem.description}
+          currentSlug={modalLineItem.service_slug}
+          catalog={catalog}
+          onClose={() => setCorrectionModalLineId(null)}
+          onSubmitted={handleCorrectionSubmitted}
+          getAuthToken={getAuthToken}
+        />
+      )}
+
+      {/* S74.5 D6 G4 LOCK — community-vs-user conflict modal. Surfaces when
+          a community/admin promotion landed a slug that differs from the
+          user's prior correction. Endpoint resolution wired below. */}
+      {flywheelEnabled && activeConflictLine && (
+        <CommunityConflictModal
+          claimId={claimId}
+          lineItem={activeConflictLine}
+          onClose={() =>
+            setSnoozedConflicts((prev) => {
+              const next = new Set(prev);
+              next.add(activeConflictLine.id);
+              return next;
+            })
+          }
+          onResolved={async () => {
+            await refetchClaim();
+          }}
+          getAuthToken={getAuthToken}
+        />
+      )}
+
+      {/* S74.5 D15 Q-E LOCK — dismiss-finding modal. Reason logged to
+          flywheel telemetry; finding hidden on subsequent renders. */}
+      {flywheelEnabled && dismissTarget && (
+        <DismissFindingModal
+          claimId={claimId}
+          finding={dismissTarget}
+          onClose={() => setDismissTarget(null)}
+          onSubmitted={async () => {
+            setDismissTarget(null);
+            await refetchClaim();
+          }}
+          getAuthToken={getAuthToken}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── S74.5 D6 G4 LOCK — Community-vs-user conflict modal ───────────────────
+//
+// Surfaces when a Pattern 1 #3 promotion lands a different slug than the
+// user previously chose. Per Subplan §3 Layer C, the auto-switch already
+// happened server-side during backfill; this modal lets the user revert
+// (sets user_correction_locked_at sticky per-account) or keep the community
+// value. Resolution endpoint: POST /api/claims/[claimId]/line-items/[lineId]/resolve-conflict
+
+function CommunityConflictModal({
+  claimId,
+  lineItem,
+  onClose,
+  onResolved,
+  getAuthToken,
+}: {
+  claimId: string;
+  lineItem: LineItem;
+  onClose: () => void;
+  onResolved: () => Promise<void> | void;
+  getAuthToken: () => Promise<string | null>;
+}) {
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const userOriginalSlug =
+    (lineItem.metadata?.user_correction_pre_backfill_slug as
+      | string
+      | undefined) ?? null;
+  const communitySlug = lineItem.codeIdentity?.communitySlug ?? null;
+
+  async function submit(action: "revert" | "accept") {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const token = await getAuthToken();
+      if (!token) throw new Error("Sign-in expired. Please reload and try again.");
+      const res = await fetch(
+        `/api/claims/${claimId}/line-items/${lineItem.id}/resolve-conflict`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ action }),
+        },
+      );
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || `Resolve failed (${res.status})`);
+      }
+      await onResolved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Resolve failed");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="community-conflict-title"
+    >
+      <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
+        <h2 id="community-conflict-title" className="mb-2 text-base font-semibold text-gray-900">
+          The community updated this category
+        </h2>
+        <p className="mb-4 text-sm text-gray-700">
+          We&apos;ve updated <span className="font-mono">{lineItem.billing_code}</span>{" "}
+          to <span className="font-mono">{communitySlug}</span> based on
+          corroboration from other users. You previously set it
+          {userOriginalSlug ? (
+            <>
+              {" "}
+              to <span className="font-mono">{userOriginalSlug}</span>.
+            </>
+          ) : (
+            " yourself."
+          )}
+        </p>
+        <p className="mb-4 text-xs text-gray-500">
+          Revert to keep your choice for this account (your direct evidence wins;
+          future community shifts won&apos;t auto-override).
+        </p>
+
+        {error && (
+          <div className="mb-3 rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700">
+            {error}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => submit("accept")}
+            disabled={submitting}
+            className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            Keep community value
+          </button>
+          <button
+            type="button"
+            onClick={() => submit("revert")}
+            disabled={submitting}
+            className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+          >
+            Revert to my choice
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="rounded px-3 py-2 text-sm text-gray-500 hover:text-gray-700 disabled:opacity-50"
+            aria-label="Decide later"
+          >
+            Later
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1005,6 +1606,217 @@ this service when rendered in-network...`;
             <p className="text-[11px] text-gray-500 italic">Letter not drafted yet.</p>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── S74.5 D15 Q-E LOCK — Dismiss-finding modal ────────────────────────────
+//
+// Lets the user hide a finding with a reason. The reason corpus is preserved
+// on the row metadata (auditFindings[].dismissed_reason) for flywheel
+// telemetry — false-positive pattern detection feeds future Pattern P-9
+// promotion (e.g., "always dismiss zero_cost_share_overcharge on prompt_pay
+// codes" → admin queue → registry update).
+//
+// Reason picker matches the Subplan §7.3 LOCK exactly + "other" free-text
+// fallback per Q-E.
+
+const DISMISS_REASONS: Array<{
+  value: string;
+  label: string;
+  hint: string;
+}> = [
+  {
+    value: "legitimate_adjustment",
+    label: "Legitimate adjustment",
+    hint: "I confirmed with the provider this adjustment is correct.",
+  },
+  {
+    value: "prior_balance_carryover",
+    label: "Prior balance carryover",
+    hint: "This is a leftover balance from a different claim.",
+  },
+  {
+    value: "prompt_pay_discount",
+    label: "Prompt-pay discount",
+    hint: "I got an early-payment discount that explains the gap.",
+  },
+  {
+    value: "state_mandate_adjustment",
+    label: "State-mandate adjustment",
+    hint: "State law required this specific adjustment.",
+  },
+  {
+    value: "other",
+    label: "Other (tell us)",
+    hint: "Help us improve — explain in one line.",
+  },
+];
+
+function DismissFindingModal({
+  claimId,
+  finding,
+  onClose,
+  onSubmitted,
+  getAuthToken,
+}: {
+  claimId: string;
+  finding: AuditFinding;
+  onClose: () => void;
+  onSubmitted: () => Promise<void> | void;
+  getAuthToken: () => Promise<string | null>;
+}) {
+  const [reason, setReason] = useState<string>("legitimate_adjustment");
+  const [note, setNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (reason === "other" && !note.trim()) {
+      setError("Please add a short note so we can learn from this.");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const token = await getAuthToken();
+      if (!token) throw new Error("Sign-in expired. Please reload and try again.");
+      const res = await fetch(
+        `/api/claims/${claimId}/findings/${finding.id}/dismiss`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ reason, note: note.trim() || undefined }),
+        },
+      );
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || `Dismiss failed (${res.status})`);
+      }
+      await onSubmitted();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Dismiss failed");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="dismiss-finding-title"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="w-full max-w-lg rounded-lg bg-white p-6 shadow-xl">
+        <div className="mb-4 flex items-start justify-between">
+          <h2
+            id="dismiss-finding-title"
+            className="text-lg font-semibold text-gray-900"
+          >
+            Hide this finding?
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600"
+            aria-label="Close"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="mb-4 rounded border border-gray-200 bg-gray-50 p-3 text-sm">
+          <div className="font-medium text-gray-900">{finding.title}</div>
+          <div className="mt-1 text-xs text-gray-600">
+            {finding.type.replace(/_/g, " ")} · {finding.severity}
+            {finding.estimatedOvercharge > 0 && (
+              <> · ${finding.estimatedOvercharge.toLocaleString()}</>
+            )}
+          </div>
+        </div>
+
+        <form onSubmit={handleSubmit}>
+          <p className="mb-2 text-xs text-gray-600">
+            Why are you hiding this? Your answer helps us tune the audit.
+          </p>
+
+          <fieldset className="mb-4 space-y-2">
+            {DISMISS_REASONS.map((r) => (
+              <label
+                key={r.value}
+                className={`flex cursor-pointer items-start gap-2 rounded border p-2 text-sm transition-colors ${
+                  reason === r.value
+                    ? "border-blue-300 bg-blue-50"
+                    : "border-gray-200 hover:bg-gray-50"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="dismiss-reason"
+                  value={r.value}
+                  checked={reason === r.value}
+                  onChange={() => setReason(r.value)}
+                  className="mt-0.5"
+                />
+                <span className="min-w-0">
+                  <span className="block font-medium text-gray-900">{r.label}</span>
+                  <span className="block text-xs text-gray-500">{r.hint}</span>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+
+          {reason === "other" && (
+            <div className="mb-4">
+              <label
+                htmlFor="dismiss-note"
+                className="mb-1 block text-xs font-medium text-gray-700"
+              >
+                Tell us what&apos;s going on
+              </label>
+              <textarea
+                id="dismiss-note"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                rows={3}
+                maxLength={500}
+                placeholder="One short sentence is plenty."
+                className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+          )}
+
+          {error && (
+            <div className="mb-3 rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700">
+              {error}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={submitting}
+              className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {submitting ? "Hiding..." : "Hide finding"}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );

@@ -300,6 +300,12 @@ export interface BackfillResult {
  * Identifies conflicting users (those whose existing service_slug differs
  * from the newly-promoted slug AND not locked) so D6 conflict modal can fire
  * on their next /claim view.
+ *
+ * G4 LOCK preservation: for any row with a prior user_corrected_at, we
+ * snapshot the user's slug into metadata.user_correction_pre_backfill_slug
+ * BEFORE overwriting service_slug. The D6 CommunityConflictModal reads this
+ * snapshot to render "you previously set it to X" copy; the
+ * resolve-conflict endpoint restores it on Revert.
  */
 export async function backfillCorroboratedMapping(
   identityId: string,
@@ -310,7 +316,9 @@ export async function backfillCorroboratedMapping(
   // 1. Identify rows that need updating (existing slug differs + not locked)
   const { data: conflictRows } = await supabase
     .from("claim_line_items")
-    .select("id, claim_id, service_slug, claims(user_id)")
+    .select(
+      "id, claim_id, service_slug, user_corrected_at, metadata, claims(user_id)",
+    )
     .eq("billing_code_identity_id", identityId)
     .is("user_correction_locked_at", null)
     .neq("service_slug", newSlug);
@@ -328,7 +336,30 @@ export async function backfillCorroboratedMapping(
     ),
   );
 
-  // 2. Update all unlocked rows with stale slug
+  // 2. For rows with user_corrected_at, snapshot prior slug into metadata
+  // BEFORE the slug overwrite below. Allows G4 Revert action to restore.
+  const userCorrectedRows = (conflictRows ?? []).filter(
+    (r) => r.user_corrected_at != null,
+  );
+  for (const row of userCorrectedRows) {
+    const meta = (row.metadata as Record<string, unknown> | null) ?? {};
+    // Don't clobber an existing snapshot — if user already saw + dismissed a
+    // prior conflict on this same row, the original-original slug is what
+    // matters; this iteration's snapshot is a duplicate.
+    if (meta.user_correction_pre_backfill_slug != null) continue;
+    await supabase
+      .from("claim_line_items")
+      .update({
+        metadata: {
+          ...meta,
+          user_correction_pre_backfill_slug: row.service_slug,
+          user_correction_pre_backfill_at: new Date().toISOString(),
+        },
+      })
+      .eq("id", row.id);
+  }
+
+  // 3. Update all unlocked rows with stale slug
   const { data: updated, error: updateErr } = await supabase
     .from("claim_line_items")
     .update({ service_slug: newSlug })

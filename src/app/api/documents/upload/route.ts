@@ -173,8 +173,42 @@ export async function POST(req: NextRequest) {
   const storagePath = `${user.id}/${documentId}.${ext}`;
   const contentType = file.type || (isHeic ? "image/heic" : "application/octet-stream");
 
-  // Upload to storage
   const buffer = Buffer.from(await file.arrayBuffer());
+
+  // S74.5 D11 (Session 83) — ingestion-layer file-hash dedup. Compute SHA-256
+  // of the file bytes; if (user_id, file_hash) already exists in documents,
+  // short-circuit and return the existing documentId. This prevents the
+  // duplicate-claims pipeline that motivated D11 from re-firing whenever a
+  // user re-uploads the same PDF. Hash is computed in-memory (file already
+  // loaded for storage upload anyway), so the check has zero extra IO.
+  // Comparison-purpose uploads are EXCLUDED from dedup — by design those
+  // intentionally upload alternate plan docs that may share filenames or
+  // even bytes if the user copies one comparison to another slot; the
+  // /compare flow needs distinct documents rows per slot.
+  const fileHash = computeFileHash(buffer);
+  if (purpose !== "comparison") {
+    const { data: existingDoc } = await supabase
+      .from("documents")
+      .select("id, doc_type, status, file_name, created_at")
+      .eq("user_id", user.id)
+      .eq("file_hash", fileHash)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (existingDoc) {
+      console.log(
+        `[upload] file-hash dedup hit — reusing existing documentId ${existingDoc.id} for user ${user.id}`,
+      );
+      return NextResponse.json({
+        documentId: existingDoc.id as string,
+        status: existingDoc.status as string,
+        deduplicated: true,
+        existingFileName: existingDoc.file_name as string,
+      });
+    }
+  }
+
+  // Upload to storage
   const { error: uploadError } = await supabase.storage
     .from("documents")
     .upload(storagePath, buffer, { contentType });
@@ -202,6 +236,13 @@ export async function POST(req: NextRequest) {
     doc_type: docType,
     consent_event_id: consentEvent.id,
     status: "uploaded",
+    // S74.5 D11 — write the hash so future re-uploads dedup at the check
+    // above. Pre-mig 090 DBs will reject this insert; tolerated by wrapping
+    // the file_hash column write in a follow-up UPDATE pattern (same as
+    // mig 078 purpose handling). Simpler: insert with hash inline; if mig
+    // is unapplied the entire insert fails (loud rather than silent). At
+    // this point mig 090 is a hard prereq.
+    file_hash: fileHash,
   });
 
   if (dbError) {

@@ -8,6 +8,7 @@
 // time to detect drift after category corrections.
 
 import * as crypto from "crypto";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AuditFinding } from "../billing/types";
 
 interface LineItemSlugInput {
@@ -15,10 +16,73 @@ interface LineItemSlugInput {
   line_number?: number;
 }
 
-interface FingerprintInput {
+export interface FingerprintInput {
   findings: Array<Pick<AuditFinding, "type"> & { slug?: string | null; amount?: number }>;
   lineItems: LineItemSlugInput[];
   totalRecoveryEstimate: number;
+}
+
+/**
+ * Load the FingerprintInput shape from a persisted claim. Reads
+ * claim_line_items (service_slug + metadata.auditFindings) plus
+ * claim.metadata.auditSummary.totalEstimatedOvercharge.
+ *
+ * Returns null if the claim or line items can't be loaded.
+ */
+export async function loadFingerprintInputForClaim(
+  supabase: SupabaseClient,
+  claimId: string,
+): Promise<FingerprintInput | null> {
+  const { data: claim } = await supabase
+    .from("claims")
+    .select("id, metadata")
+    .eq("id", claimId)
+    .maybeSingle();
+  if (!claim) return null;
+
+  const { data: lineItems } = await supabase
+    .from("claim_line_items")
+    .select("line_number, service_slug, metadata")
+    .eq("claim_id", claimId)
+    .order("line_number", { ascending: true });
+
+  const claimMeta = (claim.metadata as Record<string, unknown> | null) ?? {};
+  const auditSummary =
+    (claimMeta.auditSummary as { totalEstimatedOvercharge?: number } | undefined) ??
+    null;
+  const totalRecoveryEstimate = Number(
+    auditSummary?.totalEstimatedOvercharge ?? 0,
+  );
+
+  // Findings live on each line_item.metadata.auditFindings; flatten + dedup.
+  // The fingerprint cares about distinct (type, slug, amount) tuples.
+  const findings: FingerprintInput["findings"] = [];
+  const seen = new Set<string>();
+  for (const li of lineItems ?? []) {
+    const liMeta = (li.metadata as Record<string, unknown> | null) ?? {};
+    const items =
+      (liMeta.auditFindings as
+        | Array<{ type?: string; estimatedOvercharge?: number }>
+        | undefined) ?? [];
+    for (const f of items) {
+      const type = f.type ?? "unknown";
+      const slug = (li.service_slug as string | null) ?? null;
+      const amount = Number(f.estimatedOvercharge ?? 0);
+      const key = `${type}|${slug ?? ""}|${amount}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      findings.push({ type: type as AuditFinding["type"], slug, amount });
+    }
+  }
+
+  return {
+    findings,
+    lineItems: (lineItems ?? []).map((li) => ({
+      service_slug: (li.service_slug as string | null) ?? null,
+      line_number: li.line_number as number,
+    })),
+    totalRecoveryEstimate,
+  };
 }
 
 export function computeEvidenceFingerprint(input: FingerprintInput): string {
@@ -36,7 +100,6 @@ export function computeEvidenceFingerprint(input: FingerprintInput): string {
       }),
     line_item_slugs: input.lineItems
       .map((li) => li.service_slug ?? null)
-      .filter((s): s is string | null => true)
       .sort((a, b) => (a ?? "").localeCompare(b ?? "")),
     total_recovery_cents: Math.round(input.totalRecoveryEstimate * 100),
   };

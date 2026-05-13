@@ -112,10 +112,13 @@ export async function GET(req: NextRequest) {
   // surface duplicates as separate cards on /claim. Display-layer dedup; the
   // duplicate dispute_outcomes rows in the DB are untouched (a proper fix
   // lives at the ingestion layer + needs migration to merge existing dupes).
+  // S74.5 D11 — exclude soft-deleted claims (merge losers + future
+  // user-requested erasures). Filter is partial-index-backed (idx_claims_user_live).
   const { data: rawClaims, error } = await supabase
     .from("claims")
     .select("*")
     .eq("user_id", user.id)
+    .is("deleted_at", null)
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -302,6 +305,7 @@ export async function GET(req: NextRequest) {
     .from("claims")
     .select("id, status, total_billed, total_patient_responsibility, source_document_id, date_of_service, metadata, created_at")
     .eq("user_id", user.id)
+    .is("deleted_at", null)
     .order("created_at", { ascending: false });
   const allClaims = dedupBillsByFingerprint((allClaimsRaw as RawClaim[]) || []);
 

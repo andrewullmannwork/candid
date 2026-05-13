@@ -11,6 +11,8 @@ import {
   resolveStillOutstanding,
   type PlanCoverageInput,
 } from "@/lib/claims/recovery-math";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { maybeReauditClaim } from "@/lib/audit/reaudit";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -57,12 +59,98 @@ export async function GET(
     return NextResponse.json({ error: "Claim not found" }, { status: 404 });
   }
 
+  // S74.5 D11 — if this claim was soft-deleted as a merge loser, surface the
+  // canonical (winner) claim_id so the client can redirect. If soft-deleted
+  // for any other reason (compliance erasure, etc.), 404 — the data is gone.
+  if (claim.deleted_at) {
+    if (claim.merged_into_claim_id) {
+      return NextResponse.json(
+        {
+          error: "Claim merged",
+          mergedIntoClaimId: claim.merged_into_claim_id as string,
+        },
+        { status: 410 },
+      );
+    }
+    return NextResponse.json({ error: "Claim not found" }, { status: 404 });
+  }
+
+  // S74.5 D6 — read flywheel flag once per request; surfaces to client so it
+  // knows whether to render category-correction UI on line items.
+  const flywheelEnabled = await isFeatureEnabled(
+    "s74_5_categorization_flywheel_v1",
+  );
+
   // Fetch line items
-  const { data: lineItems } = await supabase
+  let { data: lineItems } = await supabase
     .from("claim_line_items")
     .select("*")
     .eq("claim_id", claimId)
     .order("line_number", { ascending: true });
+
+  // S74.5 D7 — view-fetch re-audit hook (1/min + 5/day throttle inside).
+  // Runs only when flag is ON AND claim is marked stale. On success, the
+  // claim metadata + line_items metadata are refreshed so the response
+  // below reflects the new findings. We re-read after to pick them up.
+  let reauditResult: Awaited<ReturnType<typeof maybeReauditClaim>> | null = null;
+  if (flywheelEnabled && lineItems && lineItems.length > 0) {
+    reauditResult = await maybeReauditClaim(supabase, claim, lineItems);
+    if (reauditResult.reaudited) {
+      // Re-read updated rows so the response reflects fresh findings.
+      const refresh = await supabase
+        .from("claim_line_items")
+        .select("*")
+        .eq("claim_id", claimId)
+        .order("line_number", { ascending: true });
+      lineItems = refresh.data ?? lineItems;
+      const refreshedClaim = await supabase
+        .from("claims")
+        .select("*")
+        .eq("id", claimId)
+        .eq("user_id", user.id)
+        .single();
+      if (refreshedClaim.data) Object.assign(claim, refreshedClaim.data);
+    }
+  }
+
+  // S74.5 D6 — when the flywheel flag is ON and line items are linked to a
+  // billing_code_identity row, fetch the community/admin-verified slug so the
+  // client can render the G4 conflict-resolution modal when the community
+  // value differs from the user's row. Bounded by distinct identity_ids per
+  // claim (small fanout — typically <10).
+  const identityMap = new Map<
+    string,
+    {
+      service_slug: string | null;
+      promotion_state: "proposed" | "corroborated" | "admin_verified";
+      confidence: number;
+    }
+  >();
+  if (flywheelEnabled && lineItems) {
+    const identityIds = Array.from(
+      new Set(
+        lineItems
+          .map((li) => li.billing_code_identity_id as string | null)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    );
+    if (identityIds.length > 0) {
+      const { data: identities } = await supabase
+        .from("billing_code_identity")
+        .select("id, service_slug, promotion_state, confidence")
+        .in("id", identityIds);
+      for (const row of identities ?? []) {
+        identityMap.set(row.id as string, {
+          service_slug: row.service_slug as string | null,
+          promotion_state: row.promotion_state as
+            | "proposed"
+            | "corroborated"
+            | "admin_verified",
+          confidence: Number(row.confidence ?? 0.5),
+        });
+      }
+    }
+  }
 
   // Fetch coverage status for each line item's service_slug
   const coverageMap = new Map<string, { covered: boolean | null; copay: number | null; coinsurance: number | null; source: string | null }>();
@@ -115,6 +203,22 @@ export async function GET(
     });
     const recovery = computeRecovery(billed, stillOutstanding, coverage);
 
+    // S74.5 D6 — enrich with code-identity state for the correction pill +
+    // G4 conflict modal trigger. Only populated when flywheel flag is ON.
+    const identityId = item.billing_code_identity_id as string | null;
+    const identity = identityId ? identityMap.get(identityId) ?? null : null;
+    const communitySlug = identity?.service_slug ?? null;
+    const isPromoted =
+      identity?.promotion_state === "corroborated" ||
+      identity?.promotion_state === "admin_verified";
+    const conflictsWithCommunity =
+      flywheelEnabled &&
+      isPromoted &&
+      communitySlug !== null &&
+      item.service_slug !== null &&
+      item.service_slug !== communitySlug &&
+      !item.user_correction_locked_at;
+
     return {
       ...item,
       coverageStatus: coverage
@@ -126,6 +230,18 @@ export async function GET(
           : null,
       planCoverage: coverage || null,
       recovery,
+      codeIdentity: flywheelEnabled
+        ? {
+            identityId,
+            communitySlug,
+            promotionState: identity?.promotion_state ?? null,
+            confidence: identity?.confidence ?? null,
+            conflictsWithCommunity,
+            userCorrectedAt: (item.user_corrected_at as string | null) ?? null,
+            userCorrectionLockedAt:
+              (item.user_correction_locked_at as string | null) ?? null,
+          }
+        : null,
     };
   });
 
@@ -202,5 +318,11 @@ export async function GET(
     disputes: disputes || [],
     relatedClaims,
     recovery: claimRecovery,
+    flags: {
+      categorizationFlywheelV1: flywheelEnabled,
+    },
+    // S74.5 D7 — surface re-audit outcome for telemetry + client toasts.
+    // null when flag off or claim wasn't stale.
+    reaudit: reauditResult,
   });
 }

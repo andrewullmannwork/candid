@@ -10,6 +10,7 @@ const adminNav = [
   { href: "/admin/corrections", label: "Benefit Corrections" },
   { href: "/admin/pipeline", label: "Benefit Pipeline" },
   { href: "/admin/claims", label: "Claims & Disputes" },
+  { href: "/admin/code-identity-review", label: "Code Identity Review" },
   { href: "/admin/consent", label: "Consent Audit" },
   { href: "/admin/documents/review", label: "Document Review" },
   { href: "/admin/flags", label: "Feature Flags" },

@@ -12,6 +12,11 @@ import { createServerClient } from "@/lib/supabase/server";
 import { reparseField } from "@/lib/plan/reparse-field";
 import { loadDecorationContext } from "@/lib/plan/analyze-decoration";
 import type { AuditReport, DisputeLetterType } from "@/lib/billing/types";
+import {
+  computeEvidenceFingerprint,
+  loadFingerprintInputForClaim,
+} from "@/lib/disputes/evidence-fingerprint";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
 
 export async function POST(req: NextRequest) {
   try {
@@ -255,6 +260,39 @@ export async function POST(req: NextRequest) {
       } catch (err) {
         if (err instanceof Error && err.message !== "feature_disabled") {
           console.error("[disputes] Failed to persist dispute (non-fatal):", err);
+        }
+      }
+
+      // S74.5 D16 — compute initial evidence_fingerprint and persist on the
+      // dispute row. View endpoint compares stored vs current to detect drift
+      // after subsequent category corrections. Only fires when flag ON +
+      // dispute persisted + claimId present. Non-blocking on failure.
+      if (disputeId && body.claimId) {
+        try {
+          const flywheelOn = await isFeatureEnabled(
+            "s74_5_categorization_flywheel_v1",
+          );
+          if (flywheelOn) {
+            const input = await loadFingerprintInputForClaim(
+              supabase,
+              body.claimId as string,
+            );
+            if (input) {
+              const evidenceFingerprint = computeEvidenceFingerprint(input);
+              await supabase
+                .from("dispute_outcomes")
+                .update({
+                  evidence_fingerprint: evidenceFingerprint,
+                  last_refresh_at: new Date().toISOString(),
+                })
+                .eq("id", disputeId);
+            }
+          }
+        } catch (err) {
+          console.error(
+            "[disputes/generate] evidence_fingerprint write failed (non-fatal):",
+            err,
+          );
         }
       }
 

@@ -76,6 +76,9 @@ export async function runZeroCostShareCheck(
   // Single OR-style query — Supabase doesn't natively support tuple IN,
   // so we issue one query per (code, codeType) using .in on code with
   // post-filter on codeType. Small volume per bill (<10 codes); acceptable.
+  // Order by coverage_basis ascending so when a code appears under both
+  // ACA_preventive + ACIP_vaccine, the ACA row sorts first deterministically
+  // (matchingRows[0] below). Stable for snapshot tests + dispute citations.
   const { data: rows, error } = await supabase
     .from("zero_cost_share_codes")
     .select(
@@ -85,7 +88,8 @@ export async function runZeroCostShareCheck(
       "billing_code",
       lookupKeys.map((k) => k.code),
     )
-    .is("retired_at", null);
+    .is("retired_at", null)
+    .order("coverage_basis", { ascending: true });
 
   if (error) {
     console.warn("[zero-cost-share] lookup failed", error);

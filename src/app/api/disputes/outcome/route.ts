@@ -13,6 +13,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { updateDisputeOutcome, getUserDisputes } from "@/lib/disputes/persist";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
+import {
+  computeCooldownUntil,
+  computeEvidenceFingerprint,
+  loadFingerprintInputForClaim,
+} from "@/lib/disputes/evidence-fingerprint";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -98,7 +104,7 @@ export async function POST(req: NextRequest) {
     // could mutate any dispute by knowing its UUID.
     const { data: existing } = await supabase
       .from("dispute_outcomes")
-      .select("id, user_id, status, filed_date")
+      .select("id, user_id, status, filed_date, claim_id, letter_content, sent_at")
       .eq("id", disputeId)
       .single();
 
@@ -115,6 +121,50 @@ export async function POST(req: NextRequest) {
 
     if (!success) {
       return NextResponse.json({ error: "Failed to update dispute" }, { status: 500 });
+    }
+
+    // S74.5 D16 — Mark-as-Sent snapshot capture. When the transition is
+    // drafted → filed AND sent_at hasn't already been captured (idempotent
+    // re-clicks shouldn't reset the cooldown clock), snapshot the current
+    // letter_content into sent_letter + set sent_at + cooldown_until +
+    // refresh evidence_fingerprint. Gated on flag so OFF preserves
+    // pre-S74.5 behavior exactly.
+    if (status === "filed" && !existing.sent_at) {
+      try {
+        const flywheelOn = await isFeatureEnabled(
+          "s74_5_categorization_flywheel_v1",
+        );
+        if (flywheelOn) {
+          const sentAt = new Date();
+          const cooldownUntil = computeCooldownUntil(sentAt, 30);
+
+          let fingerprint: string | null = null;
+          if (existing.claim_id) {
+            const fpInput = await loadFingerprintInputForClaim(
+              supabase,
+              existing.claim_id as string,
+            );
+            if (fpInput) fingerprint = computeEvidenceFingerprint(fpInput);
+          }
+
+          await supabase
+            .from("dispute_outcomes")
+            .update({
+              sent_letter: existing.letter_content,
+              sent_at: sentAt.toISOString(),
+              cooldown_until: cooldownUntil.toISOString(),
+              evidence_fingerprint:
+                fingerprint ?? undefined,
+              last_refresh_at: sentAt.toISOString(),
+            })
+            .eq("id", disputeId);
+        }
+      } catch (err) {
+        console.error(
+          "[disputes/outcome] D16 sent-letter snapshot failed (non-fatal):",
+          err,
+        );
+      }
     }
 
     return NextResponse.json({ success: true });

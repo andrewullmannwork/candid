@@ -177,6 +177,12 @@ export async function proposeNewSignature(opts: {
   proposedByUserId: string | null;
 }): Promise<LookupResult | null> {
   const supabase = createServerClient();
+  // distinct_user_count starts at 0 — endorsement counter advances only when an
+  // explicit contributor is recorded in corroborator_sources via
+  // upsertCorrectorOnIdentity(). Starting at 1 here would double-count the
+  // proposer in the recordUserCorrection flow (insert → 1; upsert → 2) and
+  // halve the effective Pattern 1 #3 threshold from 3 → 2 distinct users.
+  // proposed_by_user_id still records the proposer for admin forensics.
   const { data, error } = await supabase
     .from("billing_code_identity")
     .insert({
@@ -187,7 +193,7 @@ export async function proposeNewSignature(opts: {
       service_slug: opts.proposedSlug,
       promotion_state: "proposed",
       confidence: 0.5,
-      distinct_user_count: 1,
+      distinct_user_count: 0,
       proposed_by_user_id: opts.proposedByUserId,
     })
     .select("id, service_slug, confidence, promotion_state")
