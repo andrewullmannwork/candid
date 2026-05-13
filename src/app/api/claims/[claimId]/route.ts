@@ -7,7 +7,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import {
-  computeRecovery,
+  computeRecoveryV2,
   resolveStillOutstanding,
   type PlanCoverageInput,
 } from "@/lib/claims/recovery-math";
@@ -81,7 +81,7 @@ export async function GET(
     "s74_5_categorization_flywheel_v1",
   );
 
-  // Fetch line items
+  // Fetch line items (SELECT * picks up the new mig 092 columns automatically).
   let { data: lineItems } = await supabase
     .from("claim_line_items")
     .select("*")
@@ -194,14 +194,23 @@ export async function GET(
       : null;
 
     const billed = Number(item.billed_amount || 0);
-    const stillOutstanding = resolveStillOutstanding({
-      lineBilled: billed,
-      lineStillOutstanding: item.amount_still_outstanding != null ? Number(item.amount_still_outstanding) : null,
-      linePatientOwes: item.patient_owes != null ? Number(item.patient_owes) : null,
-      claimTotalBilled,
-      claimStillOutstanding,
+    // F-1 / mig 092 — patient_paid_amount column drives refund/forgiveness split.
+    const patientPaid = Number(item.patient_paid_amount ?? 0);
+    const patientResponsibility = item.patient_owes != null
+      ? Number(item.patient_owes)
+      : resolveStillOutstanding({
+          lineBilled: billed,
+          lineStillOutstanding: item.amount_still_outstanding != null ? Number(item.amount_still_outstanding) : null,
+          linePatientOwes: null,
+          claimTotalBilled,
+          claimStillOutstanding,
+        });
+    const recovery = computeRecoveryV2({
+      billed,
+      patientResponsibility,
+      patientPaid,
+      planCoverage: coverage,
     });
-    const recovery = computeRecovery(billed, stillOutstanding, coverage);
 
     // S74.5 D6 — enrich with code-identity state for the correction pill +
     // G4 conflict modal trigger. Only populated when flywheel flag is ON.

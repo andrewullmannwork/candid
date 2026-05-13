@@ -144,8 +144,10 @@ export async function persistAuditResults(
         date_of_service: parsedBill.serviceDate || null,
         total_billed: parsedBill.totals.totalBilled,
         total_allowed: parsedBill.totals.totalAllowed || null,
-        total_insurance_paid: parsedBill.totals.totalInsurancePaid || null,
-        total_patient_responsibility: parsedBill.totals.totalPatientResponsibility || null,
+        total_insurance_paid: parsedBill.totals.totalInsurancePaid ?? null,
+        total_insurance_adjusted: parsedBill.totals.totalInsAdjusted ?? 0,
+        total_patient_responsibility: parsedBill.totals.totalPatientResponsibility ?? null,
+        total_patient_paid: parsedBill.totals.totalPatientPaid ?? 0,
         claim_number: null, // Not always present on bills
         status: auditReport.findings.length > 0 ? "flagged" : "processed",
         metadata: {
@@ -292,6 +294,10 @@ export async function persistAuditResults(
               severity: f.severity,
               estimatedOvercharge: f.estimatedOvercharge,
               title: f.title,
+              description: f.description, // Session 85 — persist so the
+              // expanded-row "what we found" card can render the longer
+              // user-friendly explanation (e.g., F-14's insurer-vs-plan
+              // narrative).
               actionable: f.actionable,
             })),
           }
@@ -318,8 +324,15 @@ export async function persistAuditResults(
         units: item.quantity || 1,
         billed_amount: item.billedAmount,
         allowed_amount: item.allowedAmount || null,
-        insurance_paid: item.insurancePaid || null,
-        patient_owes: item.patientResponsibility || null,
+        insurance_paid: item.insurancePaid ?? null,
+        // Mig 092 — contractual writeoff distinct from insurance_paid. Defaults
+        // to 0 (rather than null) so downstream math can sum without null guards;
+        // null indicates "parser didn't extract" which we treat as 0 too here.
+        insurance_adjusted_amount: item.ins_adjusted ?? 0,
+        patient_owes: item.patientResponsibility ?? null,
+        // Mig 092 — patient out-of-pocket payments. Default 0; populated by
+        // parser when "Paid [date] -$X" footer lines are present on the bill.
+        patient_paid_amount: item.patient_paid ?? 0,
         plan_year: resolvedPlanYear,
         adjustment_reason_code: null,
         modifier_codes: item.modifier ? [item.modifier] : null,

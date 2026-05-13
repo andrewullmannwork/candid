@@ -20,6 +20,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { runAudit } from "./index";
+import { loadCoverageMapForPlan } from "./coverage-loader";
 import type {
   ParsedBill,
   BillLineItem,
@@ -65,6 +66,7 @@ interface ClaimRow {
   total_allowed: number | null;
   total_insurance_paid: number | null;
   total_patient_responsibility: number | null;
+  insurance_plan_id?: string | null;
   metadata: Record<string, unknown> | null;
 }
 
@@ -79,7 +81,9 @@ interface LineItemRow {
   billed_amount: number | null;
   allowed_amount: number | null;
   insurance_paid: number | null;
+  insurance_adjusted_amount?: number | null; // mig 092
   patient_owes: number | null;
+  patient_paid_amount?: number | null; // mig 092
   metadata: Record<string, unknown> | null;
 }
 
@@ -175,7 +179,10 @@ export async function maybeReauditClaim(
   }
 
   const parsedBill = reconstructParsedBill(claim, lineItems);
-  const auditReport = await runAudit(parsedBill);
+  // F-2 — load plan coverage so audit rules (missing_adjustment, F-14
+  // insurance_underpayment) can compute should_owe against plan terms.
+  const planCoverage = await loadCoverageMapForPlan(supabase, claim.insurance_plan_id ?? null);
+  const auditReport = await runAudit(parsedBill, planCoverage);
 
   // Group LINE-LEVEL findings by line_number for per-row metadata writes.
   // Claim-level findings (lineItems=[]) are persisted to
@@ -232,6 +239,7 @@ export async function maybeReauditClaim(
                 severity: f.severity,
                 estimatedOvercharge: f.estimatedOvercharge,
                 title: f.title,
+                description: f.description, // Session 85 — see persist.ts note
                 actionable: f.actionable,
               },
               f,
@@ -338,6 +346,12 @@ function reconstructParsedBill(claim: ClaimRow, lineItems: LineItemRow[]): Parse
       billedAmount: Number(li.billed_amount ?? 0),
       allowedAmount: li.allowed_amount != null ? Number(li.allowed_amount) : undefined,
       insurancePaid: li.insurance_paid != null ? Number(li.insurance_paid) : undefined,
+      // Mig 092 — restore ins_adjusted + patient_paid on re-audit so F-13 / F-14
+      // see the correct values rather than treating undefined as "not applied".
+      ins_adjusted:
+        li.insurance_adjusted_amount != null ? Number(li.insurance_adjusted_amount) : undefined,
+      patient_paid:
+        li.patient_paid_amount != null ? Number(li.patient_paid_amount) : undefined,
       patientResponsibility:
         li.patient_owes != null ? Number(li.patient_owes) : undefined,
     };

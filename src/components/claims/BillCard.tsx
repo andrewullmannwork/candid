@@ -78,6 +78,19 @@ const STATUS: Record<string, { label: string; className: string; dotClass: strin
 function formatDate(iso: string | null): string {
   if (!iso) return "Date unknown";
   try {
+    // F-6 — parse YYYY-MM-DD as a LOCAL calendar date, not a UTC instant.
+    // `new Date("2025-06-02")` parses as UTC midnight, then toLocaleDateString
+    // renders in the user's tz — Pacific time then displays "Jun 1, 2025"
+    // (off by one). Split the string and construct a local Date instead.
+    const match = iso.slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (match) {
+      const [, y, m, d] = match;
+      return new Date(Number(y), Number(m) - 1, Number(d)).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+    }
     return new Date(iso).toLocaleDateString("en-US", {
       month: "short",
       day: "numeric",
@@ -182,16 +195,25 @@ export function BillCard({
           </p>
         )}
 
-        {/* Findings preview */}
+        {/* F-4 (Session 85) — Warmer headline framing globally.
+            Per-line coverage takes precedence: when most lines are covered,
+            lead with "N covered services" copy. Findings detail surfaces
+            BELOW the headline, not in place of it. The status pill in the
+            header still calls out "Issues found" / "Needs review" / etc.
+            for the at-a-glance scan. */}
+        <BillCardSummaryHeadline claim={claim} hasIssues={hasIssues} reviewCount={reviewCount} potentialRecovery={potentialRecovery} shouldOwe={shouldOwe} />
+
+        {/* Findings preview — only when findings exist; nested BELOW the
+            warmer headline (no longer the lead). */}
         {hasIssues && claim.topFindings && claim.topFindings.length > 0 && (
-          <div className="mt-4 rounded-xl border border-amber-100 bg-amber-50/60 p-3">
+          <div className="mt-3 rounded-xl border border-amber-100 bg-amber-50/60 p-3">
             <div className="flex items-center justify-between">
               <p className="text-xs font-semibold text-amber-900">
-                {claim.findingCount} {claim.findingCount === 1 ? "issue" : "issues"} found
+                We found {claim.findingCount} {claim.findingCount === 1 ? "issue" : "issues"} to dispute
               </p>
               {savings > 0 && (
                 <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800 tabular-nums">
-                  ~${savings.toLocaleString()} savings
+                  ~${savings.toLocaleString()} recoverable
                 </span>
               )}
             </div>
@@ -214,40 +236,6 @@ export function BillCard({
                 </li>
               )}
             </ul>
-          </div>
-        )}
-
-        {!hasIssues && reviewCount > 0 && (
-          <div className="mt-4 rounded-xl border border-amber-100 bg-amber-50/60 p-3">
-            <p className="text-xs font-semibold text-amber-900">
-              {buildReviewHeadline(reviewCount)}
-            </p>
-            <p className="mt-1 text-xs text-amber-800">
-              {buildReviewExplanation(reviewCount)}
-            </p>
-          </div>
-        )}
-
-        {/* Potential recovery callout — user shouldn't owe this much per plan.
-            Precedence: audit findings > unverified charges > recovery
-            opportunity > clean. Recovery branch fires only when the other
-            two are quiet, so we don't stack redundant callouts. */}
-        {!hasIssues && reviewCount === 0 && potentialRecovery > 0 && (
-          <div className="mt-4 rounded-xl border border-green-100 bg-green-50/60 p-3">
-            <p className="text-xs font-semibold text-green-900">
-              Potential recovery: +${potentialRecovery.toLocaleString()}
-            </p>
-            <p className="mt-1 text-xs text-green-800">
-              Your plan says you shouldn&apos;t owe{shouldOwe > 0 ? ` more than $${shouldOwe.toLocaleString()}` : " anything"} for this bill. The difference is recoverable — consider disputing.
-            </p>
-          </div>
-        )}
-
-        {!hasIssues && reviewCount === 0 && potentialRecovery === 0 && (
-          <div className="mt-4 rounded-xl border border-green-100 bg-green-50/60 p-3">
-            <p className="text-xs font-semibold text-green-900">
-              No billing errors detected · {claim.lineItemCount} line {claim.lineItemCount === 1 ? "item" : "items"} audited
-            </p>
           </div>
         )}
 
@@ -282,4 +270,82 @@ function buildReviewHeadline(reviewCount: number): string {
 function buildReviewExplanation(reviewCount: number): string {
   const serviceRef = reviewCount === 1 ? "this service" : "these services";
   return `Your plan covers ${serviceRef}, but the EOB shows no line-item breakdown. See the full breakdown below to reconcile what's already been paid vs. what you still owe.`;
+}
+
+// ── F-4 (Session 85) — Warmer headline shared across all bill states ──────
+//
+// Replaces the previous mutually-exclusive precedence (findings > review >
+// recovery > clean) with a single headline that leads with COVERAGE framing.
+// Findings detail surfaces in a separate block below. Designed so a bill
+// with one missed-adjustment finding doesn't feel scarier than it should,
+// and a bill with 4 covered preventive services doesn't lose the warm
+// "your plan has you covered" reassurance just because one line surfaced
+// an issue.
+
+function BillCardSummaryHeadline({
+  claim,
+  hasIssues,
+  reviewCount,
+  potentialRecovery,
+  shouldOwe,
+}: {
+  claim: ClaimSummary;
+  hasIssues: boolean;
+  reviewCount: number;
+  potentialRecovery: number;
+  shouldOwe: number;
+}) {
+  // Case A — line items lack allocation but coverage is good → warmest framing.
+  if (reviewCount > 0) {
+    return (
+      <div className="mt-4 rounded-xl border border-amber-100 bg-amber-50/60 p-3">
+        <p className="text-xs font-semibold text-amber-900">
+          {buildReviewHeadline(reviewCount)}
+        </p>
+        <p className="mt-1 text-xs text-amber-800">
+          {buildReviewExplanation(reviewCount)}
+        </p>
+      </div>
+    );
+  }
+
+  // Case B — recovery opportunity with no per-line review gap → plan-vs-bill copy.
+  if (potentialRecovery > 0 && !hasIssues) {
+    return (
+      <div className="mt-4 rounded-xl border border-green-100 bg-green-50/60 p-3">
+        <p className="text-xs font-semibold text-green-900">
+          Potential recovery: +${potentialRecovery.toLocaleString()}
+        </p>
+        <p className="mt-1 text-xs text-green-800">
+          Your plan says you shouldn&apos;t owe
+          {shouldOwe > 0 ? ` more than $${shouldOwe.toLocaleString()}` : " anything"}
+          {" "}for this bill. The difference is recoverable — consider disputing.
+        </p>
+      </div>
+    );
+  }
+
+  // Case C — findings exist → warm "services audited" lead; findings detail
+  // surfaces in the amber block immediately below.
+  if (hasIssues) {
+    return (
+      <div className="mt-4 rounded-xl border border-green-100 bg-green-50/60 p-3">
+        <p className="text-xs font-semibold text-green-900">
+          {claim.lineItemCount} {claim.lineItemCount === 1 ? "service" : "services"} audited · plan coverage applied
+        </p>
+        <p className="mt-1 text-xs text-green-800">
+          See the breakdown below — most of this bill is covered; the {claim.findingCount === 1 ? "issue" : "issues"} we found {claim.findingCount === 1 ? "is" : "are"} shown next.
+        </p>
+      </div>
+    );
+  }
+
+  // Case D — clean bill, no recovery, no review → minimal positive copy.
+  return (
+    <div className="mt-4 rounded-xl border border-green-100 bg-green-50/60 p-3">
+      <p className="text-xs font-semibold text-green-900">
+        No billing errors detected · {claim.lineItemCount} line {claim.lineItemCount === 1 ? "item" : "items"} audited
+      </p>
+    </div>
+  );
 }

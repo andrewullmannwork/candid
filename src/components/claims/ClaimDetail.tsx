@@ -33,7 +33,11 @@ interface LineItem {
   billed_amount: number | null;
   allowed_amount: number | null;
   insurance_paid: number | null;
+  // Mig 092 — distinct from insurance_paid (contractual writeoff, not payment).
+  insurance_adjusted_amount?: number | null;
   patient_owes: number | null;
+  // Mig 092 — patient OOP payments (separate from patient_owes which is total responsibility).
+  patient_paid_amount?: number | null;
   amount_still_outstanding: number | null;
   metadata: Record<string, unknown>;
   coverageStatus: "covered" | "not_covered" | "unknown" | null;
@@ -45,6 +49,12 @@ interface LineItem {
   } | null;
   recovery?: {
     billed: number;
+    // Mig 092 / Session 85 — patient-aware fields take precedence; legacy
+    // alreadyPaid / stillOutstanding retained for back-compat with legacy
+    // UI surfaces.
+    patientPaid?: number;
+    patientResponsibility?: number;
+    remainingBalance?: number;
     alreadyPaid: number;
     stillOutstanding: number;
     shouldOwe: number;
@@ -148,6 +158,27 @@ const SEVERITY_COLORS: Record<string, string> = {
   low: "text-yellow-700 bg-yellow-50 border-yellow-200",
 };
 
+// Session 85 — user-friendly finding-type labels. Replaces the previous
+// `type.replace("_", " ")` + severity rendering (which surfaced "missing
+// adjustment · medium" — opaque jargon). Severity is dropped from the
+// subtitle entirely; the colored card border + recovery amount carry the
+// urgency signal.
+const FRIENDLY_FINDING_TYPE: Record<string, string> = {
+  overcharge: "Possible overcharge",
+  duplicate: "Duplicate charge",
+  unbundling: "Bundled service issue",
+  upcoding: "Code level review",
+  balance_billing: "Balance billing",
+  missing_adjustment: "Contractual adjustment review",
+  stale_claim: "Late filing",
+  zero_cost_share_overcharge: "Should be $0 — ACA preventive / vaccine",
+  unallocated_balance: "Unallocated balance",
+  insurance_underpayment: "Insurance under-payment",
+};
+function friendlyFindingType(type: string): string {
+  return FRIENDLY_FINDING_TYPE[type] ?? type.replace(/_/g, " ");
+}
+
 // Lifecycle labels for disputes. Legacy statuses (filed, in_progress, settled,
 // withdrawn, *_on_escalation) still occur in the DB and are mapped here.
 const DISPUTE_STATUS_LABEL: Record<string, string> = {
@@ -220,7 +251,19 @@ export function ClaimDetail({
   const router = useRouter();
   const [data, setData] = useState<ClaimData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [expandedItem, setExpandedItem] = useState<string | null>(focusLineItemId || null);
+  // Session 85 — default to ALL primary rows expanded so Plan-says/Bill-shows
+  // + Dispute CTA surface on first render (Andrew's direction: bill-specific
+  // modal page; the recovery story + paid-subscription gateway are the
+  // primary value, keep them maximally visible). User can collapse individual
+  // rows via the chevron in the row header.
+  const [collapsedRows, setCollapsedRows] = useState<Set<string>>(new Set());
+  const toggleRowCollapsed = (id: string) =>
+    setCollapsedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   const [disputeLoading, setDisputeLoading] = useState(false);
 
   // S74.5 D6 — CategoryCorrectionModal state.
@@ -696,7 +739,7 @@ export function ClaimDetail({
                       <p className="mt-1 opacity-80">{f.description}</p>
                     )}
                     <p className="mt-1 opacity-60">
-                      {f.type.replace(/_/g, " ")} · {f.severity}
+                      {friendlyFindingType(f.type)}
                       {f.dismissed && f.dismissed_reason && (
                         <>
                           {" "}· dismissed:{" "}
@@ -736,17 +779,38 @@ export function ClaimDetail({
         </div>
       )}
 
-      {/* Line items table — 7-col layout per user preference.
-          Code, Coverage, Flags each get their own column. Numbers right-aligned. */}
+      {/* Line items table — Session 85 round 3 layout.
+          Service / Code / Billed / Paid / Plan Share / Refund / Forgive / Coverage = 8 columns.
+          Flags column dropped (finding info surfaces in the expanded-row state
+          + the Owed-side green numbers convey the recovery story already).
+          Refund + Forgive split per Andrew's direction — clearer than a single
+          "Owed" column.
+
+          Cropping fix: removed both `overflow-hidden` AND the min-w wrapper.
+          With 8 reasonable columns + tabular-nums + whitespace-nowrap, the
+          table flexes within its container at any common laptop width. If a
+          future user shrinks the viewport very narrow, columns compress
+          gracefully; we no longer force-scroll horizontally. */}
       <div className="bg-white border border-gray-100 rounded-xl overflow-hidden mb-4">
-        <div className="grid grid-cols-12 gap-4 items-center px-5 py-3 bg-gray-50 text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-          <div className="col-span-4">Service</div>
-          <div className="col-span-2">Code</div>
-          <div className="col-span-1 text-right">Billed</div>
-          <div className="col-span-1 text-right">Paid</div>
-          <div className="col-span-1 text-right">You Owe</div>
-          <div className="col-span-2 text-center">Coverage</div>
-          <div className="col-span-1 text-center">Flags</div>
+        <div className="grid grid-cols-12 gap-2 items-center px-5 py-3 bg-gray-50 text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+          <div className="col-span-3 min-w-0">Service</div>
+          <div className="col-span-1 min-w-0">Code</div>
+          <div className="col-span-1 text-right whitespace-nowrap">Billed</div>
+          <div className="col-span-1 text-right whitespace-nowrap">Paid</div>
+          <div className="col-span-1 text-right whitespace-nowrap" title="What your plan says you should owe — copay, coinsurance, or deductible.">Plan</div>
+          <div className="col-span-2 text-right whitespace-nowrap" title="Money you're owed when your insurer corrects an under-payment. Refund = paid above plan share (insurer reimburses you). Insured = outstanding above plan share (insurer should have paid the provider — clears your balance).">Recovery</div>
+          <div className="col-span-3 text-center whitespace-nowrap flex items-center justify-center gap-1">
+            <span>Coverage</span>
+            <span
+              className="cursor-help text-gray-400 hover:text-gray-600"
+              title="See an error? Click the Coverage badge on any row to change the service category."
+              aria-label="Click any Coverage badge to change the row's service category"
+            >
+              <svg className="h-3 w-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </span>
+          </div>
         </div>
 
         {primaryLineItems.map((item) => {
@@ -758,7 +822,7 @@ export function ClaimDetail({
             ? allFindings
             : allFindings.filter((f) => !f.dismissed);
           const dismissedCount = allFindings.length - findings.length;
-          const isExpanded = expandedItem === item.id;
+          const isExpanded = !collapsedRows.has(item.id);
           const coverageBadge = item.coverageStatus ? COVERAGE_BADGE[item.coverageStatus] : null;
 
           // Paid column = derived alreadyPaid (billed − stillOutstanding) so
@@ -771,8 +835,27 @@ export function ClaimDetail({
           // `paid` here would hide gaps on any line where the API pro-rated
           // a non-zero "already paid" from the claim header.
           const billed = item.billed_amount || 0;
-          const paid = item.recovery?.alreadyPaid ?? (item.insurance_paid || 0);
+          // Session 85 round 5 — "Paid" column = insurance_paid + patient_paid
+          // (total cleared on this line by either party). For Bill 1 with
+          // insurance_paid=$0 and patient_paid=$292.41, this reads $292.41
+          // — matches Andrew's expectation. For Bill 2 99214 with ins=$168.79
+          // and OOP=$48.25, reads $217.04 (the allowed amount). The breakdown
+          // ("Your insurer actually paid" vs "You paid OOP") lives in the
+          // red box for full transparency.
+          const paid =
+            Number(item.insurance_paid ?? 0) +
+            Number(item.patient_paid_amount ?? 0);
           const owed = item.patient_owes || 0;
+          // Session 85 — new column values:
+          //   shouldOwe = plan-defined cost share (copay / coinsurance applied to billed)
+          //   owedRecovery = total recoverable (= refund + forgiveness)
+          //   patientPaid = OOP payments (mig 092 column; defaults 0 on legacy rows)
+          //   remainingBalance = patient_owes − patient_paid (still due on the bill)
+          const shouldOwe = item.recovery?.shouldOwe ?? 0;
+          const owedRecovery = item.recovery?.potentialRecovery ?? 0;
+          const patientPaid = item.recovery?.patientPaid ?? Number(item.patient_paid_amount ?? 0);
+          const refundComponent = item.recovery?.refundComponent ?? Math.max(0, patientPaid - shouldOwe);
+          const forgivenessComponent = item.recovery?.forgivenessComponent ?? Math.max(0, owedRecovery - refundComponent);
           const rawInsurancePaid = item.insurance_paid || 0;
           const hasGap = billed > 0 && rawInsurancePaid === 0 && owed === 0;
           const gapRelevant = hasGap && item.coverageStatus !== "not_covered";
@@ -793,119 +876,126 @@ export function ClaimDetail({
                     item.codeIdentity.identityId == null)
                 ? "needs_review"
                 : "auto";
-          const pillClass =
-            pillState === "user_corrected"
-              ? "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100"
-              : pillState === "needs_review"
-                ? "bg-yellow-50 text-yellow-800 border-yellow-200 hover:bg-yellow-100"
-                : "bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100";
-          const pillLabel =
-            pillState === "user_corrected"
-              ? "Your update"
-              : pillState === "needs_review"
-                ? "Needs review"
-                : "Edit category";
+          // F-7 — pillClass + pillLabel removed; the click target is now the
+          // Coverage badge itself with a built-in pencil icon. pillState still
+          // drives the tooltip text on hover.
 
           return (
             <div key={item.id} data-line-item-id={item.id}>
               <div
                 role="button"
                 tabIndex={0}
-                onClick={() => setExpandedItem(isExpanded ? null : item.id)}
+                onClick={() => toggleRowCollapsed(item.id)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
-                    setExpandedItem(isExpanded ? null : item.id);
+                    toggleRowCollapsed(item.id);
                   }
                 }}
-                className="w-full grid grid-cols-12 gap-4 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
+                className="w-full grid grid-cols-12 gap-2 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
               >
-                <div className="col-span-4 text-xs text-gray-900">
+                <div className="col-span-3 min-w-0 text-xs text-gray-900">
                   <div className="truncate">
                     {item.description || item.service_slug?.replace(/_/g, " ") || "Unknown"}
                   </div>
+                  {/* F-7 (Session 85) — category-correction pill REMOVED from
+                      here; trigger moved to the Coverage column (far right).
+                      Show only the resolved category name as a subtle label
+                      so the user can read it without crowding the row. */}
                   {showCategoryPill && (
                     <div className="mt-1 flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openCorrectionModal(item.id);
-                        }}
-                        className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors ${pillClass}`}
-                        title={
-                          pillState === "user_corrected"
-                            ? "You changed this category. Click to edit again."
-                            : pillState === "needs_review"
-                              ? "We couldn't auto-categorize this. Click to set."
-                              : "Click to change category"
-                        }
-                      >
-                        <svg
-                          className="h-2.5 w-2.5"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                          aria-hidden
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                          />
-                        </svg>
-                        {pillLabel}
-                      </button>
-                      {item.service_slug && (
+                      {item.service_slug ? (
                         <span className="text-[10px] text-gray-500">
                           {humanizeSlug(item.service_slug)}
                         </span>
-                      )}
-                      {/* S74.5c §2.3 — Subplan §5 fallback hint: when the
-                          flywheel hasn't yet resolved a service_slug, show
-                          the legacy prefix-based category with a "review
-                          needed" suffix so the user still has a category
-                          anchor. */}
-                      {!item.service_slug && item.billing_code && (
+                      ) : item.billing_code ? (
                         <span className="text-[10px] italic text-gray-500">
                           {legacyCategoryReviewHint(item.billing_code)}
                         </span>
-                      )}
+                      ) : null}
                     </div>
                   )}
                 </div>
-                <div className="col-span-2 text-xs text-gray-500 font-mono truncate">
+                <div className="col-span-1 min-w-0 text-xs text-gray-500 font-mono truncate">
                   {item.billing_code || "—"}
                 </div>
-                <div className="col-span-1 text-xs text-gray-900 text-right tabular-nums">
+                <div className="col-span-1 text-xs text-gray-900 text-right tabular-nums whitespace-nowrap">
                   ${billed.toLocaleString()}
                 </div>
-                <div className="col-span-1 text-xs text-gray-500 text-right tabular-nums">
+                <div className="col-span-1 text-xs text-gray-500 text-right tabular-nums whitespace-nowrap">
                   ${paid.toLocaleString()}
                 </div>
-                <div className="col-span-1 text-xs font-semibold text-gray-900 text-right tabular-nums">
-                  ${owed.toLocaleString()}
+                {/* Plan Share — what your plan says you should owe. */}
+                <div
+                  className={`col-span-1 text-xs font-semibold text-right tabular-nums whitespace-nowrap ${shouldOwe === 0 ? "text-green-600" : "text-gray-900"}`}
+                  title={`Per your plan, you should owe $${shouldOwe.toLocaleString()} for this service.`}
+                >
+                  ${shouldOwe.toLocaleString()}
                 </div>
-                <div className="col-span-2 flex items-center justify-center">
-                  {coverageBadge && (
+                {/* Recovery — single combined value (refund + insured).
+                    The breakdown into Refund vs Insured surfaces in the
+                    amber-card explanation below; the column itself stays
+                    clean with one bold green number per line. */}
+                <div
+                  className="col-span-2 text-right text-sm font-bold tabular-nums whitespace-nowrap"
+                  title={
+                    refundComponent + forgivenessComponent >= 1
+                      ? `Total recoverable: $${(refundComponent + forgivenessComponent).toLocaleString()} ($${refundComponent.toLocaleString()} refund + $${forgivenessComponent.toLocaleString()} insurer should have insured).`
+                      : "Nothing recoverable on this line — bill is within plan share."
+                  }
+                >
+                  {refundComponent + forgivenessComponent >= 1 ? (
+                    <span className="text-green-700">+${(refundComponent + forgivenessComponent).toLocaleString()}</span>
+                  ) : (
+                    <span className="text-gray-300">—</span>
+                  )}
+                </div>
+                {/* F-7 — Coverage column doubles as the inline category-correction
+                    trigger. When the flywheel flag is ON and the row has an
+                    identity OR was previously corrected, the badge becomes a
+                    clickable button that opens CategoryCorrectionModal. */}
+                <div className="col-span-3 flex items-center justify-center">
+                  {coverageBadge && showCategoryPill ? (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openCorrectionModal(item.id);
+                      }}
+                      className={`group inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold transition-all cursor-pointer hover:shadow-sm hover:brightness-95 ${coverageBadge.className}`}
+                      title={
+                        pillState === "user_corrected"
+                          ? "You changed this category. Click to edit again."
+                          : pillState === "needs_review"
+                            ? "We couldn't auto-categorize this. Click to set."
+                            : "Click to change category"
+                      }
+                    >
+                      <span>{coverageBadge.label}</span>
+                      <svg
+                        className="h-2.5 w-2.5 opacity-50 group-hover:opacity-100 transition-opacity"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                        aria-hidden
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                        />
+                      </svg>
+                    </button>
+                  ) : coverageBadge ? (
                     <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className}`}>
                       {coverageBadge.label}
                     </span>
-                  )}
+                  ) : null}
                 </div>
-                <div className="col-span-1 flex items-center justify-center">
-                  {findings.length > 0 && (
-                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full text-red-700 bg-red-50">
-                      {findings.length}
-                    </span>
-                  )}
-                  {findings.length === 0 && gapRelevant && (
-                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full text-amber-700 bg-amber-100" title="Billed but nothing paid or owed — likely a denial or missing allocation">
-                      Review
-                    </span>
-                  )}
-                </div>
+                {/* Flags column dropped in Session 85 round 3 — finding count
+                    info now surfaces via the Refund/Forgive green numbers and
+                    the expanded-row state. */}
               </div>
 
               {/* Inline gap explanation when expanded and there's a gap.
@@ -1037,9 +1127,61 @@ export function ClaimDetail({
                 </div>
               )}
 
-              {/* Expanded: show findings */}
-              {isExpanded && (findings.length > 0 || (showDismissed && dismissedCount > 0)) && (
-                <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 space-y-2">
+              {/* Session 85 — show expansion panel when there's something to
+                  put in it. Need EITHER findings to render the amber card OR
+                  planCoverage + recovery values to render the green/red
+                  compare. Without either, the panel would be empty save for
+                  a lonely "Hide details" link, which is confusing. */}
+              {isExpanded && (
+                findings.length > 0 ||
+                (item.planCoverage != null && (refundComponent >= 1 || forgivenessComponent >= 1)) ||
+                (showDismissed && dismissedCount > 0)
+              ) && (
+                <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 space-y-3">
+                  {/* Session 85 round 3 — bring back the Plan-says / Bill-shows
+                      green/red compare at the TOP of the findings expansion.
+                      Andrew called this out as the most useful visual; it was
+                      previously gated on the no-findings gap case only. Now
+                      it renders whenever the row is expanded AND we have plan
+                      coverage info. */}
+                  {item.planCoverage && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div className="rounded-lg border border-green-200 bg-green-50 p-3">
+                        <p className="text-[10px] font-semibold uppercase tracking-wider text-green-700">Your plan says</p>
+                        <p className="mt-1 text-sm font-bold text-green-900">
+                          {buildPlanSays(item.planCoverage)}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border border-red-200 bg-red-50 p-3">
+                        <p className="text-[10px] font-semibold uppercase tracking-wider text-red-700">Bill shows</p>
+                        <p className="mt-1 text-sm font-bold text-red-900">
+                          Billed ${billed.toLocaleString()}
+                        </p>
+                        {/* Session 85 — user-centric fields per Andrew's
+                            direction: what they were charged + insurer's
+                            expected vs actual payment. Drop the contractual-
+                            adjustment line (low value to users) and the
+                            "amount you can recover" line (lives in the amber
+                            box below; would be redundant). */}
+                        <p className="mt-1.5 text-xs text-red-800">
+                          Your insurer should have paid: ${(() => {
+                            // Insurer's contractual share = allowed − plan cost-share
+                            // allowed = billed − insurance_adjusted
+                            const allowed = billed - (item.insurance_adjusted_amount ?? 0);
+                            return Math.max(0, allowed - shouldOwe).toLocaleString();
+                          })()}
+                        </p>
+                        <p className="mt-0.5 text-xs text-red-800">
+                          Your insurer actually paid: ${(item.insurance_paid ?? 0).toLocaleString()}
+                        </p>
+                        {patientPaid > 0 && (
+                          <p className="mt-0.5 text-xs text-red-800">
+                            You paid: ${patientPaid.toLocaleString()} OOP
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   {/* S74.5 D15 Q-E LOCK — dismissed count + show/hide toggle */}
                   {flywheelEnabled && dismissedCount > 0 && (
                     <div className="flex items-center justify-between text-[10px] text-gray-500 px-1">
@@ -1058,51 +1200,46 @@ export function ClaimDetail({
                       </button>
                     </div>
                   )}
+                  {/* Session 85 — Amber finding card restructure per Andrew:
+                      • Headline (the rule's title) preserved at top
+                      • Conditional Refund + Insured breakdown sentence (built
+                        from line-level recovery values, not the finding's
+                        own description text)
+                      • Two static CTA lines (call insurer first; dispute as
+                        fallback)
+                      • No Dismiss button (we want the user to see + act, not
+                        hide)
+                      • No taxonomy subtitle ("INSURANCE UNDER-PAYMENT" line)
+                        — internal type slug doesn't help the user. */}
                   {findings.map((f) => (
                     <div
                       key={f.id}
-                      className={`p-3 rounded-lg border text-xs ${
+                      className={`p-4 rounded-lg border text-xs ${
                         f.dismissed
                           ? "text-gray-500 bg-gray-100 border-gray-200 opacity-70"
                           : SEVERITY_COLORS[f.severity] || "text-gray-700 bg-gray-50 border-gray-200"
                       }`}
                     >
-                      <div className="flex justify-between items-start gap-2">
-                        <div className="min-w-0">
-                          <p className="font-semibold">{f.title}</p>
-                          <p className="mt-0.5 opacity-80">
-                            {f.type.replace(/_/g, " ")} · {f.severity}
-                            {f.dismissed && f.dismissed_reason && (
-                              <>
-                                {" "}· dismissed:{" "}
-                                <span className="italic">
-                                  {f.dismissed_reason.replace(/_/g, " ")}
-                                </span>
-                              </>
-                            )}
-                          </p>
-                        </div>
-                        <div className="flex items-start gap-2 shrink-0">
-                          {f.estimatedOvercharge > 0 && (
-                            <p className="font-bold">
-                              -${f.estimatedOvercharge.toLocaleString()}
-                            </p>
-                          )}
-                          {flywheelEnabled && !f.dismissed && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setDismissTarget(f);
-                              }}
-                              className="rounded border border-current px-2 py-0.5 text-[10px] font-medium opacity-70 hover:opacity-100"
-                              title="Hide this finding with a reason"
-                            >
-                              Dismiss
-                            </button>
-                          )}
-                        </div>
-                      </div>
+                      <p className="text-sm font-bold">{f.title}</p>
+                      {!f.dismissed && (refundComponent > 0 || forgivenessComponent > 0) && (
+                        <p className="mt-2 text-[12px] leading-relaxed opacity-90">
+                          {refundComponent > 0 && forgivenessComponent > 0
+                            ? `This includes a $${refundComponent.toLocaleString()} refund and $${forgivenessComponent.toLocaleString()} your insurer should have insured.`
+                            : refundComponent > 0
+                              ? `This is a $${refundComponent.toLocaleString()} refund.`
+                              : `This is $${forgivenessComponent.toLocaleString()} your insurer should have insured.`}
+                        </p>
+                      )}
+                      {!f.dismissed && (
+                        <p className="mt-2 text-[12px] leading-relaxed opacity-90">
+                          Call your insurer first. Many under-payments resolve with one phone call. If that doesn&apos;t work, click &ldquo;Dispute this charge&rdquo; below and we&apos;ll draft a formal letter for you.
+                        </p>
+                      )}
+                      {f.dismissed && f.dismissed_reason && (
+                        <p className="mt-1.5 text-[10px] uppercase tracking-wider opacity-60">
+                          Dismissed: <span className="italic normal-case">{f.dismissed_reason.replace(/_/g, " ")}</span>
+                        </p>
+                      )}
                     </div>
                   ))}
 
@@ -1185,25 +1322,34 @@ export function ClaimDetail({
                     </button>
                   )}
 
-                  {/* Plan coverage details */}
-                  {item.planCoverage && (
-                    <div className="p-3 rounded-lg border border-blue-200 bg-blue-50 text-xs text-blue-700">
-                      <p className="font-semibold">Your plan says:</p>
-                      <p>
-                        {item.planCoverage.copay != null && `Copay: $${item.planCoverage.copay}`}
-                        {item.planCoverage.copay != null && item.planCoverage.coinsurance != null && " · "}
-                        {item.planCoverage.coinsurance != null && `Coinsurance: ${(item.planCoverage.coinsurance * 100).toFixed(0)}%`}
-                        {!item.planCoverage.copay && !item.planCoverage.coinsurance && "Covered (details not extracted)"}
-                      </p>
-                      <p className="mt-1 opacity-70">Source: {item.planCoverage.source || "plan document"}</p>
-                    </div>
-                  )}
+                  {/* Bottom plan-says box removed Session 85 round 3 — its
+                      info is surfaced at the TOP of this expansion via the
+                      Plan-says/Bill-shows green/red compare. Source line
+                      ("Source: sbc_parsed") was low-value to end users. */}
+
+                  {/* Session 85 — explicit "Hide details" affordance. Default
+                      is expanded (Andrew's direction); user can collapse a
+                      row's detail panel without having to remember the
+                      whole-row click toggle. */}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleRowCollapsed(item.id);
+                    }}
+                    className="mt-1 self-end text-[10px] font-medium text-gray-500 hover:text-gray-700 inline-flex items-center gap-1"
+                  >
+                    <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                    </svg>
+                    Hide details
+                  </button>
                 </div>
               )}
             </div>
           );
         })}
-      </div>
+      </div>{/* /table outer (rounded-xl) */}
 
       {/* Quality-reporting codes — collapsed by default */}
       {qualityLineItems.length > 0 && (
@@ -1444,14 +1590,20 @@ function buildGapExplanation(
 }
 
 function buildPlanSays(planCoverage: LineItem["planCoverage"]): string {
-  if (!planCoverage) return "Covered (contact insurer to confirm)";
-  if (planCoverage.covered === false) return "Not covered";
+  // F-9 (Session 85) — always surface a specific dollar number so the panel
+  // contrasts cleanly with the EOB-shows side. When plan data is missing OR
+  // the row is "covered" without a specific copay/coinsurance, default to
+  // "Covered · $0" (assumes the most-permissive interpretation, matching
+  // Andrew's expectation that a covered service with no cost-share = $0).
+  // Don't fall back to vague "contact insurer to confirm" — that doesn't
+  // give the user anything to compare against.
+  if (planCoverage?.covered === false) return "Not covered";
 
   const parts: string[] = [];
-  if (planCoverage.copay != null) parts.push(`$${planCoverage.copay} copay`);
-  if (planCoverage.coinsurance != null) parts.push(`${(planCoverage.coinsurance * 100).toFixed(0)}% coinsurance`);
+  if (planCoverage?.copay != null) parts.push(`$${planCoverage.copay} copay`);
+  if (planCoverage?.coinsurance != null) parts.push(`${(planCoverage.coinsurance * 100).toFixed(0)}% coinsurance`);
 
-  if (parts.length === 0) return "Covered";
+  if (parts.length === 0) return "Covered · $0";
   return `Covered · ${parts.join(" · ")}`;
 }
 
@@ -1943,7 +2095,7 @@ function DismissFindingModal({
         <div className="mb-4 rounded border border-gray-200 bg-gray-50 p-3 text-sm">
           <div className="font-medium text-gray-900">{finding.title}</div>
           <div className="mt-1 text-xs text-gray-600">
-            {finding.type.replace(/_/g, " ")} · {finding.severity}
+            {friendlyFindingType(finding.type)}
             {finding.estimatedOvercharge > 0 && (
               <> · ${finding.estimatedOvercharge.toLocaleString()}</>
             )}

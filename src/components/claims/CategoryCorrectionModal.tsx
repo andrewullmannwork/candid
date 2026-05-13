@@ -16,16 +16,11 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-// S74.5c §3.6 — correction reason picker. Optional for the user (we still
-// accept the correction without a reason); the dropdown surfaces high-value
-// flywheel telemetry for alpha-testing analysis.
-const CORRECTION_REASONS: Array<{ value: string; label: string }> = [
-  { value: "wrong_service", label: "The mapped service is wrong" },
-  { value: "wrong_code_type", label: "Code type is wrong (CPT vs HCPCS, etc.)" },
-  { value: "missing_modifier", label: "Missing modifier" },
-  { value: "ambiguous_description", label: "Description is too vague" },
-  { value: "other", label: "Other (please describe)" },
-];
+// S74.5c §3.6 — correction reason picker REMOVED in Session 85 per N-1a
+// for a cleaner inline UX. The endpoint still accepts an optional `reason`
+// field (see correct-category/route.ts) for future restoration. Telemetry
+// signal preserved at the dismiss-finding endpoint (D15) which DOES capture
+// reasons today.
 
 interface CatalogSlug {
   slug: string;
@@ -60,9 +55,6 @@ export function CategoryCorrectionModal({
 }: Props) {
   const [query, setQuery] = useState("");
   const [selectedSlug, setSelectedSlug] = useState<string | null>(currentSlug);
-  // §3.6 — optional reason + free-text note.
-  const [reason, setReason] = useState<string>("");
-  const [note, setNote] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -71,8 +63,6 @@ export function CategoryCorrectionModal({
     if (open) {
       setQuery("");
       setSelectedSlug(currentSlug);
-      setReason("");
-      setNote("");
       setError(null);
       setSubmitting(false);
       setTimeout(() => searchInputRef.current?.focus(), 50);
@@ -100,10 +90,6 @@ export function CategoryCorrectionModal({
       setError("Pick a category from the list.");
       return;
     }
-    if (reason === "other" && !note.trim()) {
-      setError("Add a short note so we can learn from this correction.");
-      return;
-    }
     setSubmitting(true);
     setError(null);
     try {
@@ -117,12 +103,7 @@ export function CategoryCorrectionModal({
             "Content-Type": "application/json",
             Authorization: `Bearer ${token}`,
           },
-          // §3.6 — reason + note are optional; only send if reason was picked.
-          body: JSON.stringify({
-            slug: selectedSlug,
-            ...(reason ? { reason } : {}),
-            ...(note.trim() ? { note: note.trim() } : {}),
-          }),
+          body: JSON.stringify({ slug: selectedSlug }),
         },
       );
       if (!res.ok) {
@@ -223,50 +204,11 @@ export function CategoryCorrectionModal({
             )}
           </div>
 
-          {/* §3.6 — optional reason picker. Helps tune the categorization
-              flywheel by tracking WHY users override; surfaces high-value
-              telemetry for alpha-testing analysis (Pattern P-9 candidate). */}
-          <div className="mb-4">
-            <label
-              htmlFor="correction-reason"
-              className="mb-1 block text-xs font-medium text-gray-700"
-            >
-              Why are you changing this? <span className="text-gray-400">(optional)</span>
-            </label>
-            <select
-              id="correction-reason"
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-            >
-              <option value="">— No reason —</option>
-              {CORRECTION_REASONS.map((r) => (
-                <option key={r.value} value={r.value}>
-                  {r.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {reason === "other" && (
-            <div className="mb-4">
-              <label
-                htmlFor="correction-note"
-                className="mb-1 block text-xs font-medium text-gray-700"
-              >
-                Tell us what&apos;s going on
-              </label>
-              <textarea
-                id="correction-note"
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
-                rows={2}
-                maxLength={500}
-                placeholder="One short sentence is plenty."
-                className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-              />
-            </div>
-          )}
+          {/* N-1a (Session 85) — correction-reason picker dropped for
+              cleaner inline UX. Telemetry signal preserved at endpoint
+              level via the dismiss flow (D15) for now; reason capture
+              will return in Phase 2 if cross-user pattern analysis needs
+              it. */}
 
           <div className="mb-4 rounded border border-blue-100 bg-blue-50 p-3 text-xs text-blue-900">
             Your update is in effect for your Candid account. We&apos;ll mark it verified once

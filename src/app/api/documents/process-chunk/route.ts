@@ -66,9 +66,11 @@ async function processBillDocument(
     billType as "eob" | "itemized_bill",
   );
 
-  const auditReport = await runAudit(parsedBill);
-
-  // Fetch user context once (used by claims, backflow, and code intelligence)
+  // F-2 — resolve plan + load coverage BEFORE runAudit so missing_adjustment
+  // + insurance_underpayment rules can compute should_owe against plan terms
+  // on the very first audit. Without this, brand-new uploads would surface
+  // contractual-writeoff numbers instead of user-recovery numbers until D7
+  // re-fires on next view.
   const { isFeatureEnabled } = await import("@/lib/config/product-flags");
   const { data: userForFlag } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
   const userEmail = userForFlag?.email || undefined;
@@ -88,6 +90,11 @@ async function processBillDocument(
     dateOfService: parsedBill.serviceDate || null,
     fallbackActivePlanId: profile?.active_insurance_plan_id || null,
   });
+
+  const { loadCoverageMapForPlan } = await import("@/lib/audit/coverage-loader");
+  const planCoverage = await loadCoverageMapForPlan(supabase, insurancePlanId);
+
+  const auditReport = await runAudit(parsedBill, planCoverage);
 
   // Persist claims (feature-flagged)
   let claimId: string | null = null;

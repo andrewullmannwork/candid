@@ -77,8 +77,9 @@ export interface BillLineItem {
   quantity: number;
   billedAmount: number; // What provider charged
   allowedAmount?: number; // What insurance says is reasonable
-  insurancePaid?: number; // What insurance paid
-  patientResponsibility?: number; // What patient owes (lump sum; superseded by member_* when EOB decomposes)
+  insurancePaid?: number; // What insurance ACTUALLY paid to the provider (NOT the contractual writeoff — that's ins_adjusted)
+  patientResponsibility?: number; // Total user share assigned by insurer (lump sum; superseded by member_* when EOB decomposes). NOT the remaining balance — see patient_paid for what user has paid OOP.
+  patient_paid?: number; // What the patient has paid out of pocket on this line. Distinct from patientResponsibility (= total assigned share). Parser extracts from "Paid [date] -$X" footer lines on settled bills.
   adjustments?: number; // Write-offs / contractual adjustments
   modifier?: string; // CPT modifier (e.g., "25" for separate E/M)
 
@@ -142,8 +143,9 @@ export interface ParsedBill {
     totalAdjustments?: number;
     totalDenied?: number; // DR-3D
     totalContractDiscount?: number; // DR-3D
-    totalInsAdjusted?: number; // Task 3F: split
+    totalInsAdjusted?: number; // Task 3F: split — contractual writeoff total (NOT insurance payment)
     totalProviderAdjusted?: number; // Task 3F: split
+    totalPatientPaid?: number; // Sum of "Paid [date] -$X" footer lines; what the user has paid OOP across all line items. Distinct from totalPatientResponsibility (= total assigned share).
   };
   rawText: string; // Full OCR text for reference
   confidence: number; // 0-1, OCR extraction confidence
@@ -168,7 +170,8 @@ export type FindingType =
   | "missing_adjustment" // Insurance adjustment not applied
   | "stale_claim" // Claim filed after timely filing deadline
   | "zero_cost_share_overcharge" // S74.5 D13 — code is ACA preventive or ACIP vaccine; should be $0 patient cost
-  | "unallocated_balance"; // S74.5 D15 — bill header patient_resp exceeds SUM(line patient_resp); ask for itemization
+  | "unallocated_balance" // S74.5 D15 — bill header patient_resp exceeds SUM(line patient_resp); ask for itemization
+  | "insurance_underpayment"; // F-14 (Session 85) — service covered by plan but insurer paid $0 (writeoff applied but claim never processed)
 
 export type FindingSeverity = "low" | "medium" | "high" | "critical";
 

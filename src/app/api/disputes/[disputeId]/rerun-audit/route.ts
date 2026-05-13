@@ -136,7 +136,14 @@ export async function POST(
     parseErrors: [],
   };
 
-  const report = await runAudit(parsedBill);
+  // F-2 — load plan coverage so missing_adjustment + insurance_underpayment
+  // rules can compute should_owe against plan terms.
+  const { loadCoverageMapForPlan } = await import("@/lib/audit/coverage-loader");
+  const planCoverage = await loadCoverageMapForPlan(
+    supabase,
+    (claim as { insurance_plan_id?: string | null }).insurance_plan_id ?? null,
+  );
+  const report = await runAudit(parsedBill, planCoverage);
 
   // Group findings by line_number so we can write them back to the matching
   // claim_line_items row. A single finding may flag multiple lines (e.g.,
