@@ -63,6 +63,42 @@ Use the Claude Preview MCP tool:
 5. Wait for CI to pass
 6. Present PR to admin for review
 
+## Production Release Workflow (Session 81 change)
+
+**Important — auto-deploy on merge is OFF.** Vercel's production branch was switched from `main` → `production` in Session 81 to gate PROD releases manually and reduce build costs. The behavior change:
+
+- **Merges to `main`** → preview deploys only (Vercel builds them under the preview-environment limits, not as production)
+- **Pushes to `production`** → trigger the single PROD deploy
+- **No more "auto-deploy every PR to PROD"** — releases now batch by explicit promotion
+
+### To ship code to PROD
+
+After PR(s) merge to `main` and CI is green, promote main → production:
+
+```bash
+cd /Users/andrewullmann/Desktop/candid
+git fetch origin
+git push origin origin/main:production
+```
+
+Or via the convenience script:
+
+```bash
+./scripts/release-to-prod.sh
+```
+
+The script (a) fast-forwards `production` to current `main`, (b) shows the commits being shipped, (c) requires a `yes` confirmation. Use it when batching multiple PRs into one PROD deploy. Vercel will pick up the `production` branch push and auto-deploy from there.
+
+### Hotfix path
+
+For emergency PROD fixes, the workflow is unchanged from any other PR — merge to main, then `git push origin origin/main:production` to ship. The extra step is ~30 seconds of latency for the safety of explicit promotion.
+
+### Do NOT
+
+- Push directly to `production` from a feature branch — always go through `main`
+- Reset/force-push `production` — it should only fast-forward from `main`
+- Assume merge-to-main = deployed-to-prod (pre-Session-81 assumption; no longer true)
+
 ## Feature Flag Protocol
 
 All new user-facing features MUST be behind a feature flag before merging to main. Use the existing `feature_flag_rules` table and `isFeatureEnabled()` from `src/lib/config/product-flags.ts`.
