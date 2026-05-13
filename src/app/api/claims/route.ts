@@ -23,6 +23,56 @@ async function getAuthUser(req: NextRequest) {
   }
 }
 
+interface RawClaim {
+  id: string;
+  source_document_id: string | null;
+  date_of_service: string | null;
+  total_billed: number | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string | null;
+  insurance_plan_id: string | null;
+  amount_still_outstanding: number | null;
+  total_patient_responsibility: number | null;
+  status: string | null;
+  [key: string]: unknown;
+}
+
+/**
+ * S74 hotfix #3 — collapse duplicate bill uploads at the display layer.
+ *
+ * Until the ingestion-layer dedup ships (file-hash check on /api/documents/upload),
+ * a user re-uploading the same PDF creates multiple `claims` rows with identical
+ * provider + date + total. Surface only the most recent one per fingerprint so
+ * /claim doesn't show the same bill three times.
+ *
+ * Priority key: source_document_id when present (single doc that linked to N
+ * claim rows — should not happen but defensible), else a (provider, date, total)
+ * composite. Same-day same-provider same-total bills from independent sources
+ * (extremely rare; would need two separate visits with identical totals) get
+ * incorrectly collapsed — accepted tradeoff vs. showing real duplicates.
+ *
+ * Caller pre-sorts rawClaims DESC by created_at; the first occurrence wins.
+ */
+function dedupBillsByFingerprint(rawClaims: RawClaim[]): RawClaim[] {
+  const seen = new Set<string>();
+  const out: RawClaim[] = [];
+  for (const c of rawClaims) {
+    const provider =
+      (c.metadata as { provider?: { name?: string } } | null)?.provider?.name?.trim() ||
+      "";
+    // Round total to whole dollars so floating-point noise from re-parses
+    // (e.g., $1,297.00 vs $1297.0000001) doesn't break the fingerprint.
+    const totalCents = Math.round(Number(c.total_billed ?? 0) * 100);
+    const fingerprint = c.source_document_id
+      ? `doc:${c.source_document_id}`
+      : `fp:${c.date_of_service ?? ""}|${totalCents}|${provider.toLowerCase()}`;
+    if (seen.has(fingerprint)) continue;
+    seen.add(fingerprint);
+    out.push(c);
+  }
+  return out;
+}
+
 export async function GET(req: NextRequest) {
   const decoded = await getAuthUser(req);
   if (!decoded) {
@@ -46,17 +96,26 @@ export async function GET(req: NextRequest) {
   const limit = Math.min(parseInt(req.nextUrl.searchParams.get("limit") || "20", 10), 50);
   const offset = (page - 1) * limit;
 
-  // Fetch claims with pagination
-  const { data: claims, error, count } = await supabase
+  // Fetch claims. We deliberately over-fetch (no `.range()` cap on raw rows)
+  // so the dedup pass below can collapse re-uploads of the same bill before
+  // the paginated slice is taken. Without this, paginating raw rows would
+  // surface duplicates as separate cards on /claim. Display-layer dedup; the
+  // duplicate dispute_outcomes rows in the DB are untouched (a proper fix
+  // lives at the ingestion layer + needs migration to merge existing dupes).
+  const { data: rawClaims, error } = await supabase
     .from("claims")
-    .select("*", { count: "exact" })
+    .select("*")
     .eq("user_id", user.id)
-    .order("created_at", { ascending: false })
-    .range(offset, offset + limit - 1);
+    .order("created_at", { ascending: false });
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
+  const dedupedClaims = dedupBillsByFingerprint(rawClaims || []);
+  // Apply pagination AFTER dedup so counts line up.
+  const count = dedupedClaims.length;
+  const claims = dedupedClaims.slice(offset, offset + limit);
 
   // Collect coverage maps per insurance_plan_id so we can derive "should owe"
   // and potential recovery per line without running N+1 queries.
@@ -96,8 +155,9 @@ export async function GET(req: NextRequest) {
         .eq("claim_id", claim.id);
 
       const items = lineItems || [];
-      const coverageMap =
-        claim.insurance_plan_id && coveragePerPlan.get(claim.insurance_plan_id as string);
+      const coverageMap = claim.insurance_plan_id
+        ? coveragePerPlan.get(claim.insurance_plan_id)
+        : undefined;
       const claimTotalBilled = Number(claim.total_billed || 0);
       const claimStillOutstanding =
         claim.amount_still_outstanding != null
@@ -226,11 +286,14 @@ export async function GET(req: NextRequest) {
     })
   );
 
-  // Summary stats (computed across all user claims, not just paginated)
-  const { data: allClaims } = await supabase
+  // Summary stats — also deduped via the same fingerprint so totalBills and
+  // issues counts match what the paginated /claim view actually shows.
+  const { data: allClaimsRaw } = await supabase
     .from("claims")
-    .select("id, status, total_billed, total_patient_responsibility")
-    .eq("user_id", user.id);
+    .select("id, status, total_billed, total_patient_responsibility, source_document_id, date_of_service, metadata, created_at")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false });
+  const allClaims = dedupBillsByFingerprint((allClaimsRaw as RawClaim[]) || []);
 
   // Aggregate potential savings across all claims' line items.
   // "Issues flagged" = classic audit findings + unverified-charge review cases.
