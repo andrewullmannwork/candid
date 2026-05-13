@@ -38,18 +38,20 @@ interface RawClaim {
 }
 
 /**
- * S74 hotfix #3 — collapse duplicate bill uploads at the display layer.
+ * S74 hotfix #3+#4 — collapse duplicate bill uploads at the display layer.
  *
  * Until the ingestion-layer dedup ships (file-hash check on /api/documents/upload),
- * a user re-uploading the same PDF creates multiple `claims` rows with identical
- * provider + date + total. Surface only the most recent one per fingerprint so
- * /claim doesn't show the same bill three times.
+ * a user re-uploading the same PDF creates multiple `claims` rows AND multiple
+ * `documents` rows with DIFFERENT source_document_ids but identical provider +
+ * date + total. The earlier hotfix preferred source_document_id when present →
+ * distinct doc-ids meant no dedup. Reversed: composite is primary, doc_id is
+ * fallback only when the composite can't be computed.
  *
- * Priority key: source_document_id when present (single doc that linked to N
- * claim rows — should not happen but defensible), else a (provider, date, total)
- * composite. Same-day same-provider same-total bills from independent sources
- * (extremely rare; would need two separate visits with identical totals) get
- * incorrectly collapsed — accepted tradeoff vs. showing real duplicates.
+ * Composite key: `(date_of_service, total_billed_cents, normalized_provider)`.
+ * Edge case: two genuinely different bills with identical (date, total, provider)
+ * from the same user collapse incorrectly — accepted tradeoff (real-world rare,
+ * vs. visible duplicates on every test re-upload). The categorization flywheel
+ * sprint will replace this with ingestion-layer file-hash dedup.
  *
  * Caller pre-sorts rawClaims DESC by created_at; the first occurrence wins.
  */
@@ -58,14 +60,22 @@ function dedupBillsByFingerprint(rawClaims: RawClaim[]): RawClaim[] {
   const out: RawClaim[] = [];
   for (const c of rawClaims) {
     const provider =
-      (c.metadata as { provider?: { name?: string } } | null)?.provider?.name?.trim() ||
+      (c.metadata as { provider?: { name?: string } } | null)?.provider?.name?.trim().toLowerCase() ||
       "";
-    // Round total to whole dollars so floating-point noise from re-parses
+    // Round total to whole cents so floating-point noise from re-parses
     // (e.g., $1,297.00 vs $1297.0000001) doesn't break the fingerprint.
     const totalCents = Math.round(Number(c.total_billed ?? 0) * 100);
-    const fingerprint = c.source_document_id
-      ? `doc:${c.source_document_id}`
-      : `fp:${c.date_of_service ?? ""}|${totalCents}|${provider.toLowerCase()}`;
+    const date = c.date_of_service ?? "";
+
+    // Composite fingerprint is primary; collapses re-uploads of the same bill
+    // even when each upload creates a different documents row.
+    const composable = !!(provider && date && totalCents > 0);
+    const fingerprint = composable
+      ? `fp:${date}|${totalCents}|${provider}`
+      : c.source_document_id
+        ? `doc:${c.source_document_id}`
+        : `id:${c.id}`; // last resort: each row is unique (no dedup happens)
+
     if (seen.has(fingerprint)) continue;
     seen.add(fingerprint);
     out.push(c);
