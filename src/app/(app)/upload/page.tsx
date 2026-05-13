@@ -308,24 +308,44 @@ function UploadForm() {
             setProcessingProgress(data);
           } else {
             // No mismatch — decide between auto-redirect or premium prompt.
-            // Session 72 user direction: ALL auto-redirects go to /dashboard
-            // (the user's preferred landing surface). The dashboard exposes
-            // links to /plan (benefits) and /claim (audit) so this also works
-            // for both bill + plan-doc paths uniformly.
+            // Plan-type docs (SBC, plan_document) land on /dashboard per the
+            // Session 72 user direction (dashboard exposes /plan for benefits).
+            // Bill-type docs (eob, itemized_bill) auto-route to /audit so the
+            // user lands directly on their audit findings — overriding the
+            // Session 72 default per Session 81 user direction. Without this,
+            // the user had to manually click Claim then re-run the audit.
             const isPlanType = docType === "sbc" || docType === "plan_document";
+            const isBillType = docType === "eob" || docType === "itemized_bill";
             // SBCs don't include premium — if it's missing, hold the redirect
             // and let the user fill it in via the inline premium prompt.
             const needsPremium = isPlanType && data.linkedPlanPremium == null;
+            const redirectTarget = isBillType ? "/audit" : "/dashboard";
+            // For bills, seed sessionStorage so /audit's existing pendingAudit
+            // useEffect auto-fetches the audit report via /api/documents/process.
+            // The auto-processed path otherwise skips this (the manual fallback
+            // sets it at upload time).
+            if (isBillType && documentId) {
+              try {
+                sessionStorage.setItem(
+                  "pendingAudit",
+                  JSON.stringify({ documentId, billType: docType, fileName: null }),
+                );
+              } catch {
+                // sessionStorage may be unavailable (private mode); fall through.
+              }
+            }
             console.log("[upload] processed branch:", {
               docType,
               isPlanType,
+              isBillType,
               linkedPlanPremium: data.linkedPlanPremium,
               linkedInsurancePlanId: data.linkedInsurancePlanId,
               needsPremium,
               willAutoRedirect: !needsPremium,
+              redirectTarget,
             });
             if (!needsPremium) {
-              setTimeout(() => { window.location.href = "/dashboard"; }, 1500);
+              setTimeout(() => { window.location.href = redirectTarget; }, 1500);
             }
           }
           return;
