@@ -213,6 +213,7 @@ export async function POST(
   return NextResponse.json({
     success: true,
     letterContent: newBody,
+    letterType: letterTypeForRender,
     cf20: { targets: cf20TargetCount, upgrades: cf20UpgradeCount },
     planContext: planContext
       ? {
@@ -220,6 +221,7 @@ export async function POST(
           insurer: planContext.insurer,
           missingForYear: planContext.missingForYear,
           fallbackPlan: planContext.fallbackPlan,
+          providerContact: planContext.providerContact,
         }
       : null,
     evidence,

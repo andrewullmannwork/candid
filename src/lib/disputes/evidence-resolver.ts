@@ -52,6 +52,23 @@ export interface PlanBenefitDetail {
    * column when no P-8 data is present (legacy rows from before mig 056).
    */
   sbcExcerptVerified: boolean;
+  /**
+   * S74 Pillar 2 — where the cite-grade excerpt came from. Drives the
+   * canonical-fallback transparency disclosure in EvidenceBlock so users
+   * understand a citation may be sourced from another member's parse of
+   * the same canonical plan (Pattern 1 #3 corroboration in action) rather
+   * than from their own uploaded document. Distinct from `source` (which
+   * is the row-level user provenance) — `citationSource` is the EXCERPT's
+   * provenance specifically.
+   *
+   * Values:
+   *   - 'user_doc'           → user's own row carries cite-grade P-8 verbatim
+   *   - 'canonical_fallback' → user's row lacked P-8 verbatim; pulled from
+   *                            canonical_haiku_extractions (S72 commit 4)
+   *   - 'legacy_sbc_excerpt' → fell back to legacy mig 050 sbc_excerpt column
+   *   - null                 → no excerpt populated (sbcExcerpt is null)
+   */
+  citationSource: "user_doc" | "canonical_fallback" | "legacy_sbc_excerpt" | null;
 }
 
 export interface LineItemEvidence {
@@ -166,7 +183,20 @@ export interface EvidenceGap {
     | "plan_document_missing"
     | "plan_document_incomplete"
     | "line_items_unmapped"
-    | "audit_findings_missing";
+    | "audit_findings_missing"
+    /** S74 Pillar 3 — insurer appeals address missing (no row in insurer_catalog
+     *  for the resolved plan's insurer, OR row exists with null appeals_address).
+     *  Without an appeals address, an insurance-appeal letter cannot be mailed. */
+    | "insurer_address_missing"
+    /** S74 Pillar 3 — provider mailing address missing on the linked claim. Without
+     *  it, an overcharge / balance billing / duplicate / itemized request letter
+     *  has no recipient address. The UI surfaces a manual entry form. */
+    | "provider_address_missing"
+    /** S74 Pillar 3 — at least one planBenefit-row is not cite-grade
+     *  (sbcExcerptVerified=false). The user can click Re-draft to re-parse
+     *  un-searched plan-document sections and attempt to upgrade those rows
+     *  to verbatim citations (CF-20 path). */
+    | "cite_grade_incomplete";
   /** Short human-readable headline for the UI card. */
   title: string;
   /** One-line explanation of what adding this evidence unlocks. */
@@ -174,6 +204,13 @@ export interface EvidenceGap {
   /** Optional CTA label + href (upload, rerun audit, etc.). */
   ctaLabel?: string;
   ctaHref?: string;
+  /**
+   * S74 — number of unverified citations on this dispute for cite_grade_incomplete.
+   * Drives the body copy ("3 of 5 citations…") and lets the UI route directly to
+   * the Re-draft action instead of a navigation CTA.
+   */
+  unverifiedCount?: number;
+  totalCount?: number;
 }
 
 export interface DisputeEvidence {
@@ -313,7 +350,13 @@ export async function resolveEvidence(
   // Claim-level community aggregate: useful for the letter's opening
   // paragraph when individual line-item counts are all zero.
   const claimLevelCommunity = aggregateCommunity(claimsArr);
-  const gaps = computeEvidenceGaps(claimsArr, planContext, params.claimIds, disputeId ?? null);
+  const gaps = computeEvidenceGaps(
+    claimsArr,
+    planContext,
+    params.claimIds,
+    disputeId ?? null,
+    letterType ?? null,
+  );
 
   return {
     claims: claimsArr,
@@ -344,6 +387,7 @@ function computeEvidenceGaps(
   planContext: PlanContext | null,
   claimIds: string[],
   disputeId: string | null,
+  letterType: string | null,
 ): EvidenceGap[] {
   const gaps: EvidenceGap[] = [];
   // Prefer the persisted dispute id for the returnTo URL so the user lands
@@ -380,6 +424,68 @@ function computeEvidenceGaps(
         "We have your plan on file but couldn't match any of this bill's codes to a covered service. Upload additional pages (or a more complete SBC) to add copay citations per line item.",
       ctaLabel: "Upload more plan pages",
       ctaHref: uploadHref,
+    });
+  }
+
+  // S74 Pillar 3 — insurer appeals address missing. Only meaningful when the
+  // letter actually goes to the insurer (insurance_appeal). For other letter
+  // types the provider gap below covers the recipient gap; the insurer name
+  // still appears in the body but no address is required.
+  const insurerAddressMissing =
+    !!planContext?.plan &&
+    (!planContext.insurer || !planContext.insurer.appealsAddress);
+  if (insurerAddressMissing && letterType === "insurance_appeal") {
+    gaps.push({
+      kind: "insurer_address_missing",
+      title: "We don't have your insurer's appeals address on file",
+      description:
+        "Your insurance appeal needs a mailing address. Upload a more complete plan document so the appeals address can be extracted, or contact your insurer directly to confirm where appeals go.",
+      ctaLabel: "Upload plan document",
+      ctaHref: uploadHref,
+    });
+  }
+
+  // S74 Pillar 3 — provider mailing address missing on the linked claim.
+  // Suppress when the letter goes to the insurer (insurance_appeal) — the
+  // recipient there is the insurer, not the provider.
+  const providerAddressMissing =
+    !!planContext &&
+    (!planContext.providerContact || !planContext.providerContact.address);
+  const goesToProvider =
+    letterType !== "insurance_appeal" && letterType !== null;
+  if (providerAddressMissing && goesToProvider) {
+    gaps.push({
+      kind: "provider_address_missing",
+      title: "Add the provider's billing address",
+      description:
+        "Without this, the printed letter has no mailing address. Find the billing department address on the bill or the provider's website, then enter it below — it'll save with this dispute and any future ones for the same claim.",
+      // Intentionally no ctaHref — the UI renders an inline form that POSTs to
+      // /api/disputes/[disputeId]/provider-contact.
+    });
+  }
+
+  // S74 Pillar 3 — cite-grade incomplete. Count planBenefit-bearing rows
+  // whose sbcExcerptVerified is false. The Re-draft CTA on the toolbar runs
+  // CF-20 re-parse-on-flag (gated by consumer_read_filter_v1) which can
+  // upgrade those rows to verbatim citations.
+  const planBenefitRows = allLineItems.filter((li) => li.planBenefit);
+  const unverifiedCiteGrade = planBenefitRows.filter(
+    (li) => li.planBenefit && !li.planBenefit.sbcExcerptVerified,
+  );
+  if (unverifiedCiteGrade.length > 0 && planBenefitRows.length > 0) {
+    const unverified = unverifiedCiteGrade.length;
+    const total = planBenefitRows.length;
+    gaps.push({
+      kind: "cite_grade_incomplete",
+      title: `${unverified} of ${total} citation${total === 1 ? "" : "s"} ${unverified === 1 ? "isn't" : "aren't"} verbatim-verified yet`,
+      description:
+        "Verified citations include the verbatim plan-document quote that strengthens the letter. Re-draft to re-parse un-searched plan sections and attempt to upgrade these rows — the cost is bounded by per-plan daily caps.",
+      ctaLabel: "Re-draft letter",
+      // Intentionally no ctaHref — the UI wires this kind to the existing
+      // POST /api/disputes/[disputeId]/redraft endpoint via the toolbar's
+      // Re-draft button.
+      unverifiedCount: unverified,
+      totalCount: total,
     });
   }
 
@@ -525,6 +631,15 @@ async function loadCoverage(
     const preferredExcerpt =
       p8?.source_excerpt ?? canonicalFallback?.sourceExcerpt ?? r.sbc_excerpt ?? null;
     const sbcExcerptVerified = userRowCiteGrade || canonicalFallback !== null;
+    // S74 Pillar 2 — track the excerpt's provenance for the canonical-fallback
+    // transparency disclosure in EvidenceBlock.
+    const citationSource: PlanBenefitDetail["citationSource"] = userRowCiteGrade
+      ? "user_doc"
+      : canonicalFallback !== null
+      ? "canonical_fallback"
+      : r.sbc_excerpt
+      ? "legacy_sbc_excerpt"
+      : null;
 
     byServiceSlug.set(cat.slug, {
       covered: r.covered !== false,
@@ -536,6 +651,7 @@ async function loadCoverage(
       sbcExcerpt: preferredExcerpt,
       sbcPage: r.sbc_page ?? null,
       sbcExcerptVerified,
+      citationSource,
     });
   }
 

@@ -2,7 +2,7 @@
 // User reviews, edits, approves, and downloads. User sends letter themselves.
 
 import type { AuditFinding, ParsedBill, DisputeLetterType } from "../billing/types";
-import type { PlanContext } from "./plan-context";
+import type { PlanContext, ProviderContact, AppealsAddress } from "./plan-context";
 import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
 
 interface LetterTemplate {
@@ -57,6 +57,77 @@ interface TemplateParams {
    * back to bullet-without-quote (Case 2) or drop bullet entirely (Case 3).
    */
   gateUnverified?: boolean;
+}
+
+// ============================================================================
+// S74 Pillar 1 — recipient block builders
+// ============================================================================
+// The OLD letter body hardcoded `${providerName}\nBilling Department` (and the
+// equivalent for insurer appeals) — no mailing address. Users printed the letter
+// and had nowhere to mail it. These helpers compose the full mailing block so
+// the printed page is self-contained.
+
+function formatAppealsAddressBlock(addr: AppealsAddress): string {
+  const cityStateZip = [addr.city, addr.state, addr.postalCode]
+    .filter(Boolean)
+    .join(addr.postalCode ? " " : ", ")
+    .replace(`${addr.state} ${addr.postalCode}`, `${addr.state} ${addr.postalCode}`);
+  // Build "City, ST 12345"
+  const cityLine = [
+    [addr.city, addr.state].filter(Boolean).join(", "),
+    addr.postalCode,
+  ].filter(Boolean).join(" ");
+  return [addr.line1, addr.line2, cityLine || cityStateZip].filter(Boolean).join("\n");
+}
+
+/** Recipient block for non-appeal letters (mailed to the provider billing dept).
+ *  Prefers `planContext.providerContact.address` (loaded from claims.metadata)
+ *  but falls back to `bill.provider.address` so audit-only flows that pass an
+ *  AuditReport without a persisted claim still render a complete recipient. */
+function buildProviderRecipientBlock(
+  providerName: string,
+  providerContact: ProviderContact | null | undefined,
+  bill: ParsedBill | undefined,
+): string {
+  const lines: string[] = [providerName, "Billing Department"];
+  const address = providerContact?.address ?? bill?.provider?.address ?? null;
+  if (address) {
+    lines.push(address);
+  }
+  return lines.join("\n");
+}
+
+/** Recipient block for insurance-appeal letters (mailed to the insurer appeals dept). */
+function buildInsurerRecipientBlock(
+  insurerName: string,
+  planContext: PlanContext | null | undefined,
+): string {
+  const lines: string[] = [insurerName, "Member Services — Appeals"];
+  const appealsAddress = planContext?.insurer?.appealsAddress;
+  if (appealsAddress) {
+    lines.push(formatAppealsAddressBlock(appealsAddress));
+  }
+  const phone = planContext?.insurer?.appealsPhone;
+  if (phone) {
+    lines.push(`Phone: ${phone}`);
+  }
+  return lines.join("\n");
+}
+
+/** Patient + reference block. Surfaces Provider NPI when it's known —
+ *  preferring planContext.providerContact, falling back to bill.provider.npi
+ *  for audit-only flows. */
+function buildPatientReferenceBlock(
+  patientName: string,
+  memberId: string | undefined,
+  providerContact: ProviderContact | null | undefined,
+  bill: ParsedBill | undefined,
+): string {
+  const parts: string[] = [`Patient: ${patientName}`];
+  if (memberId) parts.push(`Member ID: ${memberId}`);
+  const npi = providerContact?.npi ?? bill?.provider?.npi ?? null;
+  if (npi) parts.push(`Provider NPI: ${npi}`);
+  return parts.join("\n");
 }
 
 // ============================================================================
@@ -307,6 +378,7 @@ const overchargeTemplate: LetterTemplate = {
     planContext,
     evidence,
     gateUnverified,
+    bill,
   }) => {
     const findingDetails = findings
       .map(
@@ -327,13 +399,15 @@ const overchargeTemplate: LetterTemplate = {
       gateUnverified ?? false,
     );
 
+    const recipientBlock = buildProviderRecipientBlock(providerName, planContext?.providerContact, bill);
+    const patientRefBlock = buildPatientReferenceBlock(patientName, undefined, planContext?.providerContact, bill);
+
     return `${formatDate(new Date().toISOString())}
 
-${providerName}
-Billing Department
+${recipientBlock}
 
 Re: Billing Dispute — Date of Service: ${formatDate(serviceDate)}
-Patient: ${patientName}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
+${patientRefBlock}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
 
 To Whom It May Concern:
 
@@ -390,14 +464,15 @@ DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis t
 const itemizedRequestTemplate: LetterTemplate = {
   type: "itemized_request",
   subject: (provider) => `Request for Itemized Bill — ${provider}`,
-  body: ({ patientName, providerName, serviceDate, accountNumber }) => {
+  body: ({ patientName, providerName, serviceDate, accountNumber, planContext, bill }) => {
+    const recipientBlock = buildProviderRecipientBlock(providerName, planContext?.providerContact, bill);
+    const patientRefBlock = buildPatientReferenceBlock(patientName, undefined, planContext?.providerContact, bill);
     return `${formatDate(new Date().toISOString())}
 
-${providerName}
-Billing Department
+${recipientBlock}
 
 Re: Request for Itemized Bill — Date of Service: ${formatDate(serviceDate)}
-Patient: ${patientName}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
+${patientRefBlock}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
 
 To Whom It May Concern:
 
@@ -458,15 +533,20 @@ const insuranceAppealTemplate: LetterTemplate = {
       gateUnverified ?? false,
     );
 
+    const recipientBlock = buildInsurerRecipientBlock(insurerName, planContext);
+    const npi = planContext?.providerContact?.npi ?? bill.provider?.npi ?? null;
+    const providerLine = npi
+      ? `Provider: ${providerName} (NPI ${npi})`
+      : `Provider: ${providerName}`;
+
     return `${formatDate(new Date().toISOString())}
 
-${insurerName}
-Member Services — Appeals
+${recipientBlock}
 
 Re: Appeal of Claim Denial — Date of Service: ${formatDate(serviceDate)}
 Patient: ${patientName}
 Member ID: ${memberId}
-Provider: ${providerName}${planLabel ? `\nPlan: ${planLabel}` : ""}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
+${providerLine}${planLabel ? `\nPlan: ${planLabel}` : ""}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
 
 To Whom It May Concern:
 
@@ -508,6 +588,7 @@ const balanceBillingTemplate: LetterTemplate = {
     planContext,
     evidence,
     gateUnverified,
+    bill,
   }) => {
     const evidenceBlock = renderEvidenceBlock(
       evidence,
@@ -527,13 +608,15 @@ const balanceBillingTemplate: LetterTemplate = {
       0
     );
 
+    const recipientBlock = buildProviderRecipientBlock(providerName, planContext?.providerContact, bill);
+    const patientRefBlock = buildPatientReferenceBlock(patientName, undefined, planContext?.providerContact, bill);
+
     return `${formatDate(new Date().toISOString())}
 
-${providerName}
-Billing Department
+${recipientBlock}
 
 Re: Balance Billing Dispute — Date of Service: ${formatDate(serviceDate)}
-Patient: ${patientName}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
+${patientRefBlock}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
 
 To Whom It May Concern:
 
@@ -591,6 +674,7 @@ const duplicateChargeTemplate: LetterTemplate = {
     planContext,
     evidence,
     gateUnverified,
+    bill,
   }) => {
     const evidenceBlock = renderEvidenceBlock(
       evidence,
@@ -610,13 +694,15 @@ const duplicateChargeTemplate: LetterTemplate = {
       0
     );
 
+    const recipientBlock = buildProviderRecipientBlock(providerName, planContext?.providerContact, bill);
+    const patientRefBlock = buildPatientReferenceBlock(patientName, undefined, planContext?.providerContact, bill);
+
     return `${formatDate(new Date().toISOString())}
 
-${providerName}
-Billing Department
+${recipientBlock}
 
 Re: Duplicate Charge Dispute — Date of Service: ${formatDate(serviceDate)}
-Patient: ${patientName}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
+${patientRefBlock}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
 
 To Whom It May Concern:
 
@@ -654,11 +740,11 @@ DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis t
 const negotiationTemplate: LetterTemplate = {
   type: "negotiation" as DisputeLetterType,
   subject: (provider) => `Self-Pay Rate Negotiation — ${provider}`,
-  body: ({ patientName, providerName, serviceDate }) => {
+  body: ({ patientName, providerName, serviceDate, planContext, bill }) => {
+    const recipientBlock = buildProviderRecipientBlock(providerName, planContext?.providerContact, bill);
     return `${formatDate(new Date().toISOString())}
 
-${providerName}
-Billing Department
+${recipientBlock}
 
 Re: Self-Pay Rate Negotiation — Date of Service: ${formatDate(serviceDate)}
 Patient: ${patientName}

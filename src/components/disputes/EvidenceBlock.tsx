@@ -17,6 +17,13 @@
  *
  * EOB / community / sibling-codes / pricing-benchmark UI is NOT gated — those
  * signals are independent of plan-data trust and remain useful regardless.
+ *
+ * S74 Pillar 2 — per-citation badges:
+ *   - "Cite-grade verified · from your plan" (citationSource='user_doc')
+ *   - "Cite-grade verified · from a similar member's plan" (citationSource='canonical_fallback')
+ *   - "Cite-grade verified" (citationSource='legacy_sbc_excerpt' — pre-P-8 data)
+ *   - "Plan data on file · not yet verbatim-verified" (sbcExcerptVerified=false)
+ * Plus inline "Re-draft to verify" hint when the row is not cite-grade.
  */
 import type { DisputeEvidence, LineItemEvidence } from "@/lib/disputes/evidence-resolver";
 
@@ -124,11 +131,23 @@ function EvidenceItem({
               "cost-sharing terms"
             )}{" "}
             for this service.
-            <div className="mt-1 text-xs text-slate-500">{item.planBenefit.citation}</div>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+              <span>{item.planBenefit.citation}</span>
+              <CitationBadge
+                verified={item.planBenefit.sbcExcerptVerified}
+                citationSource={item.planBenefit.citationSource}
+              />
+            </div>
             {showBlockquote ? (
               <blockquote className="mt-2 border-l-2 border-indigo-200 pl-3 text-slate-700 italic">
                 &ldquo;{item.planBenefit.sbcExcerpt!.trim()}&rdquo;
               </blockquote>
+            ) : null}
+            {!item.planBenefit.sbcExcerptVerified ? (
+              <div className="mt-2 text-xs italic text-slate-500">
+                We have copay / coinsurance values on file but haven&apos;t found a verbatim
+                quote in your plan document. <span className="font-medium not-italic text-slate-700">Use Re-draft</span> to attempt a cite-grade upgrade.
+              </div>
             ) : null}
           </div>
         ) : null}
@@ -170,4 +189,70 @@ function EvidenceItem({
 function formatUsd(n: number): string {
   const v = Math.round(n * 100) / 100;
   return `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/**
+ * S74 Pillar 2 — per-citation provenance badge. Sits next to the SBC page reference
+ * so the user can tell at a glance whether the blockquote came from their own plan
+ * doc, another member's parse of the same canonical plan, or a legacy pre-P-8 row.
+ */
+function CitationBadge({
+  verified,
+  citationSource,
+}: {
+  verified: boolean;
+  citationSource: LineItemEvidence["planBenefit"] extends infer T
+    ? T extends { citationSource: infer S } ? S : never
+    : never;
+}) {
+  if (!verified) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800"
+        title="Plan-benefit values are on file but we haven't yet matched them to a verbatim plan-document quote. Re-draft attempts a cite-grade upgrade."
+      >
+        <Dot tone="amber" /> Plan data on file
+      </span>
+    );
+  }
+  if (citationSource === "user_doc") {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-800"
+        title="Verbatim quote extracted from your uploaded plan document."
+      >
+        <Dot tone="emerald" /> Verified from your plan
+      </span>
+    );
+  }
+  if (citationSource === "canonical_fallback") {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-800"
+        title="Your row didn't carry a verbatim quote yet, so we cited another member's verified parse of this same plan. Pattern 1 #3 corroboration in action."
+      >
+        <Dot tone="emerald" /> Verified · community-cited
+      </span>
+    );
+  }
+  // legacy_sbc_excerpt (pre-Pattern P-8) — still cite-grade in spirit but not in
+  // the modern source_excerpt_verified sense.
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-700"
+      title="Citation drawn from a legacy plan-document parse (pre-Pattern P-8). Quality is generally good but lacks per-field verbatim verification."
+    >
+      <Dot tone="slate" /> Verified · legacy
+    </span>
+  );
+}
+
+function Dot({ tone }: { tone: "emerald" | "amber" | "slate" }) {
+  const color =
+    tone === "emerald"
+      ? "bg-emerald-500"
+      : tone === "amber"
+      ? "bg-amber-500"
+      : "bg-slate-400";
+  return <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${color}`} />;
 }

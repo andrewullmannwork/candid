@@ -15,6 +15,7 @@ import { EvidenceBlock } from "@/components/disputes/EvidenceBlock";
 import { MissingPlanBanner } from "@/components/disputes/MissingPlanBanner";
 import { DownloadWarningModal } from "@/components/disputes/DownloadWarningModal";
 import { EvidenceGaps } from "@/components/disputes/EvidenceGaps";
+import { InsurerAddressCorrectionModal } from "@/components/disputes/InsurerAddressCorrectionModal";
 import type { PlanContext } from "@/lib/disputes/plan-context";
 import type { DisputeEvidence } from "@/lib/disputes/evidence-resolver";
 
@@ -185,7 +186,22 @@ function DisputesContent() {
   // EvidenceBlock UI. Resolved server-side in /api/disputes/[disputeId] GET so
   // we don't duplicate flag-evaluation logic on the client.
   const [gateUnverified, setGateUnverified] = useState(false);
+  // S74 — dispute lifecycle state for the Mark-as-Sent flow.
+  const [disputeStatus, setDisputeStatus] = useState<string | null>(null);
+  const [disputeFiledDate, setDisputeFiledDate] = useState<string | null>(null);
+  // S74 — InsurerAddressCorrectionModal open state.
+  const [insurerCorrectionOpen, setInsurerCorrectionOpen] = useState(false);
+  // S74 — Mark-sent button state + transient toast.
+  const [markingSent, setMarkingSent] = useState(false);
+  const [markSentToast, setMarkSentToast] = useState<string | null>(null);
   const disputeId = searchParams.get("dispute");
+
+  // S74 — bearer-token fetch helper shared by the inline forms (InsurerAddressCorrectionModal,
+  // ProviderAddressForm) so they don't need to know about useAuth() internals.
+  const getAuthToken = useCallback(async (): Promise<string | null> => {
+    if (!user) return null;
+    return user.firebaseUser.getIdToken();
+  }, [user]);
 
   // Fetch dispute + plan context + evidence (reused for refetch-on-focus).
   const fetchDispute = useCallback(async (id: string) => {
@@ -200,14 +216,21 @@ function DisputesContent() {
     setEvidence(data.evidence ?? null);
     setNameMismatch(data.patientNameMismatch ?? null);
     setGateUnverified(!!data.gateUnverified);
+    setDisputeStatus(typeof data.status === "string" ? data.status : null);
+    setDisputeFiledDate(typeof data.filedDate === "string" ? data.filedDate : null);
     if (data.letterContent) {
+      // Server-resolved letter type (S74). Authoritative — reads metadata.letterType
+      // first, then maps from legacy dispute_type vocab. Without this, the recipient
+      // block + DisputeLetterHero eyebrow would regress on legacy rows.
+      const resolvedLetterType: DisputeLetter["letterType"] =
+        (data.letterType as DisputeLetter["letterType"] | undefined) ?? "insurance_appeal";
       const synthesized: DisputeLetter = {
         id: data.id,
         auditReportId: data.claimId || "",
         userId: "",
-        letterType: (data.disputeType === "internal_appeal" ? "insurance_appeal" : data.disputeType) || "insurance_appeal",
+        letterType: resolvedLetterType,
         findingIds: [],
-        recipient: recipientFromPlanContext(data.planContext),
+        recipient: recipientFromPlanContext(data.planContext, resolvedLetterType),
         subject: `Formal appeal — dispute ${data.id.slice(0, 8)}`,
         body: data.letterContent,
         supportingFacts: [],
@@ -364,6 +387,48 @@ function DisputesContent() {
     }
   };
 
+  // S74 — Mark-as-Sent button. POSTs to /api/disputes/outcome with status='filed'
+  // (the lifecycle hop from `dispute_letter_drafted` → `filed` per persist.ts).
+  // Once filed, T2.2 follow-up reminders fire on their schedule and the toolbar
+  // button rotates to a read-only "Sent on <date>" pill.
+  const alreadySent = isSentStatus(disputeStatus);
+  const handleMarkSent = async () => {
+    if (!user || !disputeId || markingSent || alreadySent) return;
+    if (!window.confirm("Mark this dispute as sent? We'll start the follow-up reminder schedule and you'll see status updates on your claim.")) {
+      return;
+    }
+    setMarkingSent(true);
+    setMarkSentToast(null);
+    try {
+      const token = await user.firebaseUser.getIdToken();
+      const res = await fetch(`/api/disputes/outcome`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ disputeId, status: "filed" }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.error || `mark-sent failed (${res.status})`);
+      }
+      setMarkSentToast("Marked as sent. Follow-up reminders are scheduled.");
+      await fetchDispute(disputeId);
+    } catch (err) {
+      setMarkSentToast(err instanceof Error ? err.message : "Failed to mark as sent");
+    } finally {
+      setMarkingSent(false);
+      setTimeout(() => setMarkSentToast(null), 6000);
+    }
+  };
+
+  // S74 — InsurerAddressCorrectionModal callbacks.
+  const handleProposeInsurerCorrection = () => setInsurerCorrectionOpen(true);
+  const refetchAfterChange = async () => {
+    if (disputeId) await fetchDispute(disputeId);
+  };
+
   if (!letter) {
     if (disputeFetching) {
       return (
@@ -426,6 +491,9 @@ function DisputesContent() {
         serviceDate={serviceDate}
         askSummary={buildAskSummary(letter, potentialRecovery)}
         potentialRecovery={potentialRecovery}
+        evidence={evidence}
+        onRedraft={handleRedraft}
+        redraftInFlight={redrafting}
       />
 
       <DisputeRecipientCard
@@ -436,6 +504,7 @@ function DisputesContent() {
         planYear={planContext?.plan?.planYear ?? null}
         referenceId={letter.id}
         onConfirmAddress={handleConfirmAddress}
+        onProposeCorrection={planContext?.insurer ? handleProposeInsurerCorrection : undefined}
       />
 
       <EvidenceBlock evidence={evidence} planLabel={planLabel} gateUnverified={gateUnverified} />
@@ -459,6 +528,11 @@ function DisputesContent() {
               }
             : undefined
         }
+        onRedraft={disputeId ? handleRedraft : undefined}
+        disputeId={disputeId}
+        providerSeed={planContext?.providerContact ?? null}
+        getAuthToken={getAuthToken}
+        onProviderContactSaved={refetchAfterChange}
       />
 
       {nameMismatch ? (
@@ -522,11 +596,29 @@ function DisputesContent() {
               icon="letter"
               label="Download letter"
             />
+            {alreadySent ? (
+              <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-700">
+                <SentCheckIcon />
+                Sent{disputeFiledDate ? ` ${formatFiledDate(disputeFiledDate)}` : ""}
+              </span>
+            ) : (
+              <ToolbarButton
+                onClick={handleMarkSent}
+                icon="sent"
+                label={markingSent ? "Marking…" : "Mark as sent"}
+                tone="primary"
+              />
+            )}
           </div>
         </div>
         {redraftToast && (
           <div className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
             {redraftToast}
+          </div>
+        )}
+        {markSentToast && (
+          <div className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+            {markSentToast}
           </div>
         )}
       </div>
@@ -620,7 +712,74 @@ function DisputesContent() {
           onDownloadAnyway={forceDownloadCaseFile}
         />
       ) : null}
+
+      {planContext?.insurer ? (
+        <InsurerAddressCorrectionModal
+          open={insurerCorrectionOpen}
+          insurerName={planContext.insurer.name}
+          insurerId={planContext.insurer.id}
+          initialValues={{
+            addressLine1: planContext.insurer.appealsAddress?.line1 ?? "",
+            addressLine2: planContext.insurer.appealsAddress?.line2 ?? "",
+            city: planContext.insurer.appealsAddress?.city ?? "",
+            state: planContext.insurer.appealsAddress?.state ?? "",
+            postalCode: planContext.insurer.appealsAddress?.postalCode ?? "",
+            phone: planContext.insurer.appealsPhone ?? "",
+          }}
+          onClose={() => setInsurerCorrectionOpen(false)}
+          onSubmitted={refetchAfterChange}
+          getAuthToken={getAuthToken}
+        />
+      ) : null}
     </div>
+  );
+}
+
+/**
+ * S74 — statuses that mean the dispute has already left the user's hands. The
+ * mark-sent button hides + the toolbar shows a "Sent on <date>" pill instead.
+ * Source vocabulary in src/lib/disputes/persist.ts.
+ */
+function isSentStatus(status: string | null | undefined): boolean {
+  if (!status) return false;
+  return [
+    "filed",
+    "in_progress",
+    "won",
+    "lost",
+    "settled",
+    "withdrawn",
+    "won_on_escalation",
+    "settled_on_escalation",
+  ].includes(status);
+}
+
+function formatFiledDate(iso: string): string {
+  try {
+    return new Date(iso).toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function SentCheckIcon() {
+  return (
+    <svg
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      viewBox="0 0 24 24"
+      aria-hidden
+    >
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
   );
 }
 
@@ -680,9 +839,17 @@ function NameMismatchIcon() {
 }
 
 // Small icon set (stroke-based, matches Lucide aesthetic without the dep).
-function ToolbarIcon({ name }: { name: "edit" | "preview" | "copy" | "letter" | "casefile" | "redraft" }) {
+function ToolbarIcon({ name }: { name: "edit" | "preview" | "copy" | "letter" | "casefile" | "redraft" | "sent" }) {
   const common = { className: "h-4 w-4", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, viewBox: "0 0 24 24" };
   switch (name) {
+    case "sent":
+      // Paper-plane icon — universally signals "send / sent" to consumers.
+      return (
+        <svg {...common}>
+          <line x1="22" y1="2" x2="11" y2="13" />
+          <polygon points="22 2 15 22 11 13 2 9 22 2" />
+        </svg>
+      );
     case "redraft":
       return (
         <svg {...common}>
@@ -758,9 +925,14 @@ function ToolbarButton({
 
 function recipientFromPlanContext(
   planContext: (PlanContext & { insurer: { name: string; appealsAddress: { line1: string; line2: string | null; city: string; state: string; postalCode: string } | null; appealsPhone: string | null } | null }) | null,
+  letterType: DisputeLetter["letterType"],
 ): DisputeLetter["recipient"] {
   const insurer = planContext?.insurer ?? null;
-  if (insurer) {
+  // Appeals go to the insurer; everything else (overcharge, balance billing,
+  // duplicate charges, itemized requests, self-pay negotiation) goes to the
+  // provider billing department. S74: the provider mailing address now flows
+  // through planContext.providerContact so we can render it in the card.
+  if (letterType === "insurance_appeal" && insurer) {
     const addr = insurer.appealsAddress;
     return {
       name: insurer.name,
@@ -771,7 +943,20 @@ function recipientFromPlanContext(
       phone: insurer.appealsPhone ?? undefined,
     };
   }
-  return { name: "Insurance Appeals", role: "Appeals Department" };
+  const provider = planContext?.providerContact ?? null;
+  if (provider && (provider.name || provider.address)) {
+    return {
+      name: provider.name ?? "Provider",
+      role: "Billing Department",
+      address: provider.address ?? undefined,
+      phone: provider.phone ?? undefined,
+    };
+  }
+  // Fallback when neither side resolved — preserves legacy behavior.
+  if (letterType === "insurance_appeal") {
+    return { name: "Insurance Appeals", role: "Appeals Department" };
+  }
+  return { name: "Provider", role: "Billing Department" };
 }
 
 function RequestItemizedBill() {

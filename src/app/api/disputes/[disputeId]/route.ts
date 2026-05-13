@@ -87,6 +87,12 @@ export async function GET(
     lineItems = items || [];
   }
 
+  // S74 — resolved letter type is authoritative regardless of whether the claim
+  // is linked. The client used to map data.disputeType → letterType locally with
+  // an incomplete switch; surfacing the server-resolved letterType prevents the
+  // recipient block from regressing for legacy dispute_type vocab.
+  const resolvedLetterType = resolveLetterTypeFromDispute(dispute);
+
   // Phase 1 + 7: live-resolve plan context from the linked claim, and
   // regenerate letter body if the user has uploaded new plan data since
   // the dispute was drafted.
@@ -131,13 +137,12 @@ export async function GET(
       // | duplicate_charge | negotiation | itemized_request). The original
       // letter_type is stashed on metadata.letterType at persist time;
       // fall back to a dispute_type → letter_type mapping for legacy rows.
-      const letterTypeForRender = resolveLetterTypeFromDispute(dispute);
       const fingerprint = buildFingerprint(planContext, evidence);
       const { rerenderDisputeLetter } = await import("@/lib/disputes/rerender");
       regeneratedLetterContent = await rerenderDisputeLetter(supabase, {
         disputeId: dispute.id,
         userId: user.id,
-        letterType: letterTypeForRender,
+        letterType: resolvedLetterType,
         claimId: dispute.claim_id,
         lineItemIds: allLineItemIds,
         planContext,
@@ -203,6 +208,7 @@ export async function GET(
   return NextResponse.json({
     id: dispute.id,
     disputeType: dispute.dispute_type,
+    letterType: resolvedLetterType,
     status: dispute.status,
     amountDisputed: dispute.amount_disputed,
     amountRecovered: dispute.amount_recovered,
@@ -218,6 +224,7 @@ export async function GET(
           insurer: planContext.insurer,
           missingForYear: planContext.missingForYear,
           fallbackPlan: planContext.fallbackPlan,
+          providerContact: planContext.providerContact,
         }
       : null,
     missingPlanForYear: planContext?.missingForYear ?? null,
