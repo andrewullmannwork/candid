@@ -53,6 +53,23 @@ ALTER TABLE billing_code_identity
   ADD COLUMN IF NOT EXISTS bill_observation_count INT NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS observed_provider_canonical_ids UUID[] NOT NULL DEFAULT '{}';
 
+-- Widen promotion_state CHECK constraint to admit 'ambiguous_candidate' per
+-- Subplan §C / Q-S87-C3 lock. Required so the D4 admin-UI follow-up (which
+-- writes the 2-row ambiguous-pair on Haiku within-0.05 ties) can persist the
+-- state, AND so the pg_cron cleanup below has a non-empty target after that
+-- work lands. Additive: existing rows in 'proposed' | 'corroborated' |
+-- 'admin_verified' continue to pass. Mig 087 set the original constraint.
+ALTER TABLE billing_code_identity
+  DROP CONSTRAINT IF EXISTS billing_code_identity_promotion_state_check;
+ALTER TABLE billing_code_identity
+  ADD CONSTRAINT billing_code_identity_promotion_state_check
+  CHECK (promotion_state IN (
+    'proposed',
+    'corroborated',
+    'admin_verified',
+    'ambiguous_candidate'
+  ));
+
 COMMENT ON COLUMN billing_code_identity.bill_observation_count IS
   'S74.6 D4 / Subplan §12 — incremented on every line-item match (no dedup beyond file-hash). Captures frequency signal. Does NOT drive promotion threshold v1; surfaced in admin UI for context.';
 COMMENT ON COLUMN billing_code_identity.observed_provider_canonical_ids IS
@@ -60,8 +77,14 @@ COMMENT ON COLUMN billing_code_identity.observed_provider_canonical_ids IS
 
 -- ── Concern 3: pg_cron ambiguous_candidate cleanup ───────────────────────────
 -- Conditional on pg_cron extension being installed (PROD has it via mig 086).
+--
+-- NOTE on dollar-quoting: the outer DO block uses $do$ as its delimiter so the
+-- inner cron command body (which contains its own dollar-quoted SQL) can use
+-- the default $$ tag without colliding. Nested same-tag dollar-quotes parse as
+-- "close the outer, open a new top-level" and trip a syntax error at the inner
+-- DELETE statement (Postgres ERROR 42601).
 
-DO $$
+DO $do$
 BEGIN
   IF EXISTS (
     SELECT 1 FROM pg_extension WHERE extname = 'pg_cron'
@@ -77,7 +100,7 @@ BEGIN
     PERFORM cron.schedule(
       's74_6_ambiguous_candidate_cleanup',
       '17 3 * * *',
-      $$
+      $cleanup$
         DELETE FROM billing_code_identity
         WHERE promotion_state = 'ambiguous_candidate'
           AND created_at < now() - interval '90 days'
@@ -86,11 +109,11 @@ BEGIN
             FROM jsonb_array_elements(coalesce(corroborator_sources, '[]'::jsonb)) AS src
             WHERE src->>'source' = 'user_correction'
           );
-      $$
+      $cleanup$
     );
   ELSE
     RAISE NOTICE 'pg_cron extension not installed; skipping s74_6_ambiguous_candidate_cleanup schedule. Apply mig 086 to install + re-run this block.';
   END IF;
-END $$;
+END $do$;
 
 COMMIT;
