@@ -309,26 +309,45 @@ export async function processPlanDocumentData(
       throw new Error("SBC_PARSER_DISABLED: sbc_parser_v1 flag is OFF for this user");
     }
 
-    // ── Plan identity: Haiku primary, regex fallback (skipped under sbc_parser_v1) ────
-    // Haiku reliably extracts plan name from any SBC format; regex is fragile.
-    // The new SBC Haiku parser already extracts plan identity natively, so skip
-    // this redundant call when usedNewSBCParser is true.
-    if (!usedNewSBCParser) {
+    // ── Plan identity safety net (S90 Bug X) ─────────────────────────────────
+    // The Haiku-first SBC parser (sbc_parser_v1) AND the legacy regex
+    // parsePlanDocument both stochastically return null on plan-identity fields
+    // (planName, insurer, planType, planYear) on real fixtures — observed
+    // empirically at S90 Phase 1.1 (BSCA) + 1.2 (Ambetter). Previously this
+    // fallback was gated on `!usedNewSBCParser`, assuming the new SBC parser
+    // would always extract identity natively. That assumption was wrong.
+    //
+    // Fix: when ANY of plan_name / insurer_name / plan_type / plan_year is
+    // null after the parser ran (regardless of which parser ran), call the
+    // dedicated Haiku plan-identifier extractor (~$0.001 marginal cost) which
+    // uses a tighter prompt focused on the document header. `??=` preserves
+    // any non-null values the parser DID extract so we never overwrite a
+    // successful parser result with potentially-wrong fallback data.
+    //
+    // Bug Y at the merge step below relies on this: if both parser AND this
+    // fallback leave insurer_name null, the merge logic treats it as a
+    // mismatch (don't silently merge into the user's active plan).
+    const needsIdentityRecovery = !parseResult.plan.plan_name
+      || !parseResult.plan.insurer_name
+      || !parseResult.plan.plan_year
+      || !parseResult.plan.plan_type;
+    if (needsIdentityRecovery) {
       try {
         const { extractPlanIdentifiersWithHaiku } = await import("@/lib/plan/extraction-dedup");
         const haikuIds = await extractPlanIdentifiersWithHaiku(ocrText);
-        if (haikuIds.planName) {
-          console.log("[process-plan] Haiku plan identity:", haikuIds.planName, "|", haikuIds.insurer, "|", haikuIds.planType);
-          parseResult.plan.plan_name = haikuIds.planName;
-        }
-        // Haiku is also more reliable for insurer and plan type
-        if (haikuIds.insurer) parseResult.plan.insurer_name = haikuIds.insurer;
-        if (haikuIds.planType) parseResult.plan.plan_type = haikuIds.planType;
+        parseResult.plan.plan_name ??= haikuIds.planName ?? null;
+        parseResult.plan.insurer_name ??= haikuIds.insurer ?? null;
+        parseResult.plan.plan_type ??= haikuIds.planType ?? null;
+        parseResult.plan.plan_year ??= haikuIds.planYear ?? null;
+        console.log(
+          "[process-plan] Plan-identity safety net (Haiku fallback):",
+          `plan_name=${parseResult.plan.plan_name ?? "null"}`,
+          `insurer=${parseResult.plan.insurer_name ?? "null"}`,
+          `plan_type=${parseResult.plan.plan_type ?? "null"}`,
+          `plan_year=${parseResult.plan.plan_year ?? "null"}`,
+        );
       } catch (haikuErr) {
-        // Phase 3.2.1: this code path runs only for plan_document classification
-        // (isFullPlanDoc=true). Haiku plan-identity augmentation is best-effort;
-        // on failure, the regex parsePlanDocument result stands as-is.
-        console.warn("[process-plan] Haiku plan identity failed, using regex fallback:", haikuErr);
+        console.warn("[process-plan] Plan-identity recovery failed:", haikuErr);
       }
     }
 
@@ -536,6 +555,21 @@ export async function processPlanDocumentData(
         parsedInsurer: planInsert.insurer_name || "",
         existingPlanName: userProfile.plan_name,
         parsedPlanName: planInsert.plan_name,
+      };
+    } else if (!planInsert.insurer_name && userProfile?.insurer) {
+      // S90 Bug Y defensive guard: parser (incl. Bug X safety-net Haiku
+      // fallback) failed to extract any insurer name AND the user has an
+      // existing profile insurer. We cannot determine whether this upload
+      // is the same plan or a different one. Fail-safe by treating as a
+      // mismatch — the downstream merge step at L580 will create a new
+      // is_active=false row instead of silently overwriting the user's
+      // active plan's cost-share fields. Surfaces in UI as "insurer
+      // mismatch" so the user can disambiguate.
+      mismatchData = {
+        mismatch: true,
+        type: "insurer",
+        existingInsurer: userProfile.insurer,
+        parsedInsurer: "(parser could not extract)",
       };
     }
 
