@@ -94,6 +94,14 @@ async function processBillDocument(
   const { loadCoverageMapForPlan, loadAcaFallbackForAudit } = await import("@/lib/audit/coverage-loader");
   const planCoverage = await loadCoverageMapForPlan(supabase, insurancePlanId);
 
+  // S74.6 §C.1 — pre-flight slug resolution BEFORE runAudit. Runs the
+  // flywheel + legacy service-mapper paths, mutates bill.lineItems[i].
+  // serviceSlug + .billingCodeIdentityId so the audit pipeline can build
+  // per-slug cohort keys + D4 skips already-categorized lines. persist
+  // consumes these without re-resolving.
+  const { resolveLineItemSlugs } = await import("@/lib/claims/preflight-slug-resolver");
+  await resolveLineItemSlugs(supabase, doc.user_id, parsedBill);
+
   // S74.6 D3 — thread insurer_name so runAudit can apply cohort accuracy
   // adjustment (boost / informational chip / suppress per Subplan §B).
   let insurerNameForAudit: string | null = null;

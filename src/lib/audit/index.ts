@@ -13,8 +13,7 @@ import {
   loadAccuracyCohortMap,
   decideAccuracyAdjustment,
   applyAccuracyAdjustment,
-  mapKey,
-  type CohortStats,
+  lookupCohort,
 } from "./accuracy-cohort-loader";
 import { randomUUID } from "crypto";
 
@@ -162,10 +161,35 @@ export async function runAudit(
 }
 
 /**
- * S74.6 D3 — Apply cohort accuracy adjustments per finding. Findings without a
- * cohort lookup (no auditContext.insurerName OR claim-level findings without
- * service_slug context) pass through unchanged. Returns the filtered + adjusted
- * findings array; suppressed findings are dropped entirely.
+ * §C.1 — resolve the service slug a finding pertains to. D4 description-match
+ * findings carry the provisional slug in `descriptionMatch.provisionalSlug`;
+ * other rules emit findings flagging specific line numbers — for those we look
+ * up the pre-flight-resolved slug from the bill's lineItems. Claim-level
+ * findings (lineItems=[]) return null and fall through to the slug-less rollup.
+ *
+ * Multi-line findings: use the FIRST line's slug. Mixed-slug multi-line findings
+ * are an edge case; v1 treats them as cohort-keyed by the first match.
+ */
+function resolveSlugForFinding(
+  finding: AuditFinding,
+  lineSlugIndex: Map<number, string | null>,
+): string | null {
+  if (finding.descriptionMatch?.provisionalSlug) {
+    return finding.descriptionMatch.provisionalSlug;
+  }
+  if (!Array.isArray(finding.lineItems) || finding.lineItems.length === 0) {
+    return null;
+  }
+  return lineSlugIndex.get(finding.lineItems[0]) ?? null;
+}
+
+/**
+ * S74.6 §C.1 D3 — Apply cohort accuracy adjustments per finding. Cohort key is
+ * `(rule_type, insurer_name, service_slug)`; slug comes from the pre-flight
+ * resolution attached to bill.lineItems[i].serviceSlug. Findings without slug
+ * context fall back to the slug-less rollup (preserves S87 behavior for
+ * claim-level findings + lines pre-flight couldn't resolve). Returns the
+ * filtered + adjusted findings array; suppressed findings are dropped entirely.
  */
 async function applyCohortAccuracyAdjustments(
   findings: AuditFinding[],
@@ -174,30 +198,29 @@ async function applyCohortAccuracyAdjustments(
 ): Promise<AuditFinding[]> {
   if (!context?.insurerName || findings.length === 0) return findings;
 
-  // Build per-finding cohort key: (ruleType, insurerName). v1 collapses
-  // service_slug across (rule, insurer) since slug-mapping runs post-audit;
-  // Phase 2 can refine to per-slug once service-mapper moves upstream.
-  type FindingWithKey = { finding: AuditFinding; cohortKey: string | null };
-  const annotated: FindingWithKey[] = findings.map((f) => ({
+  // Build lineNumber → slug index from the bill's pre-flight-resolved slugs.
+  // Empty index when pre-flight didn't run upstream (legacy caller path).
+  const lineSlugIndex = new Map<number, string | null>();
+  for (const li of bill.lineItems) {
+    lineSlugIndex.set(li.lineNumber, li.serviceSlug ?? null);
+  }
+
+  type FindingWithSlug = { finding: AuditFinding; slug: string | null };
+  const annotated: FindingWithSlug[] = findings.map((f) => ({
     finding: f,
-    cohortKey: mapKey(f.type, context.insurerName!),
+    slug: resolveSlugForFinding(f, lineSlugIndex),
   }));
 
-  const tuples = annotated
-    .map((a) => {
-      if (!a.cohortKey) return null;
-      return {
-        ruleType: a.finding.type,
-        insurerName: context.insurerName!,
-      };
-    })
-    .filter((t): t is NonNullable<typeof t> => t !== null);
+  const insurerName = context.insurerName;
+  const tuples = annotated.map((a) => ({
+    ruleType: a.finding.type,
+    insurerName,
+    serviceSlug: a.slug,
+  }));
 
-  if (tuples.length === 0) return findings;
-
-  const supabase = createServerClient();
-  let cohortMap: Map<string, CohortStats>;
+  let cohortMap: Awaited<ReturnType<typeof loadAccuracyCohortMap>>;
   try {
+    const supabase = createServerClient();
     cohortMap = await loadAccuracyCohortMap(supabase, tuples);
   } catch (err) {
     console.warn("[audit] accuracy cohort load failed, emitting unadjusted", err);
@@ -205,12 +228,8 @@ async function applyCohortAccuracyAdjustments(
   }
 
   const result: AuditFinding[] = [];
-  for (const { finding, cohortKey } of annotated) {
-    if (!cohortKey) {
-      result.push(finding);
-      continue;
-    }
-    const cohort = cohortMap.get(cohortKey);
+  for (const { finding, slug } of annotated) {
+    const cohort = lookupCohort(cohortMap, finding.type, insurerName, slug);
     const decision = decideAccuracyAdjustment(finding.confidence, cohort);
     const adjusted = applyAccuracyAdjustment(finding, decision);
     if (adjusted) result.push(adjusted);

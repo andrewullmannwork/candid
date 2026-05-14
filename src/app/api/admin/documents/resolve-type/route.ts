@@ -117,6 +117,12 @@ export async function POST(req: NextRequest) {
           });
           const planCoverage = await loadCoverageMapForPlan(supabase, planId);
 
+          // S74.6 §C.1 — pre-flight slug resolution BEFORE runAudit. Mirrors
+          // the process-chunk path so cohort key + D4 skip get the same slug
+          // context regardless of which intake route triggers the audit.
+          const { resolveLineItemSlugs } = await import("@/lib/claims/preflight-slug-resolver");
+          await resolveLineItemSlugs(supabase, doc.user_id, parsedBill);
+
           // S74.6 D2 §B — ACA fallback merge for admin-driven re-audit. Same
           // pattern as process-chunk + reaudit (registry only fires on plan
           // miss; bySlug merged into planCoverage; byLineNumber passed parallel).

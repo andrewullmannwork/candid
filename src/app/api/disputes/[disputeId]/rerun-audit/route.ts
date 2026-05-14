@@ -74,7 +74,7 @@ export async function POST(
 
   const { data: lineItems } = await supabase
     .from("claim_line_items")
-    .select("id, line_number, billing_code, description, units, billed_amount, allowed_amount, insurance_paid, patient_owes, modifier_codes, service_slug, metadata")
+    .select("id, line_number, billing_code, description, units, billed_amount, allowed_amount, insurance_paid, patient_owes, modifier_codes, service_slug, billing_code_identity_id, metadata")
     .eq("claim_id", claim.id)
     .order("line_number", { ascending: true });
 
@@ -135,6 +135,21 @@ export async function POST(
     confidence: 1,
     parseErrors: [],
   };
+
+  // S74.6 §C.1 — thread persisted service_slug + billing_code_identity_id
+  // onto bill.lineItems so the audit pipeline can build per-slug cohort keys
+  // + D4 description-match skips already-categorized lines. Dispute rerun
+  // doesn't re-resolve; persisted values are authoritative.
+  const { applyPersistedSlugs } = await import("@/lib/claims/preflight-slug-resolver");
+  applyPersistedSlugs(
+    parsedBill,
+    lineItems.map((li) => ({
+      line_number: li.line_number,
+      service_slug: li.service_slug,
+      billing_code_identity_id:
+        (li as { billing_code_identity_id?: string | null }).billing_code_identity_id ?? null,
+    })),
+  );
 
   // F-2 — load plan coverage so missing_adjustment + insurance_underpayment
   // rules can compute should_owe against plan terms.

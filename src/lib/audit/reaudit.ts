@@ -79,6 +79,7 @@ interface LineItemRow {
   billing_code: string | null;
   billing_code_type: string | null;
   service_slug: string | null;
+  billing_code_identity_id?: string | null; // §C.1 — restored to cohort key
   description: string | null;
   units: number | null;
   billed_amount: number | null;
@@ -182,6 +183,21 @@ export async function maybeReauditClaim(
   }
 
   const parsedBill = reconstructParsedBill(claim, lineItems);
+
+  // S74.6 §C.1 — thread persisted service_slug + billing_code_identity_id
+  // onto bill.lineItems so the audit pipeline can build per-slug cohort keys
+  // + D4 description-match skips already-categorized lines. Re-audit doesn't
+  // re-resolve (would duplicate Haiku spend); persisted values are authoritative.
+  const { applyPersistedSlugs } = await import("@/lib/claims/preflight-slug-resolver");
+  applyPersistedSlugs(
+    parsedBill,
+    lineItems.map((li) => ({
+      line_number: li.line_number,
+      service_slug: li.service_slug,
+      billing_code_identity_id: li.billing_code_identity_id ?? null,
+    })),
+  );
+
   // F-2 — load plan coverage so audit rules (missing_adjustment, F-14
   // insurance_underpayment) can compute should_owe against plan terms.
   const planCoverage = await loadCoverageMapForPlan(supabase, claim.insurance_plan_id ?? null);

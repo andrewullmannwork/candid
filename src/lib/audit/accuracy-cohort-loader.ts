@@ -44,10 +44,13 @@ export interface CohortStats {
 }
 
 /**
- * Composite key joining (rule_type, insurer_name). v1 aggregates across slugs
- * because service_slug isn't yet resolved at runAudit time (slug-mapping runs
- * post-audit during persist). Phase 2 can refine to (rule, insurer, slug) once
- * service-mapper moves upstream of audit.
+ * Composite key joining (rule_type, insurer_name, service_slug?). §C.1 restored
+ * the slug dimension after S87 collapsed it: service-mapper now runs upstream
+ * via `resolveLineItemSlugs`, so bill.lineItems carry serviceSlug at runAudit
+ * time and findings can be keyed precisely. When slug is null (claim-level
+ * findings, or lines the pre-flight couldn't resolve), the key collapses to
+ * the slug-less form and aggregates across slugs — backward-compatible with
+ * S87's behavior for those rows.
  */
 export type AccuracyMapKey = string;
 
@@ -82,13 +85,25 @@ const BOOST_MULTIPLIER = 0.3;
 export function mapKey(
   ruleType: FindingType,
   insurerName: string,
+  serviceSlug?: string | null,
 ): AccuracyMapKey {
-  return `${ruleType}||${insurerName}`;
+  const slugPart = serviceSlug && serviceSlug.length > 0 ? serviceSlug : "*";
+  return `${ruleType}||${insurerName}||${slugPart}`;
 }
 
 /**
  * Batch-load cohort stats for all (rule_type, insurer_name, service_slug) tuples
  * the audit pipeline might consult for this bill. Empty input → empty map.
+ *
+ * §C.1 restored per-slug aggregation. The loader builds TWO sets of cohort
+ * entries from each candidate row:
+ *   - the slug-keyed entry (precise lookup for findings carrying a slug)
+ *   - the slug='*' rollup (catch-all for findings without slug context — e.g.,
+ *     claim-level findings, lines where pre-flight couldn't resolve a slug)
+ *
+ * Callers consult `mapKey(rule, insurer, slug)` first; on miss, fall back to
+ * `mapKey(rule, insurer, null)` (the rollup). This preserves backward-compat
+ * with the S87 behavior for slug-less lookups.
  *
  * Reads `audit_rule_accuracy` rows. `insurer_canonical_id` is preferred when
  * available (Pattern 2 canonical FK) but the table uses `insurer_name` as the
@@ -101,27 +116,28 @@ export async function loadAccuracyCohortMap(
   tuples: Array<{
     ruleType: FindingType;
     insurerName: string;
+    serviceSlug?: string | null;
   }>,
 ): Promise<AccuracyCohortMap> {
   const out: AccuracyCohortMap = new Map();
   if (tuples.length === 0) return out;
 
-  // Dedup tuples — bills frequently have multiple lines, same rule fires more
-  // than once, but the cohort key (rule, insurer) collapses repeats.
-  const seen = new Set<AccuracyMapKey>();
+  // Dedup tuples + collect the discriminators for the OR-style fetch.
+  const wantedKeys = new Set<AccuracyMapKey>();
   const distinctRuleTypes = new Set<FindingType>();
   const distinctInsurers = new Set<string>();
   for (const t of tuples) {
-    const k = mapKey(t.ruleType, t.insurerName);
-    if (seen.has(k)) continue;
-    seen.add(k);
+    wantedKeys.add(mapKey(t.ruleType, t.insurerName, t.serviceSlug));
+    // Always include the rollup key so callers can fall back when the slug-
+    // keyed lookup misses.
+    wantedKeys.add(mapKey(t.ruleType, t.insurerName, null));
     distinctRuleTypes.add(t.ruleType);
     distinctInsurers.add(t.insurerName);
   }
 
   // Coarse OR-style fetch — Supabase doesn't natively support tuple IN, so we
-  // pull the cross-product candidate rows and aggregate across slugs client-side.
-  // Per-bill volumes are tiny (<10 distinct rule × insurer combos).
+  // pull the cross-product candidate rows and project per-slug + rollup keys
+  // client-side. Per-bill volumes are tiny (<10 distinct rule × insurer combos).
   const { data, error } = await supabase
     .from("audit_rule_accuracy")
     .select(
@@ -135,20 +151,15 @@ export async function loadAccuracyCohortMap(
     return out;
   }
 
-  // Aggregate per (rule, insurer) across all slug rows.
-  for (const row of data ?? []) {
-    const key = mapKey(
-      row.rule_type as FindingType,
-      (row.insurer_name as string) ?? "",
-    );
-    if (!seen.has(key)) continue;
+  const accumulate = (
+    key: AccuracyMapKey,
+    won: number,
+    lost: number,
+    settled: number,
+    total: number,
+    rowAvg: number | null,
+  ): void => {
     const prior = out.get(key);
-    const won = Number(row.won_count ?? 0);
-    const lost = Number(row.lost_count ?? 0);
-    const settled = Number(row.settled_count ?? 0);
-    const total = Number(row.total_disputes ?? 0);
-    const rowAvg =
-      row.avg_recovered_pct == null ? null : Number(row.avg_recovered_pct);
     if (!prior) {
       out.set(key, {
         winCount: won,
@@ -157,9 +168,8 @@ export async function loadAccuracyCohortMap(
         totalDisputes: total,
         avgRecoveredPct: rowAvg,
       });
-      continue;
+      return;
     }
-    // Weighted average of avg_recovered_pct by win+settled cohort sizes.
     const priorWinCohort = prior.winCount + prior.settledCount;
     const rowWinCohort = won + settled;
     const newWinCohort = priorWinCohort + rowWinCohort;
@@ -178,9 +188,54 @@ export async function loadAccuracyCohortMap(
       totalDisputes: prior.totalDisputes + total,
       avgRecoveredPct: newAvg,
     });
+  };
+
+  for (const row of data ?? []) {
+    const ruleType = row.rule_type as FindingType;
+    const insurer = (row.insurer_name as string) ?? "";
+    const slug = (row.service_slug as string | null) ?? null;
+    const won = Number(row.won_count ?? 0);
+    const lost = Number(row.lost_count ?? 0);
+    const settled = Number(row.settled_count ?? 0);
+    const total = Number(row.total_disputes ?? 0);
+    const rowAvg =
+      row.avg_recovered_pct == null ? null : Number(row.avg_recovered_pct);
+
+    // Per-slug entry — emit only when callers asked for this exact slug.
+    if (slug) {
+      const slugKey = mapKey(ruleType, insurer, slug);
+      if (wantedKeys.has(slugKey)) {
+        accumulate(slugKey, won, lost, settled, total, rowAvg);
+      }
+    }
+
+    // Rollup entry across all slugs — emit when callers asked for the
+    // slug-less form (every tuple registers this rollup at build time).
+    const rollupKey = mapKey(ruleType, insurer, null);
+    if (wantedKeys.has(rollupKey)) {
+      accumulate(rollupKey, won, lost, settled, total, rowAvg);
+    }
   }
 
   return out;
+}
+
+/**
+ * Lookup helper: prefer the slug-keyed cohort; fall back to the slug-less
+ * rollup when the slug-keyed entry is absent. Callers should use this rather
+ * than `cohortMap.get` directly so the rollup fallback stays consistent.
+ */
+export function lookupCohort(
+  cohortMap: AccuracyCohortMap,
+  ruleType: FindingType,
+  insurerName: string,
+  serviceSlug: string | null | undefined,
+): CohortStats | undefined {
+  if (serviceSlug) {
+    const slugHit = cohortMap.get(mapKey(ruleType, insurerName, serviceSlug));
+    if (slugHit) return slugHit;
+  }
+  return cohortMap.get(mapKey(ruleType, insurerName, null));
 }
 
 /**

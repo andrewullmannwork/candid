@@ -296,13 +296,15 @@ export async function runDescriptionMatchCheck(
   const flagOn = await isFeatureEnabled("s74_5_categorization_flywheel_v1");
   if (!flagOn) return [];
 
-  // Filter lines: have description + code + no slug already bound. The audit
-  // pipeline runs BEFORE persist, so bill.lineItems doesn't carry serviceSlug —
-  // we treat any line missing a code-side identity binding as a candidate.
-  // (Phase 2 can refine to "skip lines where the parser already mapped a slug"
-  // once service-mapper runs upstream of audit.)
+  // S74.6 §C.1 — service-mapper now runs upstream (preflight-slug-resolver),
+  // so bill.lineItems carry `serviceSlug` when categorization already resolved.
+  // Skip those lines entirely — D4 is for lines we couldn't categorize via
+  // cached mapping, flywheel identity, or legacy service-mapper. This both
+  // saves Haiku budget and prevents D4 from emitting findings on lines where
+  // the user already has a confident category.
   const candidates = bill.lineItems.filter(
     (li) =>
+      !li.serviceSlug &&
       li.procedureCode &&
       li.description &&
       li.description.trim().length >= 3,

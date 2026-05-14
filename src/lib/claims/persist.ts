@@ -8,12 +8,10 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ParsedBill, AuditReport, AuditFinding, BillLineItem, FieldMeta } from "@/lib/billing/types";
-import { mapLineItemsToServices, inferBillingCodeType } from "@/lib/claims/service-mapper";
+import { inferBillingCodeType } from "@/lib/claims/service-mapper";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { notifyUnmappedLineItems } from "@/lib/notifications";
 import { buildProvenanceEntry, type FieldProvenanceEntry } from "@/lib/parser/field-categories";
-import { categorizeLineItem } from "@/lib/parser/code-identity";
-import { recordParserObservation } from "@/lib/parser/code-identity-promotion";
 import { reconcileHaikuCodeType } from "@/lib/billing/code-type-inference";
 
 /**
@@ -175,113 +173,25 @@ export async function persistAuditResults(
       }
     }
 
-    // Map line item descriptions → service slugs via Haiku (feature-flagged)
-    const serviceMappingEnabled = await isFeatureEnabled("billing_code_service_mapping");
-    const serviceMappings = new Map<number, { slug: string; confidence: number }>();
+    // S74.6 §C.1 — service-mapper + flywheel categorize moved upstream to
+    // `resolveLineItemSlugs` (preflight-slug-resolver) so the audit pipeline
+    // can build per-slug cohort keys + D4 can skip categorized lines. Persist
+    // now consumes the pre-resolved values from bill.lineItems[i].serviceSlug
+    // / .serviceSlugSource / .billingCodeIdentityId rather than re-running.
+    // The legacy `billing_code_service_mapping` flag controls whether
+    // unmapped-line admin notifications fire (preserved at the bottom of
+    // this function).
+    const serviceMappingEnabled = await isFeatureEnabled(
+      "billing_code_service_mapping",
+    );
+    const flywheelEnabled = await isFeatureEnabled(
+      "s74_5_categorization_flywheel_v1",
+    );
 
     // DR-3B per-field provenance: only emit when parse_strategy_v2 flag is ON.
     // OFF preserves legacy behavior (no field_provenance writes; column default '{}'
     // applies via mig 056 so reads stay backwards-compatible).
     const parseStrategyV2Enabled = await isFeatureEnabled("parse_strategy_v2");
-
-    if (serviceMappingEnabled && parsedBill.lineItems.length > 0) {
-      try {
-        const mappings = await mapLineItemsToServices(
-          parsedBill.lineItems.map((item) => ({
-            lineNumber: item.lineNumber,
-            description: item.description || item.category || "",
-            billingCode: item.procedureCode || undefined,
-            billingCodeType: item.procedureCode ? inferBillingCodeType(item.procedureCode) : undefined,
-            category: item.category || undefined,
-          }))
-        );
-        for (const m of mappings) {
-          if (m.confidence >= 0.3) {
-            serviceMappings.set(m.lineNumber, { slug: m.serviceSlug, confidence: m.confidence });
-          }
-        }
-        console.log(`[claims-persist] Mapped ${serviceMappings.size}/${parsedBill.lineItems.length} line items to service slugs`);
-      } catch (err) {
-        console.error("[claims-persist] Service mapping failed (non-blocking):", err);
-      }
-    }
-
-    // S74.5 D4 — composite-key categorization flywheel (gated). When ON, runs
-    // ALONGSIDE the legacy service-mapper: D2 result wins for slug + sets
-    // billing_code_identity_id; legacy mapping is fallback when D2 returns null.
-    const flywheelEnabled = await isFeatureEnabled("s74_5_categorization_flywheel_v1");
-    const identityMappings = new Map<
-      number,
-      { slug: string | null; confidence: number; identityId: string | null; needsReview: boolean }
-    >();
-
-    if (flywheelEnabled && parsedBill.lineItems.length > 0) {
-      try {
-        const results = await Promise.all(
-          parsedBill.lineItems.map(async (item) => {
-            const code = item.procedureCode || "";
-            if (!code) return null;
-            // S74.5c §2.4 — reconcile Haiku-emitted codeType against
-            // format-inference; G_CODE and CAT_II are unambiguous from regex
-            // and override any Haiku misclassification (Rule #12 prompt
-            // ordering risks emitting HCPCS_L2 for G0008 / CPT for 3074F).
-            const codeType =
-              reconcileHaikuCodeType(code, item.procedureCodeType) ?? undefined;
-            const description = item.description || item.category || "";
-            try {
-              const r = await categorizeLineItem({
-                code,
-                codeType,
-                description,
-                userId,
-              });
-              // §1.5 — parser-path observation. Counts toward
-              // distinct_user_count without casting a slug vote (proposed_slug
-              // stays null in the SourceEntry). Pattern 1 #15 gate is checked
-              // inside recordParserObservation; non-verified users no-op.
-              // lineItemId is null at this stage (line items aren't INSERTed
-              // yet); forensic linkage degrades gracefully.
-              if (r.identityId && userId) {
-                try {
-                  await recordParserObservation({
-                    identityId: r.identityId,
-                    userId,
-                    rawDescription: description,
-                    lineItemId: null,
-                  });
-                } catch (obsErr) {
-                  console.warn(
-                    "[claims-persist] parser observation failed for line",
-                    item.lineNumber,
-                    obsErr,
-                  );
-                }
-              }
-              return { lineNumber: item.lineNumber, ...r };
-            } catch (err) {
-              console.warn("[claims-persist] flywheel categorize failed for line", item.lineNumber, err);
-              return null;
-            }
-          })
-        );
-        for (const r of results) {
-          if (!r) continue;
-          identityMappings.set(r.lineNumber, {
-            slug: r.serviceSlug,
-            confidence: r.confidence,
-            identityId: r.identityId,
-            needsReview: r.needsReview,
-          });
-        }
-        console.log(
-          `[claims-persist] flywheel: ${identityMappings.size} line items processed (${
-            Array.from(identityMappings.values()).filter((m) => m.slug).length
-          } with slug)`
-        );
-      } catch (err) {
-        console.error("[claims-persist] flywheel categorization failed (non-blocking):", err);
-      }
-    }
 
     // Insert claim_line_items
     const lineItemInserts = parsedBill.lineItems.map((item, idx) => {
@@ -303,15 +213,13 @@ export async function persistAuditResults(
           }
         : {};
 
-      const mapping = serviceMappings.get(item.lineNumber);
-      const identity = identityMappings.get(item.lineNumber);
-      // D4: flywheel slug wins when present; legacy mapping is fallback
-      const resolvedSlug = identity?.slug ?? mapping?.slug ?? null;
-      const resolvedSlugSource = identity?.slug
-        ? "flywheel"
-        : mapping?.slug
-          ? "service_mapper"
-          : null;
+      // §C.1 — pre-flight resolved slug + identity from `resolveLineItemSlugs`
+      // (caller runs it before runAudit). When pre-flight didn't run (legacy
+      // callers in test paths), these fields are undefined and the row keeps
+      // service_slug=null until D4 post-insert assigns a provisional slug.
+      const resolvedSlug = item.serviceSlug ?? null;
+      const resolvedSlugSource = item.serviceSlugSource ?? null;
+      const resolvedIdentityId = item.billingCodeIdentityId ?? null;
 
       const baseRow: Record<string, unknown> = {
         claim_id: claim.id,
@@ -319,7 +227,7 @@ export async function persistAuditResults(
         billing_code: item.procedureCode || null,
         billing_code_type: item.procedureCode ? inferBillingCodeType(item.procedureCode) : null,
         service_slug: resolvedSlug,
-        billing_code_identity_id: identity?.identityId ?? null,
+        billing_code_identity_id: resolvedIdentityId,
         description: item.description || item.category || null,
         units: item.quantity || 1,
         billed_amount: item.billedAmount,
@@ -338,16 +246,14 @@ export async function persistAuditResults(
         modifier_codes: item.modifier ? [item.modifier] : null,
         metadata: {
           ...findingMeta,
-          ...(mapping ? { serviceMapping: { slug: mapping.slug, confidence: mapping.confidence } } : {}),
-          ...(identity
+          ...(resolvedSlug
             ? {
-                codeIdentity: {
-                  identityId: identity.identityId,
-                  slug: identity.slug,
-                  confidence: identity.confidence,
-                  needsReview: identity.needsReview,
-                },
                 slugSource: resolvedSlugSource,
+                slugResolution: {
+                  slug: resolvedSlug,
+                  identityId: resolvedIdentityId,
+                  source: resolvedSlugSource,
+                },
               }
             : {}),
         },

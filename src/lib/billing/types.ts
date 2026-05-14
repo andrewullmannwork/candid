@@ -109,6 +109,21 @@ export interface BillLineItem {
   // Task 3F: rendering provider (per-line; distinct from facility-level provider on ParsedBill)
   rendering_provider_npi?: string;
   rendering_provider_name?: string;
+
+  // S74.6 §C.1 D3 — pre-flight slug resolution. Set by
+  // `resolveLineItemSlugs` (called BEFORE runAudit) so cohort accuracy
+  // adjustment can build (rule, insurer, slug) keys + D4 description-match
+  // skips lines that already have a slug. Persist consumes these fields
+  // instead of re-running service-mapper. Reaudit + dispute-rerun populate
+  // via `applyPersistedSlugs` reading claim_line_items.service_slug.
+  serviceSlug?: string | null;
+  serviceSlugSource?:
+    | "cached_mapping"
+    | "service_mapper"
+    | "flywheel_identity"
+    | "persisted"
+    | null;
+  billingCodeIdentityId?: string | null;
 }
 
 export interface ParsedBill {
