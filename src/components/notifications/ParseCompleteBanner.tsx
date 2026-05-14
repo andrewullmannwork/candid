@@ -27,6 +27,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 
 const POLL_INTERVAL_MS = 30_000;
@@ -85,6 +86,7 @@ function writeFirstSeenMap(map: Record<string, number>): void {
 }
 
 export function ParseCompleteBanner() {
+  const pathname = usePathname();
   const { user } = useAuth();
   const [eligibleDoc, setEligibleDoc] = useState<RecentDoc | null>(null);
 
@@ -195,6 +197,11 @@ export function ParseCompleteBanner() {
   }, [eligibleDoc]);
 
   if (!eligibleDoc) return null;
+  // S91 — suppress on /upload so the banner doesn't overlap with the
+  // disambiguation modal that fires for the SAME doc the user just uploaded.
+  // The banner is for OTHER pages where the user might have navigated away;
+  // on /upload the in-page UX is authoritative.
+  if (pathname === "/upload") return null;
 
   // file_name can be long — truncate gracefully in the banner copy.
   const displayName =

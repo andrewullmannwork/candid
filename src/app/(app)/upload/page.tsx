@@ -57,6 +57,33 @@ const DOC_TYPES = {
   },
 } as const;
 
+// ─── Expected-duration copy + why-we-take-our-time subtitle ─────────────────
+// Doc-type × page-count matrix tuned against measured PROD upload times.
+// Empirical floor (S91 measurements with PR #74 Bug X Haiku safety net):
+// SBC ~108-140s; small EOB ~30-60s; large EOC (~150 pp) projected 8-12 min.
+const WHY_SUBTITLE =
+  "We meticulously go over every detail in your plan not once but twice. That takes a while, but we know it's worth it.";
+
+function getExpectedDurationCopy(
+  docType: "eob" | "itemized_bill" | "sbc" | "plan_document",
+  pages: number | null,
+): string {
+  const p = pages ?? 0;
+  switch (docType) {
+    case "eob":
+      return "30-60 seconds";
+    case "itemized_bill":
+      return p >= 30 ? "1-3 minutes" : "30-90 seconds";
+    case "sbc":
+      return "1-3 minutes";
+    case "plan_document":
+      if (p >= 100) return "8-12 minutes";
+      if (p >= 50) return "5-8 minutes";
+      if (p >= 30) return "3-5 minutes";
+      return "2-4 minutes";
+  }
+}
+
 // ─── Upload form ────────────────────────────────────────────────────────────
 
 function UploadForm() {
@@ -266,6 +293,9 @@ function UploadForm() {
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const turnstileTokenRef = useRef<string | null>(null);
   const turnstileRef = useRef<TurnstileWidgetHandle>(null);
+  // S91 — XHR ref for the active upload so the X-out cancel button can abort
+  // bytes-in-flight. Cleared when the upload settles (success, error, or abort).
+  const uploadXhrRef = useRef<XMLHttpRequest | null>(null);
   const [userPickedFile, setUserPickedFile] = useState(false);
 
   useEffect(() => {
@@ -451,13 +481,22 @@ function UploadForm() {
         setUploadProgress(0);
         const res = await new Promise<Response>((resolve, reject) => {
           const xhr = new XMLHttpRequest();
+          uploadXhrRef.current = xhr;
           xhr.upload.addEventListener("progress", (e) => {
             if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
           });
           xhr.addEventListener("load", () => {
+            uploadXhrRef.current = null;
             resolve(new Response(xhr.responseText, { status: xhr.status, headers: { "content-type": "application/json" } }));
           });
-          xhr.addEventListener("error", () => reject(new Error("Upload failed")));
+          xhr.addEventListener("error", () => {
+            uploadXhrRef.current = null;
+            reject(new Error("Upload failed"));
+          });
+          xhr.addEventListener("abort", () => {
+            uploadXhrRef.current = null;
+            reject(new Error("Upload aborted by user"));
+          });
           xhr.open("POST", "/api/documents/upload");
           xhr.setRequestHeader("Authorization", `Bearer ${idToken}`);
           xhr.send(formData);
@@ -491,13 +530,20 @@ function UploadForm() {
         // Backend now handles confidence-gated processing automatically
         if (uploadResult.classification) {
           setClassificationResult(uploadResult.classification);
+          // S91 — page count drives duration-copy tier in
+          // getExpectedDurationCopy() regardless of async-UX flag state.
+          // Decoupled from the isLargeDoc branch below so the copy stays
+          // accurate for large EOCs even when async_ingestion_ux_v1 is OFF.
+          if (typeof uploadResult.classification.pageCount === "number") {
+            setLargeDocPageCount(uploadResult.classification.pageCount);
+          }
         }
 
-        // S78 — capture large-doc flag for async UX splash. Backend sets to true
-        // only when feature flag is ON, PDF, and pageCount > 30.
+        // S78 — capture large-doc flag for async UX splash + email-on-complete.
+        // Backend sets to true only when async_ingestion_ux_v1 flag is ON, PDF,
+        // and pageCount > 30.
         if (uploadResult.isLargeDoc) {
           setIsLargeDoc(true);
-          setLargeDocPageCount(uploadResult.classification?.pageCount ?? null);
         }
 
         // Handle different processing outcomes
@@ -683,18 +729,54 @@ function UploadForm() {
       // S78 — large-doc async UX: customize title/subtitle/footer when backend
       // flagged the doc as >30-page PDF (and async_ingestion_ux_v1 is ON).
       // Sub-30-page docs continue using the existing sync copy + no footer CTA.
-      const largeDocTitle = isLargeDoc
-        ? "Thanks — we're reading your plan"
-        : "Reading your document";
-      const largeDocSubtitle = isLargeDoc
-        ? (() => {
-            const pages = largeDocPageCount ?? 0;
-            const durationTier =
-              pages >= 100 ? "5-8 minutes" : pages >= 50 ? "3-5 minutes" : "1-2 minutes";
-            const pagesPhrase = pages > 0 ? `${pages} pages of` : "";
-            return `${pagesPhrase ? pagesPhrase + " " : ""}careful extraction takes about ${durationTier}. Hang tight, browse the rest of Candid, or close the tab — we'll email you the moment it's ready.`;
-          })()
-        : "Sit tight — this usually takes 30-90 seconds.";
+      //
+      // S91 — distinguish upload phase (bytes-in-flight, no page count yet,
+      // no honest timing estimate) from post-upload reading phase (classification
+      // done, page count known, docType-aware timing). During upload phase
+      // we don't yet have enough info for an accurate duration — show a
+      // neutral "receiving" copy without a misleading time estimate.
+      const isUploadingPhase = phase === "uploading";
+      const durationCopy = getExpectedDurationCopy(docType, largeDocPageCount);
+      const largeDocTitle = isUploadingPhase
+        ? "Receiving your document"
+        : isLargeDoc
+          ? "Thanks — we're reading your plan"
+          : "Reading your document";
+      const largeDocSubtitle = isUploadingPhase
+        ? "Just a moment while we receive your file."
+        : isLargeDoc
+          ? (() => {
+              const pages = largeDocPageCount ?? 0;
+              const pagesPhrase = pages > 0 ? `${pages} pages of` : "";
+              return `${pagesPhrase ? pagesPhrase + " " : ""}careful extraction takes about ${durationCopy}. Hang tight, browse the rest of Candid, or close the tab — we'll email you the moment it's ready.`;
+            })()
+          : `Sit tight — this usually takes ${durationCopy}.`;
+      // whySubtitle only applies once we're reading the doc — suppress during
+      // the bytes-in-flight upload phase since we haven't started reading yet.
+      const largeDocWhySubtitle = isUploadingPhase ? undefined : WHY_SUBTITLE;
+
+      // S91 — cancel handler for the X-out button in PlayfulParsingScreen.
+      // During isUploading: abort the in-flight XHR (truly cancels the upload).
+      // During processing: backend job is in QStash; can't truly cancel, but we
+      // clear local UI state so the user can move on (the doc continues
+      // processing in background and shows up in their docs list).
+      const cancelInFlight = () => {
+        if (uploadXhrRef.current) {
+          try {
+            uploadXhrRef.current.abort();
+          } catch {
+            /* ignore — XHR already settled */
+          }
+          uploadXhrRef.current = null;
+        }
+        setUploaded(false);
+        setUploadStatus(null);
+        setFileName("");
+        setProcessingProgress(null);
+        setDocumentId(null);
+        setUploadProgress(0);
+        setError("");
+      };
       const largeDocFooter = isLargeDoc ? (
         <div className="text-center">
           <Link
@@ -727,7 +809,9 @@ function UploadForm() {
             ]}
             title={largeDocTitle}
             subtitle={largeDocSubtitle}
+            whySubtitle={largeDocWhySubtitle}
             footer={largeDocFooter}
+            onCancel={cancelInFlight}
           />
         </div>
       );
@@ -794,12 +878,13 @@ function UploadForm() {
       return "Processing...";
     };
 
+    const legacyDurationCopy = getExpectedDurationCopy(docType, largeDocPageCount);
     const getStepSubtitle = () => {
       if (isComplete || isError || hasMismatch || isPendingReview) return null;
-      if (isUploading) return "This usually takes about 60 seconds";
-      if (!processingProgress) return "This can take a couple minutes for large documents";
+      if (isUploading) return `This usually takes ${legacyDurationCopy}`;
+      if (!processingProgress) return `This usually takes ${legacyDurationCopy}`;
       if (processingProgress.step?.startsWith("ocr_chunk") || processingProgress.step?.startsWith("working_ocr"))
-        return "This can take a couple minutes for large documents";
+        return `This usually takes ${legacyDurationCopy}`;
       if (processingProgress.step === "classifying" || processingProgress.step === "working_classifying")
         return "Almost there...";
       if (processingProgress.step === "extracting" || processingProgress.step === "working_extracting")
@@ -1004,6 +1089,21 @@ function UploadForm() {
                       if (!user) return;
                       try {
                         const idToken = await user.firebaseUser.getIdToken();
+                        // S91 Option B — record disambiguation choice for feedback loop
+                        void fetch("/api/documents/status", {
+                          method: "POST",
+                          headers: {
+                            "Content-Type": "application/json",
+                            Authorization: `Bearer ${idToken}`,
+                          },
+                          body: JSON.stringify({
+                            documentId,
+                            action: "record_disambiguation",
+                            choice: "use_this_plan",
+                            modalType: "insurer_mismatch",
+                          }),
+                        }).catch(() => { /* fire-and-forget */ });
+
                         const profileUpdate: Record<string, string> = {};
                         if (isPlanMismatch) {
                           profileUpdate.plan_name = mm.parsedPlanName || "";
@@ -1044,7 +1144,32 @@ function UploadForm() {
                     Use this plan
                   </button>
                   <button
-                    onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setProcessingProgress(null); setDocumentId(null); }}
+                    onClick={async () => {
+                      // S91 Option B — fire-and-forget disambiguation log before clearing local state
+                      if (user && documentId) {
+                        const token = await user.firebaseUser.getIdToken().catch(() => null);
+                        if (token) {
+                          void fetch("/api/documents/status", {
+                            method: "POST",
+                            headers: {
+                              "Content-Type": "application/json",
+                              Authorization: `Bearer ${token}`,
+                            },
+                            body: JSON.stringify({
+                              documentId,
+                              action: "record_disambiguation",
+                              choice: "keep_current",
+                              modalType: "insurer_mismatch",
+                            }),
+                          }).catch(() => { /* fire-and-forget */ });
+                        }
+                      }
+                      setUploaded(false);
+                      setUploadStatus(null);
+                      setFileName("");
+                      setProcessingProgress(null);
+                      setDocumentId(null);
+                    }}
                     className="w-full py-2.5 border border-gray-200 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
                   >
                     Keep my current plan
@@ -1084,6 +1209,21 @@ function UploadForm() {
                       if (!user) return;
                       try {
                         const idToken = await user.firebaseUser.getIdToken();
+                        // S91 Option B — record disambiguation choice for feedback loop
+                        void fetch("/api/documents/status", {
+                          method: "POST",
+                          headers: {
+                            "Content-Type": "application/json",
+                            Authorization: `Bearer ${idToken}`,
+                          },
+                          body: JSON.stringify({
+                            documentId,
+                            action: "record_disambiguation",
+                            choice: "use_this_plan",
+                            modalType: "year_rollover",
+                          }),
+                        }).catch(() => { /* fire-and-forget */ });
+
                         const activateRes = await fetch("/api/documents/status", {
                           method: "POST",
                           headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
@@ -1103,7 +1243,32 @@ function UploadForm() {
                     Switch to {yr.newYear} plan
                   </button>
                   <button
-                    onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setProcessingProgress(null); setDocumentId(null); }}
+                    onClick={async () => {
+                      // S91 Option B — fire-and-forget disambiguation log before clearing local state
+                      if (user && documentId) {
+                        const token = await user.firebaseUser.getIdToken().catch(() => null);
+                        if (token) {
+                          void fetch("/api/documents/status", {
+                            method: "POST",
+                            headers: {
+                              "Content-Type": "application/json",
+                              Authorization: `Bearer ${token}`,
+                            },
+                            body: JSON.stringify({
+                              documentId,
+                              action: "record_disambiguation",
+                              choice: "keep_current",
+                              modalType: "year_rollover",
+                            }),
+                          }).catch(() => { /* fire-and-forget */ });
+                        }
+                      }
+                      setUploaded(false);
+                      setUploadStatus(null);
+                      setFileName("");
+                      setProcessingProgress(null);
+                      setDocumentId(null);
+                    }}
                     className="w-full py-2.5 border border-gray-200 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
                   >
                     Keep {yr.currentYear} plan
