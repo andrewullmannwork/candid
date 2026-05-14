@@ -1,5 +1,5 @@
 // Audit rules engine — checks parsed bills for common billing errors
-// Each rule is a pure function: ParsedBill → AuditFinding[]
+// Each rule is a pure function: (ParsedBill, benchmarks, planCoverage) → AuditFinding[]
 
 import type {
   ParsedBill,
@@ -7,12 +7,64 @@ import type {
   AuditFinding,
   CMSPPLRate,
 } from "../billing/types";
+import type { AcaFallbackLineCoverageMap, PlanCoverageMap } from "./coverage-loader";
+import type { PlanCoverageInput } from "../claims/recovery-math";
+import { computeShouldOwe } from "../claims/recovery-math";
 import { randomUUID } from "crypto";
 
 type AuditRule = (
   bill: ParsedBill,
-  benchmarks: Map<string, CMSPPLRate>
+  benchmarks: Map<string, CMSPPLRate>,
+  planCoverage: PlanCoverageMap | null,
+  acaFallback: AcaFallbackLineCoverageMap | null,
 ) => AuditFinding[];
+
+/**
+ * Resolve the most specific coverage entry for a line.
+ *
+ * S74.6 D2 §B — ACA-mandated zero-cost-share fallback (`acaFallback` keyed by
+ * line number) takes precedence over plan-slug coverage because ACA preventive
+ * lines are universally $0 by federal law even when plan_covered_services has
+ * no row (slug never bound) or has a stale row. Plan-slug lookup is the
+ * fallback when ACA fallback is absent for this line.
+ */
+function resolveCoverageForLine(
+  item: BillLineItem,
+  planCoverage: PlanCoverageMap | null,
+  acaFallback: AcaFallbackLineCoverageMap | null,
+  serviceSlug: string | null,
+): PlanCoverageInput | null {
+  if (acaFallback) {
+    const lineCov = acaFallback.get(item.lineNumber);
+    if (lineCov) return lineCov;
+  }
+  if (planCoverage && serviceSlug) {
+    const slugCov = planCoverage.get(serviceSlug);
+    if (slugCov) return slugCov;
+  }
+  return null;
+}
+
+/**
+ * Per-line plan-defined cost share — defaults to 0 when planCoverage is null
+ * or the line has no service_slug yet (categorization flywheel hasn't mapped it).
+ * Mirrors `computeShouldOwe` from recovery-math but resolves via slug lookup.
+ *
+ * NOTE: BillLineItem.category is NOT a service_slug — it's a plain-English
+ * label. We can't infer slug here without the categorization flywheel. For
+ * rules that need should_owe per line, the safest fallback when slug is
+ * unknown is to use the claim-level coverage if exactly one applies, OR 0.
+ */
+function shouldOweForLine(
+  item: BillLineItem,
+  planCoverage: PlanCoverageMap | null,
+  acaFallback: AcaFallbackLineCoverageMap | null,
+  serviceSlug: string | null,
+): number {
+  const cov = resolveCoverageForLine(item, planCoverage, acaFallback, serviceSlug);
+  if (!cov) return 0;
+  return computeShouldOwe(item.billedAmount, cov);
+}
 
 // ============================================================================
 // RULE 1: Overcharge Detection (vs. CMS Medicare benchmark)
@@ -196,43 +248,85 @@ const checkUnbundling: AuditRule = (bill) => {
 // RULE 5: Missing Insurance Adjustment
 // ============================================================================
 
-const checkMissingAdjustments: AuditRule = (bill) => {
+// RULE 5: Missing Insurance Adjustment
+//
+// F-13 (Session 85) — fires ONLY when the bill genuinely lacks the
+// contractual writeoff. Parser now extracts `ins_adjusted` and `adjustments`
+// separately; if EITHER captured a value within tolerance of the
+// (billed − allowed) gap, the writeoff WAS applied and this rule no-ops.
+// F-14 `insurance_underpayment` covers the case where the writeoff is
+// fine but the insurer never paid → patient bears the burden.
+//
+// F-3 (Session 85) — when this rule does fire, `estimatedOvercharge` is the
+// user-recovery target (patient_responsibility − should_owe per plan), not
+// the contractual writeoff amount. Copy frames the dispute in user terms:
+// "You shouldn't owe more than $X for [service]; dispute the extra $Y."
+const checkMissingAdjustments: AuditRule = (bill, _benchmarks, planCoverage, acaFallback) => {
   const findings: AuditFinding[] = [];
 
   for (const item of bill.lineItems) {
     if (
-      item.billedAmount > 0 &&
-      item.allowedAmount !== undefined &&
-      item.billedAmount > item.allowedAmount
+      !(item.billedAmount > 0) ||
+      item.allowedAmount === undefined ||
+      !(item.billedAmount > item.allowedAmount)
     ) {
-      const expectedAdjustment = item.billedAmount - item.allowedAmount;
-
-      // Check if adjustment was actually applied
-      if (
-        item.adjustments === undefined ||
-        item.adjustments < expectedAdjustment * 0.9
-      ) {
-        // Patient is being charged based on billed amount, not allowed
-        if (
-          item.patientResponsibility !== undefined &&
-          item.patientResponsibility > item.allowedAmount * 0.5
-        ) {
-          findings.push({
-            id: randomUUID(),
-            type: "missing_adjustment",
-            severity: expectedAdjustment > 300 ? "high" : "medium",
-            lineItems: [item.lineNumber],
-            title: `Insurance adjustment may not have been applied for ${item.category}`,
-            description: `The billed amount is $${item.billedAmount.toFixed(2)} but the allowed amount is $${item.allowedAmount.toFixed(2)}. The difference of $${expectedAdjustment.toFixed(2)} should be written off as a contractual adjustment, not passed to you.`,
-            estimatedOvercharge: expectedAdjustment,
-            benchmarkSource: "Internal",
-            billedAmount: item.billedAmount,
-            confidence: 0.7,
-            actionable: true,
-          });
-        }
-      }
+      continue;
     }
+    const expectedAdjustment = item.billedAmount - item.allowedAmount;
+
+    // F-13: combined writeoff = lump-sum `adjustments` + split `ins_adjusted`
+    // + `provider_adjusted`. Within 10% tolerance, writeoff is applied.
+    const writeoffApplied =
+      (item.adjustments ?? 0) +
+      (item.ins_adjusted ?? 0) +
+      (item.provider_adjusted ?? 0);
+    if (writeoffApplied >= expectedAdjustment * 0.9) {
+      continue; // adjustment WAS applied — don't fire this rule
+    }
+
+    if (
+      item.patientResponsibility === undefined ||
+      item.patientResponsibility <= item.allowedAmount * 0.5
+    ) {
+      continue;
+    }
+
+    // F-3: recovery target = patient_responsibility − should_owe. When plan
+    // coverage isn't known for this slug, fall back to the contractual gap
+    // (preserves legacy behavior for un-categorized lines).
+    // S74.6 D2 §B: acaFallback layer takes precedence over plan-slug lookup
+    // for ACA-mandated preventive lines (should_owe=0 makes the recovery
+    // target = full patient_responsibility for those lines).
+    const slug = item.category ?? null;
+    const lineCoverage = resolveCoverageForLine(item, planCoverage, acaFallback, slug);
+    const shouldOwe = shouldOweForLine(item, planCoverage, acaFallback, slug);
+    const recoveryTarget = Math.max(
+      0,
+      item.patientResponsibility - shouldOwe,
+    );
+    const useRecoveryFraming = shouldOwe > 0 || lineCoverage?.covered === true;
+    const dollarOvercharge = useRecoveryFraming ? recoveryTarget : expectedAdjustment;
+
+    const title = useRecoveryFraming
+      ? `You shouldn't owe more than $${shouldOwe.toFixed(0)} for ${item.category}`
+      : `Insurance adjustment may not have been applied for ${item.category}`;
+    const description = useRecoveryFraming
+      ? `Your plan covers ${item.category.toLowerCase()} with a $${shouldOwe.toFixed(0)} cost share, but the bill charges you $${item.patientResponsibility.toFixed(2)}. The provider billed $${item.billedAmount.toFixed(2)} and the insurer should have written off the difference (allowed amount: $${item.allowedAmount.toFixed(2)}), leaving only your $${shouldOwe.toFixed(0)} share. Dispute the extra $${recoveryTarget.toFixed(2)} as a missed contractual adjustment.`
+      : `The billed amount is $${item.billedAmount.toFixed(2)} but the allowed amount is $${item.allowedAmount.toFixed(2)}. The difference of $${expectedAdjustment.toFixed(2)} should be written off as a contractual adjustment, not passed to you.`;
+
+    findings.push({
+      id: randomUUID(),
+      type: "missing_adjustment",
+      severity: dollarOvercharge > 300 ? "high" : "medium",
+      lineItems: [item.lineNumber],
+      title,
+      description,
+      estimatedOvercharge: dollarOvercharge,
+      benchmarkSource: "Internal",
+      billedAmount: item.billedAmount,
+      confidence: 0.7,
+      actionable: true,
+    });
   }
 
   return findings;

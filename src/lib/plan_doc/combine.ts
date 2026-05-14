@@ -52,6 +52,8 @@ const PLAN_IDENTITY_KEYS: readonly PlanIdentityKey[] = [
   "outDeductibleFamily",
   "outOopMaxIndividual",
   "outOopMaxFamily",
+  "isAcaCompliant",
+  "acaComplianceBasis",
 ] as const;
 
 function isNonNullValue<T>(field: PlanDocField<T | null> | undefined): field is PlanDocField<T> {
@@ -130,6 +132,8 @@ export function mergePlanIdentityChunks(
     outDeductibleFamily: pickKey("outDeductibleFamily"),
     outOopMaxIndividual: pickKey("outOopMaxIndividual"),
     outOopMaxFamily: pickKey("outOopMaxFamily"),
+    isAcaCompliant: pickKey("isAcaCompliant"),
+    acaComplianceBasis: pickKey("acaComplianceBasis"),
   };
 }
 
@@ -276,5 +280,9 @@ export function emptyPlanIdentity(
     outDeductibleFamily: { ...emptyNumber, patternP8: { ...p8 } },
     outOopMaxIndividual: { ...emptyNumber, patternP8: { ...p8 } },
     outOopMaxFamily: { ...emptyNumber, patternP8: { ...p8 } },
+    // S74.6 D1 — ACA-compliance fields (boolean + enum-as-string).
+    // emptyBoolean shape uses null value + empty P-8 like emptyString/emptyNumber.
+    isAcaCompliant: { value: null, patternP8: { ...p8 } } as PlanDocField<boolean | null>,
+    acaComplianceBasis: { ...emptyString, patternP8: { ...p8 } },
   };
 }

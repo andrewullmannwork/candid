@@ -76,6 +76,13 @@ export interface PlanDocPlanIdentity {
   outDeductibleFamily: PlanDocField<number | null>;
   outOopMaxIndividual: PlanDocField<number | null>;
   outOopMaxFamily: PlanDocField<number | null>;
+  // S74.6 D1 — ACA-compliance flag for D2 registry-fallback gate.
+  // isAcaCompliant value semantics: TRUE/FALSE/null. Default when Haiku finds
+  // no explicit ACA-compliance signal: TRUE with basis='unknown' (Subplan §1
+  // LOCK — conservative-for-users; most plans ARE ACA-compliant; user may
+  // override at plan-upload confirmation page).
+  isAcaCompliant: PlanDocField<boolean | null>;
+  acaComplianceBasis: PlanDocField<string | null>;
 }
 
 /**

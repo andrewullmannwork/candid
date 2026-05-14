@@ -202,6 +202,8 @@ export async function selfCheckPlanDocExcerpts(
     "outDeductibleFamily",
     "outOopMaxIndividual",
     "outOopMaxFamily",
+    "isAcaCompliant",
+    "acaComplianceBasis",
   ] as const;
 
   for (const key of PLAN_IDENTITY_KEYS) {

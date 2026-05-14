@@ -66,9 +66,11 @@ async function processBillDocument(
     billType as "eob" | "itemized_bill",
   );
 
-  const auditReport = await runAudit(parsedBill);
-
-  // Fetch user context once (used by claims, backflow, and code intelligence)
+  // F-2 — resolve plan + load coverage BEFORE runAudit so missing_adjustment
+  // + insurance_underpayment rules can compute should_owe against plan terms
+  // on the very first audit. Without this, brand-new uploads would surface
+  // contractual-writeoff numbers instead of user-recovery numbers until D7
+  // re-fires on next view.
   const { isFeatureEnabled } = await import("@/lib/config/product-flags");
   const { data: userForFlag } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
   const userEmail = userForFlag?.email || undefined;
@@ -88,6 +90,59 @@ async function processBillDocument(
     dateOfService: parsedBill.serviceDate || null,
     fallbackActivePlanId: profile?.active_insurance_plan_id || null,
   });
+
+  const { loadCoverageMapForPlan, loadAcaFallbackForAudit } = await import("@/lib/audit/coverage-loader");
+  const planCoverage = await loadCoverageMapForPlan(supabase, insurancePlanId);
+
+  // S74.6 §C.1 — pre-flight slug resolution BEFORE runAudit. Runs the
+  // flywheel + legacy service-mapper paths, mutates bill.lineItems[i].
+  // serviceSlug + .billingCodeIdentityId so the audit pipeline can build
+  // per-slug cohort keys + D4 skips already-categorized lines. persist
+  // consumes these without re-resolving.
+  const { resolveLineItemSlugs } = await import("@/lib/claims/preflight-slug-resolver");
+  await resolveLineItemSlugs(supabase, doc.user_id, parsedBill);
+
+  // S74.6 D3 — thread insurer_name so runAudit can apply cohort accuracy
+  // adjustment (boost / informational chip / suppress per Subplan §B).
+  let insurerNameForAudit: string | null = null;
+  let patientNameForAcaFallback: string | null = null;
+  if (insurancePlanId) {
+    const { data: planRow } = await supabase
+      .from("insurance_plans")
+      .select("insurer_name")
+      .eq("id", insurancePlanId)
+      .maybeSingle();
+    insurerNameForAudit = (planRow?.insurer_name as string | null) ?? null;
+  }
+  // ACA fallback needs the patient name to match demographics (multi-member
+  // family plan). Bill may carry it on the parsed shape; otherwise the helper
+  // tolerates null (falls back to primary subscriber demographics).
+  patientNameForAcaFallback =
+    (parsedBill as { patientName?: string | null }).patientName ?? null;
+
+  // S74.6 D2 §B — load ACA-mandated zero-cost-share fallback for audit. ACA
+  // bySlug merges INTO planCoverage (existing plan rows win — registry only
+  // fires on plan miss); byLineNumber threaded separately so slug-less lines
+  // (D4 hasn't bound yet) still see coverage in F-13 + F-14 rules.
+  const acaFallback = await loadAcaFallbackForAudit({
+    supabase,
+    planId: insurancePlanId,
+    userId: doc.user_id,
+    patientName: patientNameForAcaFallback,
+    bill: parsedBill,
+    existingCoverageBySlug: new Set(planCoverage?.keys() ?? []),
+  });
+  const mergedPlanCoverage = planCoverage ?? new Map();
+  for (const [slug, cov] of acaFallback.bySlug) {
+    if (!mergedPlanCoverage.has(slug)) mergedPlanCoverage.set(slug, cov);
+  }
+
+  const auditReport = await runAudit(
+    parsedBill,
+    mergedPlanCoverage.size > 0 ? mergedPlanCoverage : null,
+    { insurerName: insurerNameForAudit },
+    acaFallback.byLineNumber,
+  );
 
   // Persist claims (feature-flagged)
   let claimId: string | null = null;

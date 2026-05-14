@@ -250,6 +250,31 @@ async function persistEOCPlanIdentity(
   const eocPlanIdentityProvenance = buildEOCPlanIdentityProvenance(parsed.plan_identity);
   const hasProvenanceEntries = Object.keys(eocPlanIdentityProvenance).length > 0;
 
+  // S74.6 D1 §A.1 — prefer Haiku-extracted ACA-compliance signal from EOC
+  // text; fall back to the conservative-for-users default when (a) the
+  // standalone dispatch failed (aca_compliance === null) or (b) Haiku found
+  // no signal in the bounded text slice (isAcaCompliant === null AND
+  // acaComplianceBasis === null). The default keeps D2 registry fallback
+  // working for first-parse EOC-only uploads; a subsequent SBC or plan_doc
+  // Haiku upload may overwrite via the merge-update path in process-plan.ts.
+  const acaExtracted = parsed.aca_compliance?.data;
+  const acaHasSignal =
+    !!acaExtracted &&
+    (acaExtracted.isAcaCompliant !== null || acaExtracted.acaComplianceBasis !== null);
+  const acaFields = acaHasSignal && acaExtracted
+    ? {
+        is_aca_compliant: acaExtracted.isAcaCompliant,
+        aca_compliance_basis: acaExtracted.acaComplianceBasis ?? "unknown",
+        aca_compliance_source: "eoc_parser",
+        aca_compliance_excerpt: acaExtracted.source_excerpt,
+      }
+    : {
+        is_aca_compliant: true,
+        aca_compliance_basis: "unknown",
+        aca_compliance_source: "eoc_parser_default",
+        aca_compliance_excerpt: "",
+      };
+
   const planFields = {
     user_id: doc.user_id,
     insurer_name: parsed.plan_identity.insurer_name,
@@ -266,6 +291,7 @@ async function persistEOCPlanIdentity(
     is_active: !isComparisonUpload,
     verification_status: "document_verified" as const,
     ...(hasProvenanceEntries ? { field_provenance: eocPlanIdentityProvenance } : {}),
+    ...acaFields,
   };
 
   // Check for existing active plan for this user — comparison uploads SKIP

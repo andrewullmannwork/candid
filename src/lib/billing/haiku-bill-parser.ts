@@ -24,6 +24,7 @@ import { randomUUID } from "crypto";
 import type { Accumulator, BillLineItem, ExCode, ParsedBill, ProcedureCodeType } from "./types";
 import type { ExtractionMethod } from "../parser/types";
 import { categorizeProcedureCode } from "./parser";
+import { reconcileHaikuCodeType } from "./code-type-inference";
 import { applyEOBPostProcess } from "./eob-postprocess";
 
 const MODEL = "claude-haiku-4-5-20251001";
@@ -108,8 +109,10 @@ const INSTRUCTIONS = `You are extracting structured data from a medical bill or 
 10. **Cycle detection signals**: Preserve verbatim line_number_in_eob if shown. If insurer doesn't number lines (e.g., Cigna), use sequential "1", "2", "3".
 11. **Rendering provider** (per-line): If the EOB or bill shows a rendering provider (the individual professional who delivered the service) distinct from the facility provider, populate rendering_provider_npi + rendering_provider_name on the line item. Facility-level provider goes on top-level provider field.
 12. **Procedure code type discriminator**: Set procedureCodeType based on format: 5-digit numeric = "CPT"; letter+4digit (e.g., J7298) = "HCPCS_L2"; 4-digit revenue = "REV"; 3-digit numeric DRG = "DRG"; 11-digit NDC = "NDC"; G+4digit = "G_CODE"; 4-digit ending in F = "CAT_II".
-13. **Adjustment splits**: If the document shows distinct adjustment categories (e.g., "Insurance adjusted: -$436.52" + "Provider adjusted: -$7.00"), populate ins_adjusted + provider_adjusted separately on the line item AND in totals (totalInsAdjusted + totalProviderAdjusted). Lump-sum adjustments still go in adjustments field.
-14. **Citation-grade source provenance (Pattern P-8 — CRITICAL)**: For each high-leverage field's _meta entry (see field list below), include TWO additional sub-keys alongside 'confidence':
+13. **Adjustment splits** (CRITICAL — never conflate with insurance_paid): "Ins adjusted" / "Insurance adjusted" / "Contractual adjustment" / "Plan discount" is a CONTRACTUAL WRITEOFF — the amount the insurer negotiates down before paying. It is NOT money paid to the provider. Put it in ins_adjusted (per-line) AND total_ins_adjusted (header). "Ins paid" / "Insurance paid" / "Plan paid" is the insurer's ACTUAL PAYMENT to the provider — put it in insurance_paid (per-line) AND total_insurance_paid (header). On Providence-style bills these are TWO DIFFERENT LINES in the totals box. "Provider adjusted" / "Provider write-off" goes in provider_adjusted. Lump-sum unsplit adjustments still go in the adjustments field. **Invariant check**: billed_amount ≈ ins_adjusted + provider_adjusted + insurance_paid + patient_responsibility (sometimes ± denied/contract_discount). If the math doesn't close, re-read the totals labels rather than dump everything into insurance_paid.
+
+14. **Patient out-of-pocket payments** (CRITICAL — distinct from patient_responsibility): If the bill shows "Paid [date] -$X" / "Patient payment" / "Amount paid" entries near the bottom (e.g., "Paid Jun 27, 2025 -$292.41"), these represent money the PATIENT has already paid out of pocket. Sum them into total_patient_paid (header). If a per-line patient-payment is shown, also populate patient_paid on the line item. DO NOT lump these into insurance_paid. They reduce the remaining balance (Total Due) but do NOT change the patient's assigned patient_responsibility (which is the total share assigned regardless of when it's paid).
+15. **Citation-grade source provenance (Pattern P-8 — CRITICAL)**: For each high-leverage field's _meta entry (see field list below), include TWO additional sub-keys alongside 'confidence':
    - 'source_excerpt' (≤200 chars): the exact verbatim text from the document that supports this extraction. MUST appear character-for-character in the document text. If you can't quote a verbatim ≤200-char excerpt, omit this field rather than paraphrase.
    - 'source_section_hint' (one of: "claim_header", "line_items_table", "denial_codes_section", "accumulator_block", "appeal_rights_DO_NOT_EXTRACT", "glossary_DO_NOT_EXTRACT", "footer_legalese_DO_NOT_EXTRACT", "other"): which section of the document the excerpt was pulled from.
 
@@ -151,6 +154,7 @@ const INSTRUCTIONS = `You are extracting structured data from a medical bill or 
       "provider_adjusted": 0,
       "insurance_paid": 0,
       "patient_responsibility": 0,
+      "patient_paid": 0,
       "member_copay": 0,
       "member_coinsurance": 0,
       "member_applied_to_deductible": 0,
@@ -188,6 +192,7 @@ const INSTRUCTIONS = `You are extracting structured data from a medical bill or 
     "total_allowed": 0,
     "total_insurance_paid": 0,
     "total_patient_responsibility": 0,
+    "total_patient_paid": 0,
     "total_denied": 0,
     "total_contract_discount": 0,
     "total_ins_adjusted": 0,
@@ -417,7 +422,10 @@ export async function parseBillWithHaiku(
         lineNumber: idx + 1,
         line_number_in_eob: item.line_number_in_eob ? String(item.line_number_in_eob) : undefined,
         procedureCode,
-        procedureCodeType: (item.procedureCodeType ?? item.procedure_code_type) as ProcedureCodeType | undefined,
+        procedureCodeType: reconcileHaikuCodeType(
+          procedureCode,
+          (item.procedureCodeType ?? item.procedure_code_type) as ProcedureCodeType | undefined,
+        ),
         revenueCode: item.revenue_code as string | undefined ?? item.revenueCode as string | undefined,
         description: String(item.description ?? "Medical service"),
         category: procedureCode ? categorizeProcedureCode(procedureCode) : "Medical Service",
@@ -427,6 +435,7 @@ export async function parseBillWithHaiku(
         allowedAmount: numOrUndef(item.allowed_amount ?? item.allowedAmount),
         insurancePaid: numOrUndef(item.insurance_paid ?? item.insurancePaid),
         patientResponsibility: numOrUndef(item.patient_responsibility ?? item.patientResponsibility),
+        patient_paid: numOrUndef(item.patient_paid ?? item.patientPaid),
         adjustments: numOrUndef(item.adjustments),
         modifier: item.modifier as string | undefined,
 
@@ -484,6 +493,7 @@ export async function parseBillWithHaiku(
         totalAllowed: numOrUndef(totals.total_allowed),
         totalInsurancePaid: numOrUndef(totals.total_insurance_paid),
         totalPatientResponsibility: numOrUndef(totals.total_patient_responsibility),
+        totalPatientPaid: numOrUndef(totals.total_patient_paid ?? totals.totalPatientPaid),
         totalAdjustments: numOrUndef(totals.total_adjustments),
         totalDenied: numOrUndef(totals.total_denied),
         totalContractDiscount: numOrUndef(totals.total_contract_discount),

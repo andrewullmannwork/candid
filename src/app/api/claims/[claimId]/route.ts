@@ -7,10 +7,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import {
-  computeRecovery,
+  computeRecoveryV2,
   resolveStillOutstanding,
   type PlanCoverageInput,
 } from "@/lib/claims/recovery-math";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { maybeReauditClaim } from "@/lib/audit/reaudit";
+import { buildAcaCoverageFallback } from "@/lib/audit/aca-coverage-fallback";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -57,12 +60,98 @@ export async function GET(
     return NextResponse.json({ error: "Claim not found" }, { status: 404 });
   }
 
-  // Fetch line items
-  const { data: lineItems } = await supabase
+  // S74.5 D11 — if this claim was soft-deleted as a merge loser, surface the
+  // canonical (winner) claim_id so the client can redirect. If soft-deleted
+  // for any other reason (compliance erasure, etc.), 404 — the data is gone.
+  if (claim.deleted_at) {
+    if (claim.merged_into_claim_id) {
+      return NextResponse.json(
+        {
+          error: "Claim merged",
+          mergedIntoClaimId: claim.merged_into_claim_id as string,
+        },
+        { status: 410 },
+      );
+    }
+    return NextResponse.json({ error: "Claim not found" }, { status: 404 });
+  }
+
+  // S74.5 D6 — read flywheel flag once per request; surfaces to client so it
+  // knows whether to render category-correction UI on line items.
+  const flywheelEnabled = await isFeatureEnabled(
+    "s74_5_categorization_flywheel_v1",
+  );
+
+  // Fetch line items (SELECT * picks up the new mig 092 columns automatically).
+  let { data: lineItems } = await supabase
     .from("claim_line_items")
     .select("*")
     .eq("claim_id", claimId)
     .order("line_number", { ascending: true });
+
+  // S74.5 D7 — view-fetch re-audit hook (1/min + 5/day throttle inside).
+  // Runs only when flag is ON AND claim is marked stale. On success, the
+  // claim metadata + line_items metadata are refreshed so the response
+  // below reflects the new findings. We re-read after to pick them up.
+  let reauditResult: Awaited<ReturnType<typeof maybeReauditClaim>> | null = null;
+  if (flywheelEnabled && lineItems && lineItems.length > 0) {
+    reauditResult = await maybeReauditClaim(supabase, claim, lineItems);
+    if (reauditResult.reaudited) {
+      // Re-read updated rows so the response reflects fresh findings.
+      const refresh = await supabase
+        .from("claim_line_items")
+        .select("*")
+        .eq("claim_id", claimId)
+        .order("line_number", { ascending: true });
+      lineItems = refresh.data ?? lineItems;
+      const refreshedClaim = await supabase
+        .from("claims")
+        .select("*")
+        .eq("id", claimId)
+        .eq("user_id", user.id)
+        .single();
+      if (refreshedClaim.data) Object.assign(claim, refreshedClaim.data);
+    }
+  }
+
+  // S74.5 D6 — when the flywheel flag is ON and line items are linked to a
+  // billing_code_identity row, fetch the community/admin-verified slug so the
+  // client can render the G4 conflict-resolution modal when the community
+  // value differs from the user's row. Bounded by distinct identity_ids per
+  // claim (small fanout — typically <10).
+  const identityMap = new Map<
+    string,
+    {
+      service_slug: string | null;
+      promotion_state: "proposed" | "corroborated" | "admin_verified";
+      confidence: number;
+    }
+  >();
+  if (flywheelEnabled && lineItems) {
+    const identityIds = Array.from(
+      new Set(
+        lineItems
+          .map((li) => li.billing_code_identity_id as string | null)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    );
+    if (identityIds.length > 0) {
+      const { data: identities } = await supabase
+        .from("billing_code_identity")
+        .select("id, service_slug, promotion_state, confidence")
+        .in("id", identityIds);
+      for (const row of identities ?? []) {
+        identityMap.set(row.id as string, {
+          service_slug: row.service_slug as string | null,
+          promotion_state: row.promotion_state as
+            | "proposed"
+            | "corroborated"
+            | "admin_verified",
+          confidence: Number(row.confidence ?? 0.5),
+        });
+      }
+    }
+  }
 
   // Fetch coverage status for each line item's service_slug
   const coverageMap = new Map<string, { covered: boolean | null; copay: number | null; coinsurance: number | null; source: string | null }>();
@@ -89,6 +178,27 @@ export async function GET(
     }
   }
 
+  // S74.6 D2 — Demographic-aware ACA-gated coverage fallback. For lines where
+  // plan_covered_services has no row AND plan is_aca_compliant=TRUE AND the
+  // billing code hits zero_cost_share_codes AND demographic eligibility matches,
+  // synthesize coverage `{covered:true, copay:0, coinsurance:0}` so the
+  // Coverage column renders "Covered · $0" instead of "Unknown". Plan-covered
+  // rows (even non-zero copay) always win over this fallback — registry
+  // fallback only fires on plan miss.
+  const acaFallback = await buildAcaCoverageFallback({
+    supabase,
+    planId: claim.insurance_plan_id as string | null | undefined,
+    userId: claim.user_id as string,
+    patientName: (claim.patient_name as string | null | undefined) ?? null,
+    lineItems: (lineItems ?? []).map((li) => ({
+      lineNumber: Number(li.line_number ?? 0),
+      procedureCode: (li.billing_code as string | null) ?? null,
+      procedureCodeType: (li.billing_code_type as string | null) ?? null,
+      serviceSlug: (li.service_slug as string | null) ?? null,
+    })),
+    existingCoverageBySlug: new Set(coverageMap.keys()),
+  });
+
   // Claim-level totals used as pro-rate fallback when individual line items
   // lack allocation (the common Haiku header-only case).
   const claimTotalBilled = Number(claim.total_billed || 0);
@@ -101,19 +211,59 @@ export async function GET(
 
   // Enrich line items with coverage status + recovery metrics
   const enrichedLineItems = (lineItems || []).map((item) => {
-    const coverage: PlanCoverageInput | null = item.service_slug
+    // Plan-covered-services row wins when present (even non-zero copay rows).
+    // ACA registry fallback fires only when plan coverage is absent.
+    const planCoverage: PlanCoverageInput | null = item.service_slug
       ? coverageMap.get(item.service_slug) || null
       : null;
+    const acaCoverage: PlanCoverageInput | null = planCoverage
+      ? null
+      : acaFallback.byLineNumber.get(Number(item.line_number ?? 0)) || null;
+    const coverage = planCoverage || acaCoverage;
+    const coverageSource = planCoverage
+      ? coverageMap.get(item.service_slug as string)?.source ?? null
+      : acaCoverage
+        ? "aca_zero_cost_share"
+        : null;
 
     const billed = Number(item.billed_amount || 0);
-    const stillOutstanding = resolveStillOutstanding({
-      lineBilled: billed,
-      lineStillOutstanding: item.amount_still_outstanding != null ? Number(item.amount_still_outstanding) : null,
-      linePatientOwes: item.patient_owes != null ? Number(item.patient_owes) : null,
-      claimTotalBilled,
-      claimStillOutstanding,
+    // F-1 / mig 092 — patient_paid_amount column drives refund/forgiveness split.
+    const patientPaid = Number(item.patient_paid_amount ?? 0);
+    const patientResponsibility = item.patient_owes != null
+      ? Number(item.patient_owes)
+      : resolveStillOutstanding({
+          lineBilled: billed,
+          lineStillOutstanding: item.amount_still_outstanding != null ? Number(item.amount_still_outstanding) : null,
+          linePatientOwes: null,
+          claimTotalBilled,
+          claimStillOutstanding,
+        });
+    const recovery = computeRecoveryV2({
+      billed,
+      patientResponsibility,
+      patientPaid,
+      planCoverage: coverage,
     });
-    const recovery = computeRecovery(billed, stillOutstanding, coverage);
+
+    // S74.5 D6 — enrich with code-identity state for the correction pill +
+    // G4 conflict modal trigger. Only populated when flywheel flag is ON.
+    const identityId = item.billing_code_identity_id as string | null;
+    const identity = identityId ? identityMap.get(identityId) ?? null : null;
+    const communitySlug = identity?.service_slug ?? null;
+    // S74.5c §1.3 — conflict modal trigger is "snapshot present" not
+    // "slug mismatch". After backfillCorroboratedMapping runs, the user's
+    // service_slug has already been replaced with the community value, so a
+    // mismatch check would NEVER fire for the case the modal was designed
+    // for. Instead, fire when the backfill snapshot exists in metadata
+    // (semantic: "user has a pending acknowledgment of a community
+    // auto-switch"). resolve-conflict endpoint clears the snapshot keys on
+    // either action ("revert" or "accept"), so the modal stops surfacing
+    // once consumed.
+    const itemMetadata = (item.metadata as Record<string, unknown> | null) ?? null;
+    const conflictsWithCommunity =
+      flywheelEnabled &&
+      !item.user_correction_locked_at &&
+      itemMetadata?.user_correction_pre_backfill_slug != null;
 
     return {
       ...item,
@@ -125,7 +275,22 @@ export async function GET(
           ? "unknown"
           : null,
       planCoverage: coverage || null,
+      // S74.6 D2 — surface which path produced the coverage so the UI can render
+      // "Covered (ACA)" vs "Covered (plan)" tooltip distinction.
+      coverageSource,
       recovery,
+      codeIdentity: flywheelEnabled
+        ? {
+            identityId,
+            communitySlug,
+            promotionState: identity?.promotion_state ?? null,
+            confidence: identity?.confidence ?? null,
+            conflictsWithCommunity,
+            userCorrectedAt: (item.user_corrected_at as string | null) ?? null,
+            userCorrectionLockedAt:
+              (item.user_correction_locked_at as string | null) ?? null,
+          }
+        : null,
     };
   });
 
@@ -202,5 +367,16 @@ export async function GET(
     disputes: disputes || [],
     relatedClaims,
     recovery: claimRecovery,
+    flags: {
+      categorizationFlywheelV1: flywheelEnabled,
+    },
+    // S74.5 D7 — surface re-audit outcome for telemetry + client toasts.
+    // null when flag off or claim wasn't stale.
+    reaudit: reauditResult,
+    // S74.6 D1 §A.2 — plan-level ACA basis + excerpt for Coverage badge
+    // tooltip copy. ClaimDetail.tsx consumes this when rendering tooltips on
+    // lines where coverageSource === 'aca_zero_cost_share'. null when plan
+    // is not ACA-compliant.
+    acaCompliance: acaFallback.planMeta,
   });
 }

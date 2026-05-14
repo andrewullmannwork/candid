@@ -61,6 +61,7 @@ import { extractAppealsProcedures } from "./haiku-prompts/appeals-procedures";
 import { extractCOBRules } from "./haiku-prompts/cob-rules";
 import { extractEligibilityRules } from "./haiku-prompts/eligibility-rules";
 import { extractDefinitions } from "./haiku-prompts/definitions";
+import { extractAcaCompliance, type EocAcaComplianceData } from "./haiku-prompts/aca-compliance";
 import { type Chunk, type Granularity, subSegmentSection } from "./sub-segment";
 import { isSelfCheckEnabled, selfCheckExcerpts } from "./self-check";
 
@@ -69,6 +70,11 @@ const COST_GUARD_THRESHOLD_USD = 0.9; // 90% of hard cap; pre-dispatch chunk-ski
 const COST_SOFT_ALARM_USD = 0.45;
 const COST_SOFT_TARGET_USD = 0.3;
 const FULL_TEXT_SIZE_WARN_BYTES = 50_000; // DR-3.1A.1-B-3 LOCK
+// S74.6 D1 §A.1 — ACA-compliance signal lives in cover page / preamble /
+// plan-summary box. Cap at 15k chars of cleaned text (~3.75k tokens input)
+// keeps the call cheap (~$0.005) while covering the regions where the
+// signal universally appears. Doc-short cases pass the whole doc.
+const ACA_SCAN_CHAR_BUDGET = 15_000;
 
 interface DispatchConfig {
   granularity: Granularity;
@@ -453,6 +459,28 @@ export async function parseEOC(
     warnings.push(`plan_identity_extraction_failed:${documentId}:${err instanceof Error ? err.message : String(err)}`);
   }
 
+  // 1.5 S74.6 D1 §A.1 — ACA-compliance extraction. Independent of the 6
+  // priority sections because ACA signal lives in cover page / preamble /
+  // plan-summary box rather than diagnostic sections. Dispatched against a
+  // bounded slice of cleaned text (ACA_SCAN_CHAR_BUDGET) to keep cost ~$0.005.
+  // Non-fatal: dispatch failure logs a warning + leaves aca_compliance=null
+  // so process-eoc.ts falls back to the conservative-for-users default per
+  // Subplan §1 LOCK.
+  let acaCompliance: EOCSectionResult<EocAcaComplianceData> | null = null;
+  try {
+    const acaSliceEnd = Math.min(workingText.length, ACA_SCAN_CHAR_BUDGET);
+    const acaText = workingText.slice(0, acaSliceEnd);
+    acaCompliance = await extractAcaCompliance(
+      acaText,
+      { start: 0, end: acaSliceEnd },
+      extractionMethod,
+    );
+  } catch (err) {
+    warnings.push(
+      `eoc_aca_compliance_extraction_failed:${documentId}:${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   // 2. Section segmentation — regex first (on cleaned text).
   let sectionRanges = segmentEOCSections(workingText);
   let segmentationUsed: EOCParseResult["segmentation_used"] = "regex_only";
@@ -544,6 +572,15 @@ export async function parseEOC(
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
 
+  // Fold ACA dispatch telemetry into the run totals (cost-cap + soft-alarm
+  // checks below must account for the additional Haiku call).
+  if (acaCompliance) {
+    totalCostUsd += acaCompliance.haiku_cost_usd;
+    totalInputTokens += acaCompliance.haiku_input_tokens;
+    totalOutputTokens += acaCompliance.haiku_output_tokens;
+    warnings.push(...acaCompliance.warnings);
+  }
+
   type SectionOutcome<T> = { result: EOCSectionResult<T> | null; warnings: string[] };
   const tryAssign = <T>(
     hint: EOCSectionHint,
@@ -614,6 +651,7 @@ export async function parseEOC(
     total_input_tokens: totalInputTokens,
     total_output_tokens: totalOutputTokens,
     segmentation_used: segmentationUsed,
+    aca_compliance: acaCompliance,
     warnings,
     parse_errors: parseErrors,
     dispatched_sections,

@@ -8,10 +8,11 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ParsedBill, AuditReport, AuditFinding, BillLineItem, FieldMeta } from "@/lib/billing/types";
-import { mapLineItemsToServices, inferBillingCodeType } from "@/lib/claims/service-mapper";
+import { inferBillingCodeType } from "@/lib/claims/service-mapper";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { notifyUnmappedLineItems } from "@/lib/notifications";
 import { buildProvenanceEntry, type FieldProvenanceEntry } from "@/lib/parser/field-categories";
+import { reconcileHaikuCodeType } from "@/lib/billing/code-type-inference";
 
 /**
  * Build a field_provenance JSONB payload for a parsed bill line item per DR-3B
@@ -141,8 +142,10 @@ export async function persistAuditResults(
         date_of_service: parsedBill.serviceDate || null,
         total_billed: parsedBill.totals.totalBilled,
         total_allowed: parsedBill.totals.totalAllowed || null,
-        total_insurance_paid: parsedBill.totals.totalInsurancePaid || null,
-        total_patient_responsibility: parsedBill.totals.totalPatientResponsibility || null,
+        total_insurance_paid: parsedBill.totals.totalInsurancePaid ?? null,
+        total_insurance_adjusted: parsedBill.totals.totalInsAdjusted ?? 0,
+        total_patient_responsibility: parsedBill.totals.totalPatientResponsibility ?? null,
+        total_patient_paid: parsedBill.totals.totalPatientPaid ?? 0,
         claim_number: null, // Not always present on bills
         status: auditReport.findings.length > 0 ? "flagged" : "processed",
         metadata: {
@@ -170,36 +173,25 @@ export async function persistAuditResults(
       }
     }
 
-    // Map line item descriptions → service slugs via Haiku (feature-flagged)
-    const serviceMappingEnabled = await isFeatureEnabled("billing_code_service_mapping");
-    const serviceMappings = new Map<number, { slug: string; confidence: number }>();
+    // S74.6 §C.1 — service-mapper + flywheel categorize moved upstream to
+    // `resolveLineItemSlugs` (preflight-slug-resolver) so the audit pipeline
+    // can build per-slug cohort keys + D4 can skip categorized lines. Persist
+    // now consumes the pre-resolved values from bill.lineItems[i].serviceSlug
+    // / .serviceSlugSource / .billingCodeIdentityId rather than re-running.
+    // The legacy `billing_code_service_mapping` flag controls whether
+    // unmapped-line admin notifications fire (preserved at the bottom of
+    // this function).
+    const serviceMappingEnabled = await isFeatureEnabled(
+      "billing_code_service_mapping",
+    );
+    const flywheelEnabled = await isFeatureEnabled(
+      "s74_5_categorization_flywheel_v1",
+    );
 
     // DR-3B per-field provenance: only emit when parse_strategy_v2 flag is ON.
     // OFF preserves legacy behavior (no field_provenance writes; column default '{}'
     // applies via mig 056 so reads stay backwards-compatible).
     const parseStrategyV2Enabled = await isFeatureEnabled("parse_strategy_v2");
-
-    if (serviceMappingEnabled && parsedBill.lineItems.length > 0) {
-      try {
-        const mappings = await mapLineItemsToServices(
-          parsedBill.lineItems.map((item) => ({
-            lineNumber: item.lineNumber,
-            description: item.description || item.category || "",
-            billingCode: item.procedureCode || undefined,
-            billingCodeType: item.procedureCode ? inferBillingCodeType(item.procedureCode) : undefined,
-            category: item.category || undefined,
-          }))
-        );
-        for (const m of mappings) {
-          if (m.confidence >= 0.3) {
-            serviceMappings.set(m.lineNumber, { slug: m.serviceSlug, confidence: m.confidence });
-          }
-        }
-        console.log(`[claims-persist] Mapped ${serviceMappings.size}/${parsedBill.lineItems.length} line items to service slugs`);
-      } catch (err) {
-        console.error("[claims-persist] Service mapping failed (non-blocking):", err);
-      }
-    }
 
     // Insert claim_line_items
     const lineItemInserts = parsedBill.lineItems.map((item, idx) => {
@@ -212,31 +204,58 @@ export async function persistAuditResults(
               severity: f.severity,
               estimatedOvercharge: f.estimatedOvercharge,
               title: f.title,
+              description: f.description, // Session 85 — persist so the
+              // expanded-row "what we found" card can render the longer
+              // user-friendly explanation (e.g., F-14's insurer-vs-plan
+              // narrative).
               actionable: f.actionable,
             })),
           }
         : {};
 
-      const mapping = serviceMappings.get(item.lineNumber);
+      // §C.1 — pre-flight resolved slug + identity from `resolveLineItemSlugs`
+      // (caller runs it before runAudit). When pre-flight didn't run (legacy
+      // callers in test paths), these fields are undefined and the row keeps
+      // service_slug=null until D4 post-insert assigns a provisional slug.
+      const resolvedSlug = item.serviceSlug ?? null;
+      const resolvedSlugSource = item.serviceSlugSource ?? null;
+      const resolvedIdentityId = item.billingCodeIdentityId ?? null;
 
       const baseRow: Record<string, unknown> = {
         claim_id: claim.id,
         line_number: item.lineNumber,
         billing_code: item.procedureCode || null,
         billing_code_type: item.procedureCode ? inferBillingCodeType(item.procedureCode) : null,
-        service_slug: mapping?.slug || null,
+        service_slug: resolvedSlug,
+        billing_code_identity_id: resolvedIdentityId,
         description: item.description || item.category || null,
         units: item.quantity || 1,
         billed_amount: item.billedAmount,
         allowed_amount: item.allowedAmount || null,
-        insurance_paid: item.insurancePaid || null,
-        patient_owes: item.patientResponsibility || null,
+        insurance_paid: item.insurancePaid ?? null,
+        // Mig 092 — contractual writeoff distinct from insurance_paid. Defaults
+        // to 0 (rather than null) so downstream math can sum without null guards;
+        // null indicates "parser didn't extract" which we treat as 0 too here.
+        insurance_adjusted_amount: item.ins_adjusted ?? 0,
+        patient_owes: item.patientResponsibility ?? null,
+        // Mig 092 — patient out-of-pocket payments. Default 0; populated by
+        // parser when "Paid [date] -$X" footer lines are present on the bill.
+        patient_paid_amount: item.patient_paid ?? 0,
         plan_year: resolvedPlanYear,
         adjustment_reason_code: null,
         modifier_codes: item.modifier ? [item.modifier] : null,
         metadata: {
           ...findingMeta,
-          ...(mapping ? { serviceMapping: { slug: mapping.slug, confidence: mapping.confidence } } : {}),
+          ...(resolvedSlug
+            ? {
+                slugSource: resolvedSlugSource,
+                slugResolution: {
+                  slug: resolvedSlug,
+                  identityId: resolvedIdentityId,
+                  source: resolvedSlugSource,
+                },
+              }
+            : {}),
         },
       };
 
@@ -263,6 +282,108 @@ export async function persistAuditResults(
         console.error("[claims-persist] Failed to insert line items:", lineError);
       } else if (insertedItems) {
         for (const item of insertedItems) lineItemIds.push(item.id);
+      }
+    }
+
+    // S74.6 D4 §D.1 + §D.2 + §D.4 — post-insert flywheel write. For each
+    // line item carrying a `code_uncategorized_description_match` finding,
+    // route to vote-recording (confident) or ambiguous-candidate (ambiguous)
+    // helpers. The line item ID is finally available here (couldn't write at
+    // audit time because INSERT hadn't fired). After the vote-write, §D.4
+    // auto-assigns the provisional slug + identity_id back to claim_line_items
+    // so the bill renders with the matched category on first view.
+    //
+    // Gated on flywheelEnabled + at least one matching finding. Non-blocking —
+    // errors logged + swallowed (the claim is still persisted, the flywheel
+    // just doesn't accumulate this user's vote on that line).
+    if (flywheelEnabled && lineItemIds.length === lineItemInserts.length) {
+      try {
+        // Resolve the auth users.id (UUID) once — vote-writes expect the DB
+        // user_id, not the firebase_uid.
+        const { data: userRow } = await supabase
+          .from("users")
+          .select("id")
+          .eq("firebase_uid", userId)
+          .maybeSingle();
+        const dbUserId = userRow?.id as string | null;
+        if (dbUserId) {
+          const {
+            recordDescriptionMatchVote,
+            recordAmbiguousCandidate,
+          } = await import("@/lib/parser/code-identity-promotion");
+
+          for (let idx = 0; idx < parsedBill.lineItems.length; idx++) {
+            const item = parsedBill.lineItems[idx];
+            const lineId = lineItemIds[idx];
+            const findings = findingsByLine.get(item.lineNumber) || [];
+            const dmFinding = findings.find(
+              (f) =>
+                f.type === "code_uncategorized_description_match" &&
+                f.descriptionMatch,
+            );
+            if (!dmFinding || !dmFinding.descriptionMatch) continue;
+            const dm = dmFinding.descriptionMatch;
+            const code = item.procedureCode || "";
+            if (!code) continue;
+            const codeType = reconcileHaikuCodeType(code, item.procedureCodeType) ?? undefined;
+            const desc = item.description || item.category || "";
+
+            try {
+              if (dm.ambiguous && dm.secondMatch) {
+                await recordAmbiguousCandidate({
+                  userId: dbUserId,
+                  billingCode: code,
+                  billingCodeType: codeType,
+                  rawDescription: desc,
+                  topMatch: {
+                    slug: dm.provisionalSlug,
+                    score: dm.haikuScore,
+                  },
+                  secondMatch: dm.secondMatch,
+                  lineItemId: lineId,
+                });
+                // §D.4 — even for ambiguous, top-1 becomes the displayed slug
+                // (user sees the best guess; admin disambiguation refines).
+                await supabase
+                  .from("claim_line_items")
+                  .update({ service_slug: dm.provisionalSlug })
+                  .eq("id", lineId)
+                  .is("service_slug", null);
+              } else {
+                const voteResult = await recordDescriptionMatchVote({
+                  userId: dbUserId,
+                  billingCode: code,
+                  billingCodeType: codeType,
+                  rawDescription: desc,
+                  proposedSlug: dm.provisionalSlug,
+                  haikuScore: dm.haikuScore,
+                  lineItemId: lineId,
+                });
+                // §D.4 — auto-assign provisional slug + identity_id. Only when
+                // the parser didn't already resolve a slug (don't overwrite
+                // direct catalog matches).
+                if (voteResult.identityId) {
+                  await supabase
+                    .from("claim_line_items")
+                    .update({
+                      service_slug: dm.provisionalSlug,
+                      billing_code_identity_id: voteResult.identityId,
+                    })
+                    .eq("id", lineId)
+                    .is("service_slug", null);
+                }
+              }
+            } catch (perLineErr) {
+              console.warn(
+                "[claims-persist] D4 flywheel write failed for line",
+                item.lineNumber,
+                perLineErr,
+              );
+            }
+          }
+        }
+      } catch (err) {
+        console.error("[claims-persist] D4 flywheel post-insert failed (non-blocking):", err);
       }
     }
 

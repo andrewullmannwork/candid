@@ -74,6 +74,10 @@ function emptyPlanIdentity(extractionMethod: ExtractionMethod): SBCPlanIdentity 
     rxDeductibleFamily: emptyNumber,
     referralRequired: emptyBool,
     minimumValueStandard: emptyBool,
+    // S74.6 D1 — ACA-compliance flag (default null; persistence layer applies
+    // is_aca_compliant=TRUE + basis='unknown' default when Haiku didn't emit).
+    isAcaCompliant: emptyBool,
+    acaComplianceBasis: emptyString,
   };
 }
 

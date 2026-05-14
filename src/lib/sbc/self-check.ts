@@ -196,6 +196,8 @@ export async function selfCheckSBCExcerpts(
     "rxDeductibleFamily",
     "referralRequired",
     "minimumValueStandard",
+    "isAcaCompliant",
+    "acaComplianceBasis",
   ] as const;
 
   for (const key of PLAN_IDENTITY_KEYS) {

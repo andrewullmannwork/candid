@@ -213,6 +213,7 @@ async function main() {
         total_input_tokens: 0,
         total_output_tokens: 0,
         segmentation_used: "preamble_only",
+        aca_compliance: null,
         warnings: [],
         parse_errors: [],
         dispatched_sections: [],

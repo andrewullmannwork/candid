@@ -8,7 +8,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import {
-  computeRecovery,
+  computeRecoveryV2,
   resolveStillOutstanding,
   type PlanCoverageInput,
 } from "@/lib/claims/recovery-math";
@@ -112,10 +112,13 @@ export async function GET(req: NextRequest) {
   // surface duplicates as separate cards on /claim. Display-layer dedup; the
   // duplicate dispute_outcomes rows in the DB are untouched (a proper fix
   // lives at the ingestion layer + needs migration to merge existing dupes).
+  // S74.5 D11 — exclude soft-deleted claims (merge losers + future
+  // user-requested erasures). Filter is partial-index-backed (idx_claims_user_live).
   const { data: rawClaims, error } = await supabase
     .from("claims")
     .select("*")
     .eq("user_id", user.id)
+    .is("deleted_at", null)
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -161,7 +164,7 @@ export async function GET(req: NextRequest) {
     (claims || []).map(async (claim) => {
       const { data: lineItems } = await supabase
         .from("claim_line_items")
-        .select("id, service_slug, billing_code, metadata, billed_amount, patient_owes, insurance_paid, description, amount_still_outstanding")
+        .select("id, service_slug, billing_code, metadata, billed_amount, patient_owes, insurance_paid, description, amount_still_outstanding, patient_paid_amount, insurance_adjusted_amount")
         .eq("claim_id", claim.id);
 
       const items = lineItems || [];
@@ -195,10 +198,14 @@ export async function GET(req: NextRequest) {
       }> = [];
 
       for (const item of items) {
+        // F-5 — exclude dismissed findings from count/topFindings/potentialSavings
+        // so summary cards match the detail-page state. Dismissed entries are
+        // preserved in metadata for flywheel telemetry; not surfaced to the user.
         const findings = (item.metadata as Record<string, unknown>)?.auditFindings;
         if (Array.isArray(findings)) {
-          findingCount += findings.length;
-          for (const f of findings as Array<Record<string, unknown>>) {
+          const live = (findings as Array<Record<string, unknown>>).filter((f) => !f.dismissed);
+          findingCount += live.length;
+          for (const f of live) {
             const overcharge = Number(f.estimatedOvercharge || 0);
             potentialSavings += overcharge;
             topFindings.push({
@@ -212,18 +219,28 @@ export async function GET(req: NextRequest) {
         const billed = Number(item.billed_amount || 0);
         const paid = Number(item.insurance_paid || 0);
         const owed = Number(item.patient_owes || 0);
+        // F-1 / mig 092 — patient_paid_amount column drives refund/forgiveness
+        // split. Defaults to 0 on legacy rows.
+        const patientPaid = Number(item.patient_paid_amount ?? 0);
 
-        // Recovery metrics — uses new amount_still_outstanding column when
-        // present, falls back to pro-rating claim header by billed share.
+        // F-1 — recovery uses patient_responsibility (= patient_owes) directly
+        // rather than the legacy `stillOutstanding` heuristic. patient_owes is
+        // the total assigned share; patient_paid_amount is how much the user
+        // has paid OOP. Refund/forgiveness split derives from those two.
         const coverage = (item.service_slug && coverageMap?.get(item.service_slug)) || null;
-        const stillOutstanding = resolveStillOutstanding({
+        const patientResponsibility = owed || resolveStillOutstanding({
           lineBilled: billed,
           lineStillOutstanding: item.amount_still_outstanding != null ? Number(item.amount_still_outstanding) : null,
           linePatientOwes: owed,
           claimTotalBilled,
           claimStillOutstanding,
         });
-        const rec = computeRecovery(billed, stillOutstanding, coverage);
+        const rec = computeRecoveryV2({
+          billed,
+          patientResponsibility,
+          patientPaid,
+          planCoverage: coverage,
+        });
         claimPotentialRecovery += rec.potentialRecovery;
         claimAlreadyPaid += rec.alreadyPaid;
         claimShouldOwe += rec.shouldOwe;
@@ -241,6 +258,27 @@ export async function GET(req: NextRequest) {
           });
         }
         lineItemPatientOwedSum += owed;
+      }
+
+      // F-5 — surface claim-level findings (D15 unallocated_balance + future
+      // claim-header types) on the summary card. They're persisted on
+      // claim.metadata.auditSummary.claimLevelFindings via audit/index.ts:49-66
+      // (§1.7 partition). Without this they'd be invisible to /claim list.
+      const claimMeta = (claim.metadata as Record<string, unknown> | null) ?? {};
+      const auditSummary = (claimMeta.auditSummary as Record<string, unknown> | null) ?? null;
+      const claimLevelFindings = Array.isArray(auditSummary?.claimLevelFindings)
+        ? (auditSummary?.claimLevelFindings as Array<Record<string, unknown>>)
+        : [];
+      const liveClaimLevel = claimLevelFindings.filter((f) => !f.dismissed);
+      findingCount += liveClaimLevel.length;
+      for (const f of liveClaimLevel) {
+        const overcharge = Number(f.estimatedOvercharge || 0);
+        potentialSavings += overcharge;
+        topFindings.push({
+          title: String(f.title || f.type || "Issue"),
+          estimatedOvercharge: overcharge,
+          billingCode: null,
+        });
       }
 
       // Keep top 3 findings by overcharge size
@@ -279,6 +317,15 @@ export async function GET(req: NextRequest) {
         };
       }
 
+      // Session 86 — expose post-adjustment billed total so BillCard can
+      // surface "Billed (adj.)" headline math that reconciles with "You
+      // should owe" + recovery. Prefer the claim-header value (written by
+      // persist.ts from mig 092) and fall back to summing per-line
+      // insurance_adjusted_amount when the header is NULL on legacy rows.
+      const totalInsuranceAdjusted = claim.total_insurance_adjusted != null
+        ? Number(claim.total_insurance_adjusted)
+        : items.reduce((s, it) => s + Number(it.insurance_adjusted_amount ?? 0), 0);
+
       return {
         ...claim,
         lineItemCount: items.length,
@@ -292,6 +339,7 @@ export async function GET(req: NextRequest) {
           ? ((claim.metadata as Record<string, unknown>).provider as Record<string, unknown>)?.name || "Unknown Provider"
           : "Unknown Provider",
         recovery: recoveryBlock,
+        total_insurance_adjusted: totalInsuranceAdjusted,
       };
     })
   );
@@ -302,6 +350,7 @@ export async function GET(req: NextRequest) {
     .from("claims")
     .select("id, status, total_billed, total_patient_responsibility, source_document_id, date_of_service, metadata, created_at")
     .eq("user_id", user.id)
+    .is("deleted_at", null)
     .order("created_at", { ascending: false });
   const allClaims = dedupBillsByFingerprint((allClaimsRaw as RawClaim[]) || []);
 
@@ -318,7 +367,8 @@ export async function GET(req: NextRequest) {
     for (const li of allLineItems || []) {
       const findings = (li.metadata as Record<string, unknown>)?.auditFindings;
       if (Array.isArray(findings)) {
-        for (const f of findings as Array<Record<string, unknown>>) {
+        // F-5 — exclude dismissed entries
+        for (const f of (findings as Array<Record<string, unknown>>).filter((x) => !x.dismissed)) {
           totalPotentialSavings += Number(f.estimatedOvercharge || 0);
           totalIssuesFlagged += 1;
         }
@@ -328,6 +378,20 @@ export async function GET(req: NextRequest) {
       const paid = Number(li.insurance_paid || 0);
       const owed = Number(li.patient_owes || 0);
       if (billed > 0 && paid === 0 && owed === 0) {
+        totalIssuesFlagged += 1;
+      }
+    }
+
+    // F-5 — also fold claim-level findings (D15 unallocated_balance etc.)
+    // into the totals so the top-hero "Issues flagged" + savings reflect them.
+    for (const c of allClaims) {
+      const meta = (c.metadata as Record<string, unknown> | null) ?? {};
+      const summary = (meta.auditSummary as Record<string, unknown> | null) ?? null;
+      const claimLevel = Array.isArray(summary?.claimLevelFindings)
+        ? (summary!.claimLevelFindings as Array<Record<string, unknown>>)
+        : [];
+      for (const f of claimLevel.filter((x) => !x.dismissed)) {
+        totalPotentialSavings += Number(f.estimatedOvercharge || 0);
         totalIssuesFlagged += 1;
       }
     }

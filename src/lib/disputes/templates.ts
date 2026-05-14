@@ -342,6 +342,22 @@ function renderLineItemEvidence(
     }
   }
 
+  // S74.6 D5 — Alternative-code recommendation per Q-S87-D2 Option 1 copy.
+  // Letter section requires ≥ 2 corroborated peer codes (excluding the
+  // contested line's own code) per Q-S87-C7 letterEligible gate.
+  if (li.peerCodes && li.peerCodes.length > 0 && li.billingCode) {
+    const filteredPeers = li.peerCodes.filter(
+      (p) =>
+        !(p.code === li.billingCode!.value && p.codeType === li.billingCode!.type),
+    );
+    if (filteredPeers.length >= 2) {
+      const topPeer = filteredPeers[0];
+      bullets.push(
+        `   - Note: similar charges have been successfully resolved when re-coded as **${topPeer.code}**. Please verify whether ${topPeer.code} more accurately reflects the service provided, and reprocess accordingly if applicable.`,
+      );
+    }
+  }
+
   return bullets.length > 0 ? [headline, ...bullets].join("\n") : "";
 }
 

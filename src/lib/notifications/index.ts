@@ -36,6 +36,58 @@ export async function notifyAdminForReview(
   await sendSlackReview(documentId, classifiedType, confidence, fileName, userEmail);
 }
 
+/**
+ * S74.6 D-cost §F.3 — Fire admin alert when a user's daily Haiku spend cap
+ * trips. Pairs with the `paused_at` write in `reserve_haiku_spend` so the
+ * pause is both logged + visible to ops. Caller treats Slack-down as
+ * non-fatal (the pause already happened in the DB; admin recovers via A4
+ * unfreeze later).
+ */
+export async function notifyAdminCostCapExceeded(opts: {
+  userId: string;
+  userEmail?: string | null;
+  reason: string;
+  capUsd: number;
+  attemptedTotalUsd: number;
+}): Promise<void> {
+  await sendSlack({
+    text: `Haiku spend cap tripped for ${opts.userEmail || opts.userId}`,
+    blocks: [
+      {
+        type: "header",
+        text: { type: "plain_text", text: "Haiku Spend Cap Tripped" },
+      },
+      {
+        type: "section",
+        fields: [
+          { type: "mrkdwn", text: `*User:* ${opts.userEmail || opts.userId}` },
+          { type: "mrkdwn", text: `*Reason:* ${opts.reason}` },
+          { type: "mrkdwn", text: `*Cap:* $${opts.capUsd.toFixed(2)}` },
+          { type: "mrkdwn", text: `*Attempted total:* $${opts.attemptedTotalUsd.toFixed(4)}` },
+        ],
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: "The user has been paused for the remainder of UTC day. Investigate via A4 admin UI (deferred S89) or unset `haiku_spend_tracking.paused_at` directly. Audit findings on description-match for this user will silently no-op until cleared.",
+        },
+      },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Open Admin Panel" },
+            url: `${APP_URL}/admin`,
+            style: "primary",
+          },
+        ],
+      },
+    ],
+  });
+}
+
 async function sendSlackReview(
   _documentId: string,
   classifiedType: string,

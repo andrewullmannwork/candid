@@ -30,6 +30,13 @@ const ALLOWED_TABLES = [
   // for parser-emitted unknown reference data (slugs + billing codes).
   "concept_admin_review_queue",
   "service_catalog_admin_review_queue",
+  // S74.5 D8 (Session 83) — Pattern 1 #16 admin attestation surface for the
+  // categorization flywheel. billing_code_identity carries proposed/promoted
+  // signatures; mapping_promotion_events is the append-only audit log; the
+  // zero_cost_share_codes registry is admin-tunable reference data.
+  "billing_code_identity",
+  "mapping_promotion_events",
+  "zero_cost_share_codes",
 ] as const;
 
 type AllowedTable = (typeof ALLOWED_TABLES)[number];

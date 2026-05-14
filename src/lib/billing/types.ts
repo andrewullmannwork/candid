@@ -77,8 +77,9 @@ export interface BillLineItem {
   quantity: number;
   billedAmount: number; // What provider charged
   allowedAmount?: number; // What insurance says is reasonable
-  insurancePaid?: number; // What insurance paid
-  patientResponsibility?: number; // What patient owes (lump sum; superseded by member_* when EOB decomposes)
+  insurancePaid?: number; // What insurance ACTUALLY paid to the provider (NOT the contractual writeoff — that's ins_adjusted)
+  patientResponsibility?: number; // Total user share assigned by insurer (lump sum; superseded by member_* when EOB decomposes). NOT the remaining balance — see patient_paid for what user has paid OOP.
+  patient_paid?: number; // What the patient has paid out of pocket on this line. Distinct from patientResponsibility (= total assigned share). Parser extracts from "Paid [date] -$X" footer lines on settled bills.
   adjustments?: number; // Write-offs / contractual adjustments
   modifier?: string; // CPT modifier (e.g., "25" for separate E/M)
 
@@ -108,6 +109,21 @@ export interface BillLineItem {
   // Task 3F: rendering provider (per-line; distinct from facility-level provider on ParsedBill)
   rendering_provider_npi?: string;
   rendering_provider_name?: string;
+
+  // S74.6 §C.1 D3 — pre-flight slug resolution. Set by
+  // `resolveLineItemSlugs` (called BEFORE runAudit) so cohort accuracy
+  // adjustment can build (rule, insurer, slug) keys + D4 description-match
+  // skips lines that already have a slug. Persist consumes these fields
+  // instead of re-running service-mapper. Reaudit + dispute-rerun populate
+  // via `applyPersistedSlugs` reading claim_line_items.service_slug.
+  serviceSlug?: string | null;
+  serviceSlugSource?:
+    | "cached_mapping"
+    | "service_mapper"
+    | "flywheel_identity"
+    | "persisted"
+    | null;
+  billingCodeIdentityId?: string | null;
 }
 
 export interface ParsedBill {
@@ -142,8 +158,9 @@ export interface ParsedBill {
     totalAdjustments?: number;
     totalDenied?: number; // DR-3D
     totalContractDiscount?: number; // DR-3D
-    totalInsAdjusted?: number; // Task 3F: split
+    totalInsAdjusted?: number; // Task 3F: split — contractual writeoff total (NOT insurance payment)
     totalProviderAdjusted?: number; // Task 3F: split
+    totalPatientPaid?: number; // Sum of "Paid [date] -$X" footer lines; what the user has paid OOP across all line items. Distinct from totalPatientResponsibility (= total assigned share).
   };
   rawText: string; // Full OCR text for reference
   confidence: number; // 0-1, OCR extraction confidence
@@ -166,7 +183,12 @@ export type FindingType =
   | "upcoding" // Higher-complexity code than warranted
   | "balance_billing" // Billing beyond allowed amount (illegal in some states)
   | "missing_adjustment" // Insurance adjustment not applied
-  | "stale_claim"; // Claim filed after timely filing deadline
+  | "stale_claim" // Claim filed after timely filing deadline
+  | "zero_cost_share_overcharge" // S74.5 D13 — code is ACA preventive or ACIP vaccine; should be $0 patient cost
+  | "unallocated_balance" // S74.5 D15 — bill header patient_resp exceeds SUM(line patient_resp); ask for itemization
+  | "insurance_underpayment" // F-14 (Session 85) — service covered by plan but insurer paid $0 (writeoff applied but claim never processed)
+  | "code_uncategorized_description_match" // S74.6 D4 — code lacks a slug; Haiku description-match suggests a provisional slug ≥0.85 score
+  | "uncategorized_service"; // S74.6 D4 — code lacks a slug AND Haiku description-match top score < 0.85 (soft "review or correct" finding)
 
 export type FindingSeverity = "low" | "medium" | "high" | "critical";
 
@@ -181,8 +203,43 @@ export interface AuditFinding {
   benchmarkSource: string; // "CMS PPL" | "FAIR Health" | "Internal"
   benchmarkAmount?: number; // What the benchmark says it should cost
   billedAmount: number; // What was actually billed
-  confidence: number; // 0-1
+  confidence: number; // 0-1 (possibly cohort-adjusted; see accuracy-cohort-loader)
   actionable: boolean; // Whether a dispute letter can be generated
+  // S74.6 D3 — surfaced when cohort win-rate is in the informational tier
+  // (0.2 <= win_rate < 0.5 AND n >= 10). UI renders alongside the amber
+  // finding card so users have honest signal without being discouraged from
+  // disputing. Null/undefined → no chip (boost / baseline tiers).
+  cohortAccuracyChip?: string | null;
+  // S74.6 D4 §D.1 + §D.2 — description-match metadata for persist-time flywheel
+  // writes (recordDescriptionMatchVote / recordAmbiguousCandidate). Populated
+  // only on `code_uncategorized_description_match` findings emitted from the
+  // D4 audit rule. Persist reads this AFTER claim_line_items.INSERT so it can
+  // pass the now-existing line_item_id to the vote-recording helpers.
+  descriptionMatch?: {
+    provisionalSlug: string;
+    haikuScore: number;
+    ambiguous: boolean;
+    secondMatch?: { slug: string; score: number } | null;
+  };
+}
+
+// Persisted shape on claim.metadata.auditSummary.claimLevelFindings.
+// Mirrors the minimal shape that gets written to claim_line_items.metadata.auditFindings
+// for line-level findings (so consumers can dismiss via the unified endpoint
+// regardless of attachment).
+export interface ClaimLevelFindingMeta {
+  id: string;
+  type: FindingType;
+  severity: FindingSeverity;
+  estimatedOvercharge: number;
+  title: string;
+  description?: string;
+  benchmarkSource?: string;
+  actionable: boolean;
+  dismissed?: boolean;
+  dismissed_at?: string;
+  dismissed_reason?: string;
+  dismissed_note?: string | null;
 }
 
 export interface AuditReport {
@@ -196,6 +253,11 @@ export interface AuditReport {
     totalEstimatedOvercharge: number;
     highSeverityCount: number;
     actionableCount: number;
+    // S74.5c §1.7 — claim-header findings (lineItems: []) persisted here so
+    // they survive the reaudit write loop (which keys by lineNumber) and are
+    // available to ClaimDetail's claim-level findings render section + the
+    // dismiss-finding endpoint's claim-level fallback branch.
+    claimLevelFindings?: ClaimLevelFindingMeta[];
   };
   createdAt: string;
 }
