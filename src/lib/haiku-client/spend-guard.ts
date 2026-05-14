@@ -25,8 +25,62 @@
  *   return { data: result.data, ... };
  */
 
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createServerClient } from "../supabase/server";
 import { notifyAdminCostCapExceeded } from "../notifications";
+
+// ─────────────────────────────────────────────────────────────────────────
+// REMOVE-PRE-LAUNCH: S89 hotfix — test-account allowlist that bypasses the
+// $10/user/day Haiku spend cap entirely. Only intended for pre-launch test
+// accounts during S90/S91 PROD-flag-gated testing where we deliberately
+// drive the pipeline through many parser/audit/flywheel scenarios that
+// would otherwise trip the cap. The cap-trigger flow itself is still
+// tested via a separate dedicated scenario (S90/S91 Subplan §4F.1) using
+// a non-allowlisted user.
+//
+// Must be removed before alpha launch. Tracked in [[plans/s90_s91_pre_merge_testing]]
+// Phase 5.5 cleanup checklist.
+// ─────────────────────────────────────────────────────────────────────────
+const SPEND_CAP_BYPASS_EMAILS = new Set<string>([
+  "andrew.david.ullmann@gmail.com",
+]);
+
+// In-memory cache of userId → email so the bypass check costs at most one
+// DB query per (user, 5-min window). Module-level state survives across
+// requests within the same Node process; cold starts re-cache. Acceptable
+// because the bypass set is tiny + the underlying users.email rarely changes.
+const EMAIL_LOOKUP_TTL_MS = 5 * 60 * 1000;
+const emailCache = new Map<string, { email: string | null; expiresAt: number }>();
+
+async function resolveUserEmail(
+  supabase: SupabaseClient,
+  userId: string,
+  cachedHint: string | null | undefined,
+): Promise<string | null> {
+  if (cachedHint) return cachedHint;
+  const now = Date.now();
+  const cached = emailCache.get(userId);
+  if (cached && cached.expiresAt > now) return cached.email;
+  const { data } = await supabase
+    .from("users")
+    .select("email")
+    .eq("id", userId)
+    .maybeSingle();
+  const email = (data?.email as string | null) ?? null;
+  emailCache.set(userId, { email, expiresAt: now + EMAIL_LOOKUP_TTL_MS });
+  return email;
+}
+
+async function isBypassUser(
+  supabase: SupabaseClient,
+  userId: string,
+  cachedHint: string | null | undefined,
+): Promise<boolean> {
+  if (SPEND_CAP_BYPASS_EMAILS.size === 0) return false;
+  const email = await resolveUserEmail(supabase, userId, cachedHint);
+  if (!email) return false;
+  return SPEND_CAP_BYPASS_EMAILS.has(email.toLowerCase());
+}
 
 export interface HaikuCallTelemetry {
   inputTokens: number;
@@ -90,6 +144,21 @@ export async function guardedHaikuCall<T>(
   }
 
   const supabase = createServerClient();
+
+  // REMOVE-PRE-LAUNCH: test-account bypass. When the user is on the
+  // SPEND_CAP_BYPASS_EMAILS allowlist, skip the cap entirely — the Haiku
+  // call runs and returns without any reserve_haiku_spend RPC interaction.
+  // Tagged `reason: 'bypass_test_account'` so logs make the bypass visible.
+  if (await isBypassUser(supabase, userId, options.userEmail)) {
+    const result = await callFn();
+    return {
+      data: result.data,
+      costUsd: result.costUsd,
+      allowed: true,
+      paused: false,
+      reason: "bypass_test_account",
+    };
+  }
 
   // §F.1 fast-path: check the existing paused state with a $0 reservation
   // attempt. If already paused, short-circuit BEFORE spending. The post-call
