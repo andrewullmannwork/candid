@@ -56,8 +56,17 @@ interface PlayfulParsingScreenProps {
   title?: string;
   /** Subtitle copy under the title. */
   subtitle?: string;
+  /** Optional secondary "why" line rendered under the subtitle (explains the wait). */
+  whySubtitle?: string;
   /** Action footer rendered when all docs are complete. */
   footer?: React.ReactNode;
+  /**
+   * Optional cancel handler. When provided, renders an X button in the top-left
+   * corner of the screen. Caller decides whether the cancel actually aborts an
+   * in-flight upload, just clears local state, or both (during isUploading we
+   * abort the XHR; during processing we clear UI but backend continues).
+   */
+  onCancel?: () => void;
 }
 
 // Whimsical doctor's-office vignettes — playful, never reveal mechanics.
@@ -206,8 +215,10 @@ function DocCard({ doc }: { doc: ParseDoc }) {
 export function PlayfulParsingScreen({
   docs,
   title = "Reading your plan documents",
-  subtitle = "We're extracting every detail — this usually takes 30-90 seconds.",
+  subtitle = "We're extracting every detail.",
+  whySubtitle,
   footer,
+  onCancel,
 }: PlayfulParsingScreenProps) {
   const [microcopyIdx, setMicrocopyIdx] = useState(0);
 
@@ -224,7 +235,25 @@ export function PlayfulParsingScreen({
   const anyError = docs.some((d) => d.phase === "error");
 
   return (
-    <div className="max-w-2xl mx-auto py-10 px-4">
+    <div className="max-w-2xl mx-auto py-10 px-4 relative">
+      {onCancel && (
+        <button
+          type="button"
+          onClick={onCancel}
+          aria-label="Cancel upload"
+          className="absolute top-2 left-2 w-9 h-9 flex items-center justify-center rounded-full hover:bg-slate-100 transition-colors text-slate-400 hover:text-slate-700"
+        >
+          <svg
+            className="w-5 h-5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      )}
       <div className="text-center mb-8">
         <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 mb-4 shadow-lg shadow-blue-200">
           <svg className="w-7 h-7 text-white" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -233,6 +262,11 @@ export function PlayfulParsingScreen({
         </div>
         <h1 className="text-2xl font-semibold text-slate-900">{title}</h1>
         <p className="text-sm text-slate-600 mt-2 max-w-md mx-auto">{subtitle}</p>
+        {whySubtitle && (
+          <p className="text-xs text-slate-500 mt-3 max-w-md mx-auto leading-relaxed">
+            {whySubtitle}
+          </p>
+        )}
       </div>
 
       <div className="space-y-3">

@@ -73,7 +73,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const { documentId, action } = await req.json();
+  const reqBody = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+  const documentId = reqBody.documentId as string | undefined;
+  const action = reqBody.action as string | undefined;
   if (!documentId) {
     return NextResponse.json({ error: "documentId required" }, { status: 400 });
   }
@@ -81,8 +83,13 @@ export async function POST(req: NextRequest) {
   const supabase = createServerClient();
 
   // Auth check for mutating actions — verify the user owns the document
-  const mutatingActions = ["activate_plan", "confirm_canonical_match", "reject_canonical_match"];
-  if (mutatingActions.includes(action)) {
+  const mutatingActions = [
+    "activate_plan",
+    "confirm_canonical_match",
+    "reject_canonical_match",
+    "record_disambiguation",
+  ];
+  if (action && mutatingActions.includes(action)) {
     const authHeader = req.headers.get("authorization");
     if (!authHeader?.startsWith("Bearer ")) {
       return NextResponse.json({ error: "Authorization required" }, { status: 401 });
@@ -97,6 +104,43 @@ export async function POST(req: NextRequest) {
     } catch {
       return NextResponse.json({ error: "Invalid token" }, { status: 401 });
     }
+  }
+
+  // S91 Option B — record the user's choice on the insurer-mismatch / year-rollover
+  // modal so post-MVP we can correlate doc-type override decisions with whether
+  // the user actually adopted the parsed plan. Fire-and-forget metadata write.
+  if (action === "record_disambiguation") {
+    const choice = reqBody.choice;
+    const modalType = reqBody.modalType;
+    if (choice !== "keep_current" && choice !== "use_this_plan") {
+      return NextResponse.json(
+        { error: "choice must be 'keep_current' or 'use_this_plan'" },
+        { status: 400 },
+      );
+    }
+    if (modalType !== "insurer_mismatch" && modalType !== "year_rollover") {
+      return NextResponse.json(
+        { error: "modalType must be 'insurer_mismatch' or 'year_rollover'" },
+        { status: 400 },
+      );
+    }
+
+    const { data: existing } = await supabase
+      .from("documents")
+      .select("metadata")
+      .eq("id", documentId)
+      .single();
+    const existingMeta = (existing?.metadata as Record<string, unknown> | null) ?? {};
+    const newMeta = {
+      ...existingMeta,
+      user_disambiguation: {
+        choice,
+        modal_type: modalType,
+        recorded_at: new Date().toISOString(),
+      },
+    };
+    await supabase.from("documents").update({ metadata: newMeta }).eq("id", documentId);
+    return NextResponse.json({ success: true });
   }
 
   // Activate a mismatched plan (user chose to use the new insurer)

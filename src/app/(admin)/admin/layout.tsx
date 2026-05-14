@@ -16,6 +16,7 @@ const adminNav = [
   { href: "/admin/recoding-outcomes", label: "Recoding Outcomes" },
   { href: "/admin/cost-cap", label: "Cost-Cap Paused" },
   { href: "/admin/plan-aca-overrides", label: "Plan ACA Overrides" },
+  { href: "/admin/upload-settings", label: "Upload Settings" },
   { href: "/admin/consent", label: "Consent Audit" },
   { href: "/admin/documents/review", label: "Document Review" },
   { href: "/admin/flags", label: "Feature Flags" },

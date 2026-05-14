@@ -76,7 +76,13 @@ export async function POST(req: NextRequest) {
   // Parse form data
   const formData = await req.formData();
   const file = formData.get("file") as File | null;
-  const docType = (formData.get("docType") as string) || "eob";
+  // S91: docType is the user's pick from the upload form. May be overridden
+  // by the doc-type resolver after quick-classify (Rule 1: high-conf classifier
+  // disagreement; Rule 2: SBC with pages > sbc_max_pages safety net). The
+  // initial documents INSERT below uses the user pick; the override block
+  // re-UPDATEs doc_type + writes classification_override to metadata if either
+  // rule fires. See src/lib/documents/effective-doc-type.ts.
+  let docType = (formData.get("docType") as string) || "eob";
   const turnstileToken = (formData.get("turnstileToken") as string) || undefined;
   // purpose (mig 078): "primary" (default; replaces user's active plan) vs
   // "comparison" (via /compare; persists for flywheel but does NOT touch the
@@ -304,6 +310,69 @@ export async function POST(req: NextRequest) {
     }).eq("id", documentId);
 
     console.log(`[upload] Quick classify: ${classification.classifiedType} (${Math.round(classification.confidence * 100)}%) | ${classification.pageCount} pages | file: ${file.name}`);
+
+    // ── S91: Effective doc-type resolver ─────────────────────────────────
+    // Apply the override resolver (Rule 1 + Rule 2 per /admin/upload-settings
+    // config). Always logs the resolution to documents.metadata.classification_override
+    // for empirical tuning (Option A — even non-overrides get logged so the
+    // admin tuning page can show user_pick vs effective doc_type histograms).
+    try {
+      const { resolveEffectiveDocType } = await import(
+        "@/lib/documents/effective-doc-type"
+      );
+      const { loadDocTypeOverrideConfig } = await import(
+        "@/lib/config/doc-type-override-config"
+      );
+      const overrideConfig = await loadDocTypeOverrideConfig(supabase);
+      const resolution = resolveEffectiveDocType(
+        docType as "eob" | "itemized_bill" | "sbc" | "plan_document",
+        classification.classifiedType,
+        classification.confidence,
+        classification.pageCount,
+        overrideConfig,
+      );
+
+      // Always persist the resolution for analytics (Option A). When the
+      // effective type differs from user pick, also UPDATE documents.doc_type
+      // so downstream parser dispatch uses the resolved value.
+      const overrideMeta = {
+        user_pick: resolution.userPick,
+        classifier_type: resolution.classifierType,
+        classifier_confidence: resolution.classifierConfidence,
+        page_count: resolution.pageCount,
+        effective_doc_type: resolution.effectiveDocType,
+        override_reason: resolution.overrideReason,
+        config_classifier_confidence_override: overrideConfig.classifier_confidence_override,
+        config_sbc_max_pages: overrideConfig.sbc_max_pages,
+        config_enabled: overrideConfig.enabled,
+        resolved_at: new Date().toISOString(),
+      };
+
+      if (resolution.effectiveDocType !== docType) {
+        console.log(
+          `[upload] doc_type override: user=${docType} → effective=${resolution.effectiveDocType} (reason=${resolution.overrideReason}, classifier=${classification.classifiedType}@${classification.confidence.toFixed(2)}, pages=${classification.pageCount})`,
+        );
+        await supabase
+          .from("documents")
+          .update({
+            doc_type: resolution.effectiveDocType,
+            metadata: { classification_override: overrideMeta },
+          })
+          .eq("id", documentId);
+        docType = resolution.effectiveDocType;
+      } else {
+        // No override — but still log to metadata so the admin tuning page has
+        // a uniform dataset across all uploads (override-rate denominator).
+        await supabase
+          .from("documents")
+          .update({ metadata: { classification_override: overrideMeta } })
+          .eq("id", documentId);
+      }
+    } catch (resolverErr) {
+      // Non-fatal — if the resolver itself crashes, fall through with user's
+      // pick. Logged so we can investigate.
+      console.warn("[upload] doc-type resolver failed (non-fatal):", resolverErr);
+    }
   } catch (classifyErr) {
     console.error("[upload] Quick classification failed:", classifyErr);
     // Fix 11: Don't leave doc in "uploaded" limbo — mark as error

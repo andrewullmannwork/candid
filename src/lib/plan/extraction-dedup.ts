@@ -194,6 +194,12 @@ export async function extractPlanIdentifiersWithHaiku(
         content: `Extract the insurance plan identifiers from this document header. Return ONLY a JSON object with these fields (use null if not found):
 {"insurer": "company name", "planName": "plan name", "groupNumber": "group #", "planYear": 2025, "planType": "HMO/PPO/etc", "state": "XX"}
 
+IMPORTANT — insurer vs sponsor disambiguation:
+- "insurer" must be the actual insurance CARRIER (e.g., Cigna, Aetna, Blue Shield, Kaiser, Anthem, UnitedHealthcare, Humana, BCBS).
+- Do NOT use values labeled "POLICYHOLDER:", "Plan Sponsor:", "Plan Administrator:", "Employer Group:", or "Group:" — those identify the EMPLOYER / PEO / union / trust, NOT the insurance carrier (e.g., "Sequoia One PEO, LLC", "TriNet HR Corporation", "Insperity Group Plan", "ADP TotalSource" are PEOs, not insurers).
+- The carrier is typically named on the cover or adjacent to phrases like "is offered by", "issued by", "administered by", or "underwritten by" (e.g., "Cigna Health and Life Insurance Company").
+- If the document only names a sponsor/employer and no carrier is visible in this header text, set insurer to null.
+
 Document text:
 ${headerText}`,
       }],
