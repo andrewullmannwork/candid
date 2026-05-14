@@ -24,7 +24,6 @@ const sb = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
 const ANDREW_EMAIL = "andrew.david.ullmann@gmail.com";
 const CIGNA_PLAN_ID = "38a33b4f-89d6-4b6d-b89e-c25b87ef3eaf"; // from S90 recovery log
 const AMBETTER_DOC_ID = "76d22f2f"; // prefix
-const BSCA_DOC_ID = "52baa8c1"; // prefix
 
 async function main() {
   console.log("S91 pre-Ambetter snapshot — baseline before Bug X+Y fix verification\n");
@@ -126,7 +125,9 @@ async function main() {
       out_oop_fam: cigna.out_network_oop_max_family,
     };
     const drift = Object.keys(expected).filter(
-      (k) => (expected as any)[k] !== (actual as any)[k],
+      (k) =>
+        (expected as Record<string, unknown>)[k] !==
+        (actual as Record<string, unknown>)[k],
     );
     if (drift.length === 0) {
       console.log("  ✅ Cigna plan at S71 baseline (no drift since S90 recovery)");

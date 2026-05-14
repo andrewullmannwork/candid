@@ -112,7 +112,7 @@ async function main() {
     if (cignaDirect) verifyCignaBaseline(cignaDirect);
     else console.log("  ❌ Cigna plan not found");
   } else {
-    verifyCignaBaseline(cigna as any);
+    verifyCignaBaseline(cigna as unknown as Record<string, unknown>);
   }
 
   console.log(`\n--- BUG X SUCCESS CHECK: NEW BSCA row (source_document_id=${s91Doc.id}) ---`);

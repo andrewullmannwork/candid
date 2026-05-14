@@ -129,7 +129,7 @@ async function main() {
       console.log("  ❌ Cigna plan not found at all by ID prefix");
     }
   } else {
-    verifyCignaBaseline(cigna as any);
+    verifyCignaBaseline(cigna as unknown as Record<string, unknown>);
   }
 
   // 4. NEW Ambetter row check — should be is_active=false per Bug Y
