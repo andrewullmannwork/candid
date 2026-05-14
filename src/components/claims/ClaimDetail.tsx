@@ -264,7 +264,8 @@ export function ClaimDetail({
       else next.add(id);
       return next;
     });
-  const [disputeLoading, setDisputeLoading] = useState(false);
+  // disputeLoading state removed Session 86 round 2 — dispute is now bill-level
+  // only; BulkDisputeButton manages its own loading state internally.
 
   // S74.5 D6 — CategoryCorrectionModal state.
   // Catalog fetched lazily on first modal open + cached for subsequent opens.
@@ -779,38 +780,28 @@ export function ClaimDetail({
         </div>
       )}
 
-      {/* Line items table — Session 85 round 3 layout.
-          Service / Code / Billed / Paid / Plan Share / Refund / Forgive / Coverage = 8 columns.
-          Flags column dropped (finding info surfaces in the expanded-row state
-          + the Owed-side green numbers convey the recovery story already).
-          Refund + Forgive split per Andrew's direction — clearer than a single
-          "Owed" column.
-
-          Cropping fix: removed both `overflow-hidden` AND the min-w wrapper.
-          With 8 reasonable columns + tabular-nums + whitespace-nowrap, the
-          table flexes within its container at any common laptop width. If a
-          future user shrinks the viewport very narrow, columns compress
-          gracefully; we no longer force-scroll horizontally. */}
-      <div className="bg-white border border-gray-100 rounded-xl overflow-hidden mb-4">
-        <div className="grid grid-cols-12 gap-2 items-center px-5 py-3 bg-gray-50 text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-          <div className="col-span-3 min-w-0">Service</div>
-          <div className="col-span-1 min-w-0">Code</div>
-          <div className="col-span-1 text-right whitespace-nowrap">Billed</div>
-          <div className="col-span-1 text-right whitespace-nowrap">Paid</div>
-          <div className="col-span-1 text-right whitespace-nowrap" title="What your plan says you should owe — copay, coinsurance, or deductible.">Plan</div>
-          <div className="col-span-2 text-right whitespace-nowrap" title="Money you're owed when your insurer corrects an under-payment. Refund = paid above plan share (insurer reimburses you). Insured = outstanding above plan share (insurer should have paid the provider — clears your balance).">Recovery</div>
-          <div className="col-span-3 text-center whitespace-nowrap flex items-center justify-center gap-1">
-            <span>Coverage</span>
-            <span
-              className="cursor-help text-gray-400 hover:text-gray-600"
-              title="See an error? Click the Coverage badge on any row to change the service category."
-              aria-label="Click any Coverage badge to change the row's service category"
-            >
-              <svg className="h-3 w-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            </span>
+      {/* Session 86 round 6 — responsive layout strategy:
+          • md+ (≥768px) → 7-column table with single-line headers, raw
+            "Billed" amount, all numeric columns aligned. Math explained
+            in the Plan-says/Bill-shows compare in the expansion panel.
+          • mobile (<768px) → vertical card per line item with stacked
+            label/value pairs. Horizontal scroll dropped (bad UX); user
+            scans down each metric naturally. */}
+      <div className="bg-white border border-gray-100 rounded-xl mb-4">
+        {/* Desktop table header — hidden at mobile */}
+        <div className="hidden md:grid grid-cols-[minmax(0,_1fr)_55px_70px_70px_50px_75px_minmax(95px,_1.4fr)] gap-3 items-center px-5 py-3 bg-gray-50 text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+          <div className="min-w-0">Service</div>
+          <div className="min-w-0">Code</div>
+          <div
+            className="text-right"
+            title="Amount the provider billed before insurance write-off. The breakdown below shows what your insurer wrote off and what you actually paid."
+          >
+            Billed
           </div>
+          <div className="text-right">Paid</div>
+          <div className="text-right" title="What your plan says you should owe — copay, coinsurance, or deductible.">Plan</div>
+          <div className="text-right" title="Money you're owed when your insurer corrects an under-payment.">Recovery</div>
+          <div className="text-center">Coverage</div>
         </div>
 
         {primaryLineItems.map((item) => {
@@ -835,6 +826,13 @@ export function ClaimDetail({
           // `paid` here would hide gaps on any line where the API pro-rated
           // a non-zero "already paid" from the claim header.
           const billed = item.billed_amount || 0;
+          // Session 86 — "Billed (adj.)" column = billed minus the insurer's
+          // contractual write-off. Reconciles with the rest of the row math
+          // (Paid + Plan + Recovery) which all operate on the post-adjustment
+          // balance. Falls back to raw billed when insurance_adjusted_amount
+          // is null/0 (legacy rows pre-mig 092).
+          const insuranceAdjusted = Number(item.insurance_adjusted_amount ?? 0);
+          const billedAdjusted = Math.max(0, billed - insuranceAdjusted);
           // Session 85 round 5 — "Paid" column = insurance_paid + patient_paid
           // (total cleared on this line by either party). For Bill 1 with
           // insurance_paid=$0 and patient_paid=$292.41, this reads $292.41
@@ -882,6 +880,10 @@ export function ClaimDetail({
 
           return (
             <div key={item.id} data-line-item-id={item.id}>
+              {/* Session 86 round 6 — Mobile card layout (<768px). Stacked
+                  label/value pairs per line item; no horizontal scroll.
+                  Mirrors the desktop row's click behavior (whole card toggles
+                  expansion; category subtitle stopPropagation triggers modal). */}
               <div
                 role="button"
                 tabIndex={0}
@@ -892,77 +894,19 @@ export function ClaimDetail({
                     toggleRowCollapsed(item.id);
                   }
                 }}
-                className="w-full grid grid-cols-12 gap-2 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
+                className="md:hidden block w-full text-left px-5 py-4 border-t border-gray-100 transition-colors hover:bg-gray-50 cursor-pointer"
               >
-                <div className="col-span-3 min-w-0 text-xs text-gray-900">
-                  <div className="truncate">
+                <div className="mb-3">
+                  <div className="text-sm font-medium text-gray-900 truncate">
                     {item.description || item.service_slug?.replace(/_/g, " ") || "Unknown"}
                   </div>
-                  {/* F-7 (Session 85) — category-correction pill REMOVED from
-                      here; trigger moved to the Coverage column (far right).
-                      Show only the resolved category name as a subtle label
-                      so the user can read it without crowding the row. */}
                   {showCategoryPill && (
-                    <div className="mt-1 flex items-center gap-1.5">
-                      {item.service_slug ? (
-                        <span className="text-[10px] text-gray-500">
-                          {humanizeSlug(item.service_slug)}
-                        </span>
-                      ) : item.billing_code ? (
-                        <span className="text-[10px] italic text-gray-500">
-                          {legacyCategoryReviewHint(item.billing_code)}
-                        </span>
-                      ) : null}
-                    </div>
-                  )}
-                </div>
-                <div className="col-span-1 min-w-0 text-xs text-gray-500 font-mono truncate">
-                  {item.billing_code || "—"}
-                </div>
-                <div className="col-span-1 text-xs text-gray-900 text-right tabular-nums whitespace-nowrap">
-                  ${billed.toLocaleString()}
-                </div>
-                <div className="col-span-1 text-xs text-gray-500 text-right tabular-nums whitespace-nowrap">
-                  ${paid.toLocaleString()}
-                </div>
-                {/* Plan Share — what your plan says you should owe. */}
-                <div
-                  className={`col-span-1 text-xs font-semibold text-right tabular-nums whitespace-nowrap ${shouldOwe === 0 ? "text-green-600" : "text-gray-900"}`}
-                  title={`Per your plan, you should owe $${shouldOwe.toLocaleString()} for this service.`}
-                >
-                  ${shouldOwe.toLocaleString()}
-                </div>
-                {/* Recovery — single combined value (refund + insured).
-                    The breakdown into Refund vs Insured surfaces in the
-                    amber-card explanation below; the column itself stays
-                    clean with one bold green number per line. */}
-                <div
-                  className="col-span-2 text-right text-sm font-bold tabular-nums whitespace-nowrap"
-                  title={
-                    refundComponent + forgivenessComponent >= 1
-                      ? `Total recoverable: $${(refundComponent + forgivenessComponent).toLocaleString()} ($${refundComponent.toLocaleString()} refund + $${forgivenessComponent.toLocaleString()} insurer should have insured).`
-                      : "Nothing recoverable on this line — bill is within plan share."
-                  }
-                >
-                  {refundComponent + forgivenessComponent >= 1 ? (
-                    <span className="text-green-700">+${(refundComponent + forgivenessComponent).toLocaleString()}</span>
-                  ) : (
-                    <span className="text-gray-300">—</span>
-                  )}
-                </div>
-                {/* F-7 — Coverage column doubles as the inline category-correction
-                    trigger. When the flywheel flag is ON and the row has an
-                    identity OR was previously corrected, the badge becomes a
-                    clickable button that opens CategoryCorrectionModal. */}
-                <div className="col-span-3 flex items-center justify-center">
-                  {coverageBadge && showCategoryPill ? (
                     <button
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         openCorrectionModal(item.id);
                       }}
-                      className={`group inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold transition-all cursor-pointer hover:shadow-sm hover:brightness-95 ${coverageBadge.className}`}
                       title={
                         pillState === "user_corrected"
                           ? "You changed this category. Click to edit again."
@@ -970,10 +914,107 @@ export function ClaimDetail({
                             ? "We couldn't auto-categorize this. Click to set."
                             : "Click to change category"
                       }
+                      className="mt-1 inline-flex items-center gap-1 -ml-1 rounded px-1 py-0.5 text-xs text-blue-600 hover:bg-blue-50 hover:text-blue-700 transition-colors group/cat-mobile"
                     >
-                      <span>{coverageBadge.label}</span>
+                      <span className={item.service_slug ? "" : "italic"}>
+                        {item.service_slug
+                          ? humanizeSlug(item.service_slug)
+                          : item.billing_code
+                            ? legacyCategoryReviewHint(item.billing_code)
+                            : "Set category"}
+                      </span>
+                      <svg className="h-3 w-3 opacity-60 group-hover/cat-mobile:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+                <dl className="space-y-1.5 text-xs">
+                  <div className="flex justify-between gap-3">
+                    <dt className="text-gray-500 uppercase tracking-wider">Code</dt>
+                    <dd className="font-mono text-gray-700">{item.billing_code || "—"}</dd>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <dt className="text-gray-500 uppercase tracking-wider">Billed</dt>
+                    <dd className="tabular-nums text-gray-900">${billed.toLocaleString()}</dd>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <dt className="text-gray-500 uppercase tracking-wider">Paid</dt>
+                    <dd className="tabular-nums text-gray-600">${paid.toLocaleString()}</dd>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <dt className="text-gray-500 uppercase tracking-wider">Plan</dt>
+                    <dd className={`tabular-nums font-semibold ${shouldOwe === 0 ? "text-green-600" : "text-gray-900"}`}>${shouldOwe.toLocaleString()}</dd>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <dt className="text-gray-500 uppercase tracking-wider">Recovery</dt>
+                    <dd className="tabular-nums font-bold">
+                      {refundComponent + forgivenessComponent >= 1 ? (
+                        <span className="text-green-700">+${(refundComponent + forgivenessComponent).toLocaleString()}</span>
+                      ) : (
+                        <span className="text-gray-300">—</span>
+                      )}
+                    </dd>
+                  </div>
+                  <div className="flex justify-between items-center gap-3">
+                    <dt className="text-gray-500 uppercase tracking-wider">Coverage</dt>
+                    <dd>
+                      {coverageBadge ? (
+                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className}`}>
+                          {coverageBadge.label}
+                        </span>
+                      ) : <span className="text-gray-300">—</span>}
+                    </dd>
+                  </div>
+                </dl>
+              </div>
+              {/* Desktop table row — hidden at mobile. */}
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => toggleRowCollapsed(item.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    toggleRowCollapsed(item.id);
+                  }
+                }}
+                className="hidden md:grid w-full grid-cols-[minmax(0,_1fr)_55px_70px_70px_50px_75px_minmax(95px,_1.4fr)] gap-3 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
+              >
+                <div className="min-w-0 text-xs text-gray-900">
+                  <div className="truncate">
+                    {item.description || item.service_slug?.replace(/_/g, " ") || "Unknown"}
+                  </div>
+                  {/* Session 86 — category subtitle is the click target for
+                      CategoryCorrectionModal. Was on the Coverage badge in
+                      Session 85; moved here per Andrew's direction so the
+                      subtitle ALSO advertises clickability (button-style hover
+                      + pencil icon). Stops row-toggle propagation. */}
+                  {showCategoryPill && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openCorrectionModal(item.id);
+                      }}
+                      title={
+                        pillState === "user_corrected"
+                          ? "You changed this category. Click to edit again."
+                          : pillState === "needs_review"
+                            ? "We couldn't auto-categorize this. Click to set."
+                            : "Click to change category"
+                      }
+                      className="mt-1 inline-flex items-center gap-1 -ml-1 rounded px-1 py-0.5 text-[10px] text-blue-600 hover:bg-blue-50 hover:text-blue-700 transition-colors group/cat"
+                    >
+                      <span className={item.service_slug ? "" : "italic"}>
+                        {item.service_slug
+                          ? humanizeSlug(item.service_slug)
+                          : item.billing_code
+                            ? legacyCategoryReviewHint(item.billing_code)
+                            : "Set category"}
+                      </span>
                       <svg
-                        className="h-2.5 w-2.5 opacity-50 group-hover:opacity-100 transition-opacity"
+                        className="h-2.5 w-2.5 opacity-60 group-hover/cat:opacity-100 transition-opacity"
                         fill="none"
                         stroke="currentColor"
                         viewBox="0 0 24 24"
@@ -987,7 +1028,59 @@ export function ClaimDetail({
                         />
                       </svg>
                     </button>
-                  ) : coverageBadge ? (
+                  )}
+                </div>
+                <div className="min-w-0 text-xs text-gray-500 font-mono truncate">
+                  {item.billing_code || "—"}
+                </div>
+                {/* Session 86 round 5 — Billed column shows the RAW provider-
+                    billed amount. The Plan-says/Bill-shows compare below
+                    explains the insurer write-off and what the user actually
+                    paid OOP. BillCard list view keeps "Billed Adjusted" since
+                    its top-level summary number needs the post-writeoff value. */}
+                <div
+                  className="text-xs text-gray-900 text-right tabular-nums whitespace-nowrap"
+                  title={
+                    (item.insurance_adjusted_amount ?? 0) > 0
+                      ? `Provider billed $${billed.toLocaleString()}; insurer wrote off $${(item.insurance_adjusted_amount ?? 0).toLocaleString()}, leaving an adjusted balance of $${billedAdjusted.toLocaleString()}.`
+                      : `$${billed.toLocaleString()} billed.`
+                  }
+                >
+                  ${billed.toLocaleString()}
+                </div>
+                <div className="text-xs text-gray-500 text-right tabular-nums whitespace-nowrap">
+                  ${paid.toLocaleString()}
+                </div>
+                {/* Plan Share — what your plan says you should owe. */}
+                <div
+                  className={`text-xs font-semibold text-right tabular-nums whitespace-nowrap ${shouldOwe === 0 ? "text-green-600" : "text-gray-900"}`}
+                  title={`Per your plan, you should owe $${shouldOwe.toLocaleString()} for this service.`}
+                >
+                  ${shouldOwe.toLocaleString()}
+                </div>
+                {/* Recovery — single combined value (refund + insured).
+                    The breakdown into Refund vs Insured surfaces in the
+                    amber-card explanation below; the column itself stays
+                    clean with one bold green number per line. */}
+                <div
+                  className="text-right text-xs font-bold tabular-nums whitespace-nowrap"
+                  title={
+                    refundComponent + forgivenessComponent >= 1
+                      ? `Total recoverable: $${(refundComponent + forgivenessComponent).toLocaleString()} ($${refundComponent.toLocaleString()} refund + $${forgivenessComponent.toLocaleString()} insurer should have insured).`
+                      : "Nothing recoverable on this line — bill is within plan share."
+                  }
+                >
+                  {refundComponent + forgivenessComponent >= 1 ? (
+                    <span className="text-green-700">+${(refundComponent + forgivenessComponent).toLocaleString()}</span>
+                  ) : (
+                    <span className="text-gray-300">—</span>
+                  )}
+                </div>
+                {/* Coverage badge — Session 86: reverted to static display.
+                    Click target for category correction lives on the Service
+                    column's category subtitle. */}
+                <div className="flex items-center justify-center">
+                  {coverageBadge ? (
                     <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className}`}>
                       {coverageBadge.label}
                     </span>
@@ -1040,90 +1133,11 @@ export function ClaimDetail({
                     </ol>
                   </div>
 
-                  {/* Dispute CTA */}
-                  <button
-                    disabled={disputeLoading}
-                    onClick={async (e) => {
-                      e.stopPropagation();
-                      setDisputeLoading(true);
-                      try {
-                        const token = await user!.firebaseUser.getIdToken();
-                        const claimMeta = data!.claim as Record<string, unknown>;
-                        // Synthesize a finding for this gap line so we can reuse the
-                        // existing dispute-letter generator (insurance_appeal flow).
-                        const syntheticFindingId = `gap-${item.id}`;
-                        const syntheticFinding = {
-                          id: syntheticFindingId,
-                          type: "missing_adjustment",
-                          severity: "high",
-                          estimatedOvercharge: billed,
-                          title: `Unexplained $${billed.toLocaleString()} charge for ${item.description || item.service_slug?.replace(/_/g, " ") || "service"}`,
-                          description: `Service covered by plan but EOB records $0 insurance payment and $0 patient responsibility. Provider billed $${billed.toLocaleString()}. Code: ${item.billing_code || "N/A"}.`,
-                          actionable: true,
-                          billedAmount: billed,
-                          lineItems: [item.line_number],
-                        };
-                        const auditReport = {
-                          id: claimId,
-                          documentId: (claimMeta.source_document_id as string) || "",
-                          userId: (claimMeta.user_id as string) || "",
-                          parsedBill: {
-                            provider: (claimMeta.metadata as Record<string, unknown>)?.provider || { name: "Unknown" },
-                            patient: (claimMeta.metadata as Record<string, unknown>)?.patient || { name: "Unknown" },
-                            serviceDate: (claimMeta.date_of_service as string) || "",
-                            lineItems: data!.lineItems.map((li) => ({
-                              lineNumber: li.line_number,
-                              description: li.description,
-                              procedureCode: li.billing_code,
-                              category: li.service_slug,
-                              billedAmount: li.billed_amount || 0,
-                              allowedAmount: li.allowed_amount,
-                              insurancePaid: li.insurance_paid,
-                              patientResponsibility: li.patient_owes,
-                            })),
-                            totals: {
-                              totalBilled: (claimMeta.total_billed as number) || 0,
-                              totalAllowed: (claimMeta.total_allowed as number) || undefined,
-                              totalInsurancePaid: (claimMeta.total_insurance_paid as number) || undefined,
-                              totalPatientResponsibility: (claimMeta.total_patient_responsibility as number) || undefined,
-                            },
-                          },
-                          findings: [syntheticFinding],
-                          summary: {
-                            totalFindings: 1,
-                            totalEstimatedOvercharge: billed,
-                            highSeverityCount: 1,
-                            actionableCount: 1,
-                          },
-                          createdAt: new Date().toISOString(),
-                        };
-
-                        const res = await fetch("/api/disputes/generate", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                          body: JSON.stringify({
-                            auditReport,
-                            findingIds: [syntheticFindingId],
-                            letterType: "insurance_appeal",
-                            claimId,
-                            claimLineItemIds: [item.id],
-                            insurancePlanId: (claimMeta.insurance_plan_id as string) || undefined,
-                          }),
-                        });
-
-                        if (res.ok) {
-                          const result = await res.json();
-                          router.push(disputeUrlForResult(result));
-                        }
-                      } catch (err) {
-                        console.error("Dispute generation failed:", err);
-                      }
-                      setDisputeLoading(false);
-                    }}
-                    className="w-full rounded-lg bg-blue-600 py-2.5 text-xs font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
-                  >
-                    {disputeLoading ? "Generating letter..." : "Draft dispute letter"}
-                  </button>
+                  {/* Session 86 round 2 — per-line dispute button removed.
+                      Dispute is bill-level only; the BulkDisputeButton at the
+                      bottom of the table aggregates this gap line (synthesized
+                      as a missing_adjustment finding) along with everything
+                      else worth disputing. */}
                 </div>
               )}
 
@@ -1243,84 +1257,12 @@ export function ClaimDetail({
                     </div>
                   ))}
 
-                  {/* Dispute this charge button */}
-                  {findings.some((f) => f.actionable) && (
-                    <button
-                      disabled={disputeLoading}
-                      onClick={async (e) => {
-                        e.stopPropagation();
-                        setDisputeLoading(true);
-                        try {
-                          const token = await user!.firebaseUser.getIdToken();
-                          // Reconstruct minimal audit report from claim metadata
-                          const claimMeta = data!.claim as Record<string, unknown>;
-                          const auditReport = {
-                            id: claimId,
-                            documentId: (claimMeta.source_document_id as string) || "",
-                            userId: (claimMeta.user_id as string) || "",
-                            parsedBill: {
-                              provider: (claimMeta.metadata as Record<string, unknown>)?.provider || { name: "Unknown" },
-                              patient: (claimMeta.metadata as Record<string, unknown>)?.patient || { name: "Unknown" },
-                              serviceDate: (claimMeta.date_of_service as string) || "",
-                              lineItems: data!.lineItems.map((li) => ({
-                                lineNumber: li.line_number,
-                                description: li.description,
-                                procedureCode: li.billing_code,
-                                category: li.service_slug,
-                                billedAmount: li.billed_amount || 0,
-                                allowedAmount: li.allowed_amount,
-                                insurancePaid: li.insurance_paid,
-                                patientResponsibility: li.patient_owes,
-                              })),
-                              totals: {
-                                totalBilled: claimMeta.total_billed as number || 0,
-                                totalAllowed: claimMeta.total_allowed as number || undefined,
-                                totalInsurancePaid: claimMeta.total_insurance_paid as number || undefined,
-                                totalPatientResponsibility: claimMeta.total_patient_responsibility as number || undefined,
-                              },
-                            },
-                            findings: findings.map((f) => ({
-                              ...f,
-                              billedAmount: item.billed_amount || 0,
-                              benchmarkAmount: undefined,
-                              description: f.title,
-                              lineItems: [item.line_number],
-                            })),
-                            summary: {
-                              totalFindings: findings.length,
-                              totalEstimatedOvercharge: findings.reduce((s, f) => s + f.estimatedOvercharge, 0),
-                              highSeverityCount: findings.filter((f) => f.severity === "high" || f.severity === "critical").length,
-                              actionableCount: findings.filter((f) => f.actionable).length,
-                            },
-                            createdAt: new Date().toISOString(),
-                          };
-
-                          const res = await fetch("/api/disputes/generate", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                            body: JSON.stringify({
-                              auditReport,
-                              findingIds: findings.filter((f) => f.actionable).map((f) => f.id),
-                              claimId,
-                              claimLineItemIds: [item.id],
-                              insurancePlanId: (claimMeta.insurance_plan_id as string) || undefined,
-                            }),
-                          });
-
-                          if (res.ok) {
-                            const result = await res.json();
-                            router.push(disputeUrlForResult(result));
-                          }
-                        } catch (err) {
-                          console.error("Dispute generation failed:", err);
-                        }
-                        setDisputeLoading(false);
-                      }}
-                      className="w-full py-2 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
-                    >
-                      {disputeLoading ? "Generating..." : "Dispute this charge"}
-                    </button>
-                  )}
+                  {/* Session 86 round 2 — per-line dispute button removed.
+                      Dispute is always bill-level; the single CTA at the
+                      bottom of the table aggregates every actionable finding
+                      on this bill into one letter. Keeps the UX consistent:
+                      multiple charges = multiple rows under the same header,
+                      one shared dispute action below. */}
 
                   {/* Bottom plan-says box removed Session 85 round 3 — its
                       info is surfaced at the TOP of this expansion via the
@@ -1350,6 +1292,22 @@ export function ClaimDetail({
           );
         })}
       </div>{/* /table outer (rounded-xl) */}
+
+      {/* Session 86 — bill-level "Dispute all charges" button. Surfaces when
+          there are ≥2 actionable un-dismissed findings on the bill (line-level
+          + claim-level combined). Per the design write-up: aggregates all
+          findings + claimLineItemIds into ONE letter + ONE dispute_outcomes
+          row. Per-line buttons remain for users who want to chase recoveries
+          one at a time. */}
+      <BulkDisputeButton
+        claimId={claimId}
+        claim={claim}
+        primaryLineItems={primaryLineItems}
+        claimLevelFindings={visibleClaimLevelFindings}
+        showDismissed={showDismissed}
+        getAuthToken={getAuthToken}
+        onGenerated={(result) => router.push(disputeUrlForResult(result))}
+      />
 
       {/* Quality-reporting codes — collapsed by default */}
       {qualityLineItems.length > 0 && (
@@ -2256,6 +2214,237 @@ function ThrottleToast({
           ✕
         </button>
       </div>
+    </div>
+  );
+}
+
+// ── Session 86 — BulkDisputeButton ────────────────────────────────────────
+//
+// SOLE dispute affordance on /claim. Per-line dispute buttons were removed
+// in round 2 — every contestable line on the bill rolls into ONE letter +
+// ONE dispute_outcomes row.
+//
+// Aggregation sources:
+//   1. Line-level actionable un-dismissed findings (auditFindings on the row)
+//   2. Claim-level actionable un-dismissed findings (D15 unallocated_balance,
+//      future claim-header rules)
+//   3. Gap lines — billed > $0 + insurance_paid == 0 + patient_owes == 0 +
+//      coverage != "not_covered". Synthesized as missing_adjustment findings
+//      so the bundle covers them even when no audit rule fired (universal
+//      "we don't know what's going on with this line; help me dispute it" path).
+//
+// Visibility: anything aggregates → button shows. Label is singular for
+// n=1 contested line, plural for n≥2.
+//
+// Dedup behavior (inherited from persist.ts): keyed on the first
+// claimLineItemId in the bundle. A second bulk-dispute click updates the
+// same row's letter_content + amount_disputed. Multi-line linkage preserved
+// in metadata.claimLineItemIds[].
+//
+// Letter type: picks the dominant finding type when one is present; falls
+// back to "insurance_appeal" for mixed bundles (template renders each
+// finding block independently).
+
+function BulkDisputeButton({
+  claimId,
+  claim,
+  primaryLineItems,
+  claimLevelFindings,
+  showDismissed,
+  getAuthToken,
+  onGenerated,
+}: {
+  claimId: string;
+  claim: Record<string, unknown>;
+  primaryLineItems: LineItem[];
+  claimLevelFindings: ClaimLevelFindingMeta[];
+  showDismissed: boolean;
+  getAuthToken: () => Promise<string | null>;
+  onGenerated: (result: { disputeId?: string | null; deduplicated?: boolean }) => void;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // 1. Per-line actionable findings keyed back to their owning line item.
+  const lineLevelActionable: Array<{ lineItemId: string; lineNumber: number; finding: AuditFinding; billedAmount: number }> = [];
+  for (const li of primaryLineItems) {
+    const all = ((li.metadata?.auditFindings || []) as AuditFinding[]);
+    const live = showDismissed ? all : all.filter((f) => !f.dismissed);
+    for (const f of live) {
+      if (!f.actionable) continue;
+      lineLevelActionable.push({
+        lineItemId: li.id,
+        lineNumber: li.line_number,
+        finding: f,
+        billedAmount: li.billed_amount || 0,
+      });
+    }
+  }
+
+  // 2. Claim-level actionable un-dismissed findings.
+  const claimActionable = claimLevelFindings.filter((f) => !f.dismissed && f.actionable);
+
+  // 3. Gap lines — billed > $0 + $0 insurance + $0 patient + not explicitly
+  //    not-covered. Synthesize a missing_adjustment finding so the bundle
+  //    can cover them. Skip lines that already have a real finding (avoid
+  //    double-counting the same dollar value).
+  const linesWithRealFindings = new Set(lineLevelActionable.map((e) => e.lineItemId));
+  const gapSynthetic: Array<{ lineItemId: string; lineNumber: number; finding: AuditFinding; billedAmount: number }> = [];
+  for (const li of primaryLineItems) {
+    if (linesWithRealFindings.has(li.id)) continue;
+    const billed = li.billed_amount || 0;
+    const ins = li.insurance_paid || 0;
+    const owed = li.patient_owes || 0;
+    if (!(billed > 0 && ins === 0 && owed === 0)) continue;
+    if (li.coverageStatus === "not_covered") continue;
+    const syntheticId = `gap-${li.id}`;
+    gapSynthetic.push({
+      lineItemId: li.id,
+      lineNumber: li.line_number,
+      finding: {
+        id: syntheticId,
+        type: "missing_adjustment",
+        severity: "high",
+        estimatedOvercharge: billed,
+        title: `Unexplained $${billed.toLocaleString()} charge for ${li.description || li.service_slug?.replace(/_/g, " ") || "service"}`,
+        actionable: true,
+        description: `Service ${li.coverageStatus === "covered" ? "covered by plan" : "with no coverage data"} but EOB records $0 insurance payment and $0 patient responsibility. Provider billed $${billed.toLocaleString()}. Code: ${li.billing_code || "N/A"}.`,
+      },
+      billedAmount: billed,
+    });
+  }
+
+  const aggregated = [...lineLevelActionable, ...gapSynthetic];
+  const totalContested = aggregated.length + claimActionable.length;
+  if (totalContested === 0) return null;
+
+  const distinctLineItemIds = Array.from(new Set(aggregated.map((e) => e.lineItemId)));
+  // totalRecoverable removed Session 86 round 6 — button label is action-only
+  // (no specific dollar promise). Recovery info stays visible as DATA in the
+  // table column + amber finding card, not as a CTA promise.
+
+  // Letter type: dominant type wins; mixed falls back to insurance_appeal.
+  const typeCounts = new Map<string, number>();
+  for (const e of aggregated) typeCounts.set(e.finding.type, (typeCounts.get(e.finding.type) ?? 0) + 1);
+  for (const f of claimActionable) typeCounts.set(f.type, (typeCounts.get(f.type) ?? 0) + 1);
+  const dominantType = Array.from(typeCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  const letterTypeHint = (() => {
+    if (!dominantType) return "insurance_appeal";
+    if (dominantType === "balance_billing") return "balance_billing";
+    if (dominantType === "duplicate") return "duplicate_charge";
+    if (dominantType === "overcharge") return "overcharge";
+    return "insurance_appeal";
+  })();
+
+  async function handleClick() {
+    if (loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const token = await getAuthToken();
+      if (!token) throw new Error("Sign-in expired. Please reload and try again.");
+
+      const claimMeta = claim;
+      const allFindings = [
+        ...aggregated.map((e) => ({
+          ...e.finding,
+          billedAmount: e.billedAmount,
+          benchmarkAmount: undefined,
+          description: e.finding.description || e.finding.title,
+          lineItems: [e.lineNumber],
+        })),
+        ...claimActionable.map((f) => ({
+          ...f,
+          billedAmount: 0,
+          benchmarkAmount: undefined,
+          description: f.description || f.title,
+          lineItems: [] as number[],
+        })),
+      ];
+
+      const auditReport = {
+        id: claimId,
+        documentId: (claimMeta.source_document_id as string) || "",
+        userId: (claimMeta.user_id as string) || "",
+        parsedBill: {
+          provider: (claimMeta.metadata as Record<string, unknown>)?.provider || { name: "Unknown" },
+          patient: (claimMeta.metadata as Record<string, unknown>)?.patient || { name: "Unknown" },
+          serviceDate: (claimMeta.date_of_service as string) || "",
+          lineItems: primaryLineItems.map((li) => ({
+            lineNumber: li.line_number,
+            description: li.description,
+            procedureCode: li.billing_code,
+            category: li.service_slug,
+            billedAmount: li.billed_amount || 0,
+            allowedAmount: li.allowed_amount,
+            insurancePaid: li.insurance_paid,
+            patientResponsibility: li.patient_owes,
+          })),
+          totals: {
+            totalBilled: (claimMeta.total_billed as number) || 0,
+            totalAllowed: (claimMeta.total_allowed as number) || undefined,
+            totalInsurancePaid: (claimMeta.total_insurance_paid as number) || undefined,
+            totalPatientResponsibility: (claimMeta.total_patient_responsibility as number) || undefined,
+          },
+        },
+        findings: allFindings,
+        summary: {
+          totalFindings: allFindings.length,
+          totalEstimatedOvercharge: allFindings.reduce((s, f) => s + (f.estimatedOvercharge || 0), 0),
+          highSeverityCount: allFindings.filter((f) => f.severity === "high" || f.severity === "critical").length,
+          actionableCount: allFindings.filter((f) => f.actionable).length,
+        },
+        createdAt: new Date().toISOString(),
+      };
+
+      const res = await fetch("/api/disputes/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          auditReport,
+          findingIds: allFindings.map((f) => f.id),
+          letterType: letterTypeHint,
+          claimId,
+          claimLineItemIds: distinctLineItemIds,
+          insurancePlanId: (claimMeta.insurance_plan_id as string) || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || `Dispute generation failed (${res.status})`);
+      }
+      const result = await res.json();
+      onGenerated(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Dispute generation failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Session 86 round 6 — button shows ACTION only, no specific dollar
+  // promise. Showing "recover ~$X" on the CTA risks construing as a credit/
+  // recovery guarantee (CROA + state UDAP exposure per Director Checkpoint
+  // #5 — user-sends-letter model). Recovery info stays visible as DATA
+  // (table column + amber card) but not as a promise on the action button.
+  const buttonLabel = (() => {
+    if (loading) return "Generating letter…";
+    return totalContested === 1 ? "Dispute charge" : "Dispute these charges";
+  })();
+
+  return (
+    <div className="mb-4">
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={loading}
+        className="w-full rounded-lg bg-blue-600 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
+      >
+        {buttonLabel}
+      </button>
+      {error && (
+        <p className="mt-2 text-xs text-red-700">{error}</p>
+      )}
     </div>
   );
 }

@@ -14,6 +14,10 @@ interface ClaimSummary {
   status: string;
   total_billed: number | null;
   total_patient_responsibility: number | null;
+  // Session 86 / mig 092 — insurer's contractual write-off sum across line items.
+  // When present, BillCard headlines the post-adjustment ("Billed (adj.)") number
+  // so the math reconciles with "You should owe" + recovery.
+  total_insurance_adjusted?: number | null;
   lineItemCount: number;
   findingCount: number;
   providerName: string;
@@ -112,6 +116,12 @@ export function BillCard({
   const reviewCount = claim.reviewNeededCount || 0;
   const savings = claim.potentialSavings || 0;
   const billed = claim.total_billed || 0;
+  // Session 86 — Billed (adj.) = billed minus insurer contractual write-off.
+  // Lines up with the per-line "Billed (adj.)" column on /claim and makes the
+  // headline math reconcile: adj.billed minus insurer-paid + plan-share leaves
+  // what the user actually owes (or is recoverable).
+  const insuranceAdjusted = Number(claim.total_insurance_adjusted ?? 0);
+  const billedAdjusted = Math.max(0, billed - insuranceAdjusted);
   const providerClaimedOwed = claim.total_patient_responsibility || 0;
   // Prefer API-derived recovery figures (T2.8). Fall back to the old
   // heuristic for legacy cached payloads before Session 35 rollout.
@@ -170,9 +180,18 @@ export function BillCard({
             is moved to a separate row below so it doesn't shift the arrow. */}
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Billed</p>
+            <p
+              className="text-[11px] font-medium uppercase tracking-wider text-gray-400"
+              title={
+                insuranceAdjusted > 0
+                  ? `Provider billed $${billed.toLocaleString()}; insurer wrote off $${insuranceAdjusted.toLocaleString()}.`
+                  : undefined
+              }
+            >
+              Billed Adjusted
+            </p>
             <p className="mt-0.5 text-xl font-bold text-gray-900 tabular-nums">
-              ${billed.toLocaleString()}
+              ${billedAdjusted.toLocaleString()}
             </p>
           </div>
           <svg className="h-5 w-5 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">

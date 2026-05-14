@@ -317,6 +317,15 @@ export async function GET(req: NextRequest) {
         };
       }
 
+      // Session 86 — expose post-adjustment billed total so BillCard can
+      // surface "Billed (adj.)" headline math that reconciles with "You
+      // should owe" + recovery. Prefer the claim-header value (written by
+      // persist.ts from mig 092) and fall back to summing per-line
+      // insurance_adjusted_amount when the header is NULL on legacy rows.
+      const totalInsuranceAdjusted = claim.total_insurance_adjusted != null
+        ? Number(claim.total_insurance_adjusted)
+        : items.reduce((s, it) => s + Number(it.insurance_adjusted_amount ?? 0), 0);
+
       return {
         ...claim,
         lineItemCount: items.length,
@@ -330,6 +339,7 @@ export async function GET(req: NextRequest) {
           ? ((claim.metadata as Record<string, unknown>).provider as Record<string, unknown>)?.name || "Unknown Provider"
           : "Unknown Provider",
         recovery: recoveryBlock,
+        total_insurance_adjusted: totalInsuranceAdjusted,
       };
     })
   );
