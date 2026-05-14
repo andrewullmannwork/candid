@@ -21,6 +21,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { PlanContext } from "./plan-context";
 import { extractPatternP8FromEntry, isCitationGrade } from "@/lib/parser/consumer-read";
 import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
+import { findPeerCodesForSlug } from "./peer-code-engine";
 
 const K_ANON_PRICING = 5;
 
@@ -138,6 +139,21 @@ export interface LineItemEvidence {
     estimatedOvercharge: number;
     benchmarkAmount: number | null;
     benchmarkSource: string | null;
+  }> | null;
+  /**
+   * S74.6 D5 — corroborated peer codes for this line's service_slug. Derived
+   * from `billing_code_identity` rows in `promotion_state IN ('corroborated',
+   * 'admin_verified')`, excluding the contested line's own (code, type) row.
+   * When the array has ≥ 2 entries (Q-S87-C7 letterEligible gate), the
+   * dispute letter renders an alternative-code recommendation section per
+   * Q-S87-D2 Option 1 copy. Null when the slug is unknown OR no corroborated
+   * peers exist OR fewer than 2 peers cleared the gate.
+   */
+  peerCodes: Array<{
+    code: string;
+    codeType: string;
+    confidence: number;
+    promotionState: "corroborated" | "admin_verified";
   }> | null;
 }
 
@@ -326,6 +342,48 @@ export async function resolveEvidence(
     });
   }
 
+  // S74.6 D5 — batch-load corroborated peer codes for each distinct slug across
+  // the bill. peer-code-engine queries `billing_code_identity` where slug matches
+  // AND promotion_state IN ('corroborated','admin_verified'). Each line's
+  // contested code is excluded per-call so we don't suggest re-coding to itself.
+  const peerCodesBySlug = new Map<
+    string,
+    NonNullable<LineItemEvidence["peerCodes"]>
+  >();
+  const distinctSlugsForPeerLookup = new Set<string>();
+  for (const li of filteredLineItems) {
+    const slug =
+      li.service_slug ??
+      (li.billing_code && li.billing_code_type
+        ? codeSlugFallback.get(`${li.billing_code_type}:${li.billing_code}`) ?? null
+        : null);
+    if (slug) distinctSlugsForPeerLookup.add(slug);
+  }
+  for (const slug of distinctSlugsForPeerLookup) {
+    try {
+      // Lookup excludes nothing here (multi-line dedupe); we exclude the
+      // contested line's own (code, type) at render time via the gate.
+      const peerResult = await findPeerCodesForSlug(supabase, {
+        serviceSlug: slug,
+        excludeCode: null,
+        excludeCodeType: null,
+      });
+      if (peerResult.peers.length > 0) {
+        peerCodesBySlug.set(
+          slug,
+          peerResult.peers.map((p) => ({
+            code: p.code,
+            codeType: p.codeType,
+            confidence: p.confidence,
+            promotionState: p.promotionState,
+          })),
+        );
+      }
+    } catch (err) {
+      console.warn("[evidence-resolver] peer-code lookup failed for slug", slug, err);
+    }
+  }
+
   let totalDiscrepancy = 0;
   let totalBilled = 0;
 
@@ -338,6 +396,7 @@ export async function resolveEvidence(
       pricingByCode,
       codeSlugFallback,
       planContext,
+      peerCodesBySlug,
     );
     totalBilled += evidence.billedAmount;
     totalDiscrepancy += evidence.discrepancyAmount ?? 0;
@@ -945,6 +1004,7 @@ function buildLineItemEvidence(
   pricingByCode: Map<string, NonNullable<LineItemEvidence["pricingBenchmark"]>>,
   codeSlugFallback: Map<string, string>,
   planContext: PlanContext | null,
+  peerCodesBySlug: Map<string, NonNullable<LineItemEvidence["peerCodes"]>>,
 ): LineItemEvidence {
   const billed = Number(li.billed_amount ?? 0);
   const insurancePaid = li.insurance_paid != null ? Number(li.insurance_paid) : null;
@@ -987,6 +1047,13 @@ function buildLineItemEvidence(
   const siblingCodes = lookupKey ? siblingsByCode.get(lookupKey) ?? null : null;
   const pricingBenchmark = lookupKey ? pricingByCode.get(lookupKey) ?? null : null;
   const auditFindings = extractAuditFindings(li.metadata);
+  // S74.6 D5 — peer codes for the slug (corroborated cross-user vote map).
+  // Template renders the alternative-code section when this array has ≥ 2
+  // entries (Q-S87-C7 letterEligible gate). Null when no slug OR no peers
+  // cleared the corroboration gate.
+  const peerCodes = resolvedSlug
+    ? peerCodesBySlug.get(resolvedSlug) ?? null
+    : null;
 
   return {
     lineItemId: li.id,
@@ -1007,6 +1074,7 @@ function buildLineItemEvidence(
     siblingCodes,
     pricingBenchmark,
     auditFindings,
+    peerCodes,
   };
 }
 

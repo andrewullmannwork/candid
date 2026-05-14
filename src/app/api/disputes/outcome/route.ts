@@ -62,7 +62,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { disputeId, status, amountRecovered, resolutionDate, strategyNotes } = await req.json();
+    const {
+      disputeId,
+      status,
+      amountRecovered,
+      resolutionDate,
+      strategyNotes,
+      // S74.6 D5 — optional capture of the alternative code the insurer paid on.
+      // Only persisted when status='won_on_escalation' (paired with status
+      // because pre-escalation wins typically use the original code).
+      recodedAs,
+    } = await req.json();
 
     if (!disputeId || !status) {
       return NextResponse.json(
@@ -121,6 +131,40 @@ export async function POST(req: NextRequest) {
 
     if (!success) {
       return NextResponse.json({ error: "Failed to update dispute" }, { status: 500 });
+    }
+
+    // S74.6 D5 — capture recoded_as_code on won_on_escalation outcomes. Writes
+    // directly to dispute_outcomes columns (mig 094); separate from
+    // updateDisputeOutcome which doesn't yet know about these columns. We
+    // intentionally accept the recodedAs only when status='won_on_escalation'
+    // so the "insurer paid on a different code" signal is honest — pre-
+    // escalation wins typically pay on the original code.
+    if (
+      status === "won_on_escalation" &&
+      recodedAs &&
+      typeof recodedAs.code === "string" &&
+      typeof recodedAs.codeType === "string" &&
+      recodedAs.code.trim().length > 0 &&
+      recodedAs.codeType.trim().length > 0
+    ) {
+      try {
+        await supabase
+          .from("dispute_outcomes")
+          .update({
+            recoded_as_code: recodedAs.code.trim(),
+            recoded_as_code_type: recodedAs.codeType.trim(),
+          })
+          .eq("id", disputeId);
+        // TODO (S74.6 follow-up): write `dispute_won_recoding` source entry on
+        // the (recodedAs.code, slug) billing_code_identity row so the peer-code
+        // engine gains a vote. Requires resolving the slug for the original
+        // line item; defer to Admin UI A3 wiring or a separate batch job.
+      } catch (err) {
+        console.error(
+          "[disputes/outcome] D5 recoded_as_code capture failed (non-fatal):",
+          err,
+        );
+      }
     }
 
     // S74.5 D16 — Mark-as-Sent snapshot capture. When the transition is

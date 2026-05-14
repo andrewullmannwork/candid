@@ -171,7 +171,9 @@ export type FindingType =
   | "stale_claim" // Claim filed after timely filing deadline
   | "zero_cost_share_overcharge" // S74.5 D13 — code is ACA preventive or ACIP vaccine; should be $0 patient cost
   | "unallocated_balance" // S74.5 D15 — bill header patient_resp exceeds SUM(line patient_resp); ask for itemization
-  | "insurance_underpayment"; // F-14 (Session 85) — service covered by plan but insurer paid $0 (writeoff applied but claim never processed)
+  | "insurance_underpayment" // F-14 (Session 85) — service covered by plan but insurer paid $0 (writeoff applied but claim never processed)
+  | "code_uncategorized_description_match" // S74.6 D4 — code lacks a slug; Haiku description-match suggests a provisional slug ≥0.85 score
+  | "uncategorized_service"; // S74.6 D4 — code lacks a slug AND Haiku description-match top score < 0.85 (soft "review or correct" finding)
 
 export type FindingSeverity = "low" | "medium" | "high" | "critical";
 

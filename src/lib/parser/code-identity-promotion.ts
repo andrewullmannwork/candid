@@ -36,7 +36,12 @@ import { inferProcedureCodeType } from "../billing/code-type-inference";
 import type { ProcedureCodeType } from "../billing/types";
 import * as crypto from "crypto";
 
-const DEFAULT_PROMOTION_THRESHOLD = 3;
+// S74.6 D4 — raised from 3 to 5 specifically for billing_code_identity.
+// Haiku description-match votes (D4) will dominate the corpus and Haiku-only
+// convergence at 3 is too easy to be wrong; 5 distinct verified users gives
+// the right Haiku-heavy compensation per Subplan §1 lock.
+// Threshold remains runtime-tunable via feature_flag_rules.config.promotion_threshold.
+const DEFAULT_PROMOTION_THRESHOLD = 5;
 
 // ============================================================================
 // Pattern 1 #15 verification gate
@@ -58,7 +63,23 @@ export async function isUserFullyVerified(userId: string): Promise<boolean> {
 // SourceEntry shape (§1.1 + §1.5 extended)
 // ============================================================================
 
-export type CorroboratorSource = "user_correction" | "bill_observed";
+export type CorroboratorSource =
+  | "user_correction"
+  | "bill_observed"
+  // S74.6 D4 — Haiku description-match vote (score ≥0.85); casts vote toward
+  // the matched slug. NOT user-correction (passive Haiku inference).
+  | "bill_observed_description_match"
+  // S74.6 D4 — ambiguous (2+ candidates within 0.05 score). Written on BOTH
+  // candidate identity rows. Counts toward distinct_user_count but does NOT
+  // vote for any slug. Admin disambiguates via queue.
+  | "bill_observed_description_match_candidate"
+  // S74.6 D4 — admin pre-seed from public sources (CMS / CDC / USPSTF).
+  // Counts as 1 vote toward the 5-vote threshold, NOT auto-authority.
+  | "admin_seed"
+  // S74.6 D5 — captured from dispute-outcome `recodedAs`. The insurer paid
+  // on the alternative code; that's a strong real-world signal for the
+  // (alternative_code → slug) binding.
+  | "dispute_won_recoding";
 
 export interface SourceEntry {
   user_id_hash: string;
@@ -67,6 +88,10 @@ export interface SourceEntry {
   raw_description: string;
   claim_line_item_id: string | null;
   recorded_at: string;
+  // S74.6 D4 — Haiku similarity score persisted for telemetry + admin
+  // disambiguation view. Populated only on `bill_observed_description_match`
+  // and `bill_observed_description_match_candidate` source entries.
+  haiku_score?: number | null;
 }
 
 function hashUserForIdentity(userId: string, identityId: string): string {
@@ -169,8 +194,22 @@ interface TallyResult {
 
 function tallySlugVotes(sources: SourceEntry[]): TallyResult {
   const tally = new Map<string, number>();
+  // S74.6 D4 — vote-casting source types (slug-affirming):
+  //   user_correction                  — explicit user choice
+  //   bill_observed_description_match  — Haiku similarity ≥0.85
+  //   admin_seed                       — admin pre-seed (1 vote, NOT authority)
+  //   dispute_won_recoding             — insurer paid on alternative code (D5 capture)
+  // Non-voting (counts toward distinct_user_count but no slug vote):
+  //   bill_observed                              — passive parser observation
+  //   bill_observed_description_match_candidate  — ambiguous (2+ within 0.05)
+  const VOTING_SOURCES = new Set([
+    "user_correction",
+    "bill_observed_description_match",
+    "admin_seed",
+    "dispute_won_recoding",
+  ]);
   for (const s of sources) {
-    if (s.source !== "user_correction") continue;
+    if (!VOTING_SOURCES.has(s.source)) continue;
     if (!s.proposed_slug) continue;
     tally.set(s.proposed_slug, (tally.get(s.proposed_slug) ?? 0) + 1);
   }

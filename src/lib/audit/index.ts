@@ -6,6 +6,7 @@ import { ALL_RULES } from "./rules";
 import { runZeroCostShareCheck } from "./zero-cost-share";
 import { runClaimHeaderArithmeticCheck } from "./claim-header-arithmetic";
 import { runInsuranceUnderpaymentCheck } from "./insurance-underpayment";
+import { runDescriptionMatchCheck } from "./description-service-match";
 import type { PlanCoverageMap } from "./coverage-loader";
 import { createServerClient } from "../supabase/server";
 import {
@@ -76,6 +77,15 @@ export async function runAudit(
   // contractual writeoff. Address dispute to the INSURER, not the provider.
   const underpayFindings = runInsuranceUnderpaymentCheck(bill, planCoverage);
   allFindings.push(...underpayFindings);
+
+  // Step 2e: S74.6 D4 — Description → service_catalog Haiku similarity match.
+  // For uncategorized lines (no slug yet), fires either
+  // `code_uncategorized_description_match` (confident provisional slug ≥0.85)
+  // or `uncategorized_service` (soft "review or correct"). Gated on
+  // s74_5_categorization_flywheel_v1 flag. Per-user-day budget cap inherited
+  // from S74.5 (haiku_budget_tracking + reserve_haiku_budget RPC).
+  const descMatchFindings = await runDescriptionMatchCheck(bill);
+  allFindings.push(...descMatchFindings);
 
   // Step 3: Deduplicate findings that flag the same line items
   const deduped = deduplicateFindings(allFindings);
