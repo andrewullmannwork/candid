@@ -68,6 +68,8 @@ const PLAN_IDENTITY_FIELDS = [
   "outDeductibleFamily",
   "outOopMaxIndividual",
   "outOopMaxFamily",
+  "isAcaCompliant",
+  "acaComplianceBasis",
 ] as const;
 
 export function verifyPlanDocSourceExcerpts(

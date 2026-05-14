@@ -324,6 +324,50 @@ When a cost-share table shows three columns:
 - Document is labeled HMO/EPO and has no OON columns
 - Document mentions OON only as an exception for emergencies (still set out_* to null — emergency-OON cost-sharing is a separate concept from regular OON)
 
+### 2.10.5 ACA compliance — isAcaCompliant (boolean | null) + acaComplianceBasis (enum | null)
+
+**What we need**: a flag indicating whether this plan is governed by Affordable Care Act preventive-care mandates (covers ACIP vaccines + USPSTF Grade A/B preventive services at $0 patient cost-share in-network). Downstream audit pipeline uses this flag to gate ACA-preventive coverage fallback per service.
+
+**Output two paired fields**:
+- \`isAcaCompliant\`: \`true\` | \`false\` | \`null\`
+- \`acaComplianceBasis\`: one of \`"explicit_attestation"\` | \`"inferred_marketplace"\` | \`"inferred_employer_post_2010"\` | \`"explicit_grandfathered"\` | \`"unknown"\` | \`null\`
+
+**Signal patterns (universal across carriers — apply in priority order)**:
+
+1. **Explicit attestation** → \`isAcaCompliant=true, acaComplianceBasis="explicit_attestation"\`. Phrases:
+   - \`"This plan is ACA-compliant"\` / \`"complies with the Affordable Care Act"\`
+   - \`"meets ACA minimum essential coverage"\` / \`"qualifies as minimum essential coverage (MEC) under the ACA"\`
+   - \`"covers preventive services at no cost-sharing per the Affordable Care Act"\`
+   - \`"provides essential health benefits (EHB) as defined by the ACA"\`
+   - \`"complies with all federal health care reform requirements"\` (post-2010 employer-plan language; ACA proxy)
+
+2. **Explicit grandfathered** → \`isAcaCompliant=false, acaComplianceBasis="explicit_grandfathered"\`. Phrases:
+   - \`"This is a grandfathered plan"\` / \`"grandfathered under the Affordable Care Act"\` / \`"grandfathered under the ACA"\`
+   - \`"This plan is exempt from certain ACA provisions because it is a grandfathered health plan"\`
+
+3. **Inferred marketplace** → \`isAcaCompliant=true, acaComplianceBasis="inferred_marketplace"\`. Triggers:
+   - Doc mentions purchase via \`"Covered California"\`, \`"healthcare.gov"\`, \`"state health insurance exchange"\`, \`"federal marketplace"\`, \`"individual marketplace plan"\`, \`"on-exchange"\` — all marketplace plans are ACA-compliant by definition.
+
+4. **Inferred employer post-2010** → \`isAcaCompliant=true, acaComplianceBasis="inferred_employer_post_2010"\`. Triggers (BOTH must be present):
+   - The doc indicates an employer-sponsored plan (POLICYHOLDER, Plan Sponsor, Group Number, Employer Group ID, etc.) AND
+   - Either an effective date ≥ 2011 OR plan year ≥ 2011 is present in the chunk, AND
+   - NO grandfathered language anywhere in the chunk.
+
+5. **Unknown** → \`isAcaCompliant=null, acaComplianceBasis="unknown"\`. When THIS chunk has none of the above signals. The system will default isAcaCompliant=true (basis=unknown) at the persistence layer for plans where no chunk found explicit text — do NOT emit a TRUE guess from this prompt without a basis match above.
+
+**Important — null vs unknown semantics**:
+- If you can't find any ACA signal in this chunk, return \`isAcaCompliant=null\` + \`acaComplianceBasis=null\` (let field-merge from other chunks supply the answer, or persistence default fires).
+- Only emit \`acaComplianceBasis="unknown"\` when the chunk EXPLICITLY indicates uncertainty (rare — e.g., "Please consult your benefits administrator regarding ACA compliance status.").
+
+**Pattern P-8 source_excerpt**: when isAcaCompliant is non-null, source_excerpt must be a verbatim ≤200-char span supporting the basis. For \`inferred_*\` bases, the excerpt can be the marketplace/employer/year evidence (e.g., \`"Group ID: 34936"\` + \`"Plan Year: 2025"\` — quote whichever single span best supports the inference).
+
+**Examples**:
+- Source: \`"This plan is ACA-compliant and provides minimum essential coverage."\` → isAcaCompliant=true, acaComplianceBasis="explicit_attestation", source_excerpt="This plan is ACA-compliant and provides minimum essential coverage."
+- Source: \`"This is a grandfathered health plan under the Affordable Care Act."\` → isAcaCompliant=false, acaComplianceBasis="explicit_grandfathered", source_excerpt="This is a grandfathered health plan under the Affordable Care Act."
+- Source: \`"Purchased through Covered California"\` → isAcaCompliant=true, acaComplianceBasis="inferred_marketplace", source_excerpt="Purchased through Covered California"
+- Source: \`"Plan Year: 2025 ... Group ID: 34936 Sequoia One PEO, LLC"\` (no grandfathered language, employer plan + post-2010) → isAcaCompliant=true, acaComplianceBasis="inferred_employer_post_2010", source_excerpt="Plan Year: 2025" (or "Group ID: 34936")
+- Source chunk with NO ACA signal of any kind → isAcaCompliant=null, acaComplianceBasis=null, source_excerpt=""
+
 ### 2.10 Common extraction pitfalls (universal — avoid these)
 
 - **Document type as plan name**: Extracting \`"Evidence of Coverage"\` or \`"Summary of Benefits"\` as the plan name. These are document types; the plan name is the marketed product (e.g., \`"Silver 70 PPO"\`).
@@ -505,7 +549,9 @@ Extract:
   "outDeductibleIndividual": { "value": 3000, "source_excerpt": "...", "haiku_confidence": 0.92 },
   "outDeductibleFamily": { "value": 6000, "source_excerpt": "...", "haiku_confidence": 0.92 },
   "outOopMaxIndividual": { "value": 12000, "source_excerpt": "...", "haiku_confidence": 0.92 },
-  "outOopMaxFamily": { "value": 24000, "source_excerpt": "...", "haiku_confidence": 0.92 }
+  "outOopMaxFamily": { "value": 24000, "source_excerpt": "...", "haiku_confidence": 0.92 },
+  "isAcaCompliant": { "value": true, "source_excerpt": "Plan Year: 2025 ... Group ID: 34936", "haiku_confidence": 0.78 },
+  "acaComplianceBasis": { "value": "inferred_employer_post_2010", "source_excerpt": "Plan Year: 2025", "haiku_confidence": 0.78 }
 }
 
 A reminder: the patterns and examples above are universal. They apply across hundreds of carriers, employer groups, and plan structures. Do not pattern-match against specific brand names — apply the universal extraction logic to whatever document chunk you are given.
@@ -553,6 +599,8 @@ interface RawResponse {
   outDeductibleFamily?: RawField<number>;
   outOopMaxIndividual?: RawField<number>;
   outOopMaxFamily?: RawField<number>;
+  isAcaCompliant?: RawField<boolean>;
+  acaComplianceBasis?: RawField<string>;
 }
 
 function buildField<T>(
@@ -613,6 +661,8 @@ export async function extractPlanIdentity(
     outDeductibleFamily: buildField<number>(result.data.outDeductibleFamily, extractionMethod, sectionHint),
     outOopMaxIndividual: buildField<number>(result.data.outOopMaxIndividual, extractionMethod, sectionHint),
     outOopMaxFamily: buildField<number>(result.data.outOopMaxFamily, extractionMethod, sectionHint),
+    isAcaCompliant: buildField<boolean>(result.data.isAcaCompliant, extractionMethod, sectionHint),
+    acaComplianceBasis: buildField<string>(result.data.acaComplianceBasis, extractionMethod, sectionHint),
   };
 
   return {

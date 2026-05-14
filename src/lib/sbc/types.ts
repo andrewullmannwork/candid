@@ -153,6 +153,11 @@ export interface SBCPlanIdentity {
   rxDeductibleFamily: SBCPlanField<number | null>;
   referralRequired: SBCPlanField<boolean | null>;
   minimumValueStandard: SBCPlanField<boolean | null>;
+  // S74.6 D1 — ACA-compliance flag for D2 registry-fallback gate.
+  // Same semantics as PlanDocPlanIdentity (default TRUE with basis='unknown'
+  // when no explicit signal; user override at plan-upload confirmation page).
+  isAcaCompliant: SBCPlanField<boolean | null>;
+  acaComplianceBasis: SBCPlanField<string | null>;
 }
 
 /**

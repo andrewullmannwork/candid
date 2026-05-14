@@ -266,6 +266,15 @@ async function persistEOCPlanIdentity(
     is_active: !isComparisonUpload,
     verification_status: "document_verified" as const,
     ...(hasProvenanceEntries ? { field_provenance: eocPlanIdentityProvenance } : {}),
+    // S74.6 D1 — apply ACA default for EOC-only first uploads (regex EOC parser
+    // doesn't extract ACA-compliance; relies on the conservative-for-users
+    // default per Subplan §1 LOCK so D2 registry fallback works correctly).
+    // A subsequent SBC or plan_doc Haiku upload may overwrite this with an
+    // explicit basis via the merge-update path in process-plan.ts.
+    is_aca_compliant: true,
+    aca_compliance_basis: "unknown",
+    aca_compliance_source: "eoc_parser_default",
+    aca_compliance_excerpt: "",
   };
 
   // Check for existing active plan for this user — comparison uploads SKIP

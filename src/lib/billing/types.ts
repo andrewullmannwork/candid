@@ -186,8 +186,13 @@ export interface AuditFinding {
   benchmarkSource: string; // "CMS PPL" | "FAIR Health" | "Internal"
   benchmarkAmount?: number; // What the benchmark says it should cost
   billedAmount: number; // What was actually billed
-  confidence: number; // 0-1
+  confidence: number; // 0-1 (possibly cohort-adjusted; see accuracy-cohort-loader)
   actionable: boolean; // Whether a dispute letter can be generated
+  // S74.6 D3 — surfaced when cohort win-rate is in the informational tier
+  // (0.2 <= win_rate < 0.5 AND n >= 10). UI renders alongside the amber
+  // finding card so users have honest signal without being discouraged from
+  // disputing. Null/undefined → no chip (boost / baseline tiers).
+  cohortAccuracyChip?: string | null;
 }
 
 // Persisted shape on claim.metadata.auditSummary.claimLevelFindings.

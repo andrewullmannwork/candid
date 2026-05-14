@@ -13,6 +13,8 @@ import {
   extractRowsFromSBCHaikuResult,
   extractRowsFromPlanDocHaikuResult,
 } from "@/lib/parser/canonical-haiku-extractions";
+import type { SBCPlanIdentity } from "@/lib/sbc/types";
+import type { PlanDocPlanIdentity } from "@/lib/plan_doc/types";
 import { extractServicesWithClaude } from "@/lib/plan/claude-extractor";
 import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
 import { matchInsurerWithPlanFallback } from "@/lib/plan/insurer-match";
@@ -94,6 +96,82 @@ function derivePromotionCandidatesFromHaikuResult(
   }
 
   return candidates;
+}
+
+// ── S74.6 D1 — ACA-compliance column derivation ─────────────────────────────
+//
+// Both SBC Haiku-first (Important Questions) and plan_doc Haiku-first (plan_identity)
+// extract `isAcaCompliant` + `acaComplianceBasis`. We derive the mig 093 columns:
+//   - is_aca_compliant: boolean | null
+//   - aca_compliance_basis: 'explicit_attestation' | 'inferred_marketplace' |
+//                           'inferred_employer_post_2010' | 'explicit_grandfathered' |
+//                           'unknown' | 'user_override' | 'admin_override'
+//   - aca_compliance_source: 'sbc_parser' | 'plan_doc_parser' | '<parser>_default' |
+//                            'user_override' | 'admin'
+//   - aca_compliance_excerpt: Pattern P-8 verbatim ≤500 chars (best of basis/value field)
+//
+// Per Subplan §1 LOCK: when Haiku didn't extract a signal in any chunk
+// (basis=null AND value=null), apply default `is_aca_compliant=TRUE` with
+// `basis='unknown'` — conservative-for-users; most plans ARE ACA-compliant.
+// User can override at plan-upload confirmation page (separate D1 UI surface).
+
+type AcaIdentity = SBCPlanIdentity | PlanDocPlanIdentity | null | undefined;
+
+interface AcaColumns {
+  is_aca_compliant: boolean | null;
+  aca_compliance_basis: string | null;
+  aca_compliance_source: string | null;
+  aca_compliance_excerpt: string | null;
+}
+
+const ACA_BASIS_ENUM = new Set([
+  "explicit_attestation",
+  "inferred_marketplace",
+  "inferred_employer_post_2010",
+  "explicit_grandfathered",
+  "unknown",
+]);
+
+function pickAcaExcerpt(identity: NonNullable<AcaIdentity>): string {
+  // Prefer the basis-field excerpt (richer context); fall back to the boolean
+  // field excerpt. ≤500 chars per mig 093 column comment.
+  const basisExcerpt = identity.acaComplianceBasis?.patternP8?.source_excerpt ?? "";
+  const valueExcerpt = identity.isAcaCompliant?.patternP8?.source_excerpt ?? "";
+  const chosen = basisExcerpt.length > 0 ? basisExcerpt : valueExcerpt;
+  return chosen.slice(0, 500);
+}
+
+/**
+ * Returns ACA columns extracted from Haiku output. When Haiku produced no signal
+ * (both value and basis null), returns null — caller chooses whether to apply
+ * default (new-plan insert) or skip the write (merge-update preserves prior).
+ */
+function extractedAcaColumns(
+  identity: AcaIdentity,
+  parserSourceLabel: string,
+): AcaColumns | null {
+  if (!identity) return null;
+  const acaValue = identity.isAcaCompliant?.value ?? null;
+  const rawBasis = identity.acaComplianceBasis?.value ?? null;
+  if (acaValue === null && rawBasis === null) return null;
+  // Defensive: clamp basis to enum; unknown strings collapse to 'unknown'.
+  const basis =
+    rawBasis && ACA_BASIS_ENUM.has(rawBasis) ? rawBasis : "unknown";
+  return {
+    is_aca_compliant: acaValue,
+    aca_compliance_basis: basis,
+    aca_compliance_source: parserSourceLabel,
+    aca_compliance_excerpt: pickAcaExcerpt(identity),
+  };
+}
+
+function defaultAcaColumns(parserSourceLabel: string): AcaColumns {
+  return {
+    is_aca_compliant: true,
+    aca_compliance_basis: "unknown",
+    aca_compliance_source: `${parserSourceLabel}_default`,
+    aca_compliance_excerpt: "",
+  };
 }
 
 function inferServiceCategory(slug: string): string {
@@ -380,6 +458,19 @@ export async function processPlanDocumentData(
       ? buildSBCPlanIdentityProvenance(haikuResult.planIdentity, "doc_extraction", haikuResult.dispatchedSections)
       : null;
 
+    // S74.6 D1 — derive ACA-compliance columns from Haiku output (SBC or plan_doc).
+    // Default-when-no-signal applied for new-plan insert; merge-update path below
+    // skips the write when Haiku didn't extract (preserves prior value).
+    const acaParserLabel = haikuResult
+      ? "sbc_parser"
+      : planDocHaikuResult
+        ? "plan_doc_parser"
+        : "regex_parser";
+    const acaCandidate: AcaIdentity =
+      haikuResult?.planIdentity ?? planDocHaikuResult?.planIdentity ?? null;
+    const extractedAca = extractedAcaColumns(acaCandidate, acaParserLabel);
+    const acaForInsert: AcaColumns = extractedAca ?? defaultAcaColumns(acaParserLabel);
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const planInsert: Record<string, any> = {
       ...parseResult.plan,
@@ -392,6 +483,10 @@ export async function processPlanDocumentData(
       is_active: !isComparisonUpload,
       verification_status: "document_verified" as const,
       ...(planIdentityProvenance ? { field_provenance: planIdentityProvenance } : {}),
+      // S74.6 D1 — ACA-compliance columns (mig 093). Default fires for legacy
+      // regex parses + Haiku-no-signal cases; explicit values fire when Haiku
+      // extracted in any plan-identity chunk.
+      ...acaForInsert,
     };
 
     const { data: userProfile } = await supabase
@@ -516,6 +611,11 @@ export async function processPlanDocumentData(
         out_deductible_individual: planInsert.out_deductible_individual,
         out_oop_max_individual: planInsert.out_oop_max_individual,
         ...(planIdentityProvenance ? { field_provenance: planIdentityProvenance } : {}),
+        // S74.6 D1 — propagate ACA columns only when THIS parse extracted a
+        // signal. When Haiku found nothing, preserve the plan's prior ACA value
+        // (don't overwrite a previously-extracted basis with 'unknown' just
+        // because this re-parse chunk lacked the phrase).
+        ...(extractedAca ?? {}),
       }).eq("id", targetPlanId);
       // Ensure profile points to this plan and back-populate plan info
       const profileUpdate: Record<string, unknown> = { active_insurance_plan_id: targetPlanId };

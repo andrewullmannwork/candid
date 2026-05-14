@@ -529,10 +529,12 @@ export async function parsePlanDocumentHaiku(
       "outDeductibleFamily",
       "outOopMaxIndividual",
       "outOopMaxFamily",
+      "isAcaCompliant",
+      "acaComplianceBasis",
     ] as const) {
       if (mergedPlanIdentity[key].value !== null) populated += 1;
     }
-    warnings.push(`plan_identity_populated_after_merge:${populated}_of_15:chunks=${planIdentityChunks.length}`);
+    warnings.push(`plan_identity_populated_after_merge:${populated}_of_17:chunks=${planIdentityChunks.length}`);
   }
 
   // ── Step 6: Assemble pre-verification result ──

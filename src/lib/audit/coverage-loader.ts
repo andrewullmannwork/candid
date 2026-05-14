@@ -18,6 +18,35 @@ import type { PlanCoverageInput } from "../claims/recovery-math";
 
 export type PlanCoverageMap = Map<string, PlanCoverageInput>;
 
+/**
+ * S74.6 D2 — Read the plan's `is_aca_compliant` flag for audit rules that
+ * want to apply ACA-mandated zero-cost-share fallback. Audit pipeline reads
+ * this alongside `loadCoverageMapForPlan` to decide whether to call
+ * `buildAcaCoverageFallback` for each bill being evaluated.
+ *
+ * Returns null when planId is null/missing OR the column isn't populated
+ * (legacy pre-mig-093 rows). Audit consumers treat null as "unknown ACA status"
+ * → don't apply fallback (conservative: don't synthesize coverage based on
+ * an assumption the parser didn't confirm).
+ */
+export async function loadAcaCompliantFlagForPlan(
+  supabase: SupabaseClient,
+  insurancePlanId: string | null | undefined,
+): Promise<boolean | null> {
+  if (!insurancePlanId) return null;
+  const { data, error } = await supabase
+    .from("insurance_plans")
+    .select("is_aca_compliant")
+    .eq("id", insurancePlanId)
+    .maybeSingle();
+  if (error) {
+    console.warn("[coverage-loader] aca flag load failed", error);
+    return null;
+  }
+  if (!data) return null;
+  return (data.is_aca_compliant as boolean | null) ?? null;
+}
+
 export async function loadCoverageMapForPlan(
   supabase: SupabaseClient,
   insurancePlanId: string | null | undefined,

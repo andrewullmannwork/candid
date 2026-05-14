@@ -21,7 +21,7 @@ import type { ParsedBill, AuditFinding, BillLineItem } from "../billing/types";
 import { inferProcedureCodeType } from "../billing/code-type-inference";
 import { randomUUID } from "crypto";
 
-interface UserDemographics {
+export interface UserDemographics {
   age: number | null;
   sex: "M" | "F" | null;
 }
@@ -82,7 +82,7 @@ function mapSexToMF(sexRaw: string | null | undefined): "M" | "F" | null {
 // wouldn't want the adult-eligibility-window filter to suppress findings.
 // And conversely, a male user uploading his daughter's HPV-vaccine bill
 // should see the ACA preventive finding fire under the daughter's sex.
-async function fetchPatientDemographics(
+export async function fetchPatientDemographics(
   userId: string,
   patientNameFromBill: string | null | undefined,
 ): Promise<UserDemographics> {
@@ -130,7 +130,7 @@ async function fetchPatientDemographics(
   };
 }
 
-function demographicEligible(
+export function demographicEligible(
   row: { age_min: number | null; age_max: number | null; sex: "M" | "F" | null },
   user: UserDemographics,
 ): boolean {

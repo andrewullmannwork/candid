@@ -26,7 +26,14 @@ const INSTRUCTIONS = `You are extracting plan-level scalars from the "Important 
 7. **Coverage tier** = individual / individual_family / family / employee_only / employee_spouse — pick from this list; null if uncertain.
 8. **DO NOT extract** from glossary cross-references, footer disclaimers, or coverage example text.
 9. **source_section_hint**: always "important_questions".
-10. **In-network vs Out-of-network**: SBCs typically present deductibles and OOP maxes side-by-side for both networks (e.g., "$0 in-network / $2,000 out-of-network individual"). Extract BOTH variants when present:
+10. **ACA-compliance flag** — output two paired fields (\`isAcaCompliant\` boolean | null + \`acaComplianceBasis\` enum | null) indicating whether the plan is governed by ACA preventive-care mandates. Apply patterns in priority order:
+   - **Explicit attestation** → isAcaCompliant=true, basis="explicit_attestation". Phrases like "ACA-compliant", "complies with the Affordable Care Act", "meets ACA minimum essential coverage", "provides essential health benefits (EHB)", "covers preventive services at no cost-sharing per the ACA".
+   - **Explicit grandfathered** → isAcaCompliant=false, basis="explicit_grandfathered". Phrases like "grandfathered plan", "grandfathered under the Affordable Care Act".
+   - **Inferred marketplace** → isAcaCompliant=true, basis="inferred_marketplace". Triggers when doc references "Covered California", "healthcare.gov", "state exchange", "federal marketplace", "on-exchange".
+   - **Inferred employer post-2010** → isAcaCompliant=true, basis="inferred_employer_post_2010". Triggers when BOTH: employer-sponsored indicators present (POLICYHOLDER / Plan Sponsor / Group Number) AND effective_date OR plan_year ≥ 2011 in chunk AND NO grandfathered language.
+   - **Unknown** → isAcaCompliant=null, basis=null. When this SBC chunk has NO ACA signal. Default persistence behavior will set is_aca_compliant=TRUE with basis='unknown' downstream.
+   - The source_excerpt for these fields must be a verbatim ≤200-char span supporting the basis (e.g., marketplace name, employer + year evidence, or the explicit ACA-attestation phrase).
+11. **In-network vs Out-of-network**: SBCs typically present deductibles and OOP maxes side-by-side for both networks (e.g., "$0 in-network / $2,000 out-of-network individual"). Extract BOTH variants when present:
    - **deductibleIndividual** / **deductibleFamily** / **oopMaxIndividual** / **oopMaxFamily** are IN-NETWORK values
    - **outDeductibleIndividual** / **outDeductibleFamily** / **outOopMaxIndividual** / **outOopMaxFamily** are OUT-OF-NETWORK values
    - If the SBC only presents in-network (network-only plan) or shows "Not applicable" for out-of-network, set the out_* fields to null with empty source_excerpt.
@@ -53,7 +60,9 @@ const INSTRUCTIONS = `You are extracting plan-level scalars from the "Important 
   "rxDeductibleIndividual": { "value": 300, "source_excerpt": "...", "haiku_confidence": 0.91 },
   "rxDeductibleFamily": { "value": 600, "source_excerpt": "...", "haiku_confidence": 0.91 },
   "referralRequired": { "value": false, "source_excerpt": "...", "haiku_confidence": 0.93 },
-  "minimumValueStandard": { "value": true, "source_excerpt": "...", "haiku_confidence": 0.85 }
+  "minimumValueStandard": { "value": true, "source_excerpt": "...", "haiku_confidence": 0.85 },
+  "isAcaCompliant": { "value": true, "source_excerpt": "Plan provides essential health benefits as required by the Affordable Care Act.", "haiku_confidence": 0.90 },
+  "acaComplianceBasis": { "value": "explicit_attestation", "source_excerpt": "essential health benefits as required by the Affordable Care Act", "haiku_confidence": 0.90 }
 }
 
 If a field is absent or unverifiable, set value: null AND source_excerpt: "" (do not omit the key).
@@ -122,6 +131,8 @@ interface RawResponse {
   rxDeductibleFamily?: RawFieldEntry;
   referralRequired?: RawFieldEntry;
   minimumValueStandard?: RawFieldEntry;
+  isAcaCompliant?: RawFieldEntry;
+  acaComplianceBasis?: RawFieldEntry;
 }
 
 function makeProvenance(
@@ -197,6 +208,9 @@ export async function extractImportantQuestions(
     rxDeductibleFamily: makeNumberField(result.data.rxDeductibleFamily, extractionMethod),
     referralRequired: makeBooleanField(result.data.referralRequired, extractionMethod),
     minimumValueStandard: makeBooleanField(result.data.minimumValueStandard, extractionMethod),
+    // S74.6 D1 — ACA-compliance flag for D2 registry-fallback gate.
+    isAcaCompliant: makeBooleanField(result.data.isAcaCompliant, extractionMethod),
+    acaComplianceBasis: makeStringField(result.data.acaComplianceBasis, extractionMethod),
   };
 
   return {

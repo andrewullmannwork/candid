@@ -182,7 +182,21 @@ export async function maybeReauditClaim(
   // F-2 — load plan coverage so audit rules (missing_adjustment, F-14
   // insurance_underpayment) can compute should_owe against plan terms.
   const planCoverage = await loadCoverageMapForPlan(supabase, claim.insurance_plan_id ?? null);
-  const auditReport = await runAudit(parsedBill, planCoverage);
+
+  // S74.6 D3 — thread insurer_name for cohort accuracy adjustment.
+  let insurerNameForAudit: string | null = null;
+  if (claim.insurance_plan_id) {
+    const { data: planRow } = await supabase
+      .from("insurance_plans")
+      .select("insurer_name")
+      .eq("id", claim.insurance_plan_id as string)
+      .maybeSingle();
+    insurerNameForAudit = (planRow?.insurer_name as string | null) ?? null;
+  }
+
+  const auditReport = await runAudit(parsedBill, planCoverage, {
+    insurerName: insurerNameForAudit,
+  });
 
   // Group LINE-LEVEL findings by line_number for per-row metadata writes.
   // Claim-level findings (lineItems=[]) are persisted to

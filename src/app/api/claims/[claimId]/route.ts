@@ -13,6 +13,7 @@ import {
 } from "@/lib/claims/recovery-math";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { maybeReauditClaim } from "@/lib/audit/reaudit";
+import { buildAcaCoverageFallback } from "@/lib/audit/aca-coverage-fallback";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -177,6 +178,27 @@ export async function GET(
     }
   }
 
+  // S74.6 D2 — Demographic-aware ACA-gated coverage fallback. For lines where
+  // plan_covered_services has no row AND plan is_aca_compliant=TRUE AND the
+  // billing code hits zero_cost_share_codes AND demographic eligibility matches,
+  // synthesize coverage `{covered:true, copay:0, coinsurance:0}` so the
+  // Coverage column renders "Covered · $0" instead of "Unknown". Plan-covered
+  // rows (even non-zero copay) always win over this fallback — registry
+  // fallback only fires on plan miss.
+  const acaFallback = await buildAcaCoverageFallback({
+    supabase,
+    planId: claim.insurance_plan_id as string | null | undefined,
+    userId: claim.user_id as string,
+    patientName: (claim.patient_name as string | null | undefined) ?? null,
+    lineItems: (lineItems ?? []).map((li) => ({
+      lineNumber: Number(li.line_number ?? 0),
+      procedureCode: (li.billing_code as string | null) ?? null,
+      procedureCodeType: (li.billing_code_type as string | null) ?? null,
+      serviceSlug: (li.service_slug as string | null) ?? null,
+    })),
+    existingCoverageBySlug: new Set(coverageMap.keys()),
+  });
+
   // Claim-level totals used as pro-rate fallback when individual line items
   // lack allocation (the common Haiku header-only case).
   const claimTotalBilled = Number(claim.total_billed || 0);
@@ -189,9 +211,20 @@ export async function GET(
 
   // Enrich line items with coverage status + recovery metrics
   const enrichedLineItems = (lineItems || []).map((item) => {
-    const coverage: PlanCoverageInput | null = item.service_slug
+    // Plan-covered-services row wins when present (even non-zero copay rows).
+    // ACA registry fallback fires only when plan coverage is absent.
+    const planCoverage: PlanCoverageInput | null = item.service_slug
       ? coverageMap.get(item.service_slug) || null
       : null;
+    const acaCoverage: PlanCoverageInput | null = planCoverage
+      ? null
+      : acaFallback.byLineNumber.get(Number(item.line_number ?? 0)) || null;
+    const coverage = planCoverage || acaCoverage;
+    const coverageSource = planCoverage
+      ? coverageMap.get(item.service_slug as string)?.source ?? null
+      : acaCoverage
+        ? "aca_zero_cost_share"
+        : null;
 
     const billed = Number(item.billed_amount || 0);
     // F-1 / mig 092 — patient_paid_amount column drives refund/forgiveness split.
@@ -242,6 +275,9 @@ export async function GET(
           ? "unknown"
           : null,
       planCoverage: coverage || null,
+      // S74.6 D2 — surface which path produced the coverage so the UI can render
+      // "Covered (ACA)" vs "Covered (plan)" tooltip distinction.
+      coverageSource,
       recovery,
       codeIdentity: flywheelEnabled
         ? {

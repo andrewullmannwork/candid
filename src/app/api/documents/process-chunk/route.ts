@@ -94,7 +94,21 @@ async function processBillDocument(
   const { loadCoverageMapForPlan } = await import("@/lib/audit/coverage-loader");
   const planCoverage = await loadCoverageMapForPlan(supabase, insurancePlanId);
 
-  const auditReport = await runAudit(parsedBill, planCoverage);
+  // S74.6 D3 — thread insurer_name so runAudit can apply cohort accuracy
+  // adjustment (boost / informational chip / suppress per Subplan §B).
+  let insurerNameForAudit: string | null = null;
+  if (insurancePlanId) {
+    const { data: planRow } = await supabase
+      .from("insurance_plans")
+      .select("insurer_name")
+      .eq("id", insurancePlanId)
+      .maybeSingle();
+    insurerNameForAudit = (planRow?.insurer_name as string | null) ?? null;
+  }
+
+  const auditReport = await runAudit(parsedBill, planCoverage, {
+    insurerName: insurerNameForAudit,
+  });
 
   // Persist claims (feature-flagged)
   let claimId: string | null = null;

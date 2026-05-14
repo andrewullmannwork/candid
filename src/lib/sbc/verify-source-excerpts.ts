@@ -89,6 +89,8 @@ export function verifySBCSourceExcerpts(
     "rxDeductibleFamily",
     "referralRequired",
     "minimumValueStandard",
+    "isAcaCompliant",
+    "acaComplianceBasis",
   ] as const;
 
   for (const field of planFields) {

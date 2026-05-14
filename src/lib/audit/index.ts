@@ -7,7 +7,26 @@ import { runZeroCostShareCheck } from "./zero-cost-share";
 import { runClaimHeaderArithmeticCheck } from "./claim-header-arithmetic";
 import { runInsuranceUnderpaymentCheck } from "./insurance-underpayment";
 import type { PlanCoverageMap } from "./coverage-loader";
+import { createServerClient } from "../supabase/server";
+import {
+  loadAccuracyCohortMap,
+  decideAccuracyAdjustment,
+  applyAccuracyAdjustment,
+  mapKey,
+  type CohortStats,
+} from "./accuracy-cohort-loader";
 import { randomUUID } from "crypto";
+
+/**
+ * S74.6 D3 — Optional audit context. When `insurerName` is provided, runAudit
+ * batch-reads `audit_rule_accuracy` for each emitted finding's cohort and applies
+ * tiered confidence adjustment (boost / informational / suppress) per Subplan §B.
+ * When omitted (legacy callers / documents/process single-pass), findings emit
+ * at baseline confidence with no adjustment.
+ */
+export interface AuditContext {
+  insurerName?: string | null;
+}
 
 /**
  * Thread plan-coverage into runAudit so rules can compute should_owe (copay /
@@ -20,6 +39,7 @@ import { randomUUID } from "crypto";
 export async function runAudit(
   bill: ParsedBill,
   planCoverage: PlanCoverageMap | null = null,
+  auditContext: AuditContext | null = null,
 ): Promise<AuditReport> {
   // Step 1: Look up CMS benchmarks for all procedure codes in the bill
   const codes = bill.lineItems.map((item) => ({
@@ -60,8 +80,20 @@ export async function runAudit(
   // Step 3: Deduplicate findings that flag the same line items
   const deduped = deduplicateFindings(allFindings);
 
+  // Step 3b: S74.6 D3 — apply tiered cohort accuracy adjustment. Batch-load
+  // (rule_type, insurer_name, service_slug) cohorts once, then per-finding
+  // boost / chip / suppress / leave-alone per Subplan §B. Suppressed findings
+  // drop entirely; informational tier surfaces with a UI chip. Empty cohorts
+  // emit at baseline (no regression). Only runs when auditContext.insurerName
+  // is provided — legacy callers (documents/process single-pass) emit unadjusted.
+  const adjustedFindings = await applyCohortAccuracyAdjustments(
+    deduped,
+    bill,
+    auditContext,
+  );
+
   // Step 4: Sort by severity (critical first) then by estimated overcharge
-  deduped.sort((a, b) => {
+  adjustedFindings.sort((a, b) => {
     const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
     const severityDiff = severityOrder[a.severity] - severityOrder[b.severity];
     if (severityDiff !== 0) return severityDiff;
@@ -74,7 +106,7 @@ export async function runAudit(
   // would be silently dropped. Persist them on claim.metadata.auditSummary
   // so ClaimDetail renders them in a dedicated "Claim-level issues" section
   // and the dismiss endpoint can target them via a claim-level fallback path.
-  const claimLevelFindings = deduped
+  const claimLevelFindings = adjustedFindings
     .filter((f) => !Array.isArray(f.lineItems) || f.lineItems.length === 0)
     .map((f) => ({
       id: f.id,
@@ -93,21 +125,78 @@ export async function runAudit(
     documentId: bill.documentId,
     userId: bill.userId,
     parsedBill: bill,
-    findings: deduped,
+    findings: adjustedFindings,
     summary: {
-      totalFindings: deduped.length,
-      totalEstimatedOvercharge: deduped.reduce(
+      totalFindings: adjustedFindings.length,
+      totalEstimatedOvercharge: adjustedFindings.reduce(
         (sum, f) => sum + f.estimatedOvercharge,
         0
       ),
-      highSeverityCount: deduped.filter(
+      highSeverityCount: adjustedFindings.filter(
         (f) => f.severity === "high" || f.severity === "critical"
       ).length,
-      actionableCount: deduped.filter((f) => f.actionable).length,
+      actionableCount: adjustedFindings.filter((f) => f.actionable).length,
       claimLevelFindings,
     },
     createdAt: new Date().toISOString(),
   };
+}
+
+/**
+ * S74.6 D3 — Apply cohort accuracy adjustments per finding. Findings without a
+ * cohort lookup (no auditContext.insurerName OR claim-level findings without
+ * service_slug context) pass through unchanged. Returns the filtered + adjusted
+ * findings array; suppressed findings are dropped entirely.
+ */
+async function applyCohortAccuracyAdjustments(
+  findings: AuditFinding[],
+  bill: ParsedBill,
+  context: AuditContext | null,
+): Promise<AuditFinding[]> {
+  if (!context?.insurerName || findings.length === 0) return findings;
+
+  // Build per-finding cohort key: (ruleType, insurerName). v1 collapses
+  // service_slug across (rule, insurer) since slug-mapping runs post-audit;
+  // Phase 2 can refine to per-slug once service-mapper moves upstream.
+  type FindingWithKey = { finding: AuditFinding; cohortKey: string | null };
+  const annotated: FindingWithKey[] = findings.map((f) => ({
+    finding: f,
+    cohortKey: mapKey(f.type, context.insurerName!),
+  }));
+
+  const tuples = annotated
+    .map((a) => {
+      if (!a.cohortKey) return null;
+      return {
+        ruleType: a.finding.type,
+        insurerName: context.insurerName!,
+      };
+    })
+    .filter((t): t is NonNullable<typeof t> => t !== null);
+
+  if (tuples.length === 0) return findings;
+
+  const supabase = createServerClient();
+  let cohortMap: Map<string, CohortStats>;
+  try {
+    cohortMap = await loadAccuracyCohortMap(supabase, tuples);
+  } catch (err) {
+    console.warn("[audit] accuracy cohort load failed, emitting unadjusted", err);
+    return findings;
+  }
+
+  const result: AuditFinding[] = [];
+  for (const { finding, cohortKey } of annotated) {
+    if (!cohortKey) {
+      result.push(finding);
+      continue;
+    }
+    const cohort = cohortMap.get(cohortKey);
+    const decision = decideAccuracyAdjustment(finding.confidence, cohort);
+    const adjusted = applyAccuracyAdjustment(finding, decision);
+    if (adjusted) result.push(adjusted);
+  }
+  return result;
 }
 
 function deduplicateFindings(findings: AuditFinding[]): AuditFinding[] {
