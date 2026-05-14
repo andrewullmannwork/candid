@@ -373,5 +373,10 @@ export async function GET(
     // S74.5 D7 — surface re-audit outcome for telemetry + client toasts.
     // null when flag off or claim wasn't stale.
     reaudit: reauditResult,
+    // S74.6 D1 §A.2 — plan-level ACA basis + excerpt for Coverage badge
+    // tooltip copy. ClaimDetail.tsx consumes this when rendering tooltips on
+    // lines where coverageSource === 'aca_zero_cost_share'. null when plan
+    // is not ACA-compliant.
+    acaCompliance: acaFallback.planMeta,
   });
 }

@@ -195,6 +195,17 @@ export interface AuditFinding {
   // finding card so users have honest signal without being discouraged from
   // disputing. Null/undefined → no chip (boost / baseline tiers).
   cohortAccuracyChip?: string | null;
+  // S74.6 D4 §D.1 + §D.2 — description-match metadata for persist-time flywheel
+  // writes (recordDescriptionMatchVote / recordAmbiguousCandidate). Populated
+  // only on `code_uncategorized_description_match` findings emitted from the
+  // D4 audit rule. Persist reads this AFTER claim_line_items.INSERT so it can
+  // pass the now-existing line_item_id to the vote-recording helpers.
+  descriptionMatch?: {
+    provisionalSlug: string;
+    haikuScore: number;
+    ambiguous: boolean;
+    secondMatch?: { slug: string; score: number } | null;
+  };
 }
 
 // Persisted shape on claim.metadata.auditSummary.claimLevelFindings.

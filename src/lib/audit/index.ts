@@ -7,7 +7,7 @@ import { runZeroCostShareCheck } from "./zero-cost-share";
 import { runClaimHeaderArithmeticCheck } from "./claim-header-arithmetic";
 import { runInsuranceUnderpaymentCheck } from "./insurance-underpayment";
 import { runDescriptionMatchCheck } from "./description-service-match";
-import type { PlanCoverageMap } from "./coverage-loader";
+import type { AcaFallbackLineCoverageMap, PlanCoverageMap } from "./coverage-loader";
 import { createServerClient } from "../supabase/server";
 import {
   loadAccuracyCohortMap,
@@ -36,11 +36,20 @@ export interface AuditContext {
  * admin re-classify, dispute rerun) load via `loadCoverageMapForPlan` and
  * pass through. `null` is allowed — rules treat as "coverage unknown" and
  * default should_owe to 0.
+ *
+ * S74.6 D2 §B — `acaFallback` is the audit-side ACA-mandated zero-cost-share
+ * fallback indexed by line number, loaded via `loadAcaFallbackForAudit`. Rules
+ * prefer `acaFallback.get(lineNumber)` over `planCoverage.get(slug)` when both
+ * are present, so ACA-mandated vaccine + preventive lines see should_owe=0
+ * even when categorization hasn't bound a slug. Callers MUST merge the ACA
+ * fallback's bySlug map into `planCoverage` themselves (the merge belongs to
+ * the caller because plan rows win on key conflict — see Subplan §B.2).
  */
 export async function runAudit(
   bill: ParsedBill,
   planCoverage: PlanCoverageMap | null = null,
   auditContext: AuditContext | null = null,
+  acaFallback: AcaFallbackLineCoverageMap | null = null,
 ): Promise<AuditReport> {
   // Step 1: Look up CMS benchmarks for all procedure codes in the bill
   const codes = bill.lineItems.map((item) => ({
@@ -54,7 +63,7 @@ export async function runAudit(
   const allFindings: AuditFinding[] = [];
 
   for (const rule of ALL_RULES) {
-    const findings = rule(bill, benchmarks, planCoverage);
+    const findings = rule(bill, benchmarks, planCoverage, acaFallback);
     allFindings.push(...findings);
   }
 
@@ -75,7 +84,7 @@ export async function runAudit(
   // OOP on a covered service the insurer never processed). Recovery target
   // is the user-recovery delta (patient_responsibility − should_owe), not the
   // contractual writeoff. Address dispute to the INSURER, not the provider.
-  const underpayFindings = runInsuranceUnderpaymentCheck(bill, planCoverage);
+  const underpayFindings = runInsuranceUnderpaymentCheck(bill, planCoverage, acaFallback);
   allFindings.push(...underpayFindings);
 
   // Step 2e: S74.6 D4 — Description → service_catalog Haiku similarity match.

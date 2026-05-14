@@ -16,6 +16,7 @@ import { MissingPlanBanner } from "@/components/disputes/MissingPlanBanner";
 import { DownloadWarningModal } from "@/components/disputes/DownloadWarningModal";
 import { EvidenceGaps } from "@/components/disputes/EvidenceGaps";
 import { InsurerAddressCorrectionModal } from "@/components/disputes/InsurerAddressCorrectionModal";
+import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
 import type { PlanContext } from "@/lib/disputes/plan-context";
 import type { DisputeEvidence } from "@/lib/disputes/evidence-resolver";
 
@@ -194,6 +195,9 @@ function DisputesContent() {
   // S74 — Mark-sent button state + transient toast.
   const [markingSent, setMarkingSent] = useState(false);
   const [markSentToast, setMarkSentToast] = useState<string | null>(null);
+  // S74.6 D5 §E.2 — outcome reporting modal state.
+  const [outcomeModalOpen, setOutcomeModalOpen] = useState(false);
+  const [outcomeToast, setOutcomeToast] = useState<string | null>(null);
   const disputeId = searchParams.get("dispute");
 
   // S74 — bearer-token fetch helper shared by the inline forms (InsurerAddressCorrectionModal,
@@ -597,10 +601,21 @@ function DisputesContent() {
               label="Download letter"
             />
             {alreadySent ? (
-              <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-700">
-                <SentCheckIcon />
-                Sent{disputeFiledDate ? ` ${formatFiledDate(disputeFiledDate)}` : ""}
-              </span>
+              <>
+                <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-700">
+                  <SentCheckIcon />
+                  Sent{disputeFiledDate ? ` ${formatFiledDate(disputeFiledDate)}` : ""}
+                </span>
+                {/* S74.6 D5 §E.2 — let user report the outcome (won / lost /
+                    won_on_escalation / settled) after sending. Captures
+                    recodedAs when won_on_escalation so the §E.1 flywheel
+                    vote fires server-side. */}
+                <ToolbarButton
+                  onClick={() => setOutcomeModalOpen(true)}
+                  icon="sent"
+                  label="Report outcome"
+                />
+              </>
             ) : (
               <ToolbarButton
                 onClick={handleMarkSent}
@@ -619,6 +634,11 @@ function DisputesContent() {
         {markSentToast && (
           <div className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
             {markSentToast}
+          </div>
+        )}
+        {outcomeToast && (
+          <div className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+            {outcomeToast}
           </div>
         )}
       </div>
@@ -712,6 +732,26 @@ function DisputesContent() {
           onDownloadAnyway={forceDownloadCaseFile}
         />
       ) : null}
+
+      {/* S74.6 D5 §E.2 — outcome reporting modal. Rendered alongside the
+          existing toolbar modals so state lives at the page level. */}
+      <OutcomeReportingModal
+        open={outcomeModalOpen}
+        disputeId={letter.id}
+        defaultAmount={null}
+        onCancel={() => setOutcomeModalOpen(false)}
+        onSubmitted={() => {
+          setOutcomeModalOpen(false);
+          setOutcomeToast("Outcome saved. Thanks for closing the loop.");
+          setTimeout(() => setOutcomeToast(null), 6000);
+          // Refresh dispute state so the toolbar reflects the new status.
+          if (disputeId) {
+            void fetchDispute(disputeId);
+          }
+        }}
+        getIdToken={getAuthToken}
+      />
+
 
       {planContext?.insurer ? (
         <InsurerAddressCorrectionModal

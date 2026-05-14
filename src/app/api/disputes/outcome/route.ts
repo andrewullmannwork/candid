@@ -147,18 +147,47 @@ export async function POST(req: NextRequest) {
       recodedAs.code.trim().length > 0 &&
       recodedAs.codeType.trim().length > 0
     ) {
+      const recodedCode = recodedAs.code.trim();
+      const recodedCodeType = recodedAs.codeType.trim();
       try {
         await supabase
           .from("dispute_outcomes")
           .update({
-            recoded_as_code: recodedAs.code.trim(),
-            recoded_as_code_type: recodedAs.codeType.trim(),
+            recoded_as_code: recodedCode,
+            recoded_as_code_type: recodedCodeType,
           })
           .eq("id", disputeId);
-        // TODO (S74.6 follow-up): write `dispute_won_recoding` source entry on
-        // the (recodedAs.code, slug) billing_code_identity row so the peer-code
-        // engine gains a vote. Requires resolving the slug for the original
-        // line item; defer to Admin UI A3 wiring or a separate batch job.
+
+        // S74.6 D5 §E.1 — cast `dispute_won_recoding` vote on the
+        // (recodedAs.code, slug) billing_code_identity row so the peer-code
+        // engine + Pattern 1 #3 promotion threshold gains real-world signal
+        // from "the insurer paid on this alternative code." Pattern 1 #15
+        // gated inside the helper; non-verified users no-op. Non-blocking on
+        // failure — the recoded_as_code columns are already written above
+        // and provide the dispute-letter alt-code surface independent of the
+        // flywheel vote.
+        try {
+          const { recordDisputeWonRecoding } = await import(
+            "@/lib/parser/code-identity-promotion"
+          );
+          const result = await recordDisputeWonRecoding({
+            userId,
+            disputeId,
+            recodedAsCode: recodedCode,
+            recodedAsCodeType: recodedCodeType,
+          });
+          if (!result.contributedToFlywheel) {
+            console.log(
+              "[disputes/outcome] dispute_won_recoding vote skipped:",
+              result.reason,
+            );
+          }
+        } catch (voteErr) {
+          console.error(
+            "[disputes/outcome] dispute_won_recoding vote write failed (non-fatal):",
+            voteErr,
+          );
+        }
       } catch (err) {
         console.error(
           "[disputes/outcome] D5 recoded_as_code capture failed (non-fatal):",

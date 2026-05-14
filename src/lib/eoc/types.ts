@@ -18,6 +18,7 @@
  */
 
 import type { PatternP8Provenance as SharedPatternP8Provenance } from "../parser/verify-source-excerpts";
+import type { EocAcaComplianceData } from "./haiku-prompts/aca-compliance";
 
 /**
  * EOC-specific section hints per Pattern P-8 convention.
@@ -199,6 +200,15 @@ export interface EOCParseResult {
    * - preamble_only: no headings matched at all; entire doc is `other` (degenerate)
    */
   segmentation_used: "regex_only" | "regex_plus_haiku_discovery" | "haiku_discovery_only" | "preamble_only";
+  /**
+   * S74.6 D1 §A.1 — standalone ACA-compliance extraction dispatched against
+   * a bounded slice of the cleaned EOC text. Independent of the 6 priority
+   * sections because ACA signal appears in cover page / preamble / plan-summary
+   * box rather than the diagnostic sections. Null when dispatch failed; null
+   * isAcaCompliant/basis when no signal found (persistence layer applies
+   * default fallback per Subplan §1 LOCK).
+   */
+  aca_compliance: EOCSectionResult<EocAcaComplianceData> | null;
   warnings: string[];
   parse_errors: Array<{ section: EOCSectionHint; error: string }>;
   /**

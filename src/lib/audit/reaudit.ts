@@ -20,7 +20,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { runAudit } from "./index";
-import { loadCoverageMapForPlan } from "./coverage-loader";
+import { loadAcaFallbackForAudit, loadCoverageMapForPlan } from "./coverage-loader";
 import type {
   ParsedBill,
   BillLineItem,
@@ -67,6 +67,9 @@ interface ClaimRow {
   total_insurance_paid: number | null;
   total_patient_responsibility: number | null;
   insurance_plan_id?: string | null;
+  // S74.6 D2 §B — patient_name is used by the ACA fallback to match
+  // family-plan demographics. Optional because legacy callers may not select it.
+  patient_name?: string | null;
   metadata: Record<string, unknown> | null;
 }
 
@@ -194,9 +197,28 @@ export async function maybeReauditClaim(
     insurerNameForAudit = (planRow?.insurer_name as string | null) ?? null;
   }
 
-  const auditReport = await runAudit(parsedBill, planCoverage, {
-    insurerName: insurerNameForAudit,
+  // S74.6 D2 §B — ACA fallback merge for re-audit. Patient name on the claim
+  // header lets us match family-plan demographics; absence falls back to
+  // primary subscriber via the helper.
+  const acaFallback = await loadAcaFallbackForAudit({
+    supabase,
+    planId: (claim.insurance_plan_id as string | null) ?? null,
+    userId: claim.user_id as string,
+    patientName: (claim.patient_name as string | null | undefined) ?? null,
+    bill: parsedBill,
+    existingCoverageBySlug: new Set(planCoverage?.keys() ?? []),
   });
+  const mergedPlanCoverage = planCoverage ?? new Map();
+  for (const [slug, cov] of acaFallback.bySlug) {
+    if (!mergedPlanCoverage.has(slug)) mergedPlanCoverage.set(slug, cov);
+  }
+
+  const auditReport = await runAudit(
+    parsedBill,
+    mergedPlanCoverage.size > 0 ? mergedPlanCoverage : null,
+    { insurerName: insurerNameForAudit },
+    acaFallback.byLineNumber,
+  );
 
   // Group LINE-LEVEL findings by line_number for per-row metadata writes.
   // Claim-level findings (lineItems=[]) are persisted to

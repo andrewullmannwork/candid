@@ -91,12 +91,13 @@ async function processBillDocument(
     fallbackActivePlanId: profile?.active_insurance_plan_id || null,
   });
 
-  const { loadCoverageMapForPlan } = await import("@/lib/audit/coverage-loader");
+  const { loadCoverageMapForPlan, loadAcaFallbackForAudit } = await import("@/lib/audit/coverage-loader");
   const planCoverage = await loadCoverageMapForPlan(supabase, insurancePlanId);
 
   // S74.6 D3 — thread insurer_name so runAudit can apply cohort accuracy
   // adjustment (boost / informational chip / suppress per Subplan §B).
   let insurerNameForAudit: string | null = null;
+  let patientNameForAcaFallback: string | null = null;
   if (insurancePlanId) {
     const { data: planRow } = await supabase
       .from("insurance_plans")
@@ -105,10 +106,35 @@ async function processBillDocument(
       .maybeSingle();
     insurerNameForAudit = (planRow?.insurer_name as string | null) ?? null;
   }
+  // ACA fallback needs the patient name to match demographics (multi-member
+  // family plan). Bill may carry it on the parsed shape; otherwise the helper
+  // tolerates null (falls back to primary subscriber demographics).
+  patientNameForAcaFallback =
+    (parsedBill as { patientName?: string | null }).patientName ?? null;
 
-  const auditReport = await runAudit(parsedBill, planCoverage, {
-    insurerName: insurerNameForAudit,
+  // S74.6 D2 §B — load ACA-mandated zero-cost-share fallback for audit. ACA
+  // bySlug merges INTO planCoverage (existing plan rows win — registry only
+  // fires on plan miss); byLineNumber threaded separately so slug-less lines
+  // (D4 hasn't bound yet) still see coverage in F-13 + F-14 rules.
+  const acaFallback = await loadAcaFallbackForAudit({
+    supabase,
+    planId: insurancePlanId,
+    userId: doc.user_id,
+    patientName: patientNameForAcaFallback,
+    bill: parsedBill,
+    existingCoverageBySlug: new Set(planCoverage?.keys() ?? []),
   });
+  const mergedPlanCoverage = planCoverage ?? new Map();
+  for (const [slug, cov] of acaFallback.bySlug) {
+    if (!mergedPlanCoverage.has(slug)) mergedPlanCoverage.set(slug, cov);
+  }
+
+  const auditReport = await runAudit(
+    parsedBill,
+    mergedPlanCoverage.size > 0 ? mergedPlanCoverage : null,
+    { insurerName: insurerNameForAudit },
+    acaFallback.byLineNumber,
+  );
 
   // Persist claims (feature-flagged)
   let claimId: string | null = null;

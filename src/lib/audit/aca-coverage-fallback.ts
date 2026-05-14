@@ -59,11 +59,24 @@ export interface AcaFallbackResult {
    * when D4 hasn't yet bound a slug to the code.
    */
   byLineNumber: Map<number, PlanCoverageInput>;
+  /**
+   * S74.6 D1 §A.2 — plan-level ACA basis + excerpt for Coverage badge tooltip
+   * copy. Populated whenever `is_aca_compliant=TRUE`, even when no fallback
+   * coverage fires (consumers can check `bySlug.size + byLineNumber.size === 0`
+   * to detect that). `null` when the plan is not ACA-compliant or planId/userId
+   * missing.
+   */
+  planMeta: {
+    isAcaCompliant: boolean;
+    basis: string | null;
+    excerpt: string | null;
+  } | null;
 }
 
 const EMPTY_RESULT: AcaFallbackResult = {
   bySlug: new Map(),
   byLineNumber: new Map(),
+  planMeta: null,
 };
 
 const CODE_TYPE_NAMESPACE_WHITELIST = new Set([
@@ -108,10 +121,19 @@ export async function buildAcaCoverageFallback(opts: {
   // Plan ACA-compliance gate (D1 column from mig 093).
   const { data: planRow } = await opts.supabase
     .from("insurance_plans")
-    .select("is_aca_compliant")
+    .select("is_aca_compliant, aca_compliance_basis, aca_compliance_excerpt")
     .eq("id", opts.planId)
     .maybeSingle();
   if (planRow?.is_aca_compliant !== true) return EMPTY_RESULT;
+
+  // §A.2 plan-level metadata for downstream tooltip rendering. Carried even
+  // when the per-line fallback finds no matching codes (consumers can still
+  // need the basis copy when surfacing the registry status to the user).
+  const planMeta: AcaFallbackResult["planMeta"] = {
+    isAcaCompliant: true,
+    basis: (planRow.aca_compliance_basis as string | null) ?? null,
+    excerpt: (planRow.aca_compliance_excerpt as string | null) ?? null,
+  };
 
   // Candidate lines: have a billing code AND (no slug OR slug not in existing coverage).
   // Grandfathered + non-compliant plans already filtered above; remaining lines
@@ -156,6 +178,7 @@ export async function buildAcaCoverageFallback(opts: {
   const result: AcaFallbackResult = {
     bySlug: new Map(),
     byLineNumber: new Map(),
+    planMeta,
   };
 
   for (const cand of candidates) {

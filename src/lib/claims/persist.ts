@@ -379,6 +379,108 @@ export async function persistAuditResults(
       }
     }
 
+    // S74.6 D4 §D.1 + §D.2 + §D.4 — post-insert flywheel write. For each
+    // line item carrying a `code_uncategorized_description_match` finding,
+    // route to vote-recording (confident) or ambiguous-candidate (ambiguous)
+    // helpers. The line item ID is finally available here (couldn't write at
+    // audit time because INSERT hadn't fired). After the vote-write, §D.4
+    // auto-assigns the provisional slug + identity_id back to claim_line_items
+    // so the bill renders with the matched category on first view.
+    //
+    // Gated on flywheelEnabled + at least one matching finding. Non-blocking —
+    // errors logged + swallowed (the claim is still persisted, the flywheel
+    // just doesn't accumulate this user's vote on that line).
+    if (flywheelEnabled && lineItemIds.length === lineItemInserts.length) {
+      try {
+        // Resolve the auth users.id (UUID) once — vote-writes expect the DB
+        // user_id, not the firebase_uid.
+        const { data: userRow } = await supabase
+          .from("users")
+          .select("id")
+          .eq("firebase_uid", userId)
+          .maybeSingle();
+        const dbUserId = userRow?.id as string | null;
+        if (dbUserId) {
+          const {
+            recordDescriptionMatchVote,
+            recordAmbiguousCandidate,
+          } = await import("@/lib/parser/code-identity-promotion");
+
+          for (let idx = 0; idx < parsedBill.lineItems.length; idx++) {
+            const item = parsedBill.lineItems[idx];
+            const lineId = lineItemIds[idx];
+            const findings = findingsByLine.get(item.lineNumber) || [];
+            const dmFinding = findings.find(
+              (f) =>
+                f.type === "code_uncategorized_description_match" &&
+                f.descriptionMatch,
+            );
+            if (!dmFinding || !dmFinding.descriptionMatch) continue;
+            const dm = dmFinding.descriptionMatch;
+            const code = item.procedureCode || "";
+            if (!code) continue;
+            const codeType = reconcileHaikuCodeType(code, item.procedureCodeType) ?? undefined;
+            const desc = item.description || item.category || "";
+
+            try {
+              if (dm.ambiguous && dm.secondMatch) {
+                await recordAmbiguousCandidate({
+                  userId: dbUserId,
+                  billingCode: code,
+                  billingCodeType: codeType,
+                  rawDescription: desc,
+                  topMatch: {
+                    slug: dm.provisionalSlug,
+                    score: dm.haikuScore,
+                  },
+                  secondMatch: dm.secondMatch,
+                  lineItemId: lineId,
+                });
+                // §D.4 — even for ambiguous, top-1 becomes the displayed slug
+                // (user sees the best guess; admin disambiguation refines).
+                await supabase
+                  .from("claim_line_items")
+                  .update({ service_slug: dm.provisionalSlug })
+                  .eq("id", lineId)
+                  .is("service_slug", null);
+              } else {
+                const voteResult = await recordDescriptionMatchVote({
+                  userId: dbUserId,
+                  billingCode: code,
+                  billingCodeType: codeType,
+                  rawDescription: desc,
+                  proposedSlug: dm.provisionalSlug,
+                  haikuScore: dm.haikuScore,
+                  lineItemId: lineId,
+                });
+                // §D.4 — auto-assign provisional slug + identity_id. Only when
+                // the parser didn't already resolve a slug (don't overwrite
+                // direct catalog matches).
+                if (voteResult.identityId) {
+                  await supabase
+                    .from("claim_line_items")
+                    .update({
+                      service_slug: dm.provisionalSlug,
+                      billing_code_identity_id: voteResult.identityId,
+                    })
+                    .eq("id", lineId)
+                    .is("service_slug", null);
+                }
+              }
+            } catch (perLineErr) {
+              console.warn(
+                "[claims-persist] D4 flywheel write failed for line",
+                item.lineNumber,
+                perLineErr,
+              );
+            }
+          }
+        }
+      } catch (err) {
+        console.error("[claims-persist] D4 flywheel post-insert failed (non-blocking):", err);
+      }
+    }
+
     console.log(`[claims-persist] Saved claim ${claim.id}: ${lineItemInserts.length} line items, ${auditReport.findings.length} findings`);
 
     // Notify admin if any line items couldn't be mapped to a service slug (non-blocking)

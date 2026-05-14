@@ -63,7 +63,7 @@ export async function POST(
 
   const { data: claim } = await supabase
     .from("claims")
-    .select("id, source_document_id, date_of_service, total_billed, total_allowed, total_insurance_paid, total_patient_responsibility, metadata")
+    .select("id, source_document_id, date_of_service, total_billed, total_allowed, total_insurance_paid, total_patient_responsibility, metadata, user_id, patient_name, insurance_plan_id")
     .eq("id", dispute.claim_id)
     .eq("user_id", user.id)
     .maybeSingle();
@@ -138,12 +138,45 @@ export async function POST(
 
   // F-2 — load plan coverage so missing_adjustment + insurance_underpayment
   // rules can compute should_owe against plan terms.
-  const { loadCoverageMapForPlan } = await import("@/lib/audit/coverage-loader");
-  const planCoverage = await loadCoverageMapForPlan(
+  const { loadAcaFallbackForAudit, loadCoverageMapForPlan } = await import("@/lib/audit/coverage-loader");
+  const planIdForAudit =
+    (claim as { insurance_plan_id?: string | null }).insurance_plan_id ?? null;
+  const planCoverage = await loadCoverageMapForPlan(supabase, planIdForAudit);
+
+  // S74.6 D2 §B — ACA fallback for dispute-rerun audit. Mirrors process-chunk
+  // + reaudit pattern: bySlug merged INTO planCoverage; byLineNumber threaded
+  // parallel so ACA-mandated lines with no slug still get should_owe=0.
+  const acaFallback = await loadAcaFallbackForAudit({
     supabase,
-    (claim as { insurance_plan_id?: string | null }).insurance_plan_id ?? null,
+    planId: planIdForAudit,
+    userId: claim.user_id as string,
+    patientName: (claim.patient_name as string | null | undefined) ?? null,
+    bill: parsedBill,
+    existingCoverageBySlug: new Set(planCoverage?.keys() ?? []),
+  });
+  const mergedPlanCoverage = planCoverage ?? new Map();
+  for (const [slug, cov] of acaFallback.bySlug) {
+    if (!mergedPlanCoverage.has(slug)) mergedPlanCoverage.set(slug, cov);
+  }
+
+  // S74.6 D3 §C.2 — thread insurer_name for cohort accuracy adjustment on
+  // dispute-rerun path (S87 left this site passing no insurerName).
+  let insurerNameForAudit: string | null = null;
+  if (planIdForAudit) {
+    const { data: planRow } = await supabase
+      .from("insurance_plans")
+      .select("insurer_name")
+      .eq("id", planIdForAudit)
+      .maybeSingle();
+    insurerNameForAudit = (planRow?.insurer_name as string | null) ?? null;
+  }
+
+  const report = await runAudit(
+    parsedBill,
+    mergedPlanCoverage.size > 0 ? mergedPlanCoverage : null,
+    { insurerName: insurerNameForAudit },
+    acaFallback.byLineNumber,
   );
-  const report = await runAudit(parsedBill, planCoverage);
 
   // Group findings by line_number so we can write them back to the matching
   // claim_line_items row. A single finding may flag multiple lines (e.g.,

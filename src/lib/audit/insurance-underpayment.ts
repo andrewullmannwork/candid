@@ -32,7 +32,7 @@
  */
 
 import type { ParsedBill, AuditFinding } from "../billing/types";
-import type { PlanCoverageMap } from "./coverage-loader";
+import type { AcaFallbackLineCoverageMap, PlanCoverageMap } from "./coverage-loader";
 import { computeShouldOwe } from "../claims/recovery-math";
 import { randomUUID } from "crypto";
 
@@ -41,8 +41,12 @@ const INSURANCE_PAID_ZERO_THRESHOLD = 1.0; // ≤ $1.00 treated as "zero" (round
 export function runInsuranceUnderpaymentCheck(
   bill: ParsedBill,
   planCoverage: PlanCoverageMap | null,
+  acaFallback: AcaFallbackLineCoverageMap | null = null,
 ): AuditFinding[] {
-  if (!planCoverage) return [];
+  // S74.6 D2 §B: ACA fallback can supply coverage even when slug-keyed plan
+  // coverage is empty (ACA-mandated vaccine on a plan whose plan_covered_services
+  // doesn't list the slug). Short-circuit only when BOTH coverage sources empty.
+  if (!planCoverage && !acaFallback) return [];
 
   const findings: AuditFinding[] = [];
 
@@ -54,14 +58,13 @@ export function runInsuranceUnderpaymentCheck(
     const insPaid = item.insurancePaid ?? null;
     if (insPaid == null || insPaid > INSURANCE_PAID_ZERO_THRESHOLD) continue;
 
-    // Coverage lookup keyed on category — same heuristic as rules.ts (we
-    // pass item.category as the slug; categorization flywheel sets this on
-    // claim_line_items.service_slug, which BillLineItem.category mirrors
-    // after persist.ts threads identity slug). When coverage absent or
-    // explicitly not-covered, skip.
+    // Coverage lookup: prefer ACA-mandated zero-cost-share by line number,
+    // fall back to slug-keyed plan coverage. ACA-mandated lines may have no
+    // slug (D4 hasn't bound one yet) — line-level lookup handles that case.
     const slug = item.category ?? null;
-    if (!slug) continue;
-    const coverage = planCoverage.get(slug);
+    const acaCov = acaFallback?.get(item.lineNumber) ?? null;
+    const slugCov = planCoverage && slug ? planCoverage.get(slug) ?? null : null;
+    const coverage = acaCov ?? slugCov;
     if (!coverage || coverage.covered !== true) continue;
 
     // Patient must actually be carrying a burden — either still-outstanding

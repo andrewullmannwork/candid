@@ -15,8 +15,36 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { PlanCoverageInput } from "../claims/recovery-math";
+import type { ParsedBill } from "../billing/types";
+import { buildAcaCoverageFallback } from "./aca-coverage-fallback";
 
 export type PlanCoverageMap = Map<string, PlanCoverageInput>;
+
+/**
+ * S74.6 D2 §B — audit-side ACA fallback. Coverage indexed by line number for
+ * uncategorized lines (no slug yet) that hit the ACA registry. Audit rules
+ * prefer this map over slug-keyed lookups so F-13 missing_adjustment + F-14
+ * insurance_underpayment see covered coverage on ACA-mandated vaccine lines
+ * even when D4 hasn't bound a slug to the code.
+ */
+export type AcaFallbackLineCoverageMap = Map<number, PlanCoverageInput>;
+
+export interface AuditAcaFallback {
+  /**
+   * Coverage for slug-keyed lookups. Slugs PRESENT in the plan's
+   * plan_covered_services are NOT included here (registry only fires on plan
+   * miss); callers should merge this into their existing planCoverage map
+   * with plan rows winning on key conflict.
+   */
+  bySlug: PlanCoverageMap;
+  /** Per-line coverage for uncategorized lines (slug=null). */
+  byLineNumber: AcaFallbackLineCoverageMap;
+}
+
+const EMPTY_AUDIT_ACA: AuditAcaFallback = {
+  bySlug: new Map(),
+  byLineNumber: new Map(),
+};
 
 /**
  * S74.6 D2 — Read the plan's `is_aca_compliant` flag for audit rules that
@@ -45,6 +73,48 @@ export async function loadAcaCompliantFlagForPlan(
   }
   if (!data) return null;
   return (data.is_aca_compliant as boolean | null) ?? null;
+}
+
+/**
+ * Thin audit-pipeline wrapper around `buildAcaCoverageFallback`. Converts a
+ * `ParsedBill` into the line-item shape the helper expects and returns the
+ * resulting bySlug + byLineNumber maps for audit-side merge. Callers MUST
+ * have already loaded `planCoverage` so we can filter out lines whose slug
+ * is already covered by the plan (registry only fires on plan miss).
+ *
+ * Returns empty maps when planId/userId missing or plan is not ACA-compliant
+ * (mirrors `buildAcaCoverageFallback`'s gate behavior).
+ */
+export async function loadAcaFallbackForAudit(opts: {
+  supabase: SupabaseClient;
+  planId: string | null | undefined;
+  userId: string | null | undefined;
+  patientName: string | null | undefined;
+  bill: ParsedBill;
+  existingCoverageBySlug: ReadonlySet<string>;
+}): Promise<AuditAcaFallback> {
+  if (!opts.planId || !opts.userId) return EMPTY_AUDIT_ACA;
+  const fallback = await buildAcaCoverageFallback({
+    supabase: opts.supabase,
+    planId: opts.planId,
+    userId: opts.userId,
+    patientName: opts.patientName,
+    lineItems: opts.bill.lineItems.map((li) => ({
+      lineNumber: li.lineNumber,
+      procedureCode: li.procedureCode ?? null,
+      // BillLineItem doesn't carry a code-type; let the fallback helper infer
+      // via inferProcedureCodeType.
+      procedureCodeType: null,
+      // BillLineItem.category mirrors claim_line_items.service_slug after
+      // persist runs the categorization flywheel (S74.5 D6 wiring).
+      serviceSlug: li.category ?? null,
+    })),
+    existingCoverageBySlug: opts.existingCoverageBySlug,
+  });
+  return {
+    bySlug: fallback.bySlug,
+    byLineNumber: fallback.byLineNumber,
+  };
 }
 
 export async function loadCoverageMapForPlan(

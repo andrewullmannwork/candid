@@ -127,6 +127,10 @@ async function applyCorrectorUpsert(opts: {
   source: CorroboratorSource;
   rawDescription: string;
   lineItemId: string | null;
+  // S74.6 D4 §D.3 — Haiku similarity 0..1 for description-match sources.
+  // null/undefined for non-Haiku sources (user_correction, bill_observed,
+  // admin_seed, dispute_won_recoding).
+  haikuScore?: number | null;
 }): Promise<UpsertCorrectorResult | null> {
   const supabase = createServerClient();
   const userHash = hashUserForIdentity(opts.userId, opts.identityId);
@@ -138,6 +142,7 @@ async function applyCorrectorUpsert(opts: {
     p_source: opts.source,
     p_raw_description: opts.rawDescription,
     p_claim_line_item_id: opts.lineItemId,
+    p_haiku_score: opts.haikuScore ?? null,
   });
 
   if (error || !data) {
@@ -497,6 +502,363 @@ export async function getConflictedRowsForIdentity(
     }
   }
   return rows;
+}
+
+// ============================================================================
+// S74.6 D4 §D.1 + §D.2 — Description-match vote-recording + ambiguous-candidate
+// writes. The D4 audit rule emits findings with provisional slug + haiku score
+// in metadata; persist.ts reads that metadata after line-item insert and routes
+// to one of these helpers (confident → vote; ambiguous → 2-row + admin queue).
+// ============================================================================
+
+export interface RecordDescriptionMatchVoteResult {
+  ok: boolean;
+  contributedToFlywheel: boolean;
+  reason?: string;
+  identityId?: string;
+  promotion?: PromotionEvaluation;
+}
+
+/**
+ * §D.1 — Cast a Haiku-confident description-match vote on the
+ * billing_code_identity row for (billingCode, billingCodeType, signature).
+ * Finds or creates the row (mirrors recordUserCorrection's lookup-or-propose
+ * pattern), writes a `bill_observed_description_match` SourceEntry with the
+ * Haiku score, then runs the vote-tally promotion evaluator.
+ *
+ * Pattern 1 #15 gated: skipped silently for non-verified users. The audit
+ * pipeline still emits the finding; only the flywheel write is skipped.
+ */
+export async function recordDescriptionMatchVote(opts: {
+  userId: string;
+  billingCode: string;
+  billingCodeType: ProcedureCodeType | undefined;
+  rawDescription: string;
+  proposedSlug: string;
+  haikuScore: number;
+  lineItemId: string | null;
+}): Promise<RecordDescriptionMatchVoteResult> {
+  if (!opts.userId) return { ok: false, contributedToFlywheel: false, reason: "no_user_id" };
+  const verified = await isUserFullyVerified(opts.userId);
+  if (!verified) {
+    return { ok: true, contributedToFlywheel: false, reason: "user_not_email_phone_verified" };
+  }
+
+  const codeType = opts.billingCodeType ?? inferProcedureCodeType(opts.billingCode);
+  if (!codeType) {
+    return { ok: false, contributedToFlywheel: false, reason: "unknown_code_type" };
+  }
+
+  const signature = normalizeDescriptionSignature(opts.rawDescription, opts.billingCode);
+  if (!signature) {
+    return { ok: true, contributedToFlywheel: false, reason: "empty_signature" };
+  }
+
+  let identity = await lookupExactSignature(opts.billingCode, codeType, signature);
+  if (!identity) {
+    identity = await proposeNewSignature({
+      code: opts.billingCode,
+      codeType,
+      signature,
+      rawDescription: opts.rawDescription,
+      proposedSlug: null, // slug set only on promotion
+      proposedByUserId: opts.userId,
+    });
+  }
+  if (!identity) {
+    return { ok: true, contributedToFlywheel: false, reason: "identity_create_failed" };
+  }
+
+  await applyCorrectorUpsert({
+    identityId: identity.identityId,
+    userId: opts.userId,
+    proposedSlug: opts.proposedSlug,
+    source: "bill_observed_description_match",
+    rawDescription: opts.rawDescription,
+    lineItemId: opts.lineItemId,
+    haikuScore: opts.haikuScore,
+  });
+
+  const promotion = await evaluateMappingPromotion(
+    identity.identityId,
+    opts.userId,
+    "description-match-vote",
+  );
+
+  return {
+    ok: true,
+    contributedToFlywheel: true,
+    identityId: identity.identityId,
+    promotion,
+  };
+}
+
+export interface RecordAmbiguousCandidateResult {
+  ok: boolean;
+  contributedToFlywheel: boolean;
+  reason?: string;
+  /** Both identity rows that received the candidate source entries. */
+  identityIds?: string[];
+  /** True when an admin-queue row was inserted for this ambiguity. */
+  adminQueueEnqueued?: boolean;
+}
+
+/**
+ * §D.2 — Write TWO `billing_code_identity` rows (one per ambiguous candidate
+ * slug), both carrying a `bill_observed_description_match_candidate` source
+ * entry (non-voting per the CorroboratorSource vote-rules), and enqueue an
+ * admin review row for human disambiguation.
+ *
+ * Both rows share the same `(billingCode, billingCodeType, description_signature)`
+ * tuple — proposeNewSignature handles the find-or-create. The DIFFERENT slugs
+ * are encoded only in the SourceEntry's `proposed_slug` field (non-voting), not
+ * on the identity row's `service_slug` (which stays null until promotion).
+ *
+ * Edge case: when both candidates resolve to the SAME identity row (same code +
+ * signature; only difference is the slug guess), we write one row with two
+ * candidate sources from the same user. That's correct — the admin queue row
+ * still captures the disambiguation need.
+ *
+ * Pattern 1 #15 gated.
+ */
+export async function recordAmbiguousCandidate(opts: {
+  userId: string;
+  billingCode: string;
+  billingCodeType: ProcedureCodeType | undefined;
+  rawDescription: string;
+  topMatch: { slug: string; score: number };
+  secondMatch: { slug: string; score: number };
+  lineItemId: string | null;
+}): Promise<RecordAmbiguousCandidateResult> {
+  if (!opts.userId) return { ok: false, contributedToFlywheel: false, reason: "no_user_id" };
+  const verified = await isUserFullyVerified(opts.userId);
+  if (!verified) {
+    return { ok: true, contributedToFlywheel: false, reason: "user_not_email_phone_verified" };
+  }
+
+  const codeType = opts.billingCodeType ?? inferProcedureCodeType(opts.billingCode);
+  if (!codeType) {
+    return { ok: false, contributedToFlywheel: false, reason: "unknown_code_type" };
+  }
+
+  const signature = normalizeDescriptionSignature(opts.rawDescription, opts.billingCode);
+  if (!signature) {
+    return { ok: true, contributedToFlywheel: false, reason: "empty_signature" };
+  }
+
+  // Both candidates share the same identity row (same code + signature).
+  let identity = await lookupExactSignature(opts.billingCode, codeType, signature);
+  if (!identity) {
+    identity = await proposeNewSignature({
+      code: opts.billingCode,
+      codeType,
+      signature,
+      rawDescription: opts.rawDescription,
+      proposedSlug: null,
+      proposedByUserId: opts.userId,
+    });
+  }
+  if (!identity) {
+    return { ok: true, contributedToFlywheel: false, reason: "identity_create_failed" };
+  }
+
+  // Write the top-1 candidate as the active SourceEntry (one user can only
+  // have ONE entry per identity per RPC contract; the admin queue row carries
+  // BOTH candidate slugs so the admin can pick the correct one).
+  await applyCorrectorUpsert({
+    identityId: identity.identityId,
+    userId: opts.userId,
+    proposedSlug: opts.topMatch.slug, // non-voting (source type filtered out by tally)
+    source: "bill_observed_description_match_candidate",
+    rawDescription: opts.rawDescription,
+    lineItemId: opts.lineItemId,
+    haikuScore: opts.topMatch.score,
+  });
+
+  // Flip the identity's promotion_state to 'ambiguous_candidate' so the admin
+  // UI can filter for these. Mig 094 widened the CHECK to admit this value.
+  // Existing state semantics preserved: any later user_correction promotes the
+  // row OUT of ambiguous_candidate state via promote_with_slug.
+  const supabase = createServerClient();
+  await supabase
+    .from("billing_code_identity")
+    .update({ promotion_state: "ambiguous_candidate" })
+    .eq("id", identity.identityId)
+    .eq("promotion_state", "proposed"); // never overwrite corroborated / admin_verified
+
+  // Enqueue an admin review row carrying both candidate slugs. The existing
+  // code_identity_admin_review_queue (mig 087) has columns: id, identity_id,
+  // proposed_by_user_id, candidate_slugs JSONB, status, created_at. Inserted
+  // only when a row for this (identity, user) pair doesn't already exist.
+  let adminQueueEnqueued = false;
+  try {
+    const { data: existingQ } = await supabase
+      .from("code_identity_admin_review_queue")
+      .select("id")
+      .eq("identity_id", identity.identityId)
+      .eq("proposed_by_user_id", opts.userId)
+      .maybeSingle();
+    if (!existingQ) {
+      const { error: queueErr } = await supabase
+        .from("code_identity_admin_review_queue")
+        .insert({
+          identity_id: identity.identityId,
+          proposed_by_user_id: opts.userId,
+          candidate_slugs: [
+            { slug: opts.topMatch.slug, score: opts.topMatch.score },
+            { slug: opts.secondMatch.slug, score: opts.secondMatch.score },
+          ],
+          status: "pending",
+          source_line_item_id: opts.lineItemId,
+        });
+      if (!queueErr) adminQueueEnqueued = true;
+      else console.warn("[code-identity-promotion] admin queue insert failed", queueErr);
+    } else {
+      // Already queued for this user; no double-insert. Counts as enqueued
+      // for caller's purposes.
+      adminQueueEnqueued = true;
+    }
+  } catch (err) {
+    console.warn("[code-identity-promotion] admin queue write threw", err);
+  }
+
+  return {
+    ok: true,
+    contributedToFlywheel: true,
+    identityIds: [identity.identityId],
+    adminQueueEnqueued,
+  };
+}
+
+// ============================================================================
+// S74.6 D5 §E.1 — Dispute-won recoding vote-recording.
+// ============================================================================
+
+export interface RecordDisputeWonRecodingResult {
+  ok: boolean;
+  contributedToFlywheel: boolean;
+  reason?: string;
+  identityId?: string;
+  promotion?: PromotionEvaluation;
+}
+
+/**
+ * §E.1 — When a dispute marked `won_on_escalation` captures `recodedAs={code,
+ * codeType}`, write a `dispute_won_recoding` SourceEntry on the
+ * `(recodedAsCode, recodedAsCodeType, <signature-from-original-line>)`
+ * identity row. The signal: "the insurer paid on the alternative code for
+ * this service description" — strong real-world evidence that the recoded
+ * code maps to the same service slug the original line was bound to.
+ *
+ * Description signature is computed from the ORIGINAL line's description
+ * paired with the RECODED code (per Q-S87-C4 Option A — trust the
+ * description_signature dimension; the recoding signal says "this service
+ * description maps to BOTH codes"). Original slug becomes the proposed_slug
+ * vote on the new identity row.
+ *
+ * Pattern 1 #15 gated.
+ */
+export async function recordDisputeWonRecoding(opts: {
+  userId: string;
+  disputeId: string;
+  recodedAsCode: string;
+  recodedAsCodeType: ProcedureCodeType | string;
+}): Promise<RecordDisputeWonRecodingResult> {
+  if (!opts.userId) return { ok: false, contributedToFlywheel: false, reason: "no_user_id" };
+  const verified = await isUserFullyVerified(opts.userId);
+  if (!verified) {
+    return { ok: true, contributedToFlywheel: false, reason: "user_not_email_phone_verified" };
+  }
+
+  const supabase = createServerClient();
+
+  // 1. Read the dispute's primary line item — it carries the original code's
+  // description + slug needed to build the new identity row.
+  const { data: dispute } = await supabase
+    .from("dispute_outcomes")
+    .select("claim_line_item_id")
+    .eq("id", opts.disputeId)
+    .maybeSingle();
+  const primaryLineItemId = dispute?.claim_line_item_id as string | null;
+  if (!primaryLineItemId) {
+    return {
+      ok: true,
+      contributedToFlywheel: false,
+      reason: "dispute_has_no_primary_line_item",
+    };
+  }
+
+  const { data: line } = await supabase
+    .from("claim_line_items")
+    .select("id, description, service_slug")
+    .eq("id", primaryLineItemId)
+    .maybeSingle();
+  const originalDescription = (line?.description as string | null) ?? null;
+  const originalSlug = (line?.service_slug as string | null) ?? null;
+  if (!originalDescription || !originalSlug) {
+    // Without a slug to vote for, we can't cast a meaningful recoding vote.
+    return {
+      ok: true,
+      contributedToFlywheel: false,
+      reason: "original_line_missing_description_or_slug",
+    };
+  }
+
+  const codeType = (
+    typeof opts.recodedAsCodeType === "string"
+      ? inferProcedureCodeType(opts.recodedAsCode) ?? (opts.recodedAsCodeType as ProcedureCodeType)
+      : opts.recodedAsCodeType
+  ) as ProcedureCodeType | undefined;
+  if (!codeType) {
+    return { ok: false, contributedToFlywheel: false, reason: "unknown_code_type" };
+  }
+
+  // 2. Compute signature using the ORIGINAL description paired with the
+  // RECODED code (per Q-S87-C4 Option A).
+  const signature = normalizeDescriptionSignature(originalDescription, opts.recodedAsCode);
+  if (!signature) {
+    return { ok: true, contributedToFlywheel: false, reason: "empty_signature" };
+  }
+
+  // 3. Find or create the identity row for the recoded code.
+  let identity = await lookupExactSignature(opts.recodedAsCode, codeType, signature);
+  if (!identity) {
+    identity = await proposeNewSignature({
+      code: opts.recodedAsCode,
+      codeType,
+      signature,
+      rawDescription: originalDescription,
+      proposedSlug: null,
+      proposedByUserId: opts.userId,
+    });
+  }
+  if (!identity) {
+    return { ok: true, contributedToFlywheel: false, reason: "identity_create_failed" };
+  }
+
+  // 4. Cast the dispute-won-recoding vote toward the ORIGINAL slug.
+  await applyCorrectorUpsert({
+    identityId: identity.identityId,
+    userId: opts.userId,
+    proposedSlug: originalSlug,
+    source: "dispute_won_recoding",
+    rawDescription: originalDescription,
+    lineItemId: primaryLineItemId,
+  });
+
+  // 5. Evaluate promotion.
+  const promotion = await evaluateMappingPromotion(
+    identity.identityId,
+    opts.userId,
+    "dispute-won-recoding",
+  );
+
+  return {
+    ok: true,
+    contributedToFlywheel: true,
+    identityId: identity.identityId,
+    promotion,
+  };
 }
 
 // ============================================================================

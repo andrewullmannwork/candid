@@ -108,7 +108,7 @@ export async function POST(req: NextRequest) {
           const { isFeatureEnabled } = await import("@/lib/config/product-flags");
           const { data: userForFlag } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
           const { resolveClaimPlanContext } = await import("@/lib/claims/plan-year-resolver");
-          const { loadCoverageMapForPlan } = await import("@/lib/audit/coverage-loader");
+          const { loadAcaFallbackForAudit, loadCoverageMapForPlan } = await import("@/lib/audit/coverage-loader");
           const { data: profile } = await supabase.from("profiles").select("active_insurance_plan_id").eq("user_id", doc.user_id).single();
           const { planId, planYear } = await resolveClaimPlanContext(supabase, {
             userId: doc.user_id,
@@ -117,7 +117,41 @@ export async function POST(req: NextRequest) {
           });
           const planCoverage = await loadCoverageMapForPlan(supabase, planId);
 
-          const auditReport = await runAudit(parsedBill, planCoverage);
+          // S74.6 D2 §B — ACA fallback merge for admin-driven re-audit. Same
+          // pattern as process-chunk + reaudit (registry only fires on plan
+          // miss; bySlug merged into planCoverage; byLineNumber passed parallel).
+          const acaFallback = await loadAcaFallbackForAudit({
+            supabase,
+            planId,
+            userId: doc.user_id,
+            patientName: (parsedBill as { patientName?: string | null }).patientName ?? null,
+            bill: parsedBill,
+            existingCoverageBySlug: new Set(planCoverage?.keys() ?? []),
+          });
+          const mergedPlanCoverage = planCoverage ?? new Map();
+          for (const [slug, cov] of acaFallback.bySlug) {
+            if (!mergedPlanCoverage.has(slug)) mergedPlanCoverage.set(slug, cov);
+          }
+
+          // S74.6 D3 §C.2 — thread insurer_name for cohort accuracy adjustment
+          // on admin re-classify path (S87 left this site passing no insurerName;
+          // findings emitted at baseline confidence with no adjustment).
+          let insurerNameForAudit: string | null = null;
+          if (planId) {
+            const { data: planRow } = await supabase
+              .from("insurance_plans")
+              .select("insurer_name")
+              .eq("id", planId)
+              .maybeSingle();
+            insurerNameForAudit = (planRow?.insurer_name as string | null) ?? null;
+          }
+
+          const auditReport = await runAudit(
+            parsedBill,
+            mergedPlanCoverage.size > 0 ? mergedPlanCoverage : null,
+            { insurerName: insurerNameForAudit },
+            acaFallback.byLineNumber,
+          );
 
           // Persist claims
           try {

@@ -25,6 +25,7 @@
  */
 
 import { callHaikuWithCache } from "../haiku-client/base";
+import { guardedHaikuCall } from "../haiku-client/spend-guard";
 import { createServerClient } from "../supabase/server";
 import { isFeatureEnabled } from "../config/product-flags";
 import { randomUUID } from "crypto";
@@ -144,18 +145,28 @@ export async function scoreDescriptionAgainstCatalog(opts: {
   const catalogBlock = opts.catalogSlugs.join("\n");
   const systemPrompt = `${INSTRUCTIONS}\n\n## CATALOG\n\n${catalogBlock}\n\n## DESCRIPTION TO MATCH:\n`;
 
-  let haikuRaw: HaikuResponse;
-  try {
-    const result = await callHaikuWithCache<HaikuResponse>({
-      systemPrompt,
-      userContent: opts.description.trim(),
-      sectionLabel: "description-service-match",
-    });
-    haikuRaw = result.data;
-  } catch (err) {
-    console.warn("[description-service-match] haiku error", err);
+  // S74.6 D-cost §F.1 — wrap the Haiku call with the spend-cap guard. The
+  // guard returns `paused: true` when the user is already over their daily
+  // $10 cap (or when this call would trip it). Tripping the cap fires the
+  // §F.3 admin alert via the spend-guard helper.
+  const descTrim = (opts.description ?? "").trim();
+  const guarded = await guardedHaikuCall(
+    opts.userId,
+    () =>
+      callHaikuWithCache<HaikuResponse>({
+        systemPrompt,
+        userContent: descTrim,
+        sectionLabel: "description-service-match",
+      }),
+  );
+  if (guarded.paused) {
+    return { ...empty, skippedReason: "budget_exceeded" };
+  }
+  if (!guarded.data) {
+    console.warn("[description-service-match] haiku error", guarded.reason);
     return { ...empty, skippedReason: "haiku_error" };
   }
+  const haikuRaw: HaikuResponse = guarded.data;
 
   const validSlugs = new Set(opts.catalogSlugs);
   const candidates: DescriptionMatchCandidate[] = [];
@@ -224,6 +235,8 @@ function similarityToAuditConfidence(score: number): number {
 function buildProvisionalFinding(
   item: BillLineItem,
   match: DescriptionMatchCandidate,
+  ambiguous: boolean = false,
+  secondMatch: DescriptionMatchCandidate | null = null,
 ): AuditFinding {
   return {
     id: randomUUID(),
@@ -237,6 +250,17 @@ function buildProvisionalFinding(
     billedAmount: item.billedAmount,
     confidence: similarityToAuditConfidence(match.score),
     actionable: false,
+    // S74.6 D4 §D.1 + §D.2 — carry the provisional slug + score so persist.ts
+    // can route to recordDescriptionMatchVote (confident) or
+    // recordAmbiguousCandidate (ambiguous) after line item insert.
+    descriptionMatch: {
+      provisionalSlug: match.slug,
+      haikuScore: match.score,
+      ambiguous,
+      secondMatch: secondMatch
+        ? { slug: secondMatch.slug, score: secondMatch.score }
+        : null,
+    },
   };
 }
 
@@ -309,11 +333,16 @@ export async function runDescriptionMatchCheck(
       continue;
     }
     if (result.ambiguous) {
-      // For v1 (no admin UI yet), surface the top-1 as provisional + a hint in
-      // the description that the alternative is similar. Admin disambiguation
-      // queue work (mig 094 ambiguous_candidate rows + /admin/code-identity-review
-      // extension) is the D4 follow-up.
-      const provisional = buildProvisionalFinding(item, result.topMatch);
+      // §D.2 — surface top-1 as provisional with a hint that the alternative
+      // is similar. Persist routes via recordAmbiguousCandidate (writes both
+      // candidate slugs + admin queue row) based on the `ambiguous: true`
+      // flag in metadata.
+      const provisional = buildProvisionalFinding(
+        item,
+        result.topMatch,
+        true,
+        result.secondMatch ?? null,
+      );
       if (result.secondMatch) {
         provisional.description += ` (Also similar: "${result.secondMatch.slug.replace(/_/g, " ")}" — admin may disambiguate.)`;
       }

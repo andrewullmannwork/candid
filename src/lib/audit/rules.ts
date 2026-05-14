@@ -7,7 +7,8 @@ import type {
   AuditFinding,
   CMSPPLRate,
 } from "../billing/types";
-import type { PlanCoverageMap } from "./coverage-loader";
+import type { AcaFallbackLineCoverageMap, PlanCoverageMap } from "./coverage-loader";
+import type { PlanCoverageInput } from "../claims/recovery-math";
 import { computeShouldOwe } from "../claims/recovery-math";
 import { randomUUID } from "crypto";
 
@@ -15,7 +16,34 @@ type AuditRule = (
   bill: ParsedBill,
   benchmarks: Map<string, CMSPPLRate>,
   planCoverage: PlanCoverageMap | null,
+  acaFallback: AcaFallbackLineCoverageMap | null,
 ) => AuditFinding[];
+
+/**
+ * Resolve the most specific coverage entry for a line.
+ *
+ * S74.6 D2 §B — ACA-mandated zero-cost-share fallback (`acaFallback` keyed by
+ * line number) takes precedence over plan-slug coverage because ACA preventive
+ * lines are universally $0 by federal law even when plan_covered_services has
+ * no row (slug never bound) or has a stale row. Plan-slug lookup is the
+ * fallback when ACA fallback is absent for this line.
+ */
+function resolveCoverageForLine(
+  item: BillLineItem,
+  planCoverage: PlanCoverageMap | null,
+  acaFallback: AcaFallbackLineCoverageMap | null,
+  serviceSlug: string | null,
+): PlanCoverageInput | null {
+  if (acaFallback) {
+    const lineCov = acaFallback.get(item.lineNumber);
+    if (lineCov) return lineCov;
+  }
+  if (planCoverage && serviceSlug) {
+    const slugCov = planCoverage.get(serviceSlug);
+    if (slugCov) return slugCov;
+  }
+  return null;
+}
 
 /**
  * Per-line plan-defined cost share — defaults to 0 when planCoverage is null
@@ -28,14 +56,14 @@ type AuditRule = (
  * unknown is to use the claim-level coverage if exactly one applies, OR 0.
  */
 function shouldOweForLine(
-  _item: BillLineItem,
+  item: BillLineItem,
   planCoverage: PlanCoverageMap | null,
+  acaFallback: AcaFallbackLineCoverageMap | null,
   serviceSlug: string | null,
 ): number {
-  if (!planCoverage || !serviceSlug) return 0;
-  const cov = planCoverage.get(serviceSlug);
+  const cov = resolveCoverageForLine(item, planCoverage, acaFallback, serviceSlug);
   if (!cov) return 0;
-  return computeShouldOwe(_item.billedAmount, cov);
+  return computeShouldOwe(item.billedAmount, cov);
 }
 
 // ============================================================================
@@ -233,7 +261,7 @@ const checkUnbundling: AuditRule = (bill) => {
 // user-recovery target (patient_responsibility − should_owe per plan), not
 // the contractual writeoff amount. Copy frames the dispute in user terms:
 // "You shouldn't owe more than $X for [service]; dispute the extra $Y."
-const checkMissingAdjustments: AuditRule = (bill, _benchmarks, planCoverage) => {
+const checkMissingAdjustments: AuditRule = (bill, _benchmarks, planCoverage, acaFallback) => {
   const findings: AuditFinding[] = [];
 
   for (const item of bill.lineItems) {
@@ -266,12 +294,17 @@ const checkMissingAdjustments: AuditRule = (bill, _benchmarks, planCoverage) => 
     // F-3: recovery target = patient_responsibility − should_owe. When plan
     // coverage isn't known for this slug, fall back to the contractual gap
     // (preserves legacy behavior for un-categorized lines).
-    const shouldOwe = shouldOweForLine(item, planCoverage, item.category ?? null);
+    // S74.6 D2 §B: acaFallback layer takes precedence over plan-slug lookup
+    // for ACA-mandated preventive lines (should_owe=0 makes the recovery
+    // target = full patient_responsibility for those lines).
+    const slug = item.category ?? null;
+    const lineCoverage = resolveCoverageForLine(item, planCoverage, acaFallback, slug);
+    const shouldOwe = shouldOweForLine(item, planCoverage, acaFallback, slug);
     const recoveryTarget = Math.max(
       0,
       item.patientResponsibility - shouldOwe,
     );
-    const useRecoveryFraming = shouldOwe > 0 || (planCoverage && planCoverage.get(item.category ?? "")?.covered === true);
+    const useRecoveryFraming = shouldOwe > 0 || lineCoverage?.covered === true;
     const dollarOvercharge = useRecoveryFraming ? recoveryTarget : expectedAdjustment;
 
     const title = useRecoveryFraming

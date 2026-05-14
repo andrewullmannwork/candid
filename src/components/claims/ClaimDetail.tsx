@@ -47,6 +47,9 @@ interface LineItem {
     coinsurance: number | null;
     source: string | null;
   } | null;
+  // S74.6 D2 — which path produced the line's coverage row. Drives the §A.2
+  // ACA tooltip on the Coverage badge (only when 'aca_zero_cost_share').
+  coverageSource?: string | null;
   recovery?: {
     billed: number;
     // Mig 092 / Session 85 — patient-aware fields take precedence; legacy
@@ -121,6 +124,13 @@ interface ClaimData {
     categorizationFlywheelV1?: boolean;
   };
   reaudit?: ReauditOutcome | null;
+  // S74.6 D1 §A.2 — plan-level ACA basis + excerpt for Coverage badge tooltip.
+  // null when plan is not ACA-compliant.
+  acaCompliance?: {
+    isAcaCompliant: boolean;
+    basis: string | null;
+    excerpt: string | null;
+  } | null;
 }
 
 interface DisputeDetail {
@@ -150,6 +160,41 @@ const COVERAGE_BADGE: Record<string, { label: string; className: string }> = {
   not_covered: { label: "Not Covered", className: "text-red-700 bg-red-50" },
   unknown: { label: "Unknown", className: "text-gray-500 bg-gray-100" },
 };
+
+// S74.6 D1 §A.2 — Coverage-badge tooltip copy for lines covered via the
+// ACA-mandated zero-cost-share registry (coverageSource === 'aca_zero_cost_share').
+// Copy varies by the plan's aca_compliance_basis so the user knows how
+// confident we are about ACA applicability — "explicit_attestation" is the
+// strongest claim, "unknown" is the weakest. When an excerpt is available
+// it's appended as supporting evidence.
+function buildAcaTooltip(
+  basis: string | null,
+  excerpt: string | null,
+): string {
+  let body: string;
+  switch (basis) {
+    case "explicit_attestation":
+      body = "Your plan documents confirm ACA-compliant coverage for this service at $0.";
+      break;
+    case "inferred_marketplace":
+      body =
+        "Your plan was purchased through the ACA marketplace, so this service is covered at $0 by federal law. Confirm with your insurer if uncertain.";
+      break;
+    case "inferred_employer_post_2010":
+      body =
+        "Your employer-sponsored plan is presumed ACA-compliant (effective ≥2010, no grandfathered language). Confirm with your insurer if uncertain.";
+      break;
+    case "unknown":
+    case null:
+    default:
+      body =
+        "We assumed ACA coverage for this preventive service. Confirm with your insurer if uncertain.";
+  }
+  if (excerpt && excerpt.length > 0) {
+    return `${body}\n\nEvidence from your plan: "${excerpt}"`;
+  }
+  return body;
+}
 
 const SEVERITY_COLORS: Record<string, string> = {
   critical: "text-red-700 bg-red-50 border-red-200",
@@ -815,6 +860,14 @@ export function ClaimDetail({
           const dismissedCount = allFindings.length - findings.length;
           const isExpanded = !collapsedRows.has(item.id);
           const coverageBadge = item.coverageStatus ? COVERAGE_BADGE[item.coverageStatus] : null;
+          // S74.6 D1 §A.2 — surface ACA basis tooltip when the badge stems
+          // from the registry fallback. Plan-covered rows (planCoverage row
+          // from the user's plan_covered_services) don't get this tooltip
+          // because the coverage is direct evidence, not ACA-mandate inferred.
+          const acaTooltip =
+            item.coverageSource === "aca_zero_cost_share" && data?.acaCompliance
+              ? buildAcaTooltip(data.acaCompliance.basis, data.acaCompliance.excerpt)
+              : undefined;
 
           // Paid column = derived alreadyPaid (billed − stillOutstanding) so
           // it matches BillCard + ClaimImpactHero at claim level. Falls back
@@ -960,7 +1013,10 @@ export function ClaimDetail({
                     <dt className="text-gray-500 uppercase tracking-wider">Coverage</dt>
                     <dd>
                       {coverageBadge ? (
-                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className}`}>
+                        <span
+                          className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className}${acaTooltip ? " cursor-help underline decoration-dotted decoration-1 underline-offset-2" : ""}`}
+                          title={acaTooltip}
+                        >
                           {coverageBadge.label}
                         </span>
                       ) : <span className="text-gray-300">—</span>}
@@ -1078,10 +1134,15 @@ export function ClaimDetail({
                 </div>
                 {/* Coverage badge — Session 86: reverted to static display.
                     Click target for category correction lives on the Service
-                    column's category subtitle. */}
+                    column's category subtitle. S74.6 D1 §A.2: title tooltip
+                    surfaces ACA basis when coverageSource ===
+                    'aca_zero_cost_share'. */}
                 <div className="flex items-center justify-center">
                   {coverageBadge ? (
-                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className}`}>
+                    <span
+                      className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className}${acaTooltip ? " cursor-help underline decoration-dotted decoration-1 underline-offset-2" : ""}`}
+                      title={acaTooltip}
+                    >
                       {coverageBadge.label}
                     </span>
                   ) : null}
