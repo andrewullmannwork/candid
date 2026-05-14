@@ -781,7 +781,7 @@ function UploadForm() {
       if (isStuck) return "Processing stalled";
       if (isError) return "Processing error";
       if (hasMismatch) return "Review needed";
-      if (isPendingReview) return "Needs a human touch";
+      if (isPendingReview) return "This one's stumping us";
       if (!processingProgress) return INIT_MESSAGES[messageIndex % INIT_MESSAGES.length];
       if (processingProgress.step?.startsWith("ocr_chunk") || processingProgress.step?.startsWith("working_ocr"))
         return READING_MESSAGES[messageIndex % READING_MESSAGES.length];
@@ -842,9 +842,9 @@ function UploadForm() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
               </div>
-            ) : isError || isStuck ? (
-              <div className={`w-16 h-16 rounded-full ${isStuck ? "bg-amber-50" : "bg-red-50"} flex items-center justify-center mx-auto mb-4`}>
-                <svg className={`w-8 h-8 ${isStuck ? "text-amber-500" : "text-red-500"}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            ) : isError || isStuck || isPendingReview ? (
+              <div className={`w-16 h-16 rounded-full ${isError ? "bg-red-50" : "bg-amber-50"} flex items-center justify-center mx-auto mb-4`}>
+                <svg className={`w-8 h-8 ${isError ? "text-red-500" : "text-amber-500"}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
                 </svg>
               </div>
@@ -913,11 +913,10 @@ function UploadForm() {
           {isPendingReview && (
             <div className="mb-5 p-4 bg-amber-50 border border-amber-100 rounded-xl">
               <p className="text-sm font-medium text-amber-900">
-                We need a little more time
+                Couldn&apos;t recognize this document
               </p>
               <p className="text-sm text-amber-800 mt-1.5 leading-relaxed">
-                Our document reader is working on your plan but needs a bit longer than usual.
-                We&apos;ll email you when your results are ready, or you can try uploading again.
+                We couldn&apos;t read this well enough to pull benefits. Want to try a different file?
               </p>
               <button
                 onClick={() => { setUploaded(false); setUploadStatus(null); setFileName(""); setProcessingProgress(null); setDocumentId(null); }}
@@ -1210,6 +1209,30 @@ function UploadForm() {
               />
             ) : null;
           })()}
+
+          {/* S90 Bug 2B: medium-confidence supplement prompts. Two
+              variants — plan-doc (additive richness) vs bill (verification
+              gate before dispute generation). */}
+          {isComplete && isPlanType && classificationResult && classificationResult.confidence < 0.8 && (
+            <div className="mb-4 p-4 bg-blue-50 border border-blue-100 rounded-xl">
+              <p className="text-sm font-medium text-blue-900">
+                Good start — add your full plan document for the complete picture
+              </p>
+              <p className="text-sm text-blue-800 mt-1.5 leading-relaxed">
+                We&apos;ve got the basics from your document — but for a complete benefits picture, add your Evidence of Coverage (EOC) or full plan certificate.
+              </p>
+            </div>
+          )}
+          {isComplete && (docType === "eob" || docType === "itemized_bill") && classificationResult && classificationResult.confidence < 0.8 && classificationResult.confidence >= 0.6 && (
+            <div className="mb-4 p-4 bg-blue-50 border border-blue-100 rounded-xl">
+              <p className="text-sm font-medium text-blue-900">
+                Review before disputing
+              </p>
+              <p className="text-sm text-blue-800 mt-1.5 leading-relaxed">
+                We processed this — for the most accurate audit, upload your matching {docType === "eob" ? "itemized bill" : "EOB"} and review line items before disputing.
+              </p>
+            </div>
+          )}
 
           {/* Action buttons */}
           <div className="flex flex-col gap-2">

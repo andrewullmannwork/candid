@@ -455,10 +455,80 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // MEDIUM confidence, any recognized healthcare type, OR user explicitly selected a
-  // healthcare document type — queue for admin review. Only auto-reject when the
-  // classifier finds zero signals AND the user didn't select a specific type.
+  // S90 asymmetric trust rule. Classifier confidence is a noisy signal —
+  // measured 0.6 vs 0.99 on back-to-back identical-shape SBC uploads.
+  // Threshold tiers route the trade-off between auto-process friction
+  // (good for users) and downstream risk (bad if values are wrong).
+  //
+  // Plan-docs (sbc/eoc/plan_document):
+  //   - HIGH ≥0.8         → full process (canonical + user)
+  //   - MEDIUM 0.4-0.8    → auto-process user-scoped only (dispatcher's
+  //                          resolveDocumentType returns skipCanonical=true
+  //                          → shared canonical_plans untouched per Pattern
+  //                          1 #14). Frontend renders supplement prompt.
+  //   - LOW <0.4          → pending_review
+  //
+  // Bills (eob/itemized_bill):
+  //   - HIGH ≥0.8         → full process (audit fires; dispute enabled)
+  //   - UPPER-MED 0.6-0.8 → auto-process + verification supplement prompt
+  //                          gating dispute generation (CROA-risk mitigation
+  //                          via user-in-the-loop, not blocking).
+  //   - LOWER-MED 0.4-0.6 → pending_review (parser misread on shaky data
+  //                          could produce wrong recovery amounts → wrong
+  //                          dispute letter → CROA exposure).
+  //   - LOW <0.4          → pending_review
   const userSelectedHealthcareType = ["eob", "itemized_bill", "sbc", "plan_document"].includes(docType);
+  const effectiveType = userSelectedHealthcareType ? docType : classification.classifiedType;
+  const PLAN_DOC_TYPES = new Set(["sbc", "eoc", "plan_document"]);
+  const BILL_TYPES_SET = new Set(["eob", "itemized_bill"]);
+  const CONFIDENCE_BILL_AUTO_FLOOR = 0.6;
+  const isPlanDocPath = PLAN_DOC_TYPES.has(effectiveType);
+  const isBillPath = BILL_TYPES_SET.has(effectiveType);
+
+  const autoProcessAtMedium =
+    (classification.confidence >= CONFIDENCE_LOW && isPlanDocPath) ||
+    (classification.confidence >= CONFIDENCE_BILL_AUTO_FLOOR && isBillPath);
+
+  if (autoProcessAtMedium) {
+    try {
+      await supabase.from("documents").update({
+        status: "queued",
+        processing_total_pages: classification.pageCount,
+      }).eq("id", documentId);
+
+      const baseUrl = req.headers.get("x-forwarded-proto") && req.headers.get("x-forwarded-host")
+        ? `${req.headers.get("x-forwarded-proto")}://${req.headers.get("x-forwarded-host")}`
+        : new URL(req.url).origin;
+      const enqueued = await enqueueChunk(documentId, baseUrl);
+
+      if (!enqueued) {
+        await supabase.from("documents").update({
+          status: "error",
+          processing_error: "Failed to enqueue for processing — please retry.",
+        }).eq("id", documentId);
+        return NextResponse.json({ documentId, storagePath, status: "error", error: "Failed to enqueue" }, { status: 500 });
+      }
+
+      return NextResponse.json({
+        documentId,
+        storagePath,
+        autoProcessed: true,
+        mediumConfidence: true,
+        classification: {
+          classifiedType: classification.classifiedType,
+          confidence: classification.confidence,
+          pageCount: classification.pageCount,
+        },
+      });
+    } catch (err) {
+      console.error("[upload] Auto-process (medium) error:", err);
+      // Fall through to pending_review
+    }
+  }
+
+  // MEDIUM confidence bill/EOB OR any other healthcare signal — queue for
+  // admin review. Auto-reject only when classifier finds zero signals AND the
+  // user didn't select a specific type.
   if (classification.confidence >= CONFIDENCE_LOW || classification.classifiedType !== "other" || userSelectedHealthcareType) {
     await supabase.from("documents").update({ status: "pending_review" }).eq("id", documentId);
 
