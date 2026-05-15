@@ -205,9 +205,16 @@ interface RawExtractionPayload {
   appealsContact?: RawAppealsContact | null;
 }
 
-// Fix "90day" → "90-day", "30day" → "30-day" etc. in extracted text fields
-function fixDayFormatting(text: string | null | undefined): string {
-  if (!text) return text || "";
+// Fix "90day" → "90-day", "30day" → "30-day" etc. in extracted text fields.
+// S93 — defensive against Haiku returning non-string types (numbers, booleans,
+// objects) for fields the prompt declares as string. Pre-fix: text.replace()
+// crashed with "TypeError: e.replace is not a function" (minified `text` →
+// `e`), aborting the entire claude-extractor run + producing
+// `partial_no_services` even on docs with extractable services. Found via
+// 2026-05-15 Cigna SBC PROD smoke (doc 9ce50158).
+function fixDayFormatting(text: unknown): string {
+  if (text == null) return "";
+  if (typeof text !== "string") return String(text);
   return text.replace(/(\d+)(day|days)\b/gi, "$1-$2");
 }
 
