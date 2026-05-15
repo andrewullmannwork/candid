@@ -365,6 +365,89 @@ async function dispatchPlanOrEOC(args: {
 }): Promise<ProcessPlanResult> {
   const { supabase, doc, ocrText, documentId, classification, skipCanonical } = args;
 
+  // S93 Stage 3 — unified plan_doc dispatch (mig 101).
+  // When unified_plan_doc_parser_v1 ON for the user, all plan-doc-family
+  // classifications (sbc, eoc, plan_document) route through the Haiku-first
+  // plan_doc parser. Layout detector + federal-SBC supplement (Stage 3a from
+  // S92 PR #76) handle SBC-specific extraction patterns automatically.
+  // EOCs detect as full_eoc_narrative so the supplement does NOT inject —
+  // code path identical to today's plan_doc Haiku-first behavior.
+  //
+  // OFF (default) preserves the legacy per-classification routing below.
+  // Andrew flips ON for himself first via /admin/flags before global rollout
+  // (per Stage 3 v1 ROLLOUT spec in mig 101 description).
+  const planDocFamily =
+    classification.classifiedType === "sbc" ||
+    classification.classifiedType === "eoc" ||
+    classification.classifiedType === "plan_document";
+  if (planDocFamily) {
+    const { data: userForUnified } = await supabase
+      .from("users")
+      .select("email")
+      .eq("firebase_uid", doc.user_id)
+      .maybeSingle();
+    const unifiedEnabled = await isFeatureEnabled(
+      "unified_plan_doc_parser_v1",
+      userForUnified?.email || undefined,
+    );
+    if (unifiedEnabled) {
+      // Image-PDF refusal still fires (mirrors legacy gates below) — protects
+      // against scanned-image inputs that produce garbage OCR + confident-but-
+      // wrong values that poison the canonical seed.
+      if (
+        classification.classifiedType === "sbc" &&
+        ocrText.length < SBC_MIN_TEXT_CHARS
+      ) {
+        const reason = `SBC document appears to be a scanned image (only ${ocrText.length} chars of text extracted). Please upload a text-based PDF version from your insurer's portal for accurate processing.`;
+        console.warn(`[process-chunk] ${reason} (documentId=${documentId})`);
+        await supabase
+          .from("documents")
+          .update({
+            status: "error",
+            processing_error: reason,
+            processing_step: "rejected_image_sbc",
+          })
+          .eq("id", documentId);
+        return { success: false, error: reason, parseWarnings: [reason] };
+      }
+      if (
+        classification.classifiedType === "eoc" &&
+        ocrText.length < EOC_MIN_TEXT_CHARS
+      ) {
+        const reason = `EOC document appears to be a scanned image (only ${ocrText.length} chars of text extracted). Please upload a text-based PDF version from your insurer's portal for accurate processing.`;
+        console.warn(`[process-chunk] ${reason} (documentId=${documentId})`);
+        await supabase
+          .from("documents")
+          .update({
+            status: "error",
+            processing_error: reason,
+            processing_step: "rejected_image_eoc",
+          })
+          .eq("id", documentId);
+        return { success: false, error: reason, parseWarnings: [reason] };
+      }
+      console.log(
+        `[process-chunk] unified_plan_doc_parser_v1 ON — routing ${classification.classifiedType} through plan_doc parser`,
+      );
+      // Coerce classifiedType to 'plan_document' so processPlanDocumentData's
+      // isFullPlanDoc=true branch fires (line ~207) → routes to plan_doc
+      // parser via parsePlanDocumentWithMeta. SBC parser branch (sbc_parser_v1)
+      // is bypassed — DR-3C voting + service_catalog admin-queue enqueue NOT
+      // applied for SBCs under unified flag. Trade-off accepted in Stage 3 v1
+      // (federal-SBC supplement preserves extraction quality at 88.8% > 86.8%
+      // SBC parser baseline empirically; voting+enqueue can be ported to
+      // plan_doc later if telemetry shows either is load-bearing).
+      return processPlanDocumentData(
+        supabase,
+        doc,
+        ocrText,
+        documentId,
+        { ...classification, classifiedType: "plan_document" },
+        { skipCanonical },
+      );
+    }
+  }
+
   if (classification.classifiedType === "eoc") {
     // 1. Image-PDF refusal per Q-P3.1A-12 LOCK.
     if (ocrText.length < EOC_MIN_TEXT_CHARS) {
