@@ -72,6 +72,11 @@ interface PlayfulParsingScreenProps {
 // Whimsical doctor's-office vignettes — playful, never reveal mechanics.
 // Goal: keep the wait feel intentional + light, not "here's what we're doing
 // under the hood." Add new lines anywhere; keep them concrete + visual.
+//
+// S93: expanded from 15 → 55 lines per Andrew direction (post-Cigna PROD
+// smoke) — at 4s rotation a 2-4 min parse cycles through ~30-60 lines so
+// repetition was visible. Maintain doctor's-office tone; concrete + visual;
+// no marketing fluff; no mechanics.
 const ROTATING_MICROCOPY: string[] = [
   "Taking a pen from behind our ear.",
   "Adjusting the reading lamp on our desk.",
@@ -88,6 +93,47 @@ const ROTATING_MICROCOPY: string[] = [
   "Drawing a little arrow next to the most important number.",
   "Stamping a smiley face in the corner.",
   "Almost done. Just polishing the apple on the desk.",
+  // S93 expansion ↓
+  "Squinting at the small print.",
+  "Reaching for the second pair of glasses.",
+  "Untangling the phone cord.",
+  "Filing the folder under “important.”",
+  "Wiping a smudge off the desk lamp.",
+  "Tearing a fresh page from the notepad.",
+  "Clicking the pen twice. Just to be sure.",
+  "Pinning a note to the corkboard.",
+  "Sliding the manila folder open.",
+  "Counting the pages a second time.",
+  "Refilling the stapler.",
+  "Erasing a faint pencil mark.",
+  "Fluffing the cushion on the rolling chair.",
+  "Straightening the diploma on the wall.",
+  "Watering the office fern.",
+  "Reading aloud, just to ourselves.",
+  "Reaching for the calculator.",
+  "Adjusting the desk fan.",
+  "Folding a paper airplane out of habit.",
+  "Squaring the corners of the stack.",
+  "Writing “TBD” then scratching it out.",
+  "Locating the missing paperclip.",
+  "Tapping the stapler. Empty.",
+  "Refilling the coffee pot.",
+  "Brushing crumbs off the manila folder.",
+  "Glancing at the wall clock.",
+  "Lining up the post-it notes.",
+  "Drawing a star next to the deductible.",
+  "Re-reading the appendix, just in case.",
+  "Cracking our knuckles.",
+  "Switching from blue ink to red.",
+  "Spotting the typo on page three.",
+  "Sliding a bookmark into the right spot.",
+  "Sketching a tiny clipboard in the margin.",
+  "Whispering “interesting” under our breath.",
+  "Wiping the magnifying glass clean.",
+  "Shuffling the pages back into order.",
+  "Pinning the receipt to the rest.",
+  "Folding down the corner of page seven.",
+  "Smiling at the well-organized notes.",
 ];
 
 const MICROCOPY_INTERVAL_MS = 4000;

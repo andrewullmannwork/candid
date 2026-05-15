@@ -154,6 +154,14 @@ function UploadForm() {
   const [uploading, setUploading] = useState(false);
   const [uploaded, setUploaded] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<"uploading" | "uploaded" | "auto_processed" | "pending_review" | "rejected" | "dedup_processed" | null>(null);
+  // S93 page-progress pacing — synthetic page counter that ticks 1/10s up
+  // to totalPages-1; backend completedPages can pull synthetic forward; on
+  // extracting/saving step jumps to totalPages. Per Andrew direction (post-
+  // S93 Stage 3 PROD smoke): "page every 10 seconds and then skip to the
+  // end when we are essentially done" — UX feels active even when backend
+  // is genuinely faster than 10s/page (Vercel parallel OCR).
+  const [displayedPage, setDisplayedPage] = useState(0);
+  const lastTotalPagesRef = useRef<number | null>(null);
   const [error, setError] = useState("");
   const [fileName, setFileName] = useState("");
   // S92 Stage 1: showTips is now per-picker-option (2-card UI), not per-wire-type.
@@ -215,6 +223,55 @@ function UploadForm() {
   const MIN_PLAYFUL_MS = 4000;
   const [playfulFloorActive, setPlayfulFloorActive] = useState(false);
   const playfulShownAtRef = useRef<number | null>(null);
+
+  // S93 page-progress pacing — three coordinated effects.
+  // (1) Reset displayedPage when totalPages first becomes known or changes.
+  useEffect(() => {
+    const t = processingProgress?.totalPages;
+    if (t != null && t !== lastTotalPagesRef.current) {
+      lastTotalPagesRef.current = t;
+      setDisplayedPage(t > 0 ? 1 : 0);
+    }
+  }, [processingProgress?.totalPages]);
+
+  // (2) Pull synthetic up to backend completedPages (so we never display
+  // fewer pages than backend has actually done) AND snap to totalPages
+  // when extracting/saving step fires (per Andrew "skip to the end when
+  // we are essentially done").
+  useEffect(() => {
+    const t = processingProgress?.totalPages;
+    if (!t || t < 1) return;
+    const isExtractingOrSaving =
+      processingProgress?.step?.includes("extracting") ||
+      processingProgress?.step?.includes("saving");
+    if (isExtractingOrSaving) {
+      setDisplayedPage(t);
+      return;
+    }
+    if (processingProgress?.completedPages != null) {
+      const ceiling = Math.max(1, t - 1);
+      setDisplayedPage((prev) =>
+        Math.min(Math.max(prev, processingProgress.completedPages!), ceiling),
+      );
+    }
+  }, [processingProgress?.completedPages, processingProgress?.step, processingProgress?.totalPages]);
+
+  // (3) Synthetic 10s tick — increment displayedPage by 1 every 10s, capped
+  // at totalPages-1 (the snap-to-totalPages happens via effect 2 when the
+  // backend transitions to extracting/saving).
+  useEffect(() => {
+    const t = processingProgress?.totalPages;
+    if (!t || t < 2) return; // 1-page docs don't need pacing
+    const isExtractingOrSaving =
+      processingProgress?.step?.includes("extracting") ||
+      processingProgress?.step?.includes("saving");
+    if (isExtractingOrSaving) return;
+    const ceiling = t - 1;
+    const interval = setInterval(() => {
+      setDisplayedPage((prev) => Math.min(prev + 1, ceiling));
+    }, 10_000);
+    return () => clearInterval(interval);
+  }, [processingProgress?.totalPages, processingProgress?.step]);
 
   useEffect(() => {
     if (!uploaded) return;
@@ -811,17 +868,23 @@ function UploadForm() {
               ? "cross_referencing"
               : "parsing"
             : "parsing";
+      // S93 — playfulProgress + playfulDetail consume `displayedPage` (the
+      // synthetic-paced page counter) instead of raw processingProgress.
+      // completedPages so the UX feels active even when backend OCR completes
+      // faster than 10s/page (Vercel parallelism). The displayedPage effects
+      // above handle: 10s tick, real-progress pull-up, extracting/saving snap
+      // to totalPages.
       const playfulProgress = floorOnly
         ? 95
         : isUploading
           ? Math.max(5, uploadProgress)
-          : processingProgress?.completedPages != null && processingProgress?.totalPages && processingProgress.totalPages > 0
-            ? Math.min(95, 25 + Math.round((processingProgress.completedPages / processingProgress.totalPages) * 60))
+          : processingProgress?.totalPages && processingProgress.totalPages > 0
+            ? Math.min(95, 25 + Math.round((displayedPage / processingProgress.totalPages) * 60))
             : 25;
       const playfulDetail = floorOnly
         ? "Cross-referencing your plan…"
-        : processingProgress?.completedPages != null && processingProgress?.totalPages
-          ? `Page ${processingProgress.completedPages} of ${processingProgress.totalPages}`
+        : processingProgress?.totalPages && displayedPage > 0
+          ? `Page ${displayedPage} of ${processingProgress.totalPages}`
           : processingProgress?.step ?? undefined;
       // S78 — large-doc async UX: customize title/subtitle/footer when backend
       // flagged the doc as >30-page PDF (and async_ingestion_ux_v1 is ON).
