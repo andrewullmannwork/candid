@@ -15,7 +15,10 @@ import type {
   PlanDocSectionHint,
 } from "../types";
 import type { PlanDocLayout } from "../layout-detector";
+import { loadActiveSupplement } from "../prompt-loader";
 import { callHaikuWithCache } from "./_shared";
+
+const PROMPT_FILE_PATH = "src/lib/plan_doc/haiku-prompts/services-cost-sharing.ts";
 
 // Federal-SBC tabular-extraction supplement. Federally-mandated SBCs use a tight
 // table layout where pdftotext splits cells across consecutive lines. Without
@@ -50,12 +53,21 @@ When extracting verbatim source_excerpt for SBC services:
 This rule supersedes any default tendency to "include the full context" in
 the excerpt.`;
 
-function buildInstructions(layout: PlanDocLayout | undefined): string {
-  const supplement =
-    layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant"
-      ? FEDERAL_SBC_TABULAR_SUPPLEMENT
-      : "";
-  return BASE_INSTRUCTIONS + supplement;
+// S93 Stage 5a — supplements load from `parser_prompt_versions` (mig 102) at
+// parse time with a 5-min in-process cache. The compile-time const above is
+// the fallback when no active DB row exists (initial state pre-tuning) or
+// when DB fetch fails. Admin tunes via /admin/parse-quality-tuning (Stage 5c)
+// which writes a new active row + busts the cache.
+async function buildInstructions(layout: PlanDocLayout | undefined): Promise<string> {
+  if (layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant") {
+    const supplement = await loadActiveSupplement(
+      PROMPT_FILE_PATH,
+      "FEDERAL_SBC_TABULAR_SUPPLEMENT",
+      FEDERAL_SBC_TABULAR_SUPPLEMENT,
+    );
+    return BASE_INSTRUCTIONS + supplement;
+  }
+  return BASE_INSTRUCTIONS;
 }
 
 const BASE_INSTRUCTIONS = `You are extracting per-service cost-sharing from a Plan Document services section. Return a single JSON object listing every covered service with cost-sharing fields per service.
@@ -182,8 +194,9 @@ export async function extractServicesCostSharing(
   sectionHint: PlanDocSectionHint = "services_cost_sharing",
   layout?: PlanDocLayout,
 ): Promise<PlanDocSectionResult<{ services: PlanDocService[] }>> {
+  const systemPrompt = await buildInstructions(layout);
   const result = await callHaikuWithCache<RawResponse>({
-    systemPrompt: buildInstructions(layout),
+    systemPrompt,
     userContent: sectionText,
     sectionLabel:
       layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant"

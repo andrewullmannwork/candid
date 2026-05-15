@@ -24,7 +24,10 @@ import type {
   PlanDocSectionHint,
 } from "../types";
 import type { PlanDocLayout } from "../layout-detector";
+import { loadActiveSupplement } from "../prompt-loader";
 import { callHaikuWithCache } from "./_shared";
+
+const PROMPT_FILE_PATH = "src/lib/plan_doc/haiku-prompts/plan-identity.ts";
 
 // Federal-SBC tabular-extraction supplement. Federal SBCs use a tight
 // federally-mandated table layout where pdftotext splits cells across
@@ -63,12 +66,20 @@ When extracting source_excerpt for plan-identity scalars on an SBC:
 This rule supersedes the default tendency to include label-value pairs that
 would only "make sense" if joined across lines.`;
 
-function buildInstructions(layout: PlanDocLayout | undefined): string {
-  const supplement =
-    layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant"
-      ? FEDERAL_SBC_TABULAR_SUPPLEMENT
-      : "";
-  return BASE_INSTRUCTIONS + supplement;
+// S93 Stage 5a — supplement loads from `parser_prompt_versions` (mig 102) at
+// parse time with a 5-min in-process cache. The compile-time const above is
+// the fallback when no active DB row exists. Admin tunes via /admin/parse-
+// quality-tuning (Stage 5c) which writes a new active row + busts the cache.
+async function buildInstructions(layout: PlanDocLayout | undefined): Promise<string> {
+  if (layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant") {
+    const supplement = await loadActiveSupplement(
+      PROMPT_FILE_PATH,
+      "FEDERAL_SBC_TABULAR_SUPPLEMENT",
+      FEDERAL_SBC_TABULAR_SUPPLEMENT,
+    );
+    return BASE_INSTRUCTIONS + supplement;
+  }
+  return BASE_INSTRUCTIONS;
 }
 
 const BASE_INSTRUCTIONS = `You are extracting plan-identity scalars from a section of a health plan document. Plan-identity scalars (plan name, carrier, identifiers, plan year, plan/network type, metal tier, deductibles, out-of-pocket maxes) may appear ANYWHERE in a section — cover pages, plan-summary boxes, services-schedule headers, narrative paragraphs, cost-share tables, and RUNNING HEADERS / FOOTERS that repeat on every page. Extract every scalar present in THIS chunk; the system runs this prompt on multiple sections of the same document and merges results across chunks.
@@ -686,8 +697,9 @@ export async function extractPlanIdentity(
   sectionHint: PlanDocSectionHint = "plan_identity",
   layout?: PlanDocLayout,
 ): Promise<PlanDocSectionResult<PlanDocPlanIdentity>> {
+  const systemPrompt = await buildInstructions(layout);
   const result = await callHaikuWithCache<RawResponse>({
-    systemPrompt: buildInstructions(layout),
+    systemPrompt,
     userContent: sectionText,
     sectionLabel:
       layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant"
