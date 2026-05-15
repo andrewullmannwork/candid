@@ -368,12 +368,42 @@ export async function processPlanDocumentData(
     }
 
     // ── Haiku service extraction (skipped under sbc_parser_v1; new parser already extracted) ──
+    //
+    // S93 (closes F.14 fast-follow) — also skip when the Haiku-first plan_doc
+    // parser ran (plan_doc_parser_v2 ON). The toLegacyPlanDocResult adapter
+    // already converted the parser's per-section services into the legacy
+    // SBCParsedService shape on parseResult.services; calling the legacy
+    // claude-extractor a second time either overwrites those values with its
+    // own (~49% recall regex+claude) output or crashes mid-extract on
+    // unexpected Haiku response shapes (Cigna 2026-05-15 PROD: TypeError
+    // e.replace is not a function bricked the run + produced partial_no_services
+    // even though plan-identity recovered + Haiku-first had services available).
+    //
+    // Skip rule: isFullPlanDoc + planDocHaikuResult emitted >= 1 service.
+    // When Haiku-first ran but extracted 0 services, fall through to the
+    // claude-extractor as a recovery path (the legacy regex+claude can find
+    // services the Haiku-first prompt missed in some narrative formats).
+    const usedHaikuFirstPlanDoc =
+      isFullPlanDoc &&
+      planDocHaikuResult !== null &&
+      parseResult.services.length > 0;
     if (usedNewSBCParser) {
       // New SBC Haiku parser already populated services + appealsContact;
       // skip the legacy claude-extractor call to avoid double-extraction.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (parseResult as any).appealsContact = haikuFirstAppealsContact;
       console.log(`[process-plan] sbc_parser_v1: skipped legacy claude-extractor (Haiku-first produced ${parseResult.services.length} services)`);
+    } else if (usedHaikuFirstPlanDoc) {
+      // Haiku-first plan_doc parser already populated services via
+      // toLegacyPlanDocResult adapter. Per F.14 fast-follow, the legacy
+      // claude-extractor is the deprecation target on this path; skipping
+      // here closes the loop. appealsContact stays null on this path (the
+      // plan_doc parser's accessInstructions contact info isn't currently
+      // adapted into the legacy shape — small follow-up if telemetry shows
+      // PROD users miss it).
+      console.log(
+        `[process-plan] usedHaikuFirstPlanDoc: skipped legacy claude-extractor (Haiku-first produced ${parseResult.services.length} services)`,
+      );
     } else {
     console.log("[process-plan] Attempting Haiku extraction...");
     try {
