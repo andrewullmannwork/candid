@@ -153,7 +153,7 @@ function UploadForm() {
   const [docType, setDocType] = useState<"eob" | "itemized_bill" | "sbc" | "plan_document">(initialDocType);
   const [uploading, setUploading] = useState(false);
   const [uploaded, setUploaded] = useState(false);
-  const [uploadStatus, setUploadStatus] = useState<"uploading" | "uploaded" | "auto_processed" | "pending_review" | "rejected" | "dedup_processed" | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<"uploading" | "uploaded" | "auto_processed" | "pending_review" | "rejected" | "dedup_processed" | "awaiting_confirmation" | null>(null);
   // S93 page-progress pacing — synthetic page counter that ticks 1/10s up
   // to totalPages-1; backend completedPages can pull synthetic forward; on
   // extracting/saving step jumps to totalPages. Per Andrew direction (post-
@@ -424,6 +424,19 @@ function UploadForm() {
   // bytes-in-flight. Cleared when the upload settles (success, error, or abort).
   const uploadXhrRef = useRef<XMLHttpRequest | null>(null);
   const [userPickedFile, setUserPickedFile] = useState(false);
+
+  // S94 B5 — doc-type confirmation modal. Server returns
+  // awaitingDocTypeConfirmation:true when the regex classifier disagrees with
+  // the user pick at moderate confidence (band configurable via mig 104).
+  type DocTypeConfirmation = {
+    user_pick: "eob" | "itemized_bill" | "sbc" | "plan_document";
+    classifier_pick: "eob" | "itemized_bill" | "sbc" | "plan_document" | "eoc";
+    classifier_confidence: number;
+    page_count: number;
+    options: string[];
+  };
+  const [confirmationData, setConfirmationData] = useState<DocTypeConfirmation | null>(null);
+  const [confirmationSubmitting, setConfirmationSubmitting] = useState(false);
 
   useEffect(() => {
     turnstileTokenRef.current = turnstileToken;
@@ -707,6 +720,16 @@ function UploadForm() {
         }
 
         // Handle different processing outcomes
+        if (uploadResult.awaitingDocTypeConfirmation === true && uploadResult.confirmation) {
+          // S94 B5 — server halted at awaiting_doc_type_confirmation because the
+          // regex classifier disagreed with the user's pick at moderate confidence.
+          // Show modal; resume pipeline via POST /api/documents/confirm-doc-type.
+          setConfirmationData(uploadResult.confirmation as DocTypeConfirmation);
+          setUploadStatus("awaiting_confirmation");
+          setUploaded(true);
+          setUploading(false);
+          return;
+        }
         if (uploadResult.autoProcessed) {
           // High confidence — processing triggered automatically
           // Client-side polling will drive chunk processing and redirect when done
@@ -1956,6 +1979,113 @@ function UploadForm() {
                   {consentSubmitting ? "Processing..." : "I Accept — Upload"}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── S94 B5: Doc-type confirmation modal ───────────────────────────── */}
+      {uploadStatus === "awaiting_confirmation" && confirmationData && documentId && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl">
+            <div className="p-6 border-b">
+              <h2 className="text-xl font-bold text-gray-900">
+                We&apos;re not sure what this document is
+              </h2>
+              <p className="text-sm text-gray-600 mt-2">
+                You said this is a{" "}
+                <strong>{DOC_TYPES[confirmationData.user_pick]?.short || confirmationData.user_pick}</strong>,
+                but it looks more like a{" "}
+                <strong>{DOC_TYPES[confirmationData.classifier_pick as keyof typeof DOC_TYPES]?.short || confirmationData.classifier_pick}</strong>{" "}
+                ({Math.round(confirmationData.classifier_confidence * 100)}% confidence, {confirmationData.page_count} pages). Which is it?
+              </p>
+            </div>
+
+            <div className="p-6 space-y-3">
+              {(confirmationData.options as Array<keyof typeof DOC_TYPES>).map((opt) => {
+                const info = DOC_TYPES[opt];
+                if (!info) return null;
+                const isClassifierPick = opt === confirmationData.classifier_pick;
+                return (
+                  <button
+                    key={opt}
+                    disabled={confirmationSubmitting}
+                    onClick={async () => {
+                      if (!user || confirmationSubmitting) return;
+                      setConfirmationSubmitting(true);
+                      try {
+                        const idToken = await user.firebaseUser.getIdToken();
+                        const res = await fetch("/api/documents/confirm-doc-type", {
+                          method: "POST",
+                          headers: {
+                            "Content-Type": "application/json",
+                            Authorization: `Bearer ${idToken}`,
+                          },
+                          body: JSON.stringify({
+                            documentId,
+                            action: "confirm",
+                            confirmedDocType: opt,
+                          }),
+                        });
+                        if (!res.ok) {
+                          const body = (await res.json().catch(() => ({}))) as { error?: string };
+                          throw new Error(body.error || "Confirmation failed");
+                        }
+                        setDocType(opt as "eob" | "itemized_bill" | "sbc" | "plan_document");
+                        setConfirmationData(null);
+                        setUploadStatus("auto_processed");
+                      } catch (err) {
+                        setError(err instanceof Error ? err.message : "Confirmation failed");
+                      } finally {
+                        setConfirmationSubmitting(false);
+                      }
+                    }}
+                    className="w-full text-left p-4 border-2 border-gray-200 rounded-xl hover:border-blue-500 hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="font-semibold text-gray-900">{info.label}</div>
+                      {isClassifierPick && (
+                        <span className="text-xs font-semibold text-blue-600 bg-blue-100 px-2 py-0.5 rounded">
+                          Our guess
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-sm text-gray-600 mt-1">{info.description}</div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="p-6 border-t flex justify-end gap-3">
+              <button
+                disabled={confirmationSubmitting}
+                onClick={async () => {
+                  if (!user || confirmationSubmitting) return;
+                  setConfirmationSubmitting(true);
+                  try {
+                    const idToken = await user.firebaseUser.getIdToken();
+                    await fetch("/api/documents/confirm-doc-type", {
+                      method: "POST",
+                      headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${idToken}`,
+                      },
+                      body: JSON.stringify({ documentId, action: "cancel" }),
+                    });
+                  } catch {
+                    // Non-fatal — even if the cancel POST fails, reset the UI.
+                  }
+                  setConfirmationData(null);
+                  setUploadStatus(null);
+                  setUploaded(false);
+                  setDocumentId(null);
+                  setFileName("");
+                  setConfirmationSubmitting(false);
+                }}
+                className="px-4 py-2 text-gray-600 hover:text-gray-800 disabled:opacity-50 transition-colors text-sm"
+              >
+                Cancel — upload a different file
+              </button>
             </div>
           </div>
         </div>

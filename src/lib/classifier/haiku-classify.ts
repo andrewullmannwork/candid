@@ -3,7 +3,15 @@
  * Replaces the regex classifier for authoritative classification
  * in the chunked processing pipeline.
  *
- * Uses the first ~2,000 chars of OCR text — fast and cheap (~$0.001/call).
+ * Uses the first ~3,000 chars of OCR text — fast and cheap (~$0.001/call).
+ *
+ * S94 B5: on JSON parse failure, return `source: 'haiku_unavailable'` so the
+ * caller (process-chunk route) can decide whether to fall back to the regex
+ * classifier on full OCR or to the user's pick. Previously, the catch block
+ * silently returned the user's pick — which masked a misclassified SBC and
+ * let the bill parser hallucinate CPT codes from page numbers. See mig 104.
+ *
+ * Uses parseHaikuJSON (S94 B1's shared balanced-block + jsonrepair helper).
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -12,10 +20,13 @@ import { parseHaikuJSON } from "@/lib/parser/safe-json";
 const VALID_TYPES = ["sbc", "plan_document", "eoc", "eob", "itemized_bill", "insurance_card", "other"] as const;
 type DocType = typeof VALID_TYPES[number];
 
-interface HaikuClassification {
+export type ClassifySource = "haiku" | "haiku_unavailable";
+
+export interface HaikuClassification {
   classifiedType: DocType;
   confidence: number;
   isHealthcareDocument: boolean;
+  source: ClassifySource;
 }
 
 export async function classifyWithHaiku(
@@ -25,11 +36,12 @@ export async function classifyWithHaiku(
 ): Promise<HaikuClassification> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    console.warn("[haiku-classify] No API key — falling back to user-selected type");
+    console.warn("[haiku-classify] No API key — signaling haiku_unavailable");
     return {
       classifiedType: (userSelectedType as DocType) || "other",
       confidence: 0.5,
       isHealthcareDocument: true,
+      source: "haiku_unavailable",
     };
   }
 
@@ -64,14 +76,24 @@ ${sample}`,
     });
 
     const text = response.content[0].type === "text" ? response.content[0].text : "";
-    // S94 B1 — parseHaikuJSON tolerates trailing reasoning text after the closing
-    // brace (a Haiku stochastic behavior that crashed this code path randomly
-    // and cascaded into stochastic parser dispatch).
-    const result = parseHaikuJSON<{
-      type?: string;
-      confidence?: number;
-      isHealthcare?: boolean;
-    }>(text);
+
+    // S94 B5 — parse failure → haiku_unavailable so fallback in process-chunk
+    // can re-classify on full OCR text instead of silently trusting user pick.
+    // parseHaikuJSON (S94 B1) handles balanced-block extraction + jsonrepair.
+    let result: { type?: string; confidence?: number; isHealthcare?: boolean };
+    try {
+      result = parseHaikuJSON<{ type?: string; confidence?: number; isHealthcare?: boolean }>(text);
+    } catch (parseErr) {
+      console.error(
+        `[haiku-classify] parseHaikuJSON failed. Raw response (first 200 chars): ${text.slice(0, 200)} — ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
+      );
+      return {
+        classifiedType: (userSelectedType as DocType) || "other",
+        confidence: 0.5,
+        isHealthcareDocument: true,
+        source: "haiku_unavailable",
+      };
+    }
 
     const docType: DocType = (result.type && (VALID_TYPES as readonly string[]).includes(result.type))
       ? (result.type as DocType)
@@ -83,6 +105,7 @@ ${sample}`,
       classifiedType: docType,
       confidence: result.confidence ?? 0.8,
       isHealthcareDocument: result.isHealthcare ?? true,
+      source: "haiku",
     };
   } catch (err) {
     console.error("[haiku-classify] Classification failed:", err);
@@ -90,6 +113,7 @@ ${sample}`,
       classifiedType: (userSelectedType as DocType) || "other",
       confidence: 0.5,
       isHealthcareDocument: true,
+      source: "haiku_unavailable",
     };
   }
 }

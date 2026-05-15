@@ -485,6 +485,70 @@ export async function POST(req: NextRequest) {
           .update({ metadata: { classification_override: overrideMeta } })
           .eq("id", documentId);
       }
+
+      // ── S94 B5: Doc-type confirmation halt ───────────────────────────────
+      // When Pattern P didn't override (classifier confidence below 0.8) but
+      // the regex classifier nevertheless disagrees with the user pick above
+      // a moderate threshold, halt the pipeline and ask the user to confirm.
+      // Catches the SBC-uploaded-as-Bill case where regex said sbc@0.60 — too
+      // low for an automatic override, high enough that silently trusting the
+      // user pick is wrong. Gated by classifier_haiku_regex_fallback_v1.
+      //
+      // CRITICAL: only fire on cross-CLASS disagreement (bill vs plan_doc) —
+      // intra-plan-doc-class disagreements (e.g., user=plan_document +
+      // regex=sbc) are NOT user-actionable because both route through the
+      // same unified plan_doc parser in PROD. See isCrossClassDisagreement.
+      if (resolution.overrideReason === "user_pick_classifier_low_confidence") {
+        const { loadClassifierFallbackConfig } = await import(
+          "@/lib/config/classifier-fallback-config"
+        );
+        const { isCrossClassDisagreement } = await import(
+          "@/lib/classifier/fallback"
+        );
+        const fallbackConfig = await loadClassifierFallbackConfig(supabase);
+        const crossClass = isCrossClassDisagreement(
+          resolution.userPick,
+          resolution.classifierType,
+        );
+        if (
+          crossClass &&
+          fallbackConfig.enabled &&
+          fallbackConfig.confirmation_ui_enabled &&
+          resolution.classifierConfidence >= fallbackConfig.confirmation_regex_threshold &&
+          resolution.classifierConfidence < overrideConfig.classifier_confidence_override
+        ) {
+          const confirmationMeta = {
+            user_pick: resolution.userPick,
+            classifier_pick: resolution.classifierType,
+            classifier_confidence: resolution.classifierConfidence,
+            page_count: resolution.pageCount,
+            options: [resolution.userPick, resolution.classifierType],
+            confirmation_regex_threshold: fallbackConfig.confirmation_regex_threshold,
+            presented_at: new Date().toISOString(),
+          };
+          console.log(
+            `[upload] awaiting_doc_type_confirmation: user=${resolution.userPick} regex=${resolution.classifierType}@${resolution.classifierConfidence.toFixed(2)} (band ${fallbackConfig.confirmation_regex_threshold}-${overrideConfig.classifier_confidence_override})`,
+          );
+          await supabase
+            .from("documents")
+            .update({
+              status: "awaiting_user_confirmation",
+              processing_step: "awaiting_doc_type_confirmation",
+              metadata: {
+                classification_override: overrideMeta,
+                doc_type_confirmation: confirmationMeta,
+              },
+            })
+            .eq("id", documentId);
+          return NextResponse.json({
+            documentId,
+            storagePath,
+            status: "awaiting_user_confirmation",
+            awaitingDocTypeConfirmation: true,
+            confirmation: confirmationMeta,
+          });
+        }
+      }
     } catch (resolverErr) {
       // Non-fatal — if the resolver itself crashes, fall through with user's
       // pick. Logged so we can investigate.

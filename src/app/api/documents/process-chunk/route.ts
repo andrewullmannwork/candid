@@ -785,7 +785,17 @@ export async function POST(req: NextRequest) {
       console.log(`[process-chunk] Last OCR chunk done. Running inline classify+extract+save...`);
 
       const { classifyWithHaiku } = await import("@/lib/classifier/haiku-classify");
-      const classification = await classifyWithHaiku(fullOcrText, doc.file_name, doc.doc_type);
+      const { applyHaikuFallback, applyBillParserSanityGate } = await import("@/lib/classifier/fallback");
+      const rawClassification = await classifyWithHaiku(fullOcrText, doc.file_name, doc.doc_type);
+      const fallbackResult = await applyHaikuFallback({
+        supabase,
+        classification: rawClassification,
+        ocrText: fullOcrText,
+        fileName: doc.file_name,
+        userType: doc.doc_type,
+      });
+      const classification = fallbackResult.classification;
+      const fallbackConfig = fallbackResult.config;
 
       if (!classification.isHealthcareDocument) {
         await supabase.from("documents").update({
@@ -803,7 +813,7 @@ export async function POST(req: NextRequest) {
       const typeMismatch = userType && haikuType !== userType;
       const { effectiveType, skipCanonical, halt } = resolveDocumentType(userType, haikuType, classification.confidence);
 
-      console.log(`[process-chunk] Type resolution: user="${userType}" haiku="${haikuType}" confidence=${classification.confidence.toFixed(2)} → effective="${effectiveType}" skipCanonical=${skipCanonical} halt=${halt}`);
+      console.log(`[process-chunk] Type resolution: user="${userType}" haiku="${haikuType}" confidence=${classification.confidence.toFixed(2)} → effective="${effectiveType}" skipCanonical=${skipCanonical} halt=${halt} fellBackToRegex=${fallbackResult.fellBackToRegex}`);
 
       await supabase.from("documents").update({
         classified_type: effectiveType,
@@ -830,6 +840,49 @@ export async function POST(req: NextRequest) {
 
       // Route by document type: bills → audit pipeline, plan docs → extraction pipeline
       if (BILL_TYPES.has(effectiveType)) {
+        // S94 B5 — sanity-gate the bill parser. Refuses on suspected SBCs even
+        // when the resolver picked a bill type, catching the failure mode where
+        // Haiku errored, regex agreed with the user's wrong pick, and the bill
+        // parser would otherwise hallucinate CPT codes from page numbers.
+        const { data: metaDoc } = await supabase
+          .from("documents")
+          .select("metadata")
+          .eq("id", documentId)
+          .maybeSingle();
+        const inlinePageCount: number | null =
+          metaDoc?.metadata?.classification_override?.page_count ?? null;
+        const sanity = await applyBillParserSanityGate({
+          config: fallbackConfig,
+          effectiveType,
+          ocrText: fullOcrText,
+          pageCount: inlinePageCount,
+        });
+        if (sanity.blocked) {
+          console.warn(`[process-chunk] Bill parser sanity gate blocked: ${sanity.reason}`);
+          await supabase
+            .from("documents")
+            .update({
+              status: "error",
+              processing_step: "rejected_doc_type_mismatch",
+              processing_error: sanity.reason,
+              metadata: {
+                ...(metaDoc?.metadata || {}),
+                bill_parser_sanity_gate: {
+                  blocked: true,
+                  reason: sanity.reason,
+                  matched_sbc_phrases: sanity.matchedSbcPhrases,
+                  page_count: sanity.pageCount,
+                  blocked_at: new Date().toISOString(),
+                },
+              },
+            })
+            .eq("id", documentId);
+          return NextResponse.json({
+            step: "rejected_doc_type_mismatch",
+            continue: false,
+            error: sanity.reason,
+          });
+        }
         console.log(`[process-chunk] Bill detected (${effectiveType}). Running audit pipeline inline...`);
         const billResult = await processBillDocument(supabase, doc, fullOcrText, documentId, effectiveType);
         console.log(`[process-chunk] Bill result: success=${billResult.success}, findings=${billResult.findings}, claimId=${billResult.claimId}`);
@@ -878,7 +931,17 @@ export async function POST(req: NextRequest) {
       // 1. Classify with Haiku
       console.log(`[process-chunk] Classifying with Haiku: ocrText length=${ocrText.length}`);
       const { classifyWithHaiku } = await import("@/lib/classifier/haiku-classify");
-      const classification = await classifyWithHaiku(ocrText, doc.file_name, doc.doc_type);
+      const { applyHaikuFallback: applyHaikuFallbackFB, applyBillParserSanityGate: applyBillParserSanityGateFB } = await import("@/lib/classifier/fallback");
+      const rawFbClassification = await classifyWithHaiku(ocrText, doc.file_name, doc.doc_type);
+      const fbFallbackResult = await applyHaikuFallbackFB({
+        supabase,
+        classification: rawFbClassification,
+        ocrText,
+        fileName: doc.file_name,
+        userType: doc.doc_type,
+      });
+      const classification = fbFallbackResult.classification;
+      const fbFallbackConfig = fbFallbackResult.config;
 
       if (!classification.isHealthcareDocument) {
         console.log(`[process-chunk] Not a healthcare document — rejecting`);
@@ -897,7 +960,7 @@ export async function POST(req: NextRequest) {
       const fallbackMismatch = fallbackUserType && fallbackHaikuType !== fallbackUserType;
       const { effectiveType: fbEffectiveType, skipCanonical: fbSkipCanonical, halt: fbHalt } = resolveDocumentType(fallbackUserType, fallbackHaikuType, classification.confidence);
 
-      console.log(`[process-chunk] Type resolution: user="${fallbackUserType}" haiku="${fallbackHaikuType}" confidence=${classification.confidence.toFixed(2)} → effective="${fbEffectiveType}" skipCanonical=${fbSkipCanonical} halt=${fbHalt}`);
+      console.log(`[process-chunk] Type resolution: user="${fallbackUserType}" haiku="${fallbackHaikuType}" confidence=${classification.confidence.toFixed(2)} → effective="${fbEffectiveType}" skipCanonical=${fbSkipCanonical} halt=${fbHalt} fellBackToRegex=${fbFallbackResult.fellBackToRegex}`);
 
       await supabase.from("documents").update({
         processing_step: "working_extracting",
@@ -926,6 +989,46 @@ export async function POST(req: NextRequest) {
 
       // Route by document type
       if (BILL_TYPES.has(fbEffectiveType)) {
+        // S94 B5 — sanity-gate the bill parser (mirrors inline path above).
+        const { data: fbMetaDoc } = await supabase
+          .from("documents")
+          .select("metadata")
+          .eq("id", documentId)
+          .maybeSingle();
+        const fbPageCount: number | null =
+          fbMetaDoc?.metadata?.classification_override?.page_count ?? null;
+        const fbSanity = await applyBillParserSanityGateFB({
+          config: fbFallbackConfig,
+          effectiveType: fbEffectiveType,
+          ocrText,
+          pageCount: fbPageCount,
+        });
+        if (fbSanity.blocked) {
+          console.warn(`[process-chunk] Bill parser sanity gate blocked: ${fbSanity.reason}`);
+          await supabase
+            .from("documents")
+            .update({
+              status: "error",
+              processing_step: "rejected_doc_type_mismatch",
+              processing_error: fbSanity.reason,
+              metadata: {
+                ...(fbMetaDoc?.metadata || {}),
+                bill_parser_sanity_gate: {
+                  blocked: true,
+                  reason: fbSanity.reason,
+                  matched_sbc_phrases: fbSanity.matchedSbcPhrases,
+                  page_count: fbSanity.pageCount,
+                  blocked_at: new Date().toISOString(),
+                },
+              },
+            })
+            .eq("id", documentId);
+          return NextResponse.json({
+            step: "rejected_doc_type_mismatch",
+            continue: false,
+            error: fbSanity.reason,
+          });
+        }
         console.log(`[process-chunk] Bill detected (${fbEffectiveType}). Running audit pipeline...`);
         const billResult = await processBillDocument(supabase, doc, ocrText, documentId, fbEffectiveType);
         console.log(`[process-chunk] Bill result: success=${billResult.success}, findings=${billResult.findings}, claimId=${billResult.claimId}`);
