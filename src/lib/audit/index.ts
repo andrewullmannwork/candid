@@ -7,6 +7,7 @@ import { runZeroCostShareCheck } from "./zero-cost-share";
 import { runClaimHeaderArithmeticCheck } from "./claim-header-arithmetic";
 import { runInsuranceUnderpaymentCheck } from "./insurance-underpayment";
 import { runDescriptionMatchCheck } from "./description-service-match";
+import { isFeatureEnabled } from "../config/product-flags";
 import type { AcaFallbackLineCoverageMap, PlanCoverageMap } from "./coverage-loader";
 import { createServerClient } from "../supabase/server";
 import {
@@ -95,8 +96,27 @@ export async function runAudit(
   const descMatchFindings = await runDescriptionMatchCheck(bill);
   allFindings.push(...descMatchFindings);
 
+  // S94 B4 Fix #4 — NaN guard. Drop findings whose displayed dollar
+  // values are non-finite (NaN / Infinity). Pre-fix, NaN could leak in
+  // from claim-header-arithmetic.ts (unallocated calc when source values
+  // were undefined-coerced-to-number) or rules.ts checkDuplicates /
+  // checkMissingAdjustments paths. NaN findings render "$NaN" in copy and
+  // mark themselves actionable=true.
+  const nanGuardEnabled = await isFeatureEnabled("bill_parser_nan_guard");
+  const finiteFindings = nanGuardEnabled
+    ? allFindings.filter((f) => {
+        const ok = Number.isFinite(f.estimatedOvercharge) && Number.isFinite(f.billedAmount);
+        if (!ok) {
+          console.warn(
+            `[audit] Dropped non-finite finding: type=${f.type} title="${f.title}" overcharge=${f.estimatedOvercharge} billed=${f.billedAmount}`
+          );
+        }
+        return ok;
+      })
+    : allFindings;
+
   // Step 3: Deduplicate findings that flag the same line items
-  const deduped = deduplicateFindings(allFindings);
+  const deduped = deduplicateFindings(finiteFindings);
 
   // Step 3b: S74.6 D3 — apply tiered cohort accuracy adjustment. Batch-load
   // (rule_type, insurer_name, service_slug) cohorts once, then per-finding

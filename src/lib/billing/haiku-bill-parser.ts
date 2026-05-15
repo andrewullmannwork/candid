@@ -26,6 +26,9 @@ import type { ExtractionMethod } from "../parser/types";
 import { categorizeProcedureCode } from "./parser";
 import { reconcileHaikuCodeType } from "./code-type-inference";
 import { applyEOBPostProcess } from "./eob-postprocess";
+import { isFeatureEnabled } from "../config/product-flags";
+import { scanForSbcMarkers } from "./sbc-marker-scan";
+import { lineIsImplausible } from "./line-plausibility";
 
 const MODEL = "claude-haiku-4-5-20251001";
 const HAIKU_MAX_OUTPUT = 32000;
@@ -322,6 +325,23 @@ export async function parseBillWithHaiku(
   // returns 'ocr_unverifiable' rather than 'not_found' on misses.
   extractionMethod: ExtractionMethod = "pdftotext",
 ): Promise<ParsedBill | null> {
+  // S94 B4 Fix #1b — SBC marker scan. Refuse to parse documents that look
+  // like an SBC (Summary of Benefits and Coverage). User-uploaded SBCs
+  // mis-routed through the bill picker cause Haiku to hallucinate CPT
+  // codes from ZIP codes, P.O. boxes, and phone numbers. Doc-type resolver
+  // hardening (s94-b5) addresses routing; this is parser-side defense-in-
+  // depth. See migrations/106_bill_parser_hardening_flags.sql for the
+  // motivating incident.
+  if (await isFeatureEnabled("bill_parser_sbc_marker_scan")) {
+    const scan = scanForSbcMarkers(ocrText);
+    if (scan.isLikelySbc) {
+      console.warn(
+        `[haiku-bill-parser] Refused: SBC-like document (${scan.matchedMarkers.length}/${scan.totalMarkersChecked} markers: ${scan.matchedMarkers.join(", ")})`
+      );
+      return null;
+    }
+  }
+
   const client = getClient();
   if (!client) return null;
 
@@ -400,6 +420,8 @@ export async function parseBillWithHaiku(
     const rawLineItems = result.lineItems ?? result.line_items ?? [];
     const claimServiceDate = result.service_date ?? result.serviceDate ?? new Date().toISOString().split("T")[0];
 
+    const arithmeticGuardEnabled = await isFeatureEnabled("bill_parser_arithmetic_check");
+
     const lineItems: BillLineItem[] = rawLineItems.map((item, idx) => {
       const procedureCode = String(item.procedure_code ?? item.procedureCode ?? "");
       const billedAmount = Number(item.billed_amount ?? item.billedAmount ?? 0);
@@ -449,6 +471,21 @@ export async function parseBillWithHaiku(
       };
     });
 
+    // S94 B4 Fix #3 — drop line items that violate basic arithmetic
+    // plausibility (insurance paid >10x billed, patient owes >20x billed,
+    // $0 billed with $5k+ allocated). Catches Haiku hallucinations where
+    // dollar amounts are pulled from boilerplate text rather than tabular
+    // line items.
+    const filteredLineItems = arithmeticGuardEnabled
+      ? lineItems.filter((li) => {
+          const check = lineIsImplausible(li);
+          if (check.dropped) {
+            console.warn(`[haiku-bill-parser] Dropped line ${li.lineNumber} (code=${li.procedureCode}): ${check.reason}`);
+          }
+          return !check.dropped;
+        })
+      : lineItems;
+
     const totals = result.totals ?? {};
     const parsedBill: ParsedBill = {
       id: randomUUID(),
@@ -473,9 +510,9 @@ export async function parseBillWithHaiku(
           }
         : undefined,
       serviceDate: claimServiceDate,
-      lineItems,
+      lineItems: filteredLineItems,
       totals: {
-        totalBilled: numOrZero(totals.total_billed) || lineItems.reduce((s, li) => s + li.billedAmount, 0),
+        totalBilled: numOrZero(totals.total_billed) || filteredLineItems.reduce((s, li) => s + li.billedAmount, 0),
         totalAllowed: numOrUndef(totals.total_allowed),
         totalInsurancePaid: numOrUndef(totals.total_insurance_paid),
         totalPatientResponsibility: numOrUndef(totals.total_patient_responsibility),
