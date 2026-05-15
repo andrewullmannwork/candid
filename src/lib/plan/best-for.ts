@@ -101,13 +101,14 @@ function scoreLowEverydayCosts(plan: ComparePlanPayload): { score: number; why: 
 
 function scoreComprehensiveCoverage(plan: ComparePlanPayload): { score: number; why: string } {
   // Plan covers all major care categories at any cost-sharing.
+  // S94 B1: canonical slugs added; legacy aliases retained for pre-S94 data still rendering.
   const requiredCategories = [
-    { name: "ER", slugs: ["emergency_room", "er_visit", "emergency_services"] },
-    { name: "Hospitalization", slugs: ["inpatient_hospitalization", "hospitalization", "inpatient_facility"] },
-    { name: "Maternity", slugs: ["maternity_delivery", "maternity_prenatal", "maternity"] },
+    { name: "ER", slugs: ["er_visit", "emergency_room", "emergency_services"] },
+    { name: "Hospitalization", slugs: ["inpatient_facility", "inpatient_hospitalization", "hospitalization"] },
+    { name: "Maternity", slugs: ["delivery_facility", "delivery_professional", "prenatal_visit", "maternity_delivery", "maternity_prenatal", "maternity"] },
     { name: "Mental health", slugs: ["mental_health_outpatient", "mental_health", "behavioral_health"] },
     { name: "Specialist", slugs: ["specialist_visit", "specialist", "specialty_care"] },
-    { name: "Prescriptions", slugs: ["rx_generic", "prescription_generic", "tier_1_rx"] },
+    { name: "Prescriptions", slugs: ["generic_rx_tier1", "rx_generic", "prescription_generic", "tier_1_rx"] },
   ];
   const covered = requiredCategories.filter((c) => isCovered(findBenefit(plan, c.slugs)));
   const ratio = covered.length / requiredCategories.length;
@@ -148,9 +149,10 @@ function scoreFamilies(plan: ComparePlanPayload): { score: number; why: string }
 }
 
 function scoreOngoingPrescriptions(plan: ComparePlanPayload): { score: number; why: string } {
-  const tier1 = inCopay(findBenefit(plan, ["rx_generic", "prescription_generic", "tier_1_rx"]));
-  const tier2 = inCopay(findBenefit(plan, ["rx_preferred_brand", "prescription_preferred", "tier_2_rx"]));
-  const specialty = findBenefit(plan, ["rx_specialty", "tier_4_rx", "tier_5_rx"]);
+  // S94 B1: canonical tiered slugs added; legacy aliases retained defensively.
+  const tier1 = inCopay(findBenefit(plan, ["generic_rx_tier1", "rx_generic", "prescription_generic", "tier_1_rx"]));
+  const tier2 = inCopay(findBenefit(plan, ["preferred_brand_rx_tier2", "rx_preferred_brand", "prescription_preferred", "tier_2_rx"]));
+  const specialty = findBenefit(plan, ["specialty_rx_tier4", "rx_specialty", "tier_4_rx", "tier_5_rx"]);
 
   let score = 0;
   const reasons: string[] = [];

@@ -19,7 +19,7 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import { jsonrepair } from "jsonrepair";
+import { parseHaikuJSON } from "@/lib/parser/safe-json";
 import { randomUUID } from "crypto";
 import type { Accumulator, BillLineItem, ExCode, ParsedBill, ProcedureCodeType } from "./types";
 import type { ExtractionMethod } from "../parser/types";
@@ -50,26 +50,12 @@ function adaptiveMaxTokens(inputTokens: number): number {
 }
 
 function parseJSON(text: string): unknown {
-  const cleaned = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    console.log("[haiku-bill-parser] JSON.parse failed, attempting jsonrepair...");
-    try {
-      return JSON.parse(jsonrepair(cleaned));
-    } catch (err) {
-      // Pattern 1: regex fallback to extract JSON from any prose wrapper
-      const match = cleaned.match(/\{[\s\S]*\}/);
-      if (match) {
-        try {
-          return JSON.parse(jsonrepair(match[0]));
-        } catch {
-          throw err;
-        }
-      }
-      throw err;
-    }
-  }
+  // S94 B1 — delegate to shared parseHaikuJSON which handles trailing reasoning
+  // text + code fences + balanced-block extraction + jsonrepair fallback. The
+  // older greedy-regex fallback `/\{[\s\S]*\}/` was non-balanced (matches across
+  // multiple objects); the balanced-block extractor in safe-json correctly
+  // walks brace depth respecting string literals.
+  return parseHaikuJSON(text);
 }
 
 interface HaikuRawResult {

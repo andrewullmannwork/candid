@@ -26,6 +26,7 @@ import { buildProvenanceEntry } from "./field-categories";
 import type { PatternP8Provenance } from "./verify-source-excerpts";
 import type { SBCHaikuService, SBCPlanIdentity } from "@/lib/sbc/types";
 import type { EOCPlanIdentity } from "@/lib/eoc/types";
+import type { PlanDocService, PlanDocPlanIdentity } from "@/lib/plan_doc/types";
 
 /**
  * Translate the snake_case PatternP8Provenance shape (parser-side) into the camelCase
@@ -249,6 +250,120 @@ export function buildCanonicalInheritedProvenance(
       undefined, // no haiku confidence — we didn't run Haiku
       undefined, // no Pattern P-8 sub-keys — no source_excerpt
       undefined, // no searched_sections — no Haiku dispatch
+    );
+    if (entry) provenance[column] = entry;
+  }
+  return provenance;
+}
+
+/**
+ * Build field_provenance for a `plan_covered_services` row from a plan_doc Haiku-first
+ * parser service emission.
+ *
+ * S94 B1 — closes the silent regression where the plan_doc Haiku-first parser path
+ * was writing field_provenance: {} on every plan_covered_services row, dropping
+ * Pattern P-8 cite-grade verbatim to 0% in PROD since the unified_plan_doc_parser_v1
+ * flag flipped global ON.
+ *
+ * PlanDocService extends SBCParsedService + adds patternP8 + haikuConfidence + howToAccess.
+ * Shape is similar enough to buildPlanCoveredServiceProvenance — same column mapping —
+ * but the PlanDocService.patternP8 lives at the service level (not inside a field wrapper).
+ */
+export function buildPlanDocServiceProvenance(
+  service: PlanDocService,
+  source: SourceProvenance = "doc_extraction",
+  searchedSections?: string[],
+): Record<string, FieldProvenanceEntry> {
+  const patternP8 = adaptPatternP8(service.patternP8);
+  const haikuConfidence = service.haikuConfidence;
+
+  // Same column mapping as buildPlanCoveredServiceProvenance — PlanDocService inherits
+  // SBCParsedService field names so this is a 1:1 mirror except for the type.
+  const fields: Array<[string, unknown]> = [
+    ["in_copay", service.inCopay],
+    ["in_coinsurance", service.inCoinsurance],
+    ["in_deductible_applies", service.inDeductibleApplies],
+    ["in_copay_waiver_condition", service.inCopayWaiverCondition],
+    ["in_cost_description", service.inCostDescription],
+    ["out_copay", service.outCopay],
+    ["out_coinsurance", service.outCoinsurance],
+    ["out_deductible_applies", service.outDeductibleApplies],
+    ["out_cost_description", service.outCostDescription],
+    ["oon_paid_at_in_network", service.oonPaidAtInNetwork],
+    ["annual_limit", service.annualLimit],
+    ["annual_limit_value", service.annualLimitValue],
+    ["prior_auth_required", service.priorAuthRequired],
+    ["penalty_no_precert", service.penaltyNoPrecert],
+    ["covered", service.covered],
+    ["coverage_conditions", service.coverageConditions],
+    ["supply_limit_days", service.supplyLimitDays],
+    ["home_delivery_copay", service.homeDeliveryCopay],
+    ["step_therapy_required", service.stepTherapyRequired],
+    ["notes", service.notes],
+  ];
+
+  const provenance: Record<string, FieldProvenanceEntry> = {};
+  for (const [column, value] of fields) {
+    if (value === null || value === undefined || value === "") continue;
+    const entry = buildProvenanceEntry(
+      "plan_covered_services",
+      column,
+      source,
+      haikuConfidence,
+      patternP8,
+      searchedSections,
+    );
+    if (entry) provenance[column] = entry;
+  }
+  return provenance;
+}
+
+/**
+ * Build field_provenance for `insurance_plans` plan-identity columns from a plan_doc
+ * Haiku-first parser result.
+ *
+ * S94 B1 — closes the silent regression where plan_doc plan-identity was writing
+ * empty field_provenance: {} to insurance_plans, marking every field "estimated"
+ * instead of "verified" in the consumer-read filter even when cite-grade was 100%.
+ *
+ * Mirrors buildSBCPlanIdentityProvenance shape — PlanDocPlanIdentity uses
+ * PlanDocField<T> wrapper just like SBCPlanField<T>, so each field carries its own
+ * patternP8. Note: plan_doc adds metalTier + groupNumber + networkType columns
+ * that SBC doesn't extract — included here for completeness even though the
+ * insurance_plans schema may not have all of them (skipped silently if absent).
+ */
+export function buildPlanDocIdentityProvenance(
+  planIdentity: PlanDocPlanIdentity,
+  source: SourceProvenance = "doc_extraction",
+  searchedSections?: string[],
+): Record<string, FieldProvenanceEntry> {
+  const mappings: Array<[string, keyof PlanDocPlanIdentity]> = [
+    ["plan_name", "planName"],
+    ["insurer_name", "insurerName"],
+    ["plan_type", "planType"],
+    ["plan_year", "planYear"],
+    ["in_deductible_individual", "deductibleIndividual"],
+    ["in_deductible_family", "deductibleFamily"],
+    ["in_oop_max_individual", "oopMaxIndividual"],
+    ["in_oop_max_family", "oopMaxFamily"],
+    ["out_deductible_individual", "outDeductibleIndividual"],
+    ["out_deductible_family", "outDeductibleFamily"],
+    ["out_oop_max_individual", "outOopMaxIndividual"],
+    ["out_oop_max_family", "outOopMaxFamily"],
+  ];
+
+  const provenance: Record<string, FieldProvenanceEntry> = {};
+  for (const [column, planField] of mappings) {
+    const field = planIdentity[planField];
+    if (field === null || field === undefined) continue;
+    if (field.value === null || field.value === undefined) continue;
+    const entry = buildProvenanceEntry(
+      "insurance_plans",
+      column,
+      source,
+      field.haikuConfidence,
+      adaptPatternP8(field.patternP8),
+      searchedSections,
     );
     if (entry) provenance[column] = entry;
   }

@@ -7,6 +7,7 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
+import { parseHaikuJSON } from "@/lib/parser/safe-json";
 
 const VALID_TYPES = ["sbc", "plan_document", "eoc", "eob", "itemized_bill", "insurance_card", "other"] as const;
 type DocType = typeof VALID_TYPES[number];
@@ -63,10 +64,18 @@ ${sample}`,
     });
 
     const text = response.content[0].type === "text" ? response.content[0].text : "";
-    const jsonStr = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-    const result = JSON.parse(jsonStr);
+    // S94 B1 — parseHaikuJSON tolerates trailing reasoning text after the closing
+    // brace (a Haiku stochastic behavior that crashed this code path randomly
+    // and cascaded into stochastic parser dispatch).
+    const result = parseHaikuJSON<{
+      type?: string;
+      confidence?: number;
+      isHealthcare?: boolean;
+    }>(text);
 
-    const docType = VALID_TYPES.includes(result.type) ? result.type as DocType : "other";
+    const docType: DocType = (result.type && (VALID_TYPES as readonly string[]).includes(result.type))
+      ? (result.type as DocType)
+      : "other";
 
     console.log(`[haiku-classify] type=${docType} confidence=${result.confidence} isHealthcare=${result.isHealthcare}`);
 

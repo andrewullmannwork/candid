@@ -180,22 +180,32 @@ export async function POST(request: Request) {
         }
 
         if (coveredServices && coveredServices.length > 0) {
-          // Reverse slug map: service slug → catalog benefit educational content
+          // Reverse slug map: service slug → catalog benefit educational content.
+          // S94 B1: keys use canonical 68-slug vocabulary; legacy slug aliases retained
+          // defensively for any pre-S94 data still rendering.
           const SLUG_TO_CATALOG: Record<string, string> = {
+            // canonical (post-S94)
             pcp_visit: "annual-physical",
+            annual_physical: "annual-physical",
             preventive_care: "annual-physical",
             mental_health_outpatient: "therapy-sessions",
             substance_abuse_outpatient: "substance-abuse",
-            physical_therapy: "pt-sessions",
             pt_rehab: "pt-sessions",
-            occupational_therapy: "ot-sessions",
+            ot_rehab: "ot-sessions",
             speech_therapy: "speech-therapy",
             chiropractic: "chiro-visits",
             acupuncture: "acupuncture",
-            telehealth: "telehealth-primary",
+            telehealth_pcp: "telehealth-primary",
+            telehealth_specialist: "telehealth-primary",
             specialist_visit: "cancer-screenings",
-            maternity_prenatal: "prenatal-care",
+            cancer_screening: "cancer-screenings",
+            prenatal_visit: "prenatal-care",
             durable_medical_equipment: "breast-pump",
+            // legacy aliases (pre-S94 data; safe to remove once S94 backfill complete)
+            physical_therapy: "pt-sessions",
+            occupational_therapy: "ot-sessions",
+            telehealth: "telehealth-primary",
+            maternity_prenatal: "prenatal-care",
           };
 
           // Only build static catalog if we have services that map to it

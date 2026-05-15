@@ -73,6 +73,13 @@ export function normalizeWhitespace(text: string): string {
     .replace(/[“”„‟]/g, '"')
     .replace(/[‐‑‒–—―−]/g, "-")
     .replace(/[•·◦‣⁃▪▫●○◆◇★☆]/g, " ")
+    // S94 B1 — de-hyphenate pdftotext line-wrap artifacts. PDFs that wrap
+    // mid-hyphenated-word output "<word>-\n<word>"; after \n→space we'd see
+    // "out-of- network". Haiku's verbatim excerpt has "out-of-network" with no
+    // space. Without this fix, every OON plan-identity field with embedded
+    // "out-of-network" fails Pattern P-8 verification. The pattern matches
+    // word+hyphen+whitespace+word and removes the whitespace.
+    .replace(/(\w)-\s+(\w)/g, "$1-$2")
     .replace(/\s+/g, " ")
     .trim();
 }

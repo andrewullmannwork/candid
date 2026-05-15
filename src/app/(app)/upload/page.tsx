@@ -1047,7 +1047,7 @@ function UploadForm() {
       if (isUploading) return "Uploading your document...";
       if (isComplete) return "All done!";
       if (isStuck) return "Processing stalled";
-      if (isError) return "Processing error";
+      if (isError) return "We had an issue with your upload";
       if (hasMismatch) return "Review needed";
       if (isPendingReview) return "This one's stumping us";
       if (!processingProgress) return INIT_MESSAGES[messageIndex % INIT_MESSAGES.length];
@@ -1200,23 +1200,20 @@ function UploadForm() {
           {isError && (
             <div className="mb-5 p-4 bg-red-50 border border-red-100 rounded-xl">
               <p className="text-sm font-medium text-red-800">
-                {processingProgress?.processingError || "Something went wrong during analysis."}
+                Please try again, or upload a different document.
               </p>
               {canRetry ? (
-                <>
-                  <p className="text-xs text-red-600 mt-1">
-                    Retry {processingProgress?.retryCount || 0} of 3
-                  </p>
-                  <button
-                    onClick={() => documentId && retryDocument(documentId)}
-                    disabled={retrying}
-                    className="mt-3 w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50"
-                  >
-                    {retrying ? "Retrying..." : "Try again"}
-                  </button>
-                </>
+                <button
+                  onClick={() => documentId && retryDocument(documentId)}
+                  disabled={retrying}
+                  className="mt-3 w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50"
+                >
+                  {retrying ? "Retrying..." : "Try again"}
+                </button>
               ) : (
-                <p className="text-xs text-red-600 mt-1">Maximum retries reached. Please contact support or try uploading a different document.</p>
+                <p className="text-xs text-red-600 mt-1">
+                  Please try uploading a different document, or contact support if this keeps happening.
+                </p>
               )}
             </div>
           )}
