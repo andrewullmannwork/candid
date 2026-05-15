@@ -436,7 +436,19 @@ export async function processPlanDocumentData(
         const extractorError = (claudeResult as any).error;
         const reason = `Haiku returned fromClaude=${claudeResult.fromClaude}, services=${claudeResult.services.length}${extractorError ? `, error: ${extractorError}` : ""}`;
         console.warn("[process-plan]", reason);
-        await notifyAndFlagForReview(supabase, documentId, classification, doc, reason);
+        // S92 Stage 2 — no-dead-end fallback. Even though service extraction
+        // failed, parseResult.plan may have plan-identity scalars from earlier
+        // regex / Haiku passes. If ANY plan-identity field is populated,
+        // treat as partial_success (status=processed; user sees "Half the
+        // picture's here" UI nudge to re-upload). Otherwise genuine_failure.
+        const hasAnyPlanIdentity = Boolean(
+          parseResult.plan.plan_name ||
+            parseResult.plan.plan_type ||
+            parseResult.plan.in_deductible_individual ||
+            parseResult.plan.in_oop_max_individual,
+        );
+        const outcome: NoDeadEndOutcome = hasAnyPlanIdentity ? "partial_success" : "genuine_failure";
+        await notifyAndFlagForReview(supabase, documentId, classification, doc, reason, outcome);
         return {
           success: true,
           servicesCreated: 0,
@@ -449,13 +461,27 @@ export async function processPlanDocumentData(
             outOopMax: parseResult.plan.out_oop_max_individual,
             servicesExtracted: 0,
           },
-          parseWarnings: [...(parseResult.parseWarnings || []), "Service extraction requires admin review"],
+          parseWarnings: [
+            ...(parseResult.parseWarnings || []),
+            outcome === "partial_success"
+              ? "Services extraction returned 0 rows; plan-identity preserved (partial_success)"
+              : "Service extraction requires admin review",
+          ],
         };
       }
     } catch (err) {
       const reason = `Haiku exception: ${err instanceof Error ? err.message : String(err)}`;
       console.error("[process-plan]", reason);
-      await notifyAndFlagForReview(supabase, documentId, classification, doc, reason);
+      // S92 Stage 2 — Haiku threw entirely. If parseResult.plan has any plan-identity
+      // from earlier regex extraction, partial_success; else genuine_failure.
+      const hasAnyPlanIdentity = Boolean(
+        parseResult?.plan?.plan_name ||
+          parseResult?.plan?.plan_type ||
+          parseResult?.plan?.in_deductible_individual ||
+          parseResult?.plan?.in_oop_max_individual,
+      );
+      const outcome: NoDeadEndOutcome = hasAnyPlanIdentity ? "partial_success" : "genuine_failure";
+      await notifyAndFlagForReview(supabase, documentId, classification, doc, reason, outcome);
       return {
         success: true,
         servicesCreated: 0,
@@ -1263,11 +1289,39 @@ export async function processPlanDocumentData(
     // cleared) so /api/plan/reparse-field can dispatch Haiku on un-searched
     // sections without re-OCR. Forward-only — pre-Phase-4.0.5 docs have null
     // and fall back to upload-different-doc affordance per Q-P4.0.5-7 LOCK.
+    //
+    // S92 Stage 6 (Pattern P-Q Parse Quality Flywheel): persist parse_quality_*
+    // columns from the layout-aware Stage A label + parse-result composite
+    // score. Drives the S93 admin tuning UI's failure-cluster queue. Only
+    // populated when planDocHaikuResult is available (plan-doc parse path);
+    // legacy regex / claude-extractor paths leave NULL.
+    const parseQualityFields: Record<string, unknown> = {};
+    if (planDocHaikuResult) {
+      const layoutWarning = planDocHaikuResult.parseWarnings.find((w) => w.startsWith("layout_detected:"));
+      const detectedLayout = (layoutWarning?.split(":")[1] ?? "unknown") as
+        | "federal_sbc_8page"
+        | "federal_sbc_csr_variant"
+        | "full_eoc_narrative"
+        | "employer_plan_booklet"
+        | "plan_cert_summary"
+        | "unknown";
+      try {
+        const { computeParseQuality } = await import("@/lib/plan_doc/parse-quality");
+        const quality = computeParseQuality(planDocHaikuResult, detectedLayout);
+        parseQualityFields.parse_quality_score = quality.score;
+        parseQualityFields.parse_quality_layout = quality.layout;
+        parseQualityFields.parse_quality_failure_mode = quality.failureMode;
+        parseQualityFields.parse_quality_signature = quality.signature;
+      } catch (err) {
+        console.error("[process-plan] parse-quality compute (non-fatal):", err);
+      }
+    }
     await supabase.from("documents").update({
       status: "processed",
       linked_insurance_plan_id: targetPlanId,
       processing_step: null,
       processing_extracted_services: null,
+      ...parseQualityFields,
     }).eq("id", documentId);
 
     // S78 — async ingestion: fire parse-complete email for large plan_doc/SBC.
@@ -1306,20 +1360,47 @@ export async function processPlanDocumentData(
   }
 }
 
+/**
+ * S92 Stage 2 — no-dead-end fallback. Three outcomes after parse:
+ *   - 'partial_success' — plan-identity extracted but services=0. Set
+ *     status='processed' so user sees a `/plan` rendering with the basics
+ *     + a "Half the picture's here" CTA to re-upload. Admin still notified
+ *     for data-quality monitoring (preserves S2 skeptical-mitigation).
+ *   - 'genuine_failure' — neither plan-identity nor services recovered.
+ *     Set status='error' so user sees the "This one's stumping us" copy
+ *     with a retry CTA. Admin notified.
+ *
+ * The legacy `pending_review` status becomes admin-back-office-only — used
+ * by the S90 PR #73 asymmetric-trust LOWER-MED branch + truly unrecognizable
+ * docs. Never surfaced as the primary user UX from this function.
+ */
+type NoDeadEndOutcome = "partial_success" | "genuine_failure";
+
 async function notifyAndFlagForReview(
   supabase: SupabaseClient,
   documentId: string,
   classification: { classifiedType: string; confidence: number },
   doc: { id: string; user_id: string; file_name: string },
-  reason?: string
+  reason?: string,
+  outcome: NoDeadEndOutcome = "genuine_failure",
 ) {
   try {
     const { notifyAdminForReview } = await import("@/lib/notifications");
     const { data: profile } = await supabase.from("profiles").select("email").eq("user_id", doc.user_id).single();
     await notifyAdminForReview(documentId, classification.classifiedType, classification.confidence, doc.file_name, profile?.email || "unknown");
   } catch { /* non-critical */ }
-  await supabase.from("documents").update({
-    status: "pending_review",
-    processing_error: reason || "Haiku extraction failed or returned no services",
-  }).eq("id", documentId);
+
+  if (outcome === "partial_success") {
+    await supabase.from("documents").update({
+      status: "processed",
+      processing_step: "partial_no_services",
+      processing_error: reason || "Plan-identity extracted but 0 services returned",
+    }).eq("id", documentId);
+  } else {
+    await supabase.from("documents").update({
+      status: "error",
+      processing_step: "extraction_failed",
+      processing_error: reason || "Haiku extraction failed or returned no services",
+    }).eq("id", documentId);
+  }
 }

@@ -14,9 +14,51 @@ import type {
   PlanDocPatternP8Provenance,
   PlanDocSectionHint,
 } from "../types";
+import type { PlanDocLayout } from "../layout-detector";
 import { callHaikuWithCache } from "./_shared";
 
-const INSTRUCTIONS = `You are extracting per-service cost-sharing from a Plan Document services section. Return a single JSON object listing every covered service with cost-sharing fields per service.
+// Federal-SBC tabular-extraction supplement. Federally-mandated SBCs use a tight
+// table layout where pdftotext splits cells across consecutive lines. Without
+// this instruction, the model attempts to synthesize multi-line table rows
+// into one excerpt and the verbatim verifier rejects the synthesis. Mirrors
+// src/lib/sbc/haiku-prompts/common-medical-events.ts:81 verbatim guidance.
+const FEDERAL_SBC_TABULAR_SUPPLEMENT = `
+
+## FEDERAL-SBC LAYOUT — TABULAR EXTRACTION OVERRIDE (read carefully)
+
+This document is a federal Summary of Benefits and Coverage (SBC). pdftotext
+extracts SBC table cells across MULTIPLE LINES — a single service row's
+cost-sharing info typically spans 2-3 consecutive lines. Example:
+
+\`\`\`
+Primary care visit to treat an injury or illness
+$30 copay/visit
+50% coinsurance
+No charge after deductible has been met
+\`\`\`
+
+When extracting verbatim source_excerpt for SBC services:
+- Quote a SINGLE LINE from the source containing the most distinctive value
+  (preferably the in-network cost-sharing line).
+- DO NOT attempt to reconstruct multi-line rows into one excerpt — that will
+  fail verbatim verification.
+- Short verbatim single-line quotes are CORRECT; long reconstructed paraphrases
+  are WRONG.
+- It is PERFECTLY ACCEPTABLE for the source_excerpt to NOT include the service
+  name as long as it contains the cost value verbatim from the source.
+
+This rule supersedes any default tendency to "include the full context" in
+the excerpt.`;
+
+function buildInstructions(layout: PlanDocLayout | undefined): string {
+  const supplement =
+    layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant"
+      ? FEDERAL_SBC_TABULAR_SUPPLEMENT
+      : "";
+  return BASE_INSTRUCTIONS + supplement;
+}
+
+const BASE_INSTRUCTIONS = `You are extracting per-service cost-sharing from a Plan Document services section. Return a single JSON object listing every covered service with cost-sharing fields per service.
 
 ## CRITICAL EXTRACTION RULES
 
@@ -138,11 +180,15 @@ export async function extractServicesCostSharing(
   sectionRange: { start: number; end: number },
   extractionMethod: ExtractionMethod,
   sectionHint: PlanDocSectionHint = "services_cost_sharing",
+  layout?: PlanDocLayout,
 ): Promise<PlanDocSectionResult<{ services: PlanDocService[] }>> {
   const result = await callHaikuWithCache<RawResponse>({
-    systemPrompt: INSTRUCTIONS,
+    systemPrompt: buildInstructions(layout),
     userContent: sectionText,
-    sectionLabel: "services_cost_sharing",
+    sectionLabel:
+      layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant"
+        ? "services_cost_sharing_federal_sbc"
+        : "services_cost_sharing",
   });
 
   const services: PlanDocService[] = (result.data.services ?? [])

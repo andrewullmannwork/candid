@@ -23,9 +23,55 @@ import type {
   PlanDocPatternP8Provenance,
   PlanDocSectionHint,
 } from "../types";
+import type { PlanDocLayout } from "../layout-detector";
 import { callHaikuWithCache } from "./_shared";
 
-const INSTRUCTIONS = `You are extracting plan-identity scalars from a section of a health plan document. Plan-identity scalars (plan name, carrier, identifiers, plan year, plan/network type, metal tier, deductibles, out-of-pocket maxes) may appear ANYWHERE in a section — cover pages, plan-summary boxes, services-schedule headers, narrative paragraphs, cost-share tables, and RUNNING HEADERS / FOOTERS that repeat on every page. Extract every scalar present in THIS chunk; the system runs this prompt on multiple sections of the same document and merges results across chunks.
+// Federal-SBC tabular-extraction supplement. Federal SBCs use a tight
+// federally-mandated table layout where pdftotext splits cells across
+// consecutive lines (e.g., a deductible cell may render as "$2,500 per
+// individual / $5,000 per" on one line and "family" on the next). The default
+// plan-identity prompt is tuned for narrative + table content found in EOCs
+// and plan booklets; SBCs need this explicit guidance to avoid synthesizing
+// multi-line cells into excerpts that fail verbatim verification. Mirrors
+// src/lib/sbc/haiku-prompts/important-questions.ts:20 verbatim guidance.
+const FEDERAL_SBC_TABULAR_SUPPLEMENT = `
+
+## FEDERAL-SBC LAYOUT — TABULAR EXTRACTION OVERRIDE (read carefully)
+
+This document is a federal Summary of Benefits and Coverage (SBC). pdftotext
+extracts SBC table cells across MULTIPLE LINES. Example: a deductible answer
+cell may render as:
+
+\`\`\`
+$2,500 per individual / $5,000 per
+family for participating providers;
+$5,000 per individual / $10,000 per
+family for non-participating providers
+\`\`\`
+
+When extracting source_excerpt for plan-identity scalars on an SBC:
+- Quote a SINGLE LINE from the source containing the value
+  (e.g., "$2,500 per individual / $5,000 per" for the individual deductible).
+- DO NOT attempt to reconstruct multi-line cells into one excerpt — that will
+  fail verbatim verification.
+- Short verbatim single-line quotes are CORRECT; long reconstructed
+  paraphrases are WRONG.
+- An excerpt of just the value (e.g., "$2,500") is preferred over a wrong
+  reconstruction. If the value isn't on its own line, quote the line where it
+  appears as part of the surrounding cell content.
+
+This rule supersedes the default tendency to include label-value pairs that
+would only "make sense" if joined across lines.`;
+
+function buildInstructions(layout: PlanDocLayout | undefined): string {
+  const supplement =
+    layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant"
+      ? FEDERAL_SBC_TABULAR_SUPPLEMENT
+      : "";
+  return BASE_INSTRUCTIONS + supplement;
+}
+
+const BASE_INSTRUCTIONS = `You are extracting plan-identity scalars from a section of a health plan document. Plan-identity scalars (plan name, carrier, identifiers, plan year, plan/network type, metal tier, deductibles, out-of-pocket maxes) may appear ANYWHERE in a section — cover pages, plan-summary boxes, services-schedule headers, narrative paragraphs, cost-share tables, and RUNNING HEADERS / FOOTERS that repeat on every page. Extract every scalar present in THIS chunk; the system runs this prompt on multiple sections of the same document and merges results across chunks.
 
 The patterns below are UNIVERSAL — they apply across hundreds of insurance carriers, employer groups, marketplace plans, Medicare Advantage plans, and HMO/PPO/EPO/POS/HDHP variants. Apply the universal extraction logic; do NOT pattern-match against specific carrier names. Brand names in the examples are illustrative.
 
@@ -638,11 +684,15 @@ export async function extractPlanIdentity(
   sectionRange: { start: number; end: number },
   extractionMethod: ExtractionMethod,
   sectionHint: PlanDocSectionHint = "plan_identity",
+  layout?: PlanDocLayout,
 ): Promise<PlanDocSectionResult<PlanDocPlanIdentity>> {
   const result = await callHaikuWithCache<RawResponse>({
-    systemPrompt: INSTRUCTIONS,
+    systemPrompt: buildInstructions(layout),
     userContent: sectionText,
-    sectionLabel: "plan_identity",
+    sectionLabel:
+      layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant"
+        ? "plan_identity_federal_sbc"
+        : "plan_identity",
   });
 
   const data: PlanDocPlanIdentity = {

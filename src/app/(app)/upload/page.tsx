@@ -13,6 +13,47 @@ import { PlayfulParsingScreen, type ParseDocPhase } from "@/components/parsing/P
 import { ShareCandidCard } from "@/components/share/ShareCandidCard";
 
 // ─── Document type info ─────────────────────────────────────────────────────
+//
+// Two layers (S92 Stage 1):
+//
+//   1. PICKER_OPTIONS (2 cards) — what the USER sees + clicks. Andrew direction
+//      2026-05-14 LOCKED copy: "Bill" + "Plan Document" with explanatory subtitles.
+//      Each picker option maps to a default wire-type via `selectsAs`. The
+//      classifier + S91 PR #75 resolver (effective-doc-type.ts) handle sub-type
+//      routing — if user picks "Bill" but classifier sees a plan_document with
+//      high confidence, the resolver overrides to plan_document.
+//
+//   2. DOC_TYPES (4 wire types) — preserved as the internal wire vocabulary for
+//      backward compat with existing parsers + the historic-uploads list at the
+//      bottom of the page. The `doc_type` column on `documents` still holds one
+//      of these 4 values; resolver decides which.
+
+const PICKER_OPTIONS = {
+  bill: {
+    label: "Bill",
+    short: "Bill",
+    description: "An EOB or itemized bill from your insurer or provider",
+    selectsAs: "eob" as const,
+    tips: [
+      "An EOB (Explanation of Benefits) is what your insurer mails or emails after a claim is processed",
+      "An itemized bill is from your provider — request one if you only got a summary statement (providers must give you one by law)",
+      "Check your insurer's portal under 'Claims' / 'EOBs', or contact your provider's billing department",
+    ],
+  },
+  plan_document: {
+    label: "Plan Document",
+    short: "Plan Document",
+    description: "Your insurance plan documents — SBC, EOC, or plan booklet",
+    selectsAs: "plan_document" as const,
+    tips: [
+      "SBC = Summary of Benefits and Coverage (federally-required 8-page summary you got at enrollment)",
+      "EOC = Evidence of Coverage / plan certificate (the longer 50+ page document with the full coverage details)",
+      "Log into your insurer's portal under 'Plan Documents', or ask HR if you have employer-sponsored insurance",
+    ],
+  },
+} as const;
+
+type PickerOptionKey = keyof typeof PICKER_OPTIONS;
 
 const DOC_TYPES = {
   eob: {
@@ -115,7 +156,8 @@ function UploadForm() {
   const [uploadStatus, setUploadStatus] = useState<"uploading" | "uploaded" | "auto_processed" | "pending_review" | "rejected" | null>(null);
   const [error, setError] = useState("");
   const [fileName, setFileName] = useState("");
-  const [showTips, setShowTips] = useState<"eob" | "itemized_bill" | "sbc" | "plan_document" | null>(null);
+  // S92 Stage 1: showTips is now per-picker-option (2-card UI), not per-wire-type.
+  const [showTips, setShowTips] = useState<PickerOptionKey | null>(null);
   const [profileMissing, setProfileMissing] = useState(false);
   const [classificationResult, setClassificationResult] = useState<{
     classifiedType: string;
@@ -199,7 +241,10 @@ function UploadForm() {
       && !processingProgress?.insurerMismatch?.mismatch
       && !hasYearRolloverNow
       && !!processingProgress?.insurerMismatch?.pending_canonical_match;
-    const inActiveNow = (isUploadingNow || isProcessingNow)
+    // S91 — broaden to `uploaded` (was `isUploadingNow || isProcessingNow`)
+    // to mirror the render-time gate, so the floor engages during the transient
+    // post-upload pre-poll window too.
+    const inActiveNow = uploaded
       && !isCompleteNow && !isErrorNow && !isStuckNow
       && !hasMismatchNow && !hasYearRolloverNow && !hasCanonicalMatchNow
       && !isPendingReview;
@@ -656,8 +701,6 @@ function UploadForm() {
     disabled: uploading,
   });
 
-  const typeInfo = DOC_TYPES[docType];
-
   // ── Progress / Success state — unified flow ─────────────────────────────
   // Shows immediately when upload starts. Combined progress bar for upload + analysis.
   if (uploaded) {
@@ -691,8 +734,20 @@ function UploadForm() {
     // playfulFloorActive holds the minimum-display-time floor (smart-skip
     // re-uploads complete in 1-3s otherwise; floor ensures every user sees
     // the playful animation even on fast paths).
+    //
+    // S91 fix — previously this gated on `(isUploading || isProcessing)` which
+    // left a transient window after the upload response settled but before the
+    // first /api/documents/status poll returned. During that window uploadStatus
+    // was "auto_processed" but processingProgress was still null and both
+    // isUploading and isProcessing could read false in certain transitions,
+    // dropping the user back into the legacy panel for "Clearing a spot on the
+    // desk" microcopy. For fast SBC parses (~10 pages) the window was too brief
+    // to catch; for 150-page EOCs going through QStash the gap was multiple
+    // seconds. New gate: if the user uploaded a file AND no terminal state has
+    // fired, render PlayfulParsingScreen — its own phase logic already handles
+    // the queued/parsing/cross_referencing states cleanly.
     const inActiveProcessing =
-      (isUploading || isProcessing)
+      uploaded
       && !isComplete
       && !isError
       && !isStuck
@@ -743,7 +798,7 @@ function UploadForm() {
           ? "Thanks — we're reading your plan"
           : "Reading your document";
       const largeDocSubtitle = isUploadingPhase
-        ? "Just a moment while we receive your file."
+        ? "Just a moment while we upload your file."
         : isLargeDoc
           ? (() => {
               const pages = largeDocPageCount ?? 0;
@@ -756,10 +811,14 @@ function UploadForm() {
       const largeDocWhySubtitle = isUploadingPhase ? undefined : WHY_SUBTITLE;
 
       // S91 — cancel handler for the X-out button in PlayfulParsingScreen.
-      // During isUploading: abort the in-flight XHR (truly cancels the upload).
-      // During processing: backend job is in QStash; can't truly cancel, but we
-      // clear local UI state so the user can move on (the doc continues
-      // processing in background and shows up in their docs list).
+      //   - During isUploading: abort the in-flight XHR (truly cancels bytes).
+      //   - During processing: POST `action: "cancel"` to /api/documents/status
+      //     which sets status='error' + processing_step='canceled_by_user'.
+      //     The next process-chunk worker invocation bails at the status gate,
+      //     so further QStash chunks become no-ops. Soft cancel — a chunk
+      //     currently mid-Haiku-call completes its work, but no chunks fire
+      //     after that. Sufficient for the user-perception goal.
+      //   - Always: clear local UI state so the user can move on.
       const cancelInFlight = () => {
         if (uploadXhrRef.current) {
           try {
@@ -768,6 +827,26 @@ function UploadForm() {
             /* ignore — XHR already settled */
           }
           uploadXhrRef.current = null;
+        }
+        // Fire-and-forget backend cancel when a documentId is known. Doesn't
+        // need to complete before we clear UI; the worker reads status before
+        // each chunk, so once this UPDATE lands the worker will halt.
+        if (documentId && user) {
+          (async () => {
+            try {
+              const token = await user.firebaseUser.getIdToken();
+              await fetch("/api/documents/status", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({ documentId, action: "cancel" }),
+              });
+            } catch {
+              /* fire-and-forget */
+            }
+          })();
         }
         setUploaded(false);
         setUploadStatus(null);
@@ -1486,20 +1565,38 @@ function UploadForm() {
 
       <div className="mt-6 space-y-5">
 
-        {/* Document type selector */}
+        {/* Document type selector — S92 Stage 1: 2-card picker. Wire type
+            (`docType`) stays as the 4-tuple; picker is just a 2-card visual
+            collapse that maps to default wire types via `selectsAs`. */}
         <div>
           <label className="text-sm font-medium text-gray-700 mb-2 block">What are you uploading?</label>
           <div className="grid grid-cols-2 gap-3">
-            {(["eob", "itemized_bill", "sbc", "plan_document"] as const).map((type) => {
-              const info = DOC_TYPES[type];
-              const selected = docType === type;
+            {(Object.keys(PICKER_OPTIONS) as PickerOptionKey[]).map((pickerKey) => {
+              const option = PICKER_OPTIONS[pickerKey];
+              // A picker option is "selected" when the current docType matches
+              // either the option's default wire-type OR any sub-type that
+              // resolves into the same family. Bill family = eob/itemized_bill;
+              // Plan family = sbc/plan_document.
+              const billFamily: ReadonlyArray<typeof docType> = ["eob", "itemized_bill"];
+              const planFamily: ReadonlyArray<typeof docType> = ["sbc", "plan_document"];
+              const family = pickerKey === "bill" ? billFamily : planFamily;
+              const selected = family.includes(docType);
+              // S92 — clicking a card both selects it AND auto-opens its tips
+              // panel. Andrew direction 2026-05-14: shouldn't have to click
+              // "Where do I find this?" after picking — the tips are part of
+              // the answer to the picker prompt. Sub-button still works as a
+              // toggle for users who want to hide tips after reading.
+              const selectAndShowTips = () => {
+                setDocType(option.selectsAs);
+                setShowTips(pickerKey);
+              };
               return (
                 <div
-                  key={type}
+                  key={pickerKey}
                   role="button"
                   tabIndex={0}
-                  onClick={() => setDocType(type)}
-                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setDocType(type); }}
+                  onClick={selectAndShowTips}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") selectAndShowTips(); }}
                   className={`relative p-4 rounded-2xl border-2 text-left transition-all cursor-pointer ${
                     selected
                       ? "border-blue-500 bg-blue-50/50"
@@ -1507,17 +1604,17 @@ function UploadForm() {
                   }`}
                 >
                   <p className={`text-sm font-semibold ${selected ? "text-blue-700" : "text-gray-900"}`}>
-                    {info.short}
+                    {option.short}
                   </p>
                   <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
-                    {info.description.slice(0, 80)}...
+                    {option.description}
                   </p>
                   <button
                     type="button"
-                    onClick={(e) => { e.stopPropagation(); setShowTips(showTips === type ? null : type); }}
+                    onClick={(e) => { e.stopPropagation(); setShowTips(showTips === pickerKey ? null : pickerKey); }}
                     className="mt-2 text-[11px] font-medium text-blue-600 hover:text-blue-700"
                   >
-                    {showTips === type ? "Hide tips" : "Where do I find this?"}
+                    {showTips === pickerKey ? "Hide tips" : "Where do I find this?"}
                   </button>
                   {selected && (
                     <div className="absolute top-2.5 right-2.5 w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center">
@@ -1535,10 +1632,10 @@ function UploadForm() {
           {showTips && (
             <div className="mt-3 p-4 bg-gray-50 rounded-2xl space-y-2">
               <p className="text-xs font-semibold text-gray-600 uppercase tracking-widest">
-                How to find your {DOC_TYPES[showTips].short}
+                How to find your {PICKER_OPTIONS[showTips].short}
               </p>
               <ul className="space-y-1.5">
-                {DOC_TYPES[showTips].tips.map((tip, i) => (
+                {PICKER_OPTIONS[showTips].tips.map((tip, i) => (
                   <li key={i} className="flex items-start gap-2 text-xs text-gray-500">
                     <span className="w-4 h-4 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">
                       {i + 1}

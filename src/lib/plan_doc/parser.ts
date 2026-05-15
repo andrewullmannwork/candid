@@ -51,6 +51,7 @@ import type {
 import { extractPlanIdentity } from "./haiku-prompts/plan-identity";
 import { extractServicesCostSharing } from "./haiku-prompts/services-cost-sharing";
 import { extractAccessInstructions } from "./haiku-prompts/access-instructions";
+import { detectLayout } from "./layout-detector";
 import { verifyPlanDocSourceExcerpts } from "./verify-source-excerpts";
 import { isSelfCheckEnabled, selfCheckPlanDocExcerpts } from "./self-check";
 
@@ -271,6 +272,31 @@ export async function parsePlanDocumentHaiku(
     ).toFixed(1)}%`,
   );
 
+  // Step 0.5: Layout detection (S92 Stage 3a) — Stage A of the layout-aware
+  // 2-stage extraction architecture (Pattern P-9: Parse Quality Flywheel).
+  // Layout label gates federal-SBC-specific extraction instructions in the
+  // plan-identity + services-cost-sharing prompts. See layout-detector.ts.
+  const layoutDetection = detectLayout(workingText);
+  warnings.push(
+    `layout_detected:${layoutDetection.layout}:${layoutDetection.confidence.toFixed(2)}:features=${layoutDetection.features.length}`,
+  );
+  // Wrap extraction fns with closure baking in detected layout. Lets us reuse
+  // the existing dispatchSectionAsChunks / dispatchSectionSingle helpers
+  // unchanged. Layout=unknown falls back to default-prompt behavior.
+  const layout = layoutDetection.layout === "unknown" ? undefined : layoutDetection.layout;
+  const extractPlanIdentityWithLayout = (
+    text: string,
+    range: { start: number; end: number },
+    em: ExtractionMethod,
+    hint: PlanDocSectionHint,
+  ) => extractPlanIdentity(text, range, em, hint, layout);
+  const extractServicesCostSharingWithLayout = (
+    text: string,
+    range: { start: number; end: number },
+    em: ExtractionMethod,
+    hint: PlanDocSectionHint,
+  ) => extractServicesCostSharing(text, range, em, hint, layout);
+
   // Step 1: Section segmentation (regex first, on cleaned text)
   let sectionRanges: SectionRanges = segmentPlanDocSections(workingText);
   let segmentationUsed: PlanDocHaikuParseResult["segmentationUsed"] = "regex_only";
@@ -323,7 +349,7 @@ export async function parsePlanDocumentHaiku(
       "plan_identity",
       planIdentityText,
       planIdentityRange,
-      extractPlanIdentity,
+      extractPlanIdentityWithLayout,
       extractionMethod,
       costTracker,
       warnings,
@@ -356,7 +382,7 @@ export async function parsePlanDocumentHaiku(
         dispatchSectionSingle(
           sample.text,
           sample.range,
-          extractPlanIdentity,
+          extractPlanIdentityWithLayout,
           extractionMethod,
           costTracker,
           warnings,
@@ -371,7 +397,7 @@ export async function parsePlanDocumentHaiku(
         dispatchSectionSingle(
           sample.text,
           sample.range,
-          extractPlanIdentity,
+          extractPlanIdentityWithLayout,
           extractionMethod,
           costTracker,
           warnings,
@@ -396,7 +422,7 @@ export async function parsePlanDocumentHaiku(
       "services_cost_sharing",
       servicesText,
       servicesRange,
-      extractServicesCostSharing,
+      extractServicesCostSharingWithLayout,
       extractionMethod,
       costTracker,
       warnings,
