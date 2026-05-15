@@ -153,7 +153,7 @@ function UploadForm() {
   const [docType, setDocType] = useState<"eob" | "itemized_bill" | "sbc" | "plan_document">(initialDocType);
   const [uploading, setUploading] = useState(false);
   const [uploaded, setUploaded] = useState(false);
-  const [uploadStatus, setUploadStatus] = useState<"uploading" | "uploaded" | "auto_processed" | "pending_review" | "rejected" | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<"uploading" | "uploaded" | "auto_processed" | "pending_review" | "rejected" | "dedup_processed" | null>(null);
   const [error, setError] = useState("");
   const [fileName, setFileName] = useState("");
   // S92 Stage 1: showTips is now per-picker-option (2-card UI), not per-wire-type.
@@ -572,6 +572,39 @@ function UploadForm() {
           setDocumentId(uploadResult.documentId);
         }
 
+        // S93 Bug A fix — handle dedup-of-processed cleanly. When upload route
+        // returns deduplicated:true (file_hash matched a prior PROMOTED canonical
+        // upload by this user — see S93 Bug C tightening in /api/documents/upload),
+        // the existing doc is already processed; there's no parsing work to wait
+        // on. Pre-fix behavior fell through to status="uploaded" + polling, which
+        // got stuck on the PlayfulParsingScreen "Queued" pill (Bug B was the
+        // visible symptom; this is the upstream cause). Post-fix: route the user
+        // immediately to their results based on doc type, surfacing a clean
+        // "your plan/bill is already in your library" outcome.
+        if (uploadResult.deduplicated === true && uploadResult.status === "processed") {
+          console.log(
+            `[upload] dedup-of-processed hit (reason=${uploadResult.deduplicationReason ?? "unspecified"}); routing to results`,
+          );
+          // Plan-doc family → /plan; bills → /audit (matches existing post-process
+          // redirects in this file at lines ~1251, ~1256, ~1355). The form
+          // docType is one of {eob, itemized_bill, sbc, plan_document}; EOC
+          // documents are uploaded as plan_document and the classifier resolves
+          // the EOC sub-type downstream.
+          const isPlanDoc = docType === "sbc" || docType === "plan_document";
+          const isBill = docType === "eob" || docType === "itemized_bill";
+          const target = isPlanDoc ? "/plan" : isBill ? "/audit" : "/dashboard";
+          // Brief "Already in your library" toast/state via uploadStatus so the
+          // PlayfulParsingScreen unmounts; then navigate via window.location
+          // (matches existing pattern in this file).
+          setUploadStatus("dedup_processed");
+          setUploaded(true);
+          setUploading(false);
+          // Small delay so the user sees the resolution rather than a flicker;
+          // matches the redirect-after-success timing pattern at line ~428.
+          setTimeout(() => { window.location.href = target; }, 600);
+          return;
+        }
+
         // Backend now handles confidence-gated processing automatically
         if (uploadResult.classification) {
           setClassificationResult(uploadResult.classification);
@@ -760,6 +793,15 @@ function UploadForm() {
       // "cross_referencing" at 95% so it animates as "almost done" rather than
       // freezing at the last upload-progress value.
       const floorOnly = !inActiveProcessing && playfulFloorActive;
+      // S93 Bug B fix — terminal "queued" state is bad UX (Andrew direction:
+      // "I do not like this change. It should just have the old uploading
+      // screen. We don't need to context to queued"). Fallthrough now lands
+      // on "parsing" so the PlayfulParsingScreen always renders animated
+      // microcopy + moving progress bar between upload-complete and the
+      // first chunk-progress event (typically a few seconds for new uploads;
+      // longer for backend transient delays). The semantic stretch
+      // ("we're already reading" before chunk processing actually starts) is
+      // preferred to a static "Queued" pill that feels stuck.
       const phase: ParseDocPhase = floorOnly
         ? "cross_referencing"
         : isUploading
@@ -768,7 +810,7 @@ function UploadForm() {
             ? processingProgress?.step?.includes("extracting") || processingProgress?.step?.includes("saving")
               ? "cross_referencing"
               : "parsing"
-            : "queued";
+            : "parsing";
       const playfulProgress = floorOnly
         ? 95
         : isUploading

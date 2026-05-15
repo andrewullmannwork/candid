@@ -221,15 +221,69 @@ export async function POST(req: NextRequest) {
       .limit(1)
       .maybeSingle();
     if (existingDoc) {
+      // S93 Bug C fix — gate dedup on canonical promotion state.
+      //
+      // Old behavior: any same-user same-hash match in [queued, processing,
+      // processed] short-circuited the upload. This blocked re-uploads from
+      // contributing to the promotion flywheel — Pattern 1 #3 distinct-user
+      // corroboration count never grew past whatever it had on first parse,
+      // and CF-40 v3 canonical_document_stability counter never accrued
+      // additional parse votes for hash convergence.
+      //
+      // New behavior per Andrew direction (S93): "If the hash already exists
+      // it should either load again and contribute to the promotion flywheel
+      // or if already promoted, it should skip." Translated to code:
+      //   - canonical promoted (verification_count >= 3) → DEDUP, return
+      //     existing doc, frontend jumps to results (Bug A handles UX)
+      //   - NOT promoted → fall through to new INSERT + parse, contributing
+      //     to canonical_document_stability counter (CF-40 v3) on this parse
+      //     and to Pattern 1 #3 distinct-user count when the upload comes
+      //     from a distinct user.
+      //
+      // Resolves the canonical via insurance_plans.source_document_id
+      // (mig 009) → canonical_plans.verification_count (mig 066). When the
+      // existing doc has no canonical link yet (parse pending or failed),
+      // canonicalPromoted defaults to false → re-parse allowed.
+      const PROMOTION_THRESHOLD = 3; // Pattern 1 #3 distinct-user threshold
+      let canonicalPromoted = false;
+      const { data: linkedPlan } = await supabase
+        .from("insurance_plans")
+        .select("canonical_plan_id")
+        .eq("source_document_id", existingDoc.id)
+        .not("canonical_plan_id", "is", null)
+        .limit(1)
+        .maybeSingle();
+      if (linkedPlan?.canonical_plan_id) {
+        const { data: canon } = await supabase
+          .from("canonical_plans")
+          .select("verification_count")
+          .eq("id", linkedPlan.canonical_plan_id)
+          .maybeSingle();
+        const count = (canon?.verification_count as number | null) ?? 0;
+        canonicalPromoted = count >= PROMOTION_THRESHOLD;
+      }
+
+      if (canonicalPromoted) {
+        console.log(
+          `[upload] file-hash dedup hit on PROMOTED canonical — reusing documentId ${existingDoc.id} for user ${user.id}`,
+        );
+        return NextResponse.json({
+          documentId: existingDoc.id as string,
+          status: existingDoc.status as string,
+          deduplicated: true,
+          deduplicationReason: "canonical_promoted",
+          existingFileName: existingDoc.file_name as string,
+        });
+      }
+
       console.log(
-        `[upload] file-hash dedup hit — reusing existing documentId ${existingDoc.id} for user ${user.id}`,
+        `[upload] file-hash dedup hit on NON-promoted canonical — allowing re-parse to contribute to flywheel (existing doc: ${existingDoc.id})`,
       );
-      return NextResponse.json({
-        documentId: existingDoc.id as string,
-        status: existingDoc.status as string,
-        deduplicated: true,
-        existingFileName: existingDoc.file_name as string,
-      });
+      // Fall through to new INSERT + parse. The downstream CF-40 v3
+      // canonical_document_stability per-(canonical, hash) counter will
+      // accrue another parse vote on this attempt; Pattern 1 #3 distinct-user
+      // corroboration count grows when the upload comes from a different
+      // user_id than the existing doc.
     }
   }
 
