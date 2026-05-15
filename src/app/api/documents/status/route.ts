@@ -88,6 +88,7 @@ export async function POST(req: NextRequest) {
     "confirm_canonical_match",
     "reject_canonical_match",
     "record_disambiguation",
+    "cancel",
   ];
   if (action && mutatingActions.includes(action)) {
     const authHeader = req.headers.get("authorization");
@@ -104,6 +105,49 @@ export async function POST(req: NextRequest) {
     } catch {
       return NextResponse.json({ error: "Invalid token" }, { status: 401 });
     }
+  }
+
+  // S91 — soft-cancel an in-flight upload. Sets status='error' +
+  // processing_step='canceled_by_user' so the next process-chunk worker
+  // invocation hits the status gate at process-chunk/route.ts:474 and bails.
+  //
+  // Trade-off: the chunk currently in-flight (if any) completes and writes its
+  // partial results before bailing. To truly abort mid-Haiku-call we'd need to
+  // capture QStash message IDs at enqueue time and delete them via
+  // qstash.messages.delete — heavier lift; current approach is sufficient for
+  // the user-perception goal ("stop charging me, stop processing further").
+  if (action === "cancel") {
+    const { data: existing } = await supabase
+      .from("documents")
+      .select("status, metadata")
+      .eq("id", documentId)
+      .single();
+    if (!existing) {
+      return NextResponse.json({ error: "Document not found" }, { status: 404 });
+    }
+    // No-op if already terminal — don't overwrite a successful processed state
+    // or a different error/canceled record.
+    if (existing.status === "processed" || existing.status === "error") {
+      return NextResponse.json({ success: true, alreadyTerminal: true, status: existing.status });
+    }
+    const existingMeta = (existing.metadata as Record<string, unknown> | null) ?? {};
+    const newMeta = {
+      ...existingMeta,
+      canceled_by_user: { at: new Date().toISOString() },
+    };
+    const { error } = await supabase
+      .from("documents")
+      .update({
+        status: "error",
+        processing_step: "canceled_by_user",
+        processing_error: "Canceled by user via the upload-screen X button.",
+        metadata: newMeta,
+      })
+      .eq("id", documentId);
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+    return NextResponse.json({ success: true });
   }
 
   // S91 Option B — record the user's choice on the insurer-mismatch / year-rollover

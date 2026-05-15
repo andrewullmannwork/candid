@@ -145,6 +145,61 @@ expect(
   { effectiveDocType: "plan_document", overrideReason: "classifier_high_confidence" },
 );
 
+// ─── S92 Stage 1: Bill-vs-Plan-Doc cross-family cases ──────────────────────
+// The 2-card picker collapses 4 user-pick types into 2 user-facing families:
+//   "Bill" card → wire-type "eob" (default; classifier may sub-classify to itemized_bill)
+//   "Plan Document" card → wire-type "plan_document" (default; classifier may sub-classify to sbc / eoc)
+// Resolver must handle cross-family override cases — when user picks "Bill"
+// (wire=eob) but classifier sees a plan-doc family type, or vice versa.
+
+// Test 15: Cigna 2024 EOC case if user had picked "Bill" instead of "Plan Document"
+expect(
+  "T15 Bill→Plan: user=eob, classifier=plan_document@0.9, pages=86 → classifier_high_confidence (Cigna 2024 EOC mis-picked as Bill)",
+  resolveEffectiveDocType("eob", "plan_document", 0.9, 86),
+  { effectiveDocType: "plan_document", overrideReason: "classifier_high_confidence" },
+);
+
+// Test 16: User picks "Plan Document" on an itemized hospital bill
+expect(
+  "T16 Plan→Bill: user=plan_document, classifier=itemized_bill@0.92, pages=4 → classifier_high_confidence (bill mis-picked as Plan Doc)",
+  resolveEffectiveDocType("plan_document", "itemized_bill", 0.92, 4),
+  { effectiveDocType: "itemized_bill", overrideReason: "classifier_high_confidence" },
+);
+
+// Test 17: User picks "Bill" on a 150-page EOC → granular eoc sub-type bump
+expect(
+  "T17 Bill→EOC: user=eob, classifier=eoc@0.95, pages=150 → classifier_high_confidence (eoc granularity bump)",
+  resolveEffectiveDocType("eob", "eoc", 0.95, 150),
+  { effectiveDocType: "eoc", overrideReason: "classifier_high_confidence" },
+);
+
+// Test 18: User picks "Bill", classifier sees plan-doc with LOW conf — no override (trust user)
+expect(
+  "T18 Bill→Plan low-conf: user=eob, classifier=plan_document@0.65, pages=10 → user_pick_classifier_low_confidence (no override)",
+  resolveEffectiveDocType("eob", "plan_document", 0.65, 10),
+  { effectiveDocType: "eob", overrideReason: "user_pick_classifier_low_confidence" },
+);
+
+// Test 19: User picks "Plan Document", classifier sees bill with LOW conf — no override
+expect(
+  "T19 Plan→Bill low-conf: user=plan_document, classifier=eob@0.5, pages=4 → user_pick_classifier_low_confidence (no override)",
+  resolveEffectiveDocType("plan_document", "eob", 0.5, 4),
+  { effectiveDocType: "plan_document", overrideReason: "user_pick_classifier_low_confidence" },
+);
+
+// Test 20: User picks "Bill", classifier sees sbc@0.9, pages=25.
+// Current behavior: Rule 1 fires (eob → sbc); Rule 2 only fires when userPick==="sbc", so
+// no page-count safety net applies. Effective = sbc. The Subplan §4.2.1 originally
+// proposed chaining Rule 1 → Rule 2 (post-override sbc + pages > 20 → force plan_document),
+// which would require a small resolver code change. Capturing current behavior here;
+// Andrew may revisit if the Stage 0 head-to-head iteration shows 25-page "sbc" mis-classifies
+// in PROD are common enough to warrant the chain.
+expect(
+  "T20 Bill→SBC@9pages overflow: user=eob, classifier=sbc@0.9, pages=25 → classifier_high_confidence (Rule 1 fires; Rule 2 does NOT chain — userPick≠sbc)",
+  resolveEffectiveDocType("eob", "sbc", 0.9, 25),
+  { effectiveDocType: "sbc", overrideReason: "classifier_high_confidence" },
+);
+
 console.log(`\nResults: ${pass} passed, ${fail} failed.`);
 if (fail > 0) {
   console.log("Failed cases:", failures.join("; "));

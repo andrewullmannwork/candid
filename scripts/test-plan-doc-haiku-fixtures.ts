@@ -57,7 +57,7 @@ config({ path: resolve(__dirname, "../.env.local"), override: true });
 interface Fixture {
   id: string;
   path: string;
-  kind: "eoc_proxy" | "plan_doc_real";
+  kind: "eoc_proxy" | "plan_doc_real" | "sbc";
 }
 
 const ALL_FIXTURES: Fixture[] = [
@@ -95,6 +95,44 @@ const ALL_FIXTURES: Fixture[] = [
     id: "kaiser-ca-2026-gold-80-hmo-coinsurance",
     path: "tests/fixtures/plan_documents_local/kaiser-ca-2026-gold-80-hmo-coinsurance/source.txt",
     kind: "plan_doc_real",
+  },
+  // S92 Stage 0 HARD GATE — 7 SBC fixtures (federal 8-page template). Validates
+  // unified plan_doc parser hits ≥87% verified rate per fixture before sunsetting
+  // src/lib/sbc/. Filter via `--fixture sbc-` to run only this subset.
+  {
+    id: "sbc-ambetter-ca-2024-bronze-60-hdhp",
+    path: "tests/fixtures/sbcs/ambetter-ca-2024-bronze-60-hdhp/source.txt",
+    kind: "sbc",
+  },
+  {
+    id: "sbc-ambetter-ca-2024-silver-87",
+    path: "tests/fixtures/sbcs/ambetter-ca-2024-silver-87/source.txt",
+    kind: "sbc",
+  },
+  {
+    id: "sbc-ambetter-ca-2024-gold-80",
+    path: "tests/fixtures/sbcs/ambetter-ca-2024-gold-80/source.txt",
+    kind: "sbc",
+  },
+  {
+    id: "sbc-blue-shield-ca-2025-bronze-60-ppo",
+    path: "tests/fixtures/sbcs/blue-shield-ca-2025-bronze-60-ppo/source.txt",
+    kind: "sbc",
+  },
+  {
+    id: "sbc-blue-shield-ca-2025-silver-70-ppo",
+    path: "tests/fixtures/sbcs/blue-shield-ca-2025-silver-70-ppo/source.txt",
+    kind: "sbc",
+  },
+  {
+    id: "sbc-blue-shield-ca-2026-silver-70-hmo",
+    path: "tests/fixtures/sbcs/blue-shield-ca-2026-silver-70-hmo/source.txt",
+    kind: "sbc",
+  },
+  {
+    id: "sbc-wha-ca-2026-premier-hmo",
+    path: "tests/fixtures/sbcs/wha-ca-2026-premier-hmo/source.txt",
+    kind: "sbc",
   },
 ];
 
