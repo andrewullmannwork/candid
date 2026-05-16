@@ -34,14 +34,17 @@ const TARGET_USER_EMAIL = "andrew.david.ullmann@gmail.com";
 // SBC parser empirical baselines per fixture (from S52/S53/S93 harness runs).
 // services_count is post-canonical-resolution; cite-grade based on Pattern P-8 verified.
 // Match by fragment of plan_name or file_hash; falls through to "unknown" if not found.
-const SBC_BASELINES: Record<string, { servicesCount: number; citeGradePct: number; planIdentityPct: number; costUsd: number; note: string }> = {
-  "ambetter.*bronze.*60.*hdhp": { servicesCount: 35, citeGradePct: 100, planIdentityPct: 75, costUsd: 0.20, note: "S53 baseline; bronze HDHP" },
-  "ambetter.*silver.*87":       { servicesCount: 40, citeGradePct: 100, planIdentityPct: 42.9, costUsd: 0.20, note: "S93 silver-87 diff baseline" },
-  "ambetter.*gold.*80":         { servicesCount: 40, citeGradePct: 96, planIdentityPct: 75, costUsd: 0.20, note: "S53 baseline" },
-  "blue.shield.*bronze.*60":    { servicesCount: 40, citeGradePct: 84, planIdentityPct: 75, costUsd: 0.20, note: "S53 baseline" },
-  "blue.shield.*silver.*70.*ppo": { servicesCount: 38, citeGradePct: 79, planIdentityPct: 75, costUsd: 0.20, note: "S53 baseline" },
-  "blue.shield.*silver.*70.*hmo": { servicesCount: 38, citeGradePct: 80, planIdentityPct: 75, costUsd: 0.20, note: "S53 baseline" },
-  "wha.*premier":               { servicesCount: 38, citeGradePct: 93, planIdentityPct: 75, costUsd: 0.20, note: "S53 baseline" },
+// Keywords matched against lower(plan_name) in any order. Insurer-branded names
+// like "Health Net of CA: Gold 80 Ambetter PPO" put plan-tier before insurer-name,
+// so word-order-sensitive regex misses them.
+const SBC_BASELINES: Record<string, { keywords: string[]; servicesCount: number; citeGradePct: number; planIdentityPct: number; costUsd: number; note: string }> = {
+  "ambetter-bronze-60-hdhp":      { keywords: ["ambetter", "bronze", "60", "hdhp"], servicesCount: 35, citeGradePct: 100, planIdentityPct: 75, costUsd: 0.20, note: "S53 baseline; bronze HDHP" },
+  "ambetter-silver-87":           { keywords: ["ambetter", "silver", "87"],         servicesCount: 40, citeGradePct: 100, planIdentityPct: 42.9, costUsd: 0.20, note: "S93 silver-87 diff baseline" },
+  "ambetter-gold-80":             { keywords: ["ambetter", "gold", "80"],           servicesCount: 40, citeGradePct: 96,  planIdentityPct: 75, costUsd: 0.20, note: "S53 baseline" },
+  "blue-shield-bronze-60":        { keywords: ["blue shield", "bronze", "60"],      servicesCount: 40, citeGradePct: 84,  planIdentityPct: 75, costUsd: 0.20, note: "S53 baseline" },
+  "blue-shield-silver-70-ppo":    { keywords: ["blue shield", "silver", "70", "ppo"], servicesCount: 38, citeGradePct: 79, planIdentityPct: 75, costUsd: 0.20, note: "S53 baseline" },
+  "blue-shield-silver-70-hmo":    { keywords: ["blue shield", "silver", "70", "hmo"], servicesCount: 38, citeGradePct: 80, planIdentityPct: 75, costUsd: 0.20, note: "S53 baseline" },
+  "wha-premier":                  { keywords: ["wha", "premier"],                   servicesCount: 38, citeGradePct: 93,  planIdentityPct: 75, costUsd: 0.20, note: "S53 baseline" },
 };
 
 const PLAN_IDENTITY_KEYS = [
@@ -72,9 +75,9 @@ function isCiteGradeVerified(p?: FieldProvenance | null): boolean {
 function matchBaseline(planName: string | null): { key: string | null; baseline: typeof SBC_BASELINES[string] | null } {
   if (!planName) return { key: null, baseline: null };
   const lower = planName.toLowerCase();
-  for (const [pat, baseline] of Object.entries(SBC_BASELINES)) {
-    if (new RegExp(pat).test(lower)) {
-      return { key: pat, baseline };
+  for (const [key, baseline] of Object.entries(SBC_BASELINES)) {
+    if (baseline.keywords.every((kw) => lower.includes(kw))) {
+      return { key, baseline };
     }
   }
   return { key: null, baseline: null };
@@ -160,15 +163,31 @@ async function main() {
   // plan_covered_services rows + cite-grade
   const { data: services } = await sb
     .from("plan_covered_services")
-    .select("service_id, place_of_service, in_copay, in_coinsurance, in_cost_description, field_provenance, service_catalog:service_id(slug, name)")
+    .select("service_id, place_of_service, in_copay, in_coinsurance, in_cost_description, out_copay, out_coinsurance, out_cost_description, field_provenance, service_catalog:service_id(slug, name)")
     .eq("insurance_plan_id", plan.id);
 
   const servicesCount = services?.length ?? 0;
+  // Denominator is rows with any cost-share value populated. Covered-only rows
+  // (e.g., "Acupuncture — Covered when medically necessary" with no copay or coinsurance
+  // in the SBC) have nothing to cite under Pattern P-8 cost-share contract; counting them
+  // as failures penalizes the parser for correctly NOT hallucinating values absent from
+  // the source. Notes / coverage_conditions / prior_auth still get their own provenance
+  // entries on those rows; they're just outside this gate.
+  let citeableCount = 0;
   let servicesVerified = 0;
   if (services) {
     for (const s of services) {
-      const sfp = ((s as { field_provenance?: Record<string, FieldProvenance> }).field_provenance ?? {});
-      // Cite-grade per Pattern P-8: any of the cost-share fields verified counts.
+      const row = s as {
+        in_copay?: unknown; in_coinsurance?: unknown; in_cost_description?: unknown;
+        out_copay?: unknown; out_coinsurance?: unknown; out_cost_description?: unknown;
+        field_provenance?: Record<string, FieldProvenance>;
+      };
+      const hasAnyCostValue =
+        row.in_copay != null || row.in_coinsurance != null || row.in_cost_description ||
+        row.out_copay != null || row.out_coinsurance != null || row.out_cost_description;
+      if (!hasAnyCostValue) continue;
+      citeableCount++;
+      const sfp = row.field_provenance ?? {};
       const costFields: (keyof typeof sfp)[] = [
         "in_copay", "in_coinsurance", "in_cost_description",
         "out_copay", "out_coinsurance", "out_cost_description",
@@ -177,7 +196,7 @@ async function main() {
       if (anyVerified) servicesVerified++;
     }
   }
-  const citeGradePct = servicesCount > 0 ? (servicesVerified / servicesCount) * 100 : 0;
+  const citeGradePct = citeableCount > 0 ? (servicesVerified / citeableCount) * 100 : 0;
 
   // Cost from documents.parse_quality_* or parse_audit_runs
   let costUsd: number | null = null;
@@ -211,7 +230,7 @@ async function main() {
   console.log(`baseline match: ${key ?? "UNKNOWN — pass-fail vs absolute thresholds only"}`);
 
   console.log(`\n  Services count:    ${servicesCount}${baseline ? ` (SBC baseline ${baseline.servicesCount} ± 1)` : ""}`);
-  console.log(`  Cite-grade %:      ${citeGradePct.toFixed(1)}% (target ≥ 95%)`);
+  console.log(`  Cite-grade %:      ${citeGradePct.toFixed(1)}% (${servicesVerified}/${citeableCount} citeable rows; ${servicesCount - citeableCount} rows excluded as covered-only / no cost data) (target ≥ 95%)`);
   console.log(`  Plan-identity %:   ${planIdentityPct.toFixed(1)}% (${piVerifiedCount}/${piApplicableCount} verified) (target ≥ 80%)`);
   console.log(`  Cost:              ${costUsd !== null ? `$${costUsd.toFixed(4)}` : "n/a"}${baseline ? ` (SBC baseline $${baseline.costUsd.toFixed(4)})` : ""}`);
 

@@ -365,6 +365,40 @@ export async function POST(req: NextRequest) {
 
     console.log(`[upload] Quick classify: ${classification.classifiedType} (${Math.round(classification.confidence * 100)}%) | ${classification.pageCount} pages | file: ${file.name}`);
 
+    // ── S96: Universal page-count cap ────────────────────────────────────
+    // Reject documents exceeding UPLOAD_MAX_PAGES (default 100) BEFORE OCR/chunk
+    // dispatch. Document-agnostic per `feedback_universal_fixes_only` — applies
+    // to all doc types (SBC / EOC / EOB / bill / card) and all insurers.
+    // Pre-S96 the cap was only enforced in the legacy /api/documents/process
+    // route, leaving the live upload path uncapped — which let 143-370 page
+    // bundles into the chunk pipeline where they hit the 5-min Vercel function
+    // timeout (QStash enqueue + direct-fetch fallback both fail). Cap value
+    // tunable via UPLOAD_MAX_PAGES env var; PROD default 100.
+    const { getFlags } = await import("@/lib/config/feature-flags");
+    const flags = await getFlags();
+    if (classification.pageCount > flags.UPLOAD_MAX_PAGES) {
+      // User-facing copy — warm + actionable. Avoids "SBC"/"EOC" jargon since
+      // most users don't know those acronyms; suggests the practical action
+      // (upload the specific section instead of the full booklet).
+      const errorMsg = `This document is too large for us to read right now. It's ${classification.pageCount} pages, and we can process up to ${flags.UPLOAD_MAX_PAGES} pages at a time. Try uploading just the part of your plan or bill you'd like Candid to review.`;
+      console.warn(`[upload] Rejecting: pageCount=${classification.pageCount} > limit=${flags.UPLOAD_MAX_PAGES} | file=${file.name}`);
+      await supabase.from("documents").update({
+        status: "error",
+        processing_step: "rejected_page_limit",
+        processing_error: errorMsg,
+        processing_total_pages: classification.pageCount,
+      }).eq("id", documentId);
+      return NextResponse.json(
+        {
+          error: errorMsg,
+          pageCount: classification.pageCount,
+          limit: flags.UPLOAD_MAX_PAGES,
+          documentId,
+        },
+        { status: 413 },
+      );
+    }
+
     // ── S91: Effective doc-type resolver ─────────────────────────────────
     // Apply the override resolver (Rule 1 + Rule 2 per /admin/upload-settings
     // config). Always logs the resolution to documents.metadata.classification_override
