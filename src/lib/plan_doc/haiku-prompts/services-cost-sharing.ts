@@ -53,17 +53,61 @@ When extracting verbatim source_excerpt for SBC services:
 This rule supersedes any default tendency to "include the full context" in
 the excerpt.`;
 
+// EOC narrative supplement. EOC documents describe coverage in prose paragraphs
+// rather than tables. Different verbatim-extraction discipline applies — prose
+// sentences are naturally contiguous (no multi-line table splits) so longer
+// source_excerpts are appropriate AND verifiable. S94 Work Block B1 Stage 2 addition.
+const FULL_EOC_NARRATIVE_SUPPLEMENT = `
+
+## EOC NARRATIVE LAYOUT — PROSE EXTRACTION GUIDANCE
+
+This document is a full Evidence of Coverage (EOC) describing benefits in prose
+paragraphs rather than tabular format. pdftotext output here preserves natural
+sentence structure (no multi-line table-cell splits).
+
+For source_excerpt:
+- Extract a CONTIGUOUS SENTENCE or PHRASE containing the cost-sharing value.
+  Example: "You pay 30% coinsurance after the deductible for an in-network optometrist"
+- Multi-sentence excerpts up to ~200 chars are acceptable IF they are literally
+  adjacent in the source text.
+- A service's in-network and out-of-network cost-shares may appear in DIFFERENT
+  sentences — emit one service row per service but quote whichever cost-share
+  sentence is most distinctive (in-network preferred).
+- Service names in EOC prose are often embedded mid-sentence (e.g., "Routine eye
+  exams for adults are covered..." rather than as a heading). Look for the
+  service mention + nearest cost-sharing phrase.
+
+In-network vs out-of-network identification:
+- Tables in SBCs use column headers ("In-Network" | "Out-of-Network"). EOC prose
+  uses inline phrasing ("in-network providers", "non-network providers", "out-of-area").
+- If a sentence only mentions a single cost-share without network qualifier,
+  assume IN-NETWORK and set out* fields to null (do NOT default OON to in-network
+  values).
+
+priorAuthRequired in EOC:
+- Look for phrases like "requires prior authorization", "preauthorization required",
+  "must be obtained before treatment". Set priorAuthRequired=true.
+- Source_excerpt should quote the prior-auth sentence directly.`;
+
 // S93 Stage 5a — supplements load from `parser_prompt_versions` (mig 102) at
-// parse time with a 5-min in-process cache. The compile-time const above is
-// the fallback when no active DB row exists (initial state pre-tuning) or
-// when DB fetch fails. Admin tunes via /admin/parse-quality-tuning (Stage 5c)
-// which writes a new active row + busts the cache.
+// parse time with a 5-min in-process cache. The compile-time consts above are
+// fallbacks when no active DB row exists (initial state pre-tuning) or when DB
+// fetch fails. Admin tunes via /admin/parse-quality-tuning (Stage 5c) which
+// writes a new active row + busts the cache.
 async function buildInstructions(layout: PlanDocLayout | undefined): Promise<string> {
   if (layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant") {
     const supplement = await loadActiveSupplement(
       PROMPT_FILE_PATH,
       "FEDERAL_SBC_TABULAR_SUPPLEMENT",
       FEDERAL_SBC_TABULAR_SUPPLEMENT,
+    );
+    return BASE_INSTRUCTIONS + supplement;
+  }
+  if (layout === "full_eoc_narrative") {
+    const supplement = await loadActiveSupplement(
+      PROMPT_FILE_PATH,
+      "FULL_EOC_NARRATIVE_SUPPLEMENT",
+      FULL_EOC_NARRATIVE_SUPPLEMENT,
     );
     return BASE_INSTRUCTIONS + supplement;
   }
@@ -93,7 +137,113 @@ const BASE_INSTRUCTIONS = `You are extracting per-service cost-sharing from a Pl
 
 If you genuinely cannot find ANY contiguous verbatim span containing useful information for this service, set source_excerpt to "" (graceful 'not_found' state). Prefer SHORT but verifiable over LONG but synthesized.
 
-2. **serviceSlug**: snake_case lowercase identifier matching the service category. Use existing canonical slugs where possible: "primary_care", "specialist_visit", "emergency_room", "urgent_care", "preventive_care", "generic_drugs", "preferred_brand_drugs", "non_preferred_brand_drugs", "specialty_drugs", "outpatient_mental_health", "inpatient_mental_health", "outpatient_substance_use", "inpatient_substance_use", "inpatient_hospital_stay", "outpatient_surgery", "imaging_advanced", "imaging_basic", "lab_outpatient", "skilled_nursing_facility", "home_health_care", "hospice", "physical_therapy", "occupational_therapy", "speech_therapy", "chiropractic", "acupuncture", "durable_medical_equipment", "maternity_prenatal", "delivery", "well_baby", "vision_exam", "vision_hardware", "dental_basic", "dental_orthodontic". For uncategorized services, use snake_case based on the service name.
+2. **serviceSlug**: emit the canonical service slug from the curated 68-slug vocabulary below. For services that GENUINELY don't fit ANY canonical, emit \`proposed_<snake_case_descriptive_name>\` (e.g., \`proposed_hyperbaric_oxygen_therapy\`). NEVER invent bare snake_case slug names — either use a canonical OR use \`proposed_*\`.
+
+### CANONICAL SERVICE SLUG VOCABULARY (68 slugs)
+
+**office_visit (5)**: pcp_visit, specialist_visit, home_health, telehealth_pcp, telehealth_specialist
+
+**preventive (13)**: preventive_care, immunizations, annual_physical, cancer_screening, adult_dental_care, childrens_dental_checkup, childrens_eye_exam, childrens_glasses, routine_eye_care_adult, weight_loss_programs, vision_exam, vision_hardware, dental_orthodontic
+
+**emergency (5)**: er_visit, urgent_care, emergency_transport_ground, emergency_transport_air, non_emergency_care_outside_us
+
+**hospital (6)**: inpatient_facility, inpatient_physician, outpatient_surgery_facility, outpatient_surgery_physician, bariatric_surgery, cosmetic_surgery
+
+**imaging (3)**: advanced_imaging, diagnostic_test, imaging_basic
+
+**lab (1)**: lab_outpatient
+
+**rx (9)**: generic_rx_tier1, generic_rx_tier1_90day, preferred_brand_rx_tier2, preferred_brand_rx_90day, non_preferred_rx_tier3, non_preferred_rx_90day, specialty_rx_tier4, preventive_rx, chemotherapy_rx
+
+**therapy (9)**: pt_rehab, ot_rehab, speech_therapy, chiropractic, acupuncture, habilitation, nutritional_counseling, routine_foot_care, cardiac_rehab
+
+**mental_health (4)**: mental_health_outpatient, mental_health_inpatient, substance_abuse_outpatient, substance_abuse_inpatient
+
+**maternity (5)**: prenatal_visit, delivery_facility, delivery_professional, infertility_treatment, well_baby
+
+**long_term_care (5)**: hospice_inpatient, hospice_outpatient, long_term_care, private_duty_nursing, skilled_nursing
+
+**dme (2)**: durable_medical_equipment, hearing_aids
+
+**other (1)**: childrens_dental
+
+### SLUG SPLIT GUIDANCE (commonly seen as ONE row in source; emit as TWO rows when both facility and professional fees apply)
+
+- Hospital "Outpatient Surgery" → emit BOTH \`outpatient_surgery_facility\` (facility fee) AND \`outpatient_surgery_physician\` (surgeon's professional fee). If source has separate columns/cost-shares, the split is empirically present.
+- Hospital "Inpatient Stay" / "Hospital Stay" → emit BOTH \`inpatient_facility\` AND \`inpatient_physician\`.
+- Maternity "Delivery" / "Childbirth" → emit BOTH \`delivery_facility\` AND \`delivery_professional\`.
+- Hospice → choose \`hospice_inpatient\` or \`hospice_outpatient\` based on context. NEVER emit bare \`hospice\`.
+
+### COMMON LEGACY NAME → CANONICAL MAPPING (apply silently)
+
+- "Primary Care" / "primary_care" → \`pcp_visit\`
+- "Emergency Room" / "emergency_room" → \`er_visit\`
+- "Physical Therapy" / "physical_therapy" → \`pt_rehab\`
+- "Occupational Therapy" / "occupational_therapy" → \`ot_rehab\`
+- "Skilled Nursing Facility" / "skilled_nursing_facility" → \`skilled_nursing\`
+- "Home Health Care" / "home_health_care" → \`home_health\`
+- "Maternity Prenatal" / "maternity_prenatal" → \`prenatal_visit\`
+- "Advanced Imaging" / "imaging_advanced" → \`advanced_imaging\`
+- "Generic Drugs" / "generic_drugs" → \`generic_rx_tier1\`
+- "Preferred Brand Drugs" / "preferred_brand_drugs" → \`preferred_brand_rx_tier2\`
+- "Non-Preferred Drugs" / "non_preferred_brand_drugs" → \`non_preferred_rx_tier3\`
+- "Specialty Drugs" / "specialty_drugs" → \`specialty_rx_tier4\`
+- "Outpatient Mental Health" / "outpatient_mental_health" → \`mental_health_outpatient\`
+- "Inpatient Mental Health" / "inpatient_mental_health" → \`mental_health_inpatient\`
+- "Outpatient Substance Use" / "outpatient_substance_use" → \`substance_abuse_outpatient\`
+- "Inpatient Substance Use" / "inpatient_substance_use" → \`substance_abuse_inpatient\`
+
+### FEW-SHOT EXAMPLES (study these — they show the canonical mapping in practice)
+
+**Example 1 — SBC tabular outpatient surgery (split into facility + professional)**
+
+Source text:
+\`\`\`
+Outpatient surgery
+Facility fee (e.g., ambulatory surgery center)
+$300 copay/visit
+45% coinsurance
+Physician/surgeon fees
+20% coinsurance
+40% coinsurance
+\`\`\`
+
+Correct emission: TWO services
+- { serviceSlug: "outpatient_surgery_facility", inCopay: 300, ..., source_excerpt: "$300 copay/visit", source_row_index: 2 }
+- { serviceSlug: "outpatient_surgery_physician", inCoinsurance: 20, ..., source_excerpt: "20% coinsurance", source_row_index: 5 }
+
+**Example 2 — SBC tabular advanced imaging (canonical mapping from legacy "imaging_advanced")**
+
+Source text:
+\`\`\`
+Imaging (CT/PET scans, MRIs)
+$0 copay/visit
+50% coinsurance
+\`\`\`
+
+Correct emission: \`advanced_imaging\` (NOT \`imaging_advanced\`)
+
+**Example 3 — EOC narrative section (no table; prose-style cost-sharing)**
+
+Source text:
+\`\`\`
+We cover routine eye exams for adults once every 24 months. You pay 30% coinsurance after the deductible for an in-network optometrist. Out-of-network: 50% coinsurance after the deductible. Vision hardware (glasses or contacts) is covered up to $150 every 24 months.
+\`\`\`
+
+Correct emission: TWO services
+- { serviceSlug: "routine_eye_care_adult", inCoinsurance: 30, outCoinsurance: 50, source_excerpt: "You pay 30% coinsurance after the deductible for an in-network optometrist", source_row_index: 1 }
+- { serviceSlug: "vision_hardware", annualLimit: "$150 every 24 months", source_excerpt: "Vision hardware (glasses or contacts) is covered up to $150 every 24 months", source_row_index: 3 }
+
+**Example 4 — genuinely-novel service triggers \`proposed_*\` namespace**
+
+Source text:
+\`\`\`
+Hyperbaric oxygen therapy: 20% coinsurance, prior auth required.
+\`\`\`
+
+Correct emission: { serviceSlug: "proposed_hyperbaric_oxygen_therapy", inCoinsurance: 20, priorAuthRequired: true, ... }
+
+(There is no canonical for hyperbaric oxygen therapy. Admin review will decide whether to promote.)
 
 3. **Cost-sharing fields** (in/out network):
    - inCopay / outCopay: integer (USD) | null (null = not specified)
@@ -103,17 +253,32 @@ If you genuinely cannot find ANY contiguous verbatim span containing useful info
 
 4. **Out-of-network fields are MANDATORY when the document includes OON columns**. If document is HMO-only with no OON coverage, set out* fields to null AND outCostDescription to "Not covered". DO NOT default OON to in-network values.
 
-5. **howToAccess**: per-service plan-specific access instructions if the document includes them (e.g., "Prior auth required via 1-800-CIGNA-24" or "Find covered home health agency at mycigna.com/find-care"). null if not specified per service.
+5. **placeOfService**: MUST be one of the following canonical values (or "any" if unknown):
+   - \`pcp_office\` — primary care visits, well-child visits
+   - \`specialist_office\` — specialist visits, chiropractic, acupuncture
+   - \`outpatient_facility\` — outpatient surgery, ambulatory care
+   - \`inpatient_facility\` — hospital stays, inpatient surgery
+   - \`independent_facility\` — independent imaging/lab centers
+   - \`home\` — home health
+   - \`virtual\` — telehealth visits
+   - \`retail_pharmacy\` — retail Rx fills
+   - \`home_delivery_pharmacy\` — mail-order Rx
+   - \`designated_pharmacy\` — specialty pharmacy
+   - \`any\` — when unknown or not applicable
 
-6. **priorAuthRequired**: boolean | null. Extract from Limitations/Notes column or per-service prior-auth callouts.
+   NEVER emit \`office\`, \`facility\`, or other free-form labels. If unsure, use \`any\`.
+
+6. **howToAccess**: per-service plan-specific access instructions if the document includes them (e.g., "Prior auth required via 1-800-CIGNA-24" or "Find covered home health agency at mycigna.com/find-care"). null if not specified per service.
+
+7. **priorAuthRequired**: boolean | null. Extract from Limitations/Notes column or per-service prior-auth callouts.
 
 ## RESPONSE SCHEMA
 
 {
   "services": [
     {
-      "serviceSlug": "primary_care",
-      "placeOfService": "office",
+      "serviceSlug": "pcp_visit",
+      "placeOfService": "pcp_office",
       "inCopay": 30,
       "inCoinsurance": null,
       "inDeductibleApplies": false,
@@ -134,11 +299,14 @@ If you genuinely cannot find ANY contiguous verbatim span containing useful info
       "stepTherapyRequired": null,
       "notes": null,
       "howToAccess": "Find an in-network primary care provider at cigna.com/find-care",
-      "source_excerpt": "verbatim ≤200 chars from the document table row",
+      "source_excerpt": "verbatim ≤200 chars from the document section",
+      "source_row_index": 12,
       "haiku_confidence": 0.92
     }
   ]
 }
+
+**source_row_index semantics**: 0-indexed line number of the first line in the source section where source_excerpt begins. For tabular SBC content, this is typically the line containing the service name OR the line containing the in-network cost-share. For EOC narrative, this is the line where the relevant sentence/paragraph starts. Provides traceability for the Pattern P-8 verbatim verifier + post-hoc validation count check (services count vs unique source_row_index count should be close).
 
 ## NOW EXTRACT FROM THIS DOCUMENT SECTION:`;
 
@@ -167,6 +335,7 @@ interface RawService {
   notes?: string | null;
   howToAccess?: string | null;
   source_excerpt?: string;
+  source_row_index?: number | null;
   haiku_confidence?: number;
 }
 
@@ -216,6 +385,10 @@ export async function extractServicesCostSharing(
         source_section_hint: sectionHint,
         source_section_verified: false,
       };
+      const sourceRowIndex =
+        typeof raw.source_row_index === "number" && Number.isFinite(raw.source_row_index)
+          ? Math.max(0, Math.floor(raw.source_row_index))
+          : null;
       return {
         serviceSlug: slug,
         placeOfService: typeof raw.placeOfService === "string" ? raw.placeOfService : "",
@@ -246,6 +419,7 @@ export async function extractServicesCostSharing(
           typeof raw.howToAccess === "string" && raw.howToAccess.length > 0 ? raw.howToAccess : null,
         patternP8,
         haikuConfidence: typeof raw.haiku_confidence === "number" ? raw.haiku_confidence : undefined,
+        sourceRowIndex,
       };
     })
     .filter((s): s is PlanDocService => s !== null);

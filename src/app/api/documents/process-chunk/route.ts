@@ -8,7 +8,7 @@
  * State machine:
  *   queued/null      → download, count pages, OCR chunk 0    → ocr_chunk_1
  *   ocr_chunk_N      → OCR chunk N, append text               → ocr_chunk_{N+1} or classifying
- *   classifying       → Haiku classify + extract + save (all inline, maxDuration=60) → processed
+ *   classifying       → Haiku classify + extract + save (all inline, maxDuration=800) → processed
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -30,6 +30,41 @@ import { notifyAdminForReview } from "@/lib/notifications";
 const CHUNK_SIZE = 15; // pages per OCR chunk
 
 const BILL_TYPES = new Set(["eob", "itemized_bill"]);
+
+/**
+ * B12 — infer MIME type from a Supabase storage path's file extension.
+ * Returns the image MIME type when the path is a recognized image format;
+ * null otherwise (PDF or unknown, which flows through the PDF pipeline).
+ *
+ * HEIC inputs are converted to JPEG at upload time (upload/route.ts),
+ * so .heic / .heif should not appear in storage_path in practice — but we
+ * map them defensively in case of legacy rows or future migration.
+ */
+function inferImageMimeType(storagePath: string): string | null {
+  const ext = storagePath.split(".").pop()?.toLowerCase() ?? "";
+  switch (ext) {
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "png":
+      return "image/png";
+    case "webp":
+      return "image/webp";
+    case "gif":
+      return "image/gif";
+    case "bmp":
+      return "image/bmp";
+    case "tif":
+    case "tiff":
+      return "image/tiff";
+    case "heic":
+      return "image/heic";
+    case "heif":
+      return "image/heif";
+    default:
+      return null;
+  }
+}
 
 // Phase 3.1A — image-PDF refusal threshold per Q-P3.1A-12 LOCK.
 // EOCs need ≥500 chars of text-extracted content for the EOC parser to function
@@ -530,8 +565,13 @@ function resolveDocumentType(
 }
 
 // Haiku extraction on large documents can take 15-30s.
-// Vercel Hobby allows up to 60s with explicit maxDuration.
-export const maxDuration = 300;
+// Vercel Pro allows up to 800s with explicit maxDuration. Bumped from 300 → 800
+// at S97 to handle large-EOC (72+ page) plan_doc inline classify+extract+save
+// invocations that hit the 5-min ceiling. The architectural fix — splitting the
+// classifying step into QStash-chained sub-steps so each Haiku call fits within
+// a single function invocation — lives in the B14 work block. 800s is the Pro
+// plan max; bigger EOCs (200+ pages) will still need the split-step architecture.
+export const maxDuration = 800;
 
 export async function POST(req: NextRequest) {
   try {
@@ -590,6 +630,50 @@ export async function POST(req: NextRequest) {
       }
 
       const buffer = Buffer.from(await fileData.arrayBuffer());
+
+      // B12 — image-upload short-circuit. The PDF pipeline below
+      // (estimatePageCount, splitPDF, chunked OCR) assumes PDF bytes and
+      // fails on raw image buffers. For JPEG / PNG / WebP / etc. uploads,
+      // run a single OCR pass + jump straight to the classifying step.
+      // HEIC inputs are converted to JPEG at upload time (B12 — see
+      // upload/route.ts) so .heic never reaches storage in practice.
+      const imageMimeType = inferImageMimeType(doc.storage_path);
+      if (imageMimeType) {
+        // Budget gate — treat the image as 1 page.
+        const imgBudget = await checkProcessingBudget(1);
+        if (!imgBudget.allowed) {
+          console.log(`[process-chunk] Image budget exceeded: ${imgBudget.reason}`);
+          await supabase.from("documents").update({
+            status: "error",
+            processing_error: imgBudget.reason || "Processing limit reached",
+            processing_step: null,
+          }).eq("id", documentId);
+          return NextResponse.json({ error: imgBudget.reason }, { status: 429 });
+        }
+
+        const imgOcrResult = await extractTextFromDocument(buffer, imageMimeType);
+        await recordProcessingUsage(1);
+
+        await supabase.from("documents").update({
+          processing_step: "classifying",
+          processing_total_pages: 1,
+          processing_completed_pages: 1,
+          processing_ocr_text: imgOcrResult.text,
+        }).eq("id", documentId);
+
+        // Chain into the classify step. Same QStash enqueue pattern as the
+        // PDF path uses between chunks — guaranteed-delivery transition.
+        const imgBaseUrl = new URL(req.url).origin;
+        await enqueueChunk(documentId, imgBaseUrl);
+
+        return NextResponse.json({
+          step: "classifying",
+          totalPages: 1,
+          completedPages: 1,
+          continue: true,
+        });
+      }
+
       const totalPages = estimatePageCount(buffer);
       const totalChunks = Math.ceil(totalPages / CHUNK_SIZE);
 
@@ -767,8 +851,10 @@ export async function POST(req: NextRequest) {
     }
 
     // ── STEP: CLASSIFYING + EXTRACTING + SAVING (all inline) ──────────────
-    // With Vercel Pro (maxDuration=60), we can run classify → extract → save
+    // With Vercel Pro (maxDuration=800), we can run classify → extract → save
     // in a single invocation. No more QStash handoffs for these stages.
+    // For EOCs > 150 pages this may still hit the 800s ceiling — B14 work block
+    // tracks the architectural fix (split classify/extract into sub-steps).
     if (step === "classifying" || step === "extracting" || step === "saving" || step === "parsing") {
       const { data: claimed } = await supabase
         .from("documents")

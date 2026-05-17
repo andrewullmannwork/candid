@@ -10,7 +10,7 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import { jsonrepair } from "jsonrepair";
+import { parseHaikuJSON } from "@/lib/parser/safe-json";
 import type { BillingCodeType } from "@/lib/supabase/types";
 
 const MODEL = "claude-haiku-4-5-20251001";
@@ -65,14 +65,9 @@ function getClient(): Anthropic | null {
 }
 
 function parseJSON(text: string): unknown {
-  const cleaned = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    console.log("[service-mapper] JSON.parse failed, attempting repair...");
-    const repaired = jsonrepair(cleaned);
-    return JSON.parse(repaired);
-  }
+  // S94 B1 — delegate to shared parseHaikuJSON which handles trailing reasoning
+  // text + code fences + balanced-block extraction + jsonrepair fallback.
+  return parseHaikuJSON(text);
 }
 
 /**

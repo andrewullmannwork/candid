@@ -15,7 +15,7 @@
 
 import { createHash } from "crypto";
 import Anthropic from "@anthropic-ai/sdk";
-import { jsonrepair } from "jsonrepair";
+import { parseHaikuJSON } from "@/lib/parser/safe-json";
 // matchInsurerCatalog import removed (CF-40 v2 — Path B semantic-match smart-skip eliminated).
 import type { ProcessPlanResult } from "@/lib/plan/process-plan";
 import { extractImportantQuestions } from "@/lib/sbc/haiku-prompts/important-questions";
@@ -206,13 +206,8 @@ ${headerText}`,
     });
 
     const text = response.content[0]?.type === "text" ? response.content[0].text : "";
-    const cleaned = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(cleaned) as Record<string, unknown>;
-    } catch {
-      parsed = JSON.parse(jsonrepair(cleaned)) as Record<string, unknown>;
-    }
+    // S94 B1 — shared parseHaikuJSON handles trailing reasoning + code fences + jsonrepair.
+    const parsed = parseHaikuJSON<Record<string, unknown>>(text);
 
     return {
       insurer: (parsed.insurer as string) || null,

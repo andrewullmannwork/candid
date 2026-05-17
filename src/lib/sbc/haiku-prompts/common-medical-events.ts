@@ -15,61 +15,49 @@ import type { ExtractionMethod } from "../../parser/types";
 import { callHaikuWithCache } from "@/lib/haiku-client/base";
 import type { SBCHaikuService, SBCPatternP8Provenance, SBCSectionResult } from "../types";
 
-// SBC-curated subset of service_catalog slugs. Keep in sync with claude-extractor.ts:40
-// (legacy module). Slugs MUST exist in service_catalog table or be added in a separate
-// migration before the parser will accept them downstream.
+// SBC parser is being sunset post-S94 (Stage 3 unified dispatch routes all
+// sbc/eoc/plan_document uploads through plan_doc parser when
+// `unified_plan_doc_parser_v1` flag is ON). This list is kept aligned with the
+// 68-slug canonical vocabulary from S94 B1 for consistency during the sunset
+// window. Source of truth: plans/s94_unified_parser_meet_or_beat.md.
 const STANDARD_SLUGS = [
-  "pcp_visit",
-  "specialist_visit",
-  "preventive_care",
-  "diagnostic_test",
-  "advanced_imaging",
-  "generic_rx_tier1",
-  "preferred_brand_rx_tier2",
-  "non_preferred_rx_tier3",
-  "specialty_rx_tier4",
-  "preventive_rx",
-  "chemotherapy_rx",
-  "outpatient_surgery_facility",
-  "outpatient_surgery_physician",
-  "er_visit",
-  "emergency_transport_ground",
-  "emergency_transport_air",
-  "urgent_care",
-  "inpatient_facility",
-  "inpatient_physician",
-  "mental_health_outpatient",
-  "mental_health_inpatient",
-  "substance_abuse_outpatient",
-  "substance_abuse_inpatient",
-  "prenatal_visit",
-  "delivery_facility",
-  "delivery_professional",
-  "home_health",
-  "pt_rehab",
-  "ot_rehab",
-  "habilitation",
-  "skilled_nursing",
-  "durable_medical_equipment",
-  "hospice_inpatient",
-  "hospice_outpatient",
-  "chiropractic",
-  "acupuncture",
-  "speech_therapy",
-  "telehealth_pcp",
-  "telehealth_specialist",
-  "nutritional_counseling",
-  "childrens_eye_exam",
-  "childrens_glasses",
+  // office_visit (5)
+  "pcp_visit", "specialist_visit", "home_health", "telehealth_pcp", "telehealth_specialist",
+  // preventive (13)
+  "preventive_care", "immunizations", "annual_physical", "cancer_screening",
+  "adult_dental_care", "childrens_dental_checkup", "childrens_eye_exam",
+  "childrens_glasses", "routine_eye_care_adult", "weight_loss_programs",
+  "vision_exam", "vision_hardware", "dental_orthodontic",
+  // emergency (5)
+  "er_visit", "urgent_care", "emergency_transport_ground", "emergency_transport_air",
+  "non_emergency_care_outside_us",
+  // hospital (6)
+  "inpatient_facility", "inpatient_physician", "outpatient_surgery_facility",
+  "outpatient_surgery_physician", "bariatric_surgery", "cosmetic_surgery",
+  // imaging (3)
+  "advanced_imaging", "diagnostic_test", "imaging_basic",
+  // lab (1)
+  "lab_outpatient",
+  // rx (9)
+  "generic_rx_tier1", "generic_rx_tier1_90day", "preferred_brand_rx_tier2",
+  "preferred_brand_rx_90day", "non_preferred_rx_tier3", "non_preferred_rx_90day",
+  "specialty_rx_tier4", "preventive_rx", "chemotherapy_rx",
+  // therapy (9)
+  "pt_rehab", "ot_rehab", "speech_therapy", "chiropractic", "acupuncture",
+  "habilitation", "nutritional_counseling", "routine_foot_care", "cardiac_rehab",
+  // mental_health (4)
+  "mental_health_outpatient", "mental_health_inpatient",
+  "substance_abuse_outpatient", "substance_abuse_inpatient",
+  // maternity (5)
+  "prenatal_visit", "delivery_facility", "delivery_professional",
+  "infertility_treatment", "well_baby",
+  // long_term_care (5)
+  "hospice_inpatient", "hospice_outpatient", "long_term_care",
+  "private_duty_nursing", "skilled_nursing",
+  // dme (2)
+  "durable_medical_equipment", "hearing_aids",
+  // other (1)
   "childrens_dental",
-  "bariatric_surgery",
-  "infertility_treatment",
-  "routine_eye_exam_adult",
-  "adult_dental_care",
-  "hearing_aids",
-  "weight_loss_programs",
-  "long_term_care",
-  "private_duty_nursing",
 ];
 
 const INSTRUCTIONS = `You are extracting per-service cost-sharing rows from the "Common Medical Events" section of a Summary of Benefits and Coverage (SBC) document. Return a single JSON array with one entry per service row.

@@ -97,6 +97,13 @@ export interface PlanDocService extends SBCParsedService {
   patternP8: PlanDocPatternP8Provenance;
   haikuConfidence?: number;
   howToAccess: string | null;
+  /**
+   * 0-indexed line number in the source section where source_excerpt begins.
+   * S94 B1 Stage 2 addition: traceability for Pattern P-8 verbatim verifier +
+   * post-hoc validation count check. Null if Haiku didn't emit it (older parses
+   * pre-S94 or model regression).
+   */
+  sourceRowIndex: number | null;
 }
 
 /**

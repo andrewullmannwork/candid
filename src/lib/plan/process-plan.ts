@@ -25,7 +25,9 @@ import { translateHaikuToLegacy } from "@/lib/sbc/legacy-adapter";
 import type { SBCHaikuService, SBCParseResult, SBCParsedService } from "@/lib/sbc/types";
 import {
   buildPlanCoveredServiceProvenance,
+  buildPlanDocServiceProvenance,
   buildSBCPlanIdentityProvenance,
+  buildPlanDocIdentityProvenance,
 } from "@/lib/parser/provenance-builders";
 import { loadValidServiceSlugs, enqueueUnknownServiceSlug } from "@/lib/parser/service-catalog-slugs";
 import {
@@ -529,9 +531,21 @@ export async function processPlanDocumentData(
     // FieldProvenanceEntry records `searched_sections` — drives verbatim_absent
     // derivation + targeted re-parse coverage tracking. Forward-only per
     // Q-P4.0.5-7 LOCK (pre-Phase-4.0.5 rows have searched_sections=undefined).
+    // S94 B1 — plan_doc path now writes plan-identity Pattern P-8 provenance.
+    // Before this fix, the plan_doc Haiku-first parser path left planIdentityProvenance=null
+    // → insurance_plans.field_provenance defaulted to {} → consumer-read filter marked
+    // every field "estimated" instead of "verified" even when cite-grade was 100% via
+    // the harness. Silent regression since `unified_plan_doc_parser_v1` flag went global
+    // ON during S93 ship (2026-05-15).
     const planIdentityProvenance = haikuResult
       ? buildSBCPlanIdentityProvenance(haikuResult.planIdentity, "doc_extraction", haikuResult.dispatchedSections)
-      : null;
+      : planDocHaikuResult
+        ? buildPlanDocIdentityProvenance(
+            planDocHaikuResult.planIdentity,
+            "doc_extraction",
+            planDocHaikuResult.dispatchedSections,
+          )
+        : null;
 
     // S74.6 D1 — derive ACA-compliance columns from Haiku output (SBC or plan_doc).
     // Default-when-no-signal applied for new-plan insert; merge-update path below
@@ -895,8 +909,92 @@ export async function processPlanDocumentData(
     }
 
     // ── Service catalog + plan_covered_services ─────────────────────────────
+    // S94 B1 Stage 3 — Canonical authority gate. service_catalog is now a curated
+    // 68-slug canonical vocabulary (mig 103 + reset script). Auto-create of new
+    // slugs is REMOVED to prevent re-sprawl. Parser emissions are partitioned:
+    //   - canonical slug (in service_catalog, proposal_state='canonical') → accept
+    //   - `proposed_*` slug (Haiku unknown-service convention) → enqueue to
+    //     service_catalog_admin_review_queue (Pattern P-9); admin promotes via
+    //     /admin/review-queue
+    //   - bare unknown slug → log warning + reject (parser violation per S94 LOCK)
     let servicesCreated = 0;
     if (parseResult.services.length > 0) {
+      const { data: canonicalCatalogRows } = await supabase
+        .from("service_catalog")
+        .select("slug")
+        .eq("proposal_state", "canonical")
+        .eq("canonical_for_concept", true);
+      const canonicalSlugSet = new Set<string>(
+        (canonicalCatalogRows ?? []).map((r: { slug: string }) => r.slug),
+      );
+
+      const acceptedServices: typeof parseResult.services = [];
+      let proposedEnqueuedCount = 0;
+      let bareUnknownRejectedCount = 0;
+      for (const svc of parseResult.services) {
+        const slug = svc.serviceSlug;
+        if (canonicalSlugSet.has(slug)) {
+          acceptedServices.push(svc);
+          continue;
+        }
+        if (slug.startsWith("proposed_")) {
+          try {
+            // SBCParsedService (legacy) lacks patternP8; PlanDocService (Haiku-first
+            // plan_doc) carries it. Both flow through parseResult.services so we
+            // access defensively via unknown-cast.
+            const patternP8 = (svc as { patternP8?: {
+              source_excerpt?: string;
+              source_excerpt_verified?: "verified" | "not_found" | "ocr_unverifiable";
+              source_excerpt_extraction_method?: "pdftotext" | "native_pdf_text" | "ocr";
+              source_section_hint?: string;
+              source_section_verified?: boolean;
+            } }).patternP8;
+            await enqueueUnknownServiceSlug(supabase, {
+              sourceDocId: documentId,
+              proposedByUserId: slugEnqueueContext.proposedByUserId,
+              parserSource: isFullPlanDoc ? "plan_document" : "sbc",
+              proposedServiceSlug: slug,
+              proposedServiceLabel: slug.replace(/^proposed_/, "").replace(/_/g, " "),
+              proposedCategory: null,
+              sourceExcerpt: patternP8?.source_excerpt ?? "",
+              sourceExcerptVerified: patternP8?.source_excerpt_verified ?? "not_found",
+              sourceExcerptExtractionMethod: patternP8?.source_excerpt_extraction_method ?? "pdftotext",
+              sourceSectionHint: patternP8?.source_section_hint ?? "services_cost_sharing",
+              sourceSectionVerified: patternP8?.source_section_verified ?? false,
+              contextExtract: null,
+            });
+            proposedEnqueuedCount++;
+          } catch (e) {
+            console.warn(
+              `[process-plan] enqueue proposed slug failed: ${slug}: ${
+                e instanceof Error ? e.message : String(e)
+              }`,
+            );
+          }
+          continue;
+        }
+        console.warn(
+          `[process-plan] S94-canonical-gate: rejecting bare unknown slug "${slug}" (not canonical, not proposed_*). Source: ${
+            isFullPlanDoc ? "plan_document" : "sbc"
+          }`,
+        );
+        bareUnknownRejectedCount++;
+      }
+      parseResult.services = acceptedServices;
+      console.log(
+        `[process-plan] S94 canonical gate: ${acceptedServices.length} canonical accepted, ${proposedEnqueuedCount} proposed_* enqueued, ${bareUnknownRejectedCount} bare unknowns rejected (of ${
+          acceptedServices.length + proposedEnqueuedCount + bareUnknownRejectedCount
+        } parser emissions)`,
+      );
+
+      // Skip downstream catalog writes if every emission was rejected/enqueued.
+      if (parseResult.services.length === 0) {
+        servicesCreated = 0;
+        // fall through to plan_covered_services path; it'll see 0 services and
+        // skip cleanly. UX layer's "Half the picture's here" / "stumping us"
+        // copy handles the user-facing case via processed/error status.
+      }
+
       const allSlugs = [...new Set(parseResult.services.map((s) => s.serviceSlug))];
       const BATCH_SIZE = 50;
       const slugToId = new Map<string, string>();
@@ -907,47 +1005,13 @@ export async function processPlanDocumentData(
         for (const s of existing || []) slugToId.set(s.slug, s.id);
       }
 
-      const newSlugs = allSlugs.filter((slug) => !slugToId.has(slug));
-      if (newSlugs.length > 0) {
-        const newEntries = newSlugs.map((slug) => ({
-          slug,
-          name: slug.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase()),
-          category: inferServiceCategory(slug),
-          description: "",
-          is_preventive_eligible: false,
-        }));
-
-        for (let i = 0; i < newEntries.length; i += BATCH_SIZE) {
-          const batch = newEntries.slice(i, i + BATCH_SIZE);
-          const { data: created } = await supabase.from("service_catalog").upsert(batch, { onConflict: "slug" }).select("id, slug");
-          for (const entry of created || []) slugToId.set(entry.slug, entry.id);
-        }
-
-        // Create CANDID concepts
-        const conceptInserts = newEntries.map((entry) => ({
-          vocabulary_id: "CANDID", concept_code: entry.slug, concept_name: entry.name, concept_class: "service", domain: "service",
-        }));
-        for (let i = 0; i < conceptInserts.length; i += BATCH_SIZE) {
-          await supabase.from("concepts").upsert(conceptInserts.slice(i, i + BATCH_SIZE), { onConflict: "vocabulary_id,concept_code" });
-        }
-
-        // Backfill concept_id
-        const { data: newConcepts } = await supabase
-          .from("concepts").select("id, concept_code")
-          .eq("vocabulary_id", "CANDID").eq("concept_class", "service").in("concept_code", newSlugs);
-        if (newConcepts) {
-          for (const concept of newConcepts) {
-            await supabase.from("service_catalog").update({ concept_id: concept.id }).eq("slug", concept.concept_code).is("concept_id", null);
-          }
-        }
-
-        const otherSlugs = newEntries.filter(e => e.category === "other").map(e => e.slug);
-        if (otherSlugs.length > 0) {
-          try {
-            const { notifyUncategorizedServices } = await import("@/lib/notifications");
-            await notifyUncategorizedServices(otherSlugs);
-          } catch { /* non-critical */ }
-        }
+      // Missing slugs at this point would indicate a race (canonical row deleted
+      // between gate-read and lookup). Log + skip rather than auto-create.
+      const missingSlugs = allSlugs.filter((s) => !slugToId.has(s));
+      if (missingSlugs.length > 0) {
+        console.error(
+          `[process-plan] S94-canonical-gate: ${missingSlugs.length} slugs passed gate but missing from service_catalog (race or stale cache): ${missingSlugs.join(", ")}`,
+        );
       }
 
       // Build concept_id map
@@ -974,8 +1038,11 @@ export async function processPlanDocumentData(
       // Phase 3.2.1 — when haikuResult is available, build a parallel map of
       // SBCHaikuService rows keyed by (slug, place_of_service) so we can attach
       // Pattern P-8 field_provenance JSONB to each persisted plan_covered_services
-      // row. Plan_document path (haikuResult=null) skips field_provenance writes;
-      // those rows default to '{}' per mig 056.
+      // row.
+      // S94 B1 — also build the equivalent map for the plan_doc Haiku-first parser
+      // path. Pre-S94 the plan_doc path left field_provenance={} → cite-grade 0%
+      // in PROD since flag flipped 2026-05-15. Now both maps consulted at insert
+      // time so whichever parser ran writes provenance.
       const haikuServiceByKey = new Map<string, SBCHaikuService>();
       if (haikuResult) {
         for (const hs of [...haikuResult.services, ...haikuResult.otherCoveredServices]) {
@@ -984,14 +1051,50 @@ export async function processPlanDocumentData(
           if (!existing || hs.confidence > existing.confidence) haikuServiceByKey.set(key, hs);
         }
       }
+      const planDocServiceByKey = new Map<string, import("@/lib/plan_doc/types").PlanDocService>();
+      if (planDocHaikuResult) {
+        for (const ps of planDocHaikuResult.services) {
+          const key = `${ps.serviceSlug}|${ps.placeOfService || "any"}`;
+          const existing = planDocServiceByKey.get(key);
+          if (!existing || ps.confidence > existing.confidence) planDocServiceByKey.set(key, ps);
+        }
+      }
+
+      // S94 B1 — coerce Haiku placeOfService output to plan_covered_services
+      // place_of_service CHECK constraint (mig 009 line 196). Plan_doc Haiku
+      // emits free-form labels like "office" / "facility"; SBC parser hardcodes
+      // "any". CHECK rejects anything not in the allowed list, dropping all
+      // service rows silently. Coerce here.
+      const VALID_POS = new Set([
+        "pcp_office", "specialist_office", "outpatient_facility", "inpatient_facility",
+        "independent_facility", "home", "virtual", "retail_pharmacy",
+        "home_delivery_pharmacy", "designated_pharmacy", "any",
+      ]);
+      const coercePOS = (raw: string | null | undefined): string => {
+        const s = (raw ?? "").toLowerCase().trim();
+        if (VALID_POS.has(s)) return s;
+        // Common Haiku-emit alternatives → nearest canonical.
+        if (s === "office" || s === "primary_care" || s === "primary_care_office") return "pcp_office";
+        if (s === "specialist" || s === "specialist_visit") return "specialist_office";
+        if (s === "facility" || s === "outpatient") return "outpatient_facility";
+        if (s === "inpatient" || s === "hospital") return "inpatient_facility";
+        if (s === "telehealth" || s === "video" || s === "virtual_visit") return "virtual";
+        if (s === "pharmacy" || s === "retail") return "retail_pharmacy";
+        // Unknown / empty / non-string → "any" (preserves the row; slug carries identity).
+        return "any";
+      };
 
       const serviceInserts = confident.map((s) => {
-        const haikuService = haikuServiceByKey.get(`${s.serviceSlug}|${s.placeOfService || "any"}`);
+        const pos = coercePOS(s.placeOfService);
+        const haikuService = haikuServiceByKey.get(`${s.serviceSlug}|${coercePOS(s.placeOfService)}`)
+          ?? haikuServiceByKey.get(`${s.serviceSlug}|${s.placeOfService || "any"}`);
+        const planDocService = planDocServiceByKey.get(`${s.serviceSlug}|${coercePOS(s.placeOfService)}`)
+          ?? planDocServiceByKey.get(`${s.serviceSlug}|${s.placeOfService || "any"}`);
         return {
           insurance_plan_id: targetPlanId,
           service_id: slugToId.get(s.serviceSlug)!,
           concept_id: conceptIdMap.get(s.serviceSlug) || null,
-          place_of_service: s.placeOfService || "any",
+          place_of_service: pos,
           in_copay: s.inCopay, in_coinsurance: s.inCoinsurance,
           in_deductible_applies: s.inDeductibleApplies, in_copay_waiver_condition: s.inCopayWaiverCondition,
           in_cost_description: s.inCostDescription,
@@ -1014,6 +1117,7 @@ export async function processPlanDocumentData(
           // service row. One row excerpt covers all cost-sharing fields per Q-P3.2.1-5.
           // Phase 4.0.5: pass dispatchedSections so each entry records searched_sections
           // for verbatim_absent derivation + targeted re-parse coverage.
+          // S94 B1: plan_doc path now writes provenance via buildPlanDocServiceProvenance.
           ...(haikuService
             ? {
                 field_provenance: buildPlanCoveredServiceProvenance(
@@ -1022,7 +1126,15 @@ export async function processPlanDocumentData(
                   haikuResult?.dispatchedSections,
                 ),
               }
-            : {}),
+            : planDocService
+              ? {
+                  field_provenance: buildPlanDocServiceProvenance(
+                    planDocService,
+                    "doc_extraction",
+                    planDocHaikuResult?.dispatchedSections,
+                  ),
+                }
+              : {}),
         };
       });
 

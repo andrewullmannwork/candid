@@ -9,7 +9,7 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import { jsonrepair } from "jsonrepair";
+import { parseHaikuJSON } from "@/lib/parser/safe-json";
 import type { SBCParsedService, SBCParsedAppealsContact } from "@/lib/sbc/types";
 
 const MODEL = "claude-haiku-4-5-20251001";
@@ -24,20 +24,17 @@ function getClient(): Anthropic | null {
 }
 
 function parseJSON(text: string): unknown {
-  const cleaned = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    console.log("[claude-extractor] JSON.parse failed, attempting repair...");
-    const repaired = jsonrepair(cleaned);
-    return JSON.parse(repaired);
-  }
+  // S94 B1 — delegate to shared parseHaikuJSON which handles trailing reasoning
+  // text + code fences + balanced-block extraction + jsonrepair fallback.
+  return parseHaikuJSON(text);
 }
 
-// SBC sub-list: curated subset of service_catalog slugs for plan document extraction.
-// Every slug here MUST exist in service_catalog. Grows when new SBC benefit categories are discovered.
-// The full catalog (72+ slugs) is used by service-mapper.ts for bill line item mapping.
-const STANDARD_SLUGS = `pcp_visit, specialist_visit, preventive_care, diagnostic_test, advanced_imaging, generic_rx_tier1, preferred_brand_rx_tier2, non_preferred_rx_tier3, specialty_rx_tier4, preventive_rx, chemotherapy_rx, outpatient_surgery_facility, outpatient_surgery_physician, er_visit, emergency_transport_ground, emergency_transport_air, urgent_care, inpatient_facility, inpatient_physician, mental_health_outpatient, mental_health_inpatient, substance_abuse_outpatient, substance_abuse_inpatient, prenatal_visit, delivery_facility, delivery_professional, home_health, pt_rehab, ot_rehab, habilitation, skilled_nursing, durable_medical_equipment, hospice_inpatient, hospice_outpatient, chiropractic, acupuncture, speech_therapy, telehealth_pcp, telehealth_specialist, nutritional_counseling, childrens_eye_exam, childrens_glasses, childrens_dental, bariatric_surgery, infertility_treatment, routine_eye_care_adult, adult_dental_care, hearing_aids, weight_loss_programs, long_term_care, private_duty_nursing`;
+// LEGACY plan-document parser STANDARD_SLUGS. Per S93 PR #80 F.14 closure, this
+// claude-extractor is SKIPPED when the Haiku-first plan_doc parser produces
+// services successfully. Vocabulary kept aligned to the S94 B1 68-slug canonical
+// list for defensive consistency. Source of truth:
+// plans/s94_unified_parser_meet_or_beat.md "Locked Canonical Winners".
+const STANDARD_SLUGS = `pcp_visit, specialist_visit, home_health, telehealth_pcp, telehealth_specialist, preventive_care, immunizations, annual_physical, cancer_screening, adult_dental_care, childrens_dental_checkup, childrens_eye_exam, childrens_glasses, routine_eye_care_adult, weight_loss_programs, vision_exam, vision_hardware, dental_orthodontic, er_visit, urgent_care, emergency_transport_ground, emergency_transport_air, non_emergency_care_outside_us, inpatient_facility, inpatient_physician, outpatient_surgery_facility, outpatient_surgery_physician, bariatric_surgery, cosmetic_surgery, advanced_imaging, diagnostic_test, imaging_basic, lab_outpatient, generic_rx_tier1, generic_rx_tier1_90day, preferred_brand_rx_tier2, preferred_brand_rx_90day, non_preferred_rx_tier3, non_preferred_rx_90day, specialty_rx_tier4, preventive_rx, chemotherapy_rx, pt_rehab, ot_rehab, speech_therapy, chiropractic, acupuncture, habilitation, nutritional_counseling, routine_foot_care, cardiac_rehab, mental_health_outpatient, mental_health_inpatient, substance_abuse_outpatient, substance_abuse_inpatient, prenatal_visit, delivery_facility, delivery_professional, infertility_treatment, well_baby, hospice_inpatient, hospice_outpatient, long_term_care, private_duty_nursing, skilled_nursing, durable_medical_equipment, hearing_aids, childrens_dental`;
 
 const CATEGORY_CHECKLIST = `Look for services in ALL of these categories:
 - Physician visits (PCP, specialist, second opinion, consultant, OB/GYN)
