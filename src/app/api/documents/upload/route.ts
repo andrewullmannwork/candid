@@ -186,11 +186,40 @@ export async function POST(req: NextRequest) {
   }
 
   const documentId = crypto.randomUUID();
-  const ext = file.name.split(".").pop()?.toLowerCase() || "pdf";
-  const storagePath = `${user.id}/${documentId}.${ext}`;
-  const contentType = file.type || (isHeic ? "image/heic" : "application/octet-stream");
+  let ext = file.name.split(".").pop()?.toLowerCase() || "pdf";
+  let contentType = file.type || (isHeic ? "image/heic" : "application/octet-stream");
 
-  const buffer = Buffer.from(await file.arrayBuffer());
+  let buffer = Buffer.from(await file.arrayBuffer());
+
+  // B12 — HEIC→JPEG conversion at upload time. Document AI doesn't support HEIC
+  // natively, and the downstream process-chunk pipeline hardcoded application/pdf
+  // for years which meant HEIC uploads silently failed at OCR. Converting here
+  // keeps storage clean (always JPEG/PDF) and lets process-chunk's image branch
+  // treat all inbound images uniformly. Mirrors the scan-card route's HEIC
+  // handling (scan-card/route.ts:401-413) — pure-JS heic-convert, no native
+  // deps, works on Vercel serverless.
+  if (isHeic || contentType === "image/heic" || contentType === "image/heif") {
+    try {
+      const heicConvert = (await import("heic-convert")).default;
+      const jpegBuffer = await heicConvert({
+        buffer: new Uint8Array(buffer),
+        format: "JPEG",
+        quality: 0.9,
+      });
+      buffer = Buffer.from(jpegBuffer);
+      contentType = "image/jpeg";
+      ext = "jpg";
+      console.log("[upload] HEIC→JPEG conversion OK, size:", buffer.length);
+    } catch (convErr) {
+      console.error("[upload] HEIC conversion failed:", convErr);
+      return NextResponse.json(
+        { error: "Could not process HEIC image. Try taking a screenshot or converting to JPEG first." },
+        { status: 400 }
+      );
+    }
+  }
+
+  const storagePath = `${user.id}/${documentId}.${ext}`;
 
   // S74.5 D11 (Session 83) — ingestion-layer file-hash dedup. Compute SHA-256
   // of the file bytes; if (user_id, file_hash) already exists in documents,
