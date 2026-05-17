@@ -82,7 +82,7 @@ async function probeProposalStateDistribution() {
   }
   const counts: Record<string, number> = {};
   for (const r of data) {
-    const k = (r as any).proposal_state ?? "(null)";
+    const k = (r as { proposal_state?: string }).proposal_state ?? "(null)";
     counts[k] = (counts[k] ?? 0) + 1;
   }
   console.log(`  Total rows: ${data.length}`);
@@ -105,7 +105,7 @@ async function probeCanonicalForConceptDistribution() {
   if (!data) return;
   const counts: Record<string, number> = {};
   for (const r of data) {
-    const k = String((r as any).canonical_for_concept);
+    const k = String((r as { canonical_for_concept?: boolean }).canonical_for_concept);
     counts[k] = (counts[k] ?? 0) + 1;
   }
   for (const [k, v] of Object.entries(counts)) {

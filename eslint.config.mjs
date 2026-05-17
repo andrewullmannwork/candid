@@ -12,6 +12,11 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Archived diagnostic snapshots — frozen one-off scripts retained for
+    // historical traceability per S96 doc-organization convention. Linting
+    // these would force perpetual cleanup of code that intentionally captures
+    // a moment-in-time investigation.
+    "scripts/findings/**",
   ]),
 ]);
 
