@@ -246,6 +246,14 @@ export async function POST(request: Request) {
             const rowSource: string = s.source ?? "doc_extraction";
             return {
               serviceSlug: slug,
+              // S98 — surface place_of_service so the /plan render can build
+              // a unique React key for POS-variant rows that share the same
+              // benefit.id (e.g., mental_health_outpatient at pcp_office vs
+              // specialist_office vs outpatient_facility). Interaction state
+              // (toggle/expand) still tracks by benefit.id intentionally —
+              // user-level "I use Mental Health Outpatient" is one benefit
+              // semantically; the row split is purely cost-sharing detail.
+              placeOfService: (s.place_of_service as string | null) ?? "any",
               benefit: {
                 id: slug,
                 category,

@@ -224,7 +224,18 @@ function UploadForm() {
   const [playfulFloorActive, setPlayfulFloorActive] = useState(false);
   const playfulShownAtRef = useRef<number | null>(null);
 
-  // S93 page-progress pacing — three coordinated effects.
+  // B14 (S98) page-progress pacing — four coordinated effects.
+  // Replaces S93's three-effect design (which snapped displayedPage to
+  // totalPages the moment the backend stepped into extracting/saving — that
+  // produced the visible "skip to last page + hang" UX Andrew reported during
+  // the S98 Cigna PROD smoke). New design: tick smoothly with randomized
+  // pacing for the entire processing window; only snap to totalPages when
+  // status === "processed" (truly done).
+  //
+  // Random tick interval ∈ {10s, 12s, 15s, 20s} per tick obscures the
+  // synthetic-timer mechanic from a user's pattern-recognition (Andrew
+  // direction post-S98 PROD smoke: "so people don't know it is just a timer").
+
   // (1) Reset displayedPage when totalPages first becomes known or changes.
   useEffect(() => {
     const t = processingProgress?.totalPages;
@@ -234,44 +245,58 @@ function UploadForm() {
     }
   }, [processingProgress?.totalPages]);
 
-  // (2) Pull synthetic up to backend completedPages (so we never display
-  // fewer pages than backend has actually done) AND snap to totalPages
-  // when extracting/saving step fires (per Andrew "skip to the end when
-  // we are essentially done").
+  // (2) Pull synthetic up to backend completedPages so we never display
+  // fewer pages than backend has actually done. Capped at totalPages-1 so
+  // the snap-to-totalPages in effect (4) is the only path that reaches t.
   useEffect(() => {
     const t = processingProgress?.totalPages;
     if (!t || t < 1) return;
-    const isExtractingOrSaving =
-      processingProgress?.step?.includes("extracting") ||
-      processingProgress?.step?.includes("saving");
-    if (isExtractingOrSaving) {
-      setDisplayedPage(t);
-      return;
-    }
     if (processingProgress?.completedPages != null) {
       const ceiling = Math.max(1, t - 1);
       setDisplayedPage((prev) =>
         Math.min(Math.max(prev, processingProgress.completedPages!), ceiling),
       );
     }
-  }, [processingProgress?.completedPages, processingProgress?.step, processingProgress?.totalPages]);
+  }, [processingProgress?.completedPages, processingProgress?.totalPages]);
 
-  // (3) Synthetic 10s tick — increment displayedPage by 1 every 10s, capped
-  // at totalPages-1 (the snap-to-totalPages happens via effect 2 when the
-  // backend transitions to extracting/saving).
+  // (3) Synthetic tick — increment displayedPage by 1 every random interval
+  // picked from {10s, 12s, 15s, 20s}. Runs through the entire processing
+  // window (including classifying/extracting/saving) until status flips to
+  // "processed" — at which point effect (4) snaps to totalPages.
   useEffect(() => {
     const t = processingProgress?.totalPages;
     if (!t || t < 2) return; // 1-page docs don't need pacing
-    const isExtractingOrSaving =
-      processingProgress?.step?.includes("extracting") ||
-      processingProgress?.step?.includes("saving");
-    if (isExtractingOrSaving) return;
+    if (processingProgress?.status === "processed") return;
+    if (processingProgress?.status === "error" || processingProgress?.isStuck) return;
     const ceiling = t - 1;
-    const interval = setInterval(() => {
-      setDisplayedPage((prev) => Math.min(prev + 1, ceiling));
-    }, 10_000);
-    return () => clearInterval(interval);
-  }, [processingProgress?.totalPages, processingProgress?.step]);
+    const intervals = [10_000, 12_000, 15_000, 20_000];
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const scheduleNext = () => {
+      if (cancelled) return;
+      const delay = intervals[Math.floor(Math.random() * intervals.length)];
+      timeoutId = setTimeout(() => {
+        if (cancelled) return;
+        setDisplayedPage((prev) => Math.min(prev + 1, ceiling));
+        scheduleNext();
+      }, delay);
+    };
+    scheduleNext();
+    return () => {
+      cancelled = true;
+      if (timeoutId !== null) clearTimeout(timeoutId);
+    };
+  }, [processingProgress?.totalPages, processingProgress?.status, processingProgress?.isStuck]);
+
+  // (4) Snap to totalPages only when status === "processed" — the single
+  // moment "we're essentially done" actually means done.
+  useEffect(() => {
+    const t = processingProgress?.totalPages;
+    if (!t || t < 1) return;
+    if (processingProgress?.status === "processed") {
+      setDisplayedPage(t);
+    }
+  }, [processingProgress?.status, processingProgress?.totalPages]);
 
   useEffect(() => {
     if (!uploaded) return;
