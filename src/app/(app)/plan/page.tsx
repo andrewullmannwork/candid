@@ -922,7 +922,7 @@ export default function CandidPlanPage() {
               <div className="divide-y divide-gray-50">
                 {benefits.map((rawItem) => {
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                  const item = rawItem as any; // Extended fields: costSharing, visitLimit, priorAuthRequired, covered
+                  const item = rawItem as any; // Extended fields: costSharing, visitLimit, priorAuthRequired, covered, placeOfService
                   const isUsed = usedBenefits.has(item.benefit.id);
                   const isExpanded = expandedBenefit === item.benefit.id;
                   const rowDisplay = computeRowDisplay(item);
@@ -933,8 +933,16 @@ export default function CandidPlanPage() {
                   const isRenderable =
                     rowDisplay === null || isVisibleState(rowDisplay.state);
                   if (!isRenderable) return null;
+                  // S98 — composite React key for POS-variant rows that share
+                  // the same benefit.id (e.g., mental_health_outpatient at
+                  // pcp_office vs specialist_office vs outpatient_facility).
+                  // Interaction state (toggle/expand) still keys on benefit.id
+                  // intentionally — synced across all POS variants of one
+                  // user-level benefit. See /api/plan/analyze for the matching
+                  // placeOfService field surfacing.
+                  const rowKey = `${item.benefit.id}__${item.placeOfService ?? "any"}`;
                   return (
-                    <div key={item.benefit.id} className={`transition-colors ${isUsed ? "bg-green-50/30" : "bg-white"}`}>
+                    <div key={rowKey} className={`transition-colors ${isUsed ? "bg-green-50/30" : "bg-white"}`}>
                       <div className="flex items-start gap-3 p-4">
                         {/* Checkbox */}
                         <button
