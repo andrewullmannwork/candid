@@ -30,7 +30,7 @@
  */
 
 import type { createServerClient } from "@/lib/supabase/server";
-import { evaluateCorroboration } from "./corroboration-evaluator";
+import { evaluateCorroboration, type CorroboratorExcerpt } from "./corroboration-evaluator";
 import { applyPromotionEvent, type FireSource } from "./promotion-event";
 import {
   checkAndUpdatePendingChallenges,
@@ -51,15 +51,18 @@ export interface FieldEvaluationCandidate {
  * cite-grade dispute fields). Both process-plan + process-eoc upload paths use
  * these as a base. Per-service candidates are derived per-parser separately.
  *
- * Note on convention: SBC parser writes 'deductible_individual' (in-network);
- * EOC parser writes 'in_deductible_individual'. v1 corroboration evaluates these
- * field-keys independently. Cross-source key harmonization is Phase 5+ work.
+ * S102 (2026-05-19) — Aligned with plan_doc parser convention (`in_` prefix for
+ * in-network fields). Pre-S102 the SBC items used unprefixed names which mismatched
+ * the plan_doc parser's actual field_provenance writes (the only active parser
+ * post `unified_plan_doc_parser_v1` flag flip), causing evaluator to return
+ * corroborated_value=null and apply_promotion_event to reject. No downstream
+ * consumer references the unprefixed names (greppable).
  */
 export const PHASE_4_0_6_PLAN_IDENTITY_FIELDS_SBC: readonly string[] = [
-  "deductible_individual",
-  "deductible_family",
-  "oop_max_individual",
-  "oop_max_family",
+  "in_deductible_individual",
+  "in_deductible_family",
+  "in_oop_max_individual",
+  "in_oop_max_family",
   "plan_name",
   "plan_year",
   "plan_type",
@@ -95,6 +98,8 @@ export type CommitAndEvaluateOutcome =
   | "corroboration_added"
   /** Canonical at 0.9 but new value mismatches; needs Task 4.0.6-F state machine. */
   | "challenge_candidate"
+  /** Admin bypass (S102) — admin uploader fired apply_promotion_event with event_type='admin_override' regardless of corroboration count. */
+  | "admin_override"
   /** Evaluator or apply call returned an error; trace contains errorMessage. */
   | "error";
 
@@ -130,6 +135,204 @@ export interface CommitAndEvaluateResult {
  * remaining candidates still evaluate. This matches Promise.allSettled-style
  * fault tolerance precedent from EOC parser dispatch (Phase 3.1A).
  */
+/**
+ * Admin-bypass helper — reads the actual extracted value for a plan-identity
+ * field directly from the actor's most recent insurance_plans row linked to
+ * the canonical. Used when the evaluator returns corroborated_value=null due
+ * to field-name convention mismatch (plan_doc parser writes `in_` prefix;
+ * SBC parser writes unprefixed). Tries both variants.
+ *
+ * Returns null if no value found under either name.
+ */
+/**
+ * S102 — synthesize per-service candidates from plan_covered_services.
+ * Used when input.candidates only contains plan-identity (e.g. plan_doc parser
+ * path, which is the only active parser post unified_plan_doc_parser_v1 flag).
+ * Returns the union of existing candidates + per-service candidates for every
+ * (slug, field) pair where the actor's plan_covered_services has a value.
+ * Runs for ALL callers — not admin-only — to fix the silently broken organic path.
+ */
+async function expandPerServiceCandidates(
+  supabase: SupabaseClient,
+  actorUserId: string,
+  canonicalPlanId: string,
+  existing: FieldEvaluationCandidate[],
+): Promise<FieldEvaluationCandidate[]> {
+  const { data: plan } = await supabase
+    .from("insurance_plans")
+    .select("id")
+    .eq("user_id", actorUserId)
+    .eq("canonical_plan_id", canonicalPlanId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!plan?.id) return existing;
+
+  const { data: rows } = await supabase
+    .from("plan_covered_services")
+    .select("service_id, in_copay, in_coinsurance, in_deductible_applies, covered, prior_auth_required")
+    .eq("insurance_plan_id", plan.id);
+  if (!rows || rows.length === 0) return existing;
+
+  const serviceIds = [...new Set(rows.map((r) => r.service_id as string))];
+  const { data: services } = await supabase
+    .from("service_catalog")
+    .select("id, slug")
+    .in("id", serviceIds);
+  const idToSlug = new Map<string, string>();
+  for (const s of services ?? []) idToSlug.set(s.id as string, s.slug as string);
+
+  const perServiceFields: { name: string; rowKey: keyof typeof rows[0] }[] = [
+    { name: "copay", rowKey: "in_copay" },
+    { name: "coinsurance", rowKey: "in_coinsurance" },
+    { name: "deductible_applies", rowKey: "in_deductible_applies" },
+    { name: "is_covered", rowKey: "covered" },
+    { name: "requires_prior_auth", rowKey: "prior_auth_required" },
+  ];
+
+  const seen = new Set<string>();
+  for (const c of existing) seen.add(`${c.serviceSlug ?? ""}::${c.fieldName}`);
+
+  const added: FieldEvaluationCandidate[] = [];
+  for (const row of rows) {
+    const slug = idToSlug.get(row.service_id as string);
+    if (!slug) continue;
+    for (const { name, rowKey } of perServiceFields) {
+      const v = (row as Record<string, unknown>)[rowKey as string];
+      if (v === undefined || v === null) continue;
+      const key = `${slug}::${name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      added.push({ serviceSlug: slug, fieldName: name });
+    }
+  }
+  return added.length > 0 ? [...existing, ...added] : existing;
+}
+
+async function readAdminPerServiceValue(
+  supabase: SupabaseClient,
+  actorUserId: string,
+  canonicalPlanId: string,
+  serviceSlug: string,
+  fieldName: string,
+): Promise<{ value: unknown; excerpts: CorroboratorExcerpt[] } | null> {
+  // Find actor's most recent insurance_plans row linked to this canonical
+  const { data: plan } = await supabase
+    .from("insurance_plans")
+    .select("id")
+    .eq("user_id", actorUserId)
+    .eq("canonical_plan_id", canonicalPlanId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!plan?.id) return null;
+
+  // Look up service_catalog id for the slug
+  const { data: svc } = await supabase
+    .from("service_catalog")
+    .select("id")
+    .eq("slug", serviceSlug)
+    .maybeSingle();
+  if (!svc?.id) return null;
+
+  // Find the plan_covered_services row(s) for this (plan, service)
+  const { data: rows } = await supabase
+    .from("plan_covered_services")
+    .select("id, field_provenance, in_copay, in_coinsurance, in_deductible_applies, covered, prior_auth_required")
+    .eq("insurance_plan_id", plan.id)
+    .eq("service_id", svc.id)
+    .limit(1);
+  const row = rows?.[0];
+  if (!row) return null;
+
+  // Try field_provenance first (with prefix variants); fall back to direct column read
+  const fp = (row.field_provenance ?? null) as Record<
+    string,
+    { value?: unknown; source_excerpt?: string } | undefined
+  > | null;
+  if (fp) {
+    const variants = fieldName.startsWith("in_")
+      ? [fieldName, fieldName.slice(3)]
+      : [fieldName, `in_${fieldName}`];
+    for (const key of variants) {
+      const entry = fp[key];
+      if (entry && entry.value !== undefined && entry.value !== null) {
+        return {
+          value: entry.value,
+          excerpts: [{
+            user_id_hash: actorUserId,
+            excerpt: entry.source_excerpt ?? null,
+            document_ref: row.id as string,
+            recorded_at: new Date().toISOString(),
+          }],
+        };
+      }
+    }
+  }
+
+  // Direct column fallback — map field names to actual columns
+  const colMap: Record<string, unknown> = {
+    copay: row.in_copay,
+    coinsurance: row.in_coinsurance,
+    deductible_applies: row.in_deductible_applies,
+    is_covered: row.covered,
+    requires_prior_auth: row.prior_auth_required,
+  };
+  const direct = colMap[fieldName];
+  if (direct !== undefined && direct !== null) {
+    return {
+      value: direct,
+      excerpts: [{
+        user_id_hash: actorUserId,
+        excerpt: null,
+        document_ref: row.id as string,
+        recorded_at: new Date().toISOString(),
+      }],
+    };
+  }
+  return null;
+}
+
+async function readAdminPlanIdentityValue(
+  supabase: SupabaseClient,
+  actorUserId: string,
+  canonicalPlanId: string,
+  fieldName: string,
+): Promise<{ value: unknown; excerpts: CorroboratorExcerpt[] } | null> {
+  const { data } = await supabase
+    .from("insurance_plans")
+    .select("id, field_provenance, created_at")
+    .eq("user_id", actorUserId)
+    .eq("canonical_plan_id", canonicalPlanId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const fp = (data?.field_provenance ?? null) as Record<
+    string,
+    { value?: unknown; source_excerpt?: string; source_section_hint?: string } | undefined
+  > | null;
+  if (!fp) return null;
+  const variants = fieldName.startsWith("in_")
+    ? [fieldName, fieldName.slice(3)]
+    : [fieldName, `in_${fieldName}`];
+  for (const key of variants) {
+    const entry = fp[key];
+    if (entry && entry.value !== undefined && entry.value !== null) {
+      const excerpt = entry.source_excerpt ?? null;
+      return {
+        value: entry.value,
+        excerpts: [{
+          user_id_hash: actorUserId, // admin's user_id directly (mig 068 dedupes)
+          excerpt,
+          document_ref: data?.id ?? "",
+          recorded_at: new Date().toISOString(),
+        }],
+      };
+    }
+  }
+  return null;
+}
+
 export async function commitUploadAndEvaluateCorroboration(
   supabase: SupabaseClient,
   input: CommitAndEvaluateInput,
@@ -141,10 +344,50 @@ export async function commitUploadAndEvaluateCorroboration(
     errors: [],
   };
 
-  for (const candidate of input.candidates) {
+  // S102 admin bypass — one users.is_admin lookup per call. When admin, every
+  // candidate fires apply_promotion_event with event_type='admin_override'
+  // regardless of Pattern 1 #3 corroboration count. Cold-start lever for the
+  // admin-attested seed session (Pattern 1 #16 v4 spec; backported to v3).
+  let actorIsAdmin = false;
+  if (input.actorUserId) {
+    const { data: actor } = await supabase
+      .from("users")
+      .select("is_admin")
+      .eq("id", input.actorUserId)
+      .maybeSingle();
+    actorIsAdmin = actor?.is_admin === true;
+  }
+
+  // S102 — auto-expand per-service candidates from plan_covered_services.
+  // process-plan.ts's derivePromotionCandidatesFromHaikuResult only produces
+  // per-service candidates from the SBC parser path (VotedParseSBCResult);
+  // plan_doc parser path (the only active path post `unified_plan_doc_parser_v1`)
+  // passes null → only the 7 plan-identity candidates make it through. This
+  // expansion ensures both organic + admin paths have a complete per-service
+  // candidate list derived from the actor's actually-stored plan_covered_services
+  // rows. Runs for ALL callers (not admin-only) — pre-S102 organic path was
+  // also silently broken for plan_doc parses.
+  let effectiveCandidates = input.candidates;
+  if (input.actorUserId) {
+    const expanded = await expandPerServiceCandidates(
+      supabase,
+      input.actorUserId,
+      input.canonicalPlanId,
+      input.candidates,
+    );
+    if (expanded.length > input.candidates.length) {
+      effectiveCandidates = expanded;
+    }
+  }
+
+  for (const candidate of effectiveCandidates) {
     const { serviceSlug, fieldName } = candidate;
 
     // Step 1: evaluate corroboration (read-only)
+    // Still runs for admin path — evaluator builds corroborated_value +
+    // corroborator_excerpts from the admin's user-scoped data. The admin
+    // path ignores decision.should_promote / .should_append_source flags
+    // and force-promotes; everything else flows through normally.
     const { decision, error: evalError } = await evaluateCorroboration(
       supabase,
       input.canonicalPlanId,
@@ -165,6 +408,54 @@ export async function commitUploadAndEvaluateCorroboration(
     // Falls back to the input serviceSlug for plan-identity fields (null) or
     // when the slug isn't in service_catalog (legacy data).
     const writeSlug = decision.canonical_service_slug ?? serviceSlug;
+
+    // S102 admin-attestation bypass — fires before normal decision routing.
+    // Same canonical_plan_services write path; only event_type differs.
+    //
+    // The evaluator returns corroborated_value=null when it can't find verified
+    // excerpts for the requested field name. Plan_doc parser writes field_provenance
+    // with `in_` prefix (e.g. `in_deductible_individual`) while PHASE_4_0_6_PLAN_IDENTITY_FIELDS_SBC
+    // requests the unprefixed name. For admin path, fall back to reading the value
+    // directly from insurance_plans.field_provenance with both prefix variants.
+    if (actorIsAdmin) {
+      let attestValue = decision.corroborated_value;
+      let attestExcerpts = decision.corroborator_excerpts;
+      if (attestValue === null || attestValue === undefined) {
+        const direct = serviceSlug === null
+          ? await readAdminPlanIdentityValue(supabase, input.actorUserId!, input.canonicalPlanId, fieldName)
+          : await readAdminPerServiceValue(supabase, input.actorUserId!, input.canonicalPlanId, serviceSlug, fieldName);
+        if (direct) {
+          attestValue = direct.value;
+          attestExcerpts = direct.excerpts;
+        }
+      }
+      if (attestValue === null || attestValue === undefined) {
+        // No verified data found anywhere — skip; admin can't attest a field with no value.
+        result.trace.push({ serviceSlug, fieldName, outcome: "no_change" });
+        continue;
+      }
+      const { eventId, error: applyError } = await applyPromotionEvent(
+        supabase,
+        input.canonicalPlanId,
+        writeSlug,
+        fieldName,
+        attestValue,
+        attestExcerpts,
+        input.fireSource,
+        input.actorUserId,
+        "admin_override",
+      );
+      if (applyError || !eventId) {
+        const message = applyError?.message ?? "apply returned no event_id";
+        result.trace.push({ serviceSlug, fieldName, outcome: "error", errorMessage: message });
+        result.errors.push(`apply ${fieldName} (admin_override): ${message}`);
+        continue;
+      }
+      result.trace.push({ serviceSlug, fieldName, outcome: "admin_override", eventId });
+      result.promotionsFired += 1;
+      continue;
+    }
+
     if (decision.should_promote) {
       // First-time promotion: threshold met + canonical not yet promoted
       const { eventId, error: applyError } = await applyPromotionEvent(

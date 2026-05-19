@@ -53,6 +53,14 @@ export interface ParseDoc {
   step: string | null;
   /** Backend `completedPages`; used only for OCR-phase pull-up. */
   realCompletedPages: number | null;
+  /**
+   * S102 — surfaces `documents.metadata.smart_skip_outcome` from the status
+   * endpoint. When "skipped", useSyntheticDisplayedPage uses accelerated
+   * intervals (250ms page-tick + 500ms sub-phase) so the UI matches the
+   * actual ~12s smart-skip backend latency instead of running the full
+   * 45-60s animation for a parse that didn't happen.
+   */
+  smartSkipOutcome?: string | null;
   errorMessage?: string;
 }
 
@@ -232,12 +240,28 @@ const SYNCING_MAX_MS = 20_000;
 // for FINAL_STEPS_MIN_MS so the label is actually readable.
 const FINAL_STEPS_MIN_MS = 3_000;
 
+// S102 — smart-skip fast path constants. When ParseDoc.smartSkipOutcome ===
+// "skipped" (backend signaled no Haiku parse ran), every sub-phase uses these
+// shorter durations. Page-tick interval is in parseProgressUx.ts
+// (SMART_SKIP_TICK_INTERVAL_MS = 250ms). Total animation budget for an 8-page
+// smart-skip: ~2s page-tick + ~2s sub-phases = ~4s — matches the ~12s
+// backend latency closely without skipping the visual progress entirely.
+const SMART_SKIP_SUB_PHASE_MS = 500;
+
 function computeSubPhaseRemaining(
   startedAt: number,
   backendDone: boolean,
   maxMs: number,
+  accelerated: boolean,
 ): number {
   const elapsed = Date.now() - startedAt;
+  if (accelerated) {
+    // Smart-skip path: every sub-phase shows for 500ms regardless of backend
+    // completion timing. Backend usually beats us (parse already done before
+    // ticking finishes), so the user sees the snap-to-complete via the
+    // existing FINAL_STEPS_MIN_MS gate path.
+    return Math.max(0, SMART_SKIP_SUB_PHASE_MS - elapsed);
+  }
   const targetMs = backendDone ? SUB_PHASE_MIN_MS : maxMs;
   return Math.max(0, targetMs - elapsed);
 }
@@ -248,6 +272,11 @@ function useSyntheticDisplayedPage(doc: ParseDoc): SyntheticState {
   const [displayedPage, setDisplayedPage] = useState(0);
   const [lastTotalPages, setLastTotalPages] = useState<number | null>(null);
   const [subPhase, setSubPhase] = useState<SubPhase>("ticking");
+
+  // S102 — accelerated UI when backend signaled smart-skip. Gate on doc field
+  // surfaced via /api/documents/status. Null/undefined → existing behavior;
+  // only "skipped" triggers fast path.
+  const accelerated = doc.smartSkipOutcome === "skipped";
 
   // Reset on totalPages change (during render with equality guard). Starts at
   // 0 so the user sees "Page 0 of N" immediately on first render — the tick
@@ -318,7 +347,7 @@ function useSyntheticDisplayedPage(doc: ParseDoc): SyntheticState {
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     const scheduleNext = () => {
       if (cancelled) return;
-      const delay = pickNextTickInterval();
+      const delay = pickNextTickInterval(accelerated);
       timeoutId = setTimeout(() => {
         if (cancelled) return;
         setDisplayedPage((prev) => Math.min(prev + 1, ceiling));
@@ -330,7 +359,7 @@ function useSyntheticDisplayedPage(doc: ParseDoc): SyntheticState {
       cancelled = true;
       if (timeoutId !== null) clearTimeout(timeoutId);
     };
-  }, [doc.totalPages, subPhase]);
+  }, [doc.totalPages, subPhase, accelerated]);
 
   // Per-sub-phase start-time refs. Used to compute "remaining time" when
   // doc.phase flips mid-sub-phase, so we can shorten to MIN-from-start
@@ -359,10 +388,11 @@ function useSyntheticDisplayedPage(doc: ParseDoc): SyntheticState {
       holdStartedAtRef.current,
       doc.phase === "complete",
       HOLD_MAX_MS,
+      accelerated,
     );
     const t = setTimeout(() => setSubPhase("finalizing"), remaining);
     return () => clearTimeout(t);
-  }, [subPhase, doc.phase]);
+  }, [subPhase, doc.phase, accelerated]);
 
   // Finalizing → Syncing. Same MIN/MAX pattern as hold.
   useEffect(() => {
@@ -377,10 +407,11 @@ function useSyntheticDisplayedPage(doc: ParseDoc): SyntheticState {
       finalizingStartedAtRef.current,
       doc.phase === "complete",
       FINALIZING_MAX_MS,
+      accelerated,
     );
     const t = setTimeout(() => setSubPhase("syncing"), remaining);
     return () => clearTimeout(t);
-  }, [subPhase, doc.phase]);
+  }, [subPhase, doc.phase, accelerated]);
 
   // Syncing → Final Steps. Same MIN/MAX pattern.
   useEffect(() => {
@@ -395,10 +426,11 @@ function useSyntheticDisplayedPage(doc: ParseDoc): SyntheticState {
       syncingStartedAtRef.current,
       doc.phase === "complete",
       SYNCING_MAX_MS,
+      accelerated,
     );
     const t = setTimeout(() => setSubPhase("final_steps"), remaining);
     return () => clearTimeout(t);
-  }, [subPhase, doc.phase]);
+  }, [subPhase, doc.phase, accelerated]);
 
   // Final Steps → Complete: gated on backend signal (doc.phase === "complete")
   // plus FINAL_STEPS_MIN_MS floor. If backend completes before final_steps

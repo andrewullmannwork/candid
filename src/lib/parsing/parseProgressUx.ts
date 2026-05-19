@@ -32,8 +32,21 @@ import type { DocType } from "@/lib/classifier/doc-type-vocabulary";
  */
 export const SYNTHETIC_TICK_INTERVALS_MS = [3000, 5000, 7000, 10000] as const;
 
-/** Pick a random next tick interval from SYNTHETIC_TICK_INTERVALS_MS. */
-export function pickNextTickInterval(): number {
+/**
+ * S102 smart-skip fast path: when the backend signaled skip=true (no full
+ * Haiku parse ran), every page tick is 250ms — synthetic animation completes
+ * in ~2s for an 8-page doc, matching the actual smart-skip backend latency.
+ * Andrew direction: snappy feel without removing the page-progress animation.
+ */
+export const SMART_SKIP_TICK_INTERVAL_MS = 250;
+
+/**
+ * Pick a random next tick interval. When `accelerated` is true (smart-skip
+ * detected via documents.metadata.smart_skip_outcome), returns a fixed
+ * SMART_SKIP_TICK_INTERVAL_MS instead of a random {3,5,7,10}s pick.
+ */
+export function pickNextTickInterval(accelerated = false): number {
+  if (accelerated) return SMART_SKIP_TICK_INTERVAL_MS;
   return SYNTHETIC_TICK_INTERVALS_MS[
     Math.floor(Math.random() * SYNTHETIC_TICK_INTERVALS_MS.length)
   ];

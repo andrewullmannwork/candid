@@ -34,13 +34,26 @@ export type FireSource =
   | "admin-ui"
   | "smoke-test";
 
+/**
+ * Force-override event_type emitted by apply_promotion_event. Normal callers
+ * pass null (function computes 'first_promotion' / 'corroboration_added' from
+ * current canonical confidence). Admin bypass path (S102) passes
+ * 'admin_override' so the canonical_promotion_events audit row records the
+ * event as admin-attested rather than organic Pattern 1 #3 corroboration.
+ */
+export type ForceEventType =
+  | "first_promotion"
+  | "corroboration_added"
+  | "value_corrected_via_challenge"
+  | "admin_override";
+
 export interface ApplyPromotionEventResult {
   eventId: string | null;
   error: { message: string } | null;
 }
 
 /**
- * Calls apply_promotion_event Postgres function (mig 068).
+ * Calls apply_promotion_event Postgres function (mig 068 + mig 111).
  *
  * @param supabase Server-side Supabase client (must be service_role)
  * @param canonicalPlanId UUID of the canonical_plans row
@@ -50,6 +63,7 @@ export interface ApplyPromotionEventResult {
  * @param sources Array of corroborator excerpts; deduped + truncated to top-K server-side
  * @param fireSource Which code path triggered the firing (for telemetry)
  * @param actorUserId User whose event triggered the promotion (null for admin/system events)
+ * @param forceEventType If non-null, overrides the computed event_type. Used by the admin bypass path (S102) to emit 'admin_override' regardless of canonical confidence.
  */
 export async function applyPromotionEvent(
   supabase: SupabaseClient,
@@ -60,6 +74,7 @@ export async function applyPromotionEvent(
   sources: CorroboratorExcerpt[],
   fireSource: FireSource,
   actorUserId: string | null = null,
+  forceEventType: ForceEventType | null = null,
 ): Promise<ApplyPromotionEventResult> {
   const { data, error } = await supabase.rpc("apply_promotion_event", {
     p_canonical_plan_id: canonicalPlanId,
@@ -69,6 +84,7 @@ export async function applyPromotionEvent(
     p_sources: sources,
     p_fire_source: fireSource,
     p_actor_user_id: actorUserId,
+    p_force_event_type: forceEventType,
   });
 
   if (error) {

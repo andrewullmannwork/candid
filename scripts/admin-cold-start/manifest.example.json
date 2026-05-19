@@ -1,0 +1,26 @@
+[
+  {
+    "seed_id": "ca-kaiser-bronze-60-hmo-2026",
+    "state": "CA",
+    "source": "covered_california",
+    "insurer_name": "Kaiser Permanente",
+    "plan_name": "Bronze 60 HMO",
+    "hios_plan_id": "40513CA038000401",
+    "plan_year": 2026,
+    "sbc_url": "REPLACE_WITH_REAL_SBC_URL",
+    "brochure_url": "https://healthy.kaiserpermanente.org/content/dam/kporg/final/documents/health-plan-documents/brochure/2026/on-individual-family-plan-brochure-ca.pdf",
+    "exchange_plan_details_url": "https://apply.coveredca.com/static/lw-enrollment/anon/plan-details/health/REPLACE_ANON_TOKEN/40513CA038000401?from=hs",
+    "notes": "Captured from Covered California anon-browse 94530 zip, $39k single-member income"
+  },
+  {
+    "seed_id": "ca-blueshield-silver-70-ppo-2026",
+    "state": "CA",
+    "source": "covered_california",
+    "insurer_name": "Blue Shield of CA",
+    "plan_name": "Silver 70 PPO",
+    "hios_plan_id": "REPLACE_HIOS_ID",
+    "plan_year": 2026,
+    "sbc_url": "REPLACE_WITH_REAL_SBC_URL",
+    "notes": "Placeholder — replace before running download.ts"
+  }
+]

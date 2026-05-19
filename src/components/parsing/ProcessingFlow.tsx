@@ -85,6 +85,12 @@ interface ProcessingProgress {
   isStuck?: boolean;
   linkedInsurancePlanId?: string | null;
   linkedPlanPremium?: number | null;
+  /**
+   * S102 — surfaces documents.metadata.smart_skip_outcome from the status
+   * endpoint. "skipped" when backend smart-skipped Haiku parse; null otherwise.
+   * Used by UnifiedParseScreen to accelerate page-tick + sub-phase intervals.
+   */
+  smartSkipOutcome?: string | null;
 }
 
 interface ClassificationResult {
@@ -458,6 +464,7 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
     totalPages: processingProgress?.totalPages ?? null,
     step: processingProgress?.step ?? null,
     realCompletedPages: processingProgress?.completedPages ?? null,
+    smartSkipOutcome: processingProgress?.smartSkipOutcome ?? null,
   };
 
   // Universal loader title + subtitle (Andrew direction S101). The two-flow
