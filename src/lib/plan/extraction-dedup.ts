@@ -452,6 +452,71 @@ export async function linkDocumentToCanonical(
       .eq("id", canonical.insurer_id)
       .single();
 
+    // S102 follow-up — smart-skip mismatch detection (Andrew direction).
+    // Smart-skip previously auto-committed canonical's plan to the user's
+    // profile without confirmation, even if canonical's insurer/plan_name
+    // differed from the user's existing profile. That's unsafe — user may
+    // have uploaded the wrong file. Mirror process-plan.ts:587-660's
+    // mismatch detection so the frontend can render the "Use this plan? /
+    // Keep current?" prompt before any profile/insurance_plans commit.
+    //
+    // Comparison uploads are exempt (they're a separate side-by-side plan,
+    // never replace the active plan).
+    let smartSkipMismatch: {
+      mismatch: boolean;
+      type: "insurer" | "plan_name";
+      existingInsurer: string;
+      parsedInsurer: string;
+      existingPlanName?: string;
+      parsedPlanName?: string;
+    } | null = null;
+    if (!isComparisonUpload) {
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("insurer, plan_name")
+        .eq("user_id", doc.user_id)
+        .maybeSingle();
+      const normalize = (s: string | null | undefined) =>
+        (s || "").toLowerCase().replace(/\s*(insurance|company|inc|corp|health\s*plan)\s*/gi, "").trim();
+      const canonicalInsurerName = insurer?.name ?? identifiers.insurer ?? "";
+      const canonicalPlanName = canonical.plan_name ?? "";
+      const profileInsurerN = normalize(profile?.insurer);
+      const canonicalInsurerN = normalize(canonicalInsurerName);
+      const profilePlanN = normalize(profile?.plan_name);
+      const canonicalPlanN = normalize(canonicalPlanName);
+
+      if (profileInsurerN && canonicalInsurerN
+        && profileInsurerN !== canonicalInsurerN
+        && !profileInsurerN.includes(canonicalInsurerN)
+        && !canonicalInsurerN.includes(profileInsurerN)) {
+        smartSkipMismatch = {
+          mismatch: true,
+          type: "insurer",
+          existingInsurer: profile?.insurer || "",
+          parsedInsurer: canonicalInsurerName,
+        };
+      } else if (profilePlanN && canonicalPlanN
+        && profilePlanN !== canonicalPlanN
+        && !profilePlanN.includes(canonicalPlanN)
+        && !canonicalPlanN.includes(profilePlanN)) {
+        smartSkipMismatch = {
+          mismatch: true,
+          type: "plan_name",
+          existingInsurer: profile?.insurer || "",
+          parsedInsurer: canonicalInsurerName,
+          existingPlanName: profile?.plan_name,
+          parsedPlanName: canonicalPlanName,
+        };
+      }
+      if (smartSkipMismatch) {
+        console.log(`[extraction-dedup] Smart-skip mismatch (${smartSkipMismatch.type})`);
+        await supabase
+          .from("documents")
+          .update({ insurer_mismatch: smartSkipMismatch })
+          .eq("id", doc.id);
+      }
+    }
+
     // Resolve final values with canonical fallback for IN-network only
     // (canonical schema doesn't carry OON for these; OON comes from Haiku or stays null).
     const finalInDed = inDedIndividual ?? canonical.deductible_individual ?? null;
@@ -540,7 +605,11 @@ export async function linkDocumentToCanonical(
       // Create new plan linked to canonical.
       // Comparison uploads: skip deactivating the user's existing active plan
       // (their primary stays primary) and insert with is_active=false.
-      if (!isComparisonUpload) {
+      // S102 follow-up: if smart-skip mismatch detected (profile insurer/plan
+      // disagrees with canonical), insert with is_active=false too — user must
+      // confirm via "Use this plan?" prompt before activation.
+      const shouldActivate = !isComparisonUpload && !smartSkipMismatch;
+      if (shouldActivate) {
         await supabase.from("insurance_plans")
           .update({ is_active: false })
           .eq("user_id", doc.user_id)
@@ -565,7 +634,7 @@ export async function linkDocumentToCanonical(
           out_oop_max_family: outOopFamily,
           source: "sbc_upload",
           source_document_id: doc.id,
-          is_active: !isComparisonUpload,
+          is_active: shouldActivate,
           canonical_plan_id: canonicalPlanId,
           verification_status: "document_verified",
           field_provenance: mergedPlanFieldProvenance,
@@ -579,9 +648,10 @@ export async function linkDocumentToCanonical(
       }
       targetPlanId = newPlan.id;
 
-      // Update profile — but NOT for comparison uploads (their plan must
-      // never become the active plan, even via the smart-skip path).
-      if (!isComparisonUpload) {
+      // Update profile — only when activating the plan (no mismatch, no
+      // comparison upload). On mismatch, profile stays as-is until user
+      // confirms via "Use this plan?" prompt (handled by activate_plan API).
+      if (shouldActivate) {
         const profileUpdate: Record<string, unknown> = { active_insurance_plan_id: targetPlanId };
         if (identifiers.insurer) profileUpdate.insurer = identifiers.insurer;
         if (identifiers.planName) profileUpdate.plan_name = identifiers.planName;
