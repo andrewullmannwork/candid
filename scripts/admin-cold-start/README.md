@@ -8,7 +8,8 @@
 - Mig 111 applied to target DB (dev for smoke; PROD before bulk seed)
 - Andrew's `users.is_admin = true` in target DB
 - Local dev server running at `http://localhost:3000` (for dev smoke) OR PROD reachable
-- Andrew's Supabase session token (from browser devtools → Application → Cookies → `sb-<project>-auth-token`)
+- `SUPABASE_SERVICE_ROLE_KEY` in `.env.local` (already present; service-role bypass means no browser session token needed)
+- Andrew's `users.id` UUID (`2ce55772-bdf1-4edd-bd16-215aa239990e`)
 
 ---
 
@@ -19,7 +20,9 @@
 | `types.ts` | Shared TypeScript types for manifest entries + outcome logs. |
 | `manifest.example.json` | Template for the hand-curated SBC list. Copy → `manifest.json` → fill in real URLs. |
 | `download.ts` | Reads `manifest.json`, downloads SBC PDFs to `seed-data/sbcs/{state}/{insurer-slug}/`, computes SHA-256, writes `download-log.jsonl`. |
-| `upload-as-admin.ts` | Reads `manifest.json` + `download-log.jsonl`, POSTs each PDF to `/api/documents/upload` as admin, polls `/api/documents/status` until processed, writes `upload-log.jsonl`. |
+| `add-local-pdf.ts` | Register an already-local PDF (skip download). Useful for smoke testing with a file you already have. |
+| `seed-via-service-role.ts` | **Use this — not upload-as-admin.ts.** Service-role bypass: uploads each PDF directly via Supabase service-role client (no Firebase ID token needed), inserts documents row, calls quickClassify + effective-doc-type resolver, enqueues chunk processor, polls DB for completion. |
+| `upload-as-admin.ts` | DEPRECATED — required Firebase ID token from browser; replaced by `seed-via-service-role.ts`. Kept temporarily; remove after S103. |
 | `verify.ts` | Queries DB for each seeded canonical: `canonical_plan_services` row count + `canonical_promotion_events.event_type='admin_override'` row count. Emits pass/fail report. |
 
 ---
@@ -50,19 +53,29 @@ Output: `seed-data/sbcs/{state}/{insurer-slug}/{seed_id}.pdf` files + `download-
 
 Re-run safe: skips files already downloaded with matching hash.
 
-### 3. Upload via admin
+### 3. Upload via service-role (admin bypass)
 
 ```bash
-ADMIN_AUTH_TOKEN=<andrew-session-bearer> \
-TARGET_URL=http://localhost:3000 \
-npx tsx scripts/admin-cold-start/upload-as-admin.ts manifest.json
+ADMIN_USER_ID=<andrew-uuid> \
+BASE_URL=http://localhost:3000 \
+npx tsx scripts/admin-cold-start/seed-via-service-role.ts
 ```
 
-Output: `upload-log.jsonl` with one row per uploaded SBC: status, document_id, canonical_plan_id, service_count, promotion_event_count.
+`SUPABASE_SERVICE_ROLE_KEY` + `NEXT_PUBLIC_SUPABASE_URL` are read automatically from `.env.local`.
 
-Polls `/api/documents/status` every 5s for up to 5 minutes per upload. Records timeout as `parse_timeout`.
+Per-PDF flow (no HTTP layer; runs against DB directly):
+1. Reads file + computes SHA-256
+2. Uploads to Supabase storage at `{admin_user_id}/{documentId}.pdf`
+3. INSERTs documents row (status='uploaded')
+4. Calls `quickClassify` (imports candid module — no API call)
+5. UPDATEs documents with classification + applies effective-doc-type resolver
+6. `enqueueChunk` → chunk processor takes over
+7. Polls DB `documents.status` every 5s until `processed` (or `error`/timeout)
+8. Writes `upload-log.jsonl`
 
-Sequential (not parallel) to avoid overwhelming Haiku rate limits.
+Pre-flight: ensures admin consent_events row exists (creates one if missing — admin self-grants; pattern 1 #14 audit-clear via admin user_id linkage).
+
+Sequential (not parallel) to avoid Haiku rate-limit pressure.
 
 ### 4. Verify
 
