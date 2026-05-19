@@ -160,12 +160,17 @@ export async function commitUploadAndEvaluateCorroboration(
     }
 
     // Step 2: route based on decision flags
+    // S99 B5: use decision.canonical_service_slug (resolved canonical sibling
+    // per mig 108) so canonical_plan_services writes land on the canonical row.
+    // Falls back to the input serviceSlug for plan-identity fields (null) or
+    // when the slug isn't in service_catalog (legacy data).
+    const writeSlug = decision.canonical_service_slug ?? serviceSlug;
     if (decision.should_promote) {
       // First-time promotion: threshold met + canonical not yet promoted
       const { eventId, error: applyError } = await applyPromotionEvent(
         supabase,
         input.canonicalPlanId,
-        serviceSlug,
+        writeSlug,
         fieldName,
         decision.corroborated_value,
         decision.corroborator_excerpts,
@@ -185,7 +190,7 @@ export async function commitUploadAndEvaluateCorroboration(
       const { eventId, error: applyError } = await applyPromotionEvent(
         supabase,
         input.canonicalPlanId,
-        serviceSlug,
+        writeSlug,
         fieldName,
         decision.corroborated_value,
         decision.corroborator_excerpts,

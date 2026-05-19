@@ -40,9 +40,9 @@ import {
   type CurrentPlanSummary,
 } from "@/components/compare/PlanSlot";
 import {
-  PlayfulParsingScreen,
+  UnifiedParseScreen,
   type ParseDoc,
-} from "@/components/parsing/PlayfulParsingScreen";
+} from "@/components/parsing/UnifiedParseScreen";
 import type { ComparePlanPayload, PlanRef } from "@/lib/plan/compare";
 import { ShareCandidCard } from "@/components/share/ShareCandidCard";
 
@@ -351,7 +351,10 @@ function CompareInterface() {
           label: `Plan ${String.fromCharCode(65 + i)}`,
           fileName: file?.name ?? "Unknown",
           phase: n === 0 ? "uploading" : "queued",
-          progress: n === 0 ? 5 : 0,
+          uploadProgress: n === 0 ? 5 : 0,
+          totalPages: null,
+          step: null,
+          realCompletedPages: null,
         };
       });
       setParseDocs(initial);
@@ -374,10 +377,10 @@ function CompareInterface() {
           setParseDocs((prev) => {
             const arr = [...prev];
             const myEntry = arr.findIndex((d) => d.id === `slot-${idx}`);
-            if (myEntry >= 0) arr[myEntry] = { ...arr[myEntry], phase: "complete", progress: 100 };
+            if (myEntry >= 0) arr[myEntry] = { ...arr[myEntry], phase: "complete", uploadProgress: 100 };
             const nextQueued = arr.findIndex((d) => d.phase === "queued");
             if (nextQueued >= 0) {
-              arr[nextQueued] = { ...arr[nextQueued], phase: "uploading", progress: 5 };
+              arr[nextQueued] = { ...arr[nextQueued], phase: "uploading", uploadProgress: 5 };
             }
             return arr;
           });
@@ -477,19 +480,36 @@ function CompareInterface() {
         body: formData,
       });
       if (!uploadRes.ok) return null;
-      const uploadBody = (await uploadRes.json()) as { documentId?: string };
+      const uploadBody = (await uploadRes.json()) as {
+        documentId?: string;
+        classification?: { pageCount?: number };
+      };
       if (!uploadBody.documentId) return null;
+
+      // S100 v3 / S101 two-flow — seed totalPages from the classifier response
+      // so the parsing screen renders "Page 0 of N" immediately, same as
+      // /upload's single-doc flow. If the seed is absent (no pageCount on the
+      // upload response), the doc card stays on "Uploading" pill + "Reading…"
+      // status until the polling loop surfaces totalPages from the backend.
+      // No more rendering a page-counted screen with an unknown N.
+      const pageCountHint = uploadBody.classification?.pageCount ?? null;
 
       setParseDocs((prev) => {
         const arr = [...prev];
         const myEntry = arr.findIndex((d) => d.id === docId);
         if (myEntry >= 0) {
-          arr[myEntry] = { ...arr[myEntry], phase: "parsing", progress: 25 };
+          const seededTotalPages =
+            pageCountHint && pageCountHint > 0 ? pageCountHint : arr[myEntry].totalPages;
+          arr[myEntry] = {
+            ...arr[myEntry],
+            phase: seededTotalPages && seededTotalPages > 0 ? "parsing" : "uploading",
+            uploadProgress: 100,
+            totalPages: seededTotalPages,
+          };
         }
         return arr;
       });
 
-      const startedAt = Date.now();
       while (true) {
         await new Promise((r) => setTimeout(r, 4000));
         const statusRes = await fetch(`/api/documents/status?id=${uploadBody.documentId}`);
@@ -503,28 +523,45 @@ function CompareInterface() {
           });
         }
 
-        const phase: ParseDoc["phase"] =
+        // S101 two-flow: terminal states drive their own phase; otherwise stay
+        // "uploading" (pill + "Reading…") until pageCount is known, then flip
+        // to "parsing" so the page-tick screen takes over. Mirrors derivePhase
+        // in UnifiedParseScreen — /compare can't reuse derivePhase directly
+        // because per-doc phase is owned by ParseDoc here (multi-doc array),
+        // not derived from a single (uploadStatus, processingProgress) tuple.
+        const terminalPhase: ParseDoc["phase"] | null =
           statusBody.status === "processed"
             ? "complete"
             : statusBody.status === "error" || statusBody.isStuck
               ? "error"
-              : statusBody.completedPages != null && statusBody.totalPages != null
-                ? "cross_referencing"
-                : "parsing";
-        const progress =
-          statusBody.completedPages && statusBody.totalPages
-            ? Math.min(95, 25 + Math.round((statusBody.completedPages / statusBody.totalPages) * 60))
-            : Math.min(85, 25 + Math.round((Date.now() - startedAt) / 1000));
-        const detail =
-          statusBody.completedPages != null && statusBody.totalPages != null
-            ? `Page ${statusBody.completedPages} of ${statusBody.totalPages}`
-            : statusBody.step ?? undefined;
+              : null;
 
+        // UnifiedParseScreen owns the synthetic page-tick + sub-phase state
+        // machine internally. Caller passes raw backend data (totalPages +
+        // step + realCompletedPages); the component computes "Page X of Y" +
+        // bar fill from there.
+        //
+        // S101 seed-preserve: when backend returns 0/null totalPages on early
+        // polls (chunk runner hasn't written documents.processing_total_pages
+        // yet), keep the seed from the upload-XHR seed branch above.
         setParseDocs((prev) => {
           const arr = [...prev];
           const myEntry = arr.findIndex((d) => d.id === docId);
           if (myEntry >= 0) {
-            arr[myEntry] = { ...arr[myEntry], phase, progress, detail };
+            const backendPages =
+              typeof statusBody.totalPages === "number" && statusBody.totalPages > 0
+                ? statusBody.totalPages
+                : null;
+            const nextTotalPages = backendPages ?? arr[myEntry].totalPages;
+            const nextPhase: ParseDoc["phase"] =
+              terminalPhase ?? (nextTotalPages && nextTotalPages > 0 ? "parsing" : "uploading");
+            arr[myEntry] = {
+              ...arr[myEntry],
+              phase: nextPhase,
+              totalPages: nextTotalPages,
+              step: statusBody.step ?? null,
+              realCompletedPages: typeof statusBody.completedPages === "number" ? statusBody.completedPages : null,
+            };
           }
           return arr;
         });
@@ -635,10 +672,18 @@ function CompareInterface() {
           }}
         />
       ) : mode === "parsing" ? (
-        <PlayfulParsingScreen
+        <UnifiedParseScreen
           docs={parseDocs}
           title="Reading your plan documents"
-          subtitle="Sit tight — this usually takes 30-90 seconds per plan."
+          subtitle="We meticulously go over every detail in your plans not once but twice. That takes a while, but we know it's worth it."
+          onCancel={() => {
+            // S100 v3 — return to build mode. In-flight polling loops finish
+            // independently; their results are ignored since we re-render to
+            // the build view.
+            setParseError(null);
+            setParseDocs([]);
+            setMode("build");
+          }}
           footer={
             parseError ? (
               <div className="rounded-xl bg-rose-50 ring-1 ring-rose-200 p-4 text-center">

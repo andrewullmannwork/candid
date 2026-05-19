@@ -1,0 +1,24 @@
+{
+  "doc_type_override_v1": {
+    "flag_key": "doc_type_override_v1",
+    "enabled": true,
+    "target_type": "global",
+    "config": {
+      "sbc_max_pages": 20,
+      "classifier_confidence_override": 0.8
+    }
+  },
+  "classifier_haiku_regex_fallback_v1": {
+    "flag_key": "classifier_haiku_regex_fallback_v1",
+    "enabled": true,
+    "target_type": "global",
+    "config": {
+      "sanity_gate_enabled": true,
+      "sanity_gate_min_pages": 10,
+      "haiku_failure_fallback": "regex",
+      "confirmation_ui_enabled": true,
+      "confirmation_regex_threshold": 0.5,
+      "sanity_gate_sbc_phrase_count": 2
+    }
+  }
+}

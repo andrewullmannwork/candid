@@ -43,16 +43,26 @@ export async function enqueueChunk(documentId: string, baseUrl: string): Promise
     }
   }
 
-  // Fallback: direct fetch (for local dev or if QStash is not configured)
+  // Fallback: direct fetch (for local dev or if QStash is not configured).
+  //
+  // S101 fix — fire-and-forget intentionally. The Next.js dev server doesn't
+  // terminate the moment a response is sent (unlike Vercel serverless), so the
+  // background fetch completes successfully even though we don't await it.
+  // Awaiting here previously caused the upload route to block for the entire
+  // chunk parse (~50-90s for an 8-page SBC), which prevented the frontend from
+  // ever showing the page-count loading screen. In PROD this code path isn't
+  // hit (QStash publish is fast); this is dev-only.
   try {
-    await fetch(targetUrl, {
+    fetch(targetUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ documentId }),
+    }).catch((err) => {
+      console.error("[qstash] Direct fetch fallback rejected:", err);
     });
     return true;
   } catch (err) {
-    console.error("[qstash] Direct fetch fallback also failed:", err);
+    console.error("[qstash] Direct fetch fallback synchronous error:", err);
     return false;
   }
 }

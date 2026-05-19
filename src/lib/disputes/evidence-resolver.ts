@@ -22,6 +22,7 @@ import type { PlanContext } from "./plan-context";
 import { extractPatternP8FromEntry, isCitationGrade } from "@/lib/parser/consumer-read";
 import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import { findPeerCodesForSlug } from "./peer-code-engine";
+import { resolveCanonicalSlugs } from "@/lib/parser/canonical-resolution";
 
 const K_ANON_PRICING = 5;
 
@@ -316,6 +317,22 @@ export async function resolveEvidence(
     loadCodeToSlugFallback(supabase, codesList),
   ]);
 
+  // S99 B5 — alias-aware coverage lookup. Pre-resolve every claim-line + code-
+  // fallback slug to its canonical sibling so buildLineItemEvidence can match
+  // against loadCoverage's canonical-keyed map even when the user's
+  // plan_covered_services row sits on the alias slug and the line item on the
+  // canonical (or vice versa). post-S95 reset this is identity (no aliases).
+  const lineItemSlugs = new Set<string>();
+  for (const li of filteredLineItems) {
+    if (li.service_slug) lineItemSlugs.add(li.service_slug);
+  }
+  for (const fallback of codeSlugFallback.values()) {
+    if (fallback) lineItemSlugs.add(fallback);
+  }
+  const lineItemCanonicalMap = lineItemSlugs.size > 0
+    ? await resolveCanonicalSlugs(Array.from(lineItemSlugs), supabase)
+    : new Map<string, string>();
+
   console.log("[evidence-resolver] signals loaded:", {
     canonicalPlanId,
     planYear,
@@ -397,6 +414,7 @@ export async function resolveEvidence(
       codeSlugFallback,
       planContext,
       peerCodesBySlug,
+      lineItemCanonicalMap,
     );
     totalBilled += evidence.billedAmount;
     totalDiscrepancy += evidence.discrepancyAmount ?? 0;
@@ -599,6 +617,10 @@ async function loadCoverage(
   supabase: SupabaseClient,
   insurancePlanId: string | null,
 ): Promise<Map<string, PlanBenefitDetail>> {
+  // S99 B5 — keyed by CANONICAL slug (resolved via service_catalog.concept_id).
+  // Pre-S95 / no-aliases state: canonical === raw (no-op). Post-alias-promotion:
+  // alias rows are normalized to their canonical for lookup, so buildLineItemEvidence
+  // matches on canonical regardless of which slug the user's row sits on.
   const byServiceSlug = new Map<string, PlanBenefitDetail>();
   if (!insurancePlanId) return byServiceSlug;
 
@@ -653,6 +675,20 @@ async function loadCoverage(
 
   if (!rows) return byServiceSlug;
 
+  // S99 B5 — pre-resolve canonical sibling for every raw slug emitted by this
+  // plan's coverage rows. Single batched query against service_catalog; falls
+  // through to identity when no aliases exist.
+  const rawSlugsForCanonical: string[] = [];
+  for (const r of rows) {
+    const cat = (r as { service_catalog: { slug?: string } | { slug?: string }[] }).service_catalog;
+    const slug = Array.isArray(cat) ? cat[0]?.slug : cat?.slug;
+    if (slug) rawSlugsForCanonical.push(slug);
+  }
+  const coverageCanonicalMap =
+    rawSlugsForCanonical.length > 0
+      ? await resolveCanonicalSlugs(rawSlugsForCanonical, supabase)
+      : new Map<string, string>();
+
   for (const r of rows as unknown as Array<{
     covered: boolean | null;
     in_copay: number | null;
@@ -700,7 +736,9 @@ async function loadCoverage(
       ? "legacy_sbc_excerpt"
       : null;
 
-    byServiceSlug.set(cat.slug, {
+    // S99 B5 — key by canonical sibling (identity when no aliases exist).
+    const canonicalSlug = coverageCanonicalMap.get(cat.slug) ?? cat.slug;
+    byServiceSlug.set(canonicalSlug, {
       covered: r.covered !== false,
       copay: r.in_copay,
       coinsurance: r.in_coinsurance,
@@ -1005,6 +1043,13 @@ function buildLineItemEvidence(
   codeSlugFallback: Map<string, string>,
   planContext: PlanContext | null,
   peerCodesBySlug: Map<string, NonNullable<LineItemEvidence["peerCodes"]>>,
+  /**
+   * S99 B5 — pre-resolved canonical map for every line-item + code-fallback slug.
+   * Keyed by raw slug → canonical sibling. Identity (no-op) for slugs without
+   * aliases. resolveEvidence() builds this once before invoking
+   * buildLineItemEvidence for each line item.
+   */
+  lineItemCanonicalMap: Map<string, string>,
 ): LineItemEvidence {
   const billed = Number(li.billed_amount ?? 0);
   const insurancePaid = li.insurance_paid != null ? Number(li.insurance_paid) : null;
@@ -1022,8 +1067,14 @@ function buildLineItemEvidence(
     ? `${li.billing_code_type}:${li.billing_code}`
     : null;
   const resolvedSlug = li.service_slug ?? (codeKey ? codeSlugFallback.get(codeKey) ?? null : null);
-  const planBenefit = resolvedSlug
-    ? coverageByServiceSlug.get(resolvedSlug) ?? null
+  // S99 B5 — normalize to canonical sibling before coverage lookup. loadCoverage
+  // keys its byServiceSlug map by canonical, so we must match on canonical here.
+  // Identity (no-op) when resolvedSlug has no alias relationship.
+  const canonicalLookupSlug = resolvedSlug
+    ? lineItemCanonicalMap.get(resolvedSlug) ?? resolvedSlug
+    : null;
+  const planBenefit = canonicalLookupSlug
+    ? coverageByServiceSlug.get(canonicalLookupSlug) ?? null
     : null;
 
   const expectedPatientCost = planBenefit
