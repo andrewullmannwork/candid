@@ -51,15 +51,18 @@ export interface FieldEvaluationCandidate {
  * cite-grade dispute fields). Both process-plan + process-eoc upload paths use
  * these as a base. Per-service candidates are derived per-parser separately.
  *
- * Note on convention: SBC parser writes 'deductible_individual' (in-network);
- * EOC parser writes 'in_deductible_individual'. v1 corroboration evaluates these
- * field-keys independently. Cross-source key harmonization is Phase 5+ work.
+ * S102 (2026-05-19) — Aligned with plan_doc parser convention (`in_` prefix for
+ * in-network fields). Pre-S102 the SBC items used unprefixed names which mismatched
+ * the plan_doc parser's actual field_provenance writes (the only active parser
+ * post `unified_plan_doc_parser_v1` flag flip), causing evaluator to return
+ * corroborated_value=null and apply_promotion_event to reject. No downstream
+ * consumer references the unprefixed names (greppable).
  */
 export const PHASE_4_0_6_PLAN_IDENTITY_FIELDS_SBC: readonly string[] = [
-  "deductible_individual",
-  "deductible_family",
-  "oop_max_individual",
-  "oop_max_family",
+  "in_deductible_individual",
+  "in_deductible_family",
+  "in_oop_max_individual",
+  "in_oop_max_family",
   "plan_name",
   "plan_year",
   "plan_type",
@@ -142,12 +145,14 @@ export interface CommitAndEvaluateResult {
  * Returns null if no value found under either name.
  */
 /**
- * S102 admin-bypass — synthesize per-service candidates from plan_covered_services.
+ * S102 — synthesize per-service candidates from plan_covered_services.
  * Used when input.candidates only contains plan-identity (e.g. plan_doc parser
- * path). Returns the union of existing candidates + per-service candidates for
- * every (slug, field) pair where the actor's plan_covered_services has a value.
+ * path, which is the only active parser post unified_plan_doc_parser_v1 flag).
+ * Returns the union of existing candidates + per-service candidates for every
+ * (slug, field) pair where the actor's plan_covered_services has a value.
+ * Runs for ALL callers — not admin-only — to fix the silently broken organic path.
  */
-async function expandAdminPerServiceCandidates(
+async function expandPerServiceCandidates(
   supabase: SupabaseClient,
   actorUserId: string,
   canonicalPlanId: string,
@@ -246,7 +251,10 @@ async function readAdminPerServiceValue(
     { value?: unknown; source_excerpt?: string } | undefined
   > | null;
   if (fp) {
-    for (const key of [fieldName, `in_${fieldName}`]) {
+    const variants = fieldName.startsWith("in_")
+      ? [fieldName, fieldName.slice(3)]
+      : [fieldName, `in_${fieldName}`];
+    for (const key of variants) {
       const entry = fp[key];
       if (entry && entry.value !== undefined && entry.value !== null) {
         return {
@@ -304,7 +312,9 @@ async function readAdminPlanIdentityValue(
     { value?: unknown; source_excerpt?: string; source_section_hint?: string } | undefined
   > | null;
   if (!fp) return null;
-  const variants = [fieldName, `in_${fieldName}`];
+  const variants = fieldName.startsWith("in_")
+    ? [fieldName, fieldName.slice(3)]
+    : [fieldName, `in_${fieldName}`];
   for (const key of variants) {
     const entry = fp[key];
     if (entry && entry.value !== undefined && entry.value !== null) {
@@ -348,17 +358,18 @@ export async function commitUploadAndEvaluateCorroboration(
     actorIsAdmin = actor?.is_admin === true;
   }
 
-  // S102 admin path: auto-expand per-service candidates from plan_covered_services.
+  // S102 — auto-expand per-service candidates from plan_covered_services.
   // process-plan.ts's derivePromotionCandidatesFromHaikuResult only produces
   // per-service candidates from the SBC parser path (VotedParseSBCResult);
-  // plan_doc parser path passes null → only 7 plan-identity candidates pass
-  // through. For admin cold-start to populate canonical_plan_services, we need
-  // per-service candidates regardless. Query the actor's plan_covered_services
-  // rows and synthesize per-service candidates so the loop below fires
-  // apply_promotion_event for each.
+  // plan_doc parser path (the only active path post `unified_plan_doc_parser_v1`)
+  // passes null → only the 7 plan-identity candidates make it through. This
+  // expansion ensures both organic + admin paths have a complete per-service
+  // candidate list derived from the actor's actually-stored plan_covered_services
+  // rows. Runs for ALL callers (not admin-only) — pre-S102 organic path was
+  // also silently broken for plan_doc parses.
   let effectiveCandidates = input.candidates;
-  if (actorIsAdmin && input.actorUserId) {
-    const expanded = await expandAdminPerServiceCandidates(
+  if (input.actorUserId) {
+    const expanded = await expandPerServiceCandidates(
       supabase,
       input.actorUserId,
       input.canonicalPlanId,
