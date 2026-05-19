@@ -8,13 +8,7 @@ import { enqueueChunk } from "@/lib/queue/qstash";
 import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { verifyTurnstileToken, getRemoteIp } from "@/lib/security/turnstile";
-import {
-  computeFileHash,
-  extractPlanIdentifiers,
-  extractPlanIdentifiersWithHaiku,
-  shouldSkipExtraction,
-  linkDocumentToCanonical,
-} from "@/lib/plan/extraction-dedup";
+import { computeFileHash } from "@/lib/plan/extraction-dedup";
 
 // CF-36 (Session 72) — test account exemption from per-user document caps.
 // Hardcoded single-account escape hatch so MVP testing iterations aren't
@@ -572,72 +566,23 @@ export async function POST(req: NextRequest) {
   }
 
   const userEmail = decoded.email || "";
-  let fileHashComputed: string | null = null;
 
-  // ── Smart extraction skip (feature-flagged) ─────────────────────────────
-  // Check if this document matches a known canonical plan with stable data.
-  // If so, skip full OCR + Haiku extraction and link directly to canonical.
-  if (["sbc", "plan_document"].includes(classification.classifiedType)) {
-    try {
-      const { isFeatureEnabled } = await import("@/lib/config/product-flags");
-      const dedupEnabled = await isFeatureEnabled("document_dedup", userEmail);
-
-      if (dedupEnabled) {
-        fileHashComputed = computeFileHash(buffer);
-
-        // Two-tier identifier extraction: regex first, Haiku fallback
-        let identifiers = extractPlanIdentifiers(classification.ocrTextPreview);
-        if (!identifiers.insurer || !identifiers.planName) {
-          identifiers = await extractPlanIdentifiersWithHaiku(classification.ocrTextPreview);
-        }
-
-        // Save hash to document record
-        await supabase.from("documents").update({ file_hash: fileHashComputed }).eq("id", documentId);
-
-        const dedupResult = await shouldSkipExtraction(supabase, documentId, fileHashComputed, identifiers, user.id, classification.classifiedType);
-        console.log(`[upload] Dedup check: skip=${dedupResult.skip}, reason=${dedupResult.reason}, identifiers=${identifiers.source}`);
-
-        if (dedupResult.skip && dedupResult.canonicalPlanId) {
-          const result = await linkDocumentToCanonical(
-            supabase,
-            { id: documentId, user_id: user.id, file_name: file.name },
-            dedupResult.canonicalPlanId,
-            classification.ocrTextPreview,
-            identifiers
-          );
-
-          if (result.success) {
-            console.log(`[upload] Extraction skipped — linked to canonical ${dedupResult.canonicalPlanId}. Services: ${result.servicesCreated}`);
-            return NextResponse.json({
-              documentId,
-              storagePath,
-              autoProcessed: true,
-              skippedExtraction: true,
-              dedupReason: dedupResult.reason,
-              classification: {
-                classifiedType: classification.classifiedType,
-                confidence: classification.confidence,
-                pageCount: classification.pageCount,
-              },
-            });
-          }
-          // If linkDocumentToCanonical failed, fall through to normal processing
-          console.warn(`[upload] Dedup link failed: ${result.error}. Falling through to normal pipeline.`);
-        }
-      }
-    } catch (dedupErr) {
-      // Non-fatal — fall through to normal processing
-      console.error("[upload] Dedup check failed (non-fatal):", dedupErr);
-    }
-  }
+  // ── Smart-skip moved to chunk processor (S101 refactor) ────────────────
+  // Smart-skip dedup (canonical match → skip Haiku extraction) used to run
+  // here inline, which blocked the upload response on a 10-20s Haiku
+  // identifier-extraction call. It now runs at the top of /api/documents/
+  // process-chunk's init step, AFTER OCR chunk 0 completes. The user sees
+  // "Page 0 of N" as soon as the upload route returns (~3-5s); smart-skip
+  // happens in the background. Smart-skip cost savings preserved 1:1 —
+  // linkDocumentToCanonical still fires the moment a stable canonical match
+  // is found, same logic, same Pattern 1 #16 v4 stability checks.
+  //
+  // See: src/app/api/documents/process-chunk/route.ts (runSmartSkipCheck).
 
   // ── File hash rate limit (same file 3+ times → reject) ──────────────────
-  // Hash may already be computed by dedup block above — reuse if so
-  if (!fileHashComputed) {
-    fileHashComputed = computeFileHash(buffer);
-    await supabase.from("documents").update({ file_hash: fileHashComputed }).eq("id", documentId);
-  }
-
+  // fileHash computed at function scope (line 234) and persisted to documents
+  // row at insert time (line 353). No duplicate compute/write needed.
+  //
   // CF-36: test account also exempt from per-file-hash duplicate limit so
   // testing the same SBC repeatedly doesn't trip the rate limiter.
   if (!exemptFromCaps) {
@@ -645,7 +590,7 @@ export async function POST(req: NextRequest) {
       .from("documents")
       .select("id", { count: "exact", head: true })
       .eq("user_id", user.id)
-      .eq("file_hash", fileHashComputed);
+      .eq("file_hash", fileHash);
 
     if (hashCount != null && hashCount >= 3) {
       await supabase.from("documents").update({

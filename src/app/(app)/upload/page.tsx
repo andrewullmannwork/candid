@@ -128,6 +128,15 @@ function UploadForm() {
   const [retrying, setRetrying] = useState(false);
   const [yearRolloverEnabled, setYearRolloverEnabled] = useState(false);
 
+  // S101 v3 — auto-redirect gating. The polling effect detects status===
+  // processed and (when no mismatch / no premium-needed) stages a redirect
+  // target in this ref instead of firing window.location.href immediately.
+  // ProcessingFlow's onProgressionComplete callback flips progressionComplete
+  // → an effect below fires the actual navigation. Result: the sub-phase
+  // machine plays out in full before we leave /upload.
+  const pendingRedirectRef = useRef<string | null>(null);
+  const [progressionComplete, setProgressionComplete] = useState(false);
+
   // Previously uploaded documents
   const [userDocs, setUserDocs] = useState<
     { id: string; file_name: string; doc_type: string; status: string; created_at: string; processing_error?: string | null; retry_count?: number }[]
@@ -234,7 +243,24 @@ function UploadForm() {
         const res = await fetch(`/api/documents/status?id=${documentId}`);
         if (!res.ok || !active) return;
         const data = await res.json();
-        setProcessingProgress(data);
+        // S101 two-flow fix: preserve the seeded totalPages when the backend's
+        // first poll responses surface 0/null. The seed comes from either
+        // uploadResult.classification.pageCount (auto-accept path; line 476)
+        // or confirmationData.page_count (modal-confirm path; line 656). Both
+        // are written into processingProgress BEFORE this poll runs; without
+        // the merge guard the backend's first "queued" response (which arrives
+        // before chunk-runner writes documents.processing_total_pages) would
+        // clobber the seed with 0 and the UnifiedParseScreen would fall back
+        // to the "Uploading" pill + "Reading…" status until the chunk runner
+        // eventually surfaced totalPages. That's the S101 task #14 stuck-state
+        // bug; this guard closes it at the data layer.
+        setProcessingProgress((prev) => {
+          const backendTotalPages = typeof data.totalPages === "number" ? data.totalPages : 0;
+          if (backendTotalPages === 0 && prev?.totalPages && prev.totalPages > 0) {
+            return { ...data, totalPages: prev.totalPages };
+          }
+          return data;
+        });
 
         if (data.status === "processed") {
           active = false;
@@ -266,9 +292,12 @@ function UploadForm() {
               redirectTarget,
             });
             if (!needsPremium) {
-              setTimeout(() => {
-                window.location.href = redirectTarget;
-              }, 1500);
+              // S101 v3 — stage the redirect instead of firing setTimeout
+              // immediately. The progression-complete effect below picks it
+              // up once UnifiedParseScreen's sub-phase machine has played
+              // out. Without this gate the page navigates 1.5s after status
+              // flips processed, racing the sub-phase progression.
+              pendingRedirectRef.current = redirectTarget;
             }
           }
           return;
@@ -306,6 +335,21 @@ function UploadForm() {
       clearInterval(interval);
     };
   }, [documentId, uploadStatus]);
+
+  // S101 v3 — fire the staged redirect once the sub-phase machine signals
+  // complete via ProcessingFlow's onProgressionComplete callback. The 800ms
+  // pause gives the user a beat to register the "Ready" terminal state
+  // before navigation.
+  useEffect(() => {
+    if (!progressionComplete) return;
+    const target = pendingRedirectRef.current;
+    if (!target) return;
+    pendingRedirectRef.current = null;
+    const t = setTimeout(() => {
+      window.location.href = target;
+    }, 800);
+    return () => clearTimeout(t);
+  }, [progressionComplete]);
 
   // Check if insurance profile is filled
   useEffect(() => {
@@ -500,6 +544,13 @@ function UploadForm() {
 
         setUploaded(true);
       } catch (err) {
+        // S101 — silence the user-initiated abort path. onCancelInFlight has
+        // already wiped local state; surfacing "Upload failed" here would
+        // contradict the user's intent (they clicked X). XHR's abort event
+        // rejects with this exact error message; everything else stays loud.
+        if (err instanceof Error && err.message === "Upload aborted by user") {
+          return;
+        }
         console.error("Upload error:", err);
         setError("Upload failed. Please try again.");
       } finally {
@@ -632,6 +683,8 @@ function UploadForm() {
     setUploadProgress(0);
     setUserPickedFile(false);
     setPremiumSaved(false);
+    setProgressionComplete(false);
+    pendingRedirectRef.current = null;
   }, []);
 
   const onConfirmDocType = useCallback(
@@ -933,6 +986,7 @@ function UploadForm() {
         onRetryDocument={onRetryDocument}
         onPremiumSaved={onPremiumSaved}
         onPremiumSkipped={onPremiumSkipped}
+        onProgressionComplete={() => setProgressionComplete(true)}
       />
     );
   }

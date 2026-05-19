@@ -549,6 +549,125 @@ async function dispatchPlanOrEOC(args: {
   return processPlanDocumentData(supabase, doc, ocrText, documentId, classification, { skipCanonical });
 }
 
+/**
+ * S101 — Smart-skip Haiku extraction via canonical match.
+ *
+ * Moved here from upload route to unblock the upload response (was adding
+ * 10-20s of Haiku identifier extraction inline before the response could
+ * return). The user now sees "Page 0 of N" within ~3-5s of upload; this
+ * check fires AFTER OCR chunk 0 completes in the init step of the chunk
+ * processor, BEFORE any subsequent OCR chunks or Haiku classification.
+ *
+ * Smart-skip cost savings preserved 1:1 — when a stable canonical match is
+ * found, `linkDocumentToCanonical` fires (creates user's insurance_plans +
+ * plan_covered_services rows from canonical data, marks doc processed),
+ * skipping the full Haiku parse (~$0.10-0.50 saved per skip).
+ *
+ * Returns:
+ *   - `{ skipped: true, ... }` — smart-skip hit; doc.status = "processed"
+ *     after linkDocumentToCanonical. Caller should return success without
+ *     enqueueing further chunks.
+ *   - `{ skipped: false, reason }` — no smart-skip; caller continues normal
+ *     OCR/parse flow.
+ *
+ * Failure modes (all fall back to normal pipeline):
+ *   - doc.classified_type not plan-document family
+ *   - doc.file_hash null (shouldn't happen post-upload-insert)
+ *   - document_dedup flag off
+ *   - shouldSkipExtraction returns skip=false (no stable canonical match)
+ *   - linkDocumentToCanonical fails (logs warning, falls through)
+ *   - thrown error (logged, falls through)
+ */
+async function runSmartSkipCheck(args: {
+  supabase: SupabaseClient;
+  doc: {
+    id: string;
+    user_id: string;
+    file_name: string;
+    file_hash: string | null;
+    classified_type: string | null;
+  };
+  ocrText: string;
+}): Promise<
+  | { skipped: true; canonicalPlanId: string; reason: string; servicesCreated: number }
+  | { skipped: false; reason: string }
+> {
+  const { supabase, doc, ocrText } = args;
+  try {
+    const isPlanDoc =
+      doc.classified_type === "sbc" ||
+      doc.classified_type === "plan_document" ||
+      doc.classified_type === "eoc";
+    if (!isPlanDoc) return { skipped: false, reason: "not_plan_doc" };
+    if (!doc.file_hash) return { skipped: false, reason: "missing_file_hash" };
+
+    const { data: userForFlag } = await supabase
+      .from("users")
+      .select("email")
+      .eq("firebase_uid", doc.user_id)
+      .maybeSingle();
+    const dedupEnabled = await isFeatureEnabled(
+      "document_dedup",
+      userForFlag?.email || undefined,
+    );
+    if (!dedupEnabled) return { skipped: false, reason: "dedup_disabled" };
+
+    const { extractPlanIdentifiers, extractPlanIdentifiersWithHaiku, shouldSkipExtraction, linkDocumentToCanonical } =
+      await import("@/lib/plan/extraction-dedup");
+
+    let identifiers = extractPlanIdentifiers(ocrText);
+    if (!identifiers.insurer || !identifiers.planName) {
+      identifiers = await extractPlanIdentifiersWithHaiku(ocrText);
+    }
+
+    // doc.classified_type narrowed by isPlanDoc check above (sbc/plan_document/eoc).
+    // Cast satisfies shouldSkipExtraction's ClassifiedDocType signature.
+    const dedupResult = await shouldSkipExtraction(
+      supabase,
+      doc.id,
+      doc.file_hash,
+      identifiers,
+      doc.user_id,
+      doc.classified_type as "sbc" | "plan_document" | "eoc",
+    );
+    console.log(
+      `[process-chunk] Smart-skip check: skip=${dedupResult.skip}, reason=${dedupResult.reason}, identifiers=${identifiers.source}`,
+    );
+
+    if (!dedupResult.skip || !dedupResult.canonicalPlanId) {
+      return { skipped: false, reason: dedupResult.reason };
+    }
+
+    const result = await linkDocumentToCanonical(
+      supabase,
+      { id: doc.id, user_id: doc.user_id, file_name: doc.file_name },
+      dedupResult.canonicalPlanId,
+      ocrText,
+      identifiers,
+    );
+
+    if (!result.success) {
+      console.warn(
+        `[process-chunk] Smart-skip link failed: ${result.error}. Falling through to normal pipeline.`,
+      );
+      return { skipped: false, reason: `link_failed:${result.error ?? "unknown"}` };
+    }
+
+    console.log(
+      `[process-chunk] Smart-skip linked doc ${doc.id} to canonical ${dedupResult.canonicalPlanId}. Services created: ${result.servicesCreated}`,
+    );
+    return {
+      skipped: true,
+      canonicalPlanId: dedupResult.canonicalPlanId,
+      reason: dedupResult.reason,
+      servicesCreated: result.servicesCreated ?? 0,
+    };
+  } catch (err) {
+    console.error("[process-chunk] Smart-skip check threw (non-fatal):", err);
+    return { skipped: false, reason: "exception" };
+  }
+}
+
 function resolveDocumentType(
   userType: string,
   haikuType: string,
@@ -696,6 +815,46 @@ export async function POST(req: NextRequest) {
       const prevCompleted = doc.processing_completed_pages || 0;
       const newPages = Math.max(0, Math.min(CHUNK_SIZE, totalPages) - prevCompleted);
       if (newPages > 0) await recordProcessingUsage(newPages);
+
+      // S101 — smart-skip check (moved from upload route). OCR chunk 0 gives
+      // us 15 pages of pdfjs-extracted text — plenty for identifier regex.
+      // If matched to a stable canonical, link + mark processed and skip
+      // remaining OCR + Haiku parse. Cost savings preserved 1:1.
+      const smartSkipResult = await runSmartSkipCheck({
+        supabase,
+        doc: {
+          id: doc.id,
+          user_id: doc.user_id,
+          file_name: doc.file_name,
+          file_hash: doc.file_hash,
+          classified_type: doc.classified_type,
+        },
+        ocrText: ocrResult.text,
+      });
+
+      if (smartSkipResult.skipped) {
+        // linkDocumentToCanonical set status=processed. Also persist the
+        // page count + OCR text so /api/documents/status returns sensible
+        // numbers (frontend sub-phase machine renders "Page X of N" using
+        // totalPages from polling).
+        await supabase
+          .from("documents")
+          .update({
+            processing_total_pages: totalPages,
+            processing_completed_pages: totalPages,
+            processing_ocr_text: ocrResult.text,
+          })
+          .eq("id", documentId);
+        return NextResponse.json({
+          step: "done",
+          skippedExtraction: true,
+          dedupReason: smartSkipResult.reason,
+          canonicalPlanId: smartSkipResult.canonicalPlanId,
+          servicesCreated: smartSkipResult.servicesCreated,
+          totalPages,
+          completedPages: totalPages,
+        });
+      }
 
       const nextStep = totalChunks > 1 ? "ocr_chunk_1" : "classifying";
 

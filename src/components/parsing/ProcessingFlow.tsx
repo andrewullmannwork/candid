@@ -37,7 +37,7 @@
  * Cross-reference: plans/s100_processing_flow_refactor §3.2 dispatch
  * precedence table.
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { DocTypeConfirmationModal } from "./DocTypeConfirmationModal";
 import { ParseTerminalView, type InsurerMismatchData, type YearRolloverData, type CanonicalMatchData } from "./ParseTerminalView";
 import { UnifiedParseScreen, derivePhase, type ParseDoc } from "./UnifiedParseScreen";
@@ -129,11 +129,24 @@ export interface ProcessingFlowProps {
   onRetryDocument: () => Promise<void>;
   onPremiumSaved: (amount: number) => void;
   onPremiumSkipped: () => void;
+  /**
+   * S101 v3 — fires once the internal sub-phase machine has fully played out
+   * (every doc reached subPhase "complete"). Parent uses this to gate the
+   * auto-redirect that lives in upload/page.tsx's polling effect — without
+   * this signal, the redirect would race the sub-phase machine and navigate
+   * away before the user sees "Finalizing Parse / Syncing to Profile / Final
+   * Steps".
+   */
+  onProgressionComplete?: () => void;
 }
 
 // Minimum-display floor for the parsing screen (S71 hotfix). Smart-skip
 // re-uploads complete in 1-3s end-to-end; floor ensures every user sees the
 // playful animation even on fast paths.
+//
+// S101 v2 — the floor is now mostly superseded by the sub-phase machine's
+// own minimum duration (~6N + 45s before final_steps). The floor is still
+// kept for the brief window between upload-complete and totalPages seed.
 const MIN_PLAYFUL_MS = 4000;
 
 export function ProcessingFlow(props: ProcessingFlowProps) {
@@ -252,6 +265,32 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
     }
   }, [uploaded, inTerminalState, inActiveProcessing, playfulFloorActive]);
 
+  // ─── Progression-complete gate (S101 v2 — Andrew direction) ──────────
+  //
+  // The user must see the full sub-phase progression even when the backend
+  // finishes fast. UnifiedParseScreen owns the sub-phase machine + fires
+  // onProgressionComplete once it's wrapped up (all docs at subPhase
+  // "complete"). Until then, ProcessingFlow stays at priority 10 (rendering
+  // UnifiedParseScreen) even after isComplete flips.
+  //
+  // Reset on documentId change uses the during-render setState-with-guard
+  // pattern (React 19 idiom for prop-derived state resets) — same shape as
+  // useSyntheticDisplayedPage's totalPages reset. Parent (UploadForm) already
+  // unmounts/remounts ProcessingFlow via the `if (uploaded)` gate when
+  // starting a new upload, so this guard is mostly a belt-and-suspenders
+  // defense against a documentId change without an unmount (retryDocument
+  // reuses the same instance).
+  const [progressionComplete, setProgressionComplete] = useState(false);
+  const [lastDocumentId, setLastDocumentId] = useState(documentId);
+  if (documentId !== lastDocumentId) {
+    setLastDocumentId(documentId);
+    setProgressionComplete(false);
+  }
+  const handleProgressionComplete = useCallback(() => {
+    setProgressionComplete(true);
+    props.onProgressionComplete?.();
+  }, [props]);
+
   // ─── Priority dispatch ────────────────────────────────────────────────
 
   // Priority 0 — Modal (S99 bug closed at the structural level)
@@ -368,8 +407,10 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
     );
   }
 
-  // Priority 8 — Complete (plan-doc family)
-  if (isComplete && isPlanType) {
+  // Priority 8 — Complete (plan-doc family). S101 v2 gate: progressionComplete
+  // must also be true so the user sees the full sub-phase machine play out
+  // before transitioning to the terminal view.
+  if (isComplete && isPlanType && progressionComplete) {
     const showSupplementPrompt = !!(classificationResult && classificationResult.confidence < 0.8);
     return (
       <ParseTerminalView
@@ -387,8 +428,8 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
     );
   }
 
-  // Priority 9 — Complete (bill family)
-  if (isComplete && isBillType) {
+  // Priority 9 — Complete (bill family). Same gate as priority 8.
+  if (isComplete && isBillType && progressionComplete) {
     const showSupplementPrompt = !!(
       classificationResult &&
       classificationResult.confidence < 0.8 &&
@@ -419,28 +460,23 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
     realCompletedPages: processingProgress?.completedPages ?? null,
   };
 
-  // Title + subtitle copy per phase. Universal loader: same screen structure
-  // for upload + parse, different copy. Large-doc async-UX keeps its specific
-  // copy (async_ingestion_ux_v1 flag on globally in PROD); the default
-  // parsing subtitle drops the "About X minutes" prefix per Andrew S100 v3
-  // since the "Page X of N" counter + sub-phase status text below the bar
-  // are the actual progress signal.
-  const isUploadingPhase = phase === "uploading";
-  const title = isUploadingPhase
-    ? "Receiving your document"
-    : isLargeDoc
-      ? "Thanks — we're reading your plan"
-      : "Reading your document";
-  const subtitle = isUploadingPhase
-    ? "Just a moment while we upload your file."
-    : isLargeDoc
-      ? (() => {
-          const pages = largeDocPageCount ?? 0;
-          const pagesPhrase = pages > 0 ? `${pages} pages of` : "";
-          const largeDocDuration = getExpectedDurationCopy(docType, pages);
-          return `${pagesPhrase ? pagesPhrase + " " : ""}careful extraction takes about ${largeDocDuration}. Hang tight, browse the rest of Candid, or close the tab — we'll email you the moment it's ready.`;
-        })()
-      : "We meticulously go over every detail in your plan not once but twice. That takes a while, but we know it's worth it.";
+  // Universal loader title + subtitle (Andrew direction S101). The two-flow
+  // model says the screen looks the same whether we're still in the upload
+  // window or already ticking pages — only the pill + status text differ
+  // inside the doc card. Title stays "Reading your document" across the whole
+  // pre-complete window. Large-doc async-UX keeps its specific copy
+  // (async_ingestion_ux_v1 flag is global ON in PROD) — it's a meaningfully
+  // different UX (the email-on-complete promise) and pre-launch isn't tied
+  // to phase.
+  const title = isLargeDoc ? "Thanks — we're reading your plan" : "Reading your document";
+  const subtitle = isLargeDoc
+    ? (() => {
+        const pages = largeDocPageCount ?? 0;
+        const pagesPhrase = pages > 0 ? `${pages} pages of` : "";
+        const largeDocDuration = getExpectedDurationCopy(docType, pages);
+        return `${pagesPhrase ? pagesPhrase + " " : ""}careful extraction takes about ${largeDocDuration}. Hang tight, browse the rest of Candid, or close the tab — we'll email you the moment it's ready.`;
+      })()
+    : "We meticulously go over every detail in your plan not once but twice. That takes a while, but we know it's worth it.";
   // Suppress unused-var warning while we keep playful-floor for re-use elsewhere.
   void playfulFloorActive;
 
@@ -469,6 +505,7 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
       subtitle={subtitle}
       footer={footer}
       onCancel={props.onCancelInFlight}
+      onProgressionComplete={handleProgressionComplete}
     />
   );
 }

@@ -32,7 +32,7 @@
  * Serves BOTH /upload (single-doc hero layout) and /compare (multi-doc
  * stacked-card layout). One source of truth; no PlayfulParsingScreen.
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { pickNextTickInterval } from "@/lib/parsing/parseProgressUx";
 
 export type ParseDocPhase = "queued" | "uploading" | "parsing" | "complete" | "error";
@@ -62,6 +62,15 @@ interface UnifiedParseScreenProps {
   subtitle?: string;
   footer?: React.ReactNode;
   onCancel?: () => void;
+  /**
+   * Fires once every doc's internal sub-phase machine has reached "complete"
+   * (i.e., the synthetic ticking → hold → finalizing → syncing → final_steps
+   * chain has played out AND the backend has signaled processed). Caller
+   * (typically ProcessingFlow) uses this to gate the transition to terminal
+   * views — the user always sees the full progression even when the backend
+   * finishes fast (S101 v2 — Andrew direction).
+   */
+  onProgressionComplete?: () => void;
 }
 
 // Whimsical doctor's-office vignettes. S93 lock: 55 lines, 4s rotation.
@@ -137,24 +146,52 @@ interface DerivePhaseInput {
     | "dedup_processed"
     | "awaiting_confirmation"
     | null;
-  processingProgress: { status?: string; isStuck?: boolean } | null;
-  /** 0-100 — bytes uploaded so far for the in-flight XHR. */
+  processingProgress: {
+    status?: string;
+    isStuck?: boolean;
+    /** Backend `processing_total_pages`. 0/undefined while classifier is still
+     *  determining; > 0 once known. Gates the "Uploading" → "Parsing" pill
+     *  transition per the S101 two-flow model. */
+    totalPages?: number;
+  } | null;
+  /** 0-100 — bytes uploaded so far for the in-flight XHR. Accepted for callers'
+   *  convenience; not used in the current derivation (uploadStatus alone gates
+   *  the byte-upload window). */
   uploadProgress: number;
 }
 
 /**
- * Simple phase derivation per Andrew S100 v3.
+ * Two-flow phase derivation (Andrew direction S101).
  *
- * "Uploading" phase ends the moment bytes are fully transmitted (uploadProgress
- * = 100), not when the server response arrives. That bridges the classifier
- * gap so users see "Parsing" — not a stuck "Uploading" bar at 100% — while the
- * server runs classification (typically 3-8s for a small SBC).
+ * Two clean flows, one transition trigger:
+ *   Flow 1 (auto-accept): byte upload → "Uploading" pill + "Reading…" status →
+ *     classifier finishes + pageCount known → "Parsing" pill + "Page 0 of N"
+ *   Flow 2 (modal): byte upload → "Uploading" + "Reading…" → classifier
+ *     disagrees → modal (handled by ProcessingFlow priority 0) → user picks →
+ *     "Parsing" pill + "Page 0 of N" using the pageCount already in hand
+ *
+ * The "Uploading" pill stays visible until BOTH:
+ *   (a) we're past the upload XHR (uploadStatus !== "uploading"), AND
+ *   (b) pageCount is known (processingProgress.totalPages > 0)
+ *
+ * The (b) gate eliminates the "Reading…" stuck-state bug from S100 smoke at
+ * its source — we never render a page-counted screen with an unknown N.
+ * Once seeded (from uploadResult.classification.pageCount on auto-accept OR
+ * from confirmationData.page_count on modal confirm), the page-tick screen
+ * appears immediately at "Page 0 of N".
+ *
+ * uploadProgress is no longer part of the derivation — uploadStatus alone
+ * gates the byte-upload window. The S100 v3 `uploadProgress < 100` fast-skip
+ * was the bug source: it transitioned the pill to "Parsing" the moment bytes
+ * settled, while pageCount was still unknown, producing the "Reading…" loop.
  */
 export function derivePhase(input: DerivePhaseInput): ParseDocPhase {
-  const { uploadStatus, processingProgress, uploadProgress } = input;
-  if (uploadStatus === "uploading" && uploadProgress < 100) return "uploading";
+  const { uploadStatus, processingProgress } = input;
   if (processingProgress?.status === "processed") return "complete";
   if (processingProgress?.status === "error" || processingProgress?.isStuck) return "error";
+  if (uploadStatus === "uploading") return "uploading";
+  const hasPageCount = (processingProgress?.totalPages ?? 0) > 0;
+  if (!hasPageCount) return "uploading";
   return "parsing";
 }
 
@@ -181,9 +218,29 @@ interface SyntheticState {
   subPhase: SubPhase;
 }
 
-const HOLD_AFTER_N_MS = 10_000;
-const FINALIZING_DURATION_MS = 15_000;
-const SYNCING_DURATION_MS = 20_000;
+// S101 v4 — sub-phase timing uses MIN/MAX bands instead of fixed durations.
+// Each sub-phase shows for at LEAST SUB_PHASE_MIN_MS so the user reads the
+// label. After that, if backend has signaled processed, advance immediately;
+// otherwise hold up to the MAX (the original v3 fixed value). Result: fast
+// backends (1-page bills) finish the chrome in ~2.5s/phase instead of
+// 10/15/20s; slow backends still get the full timeline.
+const SUB_PHASE_MIN_MS = 2_500;
+const HOLD_MAX_MS = 10_000;
+const FINALIZING_MAX_MS = 15_000;
+const SYNCING_MAX_MS = 20_000;
+// Final Steps has only a MIN — it's gated on backend completion, then sticks
+// for FINAL_STEPS_MIN_MS so the label is actually readable.
+const FINAL_STEPS_MIN_MS = 3_000;
+
+function computeSubPhaseRemaining(
+  startedAt: number,
+  backendDone: boolean,
+  maxMs: number,
+): number {
+  const elapsed = Date.now() - startedAt;
+  const targetMs = backendDone ? SUB_PHASE_MIN_MS : maxMs;
+  return Math.max(0, targetMs - elapsed);
+}
 
 function useSyntheticDisplayedPage(doc: ParseDoc): SyntheticState {
   // React 19 idiomatic: setState-during-render with equality guards for the
@@ -201,15 +258,17 @@ function useSyntheticDisplayedPage(doc: ParseDoc): SyntheticState {
     setSubPhase("ticking");
   }
 
-  // Skip-to-complete on backend signal (during render with equality guard).
-  // Cancels every in-flight timer naturally — their effects bail out on
-  // subPhase change via the cleanup function.
-  if (doc.phase === "complete" && subPhase !== "complete") {
-    setSubPhase("complete");
-    if (doc.totalPages != null && doc.totalPages > 0 && displayedPage < doc.totalPages) {
-      setDisplayedPage(doc.totalPages);
-    }
-  }
+  // S101 v3 — the sub-phase machine runs its FULL progression on its own
+  // timers, regardless of how fast the backend finishes. For a 1-page bill
+  // that parses in 5s, the user still sees:
+  //   ticking (3-10s × N) → hold (10s) → finalizing (15s) → syncing (20s)
+  //   → final_steps (≥3s; longer if backend hasn't acked yet)
+  // "Final Steps" is the only sub-phase that observes backend status — it
+  // transitions to "complete" only after BOTH the FINAL_STEPS_MIN_MS floor
+  // AND doc.phase === "complete" (backend signaled processed). That transition
+  // is owned by the timer effect below — NOT a during-render setState, which
+  // would fire in a single frame and never give the user time to see the
+  // "Final Steps" label.
 
   // OCR-phase pull-up (only valid during the ticking sub-phase; once we
   // transition to hold/finalizing/syncing/final_steps, displayedPage is at N
@@ -243,14 +302,17 @@ function useSyntheticDisplayedPage(doc: ParseDoc): SyntheticState {
 
   // Random-pace synthetic tick @ {3, 5, 7, 10}s. Caps at totalPages — when
   // the increment hits N, the during-render guard above transitions to hold.
-  // S100 v3 fix: include 1-page docs (was `< 2` — that left 1-page bills
-  // stuck at "Page 0 of 1" with no sub-phase progression). Single-page docs
-  // tick once (0 → 1), transition to hold, then proceed through finalizing /
-  // syncing / final_steps until backend signals complete.
+  //
+  // S101 v3 — the ticker runs purely on its own timer chain, INDEPENDENT of
+  // doc.phase. Even if backend signals processed mid-tick, we keep ticking
+  // until we reach N (Andrew direction: user must see the page counter play
+  // out). doc.phase deliberately NOT in deps — including it caused the timer
+  // to restart whenever backend flipped to "complete", effectively pausing
+  // the ticker. ProcessingFlow priority 4 catches error states upstream so
+  // UnifiedParseScreen never renders for an errored doc anyway.
   useEffect(() => {
     if (subPhase !== "ticking") return;
     if (doc.totalPages == null || doc.totalPages < 1) return;
-    if (doc.phase === "complete" || doc.phase === "error") return;
     const ceiling = doc.totalPages;
     let cancelled = false;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -268,32 +330,99 @@ function useSyntheticDisplayedPage(doc: ParseDoc): SyntheticState {
       cancelled = true;
       if (timeoutId !== null) clearTimeout(timeoutId);
     };
-  }, [doc.totalPages, doc.phase, subPhase]);
+  }, [doc.totalPages, subPhase]);
 
-  // Hold → Finalizing transition (10s)
+  // Per-sub-phase start-time refs. Used to compute "remaining time" when
+  // doc.phase flips mid-sub-phase, so we can shorten to MIN-from-start
+  // without restarting the timer (which would otherwise double the visible
+  // duration). Cleared when sub-phase exits.
+  const holdStartedAtRef = useRef<number | null>(null);
+  const finalizingStartedAtRef = useRef<number | null>(null);
+  const syncingStartedAtRef = useRef<number | null>(null);
+  const finalStepsStartedAtRef = useRef<number | null>(null);
+
+  // Hold → Finalizing. S101 v4 MIN/MAX: shows for at least 2.5s; advances
+  // immediately once both MIN elapsed AND backend done; otherwise holds for
+  // the full 10s. doc.phase IS in deps so the timer recomputes when backend
+  // flips to "complete" mid-hold — the elapsed-from-startedAt computation
+  // makes the new timer fire at max(0, MIN - elapsed) instead of restarting
+  // from scratch (avoiding the v2 double-hold bug).
   useEffect(() => {
-    if (subPhase !== "hold") return;
-    if (doc.phase === "complete" || doc.phase === "error") return;
-    const t = setTimeout(() => setSubPhase("finalizing"), HOLD_AFTER_N_MS);
+    if (subPhase !== "hold") {
+      holdStartedAtRef.current = null;
+      return;
+    }
+    if (holdStartedAtRef.current === null) {
+      holdStartedAtRef.current = Date.now();
+    }
+    const remaining = computeSubPhaseRemaining(
+      holdStartedAtRef.current,
+      doc.phase === "complete",
+      HOLD_MAX_MS,
+    );
+    const t = setTimeout(() => setSubPhase("finalizing"), remaining);
     return () => clearTimeout(t);
   }, [subPhase, doc.phase]);
 
-  // Finalizing → Syncing transition (15s)
+  // Finalizing → Syncing. Same MIN/MAX pattern as hold.
   useEffect(() => {
-    if (subPhase !== "finalizing") return;
-    if (doc.phase === "complete" || doc.phase === "error") return;
-    const t = setTimeout(() => setSubPhase("syncing"), FINALIZING_DURATION_MS);
+    if (subPhase !== "finalizing") {
+      finalizingStartedAtRef.current = null;
+      return;
+    }
+    if (finalizingStartedAtRef.current === null) {
+      finalizingStartedAtRef.current = Date.now();
+    }
+    const remaining = computeSubPhaseRemaining(
+      finalizingStartedAtRef.current,
+      doc.phase === "complete",
+      FINALIZING_MAX_MS,
+    );
+    const t = setTimeout(() => setSubPhase("syncing"), remaining);
     return () => clearTimeout(t);
   }, [subPhase, doc.phase]);
 
-  // Syncing → Final Steps transition (20s); Final Steps sustains until backend
-  // signals complete (handled by the skip-to-complete during-render guard).
+  // Syncing → Final Steps. Same MIN/MAX pattern.
   useEffect(() => {
-    if (subPhase !== "syncing") return;
-    if (doc.phase === "complete" || doc.phase === "error") return;
-    const t = setTimeout(() => setSubPhase("final_steps"), SYNCING_DURATION_MS);
+    if (subPhase !== "syncing") {
+      syncingStartedAtRef.current = null;
+      return;
+    }
+    if (syncingStartedAtRef.current === null) {
+      syncingStartedAtRef.current = Date.now();
+    }
+    const remaining = computeSubPhaseRemaining(
+      syncingStartedAtRef.current,
+      doc.phase === "complete",
+      SYNCING_MAX_MS,
+    );
+    const t = setTimeout(() => setSubPhase("final_steps"), remaining);
     return () => clearTimeout(t);
   }, [subPhase, doc.phase]);
+
+  // Final Steps → Complete: gated on backend signal (doc.phase === "complete")
+  // plus FINAL_STEPS_MIN_MS floor. If backend completes before final_steps
+  // even starts, this fires the 3s timer the moment the syncing→final_steps
+  // transition lands. If backend isn't done yet, no timer runs — we wait.
+  useEffect(() => {
+    if (subPhase !== "final_steps") {
+      finalStepsStartedAtRef.current = null;
+      return;
+    }
+    if (finalStepsStartedAtRef.current === null) {
+      finalStepsStartedAtRef.current = Date.now();
+    }
+    if (doc.phase !== "complete") return;
+    const elapsed = Date.now() - finalStepsStartedAtRef.current;
+    const remaining = Math.max(0, FINAL_STEPS_MIN_MS - elapsed);
+    const t = setTimeout(() => {
+      setSubPhase("complete");
+      if (doc.totalPages != null && doc.totalPages > 0) {
+        setDisplayedPage(doc.totalPages);
+      }
+    }, remaining);
+    return () => clearTimeout(t);
+  }, [subPhase, doc.phase, doc.totalPages]);
 
   return { displayedPage, subPhase };
 }
@@ -368,32 +497,62 @@ function subPhaseStatusText(subPhase: SubPhase): string | null {
   return null;
 }
 
-function DocCard({ doc, isHero }: { doc: ParseDoc; isHero: boolean }) {
+function DocCard({
+  doc,
+  isHero,
+  onSubPhaseChange,
+}: {
+  doc: ParseDoc;
+  isHero: boolean;
+  onSubPhaseChange?: (docId: string, subPhase: SubPhase) => void;
+}) {
   const { displayedPage, subPhase } = useSyntheticDisplayedPage(doc);
 
-  const isActive = doc.phase === "uploading" || doc.phase === "parsing";
+  // Bubble per-doc subPhase changes up to UnifiedParseScreen so it can fire
+  // onProgressionComplete when all docs reach "complete" subPhase. Tracking
+  // happens at the parent layer because the sub-phase state is per-doc but
+  // the completion signal is screen-wide.
+  useEffect(() => {
+    onSubPhaseChange?.(doc.id, subPhase);
+  }, [doc.id, subPhase, onSubPhaseChange]);
+
+  // S101 v2 — effective phase: when backend signals processed but the
+  // sub-phase machine is still running, keep showing "Parsing" so the
+  // synthetic progression remains visible. Only flip to "complete" once the
+  // sub-phase machine itself reaches "complete" (which happens at
+  // final_steps + backend-processed per the during-render guard above).
+  const effectivePhase: ParseDocPhase =
+    doc.phase === "complete" && subPhase !== "complete" ? "parsing" : doc.phase;
+
+  const isActive = effectivePhase === "uploading" || effectivePhase === "parsing";
   const ringColor =
-    doc.phase === "complete"
+    effectivePhase === "complete"
       ? "ring-emerald-200"
-      : doc.phase === "error"
+      : effectivePhase === "error"
         ? "ring-rose-200"
         : isActive
           ? "ring-blue-200"
           : "ring-slate-200";
 
-  // Status text: page count during ticking/hold; staged copy from "finalizing"
-  // onward. Suppressed during upload phase (totalPages unknown anyway).
-  // S100 v3 fallback: when phase=parsing but totalPages isn't yet seeded
-  // (rare race — upload response landed but classifier somehow didn't surface
-  // pageCount), show "Reading…" so the user always has a visible status
-  // signal between the bar and the microcopy.
+  // Status text (Andrew direction S101 two-flow simplification):
+  //   - effectivePhase="uploading" → "Reading…" (byte transfer OR post-upload
+  //     classifier wait — single status text spans the entire pre-pageCount
+  //     window).
+  //   - effectivePhase="parsing" + ticking/hold → "Page X of N".
+  //   - effectivePhase="parsing" + post-hold → "Finalizing Parse" / "Syncing
+  //     to Profile" / "Final Steps" per the sub-phase machine.
+  //   - effectivePhase="complete"/"error" → null (ParseTerminalView takes over
+  //     via ProcessingFlow dispatch; doc card never renders these in practice).
   const statusText: string | null = (() => {
-    if (doc.phase !== "parsing") return null;
+    if (effectivePhase === "uploading") return "Reading…";
+    if (effectivePhase !== "parsing") return null;
     const staged = subPhaseStatusText(subPhase);
     if (staged) return staged;
     if (doc.totalPages != null && doc.totalPages > 0) {
       return `Page ${displayedPage} of ${doc.totalPages}`;
     }
+    // Defensive — derivePhase keeps us in "uploading" while totalPages is
+    // unknown, so this branch is unreachable under the new two-flow contract.
     return "Reading…";
   })();
 
@@ -405,10 +564,10 @@ function DocCard({ doc, isHero }: { doc: ParseDoc; isHero: boolean }) {
   //   - error → not rendered
   //   - queued → 0 (slate fill)
   const progressBarPct = (() => {
-    if (doc.phase === "uploading") return Math.max(5, doc.uploadProgress);
-    if (doc.phase === "complete") return 100;
-    if (doc.phase === "error") return 0;
-    if (doc.phase === "queued") return 0;
+    if (effectivePhase === "uploading") return Math.max(5, doc.uploadProgress);
+    if (effectivePhase === "complete") return 100;
+    if (effectivePhase === "error") return 0;
+    if (effectivePhase === "queued") return 0;
     // parsing
     if (doc.totalPages == null || doc.totalPages < 1) return 8;
     if (subPhase !== "ticking") return 100; // hold + post-hold sub-phases hold the bar full
@@ -422,24 +581,24 @@ function DocCard({ doc, isHero }: { doc: ParseDoc; isHero: boolean }) {
       } ${isHero ? "p-5" : ""}`}
     >
       <div className="flex items-start gap-3">
-        <PhaseIcon phase={doc.phase} />
+        <PhaseIcon phase={effectivePhase} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-2">
             <p className={`font-semibold text-slate-900 truncate ${isHero ? "text-base" : "text-sm"}`}>
               {doc.label}
             </p>
-            <PhaseLabel phase={doc.phase} />
+            <PhaseLabel phase={effectivePhase} />
           </div>
           <p className="text-xs text-slate-500 truncate mt-0.5">{doc.fileName}</p>
-          {doc.phase === "error" && doc.errorMessage && (
+          {effectivePhase === "error" && doc.errorMessage && (
             <p className="text-xs text-rose-600 mt-2 leading-relaxed">{doc.errorMessage}</p>
           )}
-          {doc.phase !== "complete" && doc.phase !== "error" && (
+          {effectivePhase !== "complete" && effectivePhase !== "error" && (
             <>
               <div className="mt-3 h-1.5 rounded-full bg-slate-100 overflow-hidden">
                 <div
                   className={`h-full rounded-full transition-all duration-700 ${
-                    doc.phase === "queued" ? "bg-slate-300" : "bg-blue-500"
+                    effectivePhase === "queued" ? "bg-slate-300" : "bg-blue-500"
                   }`}
                   style={{ width: `${progressBarPct}%` }}
                 />
@@ -477,8 +636,27 @@ export function UnifiedParseScreen({
   subtitle,
   footer,
   onCancel,
+  onProgressionComplete,
 }: UnifiedParseScreenProps) {
   const [microcopyIdx, setMicrocopyIdx] = useState(0);
+
+  // Per-doc subPhase tracking (S101 v2). Each DocCard reports its internal
+  // sub-phase via onSubPhaseChange; when all docs hit "complete", we fire
+  // onProgressionComplete so the parent can dispatch to terminal views.
+  const [docSubPhases, setDocSubPhases] = useState<Record<string, SubPhase>>({});
+
+  const handleSubPhaseChange = useCallback((docId: string, subPhase: SubPhase) => {
+    setDocSubPhases((prev) =>
+      prev[docId] === subPhase ? prev : { ...prev, [docId]: subPhase },
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!onProgressionComplete) return;
+    if (docs.length === 0) return;
+    const allComplete = docs.every((d) => docSubPhases[d.id] === "complete");
+    if (allComplete) onProgressionComplete();
+  }, [docs, docSubPhases, onProgressionComplete]);
 
   useEffect(() => {
     const allDone = docs.every((d) => d.phase === "complete" || d.phase === "error");
@@ -489,7 +667,12 @@ export function UnifiedParseScreen({
     return () => clearInterval(interval);
   }, [docs]);
 
-  const allComplete = docs.every((d) => d.phase === "complete");
+  // Effective allComplete: rendered "Ready" header requires the sub-phase
+  // machine to have wrapped up, not just the backend. Matches the per-doc
+  // effectivePhase rule in DocCard.
+  const allComplete = docs.every(
+    (d) => d.phase === "complete" && docSubPhases[d.id] === "complete",
+  );
   const anyError = docs.some((d) => d.phase === "error");
   const isHero = docs.length === 1;
   const defaultTitle = isHero ? "Reading your document" : "Reading your plan documents";
@@ -523,7 +706,12 @@ export function UnifiedParseScreen({
 
       <div className="space-y-3">
         {docs.map((doc) => (
-          <DocCard key={doc.id} doc={doc} isHero={isHero} />
+          <DocCard
+            key={doc.id}
+            doc={doc}
+            isHero={isHero}
+            onSubPhaseChange={handleSubPhaseChange}
+          />
         ))}
       </div>
 
