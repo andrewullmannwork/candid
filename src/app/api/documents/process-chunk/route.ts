@@ -674,7 +674,7 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      const totalPages = estimatePageCount(buffer);
+      const totalPages = await estimatePageCount(buffer);
       const totalChunks = Math.ceil(totalPages / CHUNK_SIZE);
 
       // Check processing budget before OCR

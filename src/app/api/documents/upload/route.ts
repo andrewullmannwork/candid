@@ -494,24 +494,28 @@ export async function POST(req: NextRequest) {
       // low for an automatic override, high enough that silently trusting the
       // user pick is wrong. Gated by classifier_haiku_regex_fallback_v1.
       //
-      // CRITICAL: only fire on cross-CLASS disagreement (bill vs plan_doc) —
-      // intra-plan-doc-class disagreements (e.g., user=plan_document +
-      // regex=sbc) are NOT user-actionable because both route through the
-      // same unified plan_doc parser in PROD. See isCrossClassDisagreement.
+      // CRITICAL: only fire on cross-CLASS disagreement AND only when both
+      // sides are picker-renderable (the 2-card UI can show buttons for them).
+      // shouldHaltForUserConfirmation enforces both gates — intra-plan-doc-class
+      // disagreements (e.g., user=plan_document + regex=sbc) are NOT
+      // user-actionable because both route through the same unified plan_doc
+      // parser in PROD; non-picker classifier outputs ('other',
+      // 'insurance_card', 'eoc', etc.) are not user-actionable because the
+      // modal can't render a useful choice.
       if (resolution.overrideReason === "user_pick_classifier_low_confidence") {
         const { loadClassifierFallbackConfig } = await import(
           "@/lib/config/classifier-fallback-config"
         );
-        const { isCrossClassDisagreement } = await import(
+        const { shouldHaltForUserConfirmation } = await import(
           "@/lib/classifier/fallback"
         );
         const fallbackConfig = await loadClassifierFallbackConfig(supabase);
-        const crossClass = isCrossClassDisagreement(
+        const halt = shouldHaltForUserConfirmation(
           resolution.userPick,
           resolution.classifierType,
         );
         if (
-          crossClass &&
+          halt &&
           fallbackConfig.enabled &&
           fallbackConfig.confirmation_ui_enabled &&
           resolution.classifierConfidence >= fallbackConfig.confirmation_regex_threshold &&

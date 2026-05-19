@@ -4,6 +4,7 @@ import { createServerClient } from "@/lib/supabase/server";
 import { loadDecorationContext, type DecorationContext } from "@/lib/plan/analyze-decoration";
 import { decorateFieldFromEntry } from "@/lib/parser/consumer-read";
 import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
+import { resolveCanonicalSlugs } from "@/lib/parser/canonical-resolution";
 
 export async function POST(request: Request) {
   try {
@@ -180,6 +181,16 @@ export async function POST(request: Request) {
         }
 
         if (coveredServices && coveredServices.length > 0) {
+          // S99 B5: pre-resolve each row's slug to its canonical sibling (via
+          // service_catalog.concept_id grouping). post-S95 reset, no aliases
+          // exist; this is identity. Once admin promotes the first proposed_*
+          // slug as an alias, raw alias rows will surface their canonical slug
+          // in the API response so display consumers can dedupe + group.
+          const rawSlugsForCanonical = coveredServices
+            .map((s) => s.service_catalog?.slug)
+            .filter((s): s is string => typeof s === "string" && s.length > 0);
+          const canonicalSlugMap = await resolveCanonicalSlugs(rawSlugsForCanonical, supabase);
+
           // Reverse slug map: service slug → catalog benefit educational content.
           // S94 B1: keys use canonical 68-slug vocabulary; legacy slug aliases retained
           // defensively for any pre-S94 data still rendering.
@@ -230,6 +241,12 @@ export async function POST(request: Request) {
           // Build a benefit per covered service
           const benefits = coveredServices.map((s) => {
             const slug = s.service_catalog?.slug || "unknown";
+            // S99 B5: canonical sibling resolution. Until admin promotes an
+            // alias, canonicalSlug === slug (no-op). Surface separately on the
+            // response so display consumers can group/dedupe; benefit.id stays
+            // the raw slug to preserve React key + interaction state (composite
+            // key from S98 keys by raw benefit.id + place_of_service).
+            const canonicalSlug = canonicalSlugMap.get(slug) ?? slug;
             const rawName = s.service_catalog?.name || slug.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
             const name = cleanDescription(rawName);
             const category = s.service_catalog?.category || "other";
@@ -246,6 +263,9 @@ export async function POST(request: Request) {
             const rowSource: string = s.source ?? "doc_extraction";
             return {
               serviceSlug: slug,
+              // S99 B5 — canonical sibling for alias dedupe. Equal to serviceSlug
+              // when there's no alias relationship (the current post-S95 state).
+              canonicalServiceSlug: canonicalSlug,
               // S98 — surface place_of_service so the /plan render can build
               // a unique React key for POS-variant rows that share the same
               // benefit.id (e.g., mental_health_outpatient at pcp_office vs
@@ -332,6 +352,11 @@ export async function POST(request: Request) {
               const canonicalSourceCount = decoration?.canonicalSourceCount ?? 1;
               const canonicalLogicalSource = "canonical_inherited";
               canonicalGapBenefits = gapServices.map((cs) => ({
+                // S99 B5: canonical_plan_services entries should be canonical
+                // slugs per Pattern 1 #14. Pass through; surface separately
+                // for response-shape consistency with the user-row branch.
+                serviceSlug: cs.service_slug,
+                canonicalServiceSlug: cs.service_slug,
                 benefit: {
                   id: cs.service_slug || cs.id,
                   category: "other",

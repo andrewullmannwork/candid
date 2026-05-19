@@ -30,48 +30,50 @@ import {
   type ClassifierFallbackConfig,
 } from "@/lib/config/classifier-fallback-config";
 import type { HaikuClassification } from "@/lib/classifier/haiku-classify";
+import {
+  PICKER_TYPES,
+  getDocTypeClass,
+} from "@/lib/classifier/doc-type-vocabulary";
+
+export {
+  PICKER_TYPES,
+  getDocTypeClass,
+  type DocTypeClass,
+} from "@/lib/classifier/doc-type-vocabulary";
 
 const BILL_TYPES = new Set(["eob", "itemized_bill"]);
 
 /**
- * Doc-type equivalence classes for confirmation-modal eligibility.
+ * Decide whether the upload pipeline should HALT and ask the user to confirm
+ * the doc type before parsing.
  *
- * The 2-card upload picker presents the user with "Bill" and "Plan Document"
- * — and "Plan Document" intentionally encompasses sbc, eoc, plan_document,
- * and employer_plan_booklet. Because unified_plan_doc_parser_v1 routes all
- * plan-doc-class verdicts through the same parser in PROD, an intra-class
- * disagreement (e.g., user=plan_document + regex=sbc) is meaningless to the
- * user and would just produce confusing "What is this?" modals that ask them
- * to choose between two buttons that do the same thing downstream.
+ * Halt fires only when ALL of:
+ *   1. Both `userPick` and `classifierVerdict` are types that the 2-card upload
+ *      picker can present (PICKER_TYPES). If the classifier returned 'other',
+ *      'insurance_card', 'eoc', or another type the picker doesn't render, the
+ *      modal can't show a meaningful choice — we skip the halt and let
+ *      downstream safety nets (B4 SBC marker scan + `isHealthcareDocument`
+ *      check + bill-parser sanity gate) handle it.
+ *   2. Their equivalence classes differ (bill vs plan_doc). Intra-class
+ *      disagreement (user=plan_document + classifier=sbc) is not user-
+ *      actionable because both route through unified_plan_doc_parser_v1 in
+ *      PROD — the user would see two buttons that do the same thing.
  *
- * The confirmation halt + modal should ONLY fire for CROSS-class disagreement:
- *   - user=bill + regex=sbc/eoc/plan_document  (the original S94 B5 trigger)
- *   - user=plan_document + regex=eob/itemized_bill  (the inverse)
+ * Replaces the older `isCrossClassDisagreement` helper. The rename makes the
+ * intent explicit: the function answers "should we halt?" rather than the
+ * narrower "are these in different classes?" — the answer is "no" in cases
+ * where classes differ but one side is non-picker-renderable (e.g., 'other').
  *
- * The bill-parser sanity gate is unaffected — it triggers on document content
- * (page count, SBC phrases) regardless of which class the resolver picked.
+ * See `scripts/test-shouldHaltForUserConfirmation.ts` for the test matrix
+ * including the false-positive cases this version closes.
  */
-export type DocTypeClass = "bill" | "plan_doc" | "card" | "other";
-
-export function getDocTypeClass(type: string | null | undefined): DocTypeClass {
-  if (type === "eob" || type === "itemized_bill") return "bill";
-  if (
-    type === "sbc" ||
-    type === "plan_document" ||
-    type === "eoc" ||
-    type === "employer_plan_booklet" ||
-    type === "plan_cert_summary"
-  ) {
-    return "plan_doc";
-  }
-  if (type === "insurance_card") return "card";
-  return "other";
-}
-
-export function isCrossClassDisagreement(
+export function shouldHaltForUserConfirmation(
   userPick: string | null | undefined,
   classifierVerdict: string | null | undefined,
 ): boolean {
+  if (!userPick || !classifierVerdict) return false;
+  if (!PICKER_TYPES.has(userPick)) return false;
+  if (!PICKER_TYPES.has(classifierVerdict)) return false;
   return getDocTypeClass(userPick) !== getDocTypeClass(classifierVerdict);
 }
 

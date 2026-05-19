@@ -40,9 +40,9 @@ import {
   type CurrentPlanSummary,
 } from "@/components/compare/PlanSlot";
 import {
-  PlayfulParsingScreen,
+  UnifiedParseScreen,
   type ParseDoc,
-} from "@/components/parsing/PlayfulParsingScreen";
+} from "@/components/parsing/UnifiedParseScreen";
 import type { ComparePlanPayload, PlanRef } from "@/lib/plan/compare";
 import { ShareCandidCard } from "@/components/share/ShareCandidCard";
 
@@ -351,7 +351,10 @@ function CompareInterface() {
           label: `Plan ${String.fromCharCode(65 + i)}`,
           fileName: file?.name ?? "Unknown",
           phase: n === 0 ? "uploading" : "queued",
-          progress: n === 0 ? 5 : 0,
+          uploadProgress: n === 0 ? 5 : 0,
+          totalPages: null,
+          step: null,
+          realCompletedPages: null,
         };
       });
       setParseDocs(initial);
@@ -374,10 +377,10 @@ function CompareInterface() {
           setParseDocs((prev) => {
             const arr = [...prev];
             const myEntry = arr.findIndex((d) => d.id === `slot-${idx}`);
-            if (myEntry >= 0) arr[myEntry] = { ...arr[myEntry], phase: "complete", progress: 100 };
+            if (myEntry >= 0) arr[myEntry] = { ...arr[myEntry], phase: "complete", uploadProgress: 100 };
             const nextQueued = arr.findIndex((d) => d.phase === "queued");
             if (nextQueued >= 0) {
-              arr[nextQueued] = { ...arr[nextQueued], phase: "uploading", progress: 5 };
+              arr[nextQueued] = { ...arr[nextQueued], phase: "uploading", uploadProgress: 5 };
             }
             return arr;
           });
@@ -477,19 +480,31 @@ function CompareInterface() {
         body: formData,
       });
       if (!uploadRes.ok) return null;
-      const uploadBody = (await uploadRes.json()) as { documentId?: string };
+      const uploadBody = (await uploadRes.json()) as {
+        documentId?: string;
+        classification?: { pageCount?: number };
+      };
       if (!uploadBody.documentId) return null;
+
+      // S100 v3 — seed totalPages from the classifier response so the parsing
+      // screen renders "Page 0 of N" immediately, same as /upload's single-doc
+      // flow.
+      const pageCountHint = uploadBody.classification?.pageCount ?? null;
 
       setParseDocs((prev) => {
         const arr = [...prev];
         const myEntry = arr.findIndex((d) => d.id === docId);
         if (myEntry >= 0) {
-          arr[myEntry] = { ...arr[myEntry], phase: "parsing", progress: 25 };
+          arr[myEntry] = {
+            ...arr[myEntry],
+            phase: "parsing",
+            uploadProgress: 100,
+            totalPages: pageCountHint && pageCountHint > 0 ? pageCountHint : arr[myEntry].totalPages,
+          };
         }
         return arr;
       });
 
-      const startedAt = Date.now();
       while (true) {
         await new Promise((r) => setTimeout(r, 4000));
         const statusRes = await fetch(`/api/documents/status?id=${uploadBody.documentId}`);
@@ -503,28 +518,31 @@ function CompareInterface() {
           });
         }
 
+        // S100 v3 universal loader: phase collapses to "parsing" for all
+        // active-but-not-terminal states (no more Cross-referencing distinction).
         const phase: ParseDoc["phase"] =
           statusBody.status === "processed"
             ? "complete"
             : statusBody.status === "error" || statusBody.isStuck
               ? "error"
-              : statusBody.completedPages != null && statusBody.totalPages != null
-                ? "cross_referencing"
-                : "parsing";
-        const progress =
-          statusBody.completedPages && statusBody.totalPages
-            ? Math.min(95, 25 + Math.round((statusBody.completedPages / statusBody.totalPages) * 60))
-            : Math.min(85, 25 + Math.round((Date.now() - startedAt) / 1000));
-        const detail =
-          statusBody.completedPages != null && statusBody.totalPages != null
-            ? `Page ${statusBody.completedPages} of ${statusBody.totalPages}`
-            : statusBody.step ?? undefined;
+              : "parsing";
 
+        // S100: UnifiedParseScreen owns the synthetic page-tick + countdown
+        // internally via per-doc useState. Caller passes raw backend data
+        // (totalPages + step + realCompletedPages) and the component computes
+        // the visible "Page X of Y" + progress bar from there. Drops the
+        // legacy `progress` + `detail` fields that were caller-computed.
         setParseDocs((prev) => {
           const arr = [...prev];
           const myEntry = arr.findIndex((d) => d.id === docId);
           if (myEntry >= 0) {
-            arr[myEntry] = { ...arr[myEntry], phase, progress, detail };
+            arr[myEntry] = {
+              ...arr[myEntry],
+              phase,
+              totalPages: typeof statusBody.totalPages === "number" ? statusBody.totalPages : arr[myEntry].totalPages,
+              step: statusBody.step ?? null,
+              realCompletedPages: typeof statusBody.completedPages === "number" ? statusBody.completedPages : null,
+            };
           }
           return arr;
         });
@@ -635,10 +653,18 @@ function CompareInterface() {
           }}
         />
       ) : mode === "parsing" ? (
-        <PlayfulParsingScreen
+        <UnifiedParseScreen
           docs={parseDocs}
           title="Reading your plan documents"
-          subtitle="Sit tight — this usually takes 30-90 seconds per plan."
+          subtitle="We meticulously go over every detail in your plans not once but twice. That takes a while, but we know it's worth it."
+          onCancel={() => {
+            // S100 v3 — return to build mode. In-flight polling loops finish
+            // independently; their results are ignored since we re-render to
+            // the build view.
+            setParseError(null);
+            setParseDocs([]);
+            setMode("build");
+          }}
           footer={
             parseError ? (
               <div className="rounded-xl bg-rose-50 ring-1 ring-rose-200 p-4 text-center">

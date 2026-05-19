@@ -47,14 +47,29 @@ async function getClient() {
   return _client;
 }
 
-/** Count pages in a PDF buffer without fully parsing it */
-export function estimatePageCount(buffer: Buffer): number {
-  const pdfStr = buffer.toString("latin1");
-  const pageMatches = pdfStr.match(/\/Type\s*\/Page\b/g);
-  const pagesTreeMatches = pdfStr.match(/\/Type\s*\/Pages\b/g);
-  return pageMatches
-    ? pageMatches.length - (pagesTreeMatches?.length || 0)
-    : 1;
+/**
+ * Count pages in a PDF buffer.
+ *
+ * S100 fix (Andrew direction): replaced the regex-based hack with a pdf-lib
+ * load. The old heuristic counted `/Type /Page` minus `/Type /Pages` strings
+ * in the binary, which silently undercounted on PDFs with object streams /
+ * compressed page trees (typical of modern PDFs from insurer portals). An
+ * 8-page Blue Shield SBC reproducibly returned 1, leaving the UI stuck at
+ * "Page 1 of 1" through the full parse window.
+ *
+ * pdf-lib's `getPageCount()` is authoritative + same module already imported
+ * by `splitPDF`; the import cost is paid once per worker. The function stays
+ * `async` so callers must `await`.
+ */
+export async function estimatePageCount(buffer: Buffer): Promise<number> {
+  try {
+    const { PDFDocument } = await import("pdf-lib");
+    const doc = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    return doc.getPageCount();
+  } catch {
+    // Corrupt PDF or password-locked — fall back to 1 so callers don't div0.
+    return 1;
+  }
 }
 
 /** Split a PDF into chunks of maxPages using pdf-lib */
@@ -178,7 +193,7 @@ export const documentAIProvider: OCRProvider = {
 
     // Check if we need to split the PDF into chunks
     const isPDF = mimeType === "application/pdf" || mimeType?.includes("pdf");
-    const estimatedPages = isPDF ? estimatePageCount(fileBuffer) : 1;
+    const estimatedPages = isPDF ? await estimatePageCount(fileBuffer) : 1;
 
     if (isPDF && estimatedPages > MAX_PAGES_PER_REQUEST) {
       // Split and process in chunks

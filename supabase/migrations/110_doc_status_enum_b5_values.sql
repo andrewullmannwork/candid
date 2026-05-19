@@ -1,0 +1,52 @@
+-- =============================================================================
+-- MIGRATION 110 — Add missing doc_status enum values for B5
+-- (S99 B5 — second pre-existing schema bug discovered during manual smoke)
+-- =============================================================================
+--
+-- WHY THIS MIGRATION EXISTS
+--
+-- B5's halt + confirm-doc-type code paths write doc_status values that were
+-- never added to the enum:
+--   - 'awaiting_user_confirmation' — upload route's halt branch (status set
+--     when classifier disagrees with user pick at moderate confidence and
+--     the user needs to confirm via modal)
+--   - 'cancelled' — confirm-doc-type route's "cancel" action (user closes
+--     modal without confirming)
+--
+-- Like the documents.metadata column missing in mig 109, these enum-value
+-- writes have been silently failing in PROD via PGRST/PG enum-rejection.
+-- supabase-js doesn't throw on the error; existing call sites don't check
+-- `.error`. The whole UPDATE is rejected, so the document stays at its
+-- prior status (e.g., 'uploaded' after B5 halt).
+--
+-- The 'awaiting_user_confirmation' status is the load-bearing one for B5 —
+-- without it, the halt path can't transition the document, the polling
+-- endpoint can't surface the modal-pending state, and the document is
+-- orphaned at status='uploaded' with no recovery path.
+--
+-- WHAT THIS MIGRATION ADDS
+--
+-- Two new values to doc_status enum:
+--   - 'awaiting_user_confirmation' (B5 halt state)
+--   - 'cancelled' (B5 confirm-cancel action)
+--
+-- Idempotent: ALTER TYPE ADD VALUE IF NOT EXISTS — safe to re-run.
+--
+-- Note: ALTER TYPE ADD VALUE cannot run inside a transaction in PG < 12 OR
+-- if the new value is used in the same transaction. Per PG12+ this works
+-- inline. Supabase Studio runs statements in auto-commit mode by default.
+-- No BEGIN/COMMIT block per mig 016/020 precedent for enum extensions.
+--
+-- BACKOUT
+--
+-- Postgres does NOT support removing enum values directly. To roll back:
+-- 1. Update all documents.status='awaiting_user_confirmation' to a different
+--    valid value (e.g., 'error' or 'uploaded').
+-- 2. Same for 'cancelled' rows.
+-- 3. Rename + recreate the enum (complex; usually not done in practice).
+-- The values stay even if B5 is reverted — they're additive and don't
+-- conflict with any other code path.
+-- =============================================================================
+
+ALTER TYPE doc_status ADD VALUE IF NOT EXISTS 'awaiting_user_confirmation';
+ALTER TYPE doc_status ADD VALUE IF NOT EXISTS 'cancelled';

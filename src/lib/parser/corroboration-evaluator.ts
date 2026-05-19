@@ -51,6 +51,24 @@ export interface CorroborationDecision {
   target_table: "insurance_plans" | "plan_covered_services";
   /** Max-K config that bounded the corroborator_excerpts array. */
   max_k: number;
+  /**
+   * S99 B5 (mig 108) — resolved canonical slug for the input service_slug.
+   * NULL for plan-identity-field evaluation (service_slug=null input). For
+   * per-service evaluation: the canonical sibling sharing concept_id with
+   * the input slug, OR the input slug itself if it's not in service_catalog
+   * or has NULL concept_id. Callers should pass this (not the original
+   * service_slug) to applyPromotionEvent so canonical_plan_services writes
+   * land on the canonical row, not the alias.
+   */
+  canonical_service_slug: string | null;
+  /**
+   * S99 B5 (mig 108) — count of sibling slugs sharing the input slug's
+   * concept_id (canonical + aliases). 0 when service_slug=null. 1 means
+   * input slug has no aliases (the post-S95 state for all PROD data;
+   * function behavior identical to mig 076). >1 means corroboration counted
+   * across alias siblings.
+   */
+  sibling_slugs_count: number;
 }
 
 export interface EvaluateCorroborationResult {
