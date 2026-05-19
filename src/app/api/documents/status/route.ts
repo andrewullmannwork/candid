@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
   const supabase = createServerClient();
   const { data: doc } = await supabase
     .from("documents")
-    .select("status, processing_step, processing_completed_pages, processing_total_pages, insurer_mismatch, processing_error, retry_count, processing_started_at, linked_insurance_plan_id")
+    .select("status, processing_step, processing_completed_pages, processing_total_pages, insurer_mismatch, processing_error, retry_count, processing_started_at, linked_insurance_plan_id, metadata")
     .eq("id", documentId)
     .single();
 
@@ -53,6 +53,13 @@ export async function GET(req: NextRequest) {
     && (Date.now() - new Date(doc.processing_started_at).getTime()) > STUCK_THRESHOLD_MS
     && (!doc.processing_step || doc.processing_step.startsWith("working_"));
 
+  // S102 follow-up — surface smart-skip outcome so the frontend can use
+  // accelerated page-tick + sub-phase intervals when the backend took the
+  // smart-skip path (no full Haiku parse). Written by linkDocumentToCanonical
+  // in extraction-dedup.ts. Null on full-parse uploads or pre-smart-skip docs.
+  const metadata = (doc.metadata ?? {}) as Record<string, unknown>;
+  const smartSkipOutcome = (metadata.smart_skip_outcome as string | undefined) ?? null;
+
   return NextResponse.json({
     status: doc.status,
     step: doc.processing_step,
@@ -69,6 +76,9 @@ export async function GET(req: NextRequest) {
     // Null when premium hasn't been collected yet (SBCs don't include premium —
     // user must supply it post-parse via the prompt on /upload completion).
     linkedPlanPremium,
+    // S102 follow-up: "skipped" when smart-skip fired; null otherwise. Frontend
+    // gates accelerated UI intervals on this.
+    smartSkipOutcome,
   });
 }
 

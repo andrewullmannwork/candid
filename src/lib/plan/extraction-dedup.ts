@@ -668,11 +668,25 @@ export async function linkDocumentToCanonical(
       console.log(`[extraction-dedup] Copied ${serviceInserts.length} services from canonical to plan ${targetPlanId}`);
     }
 
-    // Mark document as processed
+    // Mark document as processed + flag smart-skip outcome in metadata so the
+    // status endpoint can surface it and the frontend can use accelerated
+    // page-tick + sub-phase intervals (S102 follow-up for snappy smart-skip UX).
+    // We jsonb-merge rather than overwrite so we don't clobber existing keys
+    // (e.g., classification_override).
+    const { data: existingDoc } = await supabase
+      .from("documents")
+      .select("metadata")
+      .eq("id", doc.id)
+      .maybeSingle();
+    const mergedMetadata = {
+      ...((existingDoc?.metadata as Record<string, unknown>) ?? {}),
+      smart_skip_outcome: "skipped",
+    };
     await supabase.from("documents").update({
       status: "processed",
       linked_insurance_plan_id: targetPlanId,
       processing_step: null,
+      metadata: mergedMetadata,
     }).eq("id", doc.id);
 
     // Log the skip

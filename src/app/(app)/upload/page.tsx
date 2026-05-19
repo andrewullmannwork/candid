@@ -121,6 +121,7 @@ function UploadForm() {
     isStuck?: boolean;
     linkedInsurancePlanId?: string | null;
     linkedPlanPremium?: number | null;
+    smartSkipOutcome?: string | null;
   } | null>(null);
   // Track whether the user has saved a premium for the just-uploaded plan
   // (suppresses re-prompting after save + lets the redirect proceed).
@@ -807,6 +808,20 @@ function UploadForm() {
           window.location.href = "/profile?rescan_card=1";
           return;
         }
+      }
+
+      // S102 follow-up — Andrew direction: after "Use this plan" resolves a
+      // mismatch, ALSO show the premium prompt before redirecting (parallel to
+      // the clean-complete flow where it already shows). Only when premium is
+      // actually missing — otherwise redirect straight to /plan as before.
+      // Local mismatch clear: ProcessingFlow renders complete_plan variant once
+      // insurerMismatch is null, which is the same variant that hosts
+      // PremiumPromptInline. After save/skip, onPremiumSaved/Skipped redirects
+      // to /dashboard (the standard post-premium destination, S72 direction).
+      const premiumMissing = processingProgress.linkedPlanPremium == null;
+      if (premiumMissing) {
+        setProcessingProgress((prev) => (prev ? { ...prev, insurerMismatch: null } : prev));
+        return;
       }
 
       window.location.href = "/plan";
