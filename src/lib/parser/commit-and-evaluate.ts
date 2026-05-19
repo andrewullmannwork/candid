@@ -141,6 +141,69 @@ export interface CommitAndEvaluateResult {
  *
  * Returns null if no value found under either name.
  */
+/**
+ * S102 admin-bypass — synthesize per-service candidates from plan_covered_services.
+ * Used when input.candidates only contains plan-identity (e.g. plan_doc parser
+ * path). Returns the union of existing candidates + per-service candidates for
+ * every (slug, field) pair where the actor's plan_covered_services has a value.
+ */
+async function expandAdminPerServiceCandidates(
+  supabase: SupabaseClient,
+  actorUserId: string,
+  canonicalPlanId: string,
+  existing: FieldEvaluationCandidate[],
+): Promise<FieldEvaluationCandidate[]> {
+  const { data: plan } = await supabase
+    .from("insurance_plans")
+    .select("id")
+    .eq("user_id", actorUserId)
+    .eq("canonical_plan_id", canonicalPlanId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!plan?.id) return existing;
+
+  const { data: rows } = await supabase
+    .from("plan_covered_services")
+    .select("service_id, in_copay, in_coinsurance, in_deductible_applies, covered, prior_auth_required")
+    .eq("insurance_plan_id", plan.id);
+  if (!rows || rows.length === 0) return existing;
+
+  const serviceIds = [...new Set(rows.map((r) => r.service_id as string))];
+  const { data: services } = await supabase
+    .from("service_catalog")
+    .select("id, slug")
+    .in("id", serviceIds);
+  const idToSlug = new Map<string, string>();
+  for (const s of services ?? []) idToSlug.set(s.id as string, s.slug as string);
+
+  const perServiceFields: { name: string; rowKey: keyof typeof rows[0] }[] = [
+    { name: "copay", rowKey: "in_copay" },
+    { name: "coinsurance", rowKey: "in_coinsurance" },
+    { name: "deductible_applies", rowKey: "in_deductible_applies" },
+    { name: "is_covered", rowKey: "covered" },
+    { name: "requires_prior_auth", rowKey: "prior_auth_required" },
+  ];
+
+  const seen = new Set<string>();
+  for (const c of existing) seen.add(`${c.serviceSlug ?? ""}::${c.fieldName}`);
+
+  const added: FieldEvaluationCandidate[] = [];
+  for (const row of rows) {
+    const slug = idToSlug.get(row.service_id as string);
+    if (!slug) continue;
+    for (const { name, rowKey } of perServiceFields) {
+      const v = (row as Record<string, unknown>)[rowKey as string];
+      if (v === undefined || v === null) continue;
+      const key = `${slug}::${name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      added.push({ serviceSlug: slug, fieldName: name });
+    }
+  }
+  return added.length > 0 ? [...existing, ...added] : existing;
+}
+
 async function readAdminPerServiceValue(
   supabase: SupabaseClient,
   actorUserId: string,
@@ -285,7 +348,28 @@ export async function commitUploadAndEvaluateCorroboration(
     actorIsAdmin = actor?.is_admin === true;
   }
 
-  for (const candidate of input.candidates) {
+  // S102 admin path: auto-expand per-service candidates from plan_covered_services.
+  // process-plan.ts's derivePromotionCandidatesFromHaikuResult only produces
+  // per-service candidates from the SBC parser path (VotedParseSBCResult);
+  // plan_doc parser path passes null → only 7 plan-identity candidates pass
+  // through. For admin cold-start to populate canonical_plan_services, we need
+  // per-service candidates regardless. Query the actor's plan_covered_services
+  // rows and synthesize per-service candidates so the loop below fires
+  // apply_promotion_event for each.
+  let effectiveCandidates = input.candidates;
+  if (actorIsAdmin && input.actorUserId) {
+    const expanded = await expandAdminPerServiceCandidates(
+      supabase,
+      input.actorUserId,
+      input.canonicalPlanId,
+      input.candidates,
+    );
+    if (expanded.length > input.candidates.length) {
+      effectiveCandidates = expanded;
+    }
+  }
+
+  for (const candidate of effectiveCandidates) {
     const { serviceSlug, fieldName } = candidate;
 
     // Step 1: evaluate corroboration (read-only)
