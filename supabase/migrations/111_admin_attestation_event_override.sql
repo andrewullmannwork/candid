@@ -240,14 +240,12 @@ COMMENT ON FUNCTION apply_promotion_event(UUID, TEXT, TEXT, JSONB, JSONB, TEXT, 
 -- (the wiring of decideForcedReparse into shouldSkipExtraction). Enables
 -- activating drift sampling without flipping the broader v4 algorithm.
 
-INSERT INTO feature_flag_rules (flag_key, enabled, description, target_type, target_users, target_percentage, config)
+INSERT INTO feature_flag_rules (flag_key, enabled, description, target_type, config)
 VALUES (
   'cf40_v4_layer_5_only',
   false,
   'S102 (S73.5 D2b follow-on). Independent gate for v4 Layer 5 drift sampling (forced re-parse triggers: admin uploads, statistical random sample, temporal staleness, every-5th-smart-skip, verification mode). Separated from cf40_v4_algorithm so we can activate drift sampling without flipping the full v4 algorithm (which is still a telemetry stub for Layers 3/4). Flip ON after admin cold-start seeding completes + Layer 5 wiring lands in shouldSkipExtraction.',
   'global',
-  '[]'::jsonb,
-  100,
   '{}'::jsonb
 )
 ON CONFLICT (flag_key) DO NOTHING;
