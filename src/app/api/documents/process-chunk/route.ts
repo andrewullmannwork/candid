@@ -26,6 +26,28 @@ import { collectPricingData } from "@/lib/care/collector";
 import { checkProcessingBudget, recordProcessingUsage } from "@/lib/config/processing-usage";
 import { enqueueChunk } from "@/lib/queue/qstash";
 import { notifyAdminForReview } from "@/lib/notifications";
+import { Receiver } from "@upstash/qstash";
+
+// Strict signature verification on Vercel deploys (Preview + Production).
+// Local dev (no VERCEL_ENV) keeps working via the qstash.ts direct-fetch
+// fallback for `npm run dev` document processing.
+const IS_VERCEL_DEPLOY = !!process.env.VERCEL_ENV;
+
+let _qstashReceiver: Receiver | null | undefined = undefined;
+function getQStashReceiver(): Receiver | null {
+  if (_qstashReceiver !== undefined) return _qstashReceiver;
+  const current = process.env.QSTASH_CURRENT_SIGNING_KEY;
+  const next = process.env.QSTASH_NEXT_SIGNING_KEY;
+  if (!current || !next) {
+    _qstashReceiver = null;
+    return null;
+  }
+  _qstashReceiver = new Receiver({
+    currentSigningKey: current,
+    nextSigningKey: next,
+  });
+  return _qstashReceiver;
+}
 
 const CHUNK_SIZE = 15; // pages per OCR chunk
 
@@ -694,7 +716,39 @@ export const maxDuration = 800;
 
 export async function POST(req: NextRequest) {
   try {
-    const { documentId } = await req.json();
+    // Read raw body BEFORE JSON.parse — QStash signature is computed over
+    // the exact bytes sent. JSON.parse + re-serialize would change them.
+    const rawBody = await req.text();
+
+    if (IS_VERCEL_DEPLOY) {
+      const receiver = getQStashReceiver();
+      if (!receiver) {
+        // Fail-closed: signing keys MUST be configured in any Vercel deploy.
+        console.error("[process-chunk] FATAL: QSTASH signing keys missing in Vercel deploy");
+        return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
+      }
+      const signature = req.headers.get("upstash-signature");
+      if (!signature) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      }
+      try {
+        const valid = await receiver.verify({
+          signature,
+          body: rawBody,
+          url: req.url,
+        });
+        if (!valid) {
+          return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        }
+      } catch (verifyErr) {
+        console.warn("[process-chunk] QStash signature verification failed:", verifyErr);
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      }
+    } else {
+      console.warn("[process-chunk] QStash signature verification skipped — running outside Vercel deploy");
+    }
+
+    const { documentId } = JSON.parse(rawBody) as { documentId?: string };
     if (!documentId) {
       return NextResponse.json({ error: "documentId required" }, { status: 400 });
     }

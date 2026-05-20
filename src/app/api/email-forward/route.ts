@@ -1,12 +1,52 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Resend } from "resend";
+import { Webhook } from "svix";
 
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 const RESEND_API_BASE = "https://api.resend.com";
 
+// Strict signature verification on Vercel deploys (Preview + Production).
+// Local dev (no VERCEL_ENV) skips verification — the local dev server is not
+// a Resend webhook target in practice, and Resend's webhook URL points only
+// at the deployed environments.
+const IS_VERCEL_DEPLOY = !!process.env.VERCEL_ENV;
+
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    // Read raw body BEFORE JSON.parse — Svix signature is computed over the
+    // exact bytes Resend sent. JSON.parse + re-serialize would change them.
+    const rawBody = await req.text();
+
+    if (IS_VERCEL_DEPLOY) {
+      const secret = process.env.RESEND_WEBHOOK_SECRET;
+      if (!secret) {
+        // Fail-closed: in a Vercel deploy the secret MUST be configured.
+        // Returning 500 surfaces the misconfig in Vercel logs immediately.
+        console.error("[email-forward] FATAL: RESEND_WEBHOOK_SECRET missing in Vercel deploy");
+        return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
+      }
+      const svixId = req.headers.get("svix-id");
+      const svixTimestamp = req.headers.get("svix-timestamp");
+      const svixSignature = req.headers.get("svix-signature");
+      if (!svixId || !svixTimestamp || !svixSignature) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      }
+      try {
+        const wh = new Webhook(secret);
+        wh.verify(rawBody, {
+          "svix-id": svixId,
+          "svix-timestamp": svixTimestamp,
+          "svix-signature": svixSignature,
+        });
+      } catch (verifyErr) {
+        console.warn("[email-forward] Signature verification failed:", verifyErr);
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      }
+    } else {
+      console.warn("[email-forward] Signature verification skipped — running outside Vercel deploy");
+    }
+
+    const body = JSON.parse(rawBody);
 
     if (body?.type !== "email.received") {
       return NextResponse.json({ received: true });
