@@ -89,11 +89,12 @@ export default function DashboardPage() {
 
     async function loadDashboard() {
       const supabase = createBrowserClient();
+      const idToken = await user!.firebaseUser.getIdToken();
 
       // Load profile, documents, and plan analysis in parallel
       const [profileRes, docsRes, planRes] = await Promise.all([
         fetch("/api/profile", {
-          headers: { Authorization: `Bearer ${await user!.firebaseUser.getIdToken()}` },
+          headers: { Authorization: `Bearer ${idToken}` },
         }),
         supabase
           .from("documents")
@@ -102,8 +103,11 @@ export default function DashboardPage() {
           .order("created_at", { ascending: false }),
         fetch("/api/plan/analyze", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId: user!.userId }),
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({}),
         }).catch(() => null),
       ]);
 

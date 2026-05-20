@@ -17,6 +17,7 @@ import {
   loadFingerprintInputForClaim,
 } from "@/lib/disputes/evidence-fingerprint";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 
 export async function POST(req: NextRequest) {
   try {
@@ -24,11 +25,23 @@ export async function POST(req: NextRequest) {
 
     // Case 1: Generate from audit report findings
     if (body.auditReport && body.findingIds) {
-      const { auditReport, findingIds, letterType, insurancePlanId } = body as {
-        auditReport: AuditReport;
+      const authedUser = await requireAuthenticatedUser(req);
+      if (!authedUser) {
+        return NextResponse.json(
+          { error: "Unauthorized" },
+          { status: 401 }
+        );
+      }
+      const { findingIds, letterType, insurancePlanId } = body as {
         findingIds: string[];
         letterType?: DisputeLetterType;
         insurancePlanId?: string;
+      };
+      // Authoritative userId comes from the verified Firebase token, not the
+      // request body. Closes B9-1 §C1 IDOR.
+      const auditReport: AuditReport = {
+        ...(body.auditReport as AuditReport),
+        userId: authedUser.id,
       };
 
       if (!findingIds.length) {

@@ -640,10 +640,14 @@ export default function CandidPlanPage() {
 
     async function analyze() {
       try {
+        const idToken = await user!.firebaseUser.getIdToken();
         const res = await fetch("/api/plan/analyze", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId: user!.userId }),
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({}),
         });
 
         if (!res.ok) {

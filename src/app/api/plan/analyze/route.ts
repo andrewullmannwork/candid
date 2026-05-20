@@ -1,18 +1,21 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { analyzePlan } from "@/lib/plan/analyzer";
 import { createServerClient } from "@/lib/supabase/server";
 import { loadDecorationContext, type DecorationContext } from "@/lib/plan/analyze-decoration";
 import { decorateFieldFromEntry } from "@/lib/parser/consumer-read";
 import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import { resolveCanonicalSlugs } from "@/lib/parser/canonical-resolution";
+import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   try {
-    const { userId } = await request.json();
-
-    if (!userId) {
-      return NextResponse.json({ error: "userId required" }, { status: 400 });
+    const authedUser = await requireAuthenticatedUser(request);
+    if (!authedUser) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    // Authoritative userId comes from the verified Firebase token, not the
+    // request body. Closes B9-1 §C2 IDOR.
+    const userId = authedUser.id;
 
     const supabase = createServerClient();
 
@@ -55,14 +58,9 @@ export async function POST(request: Request) {
         // Returns null when consumer_read_filter_v1 flag is OFF — response stays
         // byte-identical to pre-Phase-4. Returns context object when flag ON;
         // callers thread context through decorateFieldFromEntry() per field.
-        const { data: userForFlag } = await supabase
-          .from("users")
-          .select("email")
-          .eq("firebase_uid", userId)
-          .single();
         const decoration: DecorationContext | null = await loadDecorationContext(
           supabase,
-          userForFlag?.email ?? null,
+          authedUser.email,
           userPlan,
         );
 
