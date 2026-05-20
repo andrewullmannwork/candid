@@ -16,7 +16,13 @@ function getClient(): Client | null {
   if (_client) return _client;
   const token = process.env.QSTASH_TOKEN;
   if (!token) return null;
-  _client = new Client({ token });
+  // QSTASH_URL pins the SDK to the project's home region (e.g.
+  // https://qstash-us-east-1.upstash.io). Without it, the SDK has been
+  // hitting eu-central-1 in PROD and getting 404 "user not found in this
+  // region", silently falling through to the direct-fetch fallback below.
+  // Set this env var on Vercel Production + Preview tiers.
+  const baseUrl = process.env.QSTASH_URL;
+  _client = baseUrl ? new Client({ token, baseUrl }) : new Client({ token });
   return _client;
 }
 
