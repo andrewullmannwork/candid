@@ -170,7 +170,7 @@ async function expandPerServiceCandidates(
 
   const { data: rows } = await supabase
     .from("plan_covered_services")
-    .select("service_id, in_copay, in_coinsurance, in_deductible_applies, covered, prior_auth_required")
+    .select("service_id, in_copay, in_coinsurance, in_deductible_applies, covered, prior_auth_required, out_copay, out_coinsurance, out_deductible_applies")
     .eq("insurance_plan_id", plan.id);
   if (!rows || rows.length === 0) return existing;
 
@@ -188,6 +188,9 @@ async function expandPerServiceCandidates(
     { name: "deductible_applies", rowKey: "in_deductible_applies" },
     { name: "is_covered", rowKey: "covered" },
     { name: "requires_prior_auth", rowKey: "prior_auth_required" },
+    { name: "out_copay", rowKey: "out_copay" },
+    { name: "out_coinsurance", rowKey: "out_coinsurance" },
+    { name: "out_deductible_applies", rowKey: "out_deductible_applies" },
   ];
 
   const seen = new Set<string>();
