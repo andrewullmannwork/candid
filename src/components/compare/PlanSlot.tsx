@@ -20,11 +20,18 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 
+/** Pattern 1 #16 vocabulary, compressed for search UI:
+ *  - "verified"  — admin-attested (cold-start) OR canonical fully promoted
+ *  - "community" — source_count ≥ 2 (multi-source aggregate, pre-promotion)
+ *  - "estimated" — single source, awaiting corroboration
+ */
+export type PlanSearchBadgeLevel = "verified" | "community" | "estimated";
+
 export interface PlanSearchResult {
-  /** plan_catalog.id (used for /upload's plan match flow). */
+  /** S107: id IS canonical_plans.id now (search source is canonical_plans;
+   *  plan_catalog is no longer queried for search). Compare resolves via
+   *  `canonicalPlanId` which mirrors `id` for back-compat. */
   id: string;
-  /** canonical_plans.id via plan_catalog_canonical_map. Required for /compare;
-   *  undefined if the plan_catalog row has no canonical mapping (legacy rows). */
   canonicalPlanId?: string;
   name: string;
   type?: string;
@@ -34,6 +41,8 @@ export interface PlanSearchResult {
   oopMax?: number | null;
   year?: number;
   insurerName?: string;
+  /** Surfaces the data-grade badge on the dropdown row + selected card. */
+  badgeLevel?: PlanSearchBadgeLevel;
 }
 
 export interface CurrentPlanSummary {
@@ -130,6 +139,7 @@ export function PlanSlot({
         subtitle={[sel.insurerName, sel.type, sel.metalLevel, sel.state].filter(Boolean).join(" · ")}
         sourceLabel="From plan search"
         sourceVariant="blue"
+        badge={sel.badgeLevel ? <SearchBadge level={sel.badgeLevel} /> : null}
         disabled={disabled}
         onClear={() => onChange({ kind: "empty" })}
       />
@@ -278,7 +288,7 @@ function ModePicker({
             </svg>
           }
           label="Search by name"
-          sublabel="50,000+ plans"
+          sublabel="1,700+ plans and growing"
           onClick={onPickSearch}
           disabled={disabled}
         />
@@ -399,7 +409,7 @@ function SearchActive({
           type="text"
           value={query}
           onChange={(e) => onQueryChange(e.target.value)}
-          placeholder="Search 50,000+ plans by name…"
+          placeholder="Search 1,700+ plans by name…"
           disabled={disabled}
           className="flex-1 bg-transparent text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none min-w-0 disabled:opacity-50"
         />
@@ -426,9 +436,14 @@ function SearchActive({
               onClick={() => onSelect(plan)}
               className="w-full text-left px-4 py-3 hover:bg-blue-50 border-b border-slate-100 last:border-b-0 transition-colors group"
             >
-              <p className="text-sm font-medium text-slate-900 group-hover:text-blue-700 transition-colors">
-                {plan.name}
-              </p>
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-sm font-medium text-slate-900 group-hover:text-blue-700 transition-colors flex-1 min-w-0">
+                  {plan.name}
+                </p>
+                {plan.badgeLevel && (
+                  <SearchBadge level={plan.badgeLevel} />
+                )}
+              </div>
               <p className="text-xs text-slate-500 mt-0.5">
                 {plan.insurerName ? `${plan.insurerName} · ` : ""}
                 {plan.type ?? ""}
@@ -448,13 +463,29 @@ function SearchActive({
       )}
 
       {query.length >= 3 && results.length === 0 && !searching && (
-        <p className="text-xs text-slate-500 px-2">
-          No matches. Try a different name, or switch to{" "}
-          <button onClick={onCancel} className="underline font-medium hover:text-slate-700">
-            upload a document
-          </button>{" "}
-          instead.
-        </p>
+        // S107: when search returns no canonical matches, point the user at
+        // upload. The cold-start inventory is growing daily; a missing plan
+        // means we don't have it yet — uploading their SBC adds it for them
+        // (user_plan path) AND seeds the canonical via Pattern 2 identity
+        // matching so the next user finds it via search.
+        <div className="rounded-2xl bg-amber-50 ring-1 ring-amber-200 p-4">
+          <p className="text-sm font-semibold text-amber-900">
+            Don&rsquo;t see your plan?
+          </p>
+          <p className="text-xs text-amber-800 mt-1">
+            Upload your SBC and we&rsquo;ll add it for you — and for everyone
+            else searching for it later.
+          </p>
+          <a
+            href="/upload"
+            className="inline-flex items-center gap-1.5 mt-3 text-sm font-semibold text-amber-900 hover:text-amber-700"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+            </svg>
+            Upload your SBC
+          </a>
+        </div>
       )}
     </div>
   );
@@ -557,6 +588,7 @@ function CommittedSlot({
   subtitle,
   sourceLabel,
   sourceVariant,
+  badge,
   disabled,
   onClear,
 }: {
@@ -566,6 +598,7 @@ function CommittedSlot({
   subtitle: string;
   sourceLabel: string;
   sourceVariant: "emerald" | "blue" | "violet";
+  badge?: React.ReactNode;
   disabled: boolean;
   onClear: () => void;
 }) {
@@ -584,10 +617,11 @@ function CommittedSlot({
           <span className="text-base font-bold text-white">{letter}</span>
         </div>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
             <span className={`inline-flex items-center text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ring-1 ${sourceClass}`}>
               {sourceLabel}
             </span>
+            {badge}
           </div>
           <p className="text-base font-semibold text-slate-900 truncate" title={title}>
             {title}
@@ -607,5 +641,42 @@ function CommittedSlot({
         </button>
       </div>
     </div>
+  );
+}
+
+// ── Search-result data-grade badge (verified / community / estimated) ──────
+
+const BADGE_STYLES: Record<
+  PlanSearchBadgeLevel,
+  { label: string; className: string; title: string }
+> = {
+  verified: {
+    label: "Verified",
+    className: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+    title: "Admin-attested or canonical-promoted plan — full coverage data.",
+  },
+  community: {
+    label: "Community",
+    className: "bg-blue-50 text-blue-700 ring-blue-200",
+    title:
+      "Aggregated from multiple users' uploads. Pending canonical promotion.",
+  },
+  estimated: {
+    label: "Estimated",
+    className: "bg-amber-50 text-amber-700 ring-amber-200",
+    title:
+      "Single-source data awaiting corroboration from another user's upload.",
+  },
+};
+
+function SearchBadge({ level }: { level: PlanSearchBadgeLevel }) {
+  const style = BADGE_STYLES[level];
+  return (
+    <span
+      title={style.title}
+      className={`inline-flex items-center text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ring-1 ${style.className}`}
+    >
+      {style.label}
+    </span>
   );
 }

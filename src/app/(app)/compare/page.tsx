@@ -404,6 +404,11 @@ function CompareInterface() {
       }
 
       // Build refs in slot order, mixing canonical + user_plan kinds.
+      // S107: search results' `canonicalPlanId` mirrors `id` (search source is
+      // canonical_plans). The else-branch console.warn below catches a future
+      // silent regression (e.g., schema drift or partial canonical promotion)
+      // before it drops a slot below the 2-plan threshold and surfaces as a
+      // generic error.
       const finalRefs: PlanRef[] = [];
       for (let i = 0; i < slots.length; i++) {
         const s = slots[i];
@@ -415,9 +420,15 @@ function CompareInterface() {
           // resolveUserPlan inherits canonical fields via field_provenance when
           // they're richer, so canonical data still bubbles up where useful.
           finalRefs.push({ kind: "user_plan", id: s.plan.insurancePlanId });
-        } else if (s.kind === "search" && s.selected && s.selected.canonicalPlanId) {
-          // Search returns plan_catalog.id; we need canonical_plans.id (via map).
-          finalRefs.push({ kind: "canonical", id: s.selected.canonicalPlanId });
+        } else if (s.kind === "search" && s.selected) {
+          if (s.selected.canonicalPlanId) {
+            finalRefs.push({ kind: "canonical", id: s.selected.canonicalPlanId });
+          } else {
+            console.warn(
+              "[compare] search slot missing canonicalPlanId — should be unreachable post-S107",
+              s.selected,
+            );
+          }
         } else if (s.kind === "upload" && s.file) {
           const ipid = uploadResults.get(i);
           if (ipid) finalRefs.push({ kind: "user_plan", id: ipid });
@@ -432,9 +443,15 @@ function CompareInterface() {
           // values render (canonical with sparse cross-user data wiped them
           // to "—" / "Estimated"). Mirrors the upload-branch fix above.
           refs.push({ kind: "user_plan", id: s.plan.insurancePlanId });
-        } else if (s.kind === "search" && s.selected && s.selected.canonicalPlanId) {
-          // Search returns plan_catalog.id; we need canonical_plans.id (via map).
-          refs.push({ kind: "canonical", id: s.selected.canonicalPlanId });
+        } else if (s.kind === "search" && s.selected) {
+          if (s.selected.canonicalPlanId) {
+            refs.push({ kind: "canonical", id: s.selected.canonicalPlanId });
+          } else {
+            console.warn(
+              "[compare] search slot missing canonicalPlanId — should be unreachable post-S107",
+              s.selected,
+            );
+          }
         }
       });
       await callCompareApi(refs);
