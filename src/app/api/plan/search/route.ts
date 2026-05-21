@@ -1,10 +1,69 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
-import { matchPlan } from "@/lib/plan/matcher";
+
+/**
+ * POST /api/plan/search — autocomplete for the /compare slot picker.
+ *
+ * S107 follow-up: source of truth is now `canonical_plans` (not `plan_catalog`).
+ *
+ * Why the swap: `plan_catalog_canonical_map` is the bridge between the CMS-
+ * ingested plan_catalog rows and our canonical plan_plans rows. That bridge is
+ * empty in PROD (S107 diagnostic: 2,275 catalog rows · 0 mapped). Every search
+ * hit from plan_catalog therefore landed in /compare as an unresolvable ref +
+ * silently dropped below the 2-plan threshold. Switching the search source to
+ * canonical_plans makes "shown in search" = "comparable" by construction.
+ *
+ * Each result carries a `badgeLevel` derived from canonical_plans.field_provenance
+ * + source_count + is_verified, mapped to Pattern 1 #16 vocabulary:
+ *   - "verified"   — canonical fully promoted (is_verified=true) OR admin-attested
+ *                    (any field_provenance entry with source='admin_attested').
+ *   - "community"  — source_count ≥ 2 (multi-source aggregation, pre-promotion).
+ *   - "estimated"  — source_count ≤ 1 (single-source, awaiting corroboration).
+ *
+ * Pattern 2 identity matching (used during user SBC upload) STILL queries
+ * plan_catalog via src/lib/plan/matcher.ts — this swap does NOT touch that path.
+ * CMS ingest (cms-marketplace-ingest.ts) also continues writing plan_catalog
+ * untouched; we just stop reading it from search.
+ */
+
+interface PlanSearchResultBadgeLevel {
+  level: "verified" | "community" | "estimated";
+}
+
+interface FieldProvenanceEntry {
+  source?: unknown;
+}
+
+function deriveBadgeLevel(
+  fieldProvenance: unknown,
+  sourceCount: number | null,
+  isVerified: boolean | null,
+): PlanSearchResultBadgeLevel["level"] {
+  if (isVerified === true) return "verified";
+
+  // Admin-attested cold-start plans set source='admin_attested' on every field
+  // they populate via mig 111's apply_promotion_event(force_event_type='admin_override').
+  // Any one such field is enough to mark the whole canonical as Verified.
+  if (fieldProvenance && typeof fieldProvenance === "object") {
+    const provenance = fieldProvenance as Record<string, FieldProvenanceEntry>;
+    for (const key of Object.keys(provenance)) {
+      const entry = provenance[key];
+      if (
+        entry &&
+        typeof entry === "object" &&
+        (entry.source === "admin_attested" || entry.source === "candid_verified")
+      ) {
+        return "verified";
+      }
+    }
+  }
+
+  if ((sourceCount ?? 0) >= 2) return "community";
+  return "estimated";
+}
 
 export async function POST(req: NextRequest) {
-  // Verify auth
   const authHeader = req.headers.get("authorization");
   if (!authHeader?.startsWith("Bearer ")) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -16,7 +75,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { query, insurer, state, planType, metalLevel, planSource } = await req.json();
+  const { query, state, planType, metalLevel } = await req.json();
 
   if (!query || typeof query !== "string" || query.trim().length < 2) {
     return NextResponse.json({ plans: [] });
@@ -25,85 +84,50 @@ export async function POST(req: NextRequest) {
   const trimmed = query.trim();
   const supabase = createServerClient();
 
-  // Three-tier search strategy. Each tier widens the funnel.
-  //
-  // 1. Trigram matcher narrowed by insurer + state — best ranking when filters fit.
-  // 2. Trigram matcher with no insurer/state filters — covers the update-insurance
-  //    flow where saved state/insurer over-restrict the catalog query.
-  // 3. ILIKE substring fallback — trigram similarity normalizes by max(triA, triB),
-  //    which scores short queries (e.g., "conn") against long candidate names
-  //    ("Connect Bronze 3800 Indiv Med Deductible") below the 0.2 sim threshold,
-  //    so the matcher returns nothing for very short inputs even though the user
-  //    is clearly typing a prefix. ILIKE recovers those.
-  let matches = await matchPlan(supabase, {
-    planName: trimmed,
-    insurerName: insurer || undefined,
-    state: state || undefined,
-    planType: planType || undefined,
-    metalLevel: metalLevel || undefined,
-    planSource: planSource || undefined,
-  }, {
-    limit: 15,
-    minConfidence: 0.15, // Lower threshold for autocomplete — show more results
-  });
-
-  if (matches.length === 0 && (insurer || state)) {
-    matches = await matchPlan(supabase, {
-      planName: trimmed,
-      planType: planType || undefined,
-      metalLevel: metalLevel || undefined,
-      planSource: planSource || undefined,
-    }, {
-      limit: 15,
-      minConfidence: 0.15,
-    });
-  }
-
-  // Tier 1+2 results — format and return if we have any.
-  if (matches.length > 0) {
-    const tier12CanonicalMap = await fetchCanonicalMap(
-      supabase,
-      matches.map((m) => m.planId),
-    );
-    const results = matches.map((m) => ({
-      id: m.planId,
-      // canonical_plan_id (via plan_catalog_canonical_map). Required for /compare;
-      // undefined if this plan_catalog row hasn't been mapped to a canonical plan.
-      canonicalPlanId: tier12CanonicalMap.get(m.planId),
-      hiosId: m.plan.hios_id,
-      name: m.planName,
-      type: m.plan.plan_type,
-      state: m.plan.state,
-      metalLevel: m.plan.metal_level,
-      premium: m.plan.premium_individual,
-      deductible: (m.plan.raw_data as Record<string, unknown>)?.deductible_individual,
-      oopMax: (m.plan.raw_data as Record<string, unknown>)?.oop_max_individual,
-      year: m.plan.year,
-      hasSbcUrl: !!m.plan.sbc_document_url,
-      dataStatus: m.plan.data_status,
-      confidence: m.confidence,
-      matchedSignals: m.matchedSignals,
-    }));
-    return NextResponse.json({ plans: results });
-  }
-
-  // Tier 3 — ILIKE substring fallback. Pulls plan names that contain the query
-  // as a substring; trigram-scoring is bypassed entirely. Sorts prefix matches
-  // first, then by data_status (verified rows preferred), then alphabetically.
-  // Escape SQL ILIKE wildcards so user input doesn't widen the pattern.
+  // Escape SQL ILIKE wildcards so user input doesn't widen the pattern beyond
+  // the typed text. (e.g. "100%" should match the literal characters, not
+  // every plan name.)
   const escaped = trimmed.replace(/[\\%_]/g, (m) => `\\${m}`);
-  const { data: ilikeRows } = await supabase
-    .from("plan_catalog")
-    .select("id, hios_id, plan_name, plan_type, state, year, metal_level, premium_individual, insurer_id, raw_data, sbc_document_url, data_status")
-    .ilike("plan_name", `%${escaped}%`)
-    .limit(30);
 
-  if (!ilikeRows || ilikeRows.length === 0) {
+  let queryBuilder = supabase
+    .from("canonical_plans")
+    .select(
+      `id,
+       hios_id,
+       plan_name,
+       plan_type,
+       state,
+       plan_year,
+       metal_level,
+       premium_monthly,
+       deductible_individual,
+       oop_max_individual,
+       insurer_id,
+       confidence_score,
+       source_count,
+       is_verified,
+       field_provenance`,
+    )
+    .ilike("plan_name", `%${escaped}%`)
+    .limit(50);
+
+  if (state && typeof state === "string") queryBuilder = queryBuilder.eq("state", state);
+  if (planType && typeof planType === "string") queryBuilder = queryBuilder.eq("plan_type", planType);
+  if (metalLevel && typeof metalLevel === "string") {
+    queryBuilder = queryBuilder.eq("metal_level", metalLevel.toLowerCase());
+  }
+
+  const { data: rows, error } = await queryBuilder;
+  if (error || !rows) {
     return NextResponse.json({ plans: [] });
   }
 
-  // Resolve insurer names so the autocomplete row UI can render them.
-  const insurerIds = [...new Set(ilikeRows.map((r) => r.insurer_id).filter(Boolean))] as string[];
+  // Hydrate insurer display names (parallel join — Supabase client can't do
+  // arbitrary joins without a foreign-key relationship declaration, and the
+  // existing schema route doesn't have one declared for this pair).
+  const insurerIds = [
+    ...new Set(rows.map((r) => r.insurer_id).filter(Boolean)),
+  ] as string[];
   const insurerNameMap = new Map<string, string>();
   if (insurerIds.length > 0) {
     const { data: insurers } = await supabase
@@ -115,72 +139,48 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Rank: prefix matches first, then verified/community/estimated, then
+  // alphabetical. Keeps the dropdown intuitive when 30+ rows come back.
   const lowerQ = trimmed.toLowerCase();
-  const ranked = ilikeRows
+  const ranked = rows
     .map((r) => {
+      const badgeLevel = deriveBadgeLevel(
+        r.field_provenance,
+        r.source_count as number | null,
+        r.is_verified as boolean | null,
+      );
       const lowerName = (r.plan_name || "").toLowerCase();
       const startsWith = lowerName.startsWith(lowerQ) ? 0 : 1;
-      const verifiedFirst = r.data_status === "verified" ? 0 : 1;
-      return { row: r, startsWith, verifiedFirst };
+      const badgeRank =
+        badgeLevel === "verified" ? 0 : badgeLevel === "community" ? 1 : 2;
+      return { row: r, badgeLevel, startsWith, badgeRank };
     })
     .sort((a, b) => {
       if (a.startsWith !== b.startsWith) return a.startsWith - b.startsWith;
-      if (a.verifiedFirst !== b.verifiedFirst) return a.verifiedFirst - b.verifiedFirst;
+      if (a.badgeRank !== b.badgeRank) return a.badgeRank - b.badgeRank;
       return (a.row.plan_name || "").localeCompare(b.row.plan_name || "");
     })
     .slice(0, 15);
 
-  const tier3CanonicalMap = await fetchCanonicalMap(
-    supabase,
-    ranked.map(({ row }) => row.id),
-  );
-
-  const rankedResults = ranked.map(({ row }) => ({
-    id: row.id,
-    canonicalPlanId: tier3CanonicalMap.get(row.id),
-    hiosId: row.hios_id,
-    name: row.plan_name,
-    type: row.plan_type,
-    state: row.state,
-    metalLevel: row.metal_level,
-    premium: row.premium_individual,
-    deductible: (row.raw_data as Record<string, unknown>)?.deductible_individual,
-    oopMax: (row.raw_data as Record<string, unknown>)?.oop_max_individual,
-    year: row.year,
-    hasSbcUrl: !!row.sbc_document_url,
-    dataStatus: row.data_status,
-    confidence: 0.5,
-    matchedSignals: ["planNameSubstring"],
-    insurerName: insurerNameMap.get(row.insurer_id || "") || "",
+  const results = ranked.map(({ row, badgeLevel }) => ({
+    // S107: id IS the canonical_plan_id now (no plan_catalog indirection).
+    // We keep both keys populated so /compare client code continues to read
+    // `s.selected.canonicalPlanId` without any change.
+    id: row.id as string,
+    canonicalPlanId: row.id as string,
+    hiosId: row.hios_id as string | null,
+    name: row.plan_name as string,
+    type: row.plan_type as string | null,
+    state: row.state as string | null,
+    metalLevel: row.metal_level as string | null,
+    premium: row.premium_monthly as number | null,
+    deductible: row.deductible_individual as number | null,
+    oopMax: row.oop_max_individual as number | null,
+    year: row.plan_year as number | null,
+    confidence: row.confidence_score as number | null,
+    badgeLevel,
+    insurerName: insurerNameMap.get((row.insurer_id as string) ?? "") ?? "",
   }));
 
-  return NextResponse.json({ plans: rankedResults });
-}
-
-/**
- * Look up canonical_plan_id for each plan_catalog row in `planCatalogIds`.
- * Returns a Map keyed by plan_catalog.id with the corresponding
- * canonical_plans.id when the row has been mapped (via mig 040 era migration).
- *
- * Plans without a canonical mapping (rare; legacy rows) won't appear in the map
- * and their `canonicalPlanId` will be undefined in the search response — the
- * /compare flow filters those out client-side since they can't be resolved.
- */
-async function fetchCanonicalMap(
-  supabase: ReturnType<typeof createServerClient>,
-  planCatalogIds: string[],
-): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
-  if (planCatalogIds.length === 0) return out;
-  const { data: rows } = await supabase
-    .from("plan_catalog_canonical_map")
-    .select("plan_catalog_id, canonical_plan_id")
-    .in("plan_catalog_id", planCatalogIds);
-  if (!rows) return out;
-  for (const r of rows) {
-    if (r.plan_catalog_id && r.canonical_plan_id) {
-      out.set(r.plan_catalog_id as string, r.canonical_plan_id as string);
-    }
-  }
-  return out;
+  return NextResponse.json({ plans: results });
 }
