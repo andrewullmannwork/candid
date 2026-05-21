@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Doc-type confirmation modal (S94 B5 + S100 structural fix).
+ * Doc-type confirmation modal (S94 B5 + S100 structural fix + S107 v2 styling).
  *
  * Backend halts the upload pipeline at `awaiting_user_confirmation` when the
  * regex classifier disagrees with the user's pick at moderate confidence (band
@@ -21,9 +21,14 @@
  * halting on cross-class disagreement), so each option renders as one picker
  * card.
  *
- * Pure presentational — submitting state local (tracks which option is
- * in-flight so we can show a spinner on the clicked button + disable siblings).
- * Caller passes async onConfirmDocType + onCancel callbacks.
+ * S107 v2 styling (Claude Design handoff): pill-row footer with explicit
+ * "Upload a different file" + "Cancel" + "Confirm" actions. Two-step
+ * interaction — clicking a card selects it (blue ring), clicking Confirm
+ * commits. Classifier's pick is pre-selected so the common path is a single
+ * Confirm click. Both "Upload a different file" and "Cancel" route to
+ * onCancel — they're visually distinct affordances for the same action
+ * (abort + clear upload state); the parent caller handles either by resetting
+ * to the upload picker.
  */
 import { useState } from "react";
 import {
@@ -49,13 +54,6 @@ interface DocTypeConfirmationModalProps {
   onCancel: () => Promise<void>;
 }
 
-// ─── Picker-language presentation (Andrew direction S100) ──────────────────
-//
-// Maps wire-type doc types to the 2-card picker vocabulary used in the upload
-// form. Avoids surfacing internal acronyms (SBC, EOB, etc.) at the user-facing
-// modal layer — keeps presentation consistent with the picker the user clicked
-// on the upload page.
-
 function pickerLabel(docType: string): string {
   const cls = getDocTypeClass(docType);
   if (cls === "bill") return "Bill";
@@ -78,24 +76,51 @@ function indefiniteArticle(word: string): string {
   return /^[aeiou]/i.test(word) ? "an" : "a";
 }
 
+function RefreshIcon({ size = 13 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+      <polyline points="21 3 21 8 16 8" />
+      <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+      <polyline points="3 21 3 16 8 16" />
+    </svg>
+  );
+}
+
 export function DocTypeConfirmationModal({
   confirmationData,
   onConfirmDocType,
   onCancel,
 }: DocTypeConfirmationModalProps) {
-  // Single multi-click guard — parent owns optimistic state transition + API
-  // call. Modal unmounts within one render after the first click, so the guard
-  // mostly defends against duplicate-clicks during the same frame.
+  // Pre-select the option whose class matches the classifier's pick. We can't
+  // use classifier_pick directly because it's ClassifierDocType ("eoc" is a
+  // possible value that isn't in the user-pickable options array); we match by
+  // equivalence class so the "plan_doc" classifier output highlights the
+  // "Plan Document" option regardless of which specific wire-type it was.
+  const classifierClass = getDocTypeClass(confirmationData.classifier_pick);
+  const classifierMatchedOption =
+    confirmationData.options.find(
+      (opt) => getDocTypeClass(opt) === classifierClass,
+    ) ?? confirmationData.options[0];
+  const [selectedDocType, setSelectedDocType] = useState<DocType>(
+    classifierMatchedOption,
+  );
   const [clicked, setClicked] = useState(false);
 
-  const handleConfirm = (opt: DocType) => {
+  const handleConfirm = () => {
     if (clicked) return;
     setClicked(true);
-    // Fire-and-forget — parent does optimistic setUploadStatus("auto_processed")
-    // + setConfirmationData(null), which unmounts this modal on next render.
-    // API call runs in parallel inside the parent's callback; failure surfaces
-    // via the form-view error banner.
-    void onConfirmDocType(opt);
+    void onConfirmDocType(selectedDocType);
   };
 
   const handleCancel = () => {
@@ -109,83 +134,98 @@ export function DocTypeConfirmationModal({
 
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
-      <div className="bg-white rounded-3xl max-w-lg w-full shadow-2xl shadow-blue-200/40 ring-1 ring-slate-200 overflow-hidden">
-        {/* Header — text-only. Title + body left-aligns with "Which is it?"
-            below at the same container padding (px-7). pt-10 gives the title
-            generous breathing room from the modal's top edge per Andrew's
-            polish pass. */}
-        <div className="px-7 pt-10 pb-6">
-          <h2 className="text-lg font-bold text-slate-900 leading-snug">
+      <div className="w-[440px] max-w-full bg-white rounded-3xl border border-gray-200 overflow-hidden shadow-[0_24px_60px_-20px_rgba(15,23,42,0.18),0_8px_20px_-8px_rgba(15,23,42,0.08)]">
+        <div className="px-7 pt-7 pb-[22px]">
+          <h2 className="text-lg font-bold text-gray-900 tracking-[-0.01em] m-0">
             Let&rsquo;s double check your document type
           </h2>
-          <p className="text-sm text-slate-600 mt-2 leading-relaxed">
+          <p className="text-sm text-gray-500 mt-2 leading-[1.55]">
             You said this is{" "}
-            <strong className="font-semibold text-slate-900">
+            <span className="font-semibold text-gray-900">
               {indefiniteArticle(userPickPretty)} {userPickPretty.toLowerCase()}
-            </strong>
+            </span>
             , but it looks more like{" "}
-            <strong className="font-semibold text-slate-900">
-              {indefiniteArticle(classifierPickPretty)} {classifierPickPretty.toLowerCase()}
-            </strong>
-            <span className="text-slate-500">
-              {" "}({Math.round(confirmationData.classifier_confidence * 100)}% confident)
+            <span className="font-semibold text-gray-900">
+              {indefiniteArticle(classifierPickPretty)}{" "}
+              {classifierPickPretty.toLowerCase()}
+            </span>
+            <span className="text-gray-400">
+              {" "}
+              ({Math.round(confirmationData.classifier_confidence * 100)}%
+              confident)
             </span>
             .
           </p>
-        </div>
 
-        {/* Choice prompt + option cards. px-7 matches header for left-edge
-            alignment between "Let's double check..." and "Which is it?". */}
-        <div className="px-7 pb-6 bg-gradient-to-b from-white to-slate-50/60">
-          <h3 className="text-base font-semibold text-slate-900 mb-3">
+          <h3 className="text-sm font-bold text-gray-900 mt-5 mb-2.5">
             Which is it?
           </h3>
-          <div className="grid grid-cols-1 gap-3 auto-rows-fr">
+
+          <div className="flex flex-col gap-2">
             {confirmationData.options.map((opt) => {
-              const isClassifierPick = opt === confirmationData.classifier_pick;
+              const isSelected = opt === selectedDocType;
+              const isClassifierPick =
+                getDocTypeClass(opt) === classifierClass;
               const label = pickerLabel(opt);
               const description = pickerDescription(opt);
               return (
                 <button
                   key={opt}
+                  type="button"
                   disabled={clicked}
-                  onClick={() => handleConfirm(opt)}
-                  className={`group relative w-full text-left p-4 bg-white rounded-2xl ring-1 transition-all disabled:cursor-not-allowed ${
-                    clicked
-                      ? "ring-slate-200 opacity-60"
-                      : isClassifierPick
-                        ? "ring-blue-200 hover:ring-2 hover:ring-blue-500 hover:shadow-md hover:shadow-blue-100"
-                        : "ring-slate-200 hover:ring-2 hover:ring-slate-400 hover:shadow-md"
+                  onClick={() => setSelectedDocType(opt)}
+                  className={`relative w-full text-left px-4 py-[14px] bg-white rounded-2xl border cursor-pointer transition-[border-color,box-shadow] duration-150 disabled:cursor-not-allowed disabled:opacity-60 ${
+                    isSelected
+                      ? "border-blue-600 shadow-[0_0_0_3px_rgba(37,99,235,0.10)]"
+                      : "border-gray-200 hover:border-gray-300"
                   }`}
+                  aria-pressed={isSelected}
                 >
-                  {/* items-start so the "Our guess" badge aligns with the TOP of
-                      the title row instead of vertical-centering against the
-                      whole flex line. */}
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="font-semibold text-slate-900">{label}</div>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[15px] font-bold text-gray-900">
+                      {label}
+                    </div>
                     {isClassifierPick && (
-                      <span className="shrink-0 text-[10px] font-bold tracking-wider uppercase text-white bg-gradient-to-r from-blue-500 to-indigo-600 px-2.5 py-1 rounded-full shadow-sm shadow-blue-200">
+                      <span className="shrink-0 whitespace-nowrap text-[9px] font-bold tracking-[0.08em] uppercase text-white bg-blue-600 px-2 py-[3px] rounded-full">
                         Our guess
                       </span>
                     )}
                   </div>
-                  <div className="text-sm text-slate-600 mt-1.5 leading-relaxed">
+                  <p className="text-[13px] text-gray-500 mt-1 leading-normal">
                     {description}
-                  </div>
+                  </p>
                 </button>
               );
             })}
           </div>
         </div>
 
-        {/* Cancel footer */}
-        <div className="px-7 py-4 border-t border-slate-100 bg-white flex justify-end items-center">
+        <div className="pt-1 px-[22px] pb-[22px] flex items-center gap-2.5">
           <button
+            type="button"
             disabled={clicked}
             onClick={handleCancel}
-            className="text-sm font-medium text-slate-500 hover:text-slate-900 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="shrink-0 inline-flex items-center gap-[7px] whitespace-nowrap bg-white hover:bg-gray-50 border border-gray-200 hover:border-gray-300 text-gray-700 text-[13px] font-medium px-3.5 py-2.5 rounded-full cursor-pointer transition-[background-color,border-color] duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Cancel — upload a different file
+            <RefreshIcon size={13} />
+            Upload a different file
+          </button>
+          <div className="flex-1" />
+          <button
+            type="button"
+            disabled={clicked}
+            onClick={handleCancel}
+            className="text-gray-500 text-[13px] font-medium px-1.5 py-2.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={clicked}
+            onClick={handleConfirm}
+            className="glow-blue bg-blue-600 hover:bg-blue-700 text-white text-[13px] font-semibold px-5 py-2.5 rounded-full cursor-pointer transition-all duration-150 hover:-translate-y-px disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0"
+          >
+            Confirm
           </button>
         </div>
       </div>
