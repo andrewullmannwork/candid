@@ -71,6 +71,28 @@ export interface PlanBenefitDetail {
    *   - null                 → no excerpt populated (sbcExcerpt is null)
    */
   citationSource: "user_doc" | "canonical_fallback" | "legacy_sbc_excerpt" | null;
+  /**
+   * S109 PR #2 — which plan source produced this PlanBenefitDetail. Drives the
+   * dispute-letter bullet copy variants (Case C-fallback says "My current plan
+   * (year)" instead of "{planName} (year)"; Case C-archive says "Per {insurer}
+   * {planName} {billYear} SBC (community-verified)"). Distinct from `source`
+   * (row-level user provenance) and `citationSource` (excerpt provenance).
+   *
+   * Values:
+   *   - 'user_exact'        → user's insurance_plans row for the bill's plan_year
+   *   - 'canonical_archive' → bill-year canonical_plan_services bound via search
+   *                            OR auto-resolved Pattern 2 identity match
+   *   - 'user_fallback'     → user's insurance_plans row for a DIFFERENT plan
+   *                            year (cited as proxy when same-plan confirmed)
+   */
+  sourcedFrom: "user_exact" | "canonical_archive" | "user_fallback";
+  /**
+   * S109 PR #2 — the plan year of the source that produced this benefit. Used
+   * for the letter's year-mismatch disclosure ("My current plan (2025) specifies
+   * ...; to the extent the 2023 plan differs..."). May be null when the
+   * source plan's year is unknown (parser-side extraction gap).
+   */
+  sourcedFromYear: number | null;
 }
 
 export interface LineItemEvidence {
@@ -294,14 +316,19 @@ export async function resolveEvidence(
     : rawLineItems;
 
   // Load plan_covered_services for the resolved plan (Phase 4 evidence block).
+  // S109 PR #2 (Chunk A) — tag PlanBenefitDetail with source provenance so the
+  // letter template can vary bullet copy per source. Chunk A only uses
+  // 'user_exact'; Chunks B + C will add 'user_fallback' (same-plan-confirmed)
+  // and 'canonical_archive' (Pattern 2 identity lookup / search modal bind).
   const planId = planContext?.plan?.id ?? null;
-  const coverageByServiceSlug = await loadCoverage(supabase, planId);
+  const planYear = planContext?.plan?.planYear ?? null;
+  const coverageByServiceSlug = await loadCoverage(supabase, planId, "user_exact", planYear);
 
   // Load community outcomes (per billing code) for the canonical plan + year.
   // This is the "other claims that have been paid" signal. Requires canonical
   // plan + year to scope correctly. k-anonymity is enforced at render time.
+  // (planYear declared above for loadCoverage source-year tagging.)
   const canonicalPlanId = planContext?.plan?.canonicalPlanId ?? null;
-  const planYear = planContext?.plan?.planYear ?? null;
   const codesList = filteredLineItems
     .filter((li) => li.billing_code && li.billing_code_type)
     .map((li) => ({ code: li.billing_code!, type: li.billing_code_type! }));
@@ -661,6 +688,8 @@ function emptyEvidence(
 async function loadCoverage(
   supabase: SupabaseClient,
   insurancePlanId: string | null,
+  sourceTag: PlanBenefitDetail["sourcedFrom"] = "user_exact",
+  sourceYear: number | null = null,
 ): Promise<Map<string, PlanBenefitDetail>> {
   // S99 B5 — keyed by CANONICAL slug (resolved via service_catalog.concept_id).
   // Pre-S95 / no-aliases state: canonical === raw (no-op). Post-alias-promotion:
@@ -794,6 +823,8 @@ async function loadCoverage(
       sbcPage: r.sbc_page ?? null,
       sbcExcerptVerified,
       citationSource,
+      sourcedFrom: sourceTag,
+      sourcedFromYear: sourceYear,
     });
   }
 
