@@ -163,15 +163,21 @@ function buildClaimIdHeader(params: {
     : null;
   const totalDisputed = params.evidence?.totals?.totalDiscrepancy ?? 0;
 
+  // S109 PR #2 (Chunk A fix) — plain "Label: value" format (no markdown bold
+  // markers). The letter preview surface renders text as plain pre-wrap, so
+  // `**Label**:` showed as literal asterisks. PDF export is unaffected by the
+  // change since the markdown-to-PDF translator handles both formats; plain
+  // labels match the surrounding letter style (the original header before
+  // this rewrite also used plain labels).
   const lines: string[] = ["Re: Appeal of Adverse Benefit Determination", ""];
-  lines.push(`**Patient**: ${params.patientName}`);
-  if (params.memberId) lines.push(`**Member ID**: ${params.memberId}`);
-  lines.push(`**Date of Service**: ${formatDate(params.serviceDate)}`);
-  lines.push(`**Provider**: ${params.providerName}`);
-  if (npi) lines.push(`**Provider NPI**: ${npi}`);
-  if (planLabel) lines.push(`**Plan**: ${planLabel}`);
-  if (params.accountNumber) lines.push(`**Account #**: ${params.accountNumber}`);
-  if (totalDisputed > 0) lines.push(`**Total Disputed**: ${formatCurrency(totalDisputed)}`);
+  lines.push(`Patient: ${params.patientName}`);
+  if (params.memberId) lines.push(`Member ID: ${params.memberId}`);
+  lines.push(`Date of Service: ${formatDate(params.serviceDate)}`);
+  lines.push(`Provider: ${params.providerName}`);
+  if (npi) lines.push(`Provider NPI: ${npi}`);
+  if (planLabel) lines.push(`Plan: ${planLabel}`);
+  if (params.accountNumber) lines.push(`Account #: ${params.accountNumber}`);
+  if (totalDisputed > 0) lines.push(`Total Disputed: ${formatCurrency(totalDisputed)}`);
   return lines.join("\n");
 }
 
@@ -501,11 +507,16 @@ function renderLineItemEvidence(
 }
 
 function formatDate(iso: string): string {
+  // S109 PR #2 (Chunk A fix) — render with timeZone: 'UTC' so ISO dates like
+  // "2023-04-25" don't shift to "April 24, 2023" in PT timezone (Date()
+  // parses ISO as UTC midnight; toLocaleDateString without timeZone converts
+  // back to local timezone, dropping a day for any zone west of UTC).
   const d = new Date(iso);
   return d.toLocaleDateString("en-US", {
     year: "numeric",
     month: "long",
     day: "numeric",
+    timeZone: "UTC",
   });
 }
 

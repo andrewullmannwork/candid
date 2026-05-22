@@ -1865,7 +1865,21 @@ function DisputeRow({
                 {redraftToast}
               </div>
             )}
-            {hasLetter && isPro ? (
+            {detailLoading ? (
+              // S109 PR #2 — show a loader during the async dispute-detail
+              // fetch so the LetterTeaser's "Legacy dispute" placeholder
+              // doesn't flash before letterContent populates. The teaser is
+              // legitimately shown only when loading completes AND letter
+              // content is confirmed absent (legacy pre-persistence row).
+              <div className="p-2 bg-white border border-gray-100 rounded-lg">
+                <div className="flex items-center justify-center py-6">
+                  <div
+                    className="h-4 w-4 animate-spin rounded-full border-2 border-blue-600 border-t-transparent"
+                    aria-label="Loading dispute letter"
+                  />
+                </div>
+              </div>
+            ) : hasLetter && isPro ? (
               <pre className="p-2 bg-white border border-gray-100 rounded-lg text-[11px] text-gray-700 whitespace-pre-wrap font-sans line-clamp-4">
                 {detail!.letterContent}
               </pre>
