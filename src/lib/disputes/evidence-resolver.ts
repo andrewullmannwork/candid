@@ -235,7 +235,14 @@ export interface EvidenceGap {
      *  (sbcExcerptVerified=false). The user can click Re-draft to re-parse
      *  un-searched plan-document sections and attempt to upgrade those rows
      *  to verbatim citations (CF-20 path). */
-    | "cite_grade_incomplete";
+    | "cite_grade_incomplete"
+    /** S109 PR #2 (Chunk B) — fallback-only case (bill year ≠ user's uploaded
+     *  plan year) where the user hasn't yet confirmed whether they were on the
+     *  same insurer in the bill year. Until confirmed, the letter renders Case
+     *  D framing (no fallback-cite) per Pattern 1 #2. The primary UI is
+     *  SamePlanConfirmBanner above the letter; EvidenceGaps surfaces it as a
+     *  card too for parallelism with other gaps. */
+    | "same_plan_unconfirmed";
   /** Short human-readable headline for the UI card. */
   title: string;
   /** One-line explanation of what adding this evidence unlocks. */
@@ -286,9 +293,18 @@ export async function resolveEvidence(
      * still routes through /disputes but won't auto-refetch the right row.
      */
     disputeId?: string | null;
+    /**
+     * S109 PR #2 (Chunk B) — user's same-insurer confirmation for the bill
+     * year. Read from dispute.metadata.userConfirmedSamePlan by the caller
+     * and passed in. Drives whether the fallback plan's coverage is loaded
+     * as a Case C-fallback proxy citation source ('yes') or treated as
+     * unavailable ('no', 'not_sure', null) so the letter falls to Case D.
+     */
+    userConfirmedSamePlan?: "yes" | "no" | "not_sure" | null;
   },
 ): Promise<DisputeEvidence> {
   const { userId, claimIds, lineItemIds, planContext, letterType, disputeId } = params;
+  const userConfirmedSamePlan = params.userConfirmedSamePlan ?? null;
 
   if (claimIds.length === 0) {
     return emptyEvidence(planContext, letterType);
@@ -315,14 +331,35 @@ export async function resolveEvidence(
     ? rawLineItems.filter((li) => lineItemIds.includes(li.id))
     : rawLineItems;
 
-  // Load plan_covered_services for the resolved plan (Phase 4 evidence block).
-  // S109 PR #2 (Chunk A) — tag PlanBenefitDetail with source provenance so the
-  // letter template can vary bullet copy per source. Chunk A only uses
-  // 'user_exact'; Chunks B + C will add 'user_fallback' (same-plan-confirmed)
-  // and 'canonical_archive' (Pattern 2 identity lookup / search modal bind).
-  const planId = planContext?.plan?.id ?? null;
-  const planYear = planContext?.plan?.planYear ?? null;
-  const coverageByServiceSlug = await loadCoverage(supabase, planId, "user_exact", planYear);
+  // Load plan_covered_services. Source-priority candidate chain:
+  //   1. user's exact-year plan (always preferred when present)
+  //   2. user's fallback plan (when same-insurer confirmed; Chunk B)
+  //   3. canonical archive (Pattern 2 identity lookup; Chunk C — future)
+  // First non-empty result wins. Tag PlanBenefitDetail with which source
+  // produced it so the letter template renders the right bullet copy.
+  let coverageByServiceSlug: Map<string, PlanBenefitDetail>;
+  let planYear: number | null = null;
+  if (planContext?.plan) {
+    planYear = planContext.plan.planYear;
+    coverageByServiceSlug = await loadCoverage(
+      supabase,
+      planContext.plan.id,
+      "user_exact",
+      planYear,
+    );
+  } else if (planContext?.fallbackPlan && userConfirmedSamePlan === "yes") {
+    // Case C-fallback: user confirmed same insurer in bill year → cite
+    // current plan as proxy with year disclosure in bullet copy.
+    planYear = planContext.fallbackPlan.planYear;
+    coverageByServiceSlug = await loadCoverage(
+      supabase,
+      planContext.fallbackPlan.id,
+      "user_fallback",
+      planYear,
+    );
+  } else {
+    coverageByServiceSlug = new Map<string, PlanBenefitDetail>();
+  }
 
   // Load community outcomes (per billing code) for the canonical plan + year.
   // This is the "other claims that have been paid" signal. Requires canonical
@@ -460,6 +497,7 @@ export async function resolveEvidence(
     params.claimIds,
     disputeId ?? null,
     letterType ?? null,
+    userConfirmedSamePlan,
   );
 
   return {
@@ -492,6 +530,7 @@ function computeEvidenceGaps(
   claimIds: string[],
   disputeId: string | null,
   letterType: string | null,
+  userConfirmedSamePlan: "yes" | "no" | "not_sure" | null,
 ): EvidenceGap[] {
   const gaps: EvidenceGap[] = [];
   // Prefer the persisted dispute id for the returnTo URL so the user lands
@@ -629,6 +668,29 @@ function computeEvidenceGaps(
       // Re-draft button.
       unverifiedCount: unverified,
       totalCount: total,
+    });
+  }
+
+  // S109 PR #2 (Chunk B) — same-plan-confirmation gap. Fires when the user
+  // has a fallback plan on file (different year than the bill) and hasn't
+  // yet confirmed whether they were on the same insurer in the bill year.
+  // SamePlanConfirmBanner above the letter is the primary surface; this
+  // panel card is the parallel "Strengthen this letter" affordance.
+  if (
+    !planContext?.plan &&
+    planContext?.fallbackPlan &&
+    planContext.missingForYear != null &&
+    userConfirmedSamePlan == null
+  ) {
+    const fbYearText = planContext.fallbackPlan.planYear != null
+      ? `your ${planContext.fallbackPlan.planYear} plan`
+      : "your current plan";
+    gaps.push({
+      kind: "same_plan_unconfirmed",
+      title: `Were you on the same insurer in ${planContext.missingForYear}?`,
+      description:
+        `We don't have your ${planContext.missingForYear} plan on file, but we do have ${fbYearText}. If you had the same insurer then, this letter can cite the current plan's terms as a proxy and ask the insurer to prove any year-over-year differences. If you switched insurers, those terms don't apply.`,
+      // CTA wired by SamePlanConfirmBanner above the letter — no ctaHref.
     });
   }
 

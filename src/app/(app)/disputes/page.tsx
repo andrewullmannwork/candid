@@ -13,6 +13,7 @@ import { DisputeLetterHero } from "@/components/disputes/DisputeLetterHero";
 import { DisputeRecipientCard } from "@/components/disputes/DisputeRecipientCard";
 import { EvidenceBlock } from "@/components/disputes/EvidenceBlock";
 import { MissingPlanBanner } from "@/components/disputes/MissingPlanBanner";
+import { SamePlanConfirmBanner } from "@/components/disputes/SamePlanConfirmBanner";
 import { DownloadWarningModal } from "@/components/disputes/DownloadWarningModal";
 import { EvidenceGaps } from "@/components/disputes/EvidenceGaps";
 import { InsurerAddressCorrectionModal } from "@/components/disputes/InsurerAddressCorrectionModal";
@@ -190,6 +191,11 @@ function DisputesContent() {
   // S74 — dispute lifecycle state for the Mark-as-Sent flow.
   const [disputeStatus, setDisputeStatus] = useState<string | null>(null);
   const [disputeFiledDate, setDisputeFiledDate] = useState<string | null>(null);
+  // S109 PR #2 (Chunk B) — current same-plan-confirmation answer; drives
+  // SamePlanConfirmBanner visibility and the letter's fallback-cite framing.
+  const [userConfirmedSamePlan, setUserConfirmedSamePlan] = useState<
+    "yes" | "no" | "not_sure" | null
+  >(null);
   // S74 — InsurerAddressCorrectionModal open state.
   const [insurerCorrectionOpen, setInsurerCorrectionOpen] = useState(false);
   // S74 — Mark-sent button state + transient toast.
@@ -222,6 +228,15 @@ function DisputesContent() {
     setGateUnverified(!!data.gateUnverified);
     setDisputeStatus(typeof data.status === "string" ? data.status : null);
     setDisputeFiledDate(typeof data.filedDate === "string" ? data.filedDate : null);
+    // S109 PR #2 (Chunk B) — banner visibility + letter framing both gated
+    // on this state. API normalizes to 'yes' | 'no' | 'not_sure' | null.
+    setUserConfirmedSamePlan(
+      data.userConfirmedSamePlan === "yes" ||
+        data.userConfirmedSamePlan === "no" ||
+        data.userConfirmedSamePlan === "not_sure"
+        ? data.userConfirmedSamePlan
+        : null,
+    );
     if (data.letterContent) {
       // Server-resolved letter type (S74). Authoritative — reads metadata.letterType
       // first, then maps from legacy dispute_type vocab. Without this, the recipient
@@ -494,6 +509,36 @@ function DisputesContent() {
           <span aria-hidden>←</span> Back to claim
         </a>
       )}
+
+      {/* S109 PR #2 (Chunk B) — Same-plan-confirmation banner. Renders only
+          for the fallback-only case (planContext.plan == null AND
+          planContext.fallbackPlan != null AND missingForYear known AND user
+          hasn't answered yet). Confirms whether the user was on the same
+          insurer in the bill year so the letter can cite the current plan
+          as a proxy (Case C-fallback) or fall back to Case D safe framing.
+          On confirm, refetchDispute regenerates the letter with the new
+          framing. */}
+      {planContext &&
+        !planContext.plan &&
+        planContext.fallbackPlan &&
+        planContext.missingForYear != null &&
+        disputeId && (
+          <SamePlanConfirmBanner
+            disputeId={disputeId}
+            billYear={planContext.missingForYear}
+            fallbackPlanYear={planContext.fallbackPlan.planYear}
+            insurerName={
+              planContext.insurer?.name ?? planContext.fallbackPlan.insurerName ?? null
+            }
+            currentAnswer={userConfirmedSamePlan}
+            getAuthToken={getAuthToken}
+            onConfirmed={async (answer) => {
+              setUserConfirmedSamePlan(answer);
+              // Re-fetch so the letter regenerates with the new framing.
+              await fetchDispute(disputeId);
+            }}
+          />
+        )}
 
       {missingYear && !missingPlanDismissed ? (
         <MissingPlanBanner

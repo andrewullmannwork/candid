@@ -129,6 +129,12 @@ export async function POST(
     userId: user.id,
     claimId: dispute.claim_id,
   });
+  // S109 PR #2 (Chunk B) — read user's same-plan confirmation answer; passed
+  // to resolveEvidence so fallback-plan coverage is loaded only when 'yes'.
+  const userConfirmedSamePlan = ((): "yes" | "no" | "not_sure" | null => {
+    const v = (dispute.metadata as Record<string, unknown> | null)?.userConfirmedSamePlan;
+    return v === "yes" || v === "no" || v === "not_sure" ? v : null;
+  })();
   let evidence = await resolveEvidence(supabase, {
     userId: user.id,
     claimIds: [dispute.claim_id],
@@ -136,6 +142,7 @@ export async function POST(
     planContext,
     letterType: dispute.dispute_type,
     disputeId: dispute.id,
+    userConfirmedSamePlan,
   });
 
   // Step 2: CF-20 re-parse-on-flag — mirrors /api/disputes/generate logic.
@@ -194,6 +201,7 @@ export async function POST(
                 planContext,
                 letterType: dispute.dispute_type,
                 disputeId: dispute.id,
+                userConfirmedSamePlan,
               });
             }
           }

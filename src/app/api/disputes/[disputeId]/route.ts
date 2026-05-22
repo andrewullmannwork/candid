@@ -150,6 +150,14 @@ export async function GET(
         userId: user.id,
         claimId: dispute.claim_id,
       });
+      // S109 PR #2 (Chunk B) — read user's same-plan confirmation answer.
+      // Drives whether resolveEvidence loads the fallback plan's coverage as
+      // a Case C-fallback proxy citation source. Stored on dispute.metadata
+      // via POST /api/disputes/[disputeId]/confirm-same-plan.
+      const userConfirmedSamePlan = ((): "yes" | "no" | "not_sure" | null => {
+        const v = (dispute.metadata as Record<string, unknown> | null)?.userConfirmedSamePlan;
+        return v === "yes" || v === "no" || v === "not_sure" ? v : null;
+      })();
       evidence = await resolveEvidence(supabase, {
         userId: user.id,
         claimIds: [dispute.claim_id],
@@ -157,6 +165,7 @@ export async function GET(
         planContext,
         letterType: dispute.dispute_type,
         disputeId: dispute.id,
+        userConfirmedSamePlan,
       });
 
       // Debug logging — helps diagnose why insurer resolution fails for a
@@ -315,6 +324,12 @@ export async function GET(
     evidence,
     patientNameMismatch,
     gateUnverified,
+    // S109 PR #2 (Chunk B) — current same-plan-confirmation answer, used by
+    // SamePlanConfirmBanner on the dispute view to render its 3-state UI.
+    userConfirmedSamePlan: ((): "yes" | "no" | "not_sure" | null => {
+      const v = (dispute.metadata as Record<string, unknown> | null)?.userConfirmedSamePlan;
+      return v === "yes" || v === "no" || v === "not_sure" ? v : null;
+    })(),
     // S74.5 D16 — drift state for the client to render the banner +
     // cooldown-gated follow-up CTA. Null when flag OFF.
     driftState: flywheelOn

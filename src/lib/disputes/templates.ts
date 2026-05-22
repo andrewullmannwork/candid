@@ -228,6 +228,27 @@ function buildClosingArgument(
     return "Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based. Per §2560.503-1(h)(2)(iii), I request reasonable access to and copies of all documents relevant to this claim, including the applicable cost-sharing and coverage provisions.";
   }
 
+  // S109 PR #2 (Chunk B) — Case C-fallback: same-plan-confirmed proxy cite.
+  // Detect by inspecting whether the rendered benefit rows are sourced from
+  // 'user_fallback' (the resolver only loads fallback coverage when the user
+  // has confirmed same-insurer in the bill year). When true, the per-line
+  // bullets already carry "My current plan (year)" framing; the closing
+  // argument shifts burden onto the insurer to prove year-over-year drift.
+  const fallbackSourced = !hasExactPlan && anyBenefit && evidence.claims.some((c) =>
+    c.lineItemEvidence.some((li) => li.planBenefit?.sourcedFrom === "user_fallback"),
+  );
+  if (fallbackSourced) {
+    const fbYear = planContext?.fallbackPlan?.planYear ?? null;
+    const missingYear = planContext?.missingForYear ?? null;
+    const fbClause = fbYear != null
+      ? `My ${fbYear} plan documents are on file with this plan and specify the cost-sharing terms cited above.`
+      : "My current plan documents are on file with this plan and specify the cost-sharing terms cited above.";
+    const yearAskClause = missingYear != null
+      ? `To the extent the ${missingYear} plan provisions differ materially from these terms, please produce the ${missingYear} Summary Plan Description and plan document under 29 USC §1024(b)(4) within the 30-day statutory period, and identify the specific provision applied to these charges.`
+      : "To the extent the plan provisions in effect on the date of service differ materially from these terms, please produce the applicable Summary Plan Description and plan document under 29 USC §1024(b)(4) within the 30-day statutory period, and identify the specific provision applied to these charges.";
+    return `Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based. ${fbClause} ${yearAskClause}`;
+  }
+
   // Case D — no plan OR fallback-only without confirmation (Chunk A default).
   // Aggregate EOB math across all claims for the inconsistency framing.
   const allLineItems = evidence.claims.flatMap((c) => c.lineItemEvidence);
