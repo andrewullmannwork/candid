@@ -489,17 +489,36 @@ function computeEvidenceGaps(
     // different year than this bill." The fallbackPlan branch fires when the
     // user has uploaded an insurance plan but its plan_year (or coverage
     // window) doesn't cover this bill's date_of_service. Saying "upload your
-    // insurance plan" in that case is misleading — they did. The gap should
-    // instead ask for the bill-year-specific plan so we can cite that year's
-    // copay / coinsurance terms (not a different year's that may have changed).
+    // insurance plan" in that case is misleading — they did.
+    //
+    // Three sub-cases:
+    //   (a) fallback exists + we know the missing year → "Upload your <year> plan"
+    //       (fallback.planYear may be null when the parser failed to extract
+    //       it; the title only needs missingYear, description adapts)
+    //   (b) fallback exists but no missing year (claim has no plan_year and
+    //       date_of_service couldn't be parsed) → "Upload the plan that was
+    //       active for this bill"
+    //   (c) no fallback at all → generic "Upload your insurance plan"
     const fallback = planContext?.fallbackPlan ?? null;
     const missingYear = planContext?.missingForYear ?? null;
-    if (fallback && missingYear != null && fallback.planYear != null) {
+    if (fallback && missingYear != null) {
+      const fbYearClause = fallback.planYear != null
+        ? `Your ${fallback.planYear} plan is on file.`
+        : "You have an insurance plan on file.";
       gaps.push({
         kind: "plan_document_missing",
         title: `Upload your ${missingYear} plan`,
         description:
-          `Your ${fallback.planYear} plan is on file, but this bill is from ${missingYear}. Plan terms change year to year — upload your ${missingYear} plan so the letter can cite that year's specific copay / coinsurance terms.`,
+          `${fbYearClause} This bill is from ${missingYear} — plan terms change year to year, so uploading your ${missingYear} plan lets the letter cite that year's specific copay / coinsurance terms.`,
+        ctaLabel: "Upload plan document",
+        ctaHref: uploadHref,
+      });
+    } else if (fallback) {
+      gaps.push({
+        kind: "plan_document_missing",
+        title: "Upload the plan that was active for this bill",
+        description:
+          "You have an insurance plan on file, but we couldn't determine which plan year applied to this bill. Upload the plan that was active when this service was rendered so the letter can cite the right terms.",
         ctaLabel: "Upload plan document",
         ctaHref: uploadHref,
       });
