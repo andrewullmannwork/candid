@@ -292,7 +292,13 @@ function renderEvidenceBlock(
   if (!hasAnyLineItems) return "";
 
   const multiClaim = evidence.claims.length > 1;
-  const lines: string[] = [`**${title}**`, ""];
+  // S109 PR #2 (Chunk B) — drop markdown `**` markers throughout. Nothing in
+  // the preview, download, or PDF path renders markdown, so `**Heading**`
+  // showed as literal asterisks. Use UPPERCASE section headers + indentation
+  // for visual structure that reads professional as plain text. Pattern P-8
+  // verbatim blockquote markers (`> *"..."*`) preserved — those are inside
+  // user-facing copy and convey "verbatim quote" semantically.
+  const lines: string[] = [title.toUpperCase(), ""];
   let itemNumber = 1;
 
   for (const claim of evidence.claims) {
@@ -301,7 +307,7 @@ function renderEvidenceBlock(
         claim.providerName ?? "Bill",
         claim.dateOfService ? formatDate(claim.dateOfService) : null,
       ].filter(Boolean).join(" · ");
-      lines.push(`**${header}**`, "");
+      lines.push(header, "");
     }
 
     for (const li of claim.lineItemEvidence) {
@@ -324,7 +330,7 @@ function renderEvidenceBlock(
 
   if (multiClaim) {
     lines.push(
-      `**Total in dispute across ${evidence.claims.length} bills: ${formatCurrency(evidence.totals.totalDiscrepancy)}**`,
+      `Total in dispute across ${evidence.claims.length} bills: ${formatCurrency(evidence.totals.totalDiscrepancy)}`,
       "",
     );
   }
@@ -349,7 +355,7 @@ function renderLineItemEvidence(
     ? `${li.billingCode.type} ${li.billingCode.value}`
     : null;
   const headline = [
-    `${index}. **${li.serviceName}**`,
+    `${index}. ${li.serviceName}`,
     codeLabel ? `(${codeLabel})` : null,
     li.billedAmount > 0 ? `— billed ${formatCurrency(li.billedAmount)}` : null,
   ].filter(Boolean).join(" ");
@@ -378,9 +384,9 @@ function renderLineItemEvidence(
     // as-proxy vs community-verified canonical archive). Pattern 1 #2 is
     // preserved — we never cite a year we don't have as if it's that year.
     const costDescriptor = li.planBenefit.copay != null
-      ? `a **${formatCurrency(li.planBenefit.copay)} copay**`
+      ? `a ${formatCurrency(li.planBenefit.copay)} copay`
       : li.planBenefit.coinsurance != null
-      ? `**${Math.round(li.planBenefit.coinsurance * 100)}% coinsurance**`
+      ? `${Math.round(li.planBenefit.coinsurance * 100)}% coinsurance`
       : "cost-sharing terms";
 
     let prefix: string;
@@ -429,7 +435,7 @@ function renderLineItemEvidence(
     const overage = li.discrepancyAmount ?? 0;
     if (overage > 0) {
       bullets.push(
-        `   - Expected patient cost per plan: ${formatCurrency(li.expectedPatientCost)}. Actual patient responsibility: ${formatCurrency(li.actualPatientCost)}. **Discrepancy: ${formatCurrency(overage)}.**`,
+        `   - Expected patient cost per plan: ${formatCurrency(li.expectedPatientCost)}. Actual patient responsibility: ${formatCurrency(li.actualPatientCost)}. Discrepancy: ${formatCurrency(overage)}.`,
       );
     }
   } else if (li.discrepancyReason && planBenefitTrusted) {
@@ -447,7 +453,7 @@ function renderLineItemEvidence(
     const c = li.communityOutcome;
     const parts: string[] = [];
     if (c.paidCount > 0) {
-      parts.push(`**${c.paidCount} of ${c.totalClaims}** claims for this code on this plan have been paid`);
+      parts.push(`${c.paidCount} of ${c.totalClaims} claims for this code on this plan have been paid`);
     } else {
       parts.push(`${c.totalClaims} claims for this code on this plan are on record`);
     }
@@ -497,7 +503,7 @@ function renderLineItemEvidence(
   if (li.auditFindings && li.auditFindings.length > 0) {
     for (const f of li.auditFindings) {
       const parts: string[] = [];
-      parts.push(`Candid audit flag (**${f.title}**)`);
+      parts.push(`Candid audit flag (${f.title})`);
       if (f.benchmarkAmount != null && f.benchmarkSource) {
         parts.push(`${f.benchmarkSource} benchmark ${formatCurrency(f.benchmarkAmount)}`);
       }
@@ -519,7 +525,7 @@ function renderLineItemEvidence(
     if (filteredPeers.length >= 2) {
       const topPeer = filteredPeers[0];
       bullets.push(
-        `   - Note: similar charges have been successfully resolved when re-coded as **${topPeer.code}**. Please verify whether ${topPeer.code} more accurately reflects the service provided, and reprocess accordingly if applicable.`,
+        `   - Note: similar charges have been successfully resolved when re-coded as ${topPeer.code}. Please verify whether ${topPeer.code} more accurately reflects the service provided, and reprocess accordingly if applicable.`,
       );
     }
   }
