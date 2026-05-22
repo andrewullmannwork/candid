@@ -29,6 +29,28 @@ const K_ANON_PRICING = 5;
 const K_ANON_THRESHOLD = 5;
 const MIN_PLAN_BENEFIT_CONFIDENCE = 0.5;
 
+/**
+ * S110 Chunk C — single-point eligibility gate for archive auto-lookup
+ * coverage. Per the lawyer-pass decision tree §3, the dispute letter only
+ * cites the bill-year canonical archive ("Case C-archive") when the user
+ * has confirmed they were on the same insurer in the bill year. Pattern 1
+ * #2 ("no fabricated citations") demands this gate — without confirmation,
+ * the archive could belong to an insurer the user has never been on.
+ *
+ * Manual bind via SearchCanonicalPlanModal (Chunk D) bypasses this gate:
+ * the user explicitly selected the canonical, which IS the confirmation.
+ *
+ * Extracted as a single helper so future redesigns of the banner (different
+ * state granularity, new flow paths) update the mapping in one place. Today
+ * a coarse `yes` vote is sufficient; future banners may produce richer
+ * intent without breaking this gate as long as the mapping stays here.
+ */
+export function isArchiveLookupEligible(
+  userConfirmedSamePlan: "yes" | "no" | "not_sure" | null | undefined,
+): boolean {
+  return userConfirmedSamePlan === "yes";
+}
+
 export interface PlanBenefitDetail {
   covered: boolean;
   copay: number | null;
@@ -301,10 +323,21 @@ export async function resolveEvidence(
      * unavailable ('no', 'not_sure', null) so the letter falls to Case D.
      */
     userConfirmedSamePlan?: "yes" | "no" | "not_sure" | null;
+    /**
+     * S110 Chunk D — explicit canonical the user bound via
+     * SearchCanonicalPlanModal as their bill-year plan. Read from
+     * dispute.metadata.canonicalPlanIdForBillYear. When set, this overrides
+     * archive auto-lookup AND the user_fallback branch — manual selection is
+     * the strongest signal (user explicitly chose this canonical as their
+     * bill-year plan). Bypasses the userConfirmedSamePlan gate because the
+     * bind action itself IS the confirmation.
+     */
+    canonicalPlanIdForBillYear?: string | null;
   },
 ): Promise<DisputeEvidence> {
   const { userId, claimIds, lineItemIds, planContext, letterType, disputeId } = params;
   const userConfirmedSamePlan = params.userConfirmedSamePlan ?? null;
+  const canonicalPlanIdForBillYear = params.canonicalPlanIdForBillYear ?? null;
 
   if (claimIds.length === 0) {
     return emptyEvidence(planContext, letterType);
@@ -331,15 +364,26 @@ export async function resolveEvidence(
     ? rawLineItems.filter((li) => lineItemIds.includes(li.id))
     : rawLineItems;
 
-  // Load plan_covered_services. Source-priority candidate chain:
-  //   1. user's exact-year plan (always preferred when present)
-  //   2. user's fallback plan (when same-insurer confirmed; Chunk B)
-  //   3. canonical archive (Pattern 2 identity lookup; Chunk C — future)
-  // First non-empty result wins. Tag PlanBenefitDetail with which source
-  // produced it so the letter template renders the right bullet copy.
+  // S110 Chunks C + D — source-priority candidate chain (first non-empty wins):
+  //   Tier 1 (user_exact)        : user's exact-year plan from plan_covered_services
+  //   Tier 2 (canonical_archive) : manual bind via SearchCanonicalPlanModal (Chunk D)
+  //                                — explicit user selection of bill-year canonical;
+  //                                bypasses userConfirmedSamePlan gate (the bind IS
+  //                                the confirmation)
+  //   Tier 3 (canonical_archive) : auto-discovered archive canonical (Chunk C
+  //                                Pattern 2 year-shift from user's current plan
+  //                                canonical) — gated on userConfirmedSamePlan='yes'
+  //                                so we don't cite across an insurer switch
+  //   Tier 4 (user_fallback)     : user's current plan as proxy citation (Chunk B)
+  //                                — same userConfirmedSamePlan gate
+  // Each PlanBenefitDetail tagged with `sourcedFrom` so the letter template
+  // renders the right bullet copy variant per Subplan §3a.
   let coverageByServiceSlug: Map<string, PlanBenefitDetail>;
   let planYear: number | null = null;
+  const archiveEligible = isArchiveLookupEligible(userConfirmedSamePlan);
+
   if (planContext?.plan) {
+    // Tier 1 — user's exact-year plan.
     planYear = planContext.plan.planYear;
     coverageByServiceSlug = await loadCoverage(
       supabase,
@@ -347,9 +391,29 @@ export async function resolveEvidence(
       "user_exact",
       planYear,
     );
-  } else if (planContext?.fallbackPlan && userConfirmedSamePlan === "yes") {
-    // Case C-fallback: user confirmed same insurer in bill year → cite
-    // current plan as proxy with year disclosure in bullet copy.
+  } else if (canonicalPlanIdForBillYear) {
+    // Tier 2 — manual canonical bind.
+    planYear = planContext?.missingForYear ?? null;
+    coverageByServiceSlug = await loadCoverageFromCanonical(
+      supabase,
+      canonicalPlanIdForBillYear,
+      "canonical_archive",
+      planYear,
+    );
+  } else if (planContext?.archiveCanonicalPlan && archiveEligible) {
+    // Tier 3 — auto-discovered archive canonical.
+    planYear =
+      planContext.archiveCanonicalPlan.planYear ??
+      planContext.missingForYear ??
+      null;
+    coverageByServiceSlug = await loadCoverageFromCanonical(
+      supabase,
+      planContext.archiveCanonicalPlan.id,
+      "canonical_archive",
+      planYear,
+    );
+  } else if (planContext?.fallbackPlan && archiveEligible) {
+    // Tier 4 — user_fallback (cite current plan with year disclosed).
     planYear = planContext.fallbackPlan.planYear;
     coverageByServiceSlug = await loadCoverage(
       supabase,
@@ -498,6 +562,7 @@ export async function resolveEvidence(
     disputeId ?? null,
     letterType ?? null,
     userConfirmedSamePlan,
+    canonicalPlanIdForBillYear,
   );
 
   return {
@@ -531,6 +596,7 @@ function computeEvidenceGaps(
   disputeId: string | null,
   letterType: string | null,
   userConfirmedSamePlan: "yes" | "no" | "not_sure" | null,
+  canonicalPlanIdForBillYear: string | null,
 ): EvidenceGap[] {
   const gaps: EvidenceGap[] = [];
   // Prefer the persisted dispute id for the returnTo URL so the user lands
@@ -676,11 +742,16 @@ function computeEvidenceGaps(
   // yet confirmed whether they were on the same insurer in the bill year.
   // SamePlanConfirmBanner above the letter is the primary surface; this
   // panel card is the parallel "Strengthen this letter" affordance.
+  //
+  // S110 Chunk D — suppress when the user has already bound a canonical
+  // via SearchCanonicalPlanModal. Manual bind IS the confirmation; banner
+  // is redundant once a canonical is selected for the bill year.
   if (
     !planContext?.plan &&
     planContext?.fallbackPlan &&
     planContext.missingForYear != null &&
-    userConfirmedSamePlan == null
+    userConfirmedSamePlan == null &&
+    !canonicalPlanIdForBillYear
   ) {
     const fbYearText = planContext.fallbackPlan.planYear != null
       ? `your ${planContext.fallbackPlan.planYear} plan`
@@ -883,6 +954,146 @@ async function loadCoverage(
       citation: `Plan SBC${r.sbc_page ? `, page ${r.sbc_page}` : ""} — ${cat.name}`,
       sbcExcerpt: preferredExcerpt,
       sbcPage: r.sbc_page ?? null,
+      sbcExcerptVerified,
+      citationSource,
+      sourcedFrom: sourceTag,
+      sourcedFromYear: sourceYear,
+    });
+  }
+
+  return byServiceSlug;
+}
+
+/**
+ * S110 Chunk C — load coverage from canonical_plan_services for an archive
+ * canonical (either Pattern 2 auto-lookup OR manual bind via Chunk D).
+ *
+ * Mirrors loadCoverage but reads canonical-scoped coverage instead of user-
+ * scoped. Key differences:
+ *   - Primary table is canonical_plan_services (not plan_covered_services).
+ *   - canonical_plan_services has no sbc_excerpt/sbc_page columns (those
+ *     live on plan_covered_services from SBC parser); cite-grade excerpts
+ *     come exclusively from canonical_haiku_extractions for this path.
+ *   - citationSource is always 'canonical_fallback' when an excerpt exists
+ *     (the excerpt was contributed by ANOTHER member who parsed this
+ *     canonical), else null. Matches Subplan §3a row 4.
+ *
+ * Caller is responsible for tagging sourceTag='canonical_archive' for both
+ * manual bind and auto-lookup paths — the letter template renders the same
+ * "Per {insurer} {planName} {year} SBC (community-verified)" framing in
+ * both cases.
+ */
+async function loadCoverageFromCanonical(
+  supabase: SupabaseClient,
+  canonicalPlanId: string,
+  sourceTag: PlanBenefitDetail["sourcedFrom"],
+  sourceYear: number | null,
+): Promise<Map<string, PlanBenefitDetail>> {
+  const byServiceSlug = new Map<string, PlanBenefitDetail>();
+
+  // Pre-load cite-grade excerpts from canonical_haiku_extractions for this
+  // canonical. Same query as loadCoverage's fallback path — only verified +
+  // section-verified rows are cite-grade per Pattern P-8.
+  const canonicalCiteGradeBySlug = new Map<
+    string,
+    { sourceExcerpt: string; sourceSectionHint: string }
+  >();
+  const { data: extractions } = await supabase
+    .from("canonical_haiku_extractions")
+    .select("service_slug, source_excerpt, source_section_hint, created_at")
+    .eq("canonical_plan_id", canonicalPlanId)
+    .eq("field_name", "services_cost_sharing_row")
+    .eq("source_excerpt_verified", "verified")
+    .eq("source_section_verified", true)
+    .order("created_at", { ascending: false });
+
+  if (extractions) {
+    for (const ext of extractions as Array<{
+      service_slug: string | null;
+      source_excerpt: string | null;
+      source_section_hint: string | null;
+    }>) {
+      if (!ext.service_slug || !ext.source_excerpt) continue;
+      if (!canonicalCiteGradeBySlug.has(ext.service_slug)) {
+        canonicalCiteGradeBySlug.set(ext.service_slug, {
+          sourceExcerpt: ext.source_excerpt,
+          sourceSectionHint: ext.source_section_hint ?? "",
+        });
+      }
+    }
+  }
+
+  // Fetch canonical_plan_services rows for this canonical with service_catalog
+  // join for display name. Schema per src/lib/plan/compare.ts:209+ — copay /
+  // coinsurance / deductible_applies + OON mirrors + is_covered + field_provenance.
+  const { data: rows } = await supabase
+    .from("canonical_plan_services")
+    .select(
+      "is_covered, copay, coinsurance, source, confidence, field_provenance, service_catalog!inner(slug, name)",
+    )
+    .eq("canonical_plan_id", canonicalPlanId);
+
+  if (!rows) return byServiceSlug;
+
+  // Pre-resolve canonical sibling for every raw slug emitted by this
+  // canonical's coverage rows — preserves the S99 B5 alias normalization
+  // even though post-S95 reset this is identity (no aliases).
+  const rawSlugsForCanonical: string[] = [];
+  for (const r of rows) {
+    const cat = (r as { service_catalog: { slug?: string } | { slug?: string }[] }).service_catalog;
+    const slug = Array.isArray(cat) ? cat[0]?.slug : cat?.slug;
+    if (slug) rawSlugsForCanonical.push(slug);
+  }
+  const coverageCanonicalMap =
+    rawSlugsForCanonical.length > 0
+      ? await resolveCanonicalSlugs(rawSlugsForCanonical, supabase)
+      : new Map<string, string>();
+
+  for (const r of rows as unknown as Array<{
+    is_covered: boolean | null;
+    copay: number | null;
+    coinsurance: number | null;
+    source: string | null;
+    confidence: number | null;
+    field_provenance: Record<string, FieldProvenanceEntry> | null;
+    service_catalog: { slug: string; name: string } | Array<{ slug: string; name: string }>;
+  }>) {
+    const cat = Array.isArray(r.service_catalog) ? r.service_catalog[0] : r.service_catalog;
+    if (!cat?.slug) continue;
+    const confidence = r.confidence ?? 0.5;
+    if (confidence < MIN_PLAN_BENEFIT_CONFIDENCE) continue;
+
+    // Pattern P-8 cite-grade for canonical path: rely on
+    // canonical_haiku_extractions excerpt (admin-attested or community-
+    // verified cite-grade). canonical_plan_services rows may have their own
+    // field_provenance with admin_attested sources; treat those as verified
+    // structurally (Pattern 1 #4) but excerpt comes from haiku-extractions.
+    const primaryField = r.copay !== null ? "copay" : "coinsurance";
+    const p8Entry = r.field_provenance?.[primaryField];
+    const p8 = extractPatternP8FromEntry(p8Entry);
+    const userRowCiteGrade = isCitationGrade(p8);
+
+    const canonicalCiteGrade = canonicalCiteGradeBySlug.get(cat.slug) ?? null;
+
+    const preferredExcerpt =
+      p8?.source_excerpt ?? canonicalCiteGrade?.sourceExcerpt ?? null;
+    const sbcExcerptVerified = userRowCiteGrade || canonicalCiteGrade !== null;
+    const citationSource: PlanBenefitDetail["citationSource"] = userRowCiteGrade
+      ? "user_doc"
+      : canonicalCiteGrade !== null
+      ? "canonical_fallback"
+      : null;
+
+    const canonicalSlug = coverageCanonicalMap.get(cat.slug) ?? cat.slug;
+    byServiceSlug.set(canonicalSlug, {
+      covered: r.is_covered !== false,
+      copay: r.copay,
+      coinsurance: r.coinsurance,
+      source: r.source ?? "canonical",
+      confidence,
+      citation: `Summary of Benefits and Coverage — ${cat.name}`,
+      sbcExcerpt: preferredExcerpt,
+      sbcPage: null,
       sbcExcerptVerified,
       citationSource,
       sourcedFrom: sourceTag,

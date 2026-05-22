@@ -158,6 +158,13 @@ export async function GET(
         const v = (dispute.metadata as Record<string, unknown> | null)?.userConfirmedSamePlan;
         return v === "yes" || v === "no" || v === "not_sure" ? v : null;
       })();
+      // S110 Chunk D — read user's manual canonical bind for the bill year.
+      // When set, supersedes archive auto-lookup AND user_fallback paths.
+      // Stored via POST /api/disputes/[disputeId]/bind-canonical.
+      const canonicalPlanIdForBillYear = ((): string | null => {
+        const v = (dispute.metadata as Record<string, unknown> | null)?.canonicalPlanIdForBillYear;
+        return typeof v === "string" && v.length > 0 ? v : null;
+      })();
       evidence = await resolveEvidence(supabase, {
         userId: user.id,
         claimIds: [dispute.claim_id],
@@ -166,6 +173,7 @@ export async function GET(
         letterType: dispute.dispute_type,
         disputeId: dispute.id,
         userConfirmedSamePlan,
+        canonicalPlanIdForBillYear,
       });
 
       // Debug logging — helps diagnose why insurer resolution fails for a
@@ -318,6 +326,10 @@ export async function GET(
           missingForYear: planContext.missingForYear,
           fallbackPlan: planContext.fallbackPlan,
           providerContact: planContext.providerContact,
+          // S110 Chunk C — surface archive auto-lookup result so the UI can
+          // show "We found your 2023 plan in our library" before the user
+          // answers SamePlanConfirmBanner. Null when no archive available.
+          archiveCanonicalPlan: planContext.archiveCanonicalPlan,
         }
       : null,
     missingPlanForYear: planContext?.missingForYear ?? null,
@@ -329,6 +341,13 @@ export async function GET(
     userConfirmedSamePlan: ((): "yes" | "no" | "not_sure" | null => {
       const v = (dispute.metadata as Record<string, unknown> | null)?.userConfirmedSamePlan;
       return v === "yes" || v === "no" || v === "not_sure" ? v : null;
+    })(),
+    // S110 Chunk D — surface the bound canonical id (if any) so the UI
+    // can hide the SearchCanonicalPlanModal trigger and SamePlanConfirmBanner
+    // once the user has explicitly bound a bill-year canonical.
+    canonicalPlanIdForBillYear: ((): string | null => {
+      const v = (dispute.metadata as Record<string, unknown> | null)?.canonicalPlanIdForBillYear;
+      return typeof v === "string" && v.length > 0 ? v : null;
     })(),
     // S74.5 D16 — drift state for the client to render the banner +
     // cooldown-gated follow-up CTA. Null when flag OFF.

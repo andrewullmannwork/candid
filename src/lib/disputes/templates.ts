@@ -228,6 +228,20 @@ function buildClosingArgument(
     return "Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based. Per §2560.503-1(h)(2)(iii), I request reasonable access to and copies of all documents relevant to this claim, including the applicable cost-sharing and coverage provisions.";
   }
 
+  // S110 Chunk C — Case C-archive: canonical archive (auto-lookup OR manual
+  // bind) supplied the cited terms. Per Subplan §3b, per-line bullets carry
+  // the cite; closing argument is just the standard §503-1(g) provision-
+  // request — no reverse-burden needed because the cited terms ARE the bill-
+  // year plan's terms (community-verified). Detected by `canonical_archive`
+  // tagging on planBenefit rows (resolver only emits this tag when a bound
+  // canonical was actually used to load coverage).
+  const archiveSourced = !hasExactPlan && anyBenefit && evidence.claims.some((c) =>
+    c.lineItemEvidence.some((li) => li.planBenefit?.sourcedFrom === "canonical_archive"),
+  );
+  if (archiveSourced) {
+    return "Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based.";
+  }
+
   // S109 PR #2 (Chunk B) — Case C-fallback: same-plan-confirmed proxy cite.
   // Detect by inspecting whether the rendered benefit rows are sourced from
   // 'user_fallback' (the resolver only loads fallback coverage when the user
@@ -392,8 +406,18 @@ function renderLineItemEvidence(
     let prefix: string;
     switch (li.planBenefit.sourcedFrom) {
       case "canonical_archive": {
-        const insurer = planContext?.insurer?.name ?? planContext?.plan?.insurerName ?? "this plan's";
-        const planName = planContext?.plan?.planName ?? "Summary of Benefits and Coverage";
+        // S110 Chunk C — read from archiveCanonicalPlan (the bound bill-year
+        // canonical), NOT planContext.plan (which is null in this branch —
+        // archive citations only render when no exact-year user plan exists).
+        // Pattern 1 #2 preserved: we cite the canonical's insurer + plan name +
+        // bill year, all of which describe the actual bill-year plan terms.
+        const archive = planContext?.archiveCanonicalPlan ?? null;
+        const insurer =
+          archive?.insurerName ??
+          planContext?.insurer?.name ??
+          planContext?.fallbackPlan?.insurerName ??
+          "this plan's";
+        const planName = archive?.planName ?? "plan";
         const yearClause = li.planBenefit.sourcedFromYear != null
           ? `${li.planBenefit.sourcedFromYear} Summary of Benefits and Coverage (community-verified)`
           : "Summary of Benefits and Coverage (community-verified)";

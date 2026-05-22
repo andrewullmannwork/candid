@@ -1,10 +1,14 @@
 /**
- * S109 PR #2 (Chunk B) testing helper — clear dispute.metadata.userConfirmedSamePlan
- * on Andrew's disputes so the SamePlanConfirmBanner re-appears for re-testing.
+ * S109 PR #2 (Chunk B) + S110 Chunk D testing helper — clear dispute-letter
+ * banner + bind state on Andrew's disputes so the SamePlanConfirmBanner +
+ * Find-in-library CTA re-appear for re-testing.
  *
- * Removes userConfirmedSamePlan + userConfirmedSamePlanAt from each Andrew-owned
- * dispute's metadata. Other metadata fields (claimLineItemIds, lastRedraftAt,
- * redraftHistory, planContextFingerprint, etc.) are preserved.
+ * Removes from each Andrew-owned dispute's metadata:
+ *   - userConfirmedSamePlan + userConfirmedSamePlanAt (Chunk B banner answer)
+ *   - canonicalPlanIdForBillYear + canonicalPlanBoundAt (Chunk D manual bind)
+ *
+ * Other metadata fields (claimLineItemIds, lastRedraftAt, redraftHistory,
+ * planContextFingerprint, etc.) are preserved.
  *
  * Run: `npx tsx scripts/findings/ops9-audit/clear-same-plan-confirmation.ts`
  * Dry-run: `npx tsx scripts/findings/ops9-audit/clear-same-plan-confirmation.ts --dry-run`
@@ -50,11 +54,15 @@ async function main() {
   let touched = 0;
   for (const d of disputes) {
     const meta = (d.metadata as Record<string, unknown> | null) ?? {};
-    if (meta.userConfirmedSamePlan == null && meta.userConfirmedSamePlanAt == null) {
+    const hasBannerState =
+      meta.userConfirmedSamePlan != null || meta.userConfirmedSamePlanAt != null;
+    const hasBindState =
+      meta.canonicalPlanIdForBillYear != null || meta.canonicalPlanBoundAt != null;
+    if (!hasBannerState && !hasBindState) {
       continue;
     }
     console.log(
-      `  - dispute ${d.id.slice(0, 8)} (claim ${String(d.claim_id ?? "—").slice(0, 8)}): clearing userConfirmedSamePlan=${meta.userConfirmedSamePlan ?? "null"}`,
+      `  - dispute ${d.id.slice(0, 8)} (claim ${String(d.claim_id ?? "—").slice(0, 8)}): clearing userConfirmedSamePlan=${meta.userConfirmedSamePlan ?? "null"}, canonicalPlanIdForBillYear=${typeof meta.canonicalPlanIdForBillYear === "string" ? (meta.canonicalPlanIdForBillYear as string).slice(0, 8) : "null"}`,
     );
     if (DRY_RUN) {
       touched++;
@@ -63,6 +71,8 @@ async function main() {
     const next: Record<string, unknown> = { ...meta };
     delete next.userConfirmedSamePlan;
     delete next.userConfirmedSamePlanAt;
+    delete next.canonicalPlanIdForBillYear;
+    delete next.canonicalPlanBoundAt;
     const { error: updErr } = await supabase
       .from("dispute_outcomes")
       .update({ metadata: next, updated_at: new Date().toISOString() })
@@ -75,7 +85,7 @@ async function main() {
   }
 
   console.log(
-    `\n${DRY_RUN ? "[dry-run] would clear" : "Cleared"} userConfirmedSamePlan on ${touched} of ${disputes.length} dispute${disputes.length === 1 ? "" : "s"}.`,
+    `\n${DRY_RUN ? "[dry-run] would clear" : "Cleared"} banner + bind state on ${touched} of ${disputes.length} dispute${disputes.length === 1 ? "" : "s"}.`,
   );
 }
 

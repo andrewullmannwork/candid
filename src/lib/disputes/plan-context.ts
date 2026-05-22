@@ -95,6 +95,25 @@ export interface PlanContext {
    * "the applicable state Department of Insurance".
    */
   userState: string | null;
+  /**
+   * S110 Chunk C — community-corroborated bill-year canonical found via strict
+   * Pattern 2 identity year-shift from the user's current plan canonical.
+   *
+   * Populated when ALL hold:
+   *   1. `plan` is null (no exact-year user plan on file)
+   *   2. `fallbackPlan.canonicalPlanId` is non-null (anchor gate — only year-
+   *       shift from a canonical-identified plan, not raw user uploads)
+   *   3. `missingForYear` is non-null (we know the bill year to shift to)
+   *   4. Strict 5-component match in canonical_plans returns exactly one row
+   *      (uniqueness gate — insurer_id + plan_name + state + metal_level +
+   *      plan_type match the anchor, with plan_year = missingForYear)
+   *
+   * Null otherwise. Use eligibility (vs presence) gated on
+   * `userConfirmedSamePlan === 'yes'` per evidence-resolver
+   * `isArchiveLookupEligible`. Pattern 1 #2 preserved: cited terms ARE the
+   * bill-year plan's terms (community-verified), not the current plan's.
+   */
+  archiveCanonicalPlan: ResolvedPlan | null;
 }
 
 const STALE_THRESHOLD_DAYS = 180;
@@ -210,6 +229,23 @@ export async function resolvePlanContext(
     .maybeSingle();
   const userState = (profile?.state as string | null) ?? null;
 
+  // S110 Chunk C — community-corroborated bill-year canonical auto-lookup.
+  // Only fires when (a) no exact-year user plan, (b) fallback plan has a
+  // canonical anchor, (c) bill year known. The lookup itself enforces strict
+  // 5-component identity + uniqueness. Eager population so the UI can see
+  // archive availability before SamePlanConfirmBanner is answered; whether
+  // the letter USES the archive is gated separately on userConfirmedSamePlan
+  // === 'yes' in evidence-resolver.
+  let archiveCanonicalPlan: ResolvedPlan | null = null;
+  const fallbackAnchorId = fallbackPlan?.canonical_plan_id ?? null;
+  if (!resolvedPlan && fallbackAnchorId && missingForYear != null) {
+    archiveCanonicalPlan = await lookupArchiveCanonical(
+      supabase,
+      fallbackAnchorId,
+      missingForYear,
+    );
+  }
+
   return {
     plan: toResolved(resolvedPlan),
     insurer,
@@ -217,6 +253,137 @@ export async function resolvePlanContext(
     fallbackPlan: toResolved(fallbackPlan),
     providerContact,
     userState,
+    archiveCanonicalPlan,
+  };
+}
+
+/**
+ * S110 Chunk C — Pattern 2 identity year-shift lookup.
+ *
+ * Given a canonical_plan_id (anchor — the user's current plan canonical) and
+ * a target plan_year (the bill year), find the canonical_plans row that
+ * represents THE SAME PLAN for the target year. Strict 5-component identity
+ * gate (insurer_id + plan_name normalized + state + metal_level + plan_type)
+ * + uniqueness gate (must return exactly one row to be confident).
+ *
+ * Why strict + unique:
+ *   - Pattern 1 #2 ("no fabricated citations") demands high precision. False
+ *     positive (matching the wrong plan's bill-year version) = citing terms
+ *     that aren't actually the user's bill-year plan.
+ *   - Asymmetric risk: false negative just falls through to user_fallback
+ *     (cite current plan with year disclosed); false positive is a Pattern
+ *     1 #2 violation. Bias toward strict matching.
+ *
+ * Components dropped from full Pattern 2 (employer/network/HIOS) because
+ * those drift legitimately year-over-year and would cause false negatives.
+ * Plan_name uses LOWER+TRIM normalization (whitespace + case insensitive)
+ * per feedback_candid_recall_over_precision — no fuzzy matching.
+ *
+ * Returns null on any of: anchor missing identity components, no match,
+ * multiple matches (ambiguous), DB error.
+ */
+async function lookupArchiveCanonical(
+  supabase: SupabaseClient,
+  anchorCanonicalPlanId: string,
+  billYear: number,
+): Promise<ResolvedPlan | null> {
+  // Step 1 — fetch the anchor canonical to read its identity components.
+  const { data: anchor, error: anchorErr } = await supabase
+    .from("canonical_plans")
+    .select("insurer_id, plan_name, plan_type, state, metal_level")
+    .eq("id", anchorCanonicalPlanId)
+    .maybeSingle();
+
+  if (anchorErr || !anchor) {
+    console.log("[plan-context] archive lookup: anchor canonical fetch failed", {
+      anchorCanonicalPlanId,
+      err: anchorErr?.message ?? null,
+    });
+    return null;
+  }
+
+  // Strict 5-component requirement: any missing component → abstain. Most
+  // common cause is non-ACA / employer-sponsored plans without metal_level.
+  if (
+    !anchor.insurer_id ||
+    !anchor.plan_name ||
+    !anchor.state ||
+    !anchor.metal_level ||
+    !anchor.plan_type
+  ) {
+    console.log("[plan-context] archive lookup: anchor missing identity components", {
+      anchorCanonicalPlanId,
+      hasInsurerId: !!anchor.insurer_id,
+      hasPlanName: !!anchor.plan_name,
+      hasState: !!anchor.state,
+      hasMetalLevel: !!anchor.metal_level,
+      hasPlanType: !!anchor.plan_type,
+    });
+    return null;
+  }
+
+  // Step 2 — find canonical(s) for bill year matching insurer + state +
+  // metal + plan_type. Plan-name matched in-memory after LOWER+TRIM to avoid
+  // ILIKE wildcard interpretation on user-uploaded names that may contain
+  // literal `%` or `_`.
+  const { data: candidates, error: matchErr } = await supabase
+    .from("canonical_plans")
+    .select("id, plan_name, plan_year, plan_type, state, metal_level, insurer_id")
+    .eq("insurer_id", anchor.insurer_id)
+    .eq("state", anchor.state)
+    .eq("metal_level", anchor.metal_level)
+    .eq("plan_type", anchor.plan_type)
+    .eq("plan_year", billYear);
+
+  if (matchErr) {
+    console.log("[plan-context] archive lookup: candidate query failed", {
+      err: matchErr.message,
+    });
+    return null;
+  }
+
+  const normalizedAnchorName = anchor.plan_name.toLowerCase().trim();
+  const matches = (candidates ?? []).filter(
+    (c) =>
+      typeof c.plan_name === "string" &&
+      c.plan_name.toLowerCase().trim() === normalizedAnchorName,
+  );
+
+  // Uniqueness gate — abstain on 0 or >1 results.
+  if (matches.length !== 1) {
+    console.log("[plan-context] archive lookup: no unique match", {
+      anchorCanonicalPlanId,
+      billYear,
+      candidateCount: candidates?.length ?? 0,
+      exactNameMatchCount: matches.length,
+    });
+    return null;
+  }
+
+  const match = matches[0];
+
+  // Hydrate insurer display name for the resulting ResolvedPlan.
+  const { data: insurer } = await supabase
+    .from("insurer_catalog")
+    .select("name")
+    .eq("id", match.insurer_id)
+    .maybeSingle();
+
+  console.log("[plan-context] archive lookup match", {
+    anchorCanonicalPlanId,
+    billYear,
+    archiveCanonicalId: match.id,
+    archivePlanName: match.plan_name,
+    archiveInsurer: insurer?.name ?? match.insurer_id,
+  });
+
+  return {
+    id: match.id,
+    planName: match.plan_name ?? null,
+    planYear: match.plan_year ?? null,
+    insurerName: insurer?.name ?? null,
+    planType: match.plan_type ?? null,
+    canonicalPlanId: match.id,
   };
 }
 

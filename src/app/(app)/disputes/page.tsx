@@ -14,6 +14,7 @@ import { DisputeRecipientCard } from "@/components/disputes/DisputeRecipientCard
 import { EvidenceBlock } from "@/components/disputes/EvidenceBlock";
 import { MissingPlanBanner } from "@/components/disputes/MissingPlanBanner";
 import { SamePlanConfirmBanner } from "@/components/disputes/SamePlanConfirmBanner";
+import { SearchCanonicalPlanModal } from "@/components/disputes/SearchCanonicalPlanModal";
 import { DownloadWarningModal } from "@/components/disputes/DownloadWarningModal";
 import { EvidenceGaps } from "@/components/disputes/EvidenceGaps";
 import { InsurerAddressCorrectionModal } from "@/components/disputes/InsurerAddressCorrectionModal";
@@ -196,6 +197,14 @@ function DisputesContent() {
   const [userConfirmedSamePlan, setUserConfirmedSamePlan] = useState<
     "yes" | "no" | "not_sure" | null
   >(null);
+  // S110 Chunk D — bound canonical id for bill-year. When set, archive
+  // citations are sourced from this canonical's services (manual bind beats
+  // auto-lookup and user_fallback). Hides the search-modal trigger.
+  const [canonicalPlanIdForBillYear, setCanonicalPlanIdForBillYear] = useState<
+    string | null
+  >(null);
+  // S110 Chunk D — search modal open state.
+  const [searchModalOpen, setSearchModalOpen] = useState(false);
   // S74 — InsurerAddressCorrectionModal open state.
   const [insurerCorrectionOpen, setInsurerCorrectionOpen] = useState(false);
   // S74 — Mark-sent button state + transient toast.
@@ -235,6 +244,11 @@ function DisputesContent() {
         data.userConfirmedSamePlan === "no" ||
         data.userConfirmedSamePlan === "not_sure"
         ? data.userConfirmedSamePlan
+        : null,
+    );
+    setCanonicalPlanIdForBillYear(
+      typeof data.canonicalPlanIdForBillYear === "string" && data.canonicalPlanIdForBillYear.length > 0
+        ? data.canonicalPlanIdForBillYear
         : null,
     );
     if (data.letterContent) {
@@ -522,7 +536,8 @@ function DisputesContent() {
         !planContext.plan &&
         planContext.fallbackPlan &&
         planContext.missingForYear != null &&
-        disputeId && (
+        disputeId &&
+        !canonicalPlanIdForBillYear && (
           <SamePlanConfirmBanner
             disputeId={disputeId}
             billYear={planContext.missingForYear}
@@ -539,6 +554,65 @@ function DisputesContent() {
             }}
           />
         )}
+
+      {/* S110 Chunk D — Find-in-library CTA. Renders after the user answered
+          'no' or 'not_sure' to SamePlanConfirmBanner AND no canonical is
+          bound yet. Provides search-library + upload paths so the letter
+          can graduate from Case D safe framing to Case C-archive citation.
+          Hidden once a canonical is bound (the banner also hides in that
+          case so the user just sees the upgraded letter). */}
+      {planContext &&
+        !planContext.plan &&
+        planContext.missingForYear != null &&
+        disputeId &&
+        !canonicalPlanIdForBillYear &&
+        (userConfirmedSamePlan === "no" || userConfirmedSamePlan === "not_sure") && (
+          <div className="rounded-xl border border-blue-200 bg-blue-50/70 px-4 py-4">
+            <h3 className="text-sm font-semibold text-blue-900">
+              Strengthen this letter with your {planContext.missingForYear} plan terms
+            </h3>
+            <p className="mt-1 text-xs text-blue-800/90 leading-relaxed">
+              Find your {planContext.missingForYear} plan in Candid&apos;s
+              community library, or upload it directly. Either way, the letter
+              can then cite the actual {planContext.missingForYear} cost-
+              sharing terms instead of falling back to a statutory-only
+              framing.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setSearchModalOpen(true)}
+                className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
+              >
+                Find in Candid&apos;s library
+              </button>
+              <a
+                href={`/upload?planYear=${planContext.missingForYear}&returnTo=${encodeURIComponent(
+                  `/disputes?dispute=${disputeId}`,
+                )}`}
+                className="rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+              >
+                Upload my {planContext.missingForYear} plan
+              </a>
+            </div>
+          </div>
+        )}
+
+      {/* S110 Chunk D — search modal. Renders into a portal-like overlay when
+          open. Closes on background click, X, or successful bind. */}
+      {disputeId && planContext?.missingForYear != null && (
+        <SearchCanonicalPlanModal
+          open={searchModalOpen}
+          disputeId={disputeId}
+          billYear={planContext.missingForYear}
+          userState={null}
+          getAuthToken={getAuthToken}
+          onClose={() => setSearchModalOpen(false)}
+          onBound={async () => {
+            await fetchDispute(disputeId);
+          }}
+        />
+      )}
 
       {missingYear && !missingPlanDismissed ? (
         <MissingPlanBanner

@@ -135,6 +135,13 @@ export async function POST(
     const v = (dispute.metadata as Record<string, unknown> | null)?.userConfirmedSamePlan;
     return v === "yes" || v === "no" || v === "not_sure" ? v : null;
   })();
+  // S110 Chunk D — read manual canonical bind. Threads through both initial
+  // and post-CF20 resolveEvidence calls so archive coverage stays consistent
+  // across the redraft cycle.
+  const canonicalPlanIdForBillYear = ((): string | null => {
+    const v = (dispute.metadata as Record<string, unknown> | null)?.canonicalPlanIdForBillYear;
+    return typeof v === "string" && v.length > 0 ? v : null;
+  })();
   let evidence = await resolveEvidence(supabase, {
     userId: user.id,
     claimIds: [dispute.claim_id],
@@ -143,6 +150,7 @@ export async function POST(
     letterType: dispute.dispute_type,
     disputeId: dispute.id,
     userConfirmedSamePlan,
+    canonicalPlanIdForBillYear,
   });
 
   // Step 2: CF-20 re-parse-on-flag — mirrors /api/disputes/generate logic.
@@ -202,6 +210,7 @@ export async function POST(
                 letterType: dispute.dispute_type,
                 disputeId: dispute.id,
                 userConfirmedSamePlan,
+                canonicalPlanIdForBillYear,
               });
             }
           }

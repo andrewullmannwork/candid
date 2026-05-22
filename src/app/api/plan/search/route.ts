@@ -75,7 +75,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { query, state, planType, metalLevel } = await req.json();
+  const { query, state, planType, metalLevel, planYear, insurerHint, canonicalOnly } = await req.json();
+  void canonicalOnly; // S110 Chunk D — accepted for forward-compat; this route IS canonical-only
 
   if (!query || typeof query !== "string" || query.trim().length < 2) {
     return NextResponse.json({ plans: [] });
@@ -88,6 +89,23 @@ export async function POST(req: NextRequest) {
   // the typed text. (e.g. "100%" should match the literal characters, not
   // every plan name.)
   const escaped = trimmed.replace(/[\\%_]/g, (m) => `\\${m}`);
+
+  // S110 Chunk D — when insurerHint provided, pre-resolve matching insurer ids
+  // from insurer_catalog so canonical_plans.insurer_id can be filtered. Empty
+  // match → zero results (false negative preferred over false positive).
+  let insurerIdFilter: string[] | null = null;
+  if (typeof insurerHint === "string" && insurerHint.trim().length >= 2) {
+    const insurerEscaped = insurerHint.trim().replace(/[\\%_]/g, (m) => `\\${m}`);
+    const { data: insurerMatches } = await supabase
+      .from("insurer_catalog")
+      .select("id")
+      .ilike("name", `%${insurerEscaped}%`)
+      .limit(20);
+    insurerIdFilter = (insurerMatches ?? []).map((r) => r.id as string);
+    if (insurerIdFilter.length === 0) {
+      return NextResponse.json({ plans: [] });
+    }
+  }
 
   let queryBuilder = supabase
     .from("canonical_plans")
@@ -115,6 +133,13 @@ export async function POST(req: NextRequest) {
   if (planType && typeof planType === "string") queryBuilder = queryBuilder.eq("plan_type", planType);
   if (metalLevel && typeof metalLevel === "string") {
     queryBuilder = queryBuilder.eq("metal_level", metalLevel.toLowerCase());
+  }
+  // S110 Chunk D — bill-year filter for SearchCanonicalPlanModal.
+  if (typeof planYear === "number" && Number.isFinite(planYear)) {
+    queryBuilder = queryBuilder.eq("plan_year", planYear);
+  }
+  if (insurerIdFilter) {
+    queryBuilder = queryBuilder.in("insurer_id", insurerIdFilter);
   }
 
   const { data: rows, error } = await queryBuilder;
