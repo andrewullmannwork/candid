@@ -286,21 +286,14 @@ function renderEvidenceBlock(
     }
   }
 
-  // S109 PR #2 (Chunk A) — 4-case closing argument from the lawyer-pass
-  // decision tree per plans/s109_dispute_letter_lawyer_posture.md §3b. Case A
-  // (exact plan + benefit hits) emits nothing — per-line bullets carry it.
-  // Case B (exact plan + no benefit hits) cites §503-1(g) + §503-1(h)(2)(iii).
-  // Case D (no plan / fallback-only without confirmation — Chunk A default)
-  // cites §503-1(g) + §1024(b)(4) + EOB inconsistency. Chunk B adds Case C
-  // (fallback proxy + same-plan-confirmed banner gate) and Case C-archive
-  // (canonical archive bound via search or Pattern 2 auto-lookup).
-  const closingArgument = buildClosingArgument(planContext, evidence);
-  if (closingArgument) {
-    lines.push(closingArgument, "");
-  }
-  // S109 PR #2 (Chunk A) — escalation-path paragraph (always emitted; signals
-  // process-knowledge without being adversarial).
-  lines.push(buildEscalationParagraph(planContext), "");
+  // S109 PR #2 (Chunk A) — closing argument + escalation paragraph moved out
+  // of renderEvidenceBlock and into insuranceAppealTemplate.body directly.
+  // renderEvidenceBlock is shared by provider-bound letters (overcharge,
+  // balance_billing, duplicate, itemized_request, negotiation) where the
+  // "Plan Administrator" / state-DOI language doesn't fit (those go to the
+  // provider's billing department, not the insurer). The 4-case decision
+  // tree from the Subplan is insurer-scoped per §4. Per-line bullets here
+  // carry the substantive evidence regardless of recipient.
 
   if (multiClaim) {
     lines.push(
@@ -713,12 +706,15 @@ const insuranceAppealTemplate: LetterTemplate = {
       evidence,
     });
 
-    // S109 PR #2 (Chunk A) — removed the duplicate "Under the ACA / §503-1"
-    // paragraph that previously followed the evidence block. The closing
-    // argument inside renderEvidenceBlock (buildClosingArgument) now carries
-    // the statutory ask, and buildEscalationParagraph carries the §2719
-    // escalation-path disclosure. Removing the duplicate prevents the same
-    // statute from appearing twice in the letter body.
+    // S109 PR #2 (Chunk A) — 4-case closing argument + escalation paragraph
+    // emitted here (NOT inside renderEvidenceBlock) so provider-bound letters
+    // don't pick up "Plan Administrator" / state-DOI language. Per Subplan §4
+    // this rewrite is localized to insurance_appeal. Removed the duplicate
+    // "Under the ACA / §503-1" paragraph that previously followed the
+    // evidence block — the closing argument now carries the statutory ask
+    // and the escalation paragraph carries the §2719 disclosure.
+    const closingArgument = buildClosingArgument(planContext, evidence ?? null);
+    const escalationParagraph = buildEscalationParagraph(planContext);
 
     return `${formatDate(new Date().toISOString())}
 
@@ -736,7 +732,7 @@ The services provided were medically necessary and should be covered under my pl
 2. The clinical criteria used to determine medical necessity
 3. Instructions for requesting an external review if this internal appeal is denied
 
-${evidenceBlock ? `${evidenceBlock}` : ""}
+${evidenceBlock ? `${evidenceBlock}` : ""}${closingArgument ? `${closingArgument}\n\n` : ""}${escalationParagraph}
 
 I reserve all rights to pursue any other remedies available under federal and state law.
 
