@@ -485,14 +485,53 @@ function computeEvidenceGaps(
     : `/upload${returnTo ? `?returnTo=${returnTo}` : ""}`;
 
   if (!planContext?.plan) {
-    gaps.push({
-      kind: "plan_document_missing",
-      title: "Upload your insurance plan",
-      description:
-        "The letter can cite your plan's specific copay / coinsurance terms and SBC page references once your plan document is on file.",
-      ctaLabel: "Upload plan document",
-      ctaHref: uploadHref,
-    });
+    // S109 — differentiate "no plan at all" from "plan on file but for a
+    // different year than this bill." The fallbackPlan branch fires when the
+    // user has uploaded an insurance plan but its plan_year (or coverage
+    // window) doesn't cover this bill's date_of_service. Saying "upload your
+    // insurance plan" in that case is misleading — they did.
+    //
+    // Three sub-cases:
+    //   (a) fallback exists + we know the missing year → "Upload your <year> plan"
+    //       (fallback.planYear may be null when the parser failed to extract
+    //       it; the title only needs missingYear, description adapts)
+    //   (b) fallback exists but no missing year (claim has no plan_year and
+    //       date_of_service couldn't be parsed) → "Upload the plan that was
+    //       active for this bill"
+    //   (c) no fallback at all → generic "Upload your insurance plan"
+    const fallback = planContext?.fallbackPlan ?? null;
+    const missingYear = planContext?.missingForYear ?? null;
+    if (fallback && missingYear != null) {
+      const fbYearClause = fallback.planYear != null
+        ? `Your ${fallback.planYear} plan is on file.`
+        : "You have an insurance plan on file.";
+      gaps.push({
+        kind: "plan_document_missing",
+        title: `Upload your ${missingYear} plan`,
+        description:
+          `${fbYearClause} This bill is from ${missingYear} — plan terms change year to year, so uploading your ${missingYear} plan lets the letter cite that year's specific copay / coinsurance terms.`,
+        ctaLabel: "Upload plan document",
+        ctaHref: uploadHref,
+      });
+    } else if (fallback) {
+      gaps.push({
+        kind: "plan_document_missing",
+        title: "Upload the plan that was active for this bill",
+        description:
+          "You have an insurance plan on file, but we couldn't determine which plan year applied to this bill. Upload the plan that was active when this service was rendered so the letter can cite the right terms.",
+        ctaLabel: "Upload plan document",
+        ctaHref: uploadHref,
+      });
+    } else {
+      gaps.push({
+        kind: "plan_document_missing",
+        title: "Upload your insurance plan",
+        description:
+          "The letter can cite your plan's specific copay / coinsurance terms and SBC page references once your plan document is on file.",
+        ctaLabel: "Upload plan document",
+        ctaHref: uploadHref,
+      });
+    }
   } else if (!anyPlanBenefit) {
     gaps.push({
       kind: "plan_document_incomplete",
@@ -571,7 +610,13 @@ function computeEvidenceGaps(
       kind: "audit_findings_missing",
       title: "No audit findings attached",
       description:
-        "Re-run the audit against this bill to attach Medicare benchmark comparisons + overcharge flags directly to the letter.",
+        // S109 — drop the Medicare-benchmark reference. CMS PPL integration is
+        // wired but per-code benchmark coverage isn't broad enough yet to
+        // promise users Medicare comparisons. The audit rules that actually
+        // fire today are plan-coverage mismatches (copay/coinsurance vs
+        // billed), duplicate-charge detection, and balance-billing flags —
+        // describe those instead so the CTA matches what re-run produces.
+        "Re-run the audit against this bill to flag plan-coverage mismatches, duplicate charges, and balance-billing patterns. Findings strengthen the letter with concrete dispute reasons cited to your plan.",
       ctaLabel: "Re-run audit",
       // Intentionally no ctaHref — the UI wires this kind to an inline
       // POST /api/disputes/[disputeId]/rerun-audit instead of a navigation.

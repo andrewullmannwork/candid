@@ -302,13 +302,13 @@ export default function CandidClaimPage() {
   }
 
   function closeClaimDetail() {
-    // Prefer browser back (preserves scroll + matches user intent). Falls back
-    // to an explicit push if history is empty.
-    if (window.history.length > 1) {
-      router.back();
-    } else {
-      router.push(`/claim?tab=${tabBeforeDetail}`);
-    }
+    // S109 — explicit push instead of router.back(). The history-based back
+    // popped to whatever URL preceded the bill click in the browser tab —
+    // often /case (locked) or /dashboard when the user navigated between
+    // sections before drilling in. Push keeps the user inside /claim and
+    // matches the on-screen "Back to bills" label literally; scroll
+    // restoration on the bills list is acceptable to lose for that guarantee.
+    router.push(`/claim?tab=${tabBeforeDetail}`);
   }
 
   if (loading) {

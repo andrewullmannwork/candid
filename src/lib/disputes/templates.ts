@@ -175,11 +175,17 @@ function renderEvidenceBlock(
     }
   }
 
-  // If plan data isn't on file, call that out so the insurer sees we are
-  // open to supplementing — rather than pretending we had no data at all.
-  if (!planContext?.plan || !hasAnyPlanBenefit(evidence)) {
+  // S109 PR #1 — minimum-viable statutory-only request. The prior boilerplate
+  // ("I do not have my full plan documents on file...") was surrender language
+  // to the insurer regardless of whether the user actually had a plan on file.
+  // Replace with a neutral statutory ask that asserts the claimant's position
+  // under §503-1(g) without admitting any gap. The full 4-case decision tree
+  // (Case A no-closing, Case B/C/D enriched framing per data tier, escalation-
+  // path disclosure, claim-id header) is the PR #2 rewrite per
+  // plans/s109_dispute_letter_lawyer_posture.md.
+  if (!hasAnyPlanBenefit(evidence)) {
     lines.push(
-      "I do not have my full plan documents on file at the time of this letter. I request the Plan Administrator review the above charges against the applicable plan provisions and provide a written determination citing the specific provision on which any denial is based, per 29 CFR §2560.503-1(g).",
+      "Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based.",
       "",
     );
   }

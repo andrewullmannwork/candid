@@ -2345,20 +2345,50 @@ function BulkDisputeButton({
   // 2. Claim-level actionable un-dismissed findings.
   const claimActionable = claimLevelFindings.filter((f) => !f.dismissed && f.actionable);
 
-  // 3. Gap lines — billed > $0 + $0 insurance + $0 patient + not explicitly
-  //    not-covered. Synthesize a missing_adjustment finding so the bundle
-  //    can cover them. Skip lines that already have a real finding (avoid
-  //    double-counting the same dollar value).
+  // 3. Gap lines — synthesize a missing_adjustment finding so the bulk
+  //    dispute bundle can cover lines no audit rule fired on. Two shapes:
+  //      a. Mystery gap: billed > 0 + $0 insurance + $0 patient. No money
+  //         moved despite a charge; universal "help me dispute" case.
+  //      b. Recovery story: insurer under-paid relative to plan benefits and
+  //         the recovery-math computed refund/forgiveness ≥ $1. Mirrors the
+  //         row-expansion render gate at line 1210-1212 — whenever the row
+  //         shows the green/red "Your insurer should have paid X" panel, the
+  //         bulk dispute button must surface the same finding. Previously
+  //         only (a) qualified, which silently hid the dispute CTA on the
+  //         common "insurer paid $0 + you paid OOP" pattern.
+  //    Skip lines that already have a real audit finding (avoid double-
+  //    counting the same dollar value) and skip explicitly not-covered lines.
   const linesWithRealFindings = new Set(lineLevelActionable.map((e) => e.lineItemId));
   const gapSynthetic: Array<{ lineItemId: string; lineNumber: number; finding: AuditFinding; billedAmount: number }> = [];
   for (const li of primaryLineItems) {
     if (linesWithRealFindings.has(li.id)) continue;
+    if (li.coverageStatus === "not_covered") continue;
     const billed = li.billed_amount || 0;
     const ins = li.insurance_paid || 0;
     const owed = li.patient_owes || 0;
-    if (!(billed > 0 && ins === 0 && owed === 0)) continue;
-    if (li.coverageStatus === "not_covered") continue;
+    const refund = li.recovery?.refundComponent ?? 0;
+    const forgiveness = li.recovery?.forgivenessComponent ?? 0;
+    const isMysteryGap = billed > 0 && ins === 0 && owed === 0;
+    const hasRecoveryStory = li.planCoverage != null && (refund >= 1 || forgiveness >= 1);
+    if (!isMysteryGap && !hasRecoveryStory) continue;
+
     const syntheticId = `gap-${li.id}`;
+    const serviceLabel = li.description || li.service_slug?.replace(/_/g, " ") || "service";
+    let title: string;
+    let description: string;
+    let estimatedOvercharge: number;
+    if (isMysteryGap) {
+      title = `Unexplained $${billed.toLocaleString()} charge for ${serviceLabel}`;
+      description = `Service ${li.coverageStatus === "covered" ? "covered by plan" : "with no coverage data"} but EOB records $0 insurance payment and $0 patient responsibility. Provider billed $${billed.toLocaleString()}. Code: ${li.billing_code || "N/A"}.`;
+      estimatedOvercharge = billed;
+    } else {
+      const recoveryAmount = refund + forgiveness;
+      const patientPaid = li.recovery?.patientPaid ?? li.patient_paid_amount ?? 0;
+      const shouldOwe = li.recovery?.shouldOwe ?? 0;
+      title = `Insurer under-paid $${recoveryAmount.toLocaleString()} for ${serviceLabel}`;
+      description = `Service covered by plan. Insurance paid $${ins.toLocaleString()} on a $${billed.toLocaleString()} charge; patient paid $${patientPaid.toLocaleString()} out-of-pocket. Plan-stated patient cost-share: $${shouldOwe.toLocaleString()}. Code: ${li.billing_code || "N/A"}.`;
+      estimatedOvercharge = recoveryAmount;
+    }
     gapSynthetic.push({
       lineItemId: li.id,
       lineNumber: li.line_number,
@@ -2366,10 +2396,10 @@ function BulkDisputeButton({
         id: syntheticId,
         type: "missing_adjustment",
         severity: "high",
-        estimatedOvercharge: billed,
-        title: `Unexplained $${billed.toLocaleString()} charge for ${li.description || li.service_slug?.replace(/_/g, " ") || "service"}`,
+        estimatedOvercharge,
+        title,
         actionable: true,
-        description: `Service ${li.coverageStatus === "covered" ? "covered by plan" : "with no coverage data"} but EOB records $0 insurance payment and $0 patient responsibility. Provider billed $${billed.toLocaleString()}. Code: ${li.billing_code || "N/A"}.`,
+        description,
       },
       billedAmount: billed,
     });
