@@ -28,6 +28,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { resolvePlanContext } from "@/lib/disputes/plan-context";
+import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
+import { captureCoverageSnapshot } from "@/lib/disputes/coverage-snapshot";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -71,7 +74,7 @@ export async function POST(
 
   const { data: dispute, error: fetchErr } = await supabase
     .from("dispute_outcomes")
-    .select("id, metadata")
+    .select("id, metadata, claim_id, claim_line_item_id, dispute_type")
     .eq("id", disputeId)
     .eq("user_id", user.id)
     .single();
@@ -94,14 +97,85 @@ export async function POST(
     );
   }
 
+  // S111 smoke iteration 5 — capture pre-bind coverage snapshot so the next
+  // GET can compute a diff + validity verdict for the user. We resolve plan
+  // context + evidence with the CURRENT (pre-update) metadata so the
+  // snapshot reflects what the dispute was citing before this bind. Failure
+  // here is non-fatal — bind proceeds; the diff just won't surface on the
+  // next render.
+  let preBindCoverageSnapshot: ReturnType<
+    typeof captureCoverageSnapshot
+  > | null = null;
+  try {
+    if (dispute.claim_id) {
+      const prevMetadata =
+        (dispute.metadata as Record<string, unknown> | null) ?? {};
+      const prevCanonicalPlanIdForBillYear =
+        typeof prevMetadata.canonicalPlanIdForBillYear === "string" &&
+        (prevMetadata.canonicalPlanIdForBillYear as string).length > 0
+          ? (prevMetadata.canonicalPlanIdForBillYear as string)
+          : null;
+      const prevUserConfirmedSamePlan =
+        prevMetadata.userConfirmedSamePlan === "yes" ||
+        prevMetadata.userConfirmedSamePlan === "no" ||
+        prevMetadata.userConfirmedSamePlan === "not_sure"
+          ? (prevMetadata.userConfirmedSamePlan as
+              | "yes"
+              | "no"
+              | "not_sure")
+          : null;
+      const prevPlanContext = await resolvePlanContext(supabase, {
+        userId: user.id,
+        claimId: dispute.claim_id as string,
+        canonicalPlanIdForBillYear: prevCanonicalPlanIdForBillYear,
+      });
+      const extraLineItemIds =
+        (prevMetadata.claimLineItemIds as string[] | undefined) ?? [];
+      const allLineItemIds = Array.from(
+        new Set(
+          [dispute.claim_line_item_id, ...extraLineItemIds].filter(Boolean),
+        ),
+      ) as string[];
+      const prevEvidence = await resolveEvidence(supabase, {
+        userId: user.id,
+        claimIds: [dispute.claim_id as string],
+        lineItemIds: allLineItemIds.length > 0 ? allLineItemIds : undefined,
+        planContext: prevPlanContext,
+        letterType: dispute.dispute_type,
+        disputeId: dispute.id,
+        userConfirmedSamePlan: prevUserConfirmedSamePlan,
+        canonicalPlanIdForBillYear: prevCanonicalPlanIdForBillYear,
+      });
+      preBindCoverageSnapshot = captureCoverageSnapshot(
+        prevEvidence,
+        prevPlanContext,
+      );
+    }
+  } catch (snapshotErr) {
+    console.warn(
+      "[bind-canonical] pre-bind snapshot capture failed (non-fatal):",
+      snapshotErr,
+    );
+  }
+
+  const nextMetadata: Record<string, unknown> = {
+    ...((dispute.metadata as Record<string, unknown>) ?? {}),
+    canonicalPlanIdForBillYear: canonicalPlanId,
+    canonicalPlanBoundAt: new Date().toISOString(),
+    // S111 smoke iteration 5 — reset the wrong-year banner dismissal on
+    // each new bind so the banner re-evaluates against the new bound
+    // canonical's year (if the user binds another wrong-year plan, they
+    // should see the banner again).
+    wrongYearBannerDismissed: false,
+  };
+  if (preBindCoverageSnapshot) {
+    nextMetadata.preBindCoverageSnapshot = preBindCoverageSnapshot;
+  }
+
   const { error: updateErr } = await supabase
     .from("dispute_outcomes")
     .update({
-      metadata: {
-        ...((dispute.metadata as Record<string, unknown>) ?? {}),
-        canonicalPlanIdForBillYear: canonicalPlanId,
-        canonicalPlanBoundAt: new Date().toISOString(),
-      },
+      metadata: nextMetadata,
       updated_at: new Date().toISOString(),
     })
     .eq("id", dispute.id);

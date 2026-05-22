@@ -158,9 +158,28 @@ function buildClaimIdHeader(params: {
   evidence: DisputeEvidence | null | undefined;
 }): string {
   const npi = params.providerContact?.npi ?? params.bill?.provider?.npi ?? null;
-  const planLabel = params.planContext?.plan?.planName
+  // S111 smoke #4 — bound canonical surfaces in the Re: header.
+  // S111 smoke #6 — when the cited plan's year differs from the bill year
+  // (proxy citation), use "Current plan (cited as proxy):" framing instead
+  // of "Plan:" — saying "Plan: Anthem 2026" on a 2023 dispute falsely
+  // implies the claim was processed under that 2026 plan.
+  const exactPlanLabel = params.planContext?.plan?.planName
     ? `${params.planContext.plan.planName}${params.planContext.plan.planYear ? `, plan year ${params.planContext.plan.planYear}` : ""}`
     : null;
+  const boundPlanLabel = params.planContext?.boundCanonicalPlan?.planName
+    ? `${params.planContext.boundCanonicalPlan.planName}${params.planContext.boundCanonicalPlan.planYear ? `, plan year ${params.planContext.boundCanonicalPlan.planYear}` : ""}`
+    : null;
+  const planLabel = exactPlanLabel ?? boundPlanLabel;
+  const billYear =
+    params.planContext?.plan?.planYear ??
+    params.planContext?.missingForYear ??
+    null;
+  const planLabelYear =
+    params.planContext?.plan?.planYear ??
+    params.planContext?.boundCanonicalPlan?.planYear ??
+    null;
+  const planLabelIsProxy =
+    billYear != null && planLabelYear != null && planLabelYear !== billYear;
   const totalDisputed = params.evidence?.totals?.totalDiscrepancy ?? 0;
 
   // S109 PR #2 (Chunk A fix) — plain "Label: value" format (no markdown bold
@@ -175,7 +194,13 @@ function buildClaimIdHeader(params: {
   lines.push(`Date of Service: ${formatDate(params.serviceDate)}`);
   lines.push(`Provider: ${params.providerName}`);
   if (npi) lines.push(`Provider NPI: ${npi}`);
-  if (planLabel) lines.push(`Plan: ${planLabel}`);
+  if (planLabel) {
+    lines.push(
+      planLabelIsProxy
+        ? `Current plan (cited as proxy): ${planLabel}`
+        : `Plan: ${planLabel}`,
+    );
+  }
   if (params.accountNumber) lines.push(`Account #: ${params.accountNumber}`);
   if (totalDisputed > 0) lines.push(`Total Disputed: ${formatCurrency(totalDisputed)}`);
   return lines.join("\n");
@@ -228,18 +253,43 @@ function buildClosingArgument(
     return "Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based. Per §2560.503-1(h)(2)(iii), I request reasonable access to and copies of all documents relevant to this claim, including the applicable cost-sharing and coverage provisions.";
   }
 
-  // S110 Chunk C — Case C-archive: canonical archive (auto-lookup OR manual
-  // bind) supplied the cited terms. Per Subplan §3b, per-line bullets carry
-  // the cite; closing argument is just the standard §503-1(g) provision-
-  // request — no reverse-burden needed because the cited terms ARE the bill-
-  // year plan's terms (community-verified). Detected by `canonical_archive`
-  // tagging on planBenefit rows (resolver only emits this tag when a bound
-  // canonical was actually used to load coverage).
+  // S110 Chunk C / S111 smoke #6 — Case C-archive: canonical archive (auto-
+  // lookup OR manual bind) supplied the cited terms. When the bound
+  // canonical's year MATCHES the bill year (community-verified bill-year
+  // archive), the per-line bullets carry the cite + closing is the standard
+  // §503-1(g) provision-request. When the bound canonical is a WRONG-YEAR
+  // proxy (e.g., user bound a 2026 canonical for a 2023 bill), we use a
+  // reverse-burden ask similar to Case C-fallback — the cited terms are
+  // evidence of CURRENT coverage, and we ask the insurer to produce the
+  // bill-year SPD under 29 USC §1024(b)(4) so any year-over-year differences
+  // are on them to prove.
   const archiveSourced = !hasExactPlan && anyBenefit && evidence.claims.some((c) =>
     c.lineItemEvidence.some((li) => li.planBenefit?.sourcedFrom === "canonical_archive"),
   );
   if (archiveSourced) {
-    return "Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based.";
+    const archiveYear = (() => {
+      for (const c of evidence.claims) {
+        for (const li of c.lineItemEvidence) {
+          if (
+            li.planBenefit?.sourcedFrom === "canonical_archive" &&
+            li.planBenefit?.sourcedFromYear != null
+          ) {
+            return li.planBenefit.sourcedFromYear;
+          }
+        }
+      }
+      return null;
+    })();
+    const missingYear = planContext?.missingForYear ?? null;
+    const archiveIsProxy =
+      missingYear != null && archiveYear != null && archiveYear !== missingYear;
+    if (!archiveIsProxy) {
+      return "Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based.";
+    }
+    const yearAskClause = missingYear != null
+      ? `To the extent the ${missingYear} plan provisions differ materially from the cited terms, please produce the ${missingYear} Summary Plan Description and plan document under 29 USC §1024(b)(4) within the 30-day statutory period, and identify the specific provision applied to these charges.`
+      : "To the extent the plan provisions in effect on the date of service differ materially from the cited terms, please produce the applicable Summary Plan Description and plan document under 29 USC §1024(b)(4) within the 30-day statutory period.";
+    return `Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based. The terms cited above reflect the same plan administered under this insurer, currently in effect. ${yearAskClause}`;
   }
 
   // S109 PR #2 (Chunk B) — Case C-fallback: same-plan-confirmed proxy cite.
@@ -406,18 +456,21 @@ function renderLineItemEvidence(
     let prefix: string;
     switch (li.planBenefit.sourcedFrom) {
       case "canonical_archive": {
-        // S110 Chunk C — read from archiveCanonicalPlan (the bound bill-year
-        // canonical), NOT planContext.plan (which is null in this branch —
-        // archive citations only render when no exact-year user plan exists).
-        // Pattern 1 #2 preserved: we cite the canonical's insurer + plan name +
-        // bill year, all of which describe the actual bill-year plan terms.
-        const archive = planContext?.archiveCanonicalPlan ?? null;
+        // S111 D1/D2 refactor — read from `boundCanonicalPlan` (the canonical
+        // the user explicitly bound via PlanSearchModal). Pre-S111 this read
+        // from `archiveCanonicalPlan` (auto-discovered Pattern 2 year-shift),
+        // but D1 removed that as a citation source — auto-discovery is now
+        // UI-suggestion only. Pattern 1 #2 strict enforcement: citations
+        // require explicit user binding. The `canonical_archive` sourcedFrom
+        // tag now only comes from manual bind (loadCoverageFromCanonical
+        // invoked via the canonicalPlanIdForBillYear branch in resolveEvidence).
+        const bound = planContext?.boundCanonicalPlan ?? null;
         const insurer =
-          archive?.insurerName ??
+          bound?.insurerName ??
           planContext?.insurer?.name ??
           planContext?.fallbackPlan?.insurerName ??
           "this plan's";
-        const planName = archive?.planName ?? "plan";
+        const planName = bound?.planName ?? "plan";
         const yearClause = li.planBenefit.sourcedFromYear != null
           ? `${li.planBenefit.sourcedFromYear} Summary of Benefits and Coverage (community-verified)`
           : "Summary of Benefits and Coverage (community-verified)";
@@ -735,14 +788,49 @@ const insuranceAppealTemplate: LetterTemplate = {
     evidence,
     gateUnverified,
   }) => {
+    // S111 smoke #3/#4 — insurer precedence:
+    //   1. planContext.insurer (resolved in plan-context.ts preferring
+    //      boundCanonicalPlan.insurerName when bound — iteration 3 fix)
+    //   2. planContext.boundCanonicalPlan.insurerName (defensive fallback
+    //      in case resolveInsurer returned null but the bind succeeded)
+    //   3. bill.insurer.name (from EOB metadata)
+    //   4. planContext.plan.insurerName (user's plan row)
+    //   5. literal placeholder
     const insurerName = planContext?.insurer?.name
+      || planContext?.boundCanonicalPlan?.insurerName
       || bill.insurer?.name
       || planContext?.plan?.insurerName
       || "[Insurance Company]";
     const memberId = bill.patient.memberId || undefined;
-    const planLabel = planContext?.plan?.planName
+    // S111 smoke #4/#6 — plan label resolution + wrong-year detection.
+    // When the cited plan's year differs from the bill year, we render the
+    // sentence as a proxy citation ("citing my current 2026 plan as
+    // evidence of present coverage") rather than falsely claiming "this
+    // claim was processed under" the wrong-year plan (smoke #6 fix —
+    // saying "processed under 2026" on a 2023 dispute is factually wrong
+    // and weakens the dispute).
+    const exactPlanLabel = planContext?.plan?.planName
       ? `${planContext.plan.planName}${planContext.plan.planYear ? `, plan year ${planContext.plan.planYear}` : ""}`
       : null;
+    const boundPlanLabel = planContext?.boundCanonicalPlan?.planName
+      ? `${planContext.boundCanonicalPlan.planName}${planContext.boundCanonicalPlan.planYear ? `, plan year ${planContext.boundCanonicalPlan.planYear}` : ""}`
+      : null;
+    const planLabel = exactPlanLabel ?? boundPlanLabel;
+    const billYearForLetter =
+      planContext?.plan?.planYear ?? planContext?.missingForYear ?? null;
+    const planLabelYear =
+      planContext?.plan?.planYear ??
+      planContext?.boundCanonicalPlan?.planYear ??
+      null;
+    const planLabelIsProxy =
+      billYearForLetter != null &&
+      planLabelYear != null &&
+      planLabelYear !== billYearForLetter;
+    const planLabelSentence = planLabel
+      ? planLabelIsProxy
+        ? ` I am citing my current ${planLabel} as evidence of present coverage under this insurer; the plan in effect on the date of service is the subject of the request below.`
+        : ` This claim was processed under ${planLabel}.`
+      : "";
     const evidenceBlock = renderEvidenceBlock(
       evidence,
       planContext,
@@ -786,7 +874,7 @@ ${claimIdHeader}
 
 To Whom It May Concern:
 
-I am writing to formally appeal the denial of my claim for services rendered on ${formatDate(serviceDate)} by ${providerName}.${planLabel ? ` This claim was processed under ${planLabel}.` : ""}
+I am writing to formally appeal the denial of my claim for services rendered on ${formatDate(serviceDate)} by ${providerName}.${planLabelSentence}
 
 The services provided were medically necessary and should be covered under my plan. I am requesting a full review of this denial, including:
 

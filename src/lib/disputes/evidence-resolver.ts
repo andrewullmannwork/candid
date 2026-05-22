@@ -264,7 +264,15 @@ export interface EvidenceGap {
      *  D framing (no fallback-cite) per Pattern 1 #2. The primary UI is
      *  SamePlanConfirmBanner above the letter; EvidenceGaps surfaces it as a
      *  card too for parallelism with other gaps. */
-    | "same_plan_unconfirmed";
+    | "same_plan_unconfirmed"
+    /** S111 D6 — user bound a canonical via PlanSearchModal but Candid's
+     *  community library is missing cost-sharing for some/all bill line items
+     *  on that canonical. Letter still cites the plan (Case C-archive) but
+     *  can't render per-line copay/coinsurance bullets. Primary CTA opens the
+     *  PlanSearchModal in upload mode so the user can graduate to user_exact
+     *  via their own SBC; secondary action is dismiss-in-UI ("Continue without
+     *  it"). Copy interpolates X/Y service counts + the missing service names. */
+    | "bound_canonical_coverage_thin";
   /** Short human-readable headline for the UI card. */
   title: string;
   /** One-line explanation of what adding this evidence unlocks. */
@@ -364,18 +372,22 @@ export async function resolveEvidence(
     ? rawLineItems.filter((li) => lineItemIds.includes(li.id))
     : rawLineItems;
 
-  // S110 Chunks C + D — source-priority candidate chain (first non-empty wins):
+  // S111 D1 refactor — source-priority candidate chain (first non-empty wins):
   //   Tier 1 (user_exact)        : user's exact-year plan from plan_covered_services
-  //   Tier 2 (canonical_archive) : manual bind via SearchCanonicalPlanModal (Chunk D)
-  //                                — explicit user selection of bill-year canonical;
-  //                                bypasses userConfirmedSamePlan gate (the bind IS
-  //                                the confirmation)
-  //   Tier 3 (canonical_archive) : auto-discovered archive canonical (Chunk C
-  //                                Pattern 2 year-shift from user's current plan
-  //                                canonical) — gated on userConfirmedSamePlan='yes'
-  //                                so we don't cite across an insurer switch
-  //   Tier 4 (user_fallback)     : user's current plan as proxy citation (Chunk B)
-  //                                — same userConfirmedSamePlan gate
+  //   Tier 2 (canonical_archive) : manual bind via PlanSearchModal — explicit
+  //                                user selection of bill-year canonical;
+  //                                bypasses userConfirmedSamePlan gate (the bind
+  //                                IS the confirmation)
+  //   Tier 3 (user_fallback)     : user's current plan as proxy citation (Case C-
+  //                                fallback) — gated on userConfirmedSamePlan='yes'
+  //
+  // S111 D1 — auto-discovered archive (Pattern 2 year-shift) is **NO LONGER**
+  // in this chain. It survives as a UI suggestion only
+  // (`planContext.archiveCanonicalPlan` powers PlanSearchModal's auto-mode
+  // best-match highlight). Pattern 1 #2 strict enforcement: citations require
+  // explicit user binding, never silent auto-bind even with a high-confidence
+  // year-shift match.
+  //
   // Each PlanBenefitDetail tagged with `sourcedFrom` so the letter template
   // renders the right bullet copy variant per Subplan §3a.
   let coverageByServiceSlug: Map<string, PlanBenefitDetail>;
@@ -393,27 +405,18 @@ export async function resolveEvidence(
     );
   } else if (canonicalPlanIdForBillYear) {
     // Tier 2 — manual canonical bind.
-    planYear = planContext?.missingForYear ?? null;
+    planYear =
+      planContext?.boundCanonicalPlan?.planYear ??
+      planContext?.missingForYear ??
+      null;
     coverageByServiceSlug = await loadCoverageFromCanonical(
       supabase,
       canonicalPlanIdForBillYear,
       "canonical_archive",
       planYear,
     );
-  } else if (planContext?.archiveCanonicalPlan && archiveEligible) {
-    // Tier 3 — auto-discovered archive canonical.
-    planYear =
-      planContext.archiveCanonicalPlan.planYear ??
-      planContext.missingForYear ??
-      null;
-    coverageByServiceSlug = await loadCoverageFromCanonical(
-      supabase,
-      planContext.archiveCanonicalPlan.id,
-      "canonical_archive",
-      planYear,
-    );
   } else if (planContext?.fallbackPlan && archiveEligible) {
-    // Tier 4 — user_fallback (cite current plan with year disclosed).
+    // Tier 3 — user_fallback (cite current plan with year disclosed).
     planYear = planContext.fallbackPlan.planYear;
     coverageByServiceSlug = await loadCoverage(
       supabase,
@@ -429,7 +432,15 @@ export async function resolveEvidence(
   // This is the "other claims that have been paid" signal. Requires canonical
   // plan + year to scope correctly. k-anonymity is enforced at render time.
   // (planYear declared above for loadCoverage source-year tagging.)
-  const canonicalPlanId = planContext?.plan?.canonicalPlanId ?? null;
+  //
+  // S111 D8 — fall through to the manually-bound canonical when there's no
+  // exact-year user plan. Without this, B5 fires: community/sibling/pricing
+  // signals stay empty even though the user has bound a canonical that has
+  // outcome data on it.
+  const canonicalPlanId =
+    planContext?.plan?.canonicalPlanId ??
+    canonicalPlanIdForBillYear ??
+    null;
   const codesList = filteredLineItems
     .filter((li) => li.billing_code && li.billing_code_type)
     .map((li) => ({ code: li.billing_code!, type: li.billing_code_type! }));
@@ -616,12 +627,18 @@ function computeEvidenceGaps(
     ? `/upload?planYear=${planYearForUpload}${returnTo ? `&returnTo=${returnTo}` : ""}`
     : `/upload${returnTo ? `?returnTo=${returnTo}` : ""}`;
 
-  if (!planContext?.plan) {
+  if (!planContext?.plan && !canonicalPlanIdForBillYear) {
     // S109 — differentiate "no plan at all" from "plan on file but for a
     // different year than this bill." The fallbackPlan branch fires when the
     // user has uploaded an insurance plan but its plan_year (or coverage
     // window) doesn't cover this bill's date_of_service. Saying "upload your
     // insurance plan" in that case is misleading — they did.
+    //
+    // S111 D1/B1 — suppress entirely when canonicalPlanIdForBillYear is set:
+    // the user has explicitly bound a bill-year canonical, so prompting them
+    // to upload contradicts that decision. If the bound canonical's coverage
+    // doesn't match the bill's codes, the D6 bound_canonical_coverage_thin
+    // gap emits a more accurate upload prompt below.
     //
     // Three sub-cases:
     //   (a) fallback exists + we know the missing year → "Upload your <year> plan"
@@ -664,7 +681,11 @@ function computeEvidenceGaps(
         ctaHref: uploadHref,
       });
     }
-  } else if (!anyPlanBenefit) {
+  } else if (planContext?.plan && !anyPlanBenefit) {
+    // S111 — constrain to the "user has plan, parser missed codes" case. The
+    // bound-canonical thin-coverage case is handled by D6
+    // bound_canonical_coverage_thin below, which has tailored copy that
+    // names the bound canonical.
     gaps.push({
       kind: "plan_document_incomplete",
       title: "Add pages from your plan document",
@@ -790,6 +811,75 @@ function computeEvidenceGaps(
       description:
         "A few codes on this bill don't have a known category yet — the letter still cites the code + EOB math, but plan-coverage matching needs a category.",
     });
+  }
+
+  // S111 D6 — bound canonical coverage thin. Fires when the user has
+  // explicitly bound a bill-year canonical (canonicalPlanIdForBillYear set,
+  // no exact-year user plan) AND the bound canonical's coverage doesn't
+  // match all of this bill's billable line items. Letter still cites the
+  // canonical via Case C-archive closing, but missing planBenefit rows mean
+  // per-line copay/coinsurance bullets can't render. Approved copy from
+  // Subplan §3c verbatim. Primary CTA opens PlanSearchModal in upload mode
+  // (wired in disputes/page.tsx via onUploadInModal); we don't emit
+  // ctaHref because the route is in-modal, not a navigation.
+  if (
+    canonicalPlanIdForBillYear &&
+    !planContext?.plan &&
+    planContext?.boundCanonicalPlan
+  ) {
+    const billableItems = allLineItems.filter((li) => li.billingCode);
+    const missingItems = billableItems.filter((li) => !li.planBenefit);
+    if (missingItems.length > 0 && billableItems.length > 0) {
+      const Y = billableItems.length;
+      const X = missingItems.length;
+      const bound = planContext.boundCanonicalPlan;
+      const billYear =
+        bound.planYear ?? planContext.missingForYear ?? null;
+      const insurer = bound.insurerName ?? "your insurer";
+      const planName = bound.planName ?? "your plan";
+
+      const allMissing = X === Y;
+      const xOfYClause =
+        allMissing && Y === 1
+          ? "for this bill's services"
+          : allMissing
+            ? `for ${Y} of ${Y} services`
+            : `for ${X} of ${Y} services`;
+
+      // Dedup + preserve order. ServiceName is reliably set by buildLineItemEvidence
+      // even for unmapped items (falls back to "Service" / code). Empty-string
+      // names are dropped to keep the comma list clean.
+      const missingNamesSet = new Set<string>();
+      const missingNames: string[] = [];
+      for (const li of missingItems) {
+        if (li.serviceName && !missingNamesSet.has(li.serviceName)) {
+          missingNamesSet.add(li.serviceName);
+          missingNames.push(li.serviceName);
+        }
+      }
+      const serviceNameClause =
+        missingNames.length === 0
+          ? "these services"
+          : missingNames.length === 1
+            ? missingNames[0]
+            : missingNames.length === 2
+              ? `${missingNames[0]} and ${missingNames[1]}`
+              : `${missingNames.slice(0, -1).join(", ")}, and ${missingNames[missingNames.length - 1]}`;
+
+      const yearSegment = billYear != null ? `${billYear} ` : "";
+      const ctaYearSegment = billYear != null ? `${billYear} ` : "";
+
+      gaps.push({
+        kind: "bound_canonical_coverage_thin",
+        title: `Got the plan — but we're light on details ${xOfYClause}.`,
+        description: `We linked your ${yearSegment}${insurer} ${planName}, but Candid's community library is missing cost-sharing for ${serviceNameClause} on this exact plan. Your letter still cites the plan, but uploading your ${yearSegment}SBC would let us cite the actual copay and coinsurance.`,
+        ctaLabel: `Upload my ${ctaYearSegment}plan`,
+        // Intentionally no ctaHref — the EvidenceGaps UI wires this kind to
+        // open PlanSearchModal in upload mode rather than navigating to /upload.
+        unverifiedCount: X,
+        totalCount: Y,
+      });
+    }
   }
 
   return gaps;

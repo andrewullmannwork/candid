@@ -12,14 +12,23 @@ import { disputeUrlForResult } from "@/lib/disputes/url";
 import { DisputeLetterHero } from "@/components/disputes/DisputeLetterHero";
 import { DisputeRecipientCard } from "@/components/disputes/DisputeRecipientCard";
 import { EvidenceBlock } from "@/components/disputes/EvidenceBlock";
-import { MissingPlanBanner } from "@/components/disputes/MissingPlanBanner";
-import { SamePlanConfirmBanner } from "@/components/disputes/SamePlanConfirmBanner";
-import { SearchCanonicalPlanModal } from "@/components/disputes/SearchCanonicalPlanModal";
+import { VerifStrip } from "@/components/disputes/VerifStrip";
+import {
+  CoverageDiffPanel,
+  type CoverageDiff,
+} from "@/components/disputes/CoverageDiffPanel";
+import {
+  PlanSearchModal,
+  type PlanSearchModalMode,
+} from "@/components/disputes/PlanSearchModal";
 import { DownloadWarningModal } from "@/components/disputes/DownloadWarningModal";
 import { EvidenceGaps } from "@/components/disputes/EvidenceGaps";
 import { InsurerAddressCorrectionModal } from "@/components/disputes/InsurerAddressCorrectionModal";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
-import type { PlanContext } from "@/lib/disputes/plan-context";
+import type {
+  BoundCanonicalPlan,
+  PlanContext,
+} from "@/lib/disputes/plan-context";
 import type { DisputeEvidence } from "@/lib/disputes/evidence-resolver";
 
 export default function DisputesPage() {
@@ -182,7 +191,6 @@ function DisputesContent() {
   const [disputeFetching, setDisputeFetching] = useState(false);
   const [planContext, setPlanContext] = useState<PlanContext | null>(null);
   const [evidence, setEvidence] = useState<DisputeEvidence | null>(null);
-  const [missingPlanDismissed, setMissingPlanDismissed] = useState(false);
   const [downloadWarnOpen, setDownloadWarnOpen] = useState(false);
   const [nameMismatch, setNameMismatch] = useState<{ billName: string; profileName: string } | null>(null);
   // Phase 4 Task 4-E: server-authoritative flag state for cite-grade gating on
@@ -197,14 +205,29 @@ function DisputesContent() {
   const [userConfirmedSamePlan, setUserConfirmedSamePlan] = useState<
     "yes" | "no" | "not_sure" | null
   >(null);
-  // S110 Chunk D — bound canonical id for bill-year. When set, archive
-  // citations are sourced from this canonical's services (manual bind beats
-  // auto-lookup and user_fallback). Hides the search-modal trigger.
-  const [canonicalPlanIdForBillYear, setCanonicalPlanIdForBillYear] = useState<
-    string | null
-  >(null);
-  // S110 Chunk D — search modal open state.
-  const [searchModalOpen, setSearchModalOpen] = useState(false);
+  // S111 D2 — server-resolved bound canonical (insurer + plan name + badge).
+  // Surfaced at the top level of the GET response so VerifStrip can render
+  // bound-verified state directly without a follow-up fetch. The raw
+  // canonical id lives on the server (dispute.metadata.canonicalPlanIdForBillYear);
+  // the client doesn't need to track it separately since boundCanonicalPlan
+  // is the read surface for both the strip + templates.
+  const [boundCanonicalPlan, setBoundCanonicalPlan] =
+    useState<BoundCanonicalPlan | null>(null);
+  // S111 smoke #2 — proxy-acceptance flag. Distinguishes "Yes, deciding"
+  // (confirm-archive or upload-or-proxy strip) from "Yes, chose proxy"
+  // (bound-proxy strip). Persisted in dispute.metadata.userAcceptedProxy.
+  const [userAcceptedProxy, setUserAcceptedProxy] = useState(false);
+  // S111 smoke #5 — wrong-year banner dismissal flag (from response).
+  const [wrongYearBannerDismissed, setWrongYearBannerDismissed] = useState(false);
+  // S111 smoke #5 — coverage diff payload (from response). Rendered above
+  // the letter via CoverageDiffPanel when present. Cleared via the
+  // clear-coverage-diff endpoint when user proceeds with the dispute.
+  const [coverageDiff, setCoverageDiff] = useState<CoverageDiff | null>(null);
+  // S111 — unified modal state. Replaces the S110 SearchCanonicalPlanModal
+  // open boolean; mode controls the 5-mode morph in PlanSearchModal.
+  const [planSearchModalOpen, setPlanSearchModalOpen] = useState(false);
+  const [planSearchModalMode, setPlanSearchModalMode] =
+    useState<PlanSearchModalMode>("search");
   // S74 — InsurerAddressCorrectionModal open state.
   const [insurerCorrectionOpen, setInsurerCorrectionOpen] = useState(false);
   // S74 — Mark-sent button state + transient toast.
@@ -246,11 +269,17 @@ function DisputesContent() {
         ? data.userConfirmedSamePlan
         : null,
     );
-    setCanonicalPlanIdForBillYear(
-      typeof data.canonicalPlanIdForBillYear === "string" && data.canonicalPlanIdForBillYear.length > 0
-        ? data.canonicalPlanIdForBillYear
-        : null,
+    // S111 D2 — top-level boundCanonicalPlan from the response. Drives
+    // VerifStrip's bound-verified state without a follow-up fetch. Trust the
+    // server shape (server validates canonical exists before populating).
+    setBoundCanonicalPlan(
+      (data.boundCanonicalPlan as BoundCanonicalPlan | null) ?? null,
     );
+    // S111 smoke #2 — proxy-acceptance flag from response top level.
+    setUserAcceptedProxy(data.userAcceptedProxy === true);
+    // S111 smoke #5 — wrong-year banner dismissal + coverage diff.
+    setWrongYearBannerDismissed(data.wrongYearBannerDismissed === true);
+    setCoverageDiff((data.coverageDiff as CoverageDiff | null) ?? null);
     if (data.letterContent) {
       // Server-resolved letter type (S74). Authoritative — reads metadata.letterType
       // first, then maps from legacy dispute_type vocab. Without this, the recipient
@@ -349,8 +378,13 @@ function DisputesContent() {
   const handleDownloadCaseFile = () => {
     if (!letter) return;
     // Phase 3: warn-not-block when plan missing for claim year.
+    // S111 smoke #4 — also skip the warning when the user has bound a
+    // canonical OR explicitly accepted proxy, since either path addresses
+    // the missing-plan gap (letter cites the bound canonical or current
+    // plan as proxy, respectively).
     const missingYear = letter.missingPlanForYear ?? planContext?.missingForYear ?? null;
-    if (missingYear && !missingPlanDismissed) {
+    const planGapAddressed = !!boundCanonicalPlan || userAcceptedProxy;
+    if (missingYear && !planGapAddressed) {
       setDownloadWarnOpen(true);
       return;
     }
@@ -524,108 +558,207 @@ function DisputesContent() {
         </a>
       )}
 
-      {/* S109 PR #2 (Chunk B) — Same-plan-confirmation banner. Renders only
-          for the fallback-only case (planContext.plan == null AND
-          planContext.fallbackPlan != null AND missingForYear known AND user
-          hasn't answered yet). Confirms whether the user was on the same
-          insurer in the bill year so the letter can cite the current plan
-          as a proxy (Case C-fallback) or fall back to Case D safe framing.
-          On confirm, refetchDispute regenerates the letter with the new
-          framing. */}
+      {/* S111 D3 — VerifStrip replaces SamePlanConfirmBanner + "Strengthen
+          this letter" blue CTA panel. Single morphing component covering
+          question / checking / bound-verified / bound-proxy / fallback per
+          Subplan §3d. Parent gates rendering when no exact-year user plan
+          exists; the strip itself handles state derivation + optimistic
+          updates. */}
       {planContext &&
         !planContext.plan &&
-        planContext.fallbackPlan &&
         planContext.missingForYear != null &&
-        disputeId &&
-        !canonicalPlanIdForBillYear && (
-          <SamePlanConfirmBanner
+        disputeId && (
+          <VerifStrip
             disputeId={disputeId}
             billYear={planContext.missingForYear}
-            fallbackPlanYear={planContext.fallbackPlan.planYear}
             insurerName={
-              planContext.insurer?.name ?? planContext.fallbackPlan.insurerName ?? null
+              planContext.insurer?.name ??
+              planContext.fallbackPlan?.insurerName ??
+              null
             }
-            currentAnswer={userConfirmedSamePlan}
+            fallbackPlan={planContext.fallbackPlan}
+            userConfirmedSamePlan={userConfirmedSamePlan}
+            userAcceptedProxy={userAcceptedProxy}
+            archiveCanonicalPlan={
+              planContext.archiveCanonicalPlan
+                ? {
+                    id: planContext.archiveCanonicalPlan.id,
+                    planName: planContext.archiveCanonicalPlan.planName,
+                    planYear: planContext.archiveCanonicalPlan.planYear,
+                    insurerName: planContext.archiveCanonicalPlan.insurerName,
+                  }
+                : null
+            }
+            boundCanonicalPlan={boundCanonicalPlan}
+            wrongYearBannerDismissed={wrongYearBannerDismissed}
             getAuthToken={getAuthToken}
             onConfirmed={async (answer) => {
               setUserConfirmedSamePlan(answer);
-              // Re-fetch so the letter regenerates with the new framing.
+              await fetchDispute(disputeId);
+            }}
+            onOpenSearchModalAuto={() => {
+              setPlanSearchModalMode("auto");
+              setPlanSearchModalOpen(true);
+            }}
+            onOpenSearchModalSearch={() => {
+              setPlanSearchModalMode("search");
+              setPlanSearchModalOpen(true);
+            }}
+            onOpenUploadModal={() => {
+              setPlanSearchModalMode("upload");
+              setPlanSearchModalOpen(true);
+            }}
+            onDismissWrongYearBanner={async () => {
+              // S111 smoke #5 — POST dismiss flag + refetch. Server resets
+              // dismissal to false on each new bind so the banner reappears
+              // if the user binds another wrong-year plan.
+              if (!user) return;
+              const token = await user.firebaseUser.getIdToken();
+              await fetch(
+                `/api/disputes/${disputeId}/dismiss-wrong-year-banner`,
+                {
+                  method: "POST",
+                  headers: { Authorization: `Bearer ${token}` },
+                },
+              );
               await fetchDispute(disputeId);
             }}
           />
         )}
 
-      {/* S110 Chunk D — Find-in-library CTA. Renders after the user answered
-          'no' or 'not_sure' to SamePlanConfirmBanner AND no canonical is
-          bound yet. Provides search-library + upload paths so the letter
-          can graduate from Case D safe framing to Case C-archive citation.
-          Hidden once a canonical is bound (the banner also hides in that
-          case so the user just sees the upgraded letter). */}
-      {planContext &&
-        !planContext.plan &&
-        planContext.missingForYear != null &&
-        disputeId &&
-        !canonicalPlanIdForBillYear &&
-        (userConfirmedSamePlan === "no" || userConfirmedSamePlan === "not_sure") && (
-          <div className="rounded-xl border border-blue-200 bg-blue-50/70 px-4 py-4">
-            <h3 className="text-sm font-semibold text-blue-900">
-              Strengthen this letter with your {planContext.missingForYear} plan terms
-            </h3>
-            <p className="mt-1 text-xs text-blue-800/90 leading-relaxed">
-              Find your {planContext.missingForYear} plan in Candid&apos;s
-              community library, or upload it directly. Either way, the letter
-              can then cite the actual {planContext.missingForYear} cost-
-              sharing terms instead of falling back to a statutory-only
-              framing.
-            </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => setSearchModalOpen(true)}
-                className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
-              >
-                Find in Candid&apos;s library
-              </button>
-              <a
-                href={`/upload?planYear=${planContext.missingForYear}&returnTo=${encodeURIComponent(
-                  `/disputes?dispute=${disputeId}`,
-                )}`}
-                className="rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
-              >
-                Upload my {planContext.missingForYear} plan
-              </a>
-            </div>
-          </div>
-        )}
-
-      {/* S110 Chunk D — search modal. Renders into a portal-like overlay when
-          open. Closes on background click, X, or successful bind. */}
+      {/* S111 — unified PlanSearchModal. 5-mode morph; controlled by the
+          page-level open + mode state. Bind success → refetch; upload
+          success → refetch (planContext.plan should populate once Haiku
+          finishes, after which the strip morphs away entirely). */}
       {disputeId && planContext?.missingForYear != null && (
-        <SearchCanonicalPlanModal
-          open={searchModalOpen}
+        <PlanSearchModal
+          open={planSearchModalOpen}
+          initialMode={planSearchModalMode}
           disputeId={disputeId}
           billYear={planContext.missingForYear}
           userState={null}
+          initialInsurerName={
+            planContext.insurer?.name ??
+            planContext.fallbackPlan?.insurerName ??
+            null
+          }
+          archiveSuggestion={
+            planContext.archiveCanonicalPlan
+              ? {
+                  id: planContext.archiveCanonicalPlan.id,
+                  planName: planContext.archiveCanonicalPlan.planName,
+                  planYear: planContext.archiveCanonicalPlan.planYear,
+                  insurerName: planContext.archiveCanonicalPlan.insurerName,
+                }
+              : null
+          }
           getAuthToken={getAuthToken}
-          onClose={() => setSearchModalOpen(false)}
           onBound={async () => {
             await fetchDispute(disputeId);
           }}
+          onUploaded={async () => {
+            await fetchDispute(disputeId);
+          }}
+          onSkipToProxy={async () => {
+            // S111 smoke #4 — footer "Use current plan as evidence (weaker)"
+            // POSTs confirm-same-plan with acceptedProxy=true so the strip
+            // transitions to bound-proxy after modal close.
+            if (!user) return;
+            const token = await user.firebaseUser.getIdToken();
+            await fetch(
+              `/api/disputes/${disputeId}/confirm-same-plan`,
+              {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  answer: "yes",
+                  acceptedProxy: true,
+                }),
+              },
+            );
+            await fetchDispute(disputeId);
+          }}
+          onClose={() => setPlanSearchModalOpen(false)}
         />
       )}
 
-      {missingYear && !missingPlanDismissed ? (
-        <MissingPlanBanner
-          claimYear={missingYear}
-          disputeId={letter.id}
-          onDismiss={() => setMissingPlanDismissed(true)}
-        />
-      ) : null}
+      {/* S111 smoke #4 — MissingPlanBanner removed; VerifStrip above covers
+          the "need plan" messaging across all branches (question /
+          confirm-archive / upload-or-proxy / fallback / bound-*). Two
+          parallel banners was redundant and confusing per the smoke. */}
 
       {/* Important notice — moved to top; softer styling, less boxy */}
       <div className="rounded-xl border border-amber-100 bg-amber-50/70 px-4 py-3 text-xs leading-relaxed text-amber-800">
         <strong className="font-semibold">Important —</strong> Review this letter carefully and make any edits needed. You must send this letter yourself — Candid does not submit letters on your behalf. Consider consulting an attorney if your dispute involves significant amounts.
       </div>
+
+      {/* S111 smoke #5 — coverage diff panel. Renders only when the GET
+          handler computed a diff against a stored pre-bind snapshot.
+          Cleared by Proceed or replaced by Cancel-dispute flow. */}
+      {coverageDiff && disputeId && (
+        <CoverageDiffPanel
+          diff={coverageDiff}
+          onProceed={async () => {
+            if (!user) return;
+            const token = await user.firebaseUser.getIdToken();
+            await fetch(
+              `/api/disputes/${disputeId}/clear-coverage-diff`,
+              {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` },
+              },
+            );
+            await fetchDispute(disputeId);
+          }}
+          onCancelDispute={async () => {
+            // S111 smoke #6 — when the coverage diff verdict marks the
+            // dispute as invalidated (new plan supports the bill / removes
+            // the discrepancy), skip the outcome modal and auto-withdraw.
+            // None of the modal's options ("Won / Lost / Settled / Won on
+            // escalation") map to a "not applicable due to plan change"
+            // cancellation — using one would mis-record the outcome.
+            //
+            // For other verdicts (still_valid / weakened), open the modal
+            // so the user can record an outcome explicitly.
+            if (!user) return;
+            if (coverageDiff?.verdict === "invalidated") {
+              const token = await user.firebaseUser.getIdToken();
+              const notes = `Dispute withdrawn after coverage check: ${coverageDiff.verdictReason}`;
+              try {
+                await fetch(`/api/disputes/outcome`, {
+                  method: "POST",
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({
+                    disputeId,
+                    status: "withdrawn",
+                    strategyNotes: notes,
+                  }),
+                });
+                // Clear the coverage diff so the panel collapses + reflects
+                // the new withdrawn state on next refetch.
+                await fetch(
+                  `/api/disputes/${disputeId}/clear-coverage-diff`,
+                  {
+                    method: "POST",
+                    headers: { Authorization: `Bearer ${token}` },
+                  },
+                );
+                await fetchDispute(disputeId);
+              } catch (err) {
+                console.error("[CoverageDiffPanel] auto-withdraw failed:", err);
+              }
+              return;
+            }
+            setOutcomeModalOpen(true);
+          }}
+        />
+      )}
 
       <DisputeLetterHero
         letter={letter}
@@ -675,6 +808,13 @@ function DisputesContent() {
         providerSeed={planContext?.providerContact ?? null}
         getAuthToken={getAuthToken}
         onProviderContactSaved={refetchAfterChange}
+        // S111 D6 — bound_canonical_coverage_thin CTA opens PlanSearchModal
+        // in upload mode rather than navigating to /upload. Keeps the user
+        // in-context on the dispute view.
+        onUploadInModal={() => {
+          setPlanSearchModalMode("upload");
+          setPlanSearchModalOpen(true);
+        }}
       />
 
       {nameMismatch ? (

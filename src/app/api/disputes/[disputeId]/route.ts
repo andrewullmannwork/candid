@@ -18,6 +18,13 @@ import { createServerClient } from "@/lib/supabase/server";
 import { resolvePlanContext } from "@/lib/disputes/plan-context";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
 import { resolveAccountName } from "@/lib/disputes/rerender";
+import {
+  captureCoverageSnapshot,
+  diffCoverageSnapshots,
+  isMeaningfulCoverageDiff,
+  type CoverageSnapshot,
+  type CoverageDiff,
+} from "@/lib/disputes/coverage-snapshot";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import {
   computeEvidenceFingerprint,
@@ -114,6 +121,11 @@ export async function GET(
     : null;
   let driftDecision: DriftDecision | null = null;
   let currentEvidenceFingerprint: string | null = null;
+  // S111 smoke iteration 5 — coverage diff. Populated when the dispute has
+  // a stored pre-bind snapshot and we successfully compute the post-bind
+  // snapshot from current evidence. Cleared via
+  // POST /api/disputes/[id]/clear-coverage-diff.
+  let coverageDiff: CoverageDiff | null = null;
 
   // Phase 1 + 7: live-resolve plan context from the linked claim, and
   // regenerate letter body if the user has uploaded new plan data since
@@ -146,10 +158,6 @@ export async function GET(
         }
       }
 
-      planContext = await resolvePlanContext(supabase, {
-        userId: user.id,
-        claimId: dispute.claim_id,
-      });
       // S109 PR #2 (Chunk B) — read user's same-plan confirmation answer.
       // Drives whether resolveEvidence loads the fallback plan's coverage as
       // a Case C-fallback proxy citation source. Stored on dispute.metadata
@@ -159,12 +167,19 @@ export async function GET(
         return v === "yes" || v === "no" || v === "not_sure" ? v : null;
       })();
       // S110 Chunk D — read user's manual canonical bind for the bill year.
-      // When set, supersedes archive auto-lookup AND user_fallback paths.
-      // Stored via POST /api/disputes/[disputeId]/bind-canonical.
+      // S111 D2 — read BEFORE resolvePlanContext so it can be threaded in to
+      // populate planContext.boundCanonicalPlan (powers templates.ts citation
+      // rendering + the VerifStrip's bound-verified state via the API
+      // response's top-level boundCanonicalPlan field).
       const canonicalPlanIdForBillYear = ((): string | null => {
         const v = (dispute.metadata as Record<string, unknown> | null)?.canonicalPlanIdForBillYear;
         return typeof v === "string" && v.length > 0 ? v : null;
       })();
+      planContext = await resolvePlanContext(supabase, {
+        userId: user.id,
+        claimId: dispute.claim_id,
+        canonicalPlanIdForBillYear,
+      });
       evidence = await resolveEvidence(supabase, {
         userId: user.id,
         claimIds: [dispute.claim_id],
@@ -175,6 +190,53 @@ export async function GET(
         userConfirmedSamePlan,
         canonicalPlanIdForBillYear,
       });
+
+      // S111 smoke iteration 5 — compute coverage diff vs the stored
+      // pre-bind snapshot. The snapshot was captured by bind-canonical
+      // (or other transition endpoints) at the moment of the bind; we diff
+      // against fresh evidence so the user sees what changed under the new
+      // plan + whether the dispute is still valid. Failure here is
+      // non-fatal — diff just doesn't surface.
+      try {
+        const preBindSnapshot = (dispute.metadata as Record<string, unknown> | null)
+          ?.preBindCoverageSnapshot as CoverageSnapshot | undefined;
+        if (preBindSnapshot && preBindSnapshot.lines) {
+          const currentSnapshot = captureCoverageSnapshot(evidence, planContext);
+          const computed = diffCoverageSnapshots(preBindSnapshot, currentSnapshot);
+          if (isMeaningfulCoverageDiff(computed)) {
+            coverageDiff = computed;
+          } else {
+            // S111 smoke #7 — suppress no-op diffs (same plan, same
+            // coverage, $0→$0). Auto-clear the stale snapshot so subsequent
+            // GETs don't keep recomputing the same empty diff. Non-fatal
+            // failure if the update fails (diff is already filtered out
+            // for this response).
+            coverageDiff = null;
+            try {
+              const cleanedMetadata = {
+                ...((dispute.metadata as Record<string, unknown>) ?? {}),
+              };
+              delete cleanedMetadata.preBindCoverageSnapshot;
+              cleanedMetadata.coverageDiffAutoClearedAt =
+                new Date().toISOString();
+              await supabase
+                .from("dispute_outcomes")
+                .update({ metadata: cleanedMetadata })
+                .eq("id", dispute.id);
+            } catch (clearErr) {
+              console.warn(
+                "[disputes/[disputeId]] auto-clear of no-op diff snapshot failed (non-fatal):",
+                clearErr,
+              );
+            }
+          }
+        }
+      } catch (diffErr) {
+        console.warn(
+          "[disputes/[disputeId]] coverage diff computation failed (non-fatal):",
+          diffErr,
+        );
+      }
 
       // Debug logging — helps diagnose why insurer resolution fails for a
       // specific dispute. Visible in `npm run dev` logs.
@@ -326,25 +388,50 @@ export async function GET(
           missingForYear: planContext.missingForYear,
           fallbackPlan: planContext.fallbackPlan,
           providerContact: planContext.providerContact,
-          // S110 Chunk C — surface archive auto-lookup result so the UI can
-          // show "We found your 2023 plan in our library" before the user
-          // answers SamePlanConfirmBanner. Null when no archive available.
+          // S110 Chunk C — surface archive auto-lookup result so PlanSearchModal
+          // can highlight it as a best-match suggestion. S111 D1: this is a UI
+          // hint only — never drives letter citations (those flow through
+          // boundCanonicalPlan below).
           archiveCanonicalPlan: planContext.archiveCanonicalPlan,
         }
       : null,
+    // S111 D2 — top-level boundCanonicalPlan for VerifStrip rendering. Holds
+    // the canonical the user explicitly bound via PlanSearchModal (with
+    // insurer name + Pattern 1 #16 badge level). Null when nothing bound.
+    boundCanonicalPlan: planContext?.boundCanonicalPlan ?? null,
     missingPlanForYear: planContext?.missingForYear ?? null,
     evidence,
     patientNameMismatch,
     gateUnverified,
     // S109 PR #2 (Chunk B) — current same-plan-confirmation answer, used by
-    // SamePlanConfirmBanner on the dispute view to render its 3-state UI.
+    // VerifStrip to derive question / fallback / bound-proxy / confirm-archive.
     userConfirmedSamePlan: ((): "yes" | "no" | "not_sure" | null => {
       const v = (dispute.metadata as Record<string, unknown> | null)?.userConfirmedSamePlan;
       return v === "yes" || v === "no" || v === "not_sure" ? v : null;
     })(),
+    // S111 smoke #2 — explicit proxy choice flag. Distinguishes
+    // "userConfirmedSamePlan=yes, awaiting archive decision" (confirm-archive
+    // strip OR upload-or-proxy strip) from "userConfirmedSamePlan=yes, user
+    // explicitly chose proxy" (bound-proxy strip). Set via POST
+    // /api/disputes/[id]/confirm-same-plan with acceptedProxy=true.
+    userAcceptedProxy: ((): boolean => {
+      const v = (dispute.metadata as Record<string, unknown> | null)?.userAcceptedProxy;
+      return v === true;
+    })(),
+    // S111 smoke iteration 5 — wrong-year banner dismissal flag. When true,
+    // VerifStrip suppresses the banner and renders a small clickable badge
+    // instead. Reset to false on each new bind so the banner re-evaluates.
+    wrongYearBannerDismissed: ((): boolean => {
+      const v = (dispute.metadata as Record<string, unknown> | null)?.wrongYearBannerDismissed;
+      return v === true;
+    })(),
+    // S111 smoke iteration 5 — coverage diff payload. Computed below from
+    // metadata.preBindCoverageSnapshot if present. Surfaces what changed
+    // between the previous bind state and the current bind, plus a verdict
+    // on whether the dispute is still valid.
+    coverageDiff,
     // S110 Chunk D — surface the bound canonical id (if any) so the UI
-    // can hide the SearchCanonicalPlanModal trigger and SamePlanConfirmBanner
-    // once the user has explicitly bound a bill-year canonical.
+    // can hide the strip's pre-bind affordances once a canonical is bound.
     canonicalPlanIdForBillYear: ((): string | null => {
       const v = (dispute.metadata as Record<string, unknown> | null)?.canonicalPlanIdForBillYear;
       return typeof v === "string" && v.length > 0 ? v : null;
