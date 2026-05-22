@@ -357,7 +357,9 @@ function DisputesContent() {
   // wants to re-attempt cite-grade upgrade for a no-cite field whose
   // un-searched sections might now have available data.
   const [redrafting, setRedrafting] = useState(false);
-  const [redraftToast, setRedraftToast] = useState<string | null>(null);
+  // S109 PR #2 — toast tracks kind so error cases (e.g., 3/24h rate limit
+  // 429) render amber instead of success-green emerald.
+  const [redraftToast, setRedraftToast] = useState<{ text: string; kind: "success" | "error" } | null>(null);
   const handleRedraft = async () => {
     if (!user || !disputeId || redrafting) return;
     setRedrafting(true);
@@ -375,16 +377,20 @@ function DisputesContent() {
       const data = await res.json();
       const upgrades = data?.cf20?.upgrades ?? 0;
       const targets = data?.cf20?.targets ?? 0;
-      setRedraftToast(
-        targets === 0
+      setRedraftToast({
+        text: targets === 0
           ? "Letter re-drafted with current plan + evidence."
           : upgrades > 0
             ? `Letter re-drafted — ${upgrades} of ${targets} citation${targets === 1 ? "" : "s"} upgraded to cite-grade.`
             : `Letter re-drafted — ${targets} citation${targets === 1 ? "" : "s"} attempted; none upgraded this run.`,
-      );
+        kind: "success",
+      });
       await fetchDispute(disputeId);
     } catch (err) {
-      setRedraftToast(err instanceof Error ? err.message : "Re-draft failed");
+      setRedraftToast({
+        text: err instanceof Error ? err.message : "Re-draft failed",
+        kind: "error",
+      });
     } finally {
       setRedrafting(false);
       setTimeout(() => setRedraftToast(null), 6000);
@@ -476,6 +482,19 @@ function DisputesContent() {
 
   return (
     <div className="max-w-4xl mx-auto space-y-5">
+      {/* S109 PR #2 — Back link to claim view. Uses letter.auditReportId
+          (set from data.claimId in fetchDispute) so the user always has a
+          path back to the source bill / claim list. Hidden when claim id
+          is absent (e.g., legacy disputes that weren't linked to a claim). */}
+      {letter.auditReportId && (
+        <a
+          href={`/claim?claim=${letter.auditReportId}`}
+          className="inline-flex items-center gap-1 text-sm font-medium text-blue-600 hover:text-blue-700"
+        >
+          <span aria-hidden>←</span> Back to claim
+        </a>
+      )}
+
       {missingYear && !missingPlanDismissed ? (
         <MissingPlanBanner
           claimYear={missingYear}
@@ -627,8 +646,14 @@ function DisputesContent() {
           </div>
         </div>
         {redraftToast && (
-          <div className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
-            {redraftToast}
+          <div
+            className={`mt-2 rounded-md px-3 py-2 text-xs ${
+              redraftToast.kind === "error"
+                ? "bg-amber-50 text-amber-800"
+                : "bg-emerald-50 text-emerald-800"
+            }`}
+          >
+            {redraftToast.text}
           </div>
         )}
         {markSentToast && (
