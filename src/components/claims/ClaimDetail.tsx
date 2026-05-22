@@ -1696,7 +1696,9 @@ function DisputeRow({
   // Same handler as /disputes page; allows users to re-draft without leaving the
   // claim view. CF-20 re-parse-on-flag fires server-side; toast surfaces outcome.
   const [redrafting, setRedrafting] = useState(false);
-  const [redraftToast, setRedraftToast] = useState<string | null>(null);
+  // S109 PR #2 — toast tracks kind so error cases (e.g., 3/24h rate limit
+  // 429) render amber instead of success-green emerald.
+  const [redraftToast, setRedraftToast] = useState<{ text: string; kind: "success" | "error" } | null>(null);
 
   const statusLabel = DISPUTE_STATUS_LABEL[dispute.status] || dispute.status;
   const statusBadgeClass = DISPUTE_STATUS_BADGE[dispute.status] || "text-gray-700 bg-gray-100";
@@ -1741,20 +1743,24 @@ function DisputeRow({
       const data = await res.json();
       const upgrades = data?.cf20?.upgrades ?? 0;
       const targets = data?.cf20?.targets ?? 0;
-      setRedraftToast(
-        targets === 0
+      setRedraftToast({
+        text: targets === 0
           ? "Letter re-drafted with current plan + evidence."
           : upgrades > 0
             ? `Letter re-drafted — ${upgrades} of ${targets} citation${targets === 1 ? "" : "s"} upgraded.`
             : `Letter re-drafted — ${targets} citation${targets === 1 ? "" : "s"} attempted; none upgraded this run.`,
-      );
+        kind: "success",
+      });
       // Refetch the dispute detail to show the updated letter content.
       const refetch = await fetch(`/api/disputes/${dispute.id}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (refetch.ok) setDetail(await refetch.json());
     } catch (err) {
-      setRedraftToast(err instanceof Error ? err.message : "Re-draft failed");
+      setRedraftToast({
+        text: err instanceof Error ? err.message : "Re-draft failed",
+        kind: "error",
+      });
     } finally {
       setRedrafting(false);
       setTimeout(() => setRedraftToast(null), 6000);
@@ -1861,11 +1867,31 @@ function DisputeRow({
               )}
             </div>
             {redraftToast && (
-              <div className="mb-1 rounded-md bg-emerald-50 px-2 py-1 text-[10px] text-emerald-800">
-                {redraftToast}
+              <div
+                className={`mb-1 rounded-md px-2 py-1 text-[10px] ${
+                  redraftToast.kind === "error"
+                    ? "bg-amber-50 text-amber-800"
+                    : "bg-emerald-50 text-emerald-800"
+                }`}
+              >
+                {redraftToast.text}
               </div>
             )}
-            {hasLetter && isPro ? (
+            {detailLoading ? (
+              // S109 PR #2 — show a loader during the async dispute-detail
+              // fetch so the LetterTeaser's "Legacy dispute" placeholder
+              // doesn't flash before letterContent populates. The teaser is
+              // legitimately shown only when loading completes AND letter
+              // content is confirmed absent (legacy pre-persistence row).
+              <div className="p-2 bg-white border border-gray-100 rounded-lg">
+                <div className="flex items-center justify-center py-6">
+                  <div
+                    className="h-4 w-4 animate-spin rounded-full border-2 border-blue-600 border-t-transparent"
+                    aria-label="Loading dispute letter"
+                  />
+                </div>
+              </div>
+            ) : hasLetter && isPro ? (
               <pre className="p-2 bg-white border border-gray-100 rounded-lg text-[11px] text-gray-700 whitespace-pre-wrap font-sans line-clamp-4">
                 {detail!.letterContent}
               </pre>

@@ -88,6 +88,13 @@ export interface PlanContext {
    * of non-appeal dispute letters.
    */
   providerContact: ProviderContact | null;
+  /**
+   * S109 PR #2 — user's state from profiles.state, used by the dispute letter
+   * escalation paragraph to name the state Department of Insurance the user
+   * may escalate to. Null when profile state is missing; letter falls back to
+   * "the applicable state Department of Insurance".
+   */
+  userState: string | null;
 }
 
 const STALE_THRESHOLD_DAYS = 180;
@@ -193,12 +200,23 @@ export async function resolvePlanContext(
     }
   }
 
+  // S109 PR #2 — pull user's state for the dispute letter escalation paragraph.
+  // Used to name the state Department of Insurance the user may escalate to.
+  // Null when profile state is missing; letter falls back to generic copy.
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("state")
+    .eq("user_id", userId)
+    .maybeSingle();
+  const userState = (profile?.state as string | null) ?? null;
+
   return {
     plan: toResolved(resolvedPlan),
     insurer,
     missingForYear,
     fallbackPlan: toResolved(fallbackPlan),
     providerContact,
+    userState,
   };
 }
 

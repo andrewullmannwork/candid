@@ -130,6 +130,144 @@ function buildPatientReferenceBlock(
   return parts.join("\n");
 }
 
+/**
+ * S109 PR #2 (Chunk A) — structured claim-identification "Re:" block for the
+ * dispute letter header. Designed for the insurer/plan administrator to look
+ * up the claim in their system without back-and-forth. Graceful-drop: lines
+ * whose source data is null/empty are omitted (no "(unknown)" placeholders).
+ *
+ * Fields:
+ *   - Patient (always present)
+ *   - Member ID (skip if absent)
+ *   - Date of Service (always present — derived from claim or DoS arg)
+ *   - Provider (always present)
+ *   - Provider NPI (skip if absent)
+ *   - Plan (skip if planContext.plan is null)
+ *   - Account # (skip if absent)
+ *   - Total Disputed (always present — from evidence.totals.totalDiscrepancy)
+ */
+function buildClaimIdHeader(params: {
+  patientName: string;
+  memberId: string | undefined;
+  serviceDate: string;
+  providerName: string;
+  providerContact: ProviderContact | null | undefined;
+  bill: ParsedBill | undefined;
+  planContext: PlanContext | null | undefined;
+  accountNumber: string | undefined;
+  evidence: DisputeEvidence | null | undefined;
+}): string {
+  const npi = params.providerContact?.npi ?? params.bill?.provider?.npi ?? null;
+  const planLabel = params.planContext?.plan?.planName
+    ? `${params.planContext.plan.planName}${params.planContext.plan.planYear ? `, plan year ${params.planContext.plan.planYear}` : ""}`
+    : null;
+  const totalDisputed = params.evidence?.totals?.totalDiscrepancy ?? 0;
+
+  // S109 PR #2 (Chunk A fix) — plain "Label: value" format (no markdown bold
+  // markers). The letter preview surface renders text as plain pre-wrap, so
+  // `**Label**:` showed as literal asterisks. PDF export is unaffected by the
+  // change since the markdown-to-PDF translator handles both formats; plain
+  // labels match the surrounding letter style (the original header before
+  // this rewrite also used plain labels).
+  const lines: string[] = ["Re: Appeal of Adverse Benefit Determination", ""];
+  lines.push(`Patient: ${params.patientName}`);
+  if (params.memberId) lines.push(`Member ID: ${params.memberId}`);
+  lines.push(`Date of Service: ${formatDate(params.serviceDate)}`);
+  lines.push(`Provider: ${params.providerName}`);
+  if (npi) lines.push(`Provider NPI: ${npi}`);
+  if (planLabel) lines.push(`Plan: ${planLabel}`);
+  if (params.accountNumber) lines.push(`Account #: ${params.accountNumber}`);
+  if (totalDisputed > 0) lines.push(`Total Disputed: ${formatCurrency(totalDisputed)}`);
+  return lines.join("\n");
+}
+
+/**
+ * S109 PR #2 (Chunk A) — escalation-path paragraph for the dispute letter
+ * closing. Names the user's state Department of Insurance when known (from
+ * profiles.state via PlanContext.userState); falls back to generic copy
+ * when state is missing. Tone: assertive-professional, NOT adversarial —
+ * cites ACA §2719 + 45 CFR §147.136 external review path. §1132(c)(1)
+ * penalty deliberately omitted; held for follow-up letters if insurer
+ * fails to respond within the 30-day §1024(b)(4) window.
+ */
+function buildEscalationParagraph(planContext: PlanContext | null | undefined): string {
+  const state = planContext?.userState ?? null;
+  const stateClause = state
+    ? `the ${state} Department of Insurance`
+    : "the applicable state Department of Insurance";
+  return `If this matter is not resolved through internal appeal, I intend to pursue external review under ACA §2719 / 45 CFR §147.136 and may file a complaint with ${stateClause}.`;
+}
+
+/**
+ * S109 PR #2 (Chunk A) — 4-case closing argument for the dispute letter,
+ * replacing the prior surrender-language boilerplate. Per the lawyer-pass
+ * decision tree in plans/s109_dispute_letter_lawyer_posture.md §3b:
+ *
+ *   Case A: hasExactPlan + anyPlanBenefit → "" (per-line bullets carry it)
+ *   Case B: hasExactPlan + !anyPlanBenefit → §503-1(g) + §503-1(h)(2)(iii)
+ *   Case C-fallback: fallback + same-plan confirmed → (Chunk B)
+ *   Case C-archive: archiveCanonicalPlan bound → (Chunk B)
+ *   Case D: no plan / not confirmed → §503-1(g) + §1024(b)(4) + EOB inconsistency
+ *
+ * Chunk A only emits Case A, B, and D; fallback-only cases fall to Case D
+ * framing until Chunk B adds the same-plan-confirmation banner gate.
+ */
+function buildClosingArgument(
+  planContext: PlanContext | null | undefined,
+  evidence: DisputeEvidence | null | undefined,
+): string {
+  if (!evidence) return "";
+  const hasExactPlan = !!planContext?.plan;
+  const anyBenefit = hasAnyPlanBenefit(evidence);
+
+  // Case A — per-line cites carry the letter.
+  if (hasExactPlan && anyBenefit) return "";
+
+  // Case B — exact plan but no benefit-row matched.
+  if (hasExactPlan && !anyBenefit) {
+    return "Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based. Per §2560.503-1(h)(2)(iii), I request reasonable access to and copies of all documents relevant to this claim, including the applicable cost-sharing and coverage provisions.";
+  }
+
+  // S109 PR #2 (Chunk B) — Case C-fallback: same-plan-confirmed proxy cite.
+  // Detect by inspecting whether the rendered benefit rows are sourced from
+  // 'user_fallback' (the resolver only loads fallback coverage when the user
+  // has confirmed same-insurer in the bill year). When true, the per-line
+  // bullets already carry "My current plan (year)" framing; the closing
+  // argument shifts burden onto the insurer to prove year-over-year drift.
+  const fallbackSourced = !hasExactPlan && anyBenefit && evidence.claims.some((c) =>
+    c.lineItemEvidence.some((li) => li.planBenefit?.sourcedFrom === "user_fallback"),
+  );
+  if (fallbackSourced) {
+    const fbYear = planContext?.fallbackPlan?.planYear ?? null;
+    const missingYear = planContext?.missingForYear ?? null;
+    const fbClause = fbYear != null
+      ? `My ${fbYear} plan documents are on file with this plan and specify the cost-sharing terms cited above.`
+      : "My current plan documents are on file with this plan and specify the cost-sharing terms cited above.";
+    const yearAskClause = missingYear != null
+      ? `To the extent the ${missingYear} plan provisions differ materially from these terms, please produce the ${missingYear} Summary Plan Description and plan document under 29 USC §1024(b)(4) within the 30-day statutory period, and identify the specific provision applied to these charges.`
+      : "To the extent the plan provisions in effect on the date of service differ materially from these terms, please produce the applicable Summary Plan Description and plan document under 29 USC §1024(b)(4) within the 30-day statutory period, and identify the specific provision applied to these charges.";
+    return `Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based. ${fbClause} ${yearAskClause}`;
+  }
+
+  // Case D — no plan OR fallback-only without confirmation (Chunk A default).
+  // Aggregate EOB math across all claims for the inconsistency framing.
+  const allLineItems = evidence.claims.flatMap((c) => c.lineItemEvidence);
+  const totalBilled = allLineItems.reduce((s, li) => s + (li.billedAmount ?? 0), 0);
+  const totalInsurancePaid = allLineItems.reduce((s, li) => s + (li.insurancePaid ?? 0), 0);
+  const totalPatientResp = allLineItems.reduce((s, li) => s + (li.patientOwes ?? 0), 0);
+
+  const parts: string[] = [
+    "Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based.",
+    "Per 29 USC §1024(b)(4), please provide the applicable Summary Plan Description and plan document within the 30-day statutory period.",
+  ];
+  if (totalBilled > 0) {
+    parts.push(
+      `The Explanation of Benefits records ${formatCurrency(totalInsurancePaid)} insurance paid on a ${formatCurrency(totalBilled)} billed charge, leaving ${formatCurrency(totalPatientResp)} as my responsibility. This treatment warrants a specific provision-level explanation.`,
+    );
+  }
+  return parts.join(" ");
+}
+
 // ============================================================================
 // Shared "Why this service should be covered" renderer
 // ============================================================================
@@ -154,7 +292,13 @@ function renderEvidenceBlock(
   if (!hasAnyLineItems) return "";
 
   const multiClaim = evidence.claims.length > 1;
-  const lines: string[] = [`**${title}**`, ""];
+  // S109 PR #2 (Chunk B) — drop markdown `**` markers throughout. Nothing in
+  // the preview, download, or PDF path renders markdown, so `**Heading**`
+  // showed as literal asterisks. Use UPPERCASE section headers + indentation
+  // for visual structure that reads professional as plain text. Pattern P-8
+  // verbatim blockquote markers (`> *"..."*`) preserved — those are inside
+  // user-facing copy and convey "verbatim quote" semantically.
+  const lines: string[] = [title.toUpperCase(), ""];
   let itemNumber = 1;
 
   for (const claim of evidence.claims) {
@@ -163,7 +307,7 @@ function renderEvidenceBlock(
         claim.providerName ?? "Bill",
         claim.dateOfService ? formatDate(claim.dateOfService) : null,
       ].filter(Boolean).join(" · ");
-      lines.push(`**${header}**`, "");
+      lines.push(header, "");
     }
 
     for (const li of claim.lineItemEvidence) {
@@ -175,24 +319,18 @@ function renderEvidenceBlock(
     }
   }
 
-  // S109 PR #1 — minimum-viable statutory-only request. The prior boilerplate
-  // ("I do not have my full plan documents on file...") was surrender language
-  // to the insurer regardless of whether the user actually had a plan on file.
-  // Replace with a neutral statutory ask that asserts the claimant's position
-  // under §503-1(g) without admitting any gap. The full 4-case decision tree
-  // (Case A no-closing, Case B/C/D enriched framing per data tier, escalation-
-  // path disclosure, claim-id header) is the PR #2 rewrite per
-  // plans/s109_dispute_letter_lawyer_posture.md.
-  if (!hasAnyPlanBenefit(evidence)) {
-    lines.push(
-      "Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based.",
-      "",
-    );
-  }
+  // S109 PR #2 (Chunk A) — closing argument + escalation paragraph moved out
+  // of renderEvidenceBlock and into insuranceAppealTemplate.body directly.
+  // renderEvidenceBlock is shared by provider-bound letters (overcharge,
+  // balance_billing, duplicate, itemized_request, negotiation) where the
+  // "Plan Administrator" / state-DOI language doesn't fit (those go to the
+  // provider's billing department, not the insurer). The 4-case decision
+  // tree from the Subplan is insurer-scoped per §4. Per-line bullets here
+  // carry the substantive evidence regardless of recipient.
 
   if (multiClaim) {
     lines.push(
-      `**Total in dispute across ${evidence.claims.length} bills: ${formatCurrency(evidence.totals.totalDiscrepancy)}**`,
+      `Total in dispute across ${evidence.claims.length} bills: ${formatCurrency(evidence.totals.totalDiscrepancy)}`,
       "",
     );
   }
@@ -217,7 +355,7 @@ function renderLineItemEvidence(
     ? `${li.billingCode.type} ${li.billingCode.value}`
     : null;
   const headline = [
-    `${index}. **${li.serviceName}**`,
+    `${index}. ${li.serviceName}`,
     codeLabel ? `(${codeLabel})` : null,
     li.billedAmount > 0 ? `— billed ${formatCurrency(li.billedAmount)}` : null,
   ].filter(Boolean).join(" ");
@@ -240,16 +378,44 @@ function renderLineItemEvidence(
   );
 
   if (li.planBenefit && planBenefitTrusted) {
-    const planName = planContext?.plan?.planName ?? "Your plan";
-    const year = planContext?.plan?.planYear ? `, ${planContext.plan.planYear}` : "";
+    // S109 PR #2 (Chunk A) — bullet prefix varies by sourcedFrom per the
+    // lawyer-pass decision tree §3a, so the letter discloses honestly which
+    // plan data backs the citation (user's exact-year plan vs current-plan-
+    // as-proxy vs community-verified canonical archive). Pattern 1 #2 is
+    // preserved — we never cite a year we don't have as if it's that year.
     const costDescriptor = li.planBenefit.copay != null
-      ? `a **${formatCurrency(li.planBenefit.copay)} copay**`
+      ? `a ${formatCurrency(li.planBenefit.copay)} copay`
       : li.planBenefit.coinsurance != null
-      ? `**${Math.round(li.planBenefit.coinsurance * 100)}% coinsurance**`
+      ? `${Math.round(li.planBenefit.coinsurance * 100)}% coinsurance`
       : "cost-sharing terms";
-    bullets.push(
-      `   - ${planName}${year} specifies ${costDescriptor} for this service. Source: ${li.planBenefit.citation}.`,
-    );
+
+    let prefix: string;
+    switch (li.planBenefit.sourcedFrom) {
+      case "canonical_archive": {
+        const insurer = planContext?.insurer?.name ?? planContext?.plan?.insurerName ?? "this plan's";
+        const planName = planContext?.plan?.planName ?? "Summary of Benefits and Coverage";
+        const yearClause = li.planBenefit.sourcedFromYear != null
+          ? `${li.planBenefit.sourcedFromYear} Summary of Benefits and Coverage (community-verified)`
+          : "Summary of Benefits and Coverage (community-verified)";
+        prefix = `Per ${insurer} ${planName} ${yearClause}, this service is covered with ${costDescriptor}`;
+        break;
+      }
+      case "user_fallback": {
+        const yearClause = li.planBenefit.sourcedFromYear != null
+          ? `My current plan (${li.planBenefit.sourcedFromYear})`
+          : "My current plan";
+        prefix = `${yearClause} specifies ${costDescriptor} for this service`;
+        break;
+      }
+      case "user_exact":
+      default: {
+        const planName = planContext?.plan?.planName ?? "Your plan";
+        const year = planContext?.plan?.planYear ? `, ${planContext.plan.planYear}` : "";
+        prefix = `${planName}${year} specifies ${costDescriptor} for this service`;
+        break;
+      }
+    }
+    bullets.push(`   - ${prefix}. Source: ${li.planBenefit.citation}.`);
     // Blockquote (Case 1 only): render the verbatim excerpt only when cite-grade
     // verified OR gating is off entirely (legacy behavior).
     if (li.planBenefit.sbcExcerpt && (!gateUnverified || li.planBenefit.sbcExcerptVerified)) {
@@ -269,7 +435,7 @@ function renderLineItemEvidence(
     const overage = li.discrepancyAmount ?? 0;
     if (overage > 0) {
       bullets.push(
-        `   - Expected patient cost per plan: ${formatCurrency(li.expectedPatientCost)}. Actual patient responsibility: ${formatCurrency(li.actualPatientCost)}. **Discrepancy: ${formatCurrency(overage)}.**`,
+        `   - Expected patient cost per plan: ${formatCurrency(li.expectedPatientCost)}. Actual patient responsibility: ${formatCurrency(li.actualPatientCost)}. Discrepancy: ${formatCurrency(overage)}.`,
       );
     }
   } else if (li.discrepancyReason && planBenefitTrusted) {
@@ -287,7 +453,7 @@ function renderLineItemEvidence(
     const c = li.communityOutcome;
     const parts: string[] = [];
     if (c.paidCount > 0) {
-      parts.push(`**${c.paidCount} of ${c.totalClaims}** claims for this code on this plan have been paid`);
+      parts.push(`${c.paidCount} of ${c.totalClaims} claims for this code on this plan have been paid`);
     } else {
       parts.push(`${c.totalClaims} claims for this code on this plan are on record`);
     }
@@ -337,7 +503,7 @@ function renderLineItemEvidence(
   if (li.auditFindings && li.auditFindings.length > 0) {
     for (const f of li.auditFindings) {
       const parts: string[] = [];
-      parts.push(`Candid audit flag (**${f.title}**)`);
+      parts.push(`Candid audit flag (${f.title})`);
       if (f.benchmarkAmount != null && f.benchmarkSource) {
         parts.push(`${f.benchmarkSource} benchmark ${formatCurrency(f.benchmarkAmount)}`);
       }
@@ -359,7 +525,7 @@ function renderLineItemEvidence(
     if (filteredPeers.length >= 2) {
       const topPeer = filteredPeers[0];
       bullets.push(
-        `   - Note: similar charges have been successfully resolved when re-coded as **${topPeer.code}**. Please verify whether ${topPeer.code} more accurately reflects the service provided, and reprocess accordingly if applicable.`,
+        `   - Note: similar charges have been successfully resolved when re-coded as ${topPeer.code}. Please verify whether ${topPeer.code} more accurately reflects the service provided, and reprocess accordingly if applicable.`,
       );
     }
   }
@@ -368,11 +534,16 @@ function renderLineItemEvidence(
 }
 
 function formatDate(iso: string): string {
+  // S109 PR #2 (Chunk A fix) — render with timeZone: 'UTC' so ISO dates like
+  // "2023-04-25" don't shift to "April 24, 2023" in PT timezone (Date()
+  // parses ISO as UTC midnight; toLocaleDateString without timeZone converts
+  // back to local timezone, dropping a day for any zone west of UTC).
   const d = new Date(iso);
   return d.toLocaleDateString("en-US", {
     year: "numeric",
     month: "long",
     day: "numeric",
+    timeZone: "UTC",
   });
 }
 
@@ -544,7 +715,7 @@ const insuranceAppealTemplate: LetterTemplate = {
       || bill.insurer?.name
       || planContext?.plan?.insurerName
       || "[Insurance Company]";
-    const memberId = bill.patient.memberId || "[Member ID]";
+    const memberId = bill.patient.memberId || undefined;
     const planLabel = planContext?.plan?.planName
       ? `${planContext.plan.planName}${planContext.plan.planYear ? `, plan year ${planContext.plan.planYear}` : ""}`
       : null;
@@ -556,19 +727,38 @@ const insuranceAppealTemplate: LetterTemplate = {
     );
 
     const recipientBlock = buildInsurerRecipientBlock(insurerName, planContext);
-    const npi = planContext?.providerContact?.npi ?? bill.provider?.npi ?? null;
-    const providerLine = npi
-      ? `Provider: ${providerName} (NPI ${npi})`
-      : `Provider: ${providerName}`;
+
+    // S109 PR #2 (Chunk A) — structured claim-id header replaces the prior
+    // ad-hoc Re/Patient/Member ID/Provider/Plan/Account# block. Adds Total
+    // Disputed; uses graceful-drop for absent fields (no "[Member ID]"
+    // placeholders).
+    const claimIdHeader = buildClaimIdHeader({
+      patientName,
+      memberId,
+      serviceDate,
+      providerName,
+      providerContact: planContext?.providerContact,
+      bill,
+      planContext,
+      accountNumber,
+      evidence,
+    });
+
+    // S109 PR #2 (Chunk A) — 4-case closing argument + escalation paragraph
+    // emitted here (NOT inside renderEvidenceBlock) so provider-bound letters
+    // don't pick up "Plan Administrator" / state-DOI language. Per Subplan §4
+    // this rewrite is localized to insurance_appeal. Removed the duplicate
+    // "Under the ACA / §503-1" paragraph that previously followed the
+    // evidence block — the closing argument now carries the statutory ask
+    // and the escalation paragraph carries the §2719 disclosure.
+    const closingArgument = buildClosingArgument(planContext, evidence ?? null);
+    const escalationParagraph = buildEscalationParagraph(planContext);
 
     return `${formatDate(new Date().toISOString())}
 
 ${recipientBlock}
 
-Re: Appeal of Claim Denial — Date of Service: ${formatDate(serviceDate)}
-Patient: ${patientName}
-Member ID: ${memberId}
-${providerLine}${planLabel ? `\nPlan: ${planLabel}` : ""}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
+${claimIdHeader}
 
 To Whom It May Concern:
 
@@ -580,9 +770,9 @@ The services provided were medically necessary and should be covered under my pl
 2. The clinical criteria used to determine medical necessity
 3. Instructions for requesting an external review if this internal appeal is denied
 
-${evidenceBlock ? `${evidenceBlock}\n` : ""}Under the Affordable Care Act and applicable state law, I am entitled to a full and fair review of this denial. Under 29 CFR §2560.503-1, any denial must cite the specific plan provision on which it is based. I request a written determination within the timeframe required by law (generally 30 days for post-service claims).
+${evidenceBlock ? `${evidenceBlock}` : ""}${closingArgument ? `${closingArgument}\n\n` : ""}${escalationParagraph}
 
-I reserve all rights to pursue external review and any other remedies available under federal and state law.
+I reserve all rights to pursue any other remedies available under federal and state law.
 
 Sincerely,
 

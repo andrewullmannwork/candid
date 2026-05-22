@@ -92,6 +92,33 @@ export async function POST(
     return NextResponse.json({ error: "Dispute has no linked claim" }, { status: 400 });
   }
 
+  // S109 PR #2 — rate limit: 3 redrafts per dispute per rolling 24 hours.
+  // Each redraft runs Haiku re-parse (CF-20 path) which has per-plan daily
+  // cost caps downstream, but the user-facing cap prevents thrashing on a
+  // single dispute. Stored as ISO timestamp array on dispute.metadata; older
+  // entries pruned on each call.
+  const REDRAFT_WINDOW_MS = 24 * 60 * 60 * 1000;
+  const REDRAFT_LIMIT = 3;
+  const rawHistory =
+    (dispute.metadata?.redraftHistory as string[] | undefined) ?? [];
+  const now = Date.now();
+  const liveHistory = rawHistory.filter((iso) => {
+    const t = Date.parse(iso);
+    return Number.isFinite(t) && now - t < REDRAFT_WINDOW_MS;
+  });
+  if (liveHistory.length >= REDRAFT_LIMIT) {
+    const oldestLiveMs = Math.min(...liveHistory.map((iso) => Date.parse(iso)));
+    const retryAtMs = oldestLiveMs + REDRAFT_WINDOW_MS;
+    const hoursUntilReset = Math.max(1, Math.ceil((retryAtMs - now) / (60 * 60 * 1000)));
+    return NextResponse.json(
+      {
+        error: `Re-draft limit reached (3 per 24 hours). Try again in ${hoursUntilReset} hour${hoursUntilReset === 1 ? "" : "s"}.`,
+        retryAt: new Date(retryAtMs).toISOString(),
+      },
+      { status: 429 },
+    );
+  }
+
   const extraIds = (dispute.metadata?.claimLineItemIds as string[] | undefined) || [];
   const allLineItemIds = Array.from(
     new Set([dispute.claim_line_item_id, ...extraIds].filter(Boolean)),
@@ -102,6 +129,12 @@ export async function POST(
     userId: user.id,
     claimId: dispute.claim_id,
   });
+  // S109 PR #2 (Chunk B) — read user's same-plan confirmation answer; passed
+  // to resolveEvidence so fallback-plan coverage is loaded only when 'yes'.
+  const userConfirmedSamePlan = ((): "yes" | "no" | "not_sure" | null => {
+    const v = (dispute.metadata as Record<string, unknown> | null)?.userConfirmedSamePlan;
+    return v === "yes" || v === "no" || v === "not_sure" ? v : null;
+  })();
   let evidence = await resolveEvidence(supabase, {
     userId: user.id,
     claimIds: [dispute.claim_id],
@@ -109,6 +142,7 @@ export async function POST(
     planContext,
     letterType: dispute.dispute_type,
     disputeId: dispute.id,
+    userConfirmedSamePlan,
   });
 
   // Step 2: CF-20 re-parse-on-flag — mirrors /api/disputes/generate logic.
@@ -167,6 +201,7 @@ export async function POST(
                 planContext,
                 letterType: dispute.dispute_type,
                 disputeId: dispute.id,
+                userConfirmedSamePlan,
               });
             }
           }
@@ -196,17 +231,22 @@ export async function POST(
     );
   }
 
-  // Step 4: persist updated letter content.
+  // Step 4: persist updated letter content + extend redraft history.
+  const newTimestamp = new Date().toISOString();
   await supabase
     .from("dispute_outcomes")
     .update({
       letter_content: newBody,
       metadata: {
         ...(dispute.metadata ?? {}),
-        lastRedraftAt: new Date().toISOString(),
+        lastRedraftAt: newTimestamp,
         lastRedraftCf20: { targets: cf20TargetCount, upgrades: cf20UpgradeCount },
+        // S109 PR #2 — rolling 24h redraft history for rate limit. Capped at
+        // REDRAFT_LIMIT (3) entries to keep metadata bounded; older live entries
+        // already pruned above before the limit check.
+        redraftHistory: [newTimestamp, ...liveHistory].slice(0, REDRAFT_LIMIT),
       },
-      updated_at: new Date().toISOString(),
+      updated_at: newTimestamp,
     })
     .eq("id", dispute.id);
 
