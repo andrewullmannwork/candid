@@ -48,6 +48,13 @@ interface Props {
   getAuthToken?: () => Promise<string | null>;
   /** Called after a provider-contact save succeeds so parent can refetch. */
   onProviderContactSaved?: () => Promise<void>;
+  /**
+   * S111 D6 — called when the user clicks "Upload my {year} plan" on the
+   * `bound_canonical_coverage_thin` gap. Opens PlanSearchModal in upload
+   * mode (the gap CTA routes to in-modal upload, not a navigation, so
+   * existing ctaHref pattern doesn't fit — parent owns modal state).
+   */
+  onUploadInModal?: () => void;
 }
 
 export function EvidenceGaps({
@@ -58,6 +65,7 @@ export function EvidenceGaps({
   providerSeed,
   getAuthToken,
   onProviderContactSaved,
+  onUploadInModal,
 }: Props) {
   const [rerunStatus, setRerunStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const [redraftStatus, setRedraftStatus] = useState<"idle" | "running" | "done" | "error">("idle");
@@ -128,6 +136,7 @@ export function EvidenceGaps({
                   onOpenProviderForm: () => setProviderFormOpen(true),
                   providerFormOpen,
                   hasProviderContext: !!disputeId && !!getAuthToken,
+                  onUploadInModal,
                 })}
               </div>
               {expandedForm ? (
@@ -164,6 +173,7 @@ function renderCta(
     onOpenProviderForm: () => void;
     providerFormOpen: boolean;
     hasProviderContext: boolean;
+    onUploadInModal?: () => void;
   },
 ) {
   if (gap.kind === "audit_findings_missing" && ctx.hasAuditCallback) {
@@ -205,6 +215,22 @@ function renderCta(
         className="inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow disabled:cursor-wait disabled:opacity-70 md:ml-4"
       >
         {label}
+      </button>
+    );
+  }
+
+  // S111 D6 — bound canonical coverage thin: route CTA to in-modal upload
+  // (PlanSearchModal upload mode) rather than navigating to /upload, since
+  // upload-in-modal is the design integration target for this gap (no
+  // out-of-modal redirect breaks the dispute view's flow).
+  if (gap.kind === "bound_canonical_coverage_thin" && ctx.onUploadInModal) {
+    return (
+      <button
+        type="button"
+        onClick={ctx.onUploadInModal}
+        className="inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow md:ml-4"
+      >
+        {gap.ctaLabel ?? "Upload my plan"}
       </button>
     );
   }

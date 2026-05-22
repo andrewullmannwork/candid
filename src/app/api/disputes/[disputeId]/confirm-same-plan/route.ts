@@ -5,7 +5,7 @@
  * dispute. The answer drives whether the dispute letter renders Case C-
  * fallback (cite current plan as proxy) or Case D (safe framing only).
  *
- * Body: { answer: 'yes' | 'no' | 'not_sure' }
+ * Body: { answer: 'yes' | 'no' | 'not_sure', acceptedProxy?: boolean }
  *
  * Auth: Firebase bearer token. Verifies user owns the dispute.
  *
@@ -13,7 +13,14 @@
  * at /api/disputes/[disputeId] reads it on next fetch and passes through to
  * resolveEvidence, which controls fallback-coverage loading.
  *
- * Returns: { success: true, userConfirmedSamePlan: <answer> }
+ * S111 smoke #2 — `acceptedProxy` (optional) distinguishes "user clicked
+ * Yes and is deciding what to do next" from "user explicitly chose to cite
+ * current plan as proxy (weaker)". When true, persists
+ * dispute.metadata.userAcceptedProxy. The VerifStrip uses this flag to
+ * derive whether to show the confirm-archive prompt (archive available,
+ * decision pending) or the bound-proxy state (decision made).
+ *
+ * Returns: { success: true, userConfirmedSamePlan: <answer>, userAcceptedProxy: <bool> }
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
@@ -40,7 +47,10 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const body = (await req.json().catch(() => null)) as { answer?: unknown } | null;
+  const body = (await req.json().catch(() => null)) as {
+    answer?: unknown;
+    acceptedProxy?: unknown;
+  } | null;
   const answer = body?.answer;
   if (answer !== "yes" && answer !== "no" && answer !== "not_sure") {
     return NextResponse.json(
@@ -48,6 +58,7 @@ export async function POST(
       { status: 400 },
     );
   }
+  const acceptedProxy = body?.acceptedProxy === true;
 
   const { disputeId } = await params;
   const supabase = createServerClient();
@@ -71,14 +82,26 @@ export async function POST(
     return NextResponse.json({ error: "Dispute not found" }, { status: 404 });
   }
 
+  const baseMetadata = (dispute.metadata as Record<string, unknown>) ?? {};
+  const nextMetadata: Record<string, unknown> = {
+    ...baseMetadata,
+    userConfirmedSamePlan: answer as SamePlanAnswer,
+    userConfirmedSamePlanAt: new Date().toISOString(),
+  };
+  if (acceptedProxy) {
+    nextMetadata.userAcceptedProxy = true;
+    nextMetadata.userAcceptedProxyAt = new Date().toISOString();
+  }
+  // Note: we intentionally do NOT clear userAcceptedProxy when acceptedProxy
+  // is undefined/false — the user's explicit proxy decision persists across
+  // re-confirmations unless explicitly reset (e.g., via a future re-bind that
+  // sets a real canonical, which derives bound-verified state regardless of
+  // this flag).
+
   const { error: updateErr } = await supabase
     .from("dispute_outcomes")
     .update({
-      metadata: {
-        ...((dispute.metadata as Record<string, unknown>) ?? {}),
-        userConfirmedSamePlan: answer as SamePlanAnswer,
-        userConfirmedSamePlanAt: new Date().toISOString(),
-      },
+      metadata: nextMetadata,
       updated_at: new Date().toISOString(),
     })
     .eq("id", dispute.id);
@@ -94,5 +117,6 @@ export async function POST(
   return NextResponse.json({
     success: true,
     userConfirmedSamePlan: answer as SamePlanAnswer,
+    userAcceptedProxy: !!nextMetadata.userAcceptedProxy,
   });
 }

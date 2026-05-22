@@ -53,6 +53,31 @@ export interface ResolvedPlan {
 }
 
 /**
+ * S111 D2 — canonical_plans row the user has explicitly bound to this dispute
+ * as the bill-year plan (via PlanSearchModal). Drives both letter citations
+ * (`templates.ts` canonical_archive bullet variant reads from this field) AND
+ * the VerifStrip's bound-verified rendering (the API GET surfaces this at the
+ * response's top level so the frontend can render its state without crossing
+ * planContext).
+ *
+ * `badgeLevel` mirrors the Pattern 1 #16 4-tier vocabulary used by
+ * /api/plan/search — verified / community / estimated — so the strip's pill
+ * is a 1:1 reflection of the canonical's promotion state.
+ *
+ * Distinct from `archiveCanonicalPlan` (auto-discovered Pattern 2 year-shift
+ * match; UI-suggestion only per S111 D1 — never drives citations).
+ */
+export interface BoundCanonicalPlan {
+  id: string;
+  planName: string | null;
+  planYear: number | null;
+  insurerName: string | null;
+  planType: string | null;
+  canonicalPlanId: string;
+  badgeLevel: "verified" | "community" | "estimated";
+}
+
+/**
  * Provider mailing contact resolved from the linked claim's `claims.metadata.provider`
  * JSONB. Populated by `resolvePlanContext` when called with a `claimId`. Used as the
  * recipient block for non-appeal letter types (overcharge, balance billing, duplicate
@@ -95,6 +120,34 @@ export interface PlanContext {
    * "the applicable state Department of Insurance".
    */
   userState: string | null;
+  /**
+   * S110 Chunk C — community-corroborated bill-year canonical found via strict
+   * Pattern 2 identity year-shift from the user's current plan canonical.
+   *
+   * S111 D1 refactor — this field is now **UI-suggestion only** (best-match
+   * highlight in PlanSearchModal auto mode). It NO LONGER drives letter
+   * citations; that's `boundCanonicalPlan` below.
+   *
+   * Populated when ALL hold:
+   *   1. `plan` is null (no exact-year user plan on file)
+   *   2. `fallbackPlan.canonicalPlanId` is non-null (anchor gate)
+   *   3. `missingForYear` is non-null
+   *   4. Strict 5-component match in canonical_plans returns exactly one row
+   *
+   * Null otherwise.
+   */
+  archiveCanonicalPlan: ResolvedPlan | null;
+  /**
+   * S111 D2 — canonical_plans row the user explicitly bound to this dispute
+   * (via PlanSearchModal). Distinct from `archiveCanonicalPlan` (auto-
+   * suggestion). Drives the canonical_archive bullet variant in templates.ts
+   * AND the VerifStrip's bound-verified rendering (API GET surfaces at top
+   * level).
+   *
+   * Populated when `canonicalPlanIdForBillYear` is passed to
+   * `resolvePlanContext` AND the canonical row exists. Null otherwise.
+   */
+  boundCanonicalPlan: BoundCanonicalPlan | null;
 }
 
 const STALE_THRESHOLD_DAYS = 180;
@@ -107,6 +160,13 @@ export async function resolvePlanContext(
     claimId?: string | null;
     planYear?: number | null;
     dateOfService?: string | null;
+    /**
+     * S111 D2 — when set, resolves `boundCanonicalPlan` for letter-citation
+     * use. Passed in by callers that have read it from
+     * `dispute.metadata.canonicalPlanIdForBillYear` (or equivalent). Null /
+     * undefined → boundCanonicalPlan stays null.
+     */
+    canonicalPlanIdForBillYear?: string | null;
   }
 ): Promise<PlanContext> {
   const { userId, claimId } = params;
@@ -187,15 +247,38 @@ export async function resolvePlanContext(
     } : null;
 
   const activeFor = resolvedPlan ?? fallbackPlan;
-  // Try insurer_name first; if that doesn't match insurer_catalog (common when
-  // the plan is administered by a PEO whose name was captured instead of the
-  // carrier), fall back to matching carrier product keywords in the plan_name
-  // (e.g. "Open Access Plus" → Cigna, "Blue Advantage" → Anthem).
-  let insurer = await resolveInsurer(supabase, activeFor?.insurer_name ?? null);
+
+  // S111 D2 — bound canonical lookup. Populated when the caller passes
+  // `canonicalPlanIdForBillYear` (read from dispute.metadata). Drives both
+  // citation rendering (templates.ts canonical_archive bullet) and the
+  // VerifStrip's bound-verified state. Resolved EARLY (before
+  // resolveInsurer) so the bound canonical's insurer can take precedence
+  // for the letter's recipient block + appeals address — required when
+  // user binds a canonical from a different insurer than their fallback
+  // plan (Smoke iteration 3 bug fix).
+  const boundCanonicalPlan =
+    params.canonicalPlanIdForBillYear
+      ? await lookupBoundCanonical(supabase, params.canonicalPlanIdForBillYear)
+      : null;
+
+  // Resolve insurer for the letter recipient block + appeals address.
+  // Precedence:
+  //   1. Bound canonical's insurer (user explicitly selected this plan, so
+  //      its insurer is authoritative for who the dispute is addressed to)
+  //   2. activeFor (exact-year plan OR fallback plan).insurer_name
+  //   3. Carrier hint inferred from plan_name (handles PEO-captured rows
+  //      where insurer_name is the PEO + plan_name carries the carrier
+  //      product like "Open Access Plus" → Cigna).
+  const preferredInsurerName =
+    boundCanonicalPlan?.insurerName ?? activeFor?.insurer_name ?? null;
+  let insurer = await resolveInsurer(supabase, preferredInsurerName);
   if (!insurer && activeFor?.plan_name) {
     const carrierHint = inferCarrierFromPlanName(activeFor.plan_name);
     if (carrierHint) {
-      console.log("[plan-context] trying plan_name-derived carrier hint:", { planName: activeFor.plan_name, hint: carrierHint });
+      console.log("[plan-context] trying plan_name-derived carrier hint:", {
+        planName: activeFor.plan_name,
+        hint: carrierHint,
+      });
       insurer = await resolveInsurer(supabase, carrierHint);
     }
   }
@@ -210,6 +293,27 @@ export async function resolvePlanContext(
     .maybeSingle();
   const userState = (profile?.state as string | null) ?? null;
 
+  // S110 Chunk C — community-corroborated bill-year canonical auto-lookup.
+  // Only fires when (a) no exact-year user plan, (b) fallback plan has a
+  // canonical anchor, (c) bill year known. The lookup itself enforces strict
+  // 5-component identity + uniqueness.
+  //
+  // S111 D1 refactor: this field is **UI-suggestion only** (used as best-match
+  // highlight in PlanSearchModal auto mode). It NO LONGER drives letter
+  // citations; the evidence-resolver coverage chain dropped the archive Tier
+  // per D1, and `templates.ts` canonical_archive reads from
+  // `boundCanonicalPlan` (manual bind) instead. Pattern 1 #2 enforcement —
+  // citations require explicit user binding.
+  let archiveCanonicalPlan: ResolvedPlan | null = null;
+  const fallbackAnchorId = fallbackPlan?.canonical_plan_id ?? null;
+  if (!resolvedPlan && fallbackAnchorId && missingForYear != null) {
+    archiveCanonicalPlan = await lookupArchiveCanonical(
+      supabase,
+      fallbackAnchorId,
+      missingForYear,
+    );
+  }
+
   return {
     plan: toResolved(resolvedPlan),
     insurer,
@@ -217,6 +321,214 @@ export async function resolvePlanContext(
     fallbackPlan: toResolved(fallbackPlan),
     providerContact,
     userState,
+    archiveCanonicalPlan,
+    boundCanonicalPlan,
+  };
+}
+
+/**
+ * S111 D2 — bound canonical lookup for letter-citation use.
+ *
+ * Given a canonical_plans id (the user's explicit bill-year plan selection
+ * via PlanSearchModal), returns a BoundCanonicalPlan with insurer name and
+ * Pattern 1 #16 badge level (verified / community / estimated). Returns null
+ * when the row doesn't exist (orphan reference — Pattern 1 #2 preserved at
+ * the data layer: never cite a canonical that doesn't exist).
+ *
+ * Badge derivation mirrors /api/plan/search/route.ts `deriveBadgeLevel`. Kept
+ * inline rather than extracted to keep blast radius small; if a third caller
+ * surfaces, lift to a shared util.
+ */
+async function lookupBoundCanonical(
+  supabase: SupabaseClient,
+  canonicalPlanId: string,
+): Promise<BoundCanonicalPlan | null> {
+  const { data: canonical, error } = await supabase
+    .from("canonical_plans")
+    .select(
+      "id, plan_name, plan_year, plan_type, insurer_id, source_count, is_verified, field_provenance",
+    )
+    .eq("id", canonicalPlanId)
+    .maybeSingle();
+  if (error || !canonical) return null;
+
+  let insurerName: string | null = null;
+  if (canonical.insurer_id) {
+    const { data: insurer } = await supabase
+      .from("insurer_catalog")
+      .select("name")
+      .eq("id", canonical.insurer_id)
+      .maybeSingle();
+    insurerName = insurer?.name ?? null;
+  }
+
+  const badgeLevel = deriveBoundCanonicalBadgeLevel(
+    canonical.field_provenance,
+    canonical.source_count as number | null,
+    canonical.is_verified as boolean | null,
+  );
+
+  return {
+    id: canonical.id as string,
+    planName: (canonical.plan_name as string | null) ?? null,
+    planYear: (canonical.plan_year as number | null) ?? null,
+    insurerName,
+    planType: (canonical.plan_type as string | null) ?? null,
+    canonicalPlanId: canonical.id as string,
+    badgeLevel,
+  };
+}
+
+function deriveBoundCanonicalBadgeLevel(
+  fieldProvenance: unknown,
+  sourceCount: number | null,
+  isVerified: boolean | null,
+): BoundCanonicalPlan["badgeLevel"] {
+  if (isVerified === true) return "verified";
+  if (fieldProvenance && typeof fieldProvenance === "object") {
+    const provenance = fieldProvenance as Record<string, { source?: unknown }>;
+    for (const key of Object.keys(provenance)) {
+      const entry = provenance[key];
+      if (
+        entry &&
+        typeof entry === "object" &&
+        (entry.source === "admin_attested" || entry.source === "candid_verified")
+      ) {
+        return "verified";
+      }
+    }
+  }
+  if ((sourceCount ?? 0) >= 2) return "community";
+  return "estimated";
+}
+
+/**
+ * S110 Chunk C — Pattern 2 identity year-shift lookup.
+ *
+ * Given a canonical_plan_id (anchor — the user's current plan canonical) and
+ * a target plan_year (the bill year), find the canonical_plans row that
+ * represents THE SAME PLAN for the target year. Strict 5-component identity
+ * gate (insurer_id + plan_name normalized + state + metal_level + plan_type)
+ * + uniqueness gate (must return exactly one row to be confident).
+ *
+ * Why strict + unique:
+ *   - Pattern 1 #2 ("no fabricated citations") demands high precision. False
+ *     positive (matching the wrong plan's bill-year version) = citing terms
+ *     that aren't actually the user's bill-year plan.
+ *   - Asymmetric risk: false negative just falls through to user_fallback
+ *     (cite current plan with year disclosed); false positive is a Pattern
+ *     1 #2 violation. Bias toward strict matching.
+ *
+ * Components dropped from full Pattern 2 (employer/network/HIOS) because
+ * those drift legitimately year-over-year and would cause false negatives.
+ * Plan_name uses LOWER+TRIM normalization (whitespace + case insensitive)
+ * per feedback_candid_recall_over_precision — no fuzzy matching.
+ *
+ * Returns null on any of: anchor missing identity components, no match,
+ * multiple matches (ambiguous), DB error.
+ */
+async function lookupArchiveCanonical(
+  supabase: SupabaseClient,
+  anchorCanonicalPlanId: string,
+  billYear: number,
+): Promise<ResolvedPlan | null> {
+  // Step 1 — fetch the anchor canonical to read its identity components.
+  const { data: anchor, error: anchorErr } = await supabase
+    .from("canonical_plans")
+    .select("insurer_id, plan_name, plan_type, state, metal_level")
+    .eq("id", anchorCanonicalPlanId)
+    .maybeSingle();
+
+  if (anchorErr || !anchor) {
+    console.log("[plan-context] archive lookup: anchor canonical fetch failed", {
+      anchorCanonicalPlanId,
+      err: anchorErr?.message ?? null,
+    });
+    return null;
+  }
+
+  // Strict 5-component requirement: any missing component → abstain. Most
+  // common cause is non-ACA / employer-sponsored plans without metal_level.
+  if (
+    !anchor.insurer_id ||
+    !anchor.plan_name ||
+    !anchor.state ||
+    !anchor.metal_level ||
+    !anchor.plan_type
+  ) {
+    console.log("[plan-context] archive lookup: anchor missing identity components", {
+      anchorCanonicalPlanId,
+      hasInsurerId: !!anchor.insurer_id,
+      hasPlanName: !!anchor.plan_name,
+      hasState: !!anchor.state,
+      hasMetalLevel: !!anchor.metal_level,
+      hasPlanType: !!anchor.plan_type,
+    });
+    return null;
+  }
+
+  // Step 2 — find canonical(s) for bill year matching insurer + state +
+  // metal + plan_type. Plan-name matched in-memory after LOWER+TRIM to avoid
+  // ILIKE wildcard interpretation on user-uploaded names that may contain
+  // literal `%` or `_`.
+  const { data: candidates, error: matchErr } = await supabase
+    .from("canonical_plans")
+    .select("id, plan_name, plan_year, plan_type, state, metal_level, insurer_id")
+    .eq("insurer_id", anchor.insurer_id)
+    .eq("state", anchor.state)
+    .eq("metal_level", anchor.metal_level)
+    .eq("plan_type", anchor.plan_type)
+    .eq("plan_year", billYear);
+
+  if (matchErr) {
+    console.log("[plan-context] archive lookup: candidate query failed", {
+      err: matchErr.message,
+    });
+    return null;
+  }
+
+  const normalizedAnchorName = anchor.plan_name.toLowerCase().trim();
+  const matches = (candidates ?? []).filter(
+    (c) =>
+      typeof c.plan_name === "string" &&
+      c.plan_name.toLowerCase().trim() === normalizedAnchorName,
+  );
+
+  // Uniqueness gate — abstain on 0 or >1 results.
+  if (matches.length !== 1) {
+    console.log("[plan-context] archive lookup: no unique match", {
+      anchorCanonicalPlanId,
+      billYear,
+      candidateCount: candidates?.length ?? 0,
+      exactNameMatchCount: matches.length,
+    });
+    return null;
+  }
+
+  const match = matches[0];
+
+  // Hydrate insurer display name for the resulting ResolvedPlan.
+  const { data: insurer } = await supabase
+    .from("insurer_catalog")
+    .select("name")
+    .eq("id", match.insurer_id)
+    .maybeSingle();
+
+  console.log("[plan-context] archive lookup match", {
+    anchorCanonicalPlanId,
+    billYear,
+    archiveCanonicalId: match.id,
+    archivePlanName: match.plan_name,
+    archiveInsurer: insurer?.name ?? match.insurer_id,
+  });
+
+  return {
+    id: match.id,
+    planName: match.plan_name ?? null,
+    planYear: match.plan_year ?? null,
+    insurerName: insurer?.name ?? null,
+    planType: match.plan_type ?? null,
+    canonicalPlanId: match.id,
   };
 }
 

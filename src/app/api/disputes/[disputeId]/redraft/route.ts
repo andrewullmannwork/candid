@@ -124,17 +124,26 @@ export async function POST(
     new Set([dispute.claim_line_item_id, ...extraIds].filter(Boolean)),
   ) as string[];
 
-  // Step 1: resolve plan context + initial evidence pass.
-  const planContext = await resolvePlanContext(supabase, {
-    userId: user.id,
-    claimId: dispute.claim_id,
-  });
   // S109 PR #2 (Chunk B) — read user's same-plan confirmation answer; passed
   // to resolveEvidence so fallback-plan coverage is loaded only when 'yes'.
   const userConfirmedSamePlan = ((): "yes" | "no" | "not_sure" | null => {
     const v = (dispute.metadata as Record<string, unknown> | null)?.userConfirmedSamePlan;
     return v === "yes" || v === "no" || v === "not_sure" ? v : null;
   })();
+  // S110 Chunk D — read manual canonical bind. S111 D2: threaded into
+  // resolvePlanContext so boundCanonicalPlan populates for templates.ts
+  // citation rendering. Also threaded into both resolveEvidence calls below
+  // so the coverage chain stays consistent across the CF-20 redraft cycle.
+  const canonicalPlanIdForBillYear = ((): string | null => {
+    const v = (dispute.metadata as Record<string, unknown> | null)?.canonicalPlanIdForBillYear;
+    return typeof v === "string" && v.length > 0 ? v : null;
+  })();
+  // Step 1: resolve plan context + initial evidence pass.
+  const planContext = await resolvePlanContext(supabase, {
+    userId: user.id,
+    claimId: dispute.claim_id,
+    canonicalPlanIdForBillYear,
+  });
   let evidence = await resolveEvidence(supabase, {
     userId: user.id,
     claimIds: [dispute.claim_id],
@@ -143,6 +152,7 @@ export async function POST(
     letterType: dispute.dispute_type,
     disputeId: dispute.id,
     userConfirmedSamePlan,
+    canonicalPlanIdForBillYear,
   });
 
   // Step 2: CF-20 re-parse-on-flag — mirrors /api/disputes/generate logic.
@@ -202,6 +212,7 @@ export async function POST(
                 letterType: dispute.dispute_type,
                 disputeId: dispute.id,
                 userConfirmedSamePlan,
+                canonicalPlanIdForBillYear,
               });
             }
           }

@@ -21,10 +21,7 @@ export function MissingPlanBanner({ claimYear, disputeId, onDismiss }: Props) {
           To strengthen this letter, add your {claimYear} insurance plan
         </div>
         <p className="mt-1 text-sm text-amber-800">
-          This claim is from {claimYear} but we don&apos;t have your plan from that
-          year on file. Upload your {claimYear} SBC or plan document — the letter
-          will automatically include your {claimYear} benefits, copays, and
-          coverage status.
+          {`This claim is from ${claimYear} but we don't have your plan from that year on file. Upload your ${claimYear} SBC or plan document — the letter will automatically include your ${claimYear} benefits, copays, and coverage status.`}
         </p>
       </div>
       <div className="flex shrink-0 items-center gap-2">
