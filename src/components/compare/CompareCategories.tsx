@@ -40,6 +40,7 @@ const REPRESENTATIVE_REASON: Record<DisplayState, DisplayStateReason | null> = {
   user_verified: "from_user_document_cite_grade",
   community: "canonical_below_threshold",
   public_data: "cms_marketplace",
+  estimate: "inferred_from_similar_plans", // v5 (S119 B1.3a) — inferred values; weaker than Public Data
   hidden: null,
 };
 
@@ -49,6 +50,7 @@ const AGGREGATE_TOOLTIP: Record<DisplayState, string> = {
   user_verified: "Some services on this plan came from your uploaded plan document or values you typed/confirmed yourself.",
   community: "Some services on this plan came from another Candid user's parse on this canonical.",
   public_data: "Some services on this plan came from public datasets (CMS, etc.) — upload your SBC for the real story.",
+  estimate: "Some services on this plan are Estimates inferred from similar plans — upload your SBC for the real number.", // v5 (S119 B1.3a)
   hidden: "",
 };
 

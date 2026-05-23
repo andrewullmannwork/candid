@@ -84,22 +84,30 @@ import type { FieldProvenanceEntry, SourceProvenance } from "./field-categories"
 // signal whenever their own data backs a value. Backend `reason` codes still
 // preserve the cite-grade vs no-cite distinction inside the user_verified state
 // so dispute-letter logic can gate blockquotes on from_user_document_cite_grade only.
-// v4 vocabulary (Session 74 — CF-40):
+// v5 vocabulary (S119 B1.3a — extends v4 with split outline-amber Public Data vs Estimate):
 //   candid_verified         → "Verified"      (≥3 distinct EMAIL+PHONE-verified users; trumps all)
 //   user_verified_community → dual badge      (smart-skip on 3-parse-stable canonical, distinct-users < 3)
 //   user_verified           → "User Verified" (Haiku ran on YOUR doc OR you typed)
 //   community               → "Community"     (canonical inheritance; user has NOT uploaded)
-//   public_data             → "Public Data"   (CMS / public dataset; no user-doc backing)
+//   public_data             → "Public Data"   (outline-AMBER per v5; CMS / state APCDs / NPPES — sourced public dataset)
+//   estimate                → "Estimate"      (outline-AMBER per v5; inferred from similar plans / cohort averages — synthesized)
 //   hidden                  → no badge        (boilerplate / parser failure)
 //
-// Aggregation order (worst → best):
-//   public_data < community < user_verified < user_verified_community < candid_verified
+// Aggregation order (worst → best) — v5 inserts `estimate` at the worst tier:
+//   estimate < public_data < community < user_verified < user_verified_community < candid_verified
+//
+// Why split outline-amber: Public Data is *sourced* (real dataset with provenance);
+// Estimate is *inferred* (we synthesized it from similar plans / cohort). Different
+// methodologies, different Pattern 1 #11 disclosure obligations. Same visual treatment
+// (outline-amber) signals shared "no user contribution" tier; differentiated labels
+// communicate methodology. Per [[Candid_10k]] §3.1 v5 supplement (ACTIVE post-B1.3a).
 export type DisplayState =
   | "candid_verified"
   | "user_verified_community" // CF-40 v4: dual badge "User Verified + Community"
   | "user_verified"
   | "community"
   | "public_data"
+  | "estimate" // v5 (S119 B1.3a): inferred from similar plans / cohort averages
   | "hidden";
 
 // Reasons surface to UI as tooltip keys + backend routing keys. Richer than
@@ -119,6 +127,9 @@ export type DisplayStateReason =
   | "provider_attestation_below_threshold" // Provider portal data with <2 user corroborations (Phase 4.5b territory) — folded into Community
   // public_data (CMS / state APCD / NPPES bulk ingest, no user-doc backing yet)
   | "cms_marketplace"                     // CMS public-marketplace data (county-resolved premium, plan-catalog match from card scan)
+  // estimate (S119 B1.3a v5 — inferred values; outline-amber visual; no direct source data)
+  | "inferred_from_similar_plans"         // v5: inferred from a similar plan (same insurer/state/network) — not direct extraction
+  | "cohort_estimate"                     // v5: inferred from cohort averages or cross-plan extrapolation — weaker than public_data
   // user_verified (caller explicitly entered/confirmed)
   | "user_correction"                     // User typed value via /api/plan/field inline-edit
   | "card_scan"                           // Extracted from a user's insurance card scan (member ID, group #, plan name)
@@ -356,10 +367,11 @@ export function isVisibleState(s: DisplayState | null | undefined): boolean {
 }
 
 /** States that should pair with an "Upload your plan document" CTA to improve
- *  the signal — Community + Public Data both lack the user's own contribution.
- *  Verified + User Verified + User Verified+Community don't need an upload CTA. */
+ *  the signal — Community + Public Data + Estimate all lack the user's own
+ *  contribution. Verified + User Verified + User Verified+Community don't need
+ *  an upload CTA. v5 (S119 B1.3a): `estimate` joins the upload-CTA tier. */
 export function needsUploadCTA(s: DisplayState | null | undefined): boolean {
-  return s === "community" || s === "public_data";
+  return s === "community" || s === "public_data" || s === "estimate";
 }
 
 /** Values where the user (or aggregated users) is the source of trust — covers
@@ -374,9 +386,10 @@ export function isDocumentBacked(s: DisplayState | null | undefined): boolean {
 export function aggregateRowState(states: Array<DisplayState | null>): DisplayState | null {
   const visible = states.filter((s): s is DisplayState => s !== null && s !== "hidden");
   if (visible.length === 0) return null;
-  // Worst → best (CF-40 v4):
-  //   public_data → community → user_verified → user_verified_community → candid_verified.
+  // Worst → best (S119 B1.3a v5; `estimate` inserted at worst tier):
+  //   estimate → public_data → community → user_verified → user_verified_community → candid_verified.
   // Row badge surfaces the worst-quality cell so the user sees the weakest link.
+  if (visible.some((s) => s === "estimate")) return "estimate";
   if (visible.some((s) => s === "public_data")) return "public_data";
   if (visible.some((s) => s === "community")) return "community";
   if (visible.some((s) => s === "user_verified")) return "user_verified";
@@ -552,9 +565,15 @@ export const DISPLAY_STATE_TOOLTIP_EN: Record<DisplayStateReason, string> = {
   provider_attestation_below_threshold:
     "Community — provider-reported data still being corroborated. Upload your plan document to check it against your real plan.",
 
-  // Public Data — green border, white fill: CMS bulk ingest, no user-doc backing yet
+  // Public Data — outline amber (v5): CMS / state APCD / NPPES bulk ingest, no user-doc backing yet
   cms_marketplace:
     "Public Data — sourced from CMS marketplace and other public datasets, based on your insurance card. Upload your plan document to confirm against your real plan.",
+
+  // Estimate — outline amber (v5; S119 B1.3a): inferred values, weaker than Public Data
+  inferred_from_similar_plans:
+    "Estimate — inferred from similar plans (same insurer / state / network). Upload your plan document for the real number.",
+  cohort_estimate:
+    "Estimate — inferred from cohort averages or cross-plan extrapolation. Upload your plan document for the real number.",
 
   // User Verified — green border, white fill: caller explicitly typed/confirmed
   user_correction:

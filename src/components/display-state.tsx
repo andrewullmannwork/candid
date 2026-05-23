@@ -113,20 +113,22 @@ interface BadgeStyle {
   icon: React.ReactNode;
 }
 
-// Session 72 v3 vocabulary — 4 visible badge variants:
-//   candid_verified  → solid green pill   "Verified"      (≥3 distinct users corroborated — Pattern 1 #3)
-//   user_verified    → green-bordered white pill  "User Verified" (your SBC/plan_doc parse OR you typed/confirmed)
-//   community        → green-bordered white pill  "Community"     (canonical entry from another user's parse, sub-3)
-//   public_data      → green-bordered white pill  "Public Data"   (CMS bulk ingest / state APCDs / NPPES — no user parse yet)
+// v5 vocabulary (S119 B1.3a — supersedes v4 dual-badge with split outline-amber):
+//   candid_verified  → solid emerald pill  "Verified"       (≥3 distinct users — Pattern 1 #3)
+//   user_verified    → outline-emerald pill "User Verified" (your SBC/plan_doc parse OR you typed/confirmed)
+//   community        → outline-emerald pill "Community"     (canonical entry from another user's parse, sub-3)
+//   public_data      → outline-AMBER pill   "Public Data"   (CMS / state APCDs / NPPES — sourced public dataset)
+//   estimate         → outline-AMBER pill   "Estimate"      (inferred from similar plans / cohort — synthesized)
 //   hidden           → no render (page-level banner for parser_failure aggregates)
 //
-// All 3 non-Verified badges share the same green-bordered white pill style
-// (only label distinguishes); "Verified" is the only solid-green badge —
-// reserves the strongest visual signal for cross-user corroboration.
-//
-// v3 collapse note: "Upload" merged into "User Verified" since both signal
-// "you contributed this." Backend reasons (from_user_document_*) preserve the
-// cite-grade vs no-cite distinction for dispute-letter logic.
+// v5 split: Public Data + Estimate share outline-amber visual but distinct labels.
+// Public Data = sourced (real dataset with provenance); Estimate = inferred
+// (we synthesized it from similar plans / cohort). Different methodologies,
+// different Pattern 1 #11 disclosure obligations. Outline-emerald RESERVED for
+// states with cross-user or single-user CANDID corroboration (Verified / User
+// Verified / Community); outline-amber = no user contribution; solid-emerald =
+// Pattern 1 #3 threshold met. Per [[Candid_10k]] §3.1 v5 supplement (ACTIVE
+// post-B1.3a) + [[Candid_Data_Patterns]] Pattern 1 #16 5-tier badging.
 
 const CHECKMARK_ICON = (
   <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
@@ -134,7 +136,7 @@ const CHECKMARK_ICON = (
   </svg>
 );
 
-// Solid green — corroborated cross-user (Pattern 1 #3 met).
+// Solid emerald — corroborated cross-user (Pattern 1 #3 met).
 const CANDID_VERIFIED_STYLE: BadgeStyle = {
   bg: "bg-emerald-600",
   text: "text-white",
@@ -143,17 +145,31 @@ const CANDID_VERIFIED_STYLE: BadgeStyle = {
   icon: CHECKMARK_ICON,
 };
 
-// Green border + white fill — single-source signals (3 variants, label is the only differentiator).
-const OUTLINE_BASE = {
+// Outline emerald — signals with CANDID corroboration (cross-user or single-user).
+const OUTLINE_EMERALD = {
   bg: "bg-white",
   text: "text-emerald-700",
   ring: "ring-emerald-500",
   icon: CHECKMARK_ICON,
 } as const;
 
-const COMMUNITY_STYLE: BadgeStyle = { ...OUTLINE_BASE, label: "Community" };
-const PUBLIC_DATA_STYLE: BadgeStyle = { ...OUTLINE_BASE, label: "Public Data" };
-const USER_VERIFIED_STYLE: BadgeStyle = { ...OUTLINE_BASE, label: "User Verified" };
+// Outline amber (v5; S119 B1.3a) — signals WITHOUT user contribution.
+// Used by Public Data (sourced) + Estimate (inferred). Dot icon (not checkmark)
+// communicates the weaker trust tier visually.
+const DOT_ICON = (
+  <span className="inline-block w-1.5 h-1.5 rounded-full bg-current" aria-hidden="true" />
+);
+const OUTLINE_AMBER = {
+  bg: "bg-amber-50",
+  text: "text-amber-700",
+  ring: "ring-amber-200",
+  icon: DOT_ICON,
+} as const;
+
+const COMMUNITY_STYLE: BadgeStyle = { ...OUTLINE_EMERALD, label: "Community" };
+const USER_VERIFIED_STYLE: BadgeStyle = { ...OUTLINE_EMERALD, label: "User Verified" };
+const PUBLIC_DATA_STYLE: BadgeStyle = { ...OUTLINE_AMBER, label: "Public Data" };
+const ESTIMATE_STYLE: BadgeStyle = { ...OUTLINE_AMBER, label: "Estimate" };
 
 function styleFor(state: DisplayState): BadgeStyle | null {
   switch (state) {
@@ -162,6 +178,7 @@ function styleFor(state: DisplayState): BadgeStyle | null {
     case "user_verified_community":  return null; // CF-40: dual-badge — DisplayStateBadge renders TWO pills (handled inline below)
     case "community":                return COMMUNITY_STYLE;
     case "public_data":              return PUBLIC_DATA_STYLE;
+    case "estimate":                 return ESTIMATE_STYLE;       // v5 (S119 B1.3a): outline amber, inferred values
     case "hidden":                   return null;
     default:                         return null;
   }
@@ -174,6 +191,12 @@ interface DisplayStateBadgeProps {
   size?: "xs" | "sm";
   /** Override default tooltip text (for surfaces that need surface-specific framing). */
   tooltip?: string;
+  /** v5 dual-pill (S119 B1.3a — generalized from CF-40): when provided, render
+   *  TWO pills side-by-side. Solid-emerald `candid_verified` NEVER appears in a
+   *  dual cluster (Verified trumps per D-S112-D); passing it as pair is a no-op
+   *  (single pill rendered instead). Common pairs: `user_verified + community`
+   *  (was the only CF-40 v4 dual), `community + estimate`, `public_data + estimate`. */
+  pair?: DisplayState;
 }
 
 export function DisplayStateBadge({
@@ -181,6 +204,7 @@ export function DisplayStateBadge({
   reason,
   size = "sm",
   tooltip,
+  pair,
 }: DisplayStateBadgeProps) {
   if (state === "hidden") return null;
 
@@ -189,29 +213,45 @@ export function DisplayStateBadge({
       ? "text-[10px] px-1.5 py-0.5 gap-0.5"
       : "text-xs px-2 py-0.5 gap-1";
 
-  // CF-40 (Session 74) — dual-badge tier: render TWO pills side-by-side.
-  // Codified in [[Candid_10k]] §3.1 *Display State Achievement & Graduation Rules* §6.
-  if (state === "user_verified_community") {
-    const tipText = tooltip ?? DISPLAY_STATE_TOOLTIP_EN[reason];
-    return (
-      <span title={tipText} className="inline-flex items-center gap-1">
-        <span
-          className={`inline-flex items-center font-semibold rounded-full ring-1 ${sizing} ${USER_VERIFIED_STYLE.bg} ${USER_VERIFIED_STYLE.text} ${USER_VERIFIED_STYLE.ring}`}
-        >
-          {USER_VERIFIED_STYLE.icon}
-          {USER_VERIFIED_STYLE.label}
+  // v5 generalized dual-pill (S119 B1.3a) — supersedes CF-40 v4 hardcoded
+  // user_verified_community branch. Verified trumps: when state OR pair is
+  // candid_verified, the dual cluster collapses to a single Verified pill.
+  // user_verified_community LEGACY state still triggers the implicit
+  // user_verified + community dual cluster for backward compat with v4 callers
+  // (e.g., aggregateRowState returning user_verified_community when a row mixes
+  // smart-skip + canonical-stable signals).
+  const effectivePair: DisplayState | null =
+    state === "candid_verified" || pair === "candid_verified"
+      ? null
+      : pair ?? (state === "user_verified_community" ? "community" : null);
+  const effectiveState: DisplayState =
+    state === "user_verified_community" ? "user_verified" : state;
+
+  if (effectivePair) {
+    const styleA = styleFor(effectiveState);
+    const styleB = styleFor(effectivePair);
+    if (styleA && styleB) {
+      const tipText = tooltip ?? DISPLAY_STATE_TOOLTIP_EN[reason];
+      return (
+        <span title={tipText} className="inline-flex items-center gap-1">
+          <span
+            className={`inline-flex items-center font-semibold rounded-full ring-1 ${sizing} ${styleA.bg} ${styleA.text} ${styleA.ring}`}
+          >
+            {styleA.icon}
+            {styleA.label}
+          </span>
+          <span
+            className={`inline-flex items-center font-semibold rounded-full ring-1 ${sizing} ${styleB.bg} ${styleB.text} ${styleB.ring}`}
+          >
+            {styleB.icon}
+            {styleB.label}
+          </span>
         </span>
-        <span
-          className={`inline-flex items-center font-semibold rounded-full ring-1 ${sizing} ${COMMUNITY_STYLE.bg} ${COMMUNITY_STYLE.text} ${COMMUNITY_STYLE.ring}`}
-        >
-          {COMMUNITY_STYLE.icon}
-          {COMMUNITY_STYLE.label}
-        </span>
-      </span>
-    );
+      );
+    }
   }
 
-  const style = styleFor(state);
+  const style = styleFor(effectiveState);
   if (!style) return null;
   const tipText = tooltip ?? DISPLAY_STATE_TOOLTIP_EN[reason];
   return (
@@ -224,6 +264,17 @@ export function DisplayStateBadge({
     </span>
   );
 }
+
+/**
+ * `<VerifyPill>` — design-aligned alias for `<DisplayStateBadge>` (S119 B1.3a).
+ *
+ * Same component, same props — exported under the design vocabulary so
+ * primitives.jsx-style callers can use either name. Both reference the same
+ * implementation; pick whichever reads better in context (`VerifyPill` reads
+ * naturally on a benefit row; `DisplayStateBadge` is more accurate inside
+ * `display-state.tsx` itself).
+ */
+export const VerifyPill = DisplayStateBadge;
 
 interface SourceQuoteProps {
   /** Verbatim text from the user's plan document. */
