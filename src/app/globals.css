@@ -3,6 +3,38 @@
 :root {
   --background: #ffffff;
   --foreground: #0f172a;
+
+  /* ─── VERIFICATION LADDER (display-state.tsx vocabulary) ───────────── */
+  --verified-bg:    #059669;   /* emerald-600 — solid green Verified pill (Pattern 1 #3 ≥3-user only) */
+  --verified-soft:  #ecfdf5;   /* emerald-50 */
+  --verified-ink:   #047857;   /* emerald-700 */
+  --verified-ring:  #6ee7b7;   /* emerald-300 — SourceQuote left border */
+  --unverified-bg:  #fef2f2;   /* red-50 */
+  --unverified-ink: #b91c1c;   /* red-700 */
+
+  /* ─── v5 OUTLINE-AMBER SPLIT (Public Data vs Estimate) ─────────────── */
+  --public-data-bg:   #fffbeb;   /* amber-50 — sourced (CMS / state APCD / NPPES) */
+  --public-data-ink:  #b45309;   /* amber-700 */
+  --public-data-ring: #fde68a;   /* amber-200 */
+  --estimate-bg:      #fffbeb;   /* amber-50 — inferred (similar plans / cohort) */
+  --estimate-ink:     #b45309;   /* amber-700 */
+  --estimate-ring:    #fde68a;   /* amber-200 */
+  --verify-strong:    #d97706;   /* amber-600 — verify button affordance */
+
+  /* ─── STATUS / TONE (Banner primitive — B1.1) ──────────────────────── */
+  --success-bg:     #f0fdf4;   /* green-50 */
+  --success-ink:    #15803d;   /* green-700 */
+  --success-strong: #22c55e;   /* green-500 */
+  --info-bg:        #eff6ff;   /* blue-50 */
+  --info-ink:       #1d4ed8;   /* blue-700 */
+  --hsa-bg:         #faf5ff;   /* purple-50 — HSA/FSA marketplace */
+  --hsa-ink:        #7e22ce;   /* purple-700 */
+  --warn-bg:        #fef2f2;   /* red-50 */
+  --warn-ink:       #dc2626;   /* red-500 */
+
+  /* ─── GLOW (extracted from inline; identical pixel output) ─────────── */
+  --glow-blue:       0 0 20px hsla(217, 91%, 60%, 0.15), 0 8px 32px hsla(217, 91%, 60%, 0.10);
+  --glow-blue-hover: 0 0 24px hsla(217, 91%, 60%, 0.25), 0 12px 40px hsla(217, 91%, 60%, 0.15);
 }
 
 @theme inline {
@@ -37,11 +69,11 @@ html {
 
 /* Glow effect for CTAs */
 .glow-blue {
-  box-shadow: 0 0 20px hsla(217, 91%, 60%, 0.15), 0 8px 32px hsla(217, 91%, 60%, 0.1);
+  box-shadow: var(--glow-blue);
 }
 
 .glow-blue:hover {
-  box-shadow: 0 0 24px hsla(217, 91%, 60%, 0.25), 0 12px 40px hsla(217, 91%, 60%, 0.15);
+  box-shadow: var(--glow-blue-hover);
 }
 
 /* Fade-in for rotating status messages */
