@@ -12,6 +12,13 @@ import type { ReactNode } from "react";
  * that node (typically the inline subscribe form). The card shell + visual
  * position stay the same, so the upgrade prompt → card-collection swap
  * feels like an in-place transition instead of a floating modal.
+ *
+ * **Per Phase 2 Subplan B1.2** (plans/phase2_implementation.md): this is
+ * the canonical "ComingSoonOverlay" primitive — the Subplan's
+ * `<ComingSoonOverlay reason eta?>` slot is satisfied by `<LockedOverlay
+ * tone="coming_soon" title=... description=... ctaLabel=... />`. No
+ * separate `ComingSoonOverlay` component exists or is needed. Future
+ * `/case` + `/care` surfaces consume this same primitive.
  */
 export function LockedOverlay({
   title,

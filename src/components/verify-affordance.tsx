@@ -35,9 +35,22 @@ import type {
   DisplayStateReason,
 } from "@/lib/parser/consumer-read";
 
+/**
+ * Visual shape variants (S119 B1.2):
+ *   - "card"   (default): existing Phase 4.0 amber-card with message + actions + toast.
+ *                         All existing call sites use this implicitly.
+ *   - "block":  full-width clickable callout — for empty / low-confidence whole rows.
+ *               Renders as a single Link (no re-parse button, no toast).
+ *   - "inline": small text-link with up-arrow — sits next to a VerifyPill in a row.
+ *               Compact; no message body; just the upload affordance.
+ */
+export type VerifyAffordanceShape = 'card' | 'block' | 'inline';
+
 interface VerifyAffordanceProps {
   state: DisplayState;
   reason: DisplayStateReason;
+  /** Visual shape — defaults to "card" (existing P4.0 behavior). */
+  shape?: VerifyAffordanceShape;
   /** Optional override URL for the upload-different-doc link. Defaults to /upload. */
   uploadHref?: string;
   /** Plan ID for re-parse fetch. Required to surface "Re-check our analysis" button. */
@@ -93,6 +106,7 @@ function reasonMessage(reason: DisplayStateReason, userHasDoc: boolean | undefin
 export function VerifyAffordance({
   state,
   reason,
+  shape = "card",
   uploadHref = "/upload",
   planId,
   fieldName,
@@ -197,6 +211,81 @@ export function VerifyAffordance({
     ? "Upload a more complete plan document"
     : "Upload your plan document";
 
+  // S119 B1.2 — "inline" shape variant: small text-link with up-arrow,
+  // sits next to a VerifyPill. No card chrome, no message body, no re-parse.
+  if (shape === "inline") {
+    return (
+      <Link
+        href={uploadHref}
+        className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700 hover:text-amber-900"
+      >
+        <svg
+          width="11"
+          height="11"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M12 16V4m0 0l-4 4m4-4l4 4" />
+        </svg>
+        {linkLabel}
+      </Link>
+    );
+  }
+
+  // S119 B1.2 — "block" shape variant: full-width clickable callout.
+  // For empty / low-confidence whole-row affordances. No re-parse button
+  // (matches design — block shape is a single clickable surface).
+  if (shape === "block") {
+    return (
+      <Link
+        href={uploadHref}
+        className="group flex w-full items-center gap-3 rounded-xl border border-amber-200 bg-amber-50/60 px-4 py-3 hover:bg-amber-50 transition-colors"
+      >
+        <span
+          aria-hidden="true"
+          className="inline-flex flex-shrink-0 items-center justify-center w-8 h-8 rounded-lg bg-amber-100 text-amber-700"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M12 16V4m0 0l-4 4m4-4l4 4M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
+          </svg>
+        </span>
+        <div className="flex-1 min-w-0 text-left">
+          <div className="text-[13px] font-semibold text-amber-900">
+            Want to verify this?
+          </div>
+          <div className="text-[12px] text-amber-800 mt-0.5">{message}</div>
+        </div>
+        <svg
+          className="w-3 h-3 text-amber-700 group-hover:translate-x-0.5 transition-transform"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M9 5l7 7-7 7"
+          />
+        </svg>
+      </Link>
+    );
+  }
+
+  // Default "card" shape — existing Phase 4.0 amber-card render (UNTOUCHED).
   return (
     <div className="rounded-xl border border-amber-200 bg-amber-50/60 px-4 py-3">
       <p className="text-xs text-amber-900">
