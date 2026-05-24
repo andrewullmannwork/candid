@@ -170,7 +170,7 @@ export function DropDone({ kind, fileName, onUploadAnother, onViewResults }: Dro
           onClick={onViewResults}
           className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
         >
-          {kind === "bill" ? "See the findings" : "View your benefits"} →
+          {kind === "bill" ? "View claim" : "View benefits"} →
         </button>
       </div>
     </div>

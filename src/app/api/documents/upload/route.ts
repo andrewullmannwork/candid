@@ -642,6 +642,12 @@ export async function POST(req: NextRequest) {
         storagePath,
         autoProcessed: true,
         isLargeDoc,
+        // B2-UP.1 — surface effective doc-type post-resolver so the frontend
+        // can reconcile state + show a "looks like this was actually a X"
+        // banner when Pattern P silently overrode the user's pick at high
+        // confidence (≥0.95 — too high to trigger DocTypeConfirmationModal,
+        // high enough to silently correct).
+        resolvedDocType: docType,
         classification: {
           classifiedType: classification.classifiedType,
           confidence: classification.confidence,
@@ -713,6 +719,8 @@ export async function POST(req: NextRequest) {
         storagePath,
         autoProcessed: true,
         mediumConfidence: true,
+        // B2-UP.1 — surface effective doc-type (see HIGH-confidence response above).
+        resolvedDocType: docType,
         classification: {
           classifiedType: classification.classifiedType,
           confidence: classification.confidence,

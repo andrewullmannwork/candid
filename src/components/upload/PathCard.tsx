@@ -66,6 +66,8 @@ const TONE_STYLES: Record<
 export function PathCard({ tone, icon, kind, title, body, destination, destLabel, notifyMeCta }: PathCardProps) {
   const t = TONE_STYLES[tone];
   const disabled = !destination;
+  // CTA pinned bottom-left via `mt-auto` so all 4 cards align the CTA row
+  // regardless of body length variance.
   const Inner = (
     <>
       <div className={`flex h-9 w-9 items-center justify-center rounded-xl ${t.iconBg} ${t.iconInk}`}>{icon}</div>
@@ -74,9 +76,9 @@ export function PathCard({ tone, icon, kind, title, body, destination, destLabel
       </div>
       <div className="mt-1.5 text-sm font-semibold leading-snug text-slate-900">{title}</div>
       <p className="mt-1.5 text-xs leading-relaxed text-slate-600">{body}</p>
-      {notifyMeCta && <div className="mt-3">{notifyMeCta}</div>}
+      {notifyMeCta && <div className="mt-auto pt-3">{notifyMeCta}</div>}
       {!notifyMeCta && (
-        <div className={`mt-3 text-xs font-semibold ${disabled ? "text-slate-400" : t.cta}`}>
+        <div className={`mt-auto pt-3 text-xs font-semibold ${disabled ? "text-slate-400" : t.cta}`}>
           {destLabel}
           {!disabled && " →"}
         </div>
@@ -86,14 +88,14 @@ export function PathCard({ tone, icon, kind, title, body, destination, destLabel
 
   if (disabled) {
     return (
-      <div className={`flex h-full flex-col rounded-2xl ${t.bg} p-4 ring-1 ${t.ring} opacity-75`}>{Inner}</div>
+      <div className={`flex h-full flex-col items-start rounded-2xl ${t.bg} p-4 ring-1 ${t.ring} opacity-75`}>{Inner}</div>
     );
   }
   return (
     <button
       type="button"
       onClick={destination}
-      className={`flex h-full flex-col rounded-2xl ${t.bg} p-4 text-left ring-1 ${t.ring} transition-all hover:-translate-y-0.5 hover:shadow-md`}
+      className={`flex h-full flex-col items-start rounded-2xl ${t.bg} p-4 text-left ring-1 ${t.ring} transition-all hover:-translate-y-0.5 hover:shadow-md`}
     >
       {Inner}
     </button>

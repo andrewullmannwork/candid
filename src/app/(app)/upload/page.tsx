@@ -91,6 +91,15 @@ function UploadForm() {
     confidence: number;
     mismatch: boolean;
   } | null>(null);
+  // B2-UP.1 (#4 UX fix) — captures backend Pattern P silent override so the
+  // frontend can render a correction banner + reconcile docType for
+  // downstream wiring (DropDone CTA label + redirect target). Null when no
+  // override happened (user's pick matched classifier OR confidence too low
+  // to override).
+  const [resolvedDocType, setResolvedDocType] = useState<DocType | null>(null);
+  // Original user pick captured at upload time so the banner can name the
+  // user's intent vs the corrected type. Cleared on reset.
+  const [userPickAtUpload, setUserPickAtUpload] = useState<DocType | null>(null);
   const [documentId, setDocumentId] = useState<string | null>(null);
   // S78 — async ingestion gate: backend sets isLargeDoc=true for PDFs > 30 pages
   // when async_ingestion_ux_v1 feature flag is ON. Drives the large-doc splash
@@ -512,6 +521,20 @@ function UploadForm() {
           }
         }
 
+        // B2-UP.1 (#4 UX fix) — reconcile docType with backend Pattern P
+        // silent override at high confidence (≥0.95). When the resolved type
+        // differs from user pick, snapshot the user pick (for banner copy),
+        // set resolvedDocType (drives banner render), and update docType so
+        // DropDone CTA + redirect target follow the corrected type.
+        if (
+          typeof uploadResult.resolvedDocType === "string" &&
+          uploadResult.resolvedDocType !== docType
+        ) {
+          setUserPickAtUpload(docType);
+          setResolvedDocType(uploadResult.resolvedDocType as DocType);
+          setDocType(uploadResult.resolvedDocType as DocType);
+        }
+
         // S78 — capture large-doc flag for async UX splash + email-on-complete.
         // Backend sets to true only when async_ingestion_ux_v1 flag is ON, PDF,
         // and pageCount > 30.
@@ -704,6 +727,9 @@ function UploadForm() {
     setUserPickedFile(false);
     setPremiumSaved(false);
     setProgressionComplete(false);
+    // B2-UP.1 (#4) — clear correction banner state for the next upload.
+    setResolvedDocType(null);
+    setUserPickAtUpload(null);
     pendingRedirectRef.current = null;
   }, []);
 
@@ -1131,6 +1157,29 @@ function UploadForm() {
           );
         })}
       </div>
+
+      {/* Doc-type correction banner (B2-UP.1 #4 UX fix) — visible whenever
+          backend Pattern P silently overrode the user's pick at high
+          confidence. Tells the user what we detected + where the results
+          will land. Stays visible across the post-upload window. */}
+      {resolvedDocType && userPickAtUpload && (
+        <div className="mb-4 flex items-start gap-3 rounded-2xl border border-amber-100 bg-amber-50 p-4">
+          <svg className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+          </svg>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-amber-900">
+              {resolvedDocType === "eob" || resolvedDocType === "itemized_bill"
+                ? "This looked like a bill, so we ran the audit instead."
+                : "This looked like a plan document, so we ran plan analysis instead."}
+            </p>
+            <p className="mt-0.5 text-xs leading-relaxed text-amber-800">
+              You selected <span className="font-medium">{(userPickAtUpload === "eob" || userPickAtUpload === "itemized_bill") ? "Bill or EOB" : "Plan document"}</span>, but the content matched <span className="font-medium">{(resolvedDocType === "eob" || resolvedDocType === "itemized_bill") ? "a bill" : "a plan document"}</span>. We&rsquo;ll show the results on{" "}
+              <span className="font-medium">{(resolvedDocType === "eob" || resolvedDocType === "itemized_bill") ? "/claim" : "/plan"}</span>.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* HERO drop zone */}
       <div
