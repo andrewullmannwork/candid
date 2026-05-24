@@ -154,7 +154,10 @@ export async function GET(req: NextRequest) {
       coveragePerPlan.get(planId)!.set(slug, {
         covered: svc.covered,
         copay: svc.in_copay,
-        coinsurance: svc.in_coinsurance,
+        // S120 — coinsurance stored as integer percent (0-100) in
+        // plan_covered_services.in_coinsurance; PlanCoverageInput expects
+        // decimal fraction (0-1). Normalize at the boundary.
+        coinsurance: svc.in_coinsurance != null ? Number(svc.in_coinsurance) / 100 : null,
       });
     }
   }
@@ -239,6 +242,10 @@ export async function GET(req: NextRequest) {
           billed,
           patientResponsibility,
           patientPaid,
+          // S120 — apply coinsurance to ADJUSTED billed (post-writeoff), not
+          // gross billed. Without this, recovery math overstates patient share
+          // by the full insurer contractual writeoff.
+          insuranceAdjusted: Number(item.insurance_adjusted_amount ?? 0),
           planCoverage: coverage,
         });
         claimPotentialRecovery += rec.potentialRecovery;
