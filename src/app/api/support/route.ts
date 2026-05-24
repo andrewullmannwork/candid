@@ -26,6 +26,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { postSupportTicket } from "@/lib/slack/support-notifications";
 
 const ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024; // 25 MB
 const ATTACHMENT_ALLOWED_TYPES = new Set([
@@ -130,6 +131,7 @@ export async function POST(req: NextRequest) {
 
     // Upload attachment if present. Best-effort: failure here does NOT block
     // ticket creation — log warning + return success with attachment_url null.
+    let storedAttachmentFilename: string | null = null;
     if (attachment) {
       const safeFilename = attachment.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 100);
       const storagePath = `${user.id}/${inserted.id}-${safeFilename}`;
@@ -145,6 +147,7 @@ export async function POST(req: NextRequest) {
       if (uploadError) {
         console.warn("[support] Attachment upload failed (ticket created without):", uploadError.message);
       } else {
+        storedAttachmentFilename = attachment.name;
         await supabase
           .from("support_tickets")
           .update({
@@ -153,6 +156,38 @@ export async function POST(req: NextRequest) {
           })
           .eq("id", inserted.id);
       }
+    }
+
+    // Slack Tier 1+2 outbound — post ticket to #support channel via
+    // chat.postMessage; store returned thread ts for inbound thread-reply
+    // routing (/api/slack/events). Fail-soft.
+    let linkedDocumentName: string | null = null;
+    if (linkedDocumentId) {
+      const { data: linkedDoc } = await supabase
+        .from("documents")
+        .select("file_name")
+        .eq("id", linkedDocumentId)
+        .eq("user_id", user.id)
+        .single();
+      linkedDocumentName = linkedDoc?.file_name ?? null;
+    }
+
+    const threadTs = await postSupportTicket({
+      ticketId: inserted.id,
+      userEmail: user.email ?? "(no email on file)",
+      category: category ?? null,
+      subject: subject.trim(),
+      body: body.trim(),
+      linkedDocumentName,
+      attachmentFilename: storedAttachmentFilename,
+      attachmentSizeBytes: attachment?.size ?? null,
+    });
+
+    if (threadTs) {
+      await supabase
+        .from("support_tickets")
+        .update({ slack_thread_ts: threadTs })
+        .eq("id", inserted.id);
     }
 
     return NextResponse.json({ success: true, ticket_id: inserted.id });

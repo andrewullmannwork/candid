@@ -42,6 +42,23 @@ export default function SupportClient({ faqEnabled }: Props) {
     consent &&
     !submitting;
 
+  // Why-disabled hint (smoke fix S123#2 — Andrew couldn't tell why Submit was
+  // greyed out when "Test 3" was below the 10-char details threshold). Show
+  // the FIRST unmet requirement so the user knows exactly what to fix.
+  let missingHint: string | null = null;
+  if (!submitting) {
+    if (!category) {
+      missingHint = "Pick a category above";
+    } else if (subject.trim().length <= 2) {
+      missingHint = "Add a subject (at least 3 characters)";
+    } else if (details.trim().length <= 10) {
+      const needed = 11 - details.trim().length;
+      missingHint = `Add ${needed} more character${needed === 1 ? "" : "s"} to Details`;
+    } else if (!consent) {
+      missingHint = "Check the consent box";
+    }
+  }
+
   const getIdToken = useCallback(async () => {
     if (!user) throw new Error("Not authenticated");
     return user.firebaseUser.getIdToken();
@@ -303,6 +320,12 @@ export default function SupportClient({ faqEnabled }: Props) {
               </button>
             </div>
           </div>
+
+          {missingHint && (
+            <div className="text-right text-xs text-amber-700">
+              {missingHint}
+            </div>
+          )}
 
           {error && (
             <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">{error}</div>
