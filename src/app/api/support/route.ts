@@ -184,10 +184,15 @@ export async function POST(req: NextRequest) {
     });
 
     if (threadTs) {
-      await supabase
+      const { error: tsError } = await supabase
         .from("support_tickets")
         .update({ slack_thread_ts: threadTs })
         .eq("id", inserted.id);
+      if (tsError) {
+        console.warn(
+          `[support] Failed to persist slack_thread_ts (is mig 117 applied?): ${tsError.message}`,
+        );
+      }
     }
 
     return NextResponse.json({ success: true, ticket_id: inserted.id });
