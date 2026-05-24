@@ -35,7 +35,17 @@
 
 export interface PlanCoverageInput {
   covered: boolean | null;
+  /** Per-visit fixed dollar amount the patient owes. Caps at allowed amount. */
   copay: number | null;
+  /**
+   * Patient's coinsurance share as a DECIMAL FRACTION (0-1). E.g., 0.30 for
+   * "30% coinsurance" per SBC convention.
+   *
+   * UNIT CONTRACT: Storage layer (`plan_covered_services.in_coinsurance`)
+   * holds INTEGER PERCENT (0-100). Every boundary that constructs a
+   * PlanCoverageInput from DB rows MUST divide by 100 before passing.
+   * Mismatching the unit produces 100× inflation in computeShouldOwe.
+   */
   coinsurance: number | null;
 }
 
@@ -93,17 +103,42 @@ export function resolveStillOutstanding(args: {
   return 0;
 }
 
+export interface ComputeShouldOweArgs {
+  /** Per-line gross billed amount (provider's charge before adjustments). */
+  billed: number;
+  /** Per-line contractual writeoff the insurer applies. Defaults to 0. */
+  insuranceAdjusted?: number;
+  /** Per-line provider courtesy adjustment (separate from insurer writeoff). Defaults to 0. */
+  providerAdjusted?: number;
+  planCoverage: PlanCoverageInput | null;
+}
+
 /**
  * Translate plan coverage into a dollar amount the user should owe for a given
  * billed charge. Defaults to 0 ("user isn't on the hook") when coverage is
  * unknown — conservative framing that aligns with the dispute-recovery message.
+ *
+ * Math (per Andrew direction, S120):
+ *   adjusted = max(0, billed − insuranceAdjusted − providerAdjusted)
+ *   - covered === false → patient owes the full adjusted amount
+ *   - copay set → min(copay, adjusted)  (per-visit fixed; caps at allowed)
+ *   - coinsurance > 0 → adjusted × coinsurance  (patient's share)
+ *   - otherwise → 0
+ *
+ * Coinsurance must be DECIMAL FRACTION (0-1). See PlanCoverageInput.coinsurance
+ * unit contract.
  */
-export function computeShouldOwe(billed: number, planCoverage: PlanCoverageInput | null): number {
+export function computeShouldOwe(args: ComputeShouldOweArgs): number {
+  const adjusted = Math.max(
+    0,
+    args.billed - (args.insuranceAdjusted ?? 0) - (args.providerAdjusted ?? 0),
+  );
+  const planCoverage = args.planCoverage;
   if (!planCoverage) return 0;
-  if (planCoverage.covered === false) return billed;
-  if (planCoverage.copay != null) return Math.min(planCoverage.copay, billed);
+  if (planCoverage.covered === false) return adjusted;
+  if (planCoverage.copay != null) return Math.min(planCoverage.copay, adjusted);
   if (planCoverage.coinsurance != null && planCoverage.coinsurance > 0) {
-    return Math.round(billed * planCoverage.coinsurance);
+    return Math.round(adjusted * planCoverage.coinsurance);
   }
   return 0;
 }
@@ -114,6 +149,13 @@ export interface ComputeRecoveryArgs {
   patientResponsibility: number;
   /** Patient out-of-pocket payments (from patient_paid_amount column, mig 092). Default 0. */
   patientPaid?: number;
+  /**
+   * Per-line contractual writeoff by the insurer (from `insurance_adjusted_amount`).
+   * Subtracted from billed before applying coinsurance/copay. Defaults to 0.
+   */
+  insuranceAdjusted?: number;
+  /** Per-line provider courtesy adjustment. Defaults to 0. */
+  providerAdjusted?: number;
   planCoverage: PlanCoverageInput | null;
 }
 
@@ -125,7 +167,12 @@ export function computeRecoveryV2(args: ComputeRecoveryArgs): RecoveryMetrics {
   const billed = args.billed;
   const patientResponsibility = Math.max(0, args.patientResponsibility);
   const patientPaid = Math.max(0, args.patientPaid ?? 0);
-  const shouldOwe = computeShouldOwe(billed, args.planCoverage);
+  const shouldOwe = computeShouldOwe({
+    billed,
+    insuranceAdjusted: args.insuranceAdjusted ?? 0,
+    providerAdjusted: args.providerAdjusted ?? 0,
+    planCoverage: args.planCoverage,
+  });
 
   const remainingBalance = Math.max(0, patientResponsibility - patientPaid);
   // Session 85 math fix — user_burden = max(paid, assigned-share). When the

@@ -63,7 +63,12 @@ function shouldOweForLine(
 ): number {
   const cov = resolveCoverageForLine(item, planCoverage, acaFallback, serviceSlug);
   if (!cov) return 0;
-  return computeShouldOwe(item.billedAmount, cov);
+  return computeShouldOwe({
+    billed: item.billedAmount,
+    // S120 — apply coinsurance/copay to adjusted (post-writeoff), not gross.
+    insuranceAdjusted: item.ins_adjusted ?? 0,
+    planCoverage: cov,
+  });
 }
 
 // ============================================================================

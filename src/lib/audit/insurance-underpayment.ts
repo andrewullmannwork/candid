@@ -74,7 +74,12 @@ export function runInsuranceUnderpaymentCheck(
     const totalBurden = Math.max(responsibility, paid);
     if (totalBurden <= 0) continue;
 
-    const shouldOwe = computeShouldOwe(item.billedAmount, coverage);
+    const shouldOwe = computeShouldOwe({
+      billed: item.billedAmount,
+      // S120 — apply coinsurance/copay to adjusted (post-writeoff), not gross.
+      insuranceAdjusted: item.ins_adjusted ?? 0,
+      planCoverage: coverage,
+    });
     const recoveryTarget = Math.max(0, responsibility - shouldOwe);
     if (recoveryTarget < 1) continue; // sub-$1 deltas not worth surfacing
 
