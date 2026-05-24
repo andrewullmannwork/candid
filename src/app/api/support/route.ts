@@ -132,6 +132,7 @@ export async function POST(req: NextRequest) {
     // Upload attachment if present. Best-effort: failure here does NOT block
     // ticket creation — log warning + return success with attachment_url null.
     let storedAttachmentFilename: string | null = null;
+    let storedAttachmentPath: string | null = null;
     if (attachment) {
       const safeFilename = attachment.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 100);
       const storagePath = `${user.id}/${inserted.id}-${safeFilename}`;
@@ -148,6 +149,7 @@ export async function POST(req: NextRequest) {
         console.warn("[support] Attachment upload failed (ticket created without):", uploadError.message);
       } else {
         storedAttachmentFilename = attachment.name;
+        storedAttachmentPath = storagePath;
         await supabase
           .from("support_tickets")
           .update({
@@ -161,15 +163,45 @@ export async function POST(req: NextRequest) {
     // Slack Tier 1+2 outbound — post ticket to #support channel via
     // chat.postMessage; store returned thread ts for inbound thread-reply
     // routing (/api/slack/events). Fail-soft.
+    //
+    // Generate signed URLs (7-day expiry) for linked doc + attachment so the
+    // Slack message includes clickable "View document" buttons for the support
+    // admin. Without these, admins see filenames but no way to actually read
+    // the document — surfaced as a smoke-test UX gap (S123).
+    const SIGNED_URL_EXPIRY_SECONDS = 60 * 60 * 24 * 7; // 7 days
+
     let linkedDocumentName: string | null = null;
+    let linkedDocumentSignedUrl: string | null = null;
     if (linkedDocumentId) {
       const { data: linkedDoc } = await supabase
         .from("documents")
-        .select("file_name")
+        .select("file_name, storage_path")
         .eq("id", linkedDocumentId)
         .eq("user_id", user.id)
         .single();
-      linkedDocumentName = linkedDoc?.file_name ?? null;
+      if (linkedDoc) {
+        linkedDocumentName = linkedDoc.file_name;
+        const { data: signed, error: signError } = await supabase.storage
+          .from("documents")
+          .createSignedUrl(linkedDoc.storage_path, SIGNED_URL_EXPIRY_SECONDS);
+        if (signError) {
+          console.warn(`[support] Linked-doc signed URL failed: ${signError.message}`);
+        } else {
+          linkedDocumentSignedUrl = signed?.signedUrl ?? null;
+        }
+      }
+    }
+
+    let attachmentSignedUrl: string | null = null;
+    if (storedAttachmentPath) {
+      const { data: signed, error: signError } = await supabase.storage
+        .from("support-attachments")
+        .createSignedUrl(storedAttachmentPath, SIGNED_URL_EXPIRY_SECONDS);
+      if (signError) {
+        console.warn(`[support] Attachment signed URL failed: ${signError.message}`);
+      } else {
+        attachmentSignedUrl = signed?.signedUrl ?? null;
+      }
     }
 
     const threadTs = await postSupportTicket({
@@ -179,8 +211,10 @@ export async function POST(req: NextRequest) {
       subject: subject.trim(),
       body: body.trim(),
       linkedDocumentName,
+      linkedDocumentSignedUrl,
       attachmentFilename: storedAttachmentFilename,
       attachmentSizeBytes: attachment?.size ?? null,
+      attachmentSignedUrl,
     });
 
     if (threadTs) {

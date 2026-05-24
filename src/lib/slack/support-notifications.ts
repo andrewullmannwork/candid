@@ -57,8 +57,10 @@ export interface SupportTicketSlackPayload {
   subject: string;
   body: string;
   linkedDocumentName?: string | null;
+  linkedDocumentSignedUrl?: string | null;
   attachmentFilename?: string | null;
   attachmentSizeBytes?: number | null;
+  attachmentSignedUrl?: string | null;
   appUrl?: string;
 }
 
@@ -140,16 +142,42 @@ export async function postSupportTicket(p: SupportTicketSlackPayload): Promise<s
     ],
   });
 
+  const actionElements: Record<string, unknown>[] = [];
+  if (p.linkedDocumentSignedUrl) {
+    actionElements.push({
+      type: "button",
+      text: { type: "plain_text", text: "📄 View linked doc" },
+      url: p.linkedDocumentSignedUrl,
+      style: "primary",
+    });
+  }
+  if (p.attachmentSignedUrl) {
+    actionElements.push({
+      type: "button",
+      text: { type: "plain_text", text: "📎 View attachment" },
+      url: p.attachmentSignedUrl,
+      style: "primary",
+    });
+  }
+  actionElements.push({
+    type: "button",
+    text: { type: "plain_text", text: "Reply via email (fallback)" },
+    url: mailto,
+  });
   blocks.push({
     type: "actions",
-    elements: [
-      {
-        type: "button",
-        text: { type: "plain_text", text: "Reply via email (fallback)" },
-        url: mailto,
-      },
-    ],
+    elements: actionElements,
   });
+
+  // Note signed-URL expiry for admin awareness (7 days)
+  if (p.linkedDocumentSignedUrl || p.attachmentSignedUrl) {
+    blocks.push({
+      type: "context",
+      elements: [
+        { type: "mrkdwn", text: "_View links expire in 7 days. Reply in thread to ask the user for a fresh copy._" },
+      ],
+    });
+  }
 
   try {
     const res = await fetch(`${SLACK_API_BASE}/chat.postMessage`, {
