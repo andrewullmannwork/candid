@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
 import type { InsuranceCardFields } from "@/app/api/profile/scan-card/route";
 import { createBrowserClient } from "@/lib/supabase/client";
+import { ProfileDashboard } from "@/components/profile/ProfileDashboard";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -298,8 +299,30 @@ function ProfileContent() {
   const [editMode, setEditMode] = useState(isOnboarding);
   const [hasExistingProfile, setHasExistingProfile] = useState(false);
 
+  // S121 B2.1 — profile_dashboard_v1 rollout flag. `null` while fetching;
+  // default ON when row missing per Andrew direction at S121. Network error or
+  // 5xx also falls to ON (`isProfileDashboardEnabled` server-side already
+  // treats row-missing as enabled=true; client treats fetch failure same way
+  // to preserve the post-onboarding dashboard experience).
+  const [flagEnabled, setFlagEnabled] = useState<boolean | null>(null);
+
   // User documents
   const [userDocs, setUserDocs] = useState<{ id: string; file_name: string; doc_type: string; status: string; created_at: string }[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/feature-flags/profile-dashboard")
+      .then((r) => (r.ok ? r.json() : { enabled: true }))
+      .then((d: { enabled: boolean }) => {
+        if (!cancelled) setFlagEnabled(d.enabled);
+      })
+      .catch(() => {
+        if (!cancelled) setFlagEnabled(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!user) return;
@@ -649,7 +672,74 @@ function ProfileContent() {
   const isLastStep = step === STEPS.length - 1;
   const headerTitle = isOnboarding ? "Set up your profile" : "Your Profile";
 
+  // ── Dashboard view (S121 B2.1 — flag-gated; new post-onboarding default) ─
+  // When `profile_dashboard_v1` is ON (default ON when row missing per S121),
+  // render the new <ProfileDashboard /> single-page view. When OFF, fall
+  // through to the legacy read-only view below (kept intact as a rollback
+  // path).
+  if (
+    !editMode &&
+    hasExistingProfile &&
+    !isOnboarding &&
+    flagEnabled === true
+  ) {
+    return (
+      <ProfileDashboard
+        firebaseUser={user!.firebaseUser}
+        memberSinceISO={
+          user?.firebaseUser.metadata.creationTime ?? null
+        }
+        profile={profile}
+        userDocs={userDocs}
+        needsCardRescan={needsCardRescan}
+        onUpdateInsurance={() => {
+          setEditMode(true);
+          setStep(1);
+        }}
+        onRescanCard={() => {
+          setEditMode(true);
+          setStep(0);
+        }}
+        onSaveMemberId={async (value: string) => {
+          if (!user) throw new Error("Not signed in");
+          const idToken = await user.firebaseUser.getIdToken();
+          const res = await fetch("/api/profile", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${idToken}`,
+            },
+            body: JSON.stringify({ member_id: value }),
+          });
+          if (!res.ok) {
+            const body = (await res
+              .json()
+              .catch(() => ({}))) as { error?: string };
+            throw new Error(body.error || "Save failed");
+          }
+          setProfile((p) => ({ ...p, member_id: value }));
+        }}
+      />
+    );
+  }
+
+  // Flag still loading — brief placeholder to avoid flicker between legacy
+  // view and dashboard. Only visible for ~the first network roundtrip.
+  if (
+    !editMode &&
+    hasExistingProfile &&
+    !isOnboarding &&
+    flagEnabled === null
+  ) {
+    return (
+      <div className="max-w-3xl mx-auto p-8 text-center text-gray-400 text-sm">
+        Loading…
+      </div>
+    );
+  }
+
   // ── Read-only profile view (non-onboarding, has data, not editing) ──────
+  // Legacy view — preserved as the flag-OFF rollback target.
   if (!editMode && hasExistingProfile && !isOnboarding) {
     // Profile is "functional" if we have enough to identify the plan:
     // insurer + plan_type, OR group_number + plan_type, OR insurer + group_number
