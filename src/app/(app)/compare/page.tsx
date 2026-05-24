@@ -44,7 +44,8 @@ import {
   type ParseDoc,
 } from "@/components/parsing/UnifiedParseScreen";
 import type { ComparePlanPayload, PlanRef } from "@/lib/plan/compare";
-import { ShareCandidCard } from "@/components/share/ShareCandidCard";
+import { ShareWithFriend } from "@/components/share/share-with-friend";
+import { createBrowserClient } from "@/lib/supabase/client";
 
 type Mode = "build" | "parsing" | "results";
 
@@ -217,9 +218,29 @@ function CompareInterface() {
   const turnstileTokenRef = useRef<string | null>(null);
   const turnstileRef = useRef<TurnstileWidgetHandle>(null);
 
+  // B2.4 — Gate for the NEW compare_picker ShareWithFriend embed (soft variant).
+  // Flag seeded default ON via mig 118 (S124); falls back to false until DB
+  // query resolves so we don't flash the embed if Andrew later flips it OFF.
+  const [shareWithFriendNewSurfacesEnabled, setShareWithFriendNewSurfacesEnabled] =
+    useState(false);
+
   useEffect(() => {
     turnstileTokenRef.current = turnstileToken;
   }, [turnstileToken]);
+
+  // B2.4 — Resolve `share_with_friend_new_surfaces_v1` flag on mount.
+  useEffect(() => {
+    const supabase = createBrowserClient();
+    supabase
+      .from("feature_flag_rules")
+      .select("enabled")
+      .eq("flag_key", "share_with_friend_new_surfaces_v1")
+      .eq("target_type", "global")
+      .single()
+      .then(({ data }) => {
+        if (data?.enabled) setShareWithFriendNewSurfacesEnabled(true);
+      });
+  }, []);
 
   // Session 72: Browser-back history handling. The build → parsing → results
   // transitions all happen inside this single component on the same URL, so the
@@ -785,6 +806,14 @@ function CompareInterface() {
             </button>
             {resultsError && <p className="text-sm text-rose-600 mt-3 text-center">{resultsError}</p>}
           </div>
+
+          {/* B2.4 — NEW soft-variant ShareWithFriend embed below the Compare CTA
+              (picker view only). Flag-gated via mig 118; default ON. */}
+          {shareWithFriendNewSurfacesEnabled && (
+            <div className="max-w-3xl mx-auto mt-6">
+              <ShareWithFriend variant="soft" surface="compare_picker" />
+            </div>
+          )}
         </div>
       )}
 
@@ -922,7 +951,7 @@ function ResultsView({
         </div>
       </div>
 
-      <ShareCandidCard surface="compare_results" />
+      <ShareWithFriend surface="compare_results" />
     </div>
   );
 }

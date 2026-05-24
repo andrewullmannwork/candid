@@ -23,7 +23,7 @@
  * Extracted from src/app/(app)/upload/page.tsx:1149-1672 (S100 Stage 7c Phase 1).
  */
 import Link from "next/link";
-import { ShareCandidCard } from "@/components/share/ShareCandidCard";
+import { ShareWithFriend } from "@/components/share/share-with-friend";
 import { PremiumPromptInline } from "@/components/parsing/PremiumPromptInline";
 
 interface CommonProps {
@@ -508,7 +508,7 @@ export function ParseTerminalView(props: ParseTerminalViewProps) {
         <VariantBody {...props} />
         <ActionButtons {...props} />
       </div>
-      {showShareCard && <ShareCandidCard surface="upload_complete" />}
+      {showShareCard && <ShareWithFriend surface="upload_complete" />}
     </div>
   );
 }

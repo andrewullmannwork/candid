@@ -8,6 +8,7 @@ import type { PlanAnalysisResult, AnalyzedBenefit } from "@/lib/plan/analyzer";
 import { BENEFIT_CATEGORY_LABELS } from "@/lib/plan/benefits-catalog";
 import type { BenefitCategory } from "@/lib/plan/benefits-catalog";
 import { FollowupBanner } from "@/components/disputes/FollowupBanner";
+import { ShareWithFriend } from "@/components/share/share-with-friend";
 
 // Labels for service_catalog categories (different from benefits-catalog categories)
 const SERVICE_CATEGORY_LABELS: Record<string, string> = {
@@ -57,6 +58,10 @@ export default function DashboardPage() {
   const [planResult, setPlanResult] = useState<PlanAnalysisResult | null>(null);
   const [currentYear] = useState(() => new Date().getFullYear());
   const [yearRolloverEnabled, setYearRolloverEnabled] = useState(false);
+  // B2.4 — Gate for the NEW dashboard ShareWithFriend embed (soft variant).
+  // Flag seeded default ON via mig 118 (S124).
+  const [shareWithFriendNewSurfacesEnabled, setShareWithFriendNewSurfacesEnabled] =
+    useState(false);
   // S70 follow-up: render the Compare card unconditionally for all signed-in
   // users. The /compare route + /api/plan/compare endpoint both gate on the
   // benefits_comparison_v1 flag + email_verified server-side, so the only loss
@@ -136,6 +141,15 @@ export default function DashboardPage() {
         .eq("target_type", "global")
         .single()
         .then(({ data }) => { if (data?.enabled) setYearRolloverEnabled(true); });
+
+      // B2.4 — Resolve `share_with_friend_new_surfaces_v1` flag.
+      supabase
+        .from("feature_flag_rules")
+        .select("enabled")
+        .eq("flag_key", "share_with_friend_new_surfaces_v1")
+        .eq("target_type", "global")
+        .single()
+        .then(({ data }) => { if (data?.enabled) setShareWithFriendNewSurfacesEnabled(true); });
 
       setLoading(false);
     }
@@ -851,6 +865,15 @@ export default function DashboardPage() {
           </Link>
         </div>
       </section>
+
+      {/* B2.4 — NEW soft-variant ShareWithFriend embed at bottom of /dashboard.
+          Flag-gated via mig 118; default ON. Migrates into the "More from Candid"
+          section when B3.1 lands the /dashboard redesign. */}
+      {shareWithFriendNewSurfacesEnabled && (
+        <section className="mt-8">
+          <ShareWithFriend variant="soft" surface="dashboard" />
+        </section>
+      )}
 
     </div>
   );

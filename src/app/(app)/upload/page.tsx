@@ -10,7 +10,7 @@ import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { createBrowserClient } from "@/lib/supabase/client";
 import { TurnstileWidget, type TurnstileWidgetHandle } from "@/components/security/TurnstileWidget";
 import { useProcessingFlowSlots } from "@/components/parsing/ProcessingFlow";
-import { ShareCandidCard } from "@/components/share/ShareCandidCard";
+import { ShareWithFriend } from "@/components/share/share-with-friend";
 import { TypeCard } from "@/components/upload/TypeCard";
 import { PathCard } from "@/components/upload/PathCard";
 import { DropIdle, DropHover, DropUploading } from "@/components/upload/DropZoneStates";
@@ -1382,9 +1382,9 @@ function UploadForm() {
         </div>
       )}
 
-      {/* "Help us grow" share card (S119 ShareWithFriend alias still ShareCandidCard for byte-identical preservation). */}
+      {/* "Help us grow" share card — full variant. */}
       <div className="mt-10">
-        <ShareCandidCard surface="upload_form" />
+        <ShareWithFriend surface="upload_form" />
       </div>
 
       {/* Modal slot (priority 0) — renders above everything as full-screen overlay per S99 structural fix */}
