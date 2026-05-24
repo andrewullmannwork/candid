@@ -75,8 +75,14 @@ function EmbeddedSubscribeModal({
         if (!res.ok) {
           if (data.error === "already_subscribed") {
             // Edge case: user opened modal while webhook was activating a
-            // prior subscription. Close quietly + trigger a refresh.
-            onSuccessRef.current();
+            // prior subscription — or their stripe_customers row is drifted
+            // (status=active + tier=free). In either case the parent's
+            // onSuccess uses waitFor() which polls for tier=pro; if the row
+            // is drifted, that poll runs to its 8s timeout and the modal
+            // hangs. Calling onCancel closes immediately + leaves the
+            // parent's existing subscription state untouched (no false
+            // success). If state is broken, the user can repair via DB.
+            onCancel();
             return;
           }
           setInitError(data.error || "Failed to start subscription");

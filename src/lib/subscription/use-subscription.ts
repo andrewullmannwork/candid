@@ -5,17 +5,28 @@ import { useAuth } from "@/lib/auth/auth-context";
 
 export type SubscriptionTier = "free" | "pro";
 export type SubscriptionStatus = "none" | "trialing" | "active" | "canceled" | "past_due";
+export type TierCycle = "monthly" | "annual";
+
+export interface PastDueRetryEvent {
+  at: string;
+  kind: "failed" | "scheduled";
+  cardLabel: string | null;
+  detail: string;
+}
 
 export interface SubscriptionState {
   tier: SubscriptionTier;
   status: SubscriptionStatus;
+  tierCycle: TierCycle;
   loading: boolean;
   isPro: boolean;
   cancelAtPeriodEnd: boolean;
   periodEnd: string | null;
+  cardholderName: string | null;
+  pastDueRetryLog: PastDueRetryEvent[] | null;
   /** Re-fetch subscription state from the DB. Call after mutating actions
-   *  (subscribe / cancel / resume) so UI flips immediately instead of
-   *  waiting for the webhook round-trip. */
+   *  (subscribe / cancel / resume / change-cycle) so UI flips immediately
+   *  instead of waiting for the webhook round-trip. */
   refresh: () => Promise<void>;
   /** Poll refresh() until the predicate is true or timeout fires. Use after
    *  Stripe confirmPayment returns so the UI waits for the webhook to flip
@@ -24,6 +35,7 @@ export interface SubscriptionState {
     predicate: (state: {
       tier: SubscriptionTier;
       status: SubscriptionStatus;
+      tierCycle: TierCycle;
       cancelAtPeriodEnd: boolean;
     }) => boolean,
     opts?: { timeoutMs?: number; intervalMs?: number }
@@ -48,12 +60,15 @@ export const FEATURE_ACCESS = {
 interface ApiMe {
   tier: SubscriptionTier;
   status: SubscriptionStatus;
+  tierCycle: TierCycle;
   cancelAtPeriodEnd: boolean;
   periodEnd: string | null;
   cardBrand: string | null;
   cardLast4: string | null;
   cardExpMonth: number | null;
   cardExpYear: number | null;
+  cardholderName: string | null;
+  pastDueRetryLog: PastDueRetryEvent[] | null;
 }
 
 /**
@@ -75,8 +90,11 @@ export function useSubscription(): SubscriptionState {
   const { user } = useAuth();
   const [tier, setTier] = useState<SubscriptionTier>("free");
   const [status, setStatus] = useState<SubscriptionStatus>("none");
+  const [tierCycle, setTierCycle] = useState<TierCycle>("monthly");
   const [cancelAtPeriodEnd, setCancelAtPeriodEnd] = useState(false);
   const [periodEnd, setPeriodEnd] = useState<string | null>(null);
+  const [cardholderName, setCardholderName] = useState<string | null>(null);
+  const [pastDueRetryLog, setPastDueRetryLog] = useState<PastDueRetryEvent[] | null>(null);
   const [loading, setLoading] = useState(() => !!user);
 
   const [refreshTick, setRefreshTick] = useState(0);
@@ -91,8 +109,11 @@ export function useSubscription(): SubscriptionState {
       if (data) {
         setTier(data.tier);
         setStatus(data.status);
+        setTierCycle(data.tierCycle);
         setCancelAtPeriodEnd(data.cancelAtPeriodEnd);
         setPeriodEnd(data.periodEnd);
+        setCardholderName(data.cardholderName);
+        setPastDueRetryLog(data.pastDueRetryLog);
       }
       setLoading(false);
       // Resolve any pending refresh() promises so callers can await reloads.
@@ -124,6 +145,7 @@ export function useSubscription(): SubscriptionState {
       predicate: (state: {
         tier: SubscriptionTier;
         status: SubscriptionStatus;
+        tierCycle: TierCycle;
         cancelAtPeriodEnd: boolean;
       }) => boolean,
       opts: { timeoutMs?: number; intervalMs?: number } = {}
@@ -142,6 +164,7 @@ export function useSubscription(): SubscriptionState {
           predicate({
             tier: data.tier,
             status: data.status,
+            tierCycle: data.tierCycle,
             cancelAtPeriodEnd: data.cancelAtPeriodEnd,
           })
         ) {
@@ -157,10 +180,13 @@ export function useSubscription(): SubscriptionState {
   return {
     tier,
     status,
+    tierCycle,
     loading,
     isPro: tier === "pro" && (status === "active" || status === "trialing"),
     cancelAtPeriodEnd,
     periodEnd,
+    cardholderName,
+    pastDueRetryLog,
     refresh,
     waitFor,
   };
