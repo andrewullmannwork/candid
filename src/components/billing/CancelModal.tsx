@@ -136,15 +136,15 @@ export function CancelModal({
         subtitle="We'll miss you."
         body={
           <>
-            <p className="font-semibold text-gray-900">
+            <strong className="font-semibold text-gray-900">
               You&apos;re canceled — but still on Pro until {formatDate(periodEnd)}.
-            </p>
-            <p className="mt-1.5 text-[13px] text-gray-600">
+            </strong>
+            <span className="mt-1.5 block text-[13px] text-gray-600">
               Your account keeps Pro access through the end of the period. After
               that, you&apos;ll drop to Free automatically and we&apos;ll send a
               confirmation email. All your audits, disputes, and uploaded docs
               stay yours.
-            </p>
+            </span>
           </>
         }
         primaryLabel="Got it"
