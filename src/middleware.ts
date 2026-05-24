@@ -14,6 +14,10 @@ const PUBLIC_ROUTES = [
   "/api/waitlist",
   "/api/stripe/webhook",
   "/api/auth/sync",
+  // Dev-only component-preview namespace (S121). Each /dev/* page must guard
+  // itself with `if (process.env.NODE_ENV !== "development") notFound();` so the
+  // route 404s in PROD builds.
+  "/dev",
 ];
 
 function isPublicRoute(pathname: string): boolean {
