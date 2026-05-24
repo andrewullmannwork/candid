@@ -4,43 +4,42 @@
  * ProcessingFlow — single deterministic dispatcher for the /upload post-upload
  * UX (S100 structural fix).
  *
- * Replaces the three top-level render branches that lived in UploadForm
- * (PlayfulParsingScreen at line 1037 + legacy Upload/Read/Extract/Save loader
- * at line 1149 + main form return where the modal at line 1996 lived
- * unreachable while `uploaded === true`).
+ * B2-UP.1 refactor (Andrew direction at S119 → S120): split into
+ *   - `useProcessingFlowSlots` hook — emits {modal, dropZoneContent,
+ *     belowDropZone, hidePathsGrid, isComplete} based on the 11-priority
+ *     dispatch. Used by upload/page.tsx so the new design layout (header +
+ *     type picker + drop-zone container + paths grid + share) can route
+ *     content into the right visual slots per D-§1.B.1-E.
+ *   - `ProcessingFlow` component — backward-compatible wrapper that renders
+ *     whichever slot is non-null in full-screen, matching pre-B2-UP.1 behavior.
  *
- * Priority-ordered dispatch (first match wins):
+ * Priority-ordered dispatch (first match wins; UNCHANGED from S100):
  *
- *   0  awaiting_confirmation → <DocTypeConfirmationModal>
- *   1  pending_review        → <ParseTerminalView variant="unusable" kind="pending_review">
- *   2  rejected              → <ParseTerminalView variant="unusable" kind="rejected">
- *   3  dedup_processed       → <ParseTerminalView variant="dedup_processed">
- *   4  error or stuck        → <ParseTerminalView variant="error" kind={error|stuck}>
- *   5  mismatch              → <ParseTerminalView variant="mismatch">
- *   6  year_rollover         → <ParseTerminalView variant="year_rollover">
- *   7  canonical_match       → <ParseTerminalView variant="canonical_match">
- *   8  complete (plan_doc)   → <ParseTerminalView variant="complete_plan">
- *   9  complete (bill)       → <ParseTerminalView variant="complete_bill">
- *  10  active (catch-all)    → <UnifiedParseScreen>
+ *   0  awaiting_confirmation → DocTypeConfirmationModal           [modal slot]
+ *   1  pending_review        → ParseTerminalView unusable          [drop zone]
+ *   2  rejected              → ParseTerminalView unusable          [drop zone]
+ *   3  dedup_processed       → ParseTerminalView dedup_processed   [drop zone]
+ *   4  error or stuck        → ParseTerminalView error             [drop zone]
+ *   5  mismatch              → ParseTerminalView mismatch          [below DZ]
+ *   6  year_rollover         → ParseTerminalView year_rollover     [below DZ]
+ *   7  canonical_match       → ParseTerminalView canonical_match   [below DZ]
+ *   8  complete (plan_doc)   → DropDone OR ParseTerminalView       [drop zone]
+ *   9  complete (bill)       → DropDone OR ParseTerminalView       [drop zone]
+ *  10  active (catch-all)    → UnifiedParseScreen                  [drop zone]
  *
- * Why this order: modal at priority 0 — beats every loader. Closes the S99
- * bug at the structural level (impossible for any loader to pre-empt when
- * state class is awaiting_confirmation). Order of states 5-7 matches the
- * existing inline derivation predicates (mismatch wins over year_rollover
- * wins over canonical_match per upload/page.tsx:848-854 `!mismatch` /
- * `!hasYearRollover` exclusions).
+ * Priorities 5-7 (heavy interactive forms) render BELOW the drop zone per
+ * D-§1.B.1-E — multi-field forms don't fit drop-zone height. All other
+ * non-modal priorities render INSIDE the drop-zone container.
  *
  * State derivation (isComplete, hasMismatch, etc.) + playfulFloorActive (S71
- * 4s minimum-display floor) + phase derivation all happen INTERNALLY here.
- * Caller (UploadForm) passes only raw inputs + callbacks.
- *
- * Cross-reference: plans/s100_processing_flow_refactor §3.2 dispatch
- * precedence table.
+ * 4s minimum-display floor) + progression-complete gate all happen INTERNALLY
+ * here. Caller (UploadForm) passes raw inputs + callbacks.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { DocTypeConfirmationModal } from "./DocTypeConfirmationModal";
 import { ParseTerminalView, type InsurerMismatchData, type YearRolloverData, type CanonicalMatchData } from "./ParseTerminalView";
 import { UnifiedParseScreen, derivePhase, type ParseDoc } from "./UnifiedParseScreen";
+import { DropDone } from "@/components/upload/DropZoneStates";
 import type { DocType, DocTypeConfirmation } from "@/lib/classifier/doc-type-vocabulary";
 import { getExpectedDurationCopy } from "@/lib/parsing/parseProgressUx";
 
@@ -144,6 +143,37 @@ export interface ProcessingFlowProps {
    * Steps".
    */
   onProgressionComplete?: () => void;
+
+  /**
+   * B2-UP.1 — loader visual variant passed through to UnifiedParseScreen +
+   * gates the DropDone happy-path completion visual at priorities 8-9.
+   * Default "default" preserves legacy doc-card visual; "stackV3" enables
+   * the design's StackLoaderV3 + DropDone chrome for the new /upload layout.
+   */
+  loaderVariant?: "default" | "stackV3";
+
+  /**
+   * B2-UP.1 — destination for the DropDone "See the findings" / "View your
+   * benefits" CTA at priorities 8-9 (stackV3 only). Caller wires to
+   * window.location.href or router.push.
+   */
+  onViewResults?: () => void;
+}
+
+export interface ProcessingFlowSlots {
+  modal: ReactNode | null;
+  dropZoneContent: ReactNode | null;
+  belowDropZone: ReactNode | null;
+  /**
+   * Whether the "Paths" grid below the drop zone should be hidden (D-§1.B.1-D
+   * — focus during processing + exceptions; visible idle + done).
+   */
+  hidePathsGrid: boolean;
+  /**
+   * Whether the sub-phase machine has fully resolved AND backend signaled
+   * processed (priorities 8-9 active). Caller can show post-complete chrome.
+   */
+  isComplete: boolean;
 }
 
 // Minimum-display floor for the parsing screen (S71 hotfix). Smart-skip
@@ -155,7 +185,7 @@ export interface ProcessingFlowProps {
 // kept for the brief window between upload-complete and totalPages seed.
 const MIN_PLAYFUL_MS = 4000;
 
-export function ProcessingFlow(props: ProcessingFlowProps) {
+export function useProcessingFlowSlots(props: ProcessingFlowProps): ProcessingFlowSlots {
   const {
     documentId,
     fileName,
@@ -172,11 +202,12 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
     premiumSaved,
     retrying,
     classificationResult,
+    loaderVariant = "default",
+    onViewResults,
   } = props;
 
   // ─── Derived predicates (mirrors upload/page.tsx:845-895 + 305-332) ────
   const isPendingReview = uploadStatus === "pending_review";
-  const isUploading = uploadStatus === "uploading";
   const isComplete =
     processingProgress?.status === "processed" &&
     !processingProgress?.insurerMismatch?.mismatch &&
@@ -218,11 +249,6 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
     !isPendingReview;
 
   // ─── Playful floor lifecycle (S71 4s minimum-display floor) ────────────
-  // Mirrors upload/page.tsx:301-368 verbatim — single effect orchestrates
-  // engage / bypass / release-after-delay. setState calls inside the effect
-  // body sync state to derived terminal/active conditions; the delayed-release
-  // setState lives inside a setTimeout callback (the rule's intended escape
-  // hatch for timer-driven state updates).
   const [playfulFloorActive, setPlayfulFloorActive] = useState(false);
   const playfulShownAtRef = useRef<number | null>(null);
 
@@ -238,7 +264,6 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
       return;
     }
 
-    // Terminal states bypass the floor — surface immediately so the user can act.
     if (inTerminalState) {
       if (playfulFloorActive) {
         setPlayfulFloorActive(false);
@@ -247,14 +272,12 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
       return;
     }
 
-    // Engage floor on first active state of this upload session.
     if (inActiveProcessing && playfulShownAtRef.current === null) {
       playfulShownAtRef.current = Date.now();
       setPlayfulFloorActive(true);
       return;
     }
 
-    // Schedule floor release when active state ends + min window elapses.
     if (!inActiveProcessing && playfulFloorActive && playfulShownAtRef.current !== null) {
       const elapsed = Date.now() - playfulShownAtRef.current;
       const remaining = MIN_PLAYFUL_MS - elapsed;
@@ -272,20 +295,6 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
   }, [uploaded, inTerminalState, inActiveProcessing, playfulFloorActive]);
 
   // ─── Progression-complete gate (S101 v2 — Andrew direction) ──────────
-  //
-  // The user must see the full sub-phase progression even when the backend
-  // finishes fast. UnifiedParseScreen owns the sub-phase machine + fires
-  // onProgressionComplete once it's wrapped up (all docs at subPhase
-  // "complete"). Until then, ProcessingFlow stays at priority 10 (rendering
-  // UnifiedParseScreen) even after isComplete flips.
-  //
-  // Reset on documentId change uses the during-render setState-with-guard
-  // pattern (React 19 idiom for prop-derived state resets) — same shape as
-  // useSyntheticDisplayedPage's totalPages reset. Parent (UploadForm) already
-  // unmounts/remounts ProcessingFlow via the `if (uploaded)` gate when
-  // starting a new upload, so this guard is mostly a belt-and-suspenders
-  // defense against a documentId change without an unmount (retryDocument
-  // reuses the same instance).
   const [progressionComplete, setProgressionComplete] = useState(false);
   const [lastDocumentId, setLastDocumentId] = useState(documentId);
   if (documentId !== lastDocumentId) {
@@ -297,22 +306,42 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
     props.onProgressionComplete?.();
   }, [props]);
 
-  // ─── Priority dispatch ────────────────────────────────────────────────
+  // Suppress unused-var warning while we keep playful-floor for re-use elsewhere.
+  void playfulFloorActive;
+
+  // ─── Slot dispatch (matches the 11-priority precedence table verbatim) ─
+  const slots: ProcessingFlowSlots = {
+    modal: null,
+    dropZoneContent: null,
+    belowDropZone: null,
+    hidePathsGrid: true,
+    isComplete: false,
+  };
+
+  // B2-UP.1 — when uploaded=false, the /upload page renders DropIdle / hover
+  // / uploading content itself; ProcessingFlow has no slots to emit. Guard
+  // prevents the priority-10 catch-all from rendering UnifiedParseScreen
+  // during the idle form (pre-upload).
+  if (!uploaded) {
+    slots.hidePathsGrid = false; // paths grid visible during idle
+    return slots;
+  }
 
   // Priority 0 — Modal (S99 bug closed at the structural level)
   if (uploadStatus === "awaiting_confirmation" && confirmationData && documentId) {
-    return (
+    slots.modal = (
       <DocTypeConfirmationModal
         confirmationData={confirmationData}
         onConfirmDocType={props.onConfirmDocType}
         onCancel={props.onCancelConfirmation}
       />
     );
+    return slots;
   }
 
-  // Priorities 1-2 — Unusable
+  // Priorities 1-2 — Unusable (in drop zone)
   if (uploadStatus === "pending_review") {
-    return (
+    slots.dropZoneContent = (
       <ParseTerminalView
         variant="unusable"
         kind="pending_review"
@@ -320,9 +349,10 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
         onUploadAnother={props.onUploadAnother}
       />
     );
+    return slots;
   }
   if (uploadStatus === "rejected") {
-    return (
+    slots.dropZoneContent = (
       <ParseTerminalView
         variant="unusable"
         kind="rejected"
@@ -330,22 +360,24 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
         onUploadAnother={props.onUploadAnother}
       />
     );
+    return slots;
   }
 
-  // Priority 3 — Dedup of already-processed (brief splash)
+  // Priority 3 — Dedup of already-processed (in drop zone)
   if (uploadStatus === "dedup_processed") {
-    return (
+    slots.dropZoneContent = (
       <ParseTerminalView
         variant="dedup_processed"
         fileName={fileName}
         onUploadAnother={props.onUploadAnother}
       />
     );
+    return slots;
   }
 
-  // Priority 4 — Error or stuck
+  // Priority 4 — Error or stuck (in drop zone)
   if (isError || isStuck) {
-    return (
+    slots.dropZoneContent = (
       <ParseTerminalView
         variant="error"
         kind={isStuck ? "stuck" : "error"}
@@ -356,9 +388,10 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
         onUploadAnother={props.onUploadAnother}
       />
     );
+    return slots;
   }
 
-  // Priority 5 — Mismatch
+  // Priority 5 — Mismatch (BELOW drop zone — heavy interactive form)
   if (hasMismatch && processingProgress?.insurerMismatch) {
     const mm = processingProgress.insurerMismatch;
     const mismatchData: InsurerMismatchData = {
@@ -368,7 +401,7 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
       existingPlanName: mm.existingPlanName,
       parsedPlanName: mm.parsedPlanName,
     };
-    return (
+    slots.belowDropZone = (
       <ParseTerminalView
         variant="mismatch"
         mismatch={mismatchData}
@@ -379,12 +412,13 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
         onUploadAnother={props.onUploadAnother}
       />
     );
+    return slots;
   }
 
-  // Priority 6 — Year rollover
+  // Priority 6 — Year rollover (BELOW drop zone)
   if (hasYearRollover && processingProgress?.insurerMismatch?.year_rollover) {
     const yr: YearRolloverData = processingProgress.insurerMismatch.year_rollover;
-    return (
+    slots.belowDropZone = (
       <ParseTerminalView
         variant="year_rollover"
         yearRollover={yr}
@@ -395,12 +429,13 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
         onUploadAnother={props.onUploadAnother}
       />
     );
+    return slots;
   }
 
-  // Priority 7 — Canonical match
+  // Priority 7 — Canonical match (BELOW drop zone)
   if (hasCanonicalMatch && processingProgress?.insurerMismatch?.pending_canonical_match) {
     const cm: CanonicalMatchData = processingProgress.insurerMismatch.pending_canonical_match;
-    return (
+    slots.belowDropZone = (
       <ParseTerminalView
         variant="canonical_match"
         canonicalMatch={cm}
@@ -411,6 +446,7 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
         onUploadAnother={props.onUploadAnother}
       />
     );
+    return slots;
   }
 
   // Priority 8 — Complete (plan-doc family). S101 v2 gate: progressionComplete
@@ -418,20 +454,35 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
   // before transitioning to the terminal view.
   if (isComplete && isPlanType && progressionComplete) {
     const showSupplementPrompt = !!(classificationResult && classificationResult.confidence < 0.8);
-    return (
-      <ParseTerminalView
-        variant="complete_plan"
-        needsPremium={!!needsPremium}
-        linkedInsurancePlanId={processingProgress?.linkedInsurancePlanId ?? null}
-        user={user}
-        premiumSaved={premiumSaved}
-        showSupplementPrompt={showSupplementPrompt}
-        onPremiumSaved={props.onPremiumSaved}
-        onPremiumSkipped={props.onPremiumSkipped}
-        fileName={fileName}
-        onUploadAnother={props.onUploadAnother}
-      />
-    );
+    // DropDone happy-path visual ONLY when stackV3 variant AND no premium/supplement prompts.
+    if (loaderVariant === "stackV3" && !needsPremium && !showSupplementPrompt && onViewResults) {
+      slots.dropZoneContent = (
+        <DropDone
+          kind="plan"
+          fileName={fileName}
+          onUploadAnother={props.onUploadAnother}
+          onViewResults={onViewResults}
+        />
+      );
+    } else {
+      slots.dropZoneContent = (
+        <ParseTerminalView
+          variant="complete_plan"
+          needsPremium={!!needsPremium}
+          linkedInsurancePlanId={processingProgress?.linkedInsurancePlanId ?? null}
+          user={user}
+          premiumSaved={premiumSaved}
+          showSupplementPrompt={showSupplementPrompt}
+          onPremiumSaved={props.onPremiumSaved}
+          onPremiumSkipped={props.onPremiumSkipped}
+          fileName={fileName}
+          onUploadAnother={props.onUploadAnother}
+        />
+      );
+    }
+    slots.hidePathsGrid = false; // paths grid visible during "done" state
+    slots.isComplete = true;
+    return slots;
   }
 
   // Priority 9 — Complete (bill family). Same gate as priority 8.
@@ -441,15 +492,29 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
       classificationResult.confidence < 0.8 &&
       classificationResult.confidence >= 0.6
     );
-    return (
-      <ParseTerminalView
-        variant="complete_bill"
-        docType={docType as "eob" | "itemized_bill"}
-        showSupplementPrompt={showSupplementPrompt}
-        fileName={fileName}
-        onUploadAnother={props.onUploadAnother}
-      />
-    );
+    if (loaderVariant === "stackV3" && !showSupplementPrompt && onViewResults) {
+      slots.dropZoneContent = (
+        <DropDone
+          kind="bill"
+          fileName={fileName}
+          onUploadAnother={props.onUploadAnother}
+          onViewResults={onViewResults}
+        />
+      );
+    } else {
+      slots.dropZoneContent = (
+        <ParseTerminalView
+          variant="complete_bill"
+          docType={docType as "eob" | "itemized_bill"}
+          showSupplementPrompt={showSupplementPrompt}
+          fileName={fileName}
+          onUploadAnother={props.onUploadAnother}
+        />
+      );
+    }
+    slots.hidePathsGrid = false; // paths grid visible during "done" state
+    slots.isComplete = true;
+    return slots;
   }
 
   // Priority 10 — Active (catch-all)
@@ -467,14 +532,7 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
     smartSkipOutcome: processingProgress?.smartSkipOutcome ?? null,
   };
 
-  // Universal loader title + subtitle (Andrew direction S101). The two-flow
-  // model says the screen looks the same whether we're still in the upload
-  // window or already ticking pages — only the pill + status text differ
-  // inside the doc card. Title stays "Reading your document" across the whole
-  // pre-complete window. Large-doc async-UX keeps its specific copy
-  // (async_ingestion_ux_v1 flag is global ON in PROD) — it's a meaningfully
-  // different UX (the email-on-complete promise) and pre-launch isn't tied
-  // to phase.
+  // Universal loader title + subtitle (Andrew direction S101).
   const title = isLargeDoc ? "Thanks — we're reading your plan" : "Reading your document";
   const subtitle = isLargeDoc
     ? (() => {
@@ -484,8 +542,6 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
         return `${pagesPhrase ? pagesPhrase + " " : ""}careful extraction takes about ${largeDocDuration}. Hang tight, browse the rest of Candid, or close the tab — we'll email you the moment it's ready.`;
       })()
     : "We meticulously go over every detail in your plan not once but twice. That takes a while, but we know it's worth it.";
-  // Suppress unused-var warning while we keep playful-floor for re-use elsewhere.
-  void playfulFloorActive;
 
   // Large-doc footer: optional "browse Candid" CTA.
   const footer = isLargeDoc ? (
@@ -505,7 +561,7 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
     </div>
   ) : undefined;
 
-  return (
+  slots.dropZoneContent = (
     <UnifiedParseScreen
       docs={[doc]}
       title={title}
@@ -513,6 +569,21 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
       footer={footer}
       onCancel={props.onCancelInFlight}
       onProgressionComplete={handleProgressionComplete}
+      loaderVariant={loaderVariant}
     />
   );
+  return slots;
+}
+
+/**
+ * Backward-compatible wrapper. Renders whichever slot is non-null in
+ * full-screen — pre-B2-UP.1 behavior. New /upload page uses the hook
+ * directly + routes slots into the new design layout.
+ */
+export function ProcessingFlow(props: ProcessingFlowProps) {
+  const slots = useProcessingFlowSlots(props);
+  if (slots.modal) return slots.modal;
+  if (slots.dropZoneContent) return slots.dropZoneContent;
+  if (slots.belowDropZone) return slots.belowDropZone;
+  return null;
 }

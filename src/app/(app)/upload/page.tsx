@@ -9,8 +9,12 @@ import { useConsent } from "@/lib/consent/use-consent";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { createBrowserClient } from "@/lib/supabase/client";
 import { TurnstileWidget, type TurnstileWidgetHandle } from "@/components/security/TurnstileWidget";
-import { ProcessingFlow } from "@/components/parsing/ProcessingFlow";
+import { useProcessingFlowSlots } from "@/components/parsing/ProcessingFlow";
 import { ShareCandidCard } from "@/components/share/ShareCandidCard";
+import { TypeCard } from "@/components/upload/TypeCard";
+import { PathCard } from "@/components/upload/PathCard";
+import { DropIdle, DropHover, DropUploading } from "@/components/upload/DropZoneStates";
+import { FindTipsPanel } from "@/components/upload/FindTipsPanel";
 import {
   DOC_TYPES,
   PICKER_OPTIONS,
@@ -87,6 +91,15 @@ function UploadForm() {
     confidence: number;
     mismatch: boolean;
   } | null>(null);
+  // B2-UP.1 (#4 UX fix) — captures backend Pattern P silent override so the
+  // frontend can render a correction banner + reconcile docType for
+  // downstream wiring (DropDone CTA label + redirect target). Null when no
+  // override happened (user's pick matched classifier OR confidence too low
+  // to override).
+  const [resolvedDocType, setResolvedDocType] = useState<DocType | null>(null);
+  // Original user pick captured at upload time so the banner can name the
+  // user's intent vs the corrected type. Cleared on reset.
+  const [userPickAtUpload, setUserPickAtUpload] = useState<DocType | null>(null);
   const [documentId, setDocumentId] = useState<string | null>(null);
   // S78 — async ingestion gate: backend sets isLargeDoc=true for PDFs > 30 pages
   // when async_ingestion_ux_v1 feature flag is ON. Drives the large-doc splash
@@ -128,6 +141,11 @@ function UploadForm() {
   const [premiumSaved, setPremiumSaved] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [yearRolloverEnabled, setYearRolloverEnabled] = useState(false);
+  // B2-UP.1 (D-§1.B.1-C) — Care path teaser feature-flag gate. When ON, the
+  // 4th PathCard routes to /care; when OFF, render disabled "Coming soon"
+  // chrome ("Notify me" lead-gen capture deferred to fast-follow). Flag
+  // default OFF until Phase 2 staged rollout.
+  const [candidCareLive, setCandidCareLive] = useState(false);
 
   // S101 v3 — auto-redirect gating. The polling effect detects status===
   // processed and (when no mismatch / no premium-needed) stages a redirect
@@ -164,6 +182,16 @@ function UploadForm() {
       .single()
       .then(({ data }) => {
         if (data?.enabled) setYearRolloverEnabled(true);
+      });
+    // B2-UP.1 (D-§1.B.1-C) — Care path teaser feature flag.
+    supabase
+      .from("feature_flag_rules")
+      .select("enabled")
+      .eq("flag_key", "candid_care_live")
+      .eq("target_type", "global")
+      .single()
+      .then(({ data }) => {
+        if (data?.enabled) setCandidCareLive(true);
       });
   }, [user, uploaded]);
 
@@ -493,6 +521,20 @@ function UploadForm() {
           }
         }
 
+        // B2-UP.1 (#4 UX fix) — reconcile docType with backend Pattern P
+        // silent override at high confidence (≥0.95). When the resolved type
+        // differs from user pick, snapshot the user pick (for banner copy),
+        // set resolvedDocType (drives banner render), and update docType so
+        // DropDone CTA + redirect target follow the corrected type.
+        if (
+          typeof uploadResult.resolvedDocType === "string" &&
+          uploadResult.resolvedDocType !== docType
+        ) {
+          setUserPickAtUpload(docType);
+          setResolvedDocType(uploadResult.resolvedDocType as DocType);
+          setDocType(uploadResult.resolvedDocType as DocType);
+        }
+
         // S78 — capture large-doc flag for async UX splash + email-on-complete.
         // Backend sets to true only when async_ingestion_ux_v1 flag is ON, PDF,
         // and pageCount > 30.
@@ -628,7 +670,7 @@ function UploadForm() {
       "image/heif": [".heif"],
     },
     maxFiles: 1,
-    disabled: uploading,
+    disabled: uploading || uploaded,
   });
 
   // ─── ProcessingFlow callbacks ────────────────────────────────────────────
@@ -685,6 +727,9 @@ function UploadForm() {
     setUserPickedFile(false);
     setPremiumSaved(false);
     setProgressionComplete(false);
+    // B2-UP.1 (#4) — clear correction banner state for the next upload.
+    setResolvedDocType(null);
+    setUserPickAtUpload(null);
     pendingRedirectRef.current = null;
   }, []);
 
@@ -966,63 +1011,91 @@ function UploadForm() {
   //
   // S100 Stage 7c: all post-upload UX (uploading / parsing / modal / mismatch /
   // year_rollover / canonical_match / complete / error / etc.) dispatched via
-  // <ProcessingFlow>. The doc-type-confirmation modal renders via priority 0
-  // BEFORE any loader branch — closes the S99 frontend-modal-not-rendering bug
-  // at the structural level.
+  // <useProcessingFlowSlots>. The doc-type-confirmation modal renders via
+  // priority 0 BEFORE any loader branch — closes the S99 frontend-modal-
+  // not-rendering bug at the structural level.
+  //
+  // B2-UP.1 — slot-routing replaces the prior `if (uploaded) return
+  // <ProcessingFlow />` full-screen takeover. The new design keeps the outer
+  // shell (header + type cards + drop zone container + paths grid + share)
+  // rendered always; slots route content into the right visual position.
 
-  if (uploaded) {
-    return (
-      <ProcessingFlow
-        documentId={documentId}
-        fileName={fileName}
-        docType={docType}
-        user={user}
-        uploaded={uploaded}
-        uploadStatus={uploadStatus}
-        uploadProgress={uploadProgress}
-        confirmationData={confirmationData}
-        processingProgress={processingProgress}
-        classificationResult={classificationResult}
-        isLargeDoc={isLargeDoc}
-        largeDocPageCount={largeDocPageCount}
-        yearRolloverEnabled={yearRolloverEnabled}
-        premiumSaved={premiumSaved}
-        retrying={retrying}
-        onCancelInFlight={onCancelInFlight}
-        onUploadAnother={onUploadAnother}
-        onConfirmDocType={onConfirmDocType}
-        onCancelConfirmation={onCancelConfirmation}
-        onUseThisPlanFromMismatch={onUseThisPlanFromMismatch}
-        onKeepCurrentFromMismatch={onKeepCurrentFromMismatch}
-        onSwitchYearRollover={onSwitchYearRollover}
-        onKeepCurrentYearRollover={onKeepCurrentYearRollover}
-        onConfirmCanonicalMatch={onConfirmCanonicalMatch}
-        onRejectCanonicalMatch={onRejectCanonicalMatch}
-        onRetryDocument={onRetryDocument}
-        onPremiumSaved={onPremiumSaved}
-        onPremiumSkipped={onPremiumSkipped}
-        onProgressionComplete={() => setProgressionComplete(true)}
-      />
-    );
-  }
+  const isBillType = docType === "eob" || docType === "itemized_bill";
+  const handleViewResults = useCallback(() => {
+    const target = isBillType ? "/claim" : "/plan";
+    window.location.href = target;
+  }, [isBillType]);
 
-  // ── Upload form ─────────────────────────────────────────────────────────
+  const slots = useProcessingFlowSlots({
+    documentId,
+    fileName,
+    docType,
+    user,
+    uploaded,
+    uploadStatus,
+    uploadProgress,
+    confirmationData,
+    processingProgress,
+    classificationResult,
+    isLargeDoc,
+    largeDocPageCount,
+    yearRolloverEnabled,
+    premiumSaved,
+    retrying,
+    onCancelInFlight,
+    onUploadAnother,
+    onConfirmDocType,
+    onCancelConfirmation,
+    onUseThisPlanFromMismatch,
+    onKeepCurrentFromMismatch,
+    onSwitchYearRollover,
+    onKeepCurrentYearRollover,
+    onConfirmCanonicalMatch,
+    onRejectCanonicalMatch,
+    onRetryDocument,
+    onPremiumSaved,
+    onPremiumSkipped,
+    onProgressionComplete: () => setProgressionComplete(true),
+    loaderVariant: "stackV3",
+    onViewResults: handleViewResults,
+  });
+
+  // Picker-key derivation: which TypeCard is active for the current docType?
+  const activePickerKey: PickerOptionKey = isBillType ? "bill" : "plan_document";
+
+  // Drop-zone stage:
+  //   - uploaded=true → host slots.dropZoneContent (priorities 1-4 + 8-9 + 10)
+  //   - uploading → DropUploading bytes-in-flight progress
+  //   - isDragActive → DropHover
+  //   - default → DropIdle
+  const dropStage: "idle" | "hover" | "uploading" | "slot" = uploaded
+    ? "slot"
+    : uploading
+      ? "uploading"
+      : isDragActive
+        ? "hover"
+        : "idle";
+
+  // ── Upload page ─────────────────────────────────────────────────────────
   return (
-    <div className="max-w-lg mx-auto">
-      <h1 className="text-2xl font-bold text-gray-900">Upload a document</h1>
-      <p className="mt-1.5 text-sm text-gray-500">
-        Upload your EOB or itemized bill. We&apos;ll extract every line item and run it through our audit engine.
-      </p>
+    <div className="mx-auto max-w-3xl pb-12">
+      {/* Compact header (design eyebrow + title + sub) */}
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold tracking-tight text-slate-900">Upload a document</h1>
+        <p className="mt-1.5 text-sm text-slate-500">
+          Drop in an EOB, bill, or plan document — we&rsquo;ll extract every line item, audit your charges, and enrich your plan in one pass.
+        </p>
+      </div>
 
       {/* SBC upload prompt after plan switch */}
       {needsSbc && (
-        <div className="mt-5 p-4 bg-blue-50 border border-blue-100 rounded-2xl flex items-start gap-3">
-          <svg className="w-5 h-5 text-blue-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <div className="mb-5 flex items-start gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-4">
+          <svg className="mt-0.5 h-5 w-5 shrink-0 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
           </svg>
           <div>
             <p className="text-sm font-semibold text-blue-800">Upload your plan document</p>
-            <p className="text-xs text-blue-600 mt-0.5">
+            <p className="mt-0.5 text-xs text-blue-600">
               You switched insurance plans. Upload your new Summary of Benefits and Coverage (SBC) so we can populate your benefits.
             </p>
           </div>
@@ -1031,16 +1104,16 @@ function UploadForm() {
 
       {/* Profile missing banner */}
       {profileMissing && (
-        <div className="mt-5 p-4 bg-blue-50 border border-blue-100 rounded-2xl flex items-start gap-3">
-          <svg className="w-5 h-5 text-blue-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <div className="mb-5 flex items-start gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-4">
+          <svg className="mt-0.5 h-5 w-5 shrink-0 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
           <div>
             <p className="text-sm font-medium text-blue-800">Add your insurance info first</p>
-            <p className="text-xs text-blue-600 mt-0.5">Your audit will be more accurate if we know your plan details.</p>
-            <Link href="/profile" className="inline-flex items-center gap-1 mt-2 text-xs font-semibold text-blue-700 hover:text-blue-900">
+            <p className="mt-0.5 text-xs text-blue-600">Your audit will be more accurate if we know your plan details.</p>
+            <Link href="/profile" className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-blue-700 hover:text-blue-900">
               Complete your profile
-              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
               </svg>
             </Link>
@@ -1048,154 +1121,214 @@ function UploadForm() {
         </div>
       )}
 
-      <div className="mt-6 space-y-5">
-        {/* Document type selector — S92 Stage 1: 2-card picker. Wire type
-            (`docType`) stays as the 4-tuple; picker is just a 2-card visual
-            collapse that maps to default wire types via `selectsAs`. */}
-        <div>
-          <label className="text-sm font-medium text-gray-700 mb-2 block">What are you uploading?</label>
-          <div className="grid grid-cols-2 gap-3">
-            {(Object.keys(PICKER_OPTIONS) as PickerOptionKey[]).map((pickerKey) => {
-              const option = PICKER_OPTIONS[pickerKey];
-              const billFamily: ReadonlyArray<typeof docType> = ["eob", "itemized_bill"];
-              const planFamily: ReadonlyArray<typeof docType> = ["sbc", "plan_document"];
-              const family = pickerKey === "bill" ? billFamily : planFamily;
-              const selected = family.includes(docType);
-              const selectAndShowTips = () => {
-                setDocType(option.selectsAs);
-                setShowTips(pickerKey);
-              };
-              return (
-                <div
-                  key={pickerKey}
-                  role="button"
-                  tabIndex={0}
-                  onClick={selectAndShowTips}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") selectAndShowTips();
-                  }}
-                  className={`relative p-4 rounded-2xl border-2 text-left transition-all cursor-pointer ${
-                    selected ? "border-blue-500 bg-blue-50/50" : "border-gray-200 hover:border-gray-300 bg-white"
-                  }`}
-                >
-                  <p className={`text-sm font-semibold ${selected ? "text-blue-700" : "text-gray-900"}`}>{option.short}</p>
-                  <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">{option.description}</p>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowTips(showTips === pickerKey ? null : pickerKey);
-                    }}
-                    className="mt-2 text-[11px] font-medium text-blue-600 hover:text-blue-700"
-                  >
-                    {showTips === pickerKey ? "Hide tips" : "Where do I find this?"}
-                  </button>
-                  {selected && (
-                    <div className="absolute top-2.5 right-2.5 w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center">
-                      <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                      </svg>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Tips panel */}
-          {showTips && (
-            <div className="mt-3 p-4 bg-gray-50 rounded-2xl space-y-2">
-              <p className="text-xs font-semibold text-gray-600 uppercase tracking-widest">
-                How to find your {PICKER_OPTIONS[showTips].short}
-              </p>
-              <ul className="space-y-1.5">
-                {PICKER_OPTIONS[showTips].tips.map((tip, i) => (
-                  <li key={i} className="flex items-start gap-2 text-xs text-gray-500">
-                    <span className="w-4 h-4 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">
-                      {i + 1}
-                    </span>
-                    {tip}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-
-        {/* Drop zone */}
-        <div
-          {...getRootProps()}
-          className={`relative flex flex-col items-center justify-center gap-3 p-8 border-2 border-dashed rounded-2xl cursor-pointer transition-all ${
-            isDragActive ? "border-blue-400 bg-blue-50" : "border-gray-200 bg-gray-50 hover:border-blue-300 hover:bg-blue-50/50"
-          } ${uploading ? "opacity-50 cursor-not-allowed" : ""}`}
-        >
-          <input {...getInputProps()} />
-          {uploading ? (
-            <div className="w-full max-w-[240px] text-center">
-              <p className="text-sm text-gray-600 font-medium mb-2">Uploading{uploadProgress < 100 ? "..." : " complete"}</p>
-              <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
-                <div className="h-full bg-blue-600 rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
-              </div>
-              <p className="text-xs text-gray-400 mt-1.5">
-                {fileName} — {uploadProgress}%
-              </p>
-            </div>
-          ) : isDragActive ? (
-            <>
-              <div className="w-12 h-12 rounded-2xl bg-blue-100 flex items-center justify-center">
-                <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-                </svg>
-              </div>
-              <p className="text-sm font-medium text-blue-600">Drop your PDF here</p>
-            </>
-          ) : (
-            <>
-              <div className="w-12 h-12 rounded-2xl bg-blue-100 flex items-center justify-center">
-                <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-                </svg>
-              </div>
-              <div className="text-center">
-                <p className="text-sm font-medium text-gray-700">
-                  Drop your file here, or <span className="text-blue-600">browse</span>
-                </p>
-                <p className="text-xs text-gray-400 mt-1">PDF only · Max 20MB</p>
-              </div>
-            </>
-          )}
-        </div>
-
-        {/* Cloudflare Turnstile — bot defense (S68). CF-34 (Session 72): widget
-            mounts after the user picks a file AND uses appearance="execute" so
-            it stays invisible when Cloudflare silently issues a token. */}
-        {userPickedFile && (
-          <TurnstileWidget ref={turnstileRef} action="upload" onToken={setTurnstileToken} appearance="execute" />
-        )}
-
-        {error && (
-          <div className="p-3 bg-red-50 border border-red-100 rounded-xl">
-            <p className="text-sm text-red-700">{error}</p>
-          </div>
-        )}
+      {/* Type selector — D-§1.B.1-A 2-tier (Bill / Plan); wire-type stays 4-doc-type via PICKER_OPTIONS.selectsAs */}
+      <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {(Object.keys(PICKER_OPTIONS) as PickerOptionKey[]).map((pickerKey) => {
+          const opt = PICKER_OPTIONS[pickerKey];
+          const billFamily: ReadonlyArray<typeof docType> = ["eob", "itemized_bill"];
+          const planFamily: ReadonlyArray<typeof docType> = ["sbc", "plan_document"];
+          const family = pickerKey === "bill" ? billFamily : planFamily;
+          const isActive = family.includes(docType);
+          const tone = pickerKey === "bill" ? "peach" : "mint";
+          const icon =
+            pickerKey === "bill" ? (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+              </svg>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+            );
+          return (
+            <TypeCard
+              key={pickerKey}
+              tone={tone}
+              active={isActive}
+              icon={icon}
+              title={pickerKey === "bill" ? "Bill or EOB" : "Plan document"}
+              sub={pickerKey === "bill" ? "An itemized bill or Explanation of Benefits" : "Your SBC, EOC, or plan booklet"}
+              onClick={() => {
+                if (uploaded || uploading) return;
+                setDocType(opt.selectsAs);
+                setShowTips(null);
+              }}
+            />
+          );
+        })}
       </div>
 
-      {/* ── Previously uploaded documents ──────────────────────────────────── */}
+      {/* Doc-type correction banner (B2-UP.1 #4 UX fix) — visible whenever
+          backend Pattern P silently overrode the user's pick at high
+          confidence. Tells the user what we detected + where the results
+          will land. Stays visible across the post-upload window. */}
+      {resolvedDocType && userPickAtUpload && (
+        <div className="mb-4 flex items-start gap-3 rounded-2xl border border-amber-100 bg-amber-50 p-4">
+          <svg className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+          </svg>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-amber-900">
+              {resolvedDocType === "eob" || resolvedDocType === "itemized_bill"
+                ? "This looked like a bill, so we ran the audit instead."
+                : "This looked like a plan document, so we ran plan analysis instead."}
+            </p>
+            <p className="mt-0.5 text-xs leading-relaxed text-amber-800">
+              You selected <span className="font-medium">{(userPickAtUpload === "eob" || userPickAtUpload === "itemized_bill") ? "Bill or EOB" : "Plan document"}</span>, but the content matched <span className="font-medium">{(resolvedDocType === "eob" || resolvedDocType === "itemized_bill") ? "a bill" : "a plan document"}</span>. We&rsquo;ll show the results on{" "}
+              <span className="font-medium">{(resolvedDocType === "eob" || resolvedDocType === "itemized_bill") ? "/claim" : "/plan"}</span>.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* HERO drop zone */}
+      <div
+        {...(dropStage === "idle" || dropStage === "hover" ? getRootProps() : {})}
+        className={`relative flex min-h-[280px] flex-col items-center justify-center rounded-2xl border-2 border-dashed p-6 transition-all ${
+          dropStage === "hover"
+            ? "border-blue-400 bg-blue-50/60"
+            : dropStage === "slot"
+              ? "border-slate-200 bg-white"
+              : "cursor-pointer border-slate-200 bg-slate-50 hover:border-blue-300 hover:bg-blue-50/40"
+        }`}
+      >
+        {(dropStage === "idle" || dropStage === "hover") && <input {...getInputProps()} />}
+        {dropStage === "idle" && (
+          <DropIdle
+            kind={activePickerKey === "bill" ? "bill" : "plan"}
+            onPickFile={() => {
+              /* useDropzone's getInputProps + click() native opens the picker; getRootProps wraps this container so an outer click triggers it. We can rely on that. */
+              const input = (document.querySelector('input[type="file"]') as HTMLInputElement) ?? null;
+              input?.click();
+            }}
+            tipsOpen={showTips === activePickerKey}
+            onToggleTips={() =>
+              setShowTips((s) => (s === activePickerKey ? null : activePickerKey))
+            }
+          />
+        )}
+        {dropStage === "hover" && <DropHover />}
+        {dropStage === "uploading" && (
+          <DropUploading
+            fileName={fileName}
+            uploadProgress={uploadProgress}
+            onCancel={onCancelInFlight}
+          />
+        )}
+        {dropStage === "slot" && slots.dropZoneContent}
+      </div>
+
+      {/* Find-tips panel — visible only during idle + tips toggled open */}
+      {dropStage === "idle" && showTips && (
+        <FindTipsPanel
+          kind={showTips === "bill" ? "bill" : "plan"}
+          open={true}
+          onClose={() => setShowTips(null)}
+          tips={PICKER_OPTIONS[showTips].tips}
+        />
+      )}
+
+      {/* Below-drop-zone slot — heavy interactive priorities 5-7 (mismatch / year_rollover / canonical_match) */}
+      {slots.belowDropZone && <div className="mt-6">{slots.belowDropZone}</div>}
+
+      {/* Cloudflare Turnstile widget — preserve CF-34 mounting behavior.
+          Renders when userPickedFile is true; stays mounted while waiting
+          for token. The outer shell is always rendered now so the widget
+          no longer unmounts when uploaded=true. */}
+      {userPickedFile && (
+        <div className="mt-4">
+          <TurnstileWidget ref={turnstileRef} action="upload" onToken={setTurnstileToken} appearance="execute" />
+        </div>
+      )}
+
+      {error && (
+        <div className="mt-4 rounded-xl border border-red-100 bg-red-50 p-3">
+          <p className="text-sm text-red-700">{error}</p>
+        </div>
+      )}
+
+      {/* "Paths" grid — D-§1.B.1-D visibility: visible during idle + done (priorities 8-9); hidden during processing + exceptions */}
+      {!slots.hidePathsGrid && (
+        <div className="mt-10">
+          <div className="mb-4">
+            <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+              ONE UPLOAD · EVERY SERVICE SHARPER
+            </div>
+            <h3 className="mt-1 text-base font-semibold text-slate-900">Your document powers all of Candid.</h3>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <PathCard
+              tone="peach"
+              kind="bill"
+              title="Bills feed your Claim audit"
+              body="Every line item gets compared to your plan + Medicare benchmarks. Overcharges become draftable dispute letters."
+              destLabel="See your audit"
+              icon={
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                </svg>
+              }
+              destination={() => (window.location.href = "/claim")}
+            />
+            <PathCard
+              tone="mint"
+              kind="plan"
+              title="Plans enrich your Benefits"
+              body="We surface every covered benefit you can use, flag HSA / FSA eligibility, and verify each claim against the plan you actually have."
+              destLabel="See your benefits"
+              icon={
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+              }
+              destination={() => (window.location.href = "/plan")}
+            />
+            <PathCard
+              tone="lavender"
+              kind="plan"
+              title="Plans make comparison easy"
+              body="Every plan a Candid user uploads keeps our side-by-side comparisons accurate and up to date — so you can pick the plan that actually fits."
+              destLabel="Open Compare"
+              icon={
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 4h5v16H4zM10 4h5v16h-5zM16 4h4v16h-4z" />
+                </svg>
+              }
+              destination={() => (window.location.href = "/compare")}
+            />
+            <PathCard
+              tone="sky"
+              kind="bill"
+              title="Bills strengthen Care"
+              body="Every bill teaches Candid which providers bill fairly and reimburse cleanly — so when you need care, you can find someone you won't have to dispute later."
+              destLabel={candidCareLive ? "See providers" : "Coming soon"}
+              icon={
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4.318 6.318a4.5 4.5 0 016.364 0L12 7.636l1.318-1.318a4.5 4.5 0 116.364 6.364L12 20.364l-7.682-7.682a4.5 4.5 0 010-6.364z" />
+                </svg>
+              }
+              destination={candidCareLive ? () => (window.location.href = "/care") : null}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* ── Previously uploaded documents (always visible — B14 stuck recovery + general discoverability) ──────────────────────── */}
       {userDocs.length > 0 && (
-        <div className="mt-8">
-          <h2 className="text-sm font-semibold text-gray-900 mb-3">Your uploaded documents</h2>
+        <div className="mt-10">
+          <h2 className="mb-3 text-sm font-semibold text-slate-900">Your uploaded documents</h2>
           <div className="space-y-2">
             {userDocs.map((doc) => (
-              <div key={doc.id} className="flex items-center justify-between p-3 bg-white border border-gray-100 rounded-xl">
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-8 h-8 rounded-lg bg-gray-50 flex items-center justify-center shrink-0">
-                    <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <div key={doc.id} className="flex items-center justify-between rounded-xl border border-slate-100 bg-white p-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-50">
+                    <svg className="h-4 w-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
                   </div>
                   <div className="min-w-0">
-                    <p className="text-sm font-medium text-gray-900 truncate">{doc.file_name}</p>
-                    <p className="text-xs text-gray-400">
+                    <p className="truncate text-sm font-medium text-slate-900">{doc.file_name}</p>
+                    <p className="text-xs text-slate-400">
                       {DOC_TYPES[doc.doc_type as keyof typeof DOC_TYPES]?.short || doc.doc_type}
                       {" · "}
                       {new Date(doc.created_at).toLocaleDateString()}
@@ -1218,7 +1351,7 @@ function UploadForm() {
                     </button>
                   )}
                   <span
-                    className={`text-xs font-medium px-2 py-1 rounded-full ${
+                    className={`rounded-full px-2 py-1 text-xs font-medium ${
                       doc.status === "processed"
                         ? "bg-green-50 text-green-700"
                         : doc.status === "processing" || doc.status === "queued"
@@ -1227,7 +1360,7 @@ function UploadForm() {
                             ? "bg-amber-50 text-amber-700"
                             : doc.status === "error"
                               ? "bg-red-50 text-red-700"
-                              : "bg-gray-50 text-gray-500"
+                              : "bg-slate-50 text-slate-500"
                     }`}
                   >
                     {doc.status === "processed"
@@ -1249,10 +1382,13 @@ function UploadForm() {
         </div>
       )}
 
-      {/* "Help us grow" share card — placed on the form view (before upload)
-          per user feedback so it's visible while users are deciding whether
-          to upload, not only after they've completed one. */}
-      <ShareCandidCard surface="upload_form" />
+      {/* "Help us grow" share card (S119 ShareWithFriend alias still ShareCandidCard for byte-identical preservation). */}
+      <div className="mt-10">
+        <ShareCandidCard surface="upload_form" />
+      </div>
+
+      {/* Modal slot (priority 0) — renders above everything as full-screen overlay per S99 structural fix */}
+      {slots.modal}
 
       {/* ── Inline consent modal — shown on first upload attempt ─────────── */}
       {showConsentModal && (

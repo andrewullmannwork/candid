@@ -84,3 +84,45 @@ html {
 .animate-fade-in {
   animation: fade-in 0.4s ease-out;
 }
+
+/* ── StackLoaderV3 keyframes (B2-UP.1 port from s112-loading-screens) ──── */
+@keyframes cdLoadBar {
+  0% { transform: translateX(-100%); }
+  60% { transform: translateX(180%); }
+  100% { transform: translateX(180%); }
+}
+@keyframes cdPop {
+  0% { transform: scale(0.4); opacity: 0; }
+  60% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes cdScanDoc {
+  0% { top: -4px; }
+  100% { top: 104%; }
+}
+
+/* Container-query responsive sizing for StackLoaderV3 (cdL- prefix). */
+@container cdL (max-width: 560px) {
+  .cdL-shell { padding: 28px 26px 30px !important; }
+  .cdL-title { font-size: 16px !important; }
+  .cdL-doc-card { width: 64px !important; height: 86px !important; }
+  .cdL-doc-stack { gap: 11px !important; }
+  .cdL-rotator-wrap { max-width: 88% !important; }
+}
+@container cdL (max-width: 420px) {
+  .cdL-shell { padding: 24px 18px 26px !important; }
+  .cdL-title { font-size: 15px !important; letter-spacing: -0.01em !important; }
+  .cdL-counter-row { font-size: 12.5px !important; }
+  .cdL-rotator-wrap { max-width: 94% !important; min-height: 38px !important; margin-bottom: 14px !important; }
+  .cdL-rotator-text { font-size: 13px !important; line-height: 1.45 !important; }
+  .cdL-doc-card { width: 52px !important; height: 70px !important; padding: 9px 7px !important; }
+  .cdL-doc-stack { gap: 8px !important; }
+  .cdL-doc-check { width: 18px !important; height: 18px !important; bottom: 5px !important; right: 5px !important; }
+  .cdL-hairline-wrap { width: 180px !important; }
+}
+@container cdL (max-width: 340px) {
+  .cdL-shell { padding: 20px 14px 22px !important; }
+  .cdL-doc-card { width: 46px !important; height: 62px !important; }
+  .cdL-doc-stack { gap: 7px !important; }
+  .cdL-hairline-wrap { width: 160px !important; }
+}

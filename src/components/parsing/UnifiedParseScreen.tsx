@@ -34,6 +34,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { pickNextTickInterval } from "@/lib/parsing/parseProgressUx";
+import { StackLoaderV3 } from "@/components/loaders/StackLoaderV3";
 
 export type ParseDocPhase = "queued" | "uploading" | "parsing" | "complete" | "error";
 
@@ -79,7 +80,34 @@ interface UnifiedParseScreenProps {
    * finishes fast (S101 v2 — Andrew direction).
    */
   onProgressionComplete?: () => void;
+  /**
+   * Loader visual variant (B2-UP.1).
+   *   - "default" (or omitted): existing doc-card visual; serves /compare
+   *     multi-doc stacked-card layout + /upload prior to redesign.
+   *   - "stackV3": render the design's StackLoaderV3 visual (5-doc
+   *     decorative card stack + page counter + rotating message + hairline
+   *     progress). Single-doc only. Sub-phase state machine + S98 tick +
+   *     S102 fast-path + onProgressionComplete preserved verbatim — only
+   *     the chrome changes.
+   */
+  loaderVariant?: "default" | "stackV3";
 }
+
+// Brand-voice messages for stackV3 loader variant (single-doc /upload path).
+const STACK_V3_AUDIT_MESSAGES = [
+  "Reading the fine print so you don't have to.",
+  "Cross-checking codes against fair-price data…",
+  "We read each bill twice — once for what's there, once for what isn't.",
+  "Looking for duplicate charges…",
+  "Flagging anything that smells off…",
+];
+const STACK_V3_PLAN_MESSAGES = [
+  "Reading your plan document…",
+  "We read every page twice — once for what's there, once for what isn't.",
+  "Surfacing covered benefits…",
+  "Decoding insurance-speak…",
+  "Worth the extra minute. Promise.",
+];
 
 // Whimsical doctor's-office vignettes. S93 lock: 55 lines, 4s rotation.
 const ROTATING_MICROCOPY: string[] = [
@@ -669,7 +697,11 @@ export function UnifiedParseScreen({
   footer,
   onCancel,
   onProgressionComplete,
+  loaderVariant = "default",
 }: UnifiedParseScreenProps) {
+  // NOTE: ALL hooks called unconditionally before the loaderVariant branch
+  // below per Rules of Hooks. When loaderVariant === "stackV3", the
+  // microcopyIdx + docSubPhases state stays unused — harmless idle state.
   const [microcopyIdx, setMicrocopyIdx] = useState(0);
 
   // Per-doc subPhase tracking (S101 v2). Each DocCard reports its internal
@@ -686,9 +718,12 @@ export function UnifiedParseScreen({
   useEffect(() => {
     if (!onProgressionComplete) return;
     if (docs.length === 0) return;
+    // stackV3 variant owns its own onProgressionComplete wiring inside
+    // StackLoaderV3Variant; skip this effect's call path to avoid double-firing.
+    if (loaderVariant === "stackV3") return;
     const allComplete = docs.every((d) => docSubPhases[d.id] === "complete");
     if (allComplete) onProgressionComplete();
-  }, [docs, docSubPhases, onProgressionComplete]);
+  }, [docs, docSubPhases, onProgressionComplete, loaderVariant]);
 
   useEffect(() => {
     const allDone = docs.every((d) => d.phase === "complete" || d.phase === "error");
@@ -698,6 +733,24 @@ export function UnifiedParseScreen({
     }, MICROCOPY_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [docs]);
+
+  // ── stackV3 variant (B2-UP.1 /upload visual refresh) ──────────────────
+  // Renders the design's StackLoaderV3 chrome while preserving the existing
+  // sub-phase state machine + S98 random-paced tick + S102 fast-path +
+  // onProgressionComplete gate. Restricted to single-doc — /compare callers
+  // must keep loaderVariant="default" or unset. Branch placed AFTER all
+  // hooks to satisfy Rules of Hooks.
+  if (loaderVariant === "stackV3" && docs.length === 1) {
+    return (
+      <StackLoaderV3Variant
+        doc={docs[0]}
+        title={title}
+        footer={footer}
+        onCancel={onCancel}
+        onProgressionComplete={onProgressionComplete}
+      />
+    );
+  }
 
   // Effective allComplete: rendered "Ready" header requires the sub-phase
   // machine to have wrapped up, not just the backend. Matches the per-doc
@@ -773,5 +826,71 @@ export function UnifiedParseScreen({
         }
       `}</style>
     </div>
+  );
+}
+
+// ─── stackV3 variant (B2-UP.1) ──────────────────────────────────────────────
+//
+// Drives the same sub-phase state machine as DocCard (via the shared
+// useSyntheticDisplayedPage hook), but renders StackLoaderV3 chrome instead
+// of the doc-card UI. Fires onProgressionComplete the moment its single
+// doc's subPhase reaches "complete" — same gate semantics as the default
+// variant.
+
+function StackLoaderV3Variant({
+  doc,
+  title,
+  footer,
+  onCancel,
+  onProgressionComplete,
+}: {
+  doc: ParseDoc;
+  title?: string;
+  footer?: React.ReactNode;
+  onCancel?: () => void;
+  onProgressionComplete?: () => void;
+}) {
+  const { displayedPage, subPhase } = useSyntheticDisplayedPage(doc);
+
+  // S101 v2 — effective phase logic + status-text derivation mirror the
+  // default variant exactly. When backend signals processed but the sub-phase
+  // machine is still running, keep showing parsing chrome until the machine
+  // wraps.
+  const effectivePhase: ParseDocPhase =
+    doc.phase === "complete" && subPhase !== "complete" ? "parsing" : doc.phase;
+
+  const subPhaseLabel = subPhaseStatusText(subPhase);
+  const subPhaseText: string | null = (() => {
+    if (effectivePhase === "uploading") return "Reading…";
+    if (effectivePhase !== "parsing") return null;
+    if (subPhaseLabel) return subPhaseLabel;
+    return null; // page counter rendered by StackLoaderV3 when subPhaseText is null
+  })();
+
+  // Doc-kind detection for message palette. fileName + step are unreliable
+  // — phase derivation gives us "parsing" only; the original /upload
+  // ProcessingFlow passes docType through, so we use the explicit kind via
+  // ParseDoc.label when set. Default to plan palette (more generic).
+  // Future: parameterize via prop if /compare ever uses stackV3.
+  const messages = doc.fileName.match(/eob|bill|claim/i)
+    ? STACK_V3_AUDIT_MESSAGES
+    : STACK_V3_PLAN_MESSAGES;
+
+  useEffect(() => {
+    if (subPhase === "complete" && onProgressionComplete) {
+      onProgressionComplete();
+    }
+  }, [subPhase, onProgressionComplete]);
+
+  return (
+    <StackLoaderV3
+      currentPage={displayedPage}
+      totalPages={doc.totalPages}
+      subPhaseText={subPhaseText}
+      title={title ?? "Reading your document"}
+      messages={messages}
+      footer={footer}
+      onCancel={onCancel}
+    />
   );
 }
