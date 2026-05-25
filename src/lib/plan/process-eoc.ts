@@ -37,6 +37,8 @@ import {
   generateHaikuRunId,
   extractRowsFromEOCParseResult,
 } from "@/lib/parser/canonical-haiku-extractions";
+import { validatePlanField } from "@/lib/plan/garbage-validators";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
@@ -88,6 +90,32 @@ export async function processEOCDocumentData(
   if (parsed.total_cost_usd > COST_HARD_CAP_USD) {
     const reason = `eoc_cost_hard_cap_breached:${documentId}:cost=${parsed.total_cost_usd.toFixed(4)}`;
     parseWarnings.push(reason);
+  }
+
+  // ── Ing-B: Garbage-pattern validators on EOC plan-identity ────────────────
+  // Same defense surface as process-plan.ts; doc-type-agnostic per
+  // feedback_universal_fixes_only. EOC parser today only emits plan_name +
+  // insurer_name on plan_identity (metal_tier + group_number not extracted),
+  // so we validate the two relevant fields. Mutates parsed.plan_identity
+  // in-place so all downstream uses (planFields build, provenance, profile
+  // back-populate) see the cleaned values. Gated by garbage_validators_enabled
+  // (mig 121, default ON).
+  const garbageValidatorsEnabled = await isFeatureEnabled("garbage_validators_enabled");
+  if (garbageValidatorsEnabled) {
+    const planNameResult = validatePlanField(parsed.plan_identity.plan_name, "plan_name");
+    if (planNameResult.warning) {
+      parsed.plan_identity.plan_name = null;
+      parseWarnings.push(planNameResult.warning);
+    }
+    const insurerNameResult = validatePlanField(parsed.plan_identity.insurer_name, "insurer_name");
+    if (insurerNameResult.warning) {
+      parsed.plan_identity.insurer_name = null;
+      parseWarnings.push(insurerNameResult.warning);
+    }
+    if (planNameResult.warning || insurerNameResult.warning) {
+      const fired = [planNameResult.warning, insurerNameResult.warning].filter(Boolean);
+      console.warn("[process-eoc] Garbage-pattern validator nulled fields:", fired.join(", "));
+    }
   }
 
   // 2. Plan-identity persistence.
