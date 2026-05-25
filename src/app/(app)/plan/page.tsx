@@ -19,6 +19,62 @@ import {
   type DecoratedValue,
   type DisplayState,
 } from "@/components/display-state";
+import { PageHeader } from "@/components/page-header";
+import { BenefitsScoreboard } from "@/components/benefits-scoreboard";
+import { DataSourceContextLine } from "@/components/data-source-context-line";
+import { PlanStat } from "@/components/plan/PlanStat";
+import { CategoryAccordion } from "@/components/plan/CategoryAccordion";
+
+// B3.2 — POS slug render helper. Backend ships 11 canonical slugs (per
+// process-plan.ts:1068 + mig 009 CHECK constraint); display rendering is
+// frontend-side. Title-case the slug (e.g., outpatient_facility → "Outpatient
+// Facility") with 2 overrides where the auto-render reads poorly. No new
+// vocabulary — same pattern as the inline title-case fallback used for benefit
+// categories at line 793.
+function formatPlaceOfService(pos: string | null | undefined): string {
+  if (!pos || pos === "any") return "All locations";
+  if (pos === "pcp_office") return "Primary care office";
+  return pos.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// B3.2 — Matrix verification badge per S126 Advanced Imaging Matrix design.
+// Display State v5's 6 visible states collapse to 3 visual tiers for the
+// matrix's dense per-row chrome. The full state semantics + cite-grade
+// excerpts stay in the API response for the dispute-letter consumer (Pattern
+// P-8 preserved at the data layer) — only the /plan display chrome in the
+// nested-variant case drops cite-grade affordances in favor of these badges.
+// Per Andrew direction S126: "whenever nesting we will drop the UI for the
+// cite-grade verification and use badges instead. AND of course we will keep
+// the cite-grade for dispute letters." Full lock in
+// plans/findings/design-handoffs/s126-advanced-imaging-matrix/README.md.
+function MatrixVerifyTag({ state }: { state: DisplayState | null | undefined }) {
+  if (state === "candid_verified") {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10.5px] font-bold uppercase tracking-[0.08em] px-2 py-0.5 rounded-full bg-green-600 text-white whitespace-nowrap">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M12 3l1.6 5 5 1.5-5 1.5L12 16l-1.6-5L5.4 9.5l5-1.5z" />
+        </svg>
+        Candid Verified
+      </span>
+    );
+  }
+  if (state === "user_verified" || state === "user_verified_community") {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10.5px] font-bold uppercase tracking-[0.08em] px-2 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-200 whitespace-nowrap">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M5 13l4 4L19 7" />
+        </svg>
+        Verified
+      </span>
+    );
+  }
+  // community / public_data / estimate / null → estimated
+  return (
+    <span className="inline-flex items-center gap-1 text-[10.5px] font-bold uppercase tracking-[0.08em] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 whitespace-nowrap">
+      Estimated
+    </span>
+  );
+}
 
 const SERVICE_CATEGORY_LABELS: Record<string, string> = {
   office_visit: "Office Visits",
@@ -145,167 +201,20 @@ function CategoryIcon({ category }: { category: string }) {
 }
 
 // ── Data Source Banner ──────────────────────────────────────────────────────────
-
-function AmberBanner({ title, subtitle }: { title: string; subtitle: string }) {
-  return (
-    <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3">
-      <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0 mt-0.5">
-        <svg className="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
-        </svg>
-      </div>
-      <div className="flex-1">
-        <p className="text-sm font-semibold text-amber-900">{title}</p>
-        <p className="text-xs text-amber-700 mt-0.5">{subtitle}</p>
-        <Link href="/upload" className="inline-flex items-center gap-1.5 mt-3 px-4 py-2 text-sm font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-xl transition-colors">
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-          </svg>
-          Upload your plan document
-        </Link>
-      </div>
-    </div>
-  );
-}
-
-function DataSourceBanner({ dataSource, planName, planType, insurer, verificationStatus, planSource }: {
-  dataSource: string;
-  planName?: string;
-  planType?: string;
-  insurer?: string;
-  verificationStatus?: string;
-  planSource?: string;
-}) {
-
-  if (dataSource === "user_plan") {
-    // SBC or plan document upload, or verified plan → green
-    const isVerified = verificationStatus && verificationStatus !== "unverified";
-    if (planSource === "sbc_upload" || planSource === "plan_doc_upload" || isVerified) {
-      return (
-        <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-xl flex items-start gap-3">
-          <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center shrink-0 mt-0.5">
-            <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-green-900">Results based on your uploaded document</p>
-            <p className="text-xs text-green-700 mt-0.5">
-              These benefits reflect the coverage details extracted from your plan documents.
-            </p>
-          </div>
-        </div>
-      );
-    }
-
-    // Manual entry → amber
-    if (planSource === "manual") {
-      return <AmberBanner
-        title="Results based on the insurance details you provided"
-        subtitle="Upload your plan document for more complete results."
-      />;
-    }
-
-    // Insurance card scan or other unverified → amber
-    return <AmberBanner
-      title="Results based on your insurance card"
-      subtitle="Upload your plan document for more complete results."
-    />;
-  }
-
-  if (dataSource === "user_plan_with_canonical") {
-    return (
-      <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-xl flex items-start gap-3">
-        <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center shrink-0 mt-0.5">
-          <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-        </div>
-        <div>
-          <p className="text-sm font-semibold text-green-900">Results based on your uploaded document</p>
-          <p className="text-xs text-green-700 mt-0.5">
-            Some benefits include coverage details from other members on the same plan.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  if (dataSource === "matched_plan" || dataSource === "cms_api") {
-    return (
-      <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-xl flex items-start gap-3">
-        <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center shrink-0 mt-0.5">
-          <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-        </div>
-        <div>
-          <p className="text-sm font-semibold text-blue-900">
-            Results based on a Candid verified plan matching your insurance card
-          </p>
-          <p className="text-xs text-blue-700 mt-0.5">
-            We matched your information to {planName || "a verified plan"} in our database.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  if (dataSource === "verified_plan") {
-    return <AmberBanner
-      title="Results based on a plan similar to yours"
-      subtitle="Upload your plan document for more complete results."
-    />;
-  }
-
-  // static_catalog — dynamic based on plan type
-  if (planType) {
-    return <AmberBanner
-      title={`Results based on your ${planType} plan type`}
-      subtitle="Upload your plan document for more complete results."
-    />;
-  }
-
-  // No plan type at all
-  return (
-    <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
-      <div className="flex items-start gap-3">
-        <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0 mt-0.5">
-          <svg className="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
-          </svg>
-        </div>
-        <div className="flex-1">
-          <p className="text-sm font-semibold text-amber-900">
-            No insurance information on file
-          </p>
-          <p className="text-xs text-amber-700 mt-0.5">
-            Results based on the typical user. Upload your insurance card and plan document for more complete results.
-          </p>
-          <Link
-            href="/upload"
-            className="inline-flex items-center gap-1.5 mt-3 px-4 py-2 text-sm font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-xl transition-colors"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-            </svg>
-            Upload your SBC
-          </Link>
-        </div>
-      </div>
-    </div>
-  );
-}
+// B3.2 — AmberBanner + DataSourceBanner DELETED; replaced by the
+// <DataSourceContextLine> primitive (B3.1; deferred from B1.2). The primitive
+// covers all 7 copy variants the deleted banners covered + matches /dashboard.
 
 // ── Plan Summary Card ──────────────────────────────────────────────────────────
 
-function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insurancePlanId, userHasDoc }: {
+function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insurancePlanId, userHasDoc, insurer }: {
   planName?: string;
   planYear?: number | null;
   planSummary?: AnalyzeResponse["planSummary"];
   dataSource: string;
   insurancePlanId?: string;
   userHasDoc?: boolean;
+  insurer?: string;
 }) {
   if (!planSummary || dataSource === "static_catalog") return null;
 
@@ -336,37 +245,69 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
   const summaryWorstField = summaryFields.find((f) => f.state === summaryAggState);
   const summaryAggReason = summaryWorstField?.reason ?? null;
 
+  // B3.2 — Session 77 cite-grade verbatim fallback preserved verbatim; lifted
+  // out of the inline IIFE so the renderer can be reused by the new PlanStat
+  // 4-grid below.
+  const renderDecoratedValue = (
+    field: typeof inDed,
+    placeholder: string,
+  ): React.ReactNode => {
+    if (field.state !== null && !isVisibleState(field.state)) {
+      return <span className="text-gray-300">&mdash;</span>;
+    }
+    if (
+      field.value == null &&
+      field.reason === "from_user_document_conditional_context" &&
+      field.excerpt
+    ) {
+      return (
+        <span
+          className="text-xs italic text-slate-700 leading-snug"
+          title="From your plan document"
+        >
+          &ldquo;{field.excerpt.trim()}&rdquo;
+        </span>
+      );
+    }
+    if (field.value == null) return <span className="text-gray-300">{placeholder}</span>;
+    return `$${field.value.toLocaleString()}`;
+  };
+
+  // B3.2 §1.C.2 design — eyebrow + insurer + planName + planType pill + sub +
+  // 4-grid PlanStat. PRESERVES Session 73 S71-hotfix-3 aggregation behavior
+  // (premium + planType excluded from worst-trumps) + Session 77 cite-grade
+  // verbatim fallback + VerifyAffordance worst-signal field per Phase 4.0.5-F.
+  const displayTitle = [insurer, planName].filter(Boolean).join(" ") || "Your Plan";
+
   return (
-    <div className="mt-4 p-4 bg-white border border-gray-200 rounded-xl">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-gray-900 min-w-0">
-          {planName || "Your Plan"}
+    <div className="mt-4 p-5 bg-white border border-gray-200 rounded-2xl">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-blue-600">
+            Your plan on file
+          </p>
+          <h3 className="mt-1 text-base font-semibold text-gray-900 leading-tight">
+            <span className="truncate">{displayTitle}</span>
+            {planType.value && (
+              <span className="ml-2 inline-flex align-middle text-[11px] font-semibold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded">
+                {planType.value}
+                {planSummary.metalLevel && ` · ${planSummary.metalLevel}`}
+              </span>
+            )}
+          </h3>
           {planYear && (
-            <span className="ml-2 text-xs font-medium text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">
-              {planYear}
-            </span>
+            <p className="mt-0.5 text-xs text-gray-500">{planYear} plan year</p>
           )}
-          {planType.value && (
-            <span className="ml-2 text-xs font-medium text-gray-500">
-              {planType.value}
-              {planSummary.metalLevel && ` / ${planSummary.metalLevel}`}
-            </span>
-          )}
-        </h3>
+        </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          {/* CF-19 (Session 64): summary-card aggregate badge.
-              Per user direction: only render for verified-tier states. Estimated/
-              unverified summary-card values hide individually below.
-              S71 hotfix #3 (Session 73): legacy `verification_status` badge
-              ("Document verified" / "Unverified") removed — superseded by the
-              v3 Display State vocabulary above. The two badges co-rendering
-              gave users mixed signals ("Public Data + Document verified" on
-              the same card). */}
+          {/* CF-19 (Session 64): summary-card aggregate badge — verified-tier only;
+              S71 hotfix #3 (Session 73) preserved (no legacy verification_status badge). */}
           {summaryAggState && summaryAggReason && isVisibleState(summaryAggState) && (
             <DisplayStateBadge state={summaryAggState} reason={summaryAggReason} size="xs" />
           )}
         </div>
       </div>
+
       {premium.value != null && (
         <div className="mt-3 flex items-baseline gap-1.5 flex-wrap">
           <span className="text-xl font-bold text-gray-900">
@@ -376,65 +317,16 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
           {planSummary.premiumSource === "county_specific" && (
             <span className="ml-1.5 text-[10px] font-medium text-green-600 bg-green-50 px-1.5 py-0.5 rounded">Your county</span>
           )}
-          {/* CF-19 (Session 64): per-field DisplayStateBadge removed — aggregate at card header. */}
         </div>
       )}
-      {/* CF-19 v2 (Session 64) per user direction: per-field values render only when
-          state is null (flag OFF — legacy) OR verified-tier (candid_verified / verified).
-          Estimated values render with "Upload your plan document" CTA below; hidden
-          (parser_failure) values show "—" + page-level banner aggregates failures. */}
-      {(() => {
-        const isVisible = (s: typeof inDed.state): boolean =>
-          s === null || isVisibleState(s);
-        const renderValue = (
-          field: typeof inDed,
-          placeholder: string,
-        ): React.ReactNode => {
-          if (!isVisible(field.state)) return <span className="text-gray-300">&mdash;</span>;
-          // Session 77: conditional-context surfacing. When parser captured a
-          // cite-grade verbatim quote describing a conditional plan rule (e.g.,
-          // "Deductible: Waived for emergencies") but couldn't reduce it to a
-          // single number, render the verbatim phrase as the field's display
-          // text instead of hiding behind the placeholder. The text is already
-          // verified by Pattern P-8 — it's a citable plan-document quote.
-          if (
-            field.value == null &&
-            field.reason === "from_user_document_conditional_context" &&
-            field.excerpt
-          ) {
-            return (
-              <span
-                className="text-xs italic text-slate-700 leading-snug"
-                title="From your plan document"
-              >
-                &ldquo;{field.excerpt.trim()}&rdquo;
-              </span>
-            );
-          }
-          if (field.value == null) return <span className="text-gray-300">{placeholder}</span>;
-          return `$${field.value.toLocaleString()}`;
-        };
-        return (
-          <div className="mt-3 grid grid-cols-2 gap-3">
-            <div>
-              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Deductible (in-network)</p>
-              <p className="text-sm font-medium text-gray-900">{renderValue(inDed, "Upload SBC")}</p>
-            </div>
-            <div>
-              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Deductible (out-of-network)</p>
-              <p className="text-sm font-medium text-gray-900">{renderValue(outDed, "—")}</p>
-            </div>
-            <div>
-              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">OOP Max (in-network)</p>
-              <p className="text-sm font-medium text-gray-900">{renderValue(inOop, "Upload SBC")}</p>
-            </div>
-            <div>
-              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">OOP Max (out-of-network)</p>
-              <p className="text-sm font-medium text-gray-900">{renderValue(outOop, "—")}</p>
-            </div>
-          </div>
-        );
-      })()}
+
+      {/* 4-grid PlanStat per §1.C.2 design (collapses to 2-col on narrow). */}
+      <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <PlanStat label="Deductible (in-network)" value={renderDecoratedValue(inDed, "Upload SBC")} />
+        <PlanStat label="Deductible (out-of-network)" value={renderDecoratedValue(outDed, "—")} />
+        <PlanStat label="OOP Max (in-network)" value={renderDecoratedValue(inOop, "Upload SBC")} />
+        <PlanStat label="OOP Max (out-of-network)" value={renderDecoratedValue(outOop, "—")} />
+      </div>
       {/* Phase 4.0.5 Task 4.0.5-F: smart 2-button affordance for plan-identity
           scalars. Picks the worst-signal scalar across (inDed, outDed, inOop,
           outOop) — premium excluded since it's CMS-marketplace-sourced and re-parse
@@ -549,6 +441,16 @@ export default function CandidPlanPage() {
     if (!hash || hash.startsWith("category-")) return null;
     return hash;
   });
+  // B3.2 — mutually-exclusive single-open category accordion per §1.C.2 design
+  // (benefits.jsx `openCat` single-value pattern). Init from URL hash:
+  //   #category-<key>  → open that category directly
+  //   #<benefit-id>    → category determined post-analyze (effect below)
+  const [openCategory, setOpenCategory] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    const hash = window.location.hash.slice(1);
+    if (hash.startsWith("category-")) return hash.slice("category-".length);
+    return null;
+  });
   const [usedBenefits, setUsedBenefits] = useState<Set<string>>(() => {
     if (typeof window === "undefined") return new Set();
     try {
@@ -560,6 +462,10 @@ export default function CandidPlanPage() {
   // Feature flags
   const [correctionsEnabled, setCorrectionsEnabled] = useState(false);
   const [yearRolloverEnabled, setYearRolloverEnabled] = useState(false);
+  // B3.2 — gates HSA banner click target. When OFF: banner renders as a static
+  // informational block (current behavior). When ON: clickable → /hsa-marketplace
+  // (B3-HSA.2 future route).
+  const [hsaMarketplaceEnabled, setHsaMarketplaceEnabled] = useState(false);
 
   // Historical plans state
   const [historicalPlans, setHistoricalPlans] = useState<Array<{
@@ -575,9 +481,14 @@ export default function CandidPlanPage() {
 
   // Correction form state
   const [correctionTarget, setCorrectionTarget] = useState<{
-    benefitId: string;
-    serviceSlug: string;
-    title: string;
+    benefitId: string;    // slug — /api/plan/corrections POST contract
+    serviceSlug: string;  // slug — /api/plan/corrections POST contract
+    title: string;        // display title — form header copy
+    // B3.2 — groupKey = display title within category; used to match active
+    // form back to its parent group row at render time. Stable across re-fetches
+    // (titles come from service_catalog.name); decoupled from primarySlug which
+    // may change if API reorders variants.
+    groupKey: string;
   } | null>(null);
   const [correctionField, setCorrectionField] = useState<string>("copay");
   const [correctionValue, setCorrectionValue] = useState("");
@@ -664,6 +575,11 @@ export default function CandidPlanPage() {
         // Scroll category section into view when arriving from /dashboard tile
         // (B3.1) — hash format `category-<categoryKey>`. Defers one frame so
         // the category sections have rendered with their `id` attributes.
+        //
+        // B3.2 extension — also handle `#<benefit-id>` deep-link case: find the
+        // parent category for that benefit, open that CategoryAccordion, and
+        // scroll the row into view (expandedBenefit useState init already set
+        // expandedBenefit=hash so the row body shows once the accordion opens).
         if (typeof window !== "undefined") {
           const hash = window.location.hash.slice(1);
           if (hash.startsWith("category-")) {
@@ -671,6 +587,16 @@ export default function CandidPlanPage() {
               const el = document.getElementById(hash);
               if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
             });
+          } else if (hash) {
+            // Per-benefit deep-link — look up category from the analyze response.
+            const parent = data.benefits.find((b) => b.benefit.id === hash);
+            if (parent) {
+              setOpenCategory(parent.benefit.category);
+              requestAnimationFrame(() => {
+                const el = document.getElementById(`category-${parent.benefit.category}`);
+                if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+              });
+            }
           }
         }
       } catch (err) {
@@ -682,11 +608,11 @@ export default function CandidPlanPage() {
 
     analyze();
 
-    // Load historical plans + check feature flag (non-critical, parallel)
+    // Load historical plans + check feature flags (non-critical, parallel)
     (async () => {
       try {
         const supabase = createBrowserClient();
-        const [plansRes, flagRes, rolloverFlagRes] = await Promise.all([
+        const [plansRes, flagRes, rolloverFlagRes, hsaFlagRes] = await Promise.all([
           supabase
             .from("insurance_plans")
             .select("id, plan_name, insurer_name, plan_type, plan_year, is_active, created_at")
@@ -704,11 +630,18 @@ export default function CandidPlanPage() {
             .eq("flag_key", "plan_year_rollover")
             .eq("target_type", "global")
             .single(),
+          supabase
+            .from("feature_flag_rules")
+            .select("enabled")
+            .eq("flag_key", "hsa_marketplace_v1")
+            .eq("target_type", "global")
+            .single(),
         ]);
         if (plansRes.data) setHistoricalPlans(plansRes.data);
         if (flagRes.data?.enabled) setCorrectionsEnabled(true);
         if (rolloverFlagRes.data?.enabled) setYearRolloverEnabled(true);
-      } catch { /* non-critical */ }
+        if (hsaFlagRes.data?.enabled) setHsaMarketplaceEnabled(true);
+      } catch { /* non-critical — falls back to static HSA banner when flag missing */ }
     })();
   }, [user]);
 
@@ -754,9 +687,20 @@ export default function CandidPlanPage() {
     planSourceVal === "plan_doc_upload" ||
     (verificationStatusVal != null && verificationStatusVal !== "unverified");
 
-  // Separate covered vs not-covered benefits, then group covered by category
+  // B3.2 — Separate covered vs not-covered, then group covered by category AND
+  // display title. Title-based grouping (not benefit.id / slug) is intentional:
+  // the backend assigns distinct slugs to some POS-variants of the same
+  // user-perceived benefit (e.g., 3 rows titled "Advanced Imaging (CT/PET/MRI)"
+  // may have slugs `advanced_imaging` / `advanced_imaging_outpatient` /
+  // `advanced_imaging_independent_facility`). Grouping by slug under-merges and
+  // leaves visible duplicates that look identical to the user — exactly the
+  // bug Andrew flagged. Grouping by title within category catches every
+  // perceived duplicate without false-merging across categories (categories are
+  // the outer grouping). usedBenefits + expandedBenefit state keys on the
+  // group title; correctionTarget.benefitId continues to use the primary
+  // variant's actual slug for the /api/plan/corrections POST contract.
   const notCoveredItems: AnalyzedBenefit[] = [];
-  const grouped = new Map<string, AnalyzedBenefit[]>();
+  const grouped = new Map<string, Map<string, AnalyzedBenefit[]>>();
   for (const item of result.benefits) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if ((item as any).covered === false) {
@@ -764,37 +708,50 @@ export default function CandidPlanPage() {
       continue;
     }
     const cat = item.benefit.category;
-    if (!grouped.has(cat)) grouped.set(cat, []);
-    grouped.get(cat)!.push(item);
+    const titleKey = item.benefit.title;
+    if (!grouped.has(cat)) grouped.set(cat, new Map());
+    const catMap = grouped.get(cat)!;
+    if (!catMap.has(titleKey)) catMap.set(titleKey, []);
+    catMap.get(titleKey)!.push(item);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const coveredBenefits = result.benefits.filter((b) => (b as any).covered !== false);
-  const totalUsed = coveredBenefits.filter((b) => usedBenefits.has(b.benefit.id)).length;
+  // B3.2 — totalUsed counts distinct benefit-titles the user has checked off
+  // (not POS-variant rows or distinct slugs). Matches the title-keyed toggle
+  // semantics used by the per-group parent rows below.
+  const distinctCoveredTitles = new Set(coveredBenefits.map((b) => b.benefit.title));
+  const totalUsed = Array.from(distinctCoveredTitles).filter((title) => usedBenefits.has(title)).length;
+  const totalCoveredBenefitIds = distinctCoveredTitles.size;
+
+  // B3.2 \u2014 HSA-eligible benefit count drives banner copy + visibility gate.
+  const hsaEligibleCount = result.benefits.filter((b) => b.benefit.hsaFsaEligible).length;
+
+  // B3.2 \u2014 subtitle adapts to plan state. PageHeader sub prop accepts string.
+  const headerSub = isGeneric
+    ? `General benefits available with most ${result.planType || ""} plans \u2014 not specific to your plan.`
+    : result.planName
+      ? `Benefits your ${result.planName} plan covers. Check off what you\u2019re using.`
+      : "Benefits your insurance plan covers. Check off what you\u2019re using to track your progress.";
 
   return (
     <div className="max-w-3xl">
-      <h1 className="text-2xl font-bold text-gray-900">Your Benefits</h1>
-      <p className="mt-2 text-gray-600">
-        {isGeneric
-          ? `General benefits available with most ${result.planType || ""} plans \u2014 not specific to your plan.`
-          : result.planName
-            ? `Benefits your ${result.planName} plan covers. Check off what you\u2019re using.`
-            : "Benefits your insurance plan covers. Check off what you\u2019re using to track your progress."
-        }
-      </p>
+      <PageHeader title="Your Benefits" sub={headerSub} />
 
-      {/* Data source transparency banner */}
-      <DataSourceBanner
+      {/* Data source transparency \u2014 methodology disclosure per Pattern 1 #11.
+          Replaces S107-era AmberBanner+DataSourceBanner with the B3.1
+          DataSourceContextLine primitive for cross-surface consistency
+          (/dashboard already uses this). 7 copy variants \u00d7 3 tiers preserved. */}
+      <DataSourceContextLine
         dataSource={result.dataSource}
-        planName={result.planName}
-        planType={result.planType}
-        insurer={result.insurer}
-        verificationStatus={result.planSummary?.verificationStatus}
         planSource={(result as unknown as Record<string, unknown>).planSource as string | undefined}
+        planType={result.planType}
+        verificationStatus={result.planSummary?.verificationStatus}
+        className="mt-2 mb-4"
       />
 
-      {/* Plan summary card (only for matched/uploaded plans) */}
+      {/* Plan summary card (only for matched/uploaded plans). NEW chrome per
+          \u00a71.C.2 design: eyebrow + insurer/plan + planType pill + 4-grid PlanStat. */}
       <PlanSummaryCard
         planName={result.planName}
         planYear={yearRolloverEnabled ? result.planYear : null}
@@ -802,171 +759,198 @@ export default function CandidPlanPage() {
         dataSource={result.dataSource}
         insurancePlanId={result.insurancePlanId}
         userHasDoc={userHasDoc}
+        insurer={result.insurer}
       />
 
-      {/* Profile completeness — contextual, non-blocking */}
-      {!result.profileComplete && result.missingFields.length > 0 && (
-        <div className="mt-4 p-4 bg-blue-50 border border-blue-100 rounded-xl flex items-start gap-3">
-          <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center shrink-0 mt-0.5">
-            <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-          </div>
-          <div className="flex-1">
-            <p className="text-sm font-semibold text-blue-900">Results are partially personalized</p>
-            <p className="text-sm text-blue-700 mt-0.5">
-              Add your{" "}
-              <span className="font-medium">
-                {result.missingFields.slice(0, 2).join(" and ")}
-                {result.missingFields.length > 2 ? ` +${result.missingFields.length - 2} more` : ""}
-              </span>{" "}
-              to see benefits specific to your plan — not just your plan type.
-            </p>
-            <Link
-              href="/profile"
-              className="inline-flex items-center gap-1 mt-2 text-sm font-semibold text-blue-600 hover:text-blue-800 transition-colors"
-            >
-              Complete your profile
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
-              </svg>
-            </Link>
-          </div>
-        </div>
-      )}
+      {/* D-§1.C.2-E: inline profile-completeness prompt REMOVED from /plan;
+          /dashboard's banner stack (B3.1) governs profile-completeness UX
+          across the app. Avoids cross-page banner duplication. */}
 
-      {/* Overall progress */}
-      <div className="mt-6 p-5 bg-white border border-gray-100 rounded-2xl">
-        <div className="flex items-center gap-5">
-          <div className="relative w-20 h-20 shrink-0">
-            <svg className="w-20 h-20 -rotate-90" viewBox="0 0 80 80">
-              <circle cx="40" cy="40" r="34" fill="none" stroke="#f1f5f9" strokeWidth="6" />
-              <circle
-                cx="40" cy="40" r="34" fill="none" stroke="#22c55e" strokeWidth="6"
-                strokeLinecap="round"
-                strokeDasharray={`${Math.round((totalUsed / Math.max(coveredBenefits.length, 1)) * 213.6)} 213.6`}
-              />
-            </svg>
-            <div className="absolute inset-0 flex items-center justify-center">
-              <span className="text-lg font-bold text-gray-900">{totalUsed}/{coveredBenefits.length}</span>
+      {/* BenefitsScoreboard + HSA banner row per \u00a71.C.2 design. The standalone
+          80\u00d780 ring above the accordion is REMOVED per D-\u00a71.C.2-K (embedded
+          56\u00d756 ring inside BenefitsScoreboard is the single source of truth). */}
+      <div className="mt-6 flex flex-wrap gap-4 items-stretch">
+        <div className="flex-[2_1_360px] min-w-0 p-5 bg-white border border-gray-100 rounded-2xl">
+          <div className="flex items-center gap-5">
+            <BenefitsScoreboard
+              verifiedCount={totalUsed}
+              totalCount={totalCoveredBenefitIds}
+              label=""
+              size="md"
+            />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-gray-900">
+                {totalUsed === 0
+                  ? "Start checking off benefits you use"
+                  : totalUsed < totalCoveredBenefitIds / 2
+                    ? "Good start \u2014 keep discovering"
+                    : totalUsed < totalCoveredBenefitIds
+                      ? "You\u2019re getting great value"
+                      : "You\u2019re maximizing your plan!"}
+              </p>
+              <p className="text-xs text-gray-500 mt-0.5">
+                {totalCoveredBenefitIds - totalUsed} covered benefits you may not be using yet
+                {hsaEligibleCount > 0 && (
+                  <>
+                    {" \u00b7 "}
+                    <span className="font-semibold text-purple-700">
+                      {hsaEligibleCount} HSA/FSA eligible.
+                    </span>
+                  </>
+                )}
+              </p>
             </div>
           </div>
-          <div>
-            <p className="text-sm font-semibold text-gray-900">
-              {totalUsed === 0
-                ? "Start checking off benefits you use"
-                : totalUsed < coveredBenefits.length / 2
-                  ? "Good start \u2014 keep discovering"
-                  : totalUsed < coveredBenefits.length
-                    ? "You\u2019re getting great value"
-                    : "You\u2019re maximizing your plan!"}
-            </p>
-            <p className="text-xs text-gray-500 mt-0.5">
-              Check off benefits as you use them to track how much value you&apos;re getting from your plan.
-            </p>
-          </div>
         </div>
+
+        {/* HSA banner (D-\u00a71.C.2-C). When `hsa_marketplace_v1` flag is ON,
+            clickable card routes to /hsa-marketplace (B3-HSA.2 future route).
+            When OFF (current default), static informational block (preserves
+            prior PROD behavior). */}
+        {hsaEligibleCount > 0 && (
+          hsaMarketplaceEnabled ? (
+            <Link
+              href="/hsa-marketplace?tab=plan"
+              className="flex-[1_1_280px] min-w-0 flex items-center gap-3 p-4 bg-purple-50 border border-purple-100 rounded-2xl hover:bg-purple-100/70 hover:border-purple-200 transition-colors"
+            >
+              <div className="w-9 h-9 rounded-lg bg-purple-100 flex items-center justify-center shrink-0">
+                <svg className="w-4 h-4 text-purple-700" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v12m-6-6h12" />
+                </svg>
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-purple-900 leading-tight">
+                  {hsaEligibleCount} {hsaEligibleCount === 1 ? "benefit is" : "benefits are"} HSA/FSA eligible
+                </p>
+                <p className="text-xs text-purple-700 mt-0.5">
+                  Pay with pre-tax savings \u2014 and shop the HSA/FSA marketplace.
+                </p>
+              </div>
+              <svg className="w-4 h-4 text-purple-700 shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+            </Link>
+          ) : (
+            <div className="flex-[1_1_280px] min-w-0 p-4 bg-purple-50 border border-purple-100 rounded-2xl">
+              <p className="text-sm font-semibold text-purple-900 leading-tight">
+                {hsaEligibleCount} {hsaEligibleCount === 1 ? "benefit is" : "benefits are"} HSA/FSA eligible
+              </p>
+              <p className="text-xs text-purple-700 mt-1">
+                Benefits marked <span className="font-semibold">HSA/FSA</span> can be paid with
+                your health savings or flexible spending account.
+              </p>
+            </div>
+          )
+        )}
       </div>
 
-      {/* HSA/FSA callout */}
-      {result.benefits.some((b) => b.benefit.hsaFsaEligible) && (
-        <div className="mt-4 p-3 bg-purple-50 border border-purple-100 rounded-xl">
-          <p className="text-sm text-purple-800">
-            Benefits marked with <span className="font-semibold">HSA/FSA</span> can be paid
-            with your health savings or flexible spending account.
-          </p>
-        </div>
-      )}
-
-      {/* Benefits by category */}
+      {/* Benefits by category — B3.2 grouped render: one parent row per
+          benefit-id (POS variants stacked inside the expanded body). */}
       <div className="mt-6 space-y-4">
-        {Array.from(grouped.entries()).map(([category, benefits]) => {
-          // CF-19 (Session 64): per-row + category visibility filter.
-          // Pre-compute each row's display state to determine visibility.
-          // Categories with zero verified-tier rows are hidden entirely (no
-          // empty container with broken progress bar). Flag-OFF case (all rowDisplays
-          // null) falls back to legacy rendering — show all rows.
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const rowDisplays = benefits.map((b) => computeRowDisplay(b as any));
-          const flagOff = rowDisplays.every((r) => r === null);
-          const visibleBenefits = flagOff
-            ? benefits
-            : benefits.filter((_, i) => {
-                const s = rowDisplays[i]?.state;
-                return isVisibleState(s);
-              });
-          if (visibleBenefits.length === 0) return null;
-          const usedInCategory = visibleBenefits.filter((b) => usedBenefits.has(b.benefit.id)).length;
-          const visibleRowDisplays = flagOff
-            ? rowDisplays
-            : rowDisplays.filter((r) => {
-                const s = r?.state;
-                return isVisibleState(s);
-              });
-          const categoryAggState = aggregateRowState(visibleRowDisplays.map((r) => r?.state ?? null));
-          const worstRowDisplay = visibleRowDisplays.find((r) => r?.state === categoryAggState);
-          const categoryAggReason = worstRowDisplay?.reason ?? null;
-          return (
-            <div key={category} id={`category-${category}`} className="border border-gray-100 rounded-2xl overflow-hidden">
-              {/* Category header with progress + aggregate badge */}
-              <div className="flex items-center justify-between p-4 bg-gray-50/50">
-                <div className="flex items-center gap-3 min-w-0">
-                  <CategoryIcon category={category} />
-                  <span className="font-semibold text-gray-900 truncate">
-                    {BENEFIT_CATEGORY_LABELS[category as BenefitCategory] || SERVICE_CATEGORY_LABELS[category] || category.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}
-                  </span>
-                  {/* Aggregate state badge — one per category. Per user direction Session 64
-                      v2 simplification: render for verified-tier states (candid_verified /
-                      verified) — and Estimated when category mostly has data from non-doc
-                      sources (CMS marketplace etc.). Hidden categories (all parser_failure)
-                      already filtered out by visibleBenefits.length === 0 check above. */}
-                  {categoryAggState && categoryAggReason && isVisibleState(categoryAggState) && (
-                    <DisplayStateBadge state={categoryAggState} reason={categoryAggReason} size="xs" />
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className={`text-xs font-semibold ${usedInCategory === benefits.length ? "text-green-600" : "text-gray-400"}`}>
-                    {usedInCategory}/{benefits.length}
-                  </span>
-                  <div className="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-green-500 rounded-full transition-all"
-                      style={{ width: `${(usedInCategory / benefits.length) * 100}%` }}
-                    />
-                  </div>
-                </div>
-              </div>
+        {Array.from(grouped.entries()).map(([category, catMap]) => {
+          // Build per-benefit-id groups, dropping benefit-ids whose variants
+          // are all hidden-tier. Preserves CF-19 (Session 64) visibility rule
+          // at the variant level: a benefit-id stays IFF at least one of its
+          // variants would render under flag-ON; flag-OFF falls back to
+          // legacy "show all" semantics.
+          const groups: Array<{
+            // groupKey: within-category grouping key — display title. Stable
+            // across renders since titles come from service_catalog.name keyed
+            // on benefit slug (see /api/plan/analyze:249-250).
+            groupKey: string;
+            // primarySlug: actual benefit-id (slug) of the first variant — used
+            // for /api/plan/corrections POST contract + the VerifyAffordance
+            // serviceSlug fallback. Distinct from groupKey because multiple
+            // slugs can share a display title (the whole reason we group by
+            // title, not slug).
+            primarySlug: string;
+            visibleVariants: AnalyzedBenefit[];
+            visibleVariantDisplays: Array<ReturnType<typeof computeRowDisplay>>;
+            aggregateState: DisplayState | null;
+          }> = [];
+          for (const [titleKey, variants] of catMap) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const variantDisplays = variants.map((v) => computeRowDisplay(v as any));
+            const variantFlagOff = variantDisplays.every((r) => r === null);
+            // Per-variant renderability mirrors the pre-B3.2 per-row rule:
+            // render when rowDisplay is null (legacy raw — no decoration info)
+            // OR the state is in the visible-tier set. The earlier filter that
+            // checked only `isVisibleState(displays[i]?.state)` incorrectly
+            // dropped null-display variants in mixed-mode groups (where some
+            // variants are decorated, others are legacy), which hid 2 of 3 cost
+            // variants on /plan benefits like Advanced Imaging and made the
+            // group fall back to single-variant render.
+            const variantRenderable = variantDisplays.map((d) => d === null || isVisibleState(d.state));
+            const visibleVariants = variantFlagOff
+              ? variants
+              : variants.filter((_, i) => variantRenderable[i]);
+            if (visibleVariants.length === 0) continue;
+            const visibleVariantDisplays = variantFlagOff
+              ? variantDisplays
+              : variantDisplays.filter((_, i) => variantRenderable[i]);
+            const aggregateState = aggregateRowState(visibleVariantDisplays.map((r) => r?.state ?? null));
+            groups.push({
+              groupKey: titleKey,
+              primarySlug: visibleVariants[0].benefit.id,
+              visibleVariants,
+              visibleVariantDisplays,
+              aggregateState,
+            });
+          }
+          if (groups.length === 0) return null;
 
-              {/* Benefits list */}
-              <div className="divide-y divide-gray-50">
-                {benefits.map((rawItem) => {
+          // Whole-category flagOff: true only if every variant in every group
+          // has a null rowDisplay (legacy-shape data; pill suppressed).
+          const flagOff = groups.every((g) => g.visibleVariantDisplays.every((r) => r === null));
+          // Counts in benefit-id terms (one count per benefit-type, not per
+          // POS-variant row). Matches user mental model "I used N of M benefit
+          // types" and the per-benefit-id toggle/expand semantics below.
+          const usedInCategory = groups.filter((g) => usedBenefits.has(g.groupKey)).length;
+          const totalInCategory = groups.length;
+          const verifiedInCategory = flagOff
+            ? undefined
+            : groups.filter((g) => g.aggregateState === "candid_verified" || g.aggregateState === "user_verified" || g.aggregateState === "user_verified_community").length;
+          // Category-level worst-signal aggregate (across all visible variants
+          // in all visible groups) — drives the X-of-Y pill color.
+          const categoryAggState = aggregateRowState(groups.flatMap((g) => g.visibleVariantDisplays.map((r) => r?.state ?? null)));
+          const safeAggState = categoryAggState && isVisibleState(categoryAggState) ? categoryAggState : null;
+          const label = BENEFIT_CATEGORY_LABELS[category as BenefitCategory] || SERVICE_CATEGORY_LABELS[category] || category.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+          const isOpen = openCategory === category;
+          return (
+            <CategoryAccordion
+              key={category}
+              categoryKey={category}
+              label={label}
+              icon={<CategoryIcon category={category} />}
+              usedCount={usedInCategory}
+              totalCount={totalInCategory}
+              verifiedCount={verifiedInCategory}
+              aggregateState={safeAggState}
+              open={isOpen}
+              onToggle={() => setOpenCategory(isOpen ? null : category)}
+            >
+              {groups.map((group) => {
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                  const item = rawItem as any; // Extended fields: costSharing, visitLimit, priorAuthRequired, covered, placeOfService
-                  const isUsed = usedBenefits.has(item.benefit.id);
-                  const isExpanded = expandedBenefit === item.benefit.id;
-                  const rowDisplay = computeRowDisplay(item);
-                  // CF-19 v2 (Session 64): rows render when state is null (flag OFF) OR
-                  // verified-tier (candid_verified / verified) OR estimated. Only `hidden`
-                  // (parser_failure / boilerplate) rows are skipped — page-level banner
-                  // surfaces the parser_failure aggregate.
-                  const isRenderable =
-                    rowDisplay === null || isVisibleState(rowDisplay.state);
-                  if (!isRenderable) return null;
-                  // S98 — composite React key for POS-variant rows that share
-                  // the same benefit.id (e.g., mental_health_outpatient at
-                  // pcp_office vs specialist_office vs outpatient_facility).
-                  // Interaction state (toggle/expand) still keys on benefit.id
-                  // intentionally — synced across all POS variants of one
-                  // user-level benefit. See /api/plan/analyze for the matching
-                  // placeOfService field surfacing.
-                  const rowKey = `${item.benefit.id}__${item.placeOfService ?? "any"}`;
+                  const primary = group.visibleVariants[0] as any;
+                  const isUsed = usedBenefits.has(group.groupKey);
+                  const isExpanded = expandedBenefit === group.groupKey;
+                  const isMultiVariant = group.visibleVariants.length > 1;
+                  // Worst-signal variant's display drives SourceQuote /
+                  // VerifyAffordance affordances in the single-variant case
+                  // (preserves prior PROD behavior). Multi-variant case renders
+                  // a per-variant SourceQuote/VerifyAffordance inside each
+                  // stacked section instead — see "Cost by location" block.
+                  const aggDisplay = group.visibleVariantDisplays.find((r) => r?.state === group.aggregateState) ?? null;
                   return (
-                    <div key={rowKey} className={`transition-colors ${isUsed ? "bg-green-50/30" : "bg-white"}`}>
+                    <div key={group.groupKey} className={`group transition-colors ${isUsed ? "bg-green-50/30 hover:bg-green-50/50" : "bg-white hover:bg-gray-50/80"}`}>
                       <div className="flex items-start gap-3 p-4">
-                        {/* Checkbox */}
+                        {/* Checkbox — toggles benefit-id ("I used this benefit
+                            type" — single state shared across all POS variants
+                            per S98 intent; rendering is one parent row per
+                            benefit-id post-B3.2 so the shared toggle no longer
+                            looks like duplicate-row sync). */}
                         <button
-                          onClick={() => toggleBenefit(item.benefit.id)}
+                          onClick={() => toggleBenefit(group.groupKey)}
                           className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-all ${
                             isUsed ? "bg-green-500 border-green-500" : "border-gray-300 hover:border-blue-400"
                           }`}
@@ -980,36 +964,71 @@ export default function CandidPlanPage() {
 
                         {/* Content — clickable to expand */}
                         <button
-                          onClick={() => setExpandedBenefit(isExpanded ? null : item.benefit.id)}
+                          onClick={() => setExpandedBenefit(isExpanded ? null : group.groupKey)}
                           className="flex-1 text-left min-w-0"
                         >
                           <div className="flex items-start justify-between gap-2">
-                            <div>
+                            <div className="min-w-0">
                               <h4 className={`font-medium ${isUsed ? "text-green-800" : "text-gray-900"}`}>
-                                {item.benefit.title}
+                                {primary.benefit.title}
                                 {isGeneric && (
                                   <span className="ml-2 text-[10px] font-medium text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
                                     estimated
                                   </span>
                                 )}
+                                {/* POS context tag — fires only in the
+                                    single-variant case where a specific
+                                    placeOfService (non-"any") would otherwise
+                                    be invisible to the user (the multi-variant
+                                    matrix surfaces POS per row internally; no
+                                    need to duplicate in the title row). */}
+                                {!isMultiVariant && primary.placeOfService && primary.placeOfService !== "any" && (
+                                  <span className="ml-2 text-[10px] font-medium text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded whitespace-nowrap">
+                                    {formatPlaceOfService(primary.placeOfService)}
+                                  </span>
+                                )}
                               </h4>
+                              {/* Subtitle: single variant → today's description.
+                                  Multi-variant → full per-POS list inline so user
+                                  sees the cost-by-location breakdown without
+                                  expanding per Andrew direction #2. line-clamp-2
+                                  bounds growth on dense rows. */}
                               <p className="mt-0.5 text-sm text-gray-500 line-clamp-2">
-                                {item.benefit.description}
+                                {isMultiVariant
+                                  ? group.visibleVariants.map((v, vi) => {
+                                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                                      const vRaw = v as any;
+                                      const posLabel = formatPlaceOfService(vRaw.placeOfService);
+                                      return (
+                                        <span key={vi}>
+                                          {vi > 0 && " · "}
+                                          {posLabel && <span className="font-medium text-gray-700">{posLabel}: </span>}
+                                          {v.benefit.description}
+                                        </span>
+                                      );
+                                    })
+                                  : primary.benefit.description}
                               </p>
                             </div>
                             <div className="flex items-center gap-2 shrink-0">
-                              {/* CF-19 (Session 64): per-row DisplayStateBadge removed —
-                                  category-level badge in the header now carries the worst-
-                                  signal aggregate. User-facing benefit (less noisy UI per user
-                                  direction). Per-row reason still informs the row's
-                                  VerifyAffordance + SourceQuote rendering in the expanded view. */}
-                              {item.benefit.hsaFsaEligible && (
+                              {primary.benefit.hsaFsaEligible && (
                                 <span className="text-[10px] font-semibold bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">
                                   HSA/FSA
                                 </span>
                               )}
+                              {/* B3.2 — per-row expand discoverability (Issue 1
+                                  hover-affordance bundle): tiny uppercase
+                                  "Details" hint rises on row hover; collapses
+                                  to chev-only at rest to preserve list density. */}
+                              <span
+                                className={`hidden sm:inline text-[10px] font-semibold uppercase tracking-wide transition-opacity ${
+                                  isExpanded ? "opacity-100 text-gray-500" : "opacity-0 group-hover:opacity-100 text-gray-400"
+                                }`}
+                              >
+                                {isExpanded ? "Hide" : "Details"}
+                              </span>
                               <svg
-                                className={`w-4 h-4 text-gray-400 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                                className={`w-4 h-4 text-gray-400 transition-all group-hover:text-gray-600 ${isExpanded ? "rotate-180 text-gray-600" : ""}`}
                                 fill="none" stroke="currentColor" viewBox="0 0 24 24"
                               >
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -1019,112 +1038,177 @@ export default function CandidPlanPage() {
                         </button>
                       </div>
 
-                      {/* Expanded: rich benefit details */}
+                      {/* Expanded body — multi-variant case stacks per-POS
+                          sections; single-variant case preserves today's flat
+                          layout. Both cases render shared per-benefit prose
+                          (howToAccess + whyUnderutilized + disclaimer + Flag
+                          issue + correction form) ONCE at the bottom — those
+                          fields are per-benefit-id in BENEFITS_CATALOG, not
+                          per-POS. */}
                       {isExpanded && (
                         <div className="px-4 pb-4 pl-12 space-y-3">
-                          {/* Cost details grid — show when we have real cost data */}
-                          {item.costSharing && (
-                            <div className="grid grid-cols-2 gap-3 p-3 bg-gray-50 rounded-xl">
-                              <div>
-                                <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">In-Network</p>
-                                <div className="mt-0.5 space-y-0.5">
-                                  {(item.costSharing.inNetwork?.costDescription || "Covered").split("; ").map((line: string, i: number) => (
-                                    <p key={i} className="text-sm font-medium text-gray-900">{line}</p>
-                                  ))}
-                                </div>
+                          {isMultiVariant ? (
+                            // Matrix per S126 Advanced Imaging Matrix design.
+                            // Per-variant SourceQuote + VerifyAffordance
+                            // intentionally DROPPED from this nested chrome
+                            // (badges replace cite-grade affordance per Andrew
+                            // direction S126); cite-grade data still surfaces
+                            // in API response for dispute-letter consumer.
+                            // Single-variant case below keeps full cite-grade
+                            // affordance unchanged.
+                            <div className="border border-gray-200 rounded-xl overflow-hidden">
+                              <div className="grid grid-cols-[1.4fr_1fr_1fr] bg-gray-50 text-[10px] font-bold uppercase tracking-[0.1em] text-gray-500">
+                                <div className="px-4 py-2.5 border-r border-gray-100">Facility</div>
+                                <div className="px-4 py-2.5 border-r border-gray-100">In-network</div>
+                                <div className="px-4 py-2.5">Out-of-network</div>
                               </div>
-                              <div>
-                                <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Out-of-Network</p>
-                                <div className="mt-0.5 space-y-0.5">
-                                  {item.costSharing.outOfNetwork?.costDescription
-                                    ? item.costSharing.outOfNetwork.costDescription.split("; ").map((line: string, i: number) => (
-                                        <p key={i} className="text-sm font-medium text-gray-900">{line}</p>
-                                      ))
-                                    : <p className="text-sm text-gray-300">&mdash;</p>
-                                  }
-                                </div>
-                              </div>
+                              {group.visibleVariants.map((v, vi) => {
+                                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                                const vRaw = v as any;
+                                const vDisplay = group.visibleVariantDisplays[vi];
+                                const posLabel = formatPlaceOfService(vRaw.placeOfService);
+                                const inCost = vRaw.costSharing?.inNetwork?.costDescription;
+                                const outCost = vRaw.costSharing?.outOfNetwork?.costDescription;
+                                return (
+                                  <div key={vi} className="grid grid-cols-[1.4fr_1fr_1fr] border-t border-gray-100">
+                                    <div className="px-4 py-3.5 border-r border-gray-100">
+                                      <div className="flex flex-col gap-1.5">
+                                        <span className="text-[13.5px] font-bold text-gray-900 leading-tight">
+                                          {posLabel}
+                                        </span>
+                                        <div className="flex flex-wrap gap-1">
+                                          <MatrixVerifyTag state={vDisplay?.state} />
+                                          {vRaw.visitLimit && (
+                                            <span className="inline-flex items-center text-[10.5px] font-medium bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full whitespace-nowrap">
+                                              {vRaw.visitLimit}
+                                            </span>
+                                          )}
+                                          {vRaw.priorAuthRequired && (
+                                            <span className="inline-flex items-center text-[10.5px] font-medium bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full whitespace-nowrap">
+                                              Prior auth
+                                            </span>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+                                    <div className="px-4 py-3.5 border-r border-gray-100">
+                                      {inCost ? (
+                                        <div className="text-sm font-semibold text-gray-900 tabular-nums space-y-0.5 leading-snug">
+                                          {inCost.split("; ").map((line: string, i: number) => (
+                                            <p key={i}>{line}</p>
+                                          ))}
+                                        </div>
+                                      ) : (
+                                        <span className="text-sm text-gray-400">&mdash;</span>
+                                      )}
+                                    </div>
+                                    <div className="px-4 py-3.5">
+                                      {outCost ? (
+                                        <div className="text-sm font-semibold text-gray-900 tabular-nums space-y-0.5 leading-snug">
+                                          {outCost.split("; ").map((line: string, i: number) => (
+                                            <p key={i}>{line}</p>
+                                          ))}
+                                        </div>
+                                      ) : (
+                                        <span className="text-sm text-gray-400">&mdash;</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
                             </div>
+                          ) : (
+                            <>
+                              {primary.costSharing && (
+                                <div className="grid grid-cols-2 gap-3 p-3 bg-gray-50 rounded-xl">
+                                  <div>
+                                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">In-Network</p>
+                                    <div className="mt-0.5 space-y-0.5">
+                                      {(primary.costSharing.inNetwork?.costDescription || "Covered").split("; ").map((line: string, i: number) => (
+                                        <p key={i} className="text-sm font-medium text-gray-900">{line}</p>
+                                      ))}
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Out-of-Network</p>
+                                    <div className="mt-0.5 space-y-0.5">
+                                      {primary.costSharing.outOfNetwork?.costDescription
+                                        ? primary.costSharing.outOfNetwork.costDescription.split("; ").map((line: string, i: number) => (
+                                            <p key={i} className="text-sm font-medium text-gray-900">{line}</p>
+                                          ))
+                                        : <p className="text-sm text-gray-300">&mdash;</p>
+                                      }
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                              <div className="flex flex-wrap gap-2">
+                                {primary.visitLimit && (
+                                  <span className="inline-flex items-center gap-1 text-xs font-medium bg-blue-50 text-blue-700 px-2 py-1 rounded-lg">
+                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    {primary.visitLimit}
+                                  </span>
+                                )}
+                                {primary.priorAuthRequired && (
+                                  <span className="inline-flex items-center gap-1 text-xs font-medium bg-amber-50 text-amber-700 px-2 py-1 rounded-lg">
+                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                                    </svg>
+                                    Prior auth required
+                                  </span>
+                                )}
+                              </div>
+                              {aggDisplay && aggDisplay.excerpt && (aggDisplay.reason === "from_user_document_cite_grade" || aggDisplay.reason === "community_corroborated") && (
+                                <SourceQuote excerpt={aggDisplay.excerpt} />
+                              )}
+                              {aggDisplay && needsUploadCTA(aggDisplay.state) && (
+                                <VerifyAffordance
+                                  state={aggDisplay.state}
+                                  reason={aggDisplay.reason}
+                                  planId={result?.insurancePlanId}
+                                  fieldName="in_copay"
+                                  serviceSlug={primary.serviceSlug || group.primarySlug}
+                                  searchedSectionsCount={aggDisplay.searchedSectionsCount}
+                                  userHasDoc={userHasDoc}
+                                />
+                              )}
+                            </>
                           )}
 
-                          {/* Badges — visit limits, prior auth, coverage status */}
-                          <div className="flex flex-wrap gap-2">
-                            {item.visitLimit && (
-                              <span className="inline-flex items-center gap-1 text-xs font-medium bg-blue-50 text-blue-700 px-2 py-1 rounded-lg">
-                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                </svg>
-                                {item.visitLimit}
-                              </span>
-                            )}
-                            {item.priorAuthRequired && (
-                              <span className="inline-flex items-center gap-1 text-xs font-medium bg-amber-50 text-amber-700 px-2 py-1 rounded-lg">
-                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                                </svg>
-                                Prior auth required
-                              </span>
-                            )}
-                            {item.covered === false && (
-                              <span className="inline-flex items-center gap-1 text-xs font-medium bg-red-50 text-red-700 px-2 py-1 rounded-lg">
-                                Not covered
-                              </span>
-                            )}
-                          </div>
-
-                          {/* Phase 4 Task 4-D: provenance evidence section. When the row has
-                              cite-grade verbatim, render the SourceQuote (gold-standard
-                              treatment per Q-DR-4E-2 case 1). When state is non-verified,
-                              render the VerifyAffordance prompt to upload a more complete
-                              plan document. Skipped entirely when no decoration is present
-                              (rowDisplay null = flag OFF; preserves byte-identical legacy). */}
-                          {/* CF-19 v2 (Session 64): SourceQuote renders only when the row
-                              has cite-grade verbatim. Reason discriminates: only
-                              from_user_document_cite_grade and community_corroborated (with
-                              excerpt) qualify for blockquote treatment. */}
-                          {rowDisplay && rowDisplay.excerpt && (rowDisplay.reason === "from_user_document_cite_grade" || rowDisplay.reason === "community_corroborated") && (
-                            <SourceQuote excerpt={rowDisplay.excerpt} />
-                          )}
-                          {rowDisplay && needsUploadCTA(rowDisplay.state) && (
-                            <VerifyAffordance
-                              state={rowDisplay.state}
-                              reason={rowDisplay.reason}
-                              planId={result?.insurancePlanId}
-                              fieldName="in_copay"
-                              serviceSlug={item.serviceSlug || item.benefit.id}
-                              searchedSectionsCount={rowDisplay.searchedSectionsCount}
-                              userHasDoc={userHasDoc}
-                            />
-                          )}
-
-                          {/* Relevance note (when no cost grid — for generic benefits) */}
-                          {!item.costSharing && item.relevanceNote && (
+                          {/* Relevance note (when no cost grid — for generic
+                              benefits). Per-benefit-id (catalog-derived). */}
+                          {!primary.costSharing && primary.relevanceNote && (
                             <div className="p-3 bg-blue-50 rounded-xl">
                               <p className="text-sm text-blue-800">
                                 <span className="font-medium">For your plan:</span>{" "}
-                                {item.relevanceNote}
+                                {primary.relevanceNote}
                               </p>
                             </div>
                           )}
 
-                          {item.benefit.howToAccess && (
+                          {/* Shared per-benefit prose (rendered ONCE for the
+                              group — howToAccess + whyUnderutilized live in
+                              BENEFITS_CATALOG keyed on benefit-id, not POS). */}
+                          {primary.benefit.howToAccess && (
                             <div>
                               <h5 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
                                 How to access this benefit
                               </h5>
                               <p className="mt-1 text-sm text-gray-600">
-                                {item.benefit.howToAccess}
+                                {primary.benefit.howToAccess}
                               </p>
                             </div>
                           )}
 
-                          {item.benefit.whyUnderutilized && (
+                          {primary.benefit.whyUnderutilized && (
                             <div>
                               <h5 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
                                 Why people miss this
                               </h5>
                               <p className="mt-1 text-sm text-gray-600">
-                                {item.benefit.whyUnderutilized}
+                                {primary.benefit.whyUnderutilized}
                               </p>
                             </div>
                           )}
@@ -1139,9 +1223,10 @@ export default function CandidPlanPage() {
                             {correctionsEnabled && !isGeneric && result && (result.dataSource === "user_plan" || result.dataSource === "user_plan_with_canonical") && (
                               <button
                                 onClick={() => setCorrectionTarget({
-                                  benefitId: item.benefit.id,
-                                  serviceSlug: item.serviceSlug || item.benefit.id,
-                                  title: item.benefit.title,
+                                  benefitId: group.primarySlug,
+                                  serviceSlug: primary.serviceSlug || group.primarySlug,
+                                  title: primary.benefit.title,
+                                  groupKey: group.groupKey,
                                 })}
                                 className="text-xs text-gray-400 hover:text-amber-600 shrink-0 ml-3 transition-colors"
                               >
@@ -1151,7 +1236,7 @@ export default function CandidPlanPage() {
                           </div>
 
                           {/* Inline correction form */}
-                          {correctionTarget?.benefitId === item.benefit.id && (
+                          {correctionTarget?.groupKey === group.groupKey && (
                             <div className="mt-2 p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
                               {correctionSuccess ? (
                                 <p className="text-sm text-green-700 font-medium">Correction submitted. Thank you!</p>
@@ -1214,8 +1299,7 @@ export default function CandidPlanPage() {
                     </div>
                   );
                 })}
-              </div>
-            </div>
+            </CategoryAccordion>
           );
         })}
 
