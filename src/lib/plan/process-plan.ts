@@ -22,6 +22,7 @@ import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { votedParseSBC } from "@/lib/sbc/voted-parser";
 import type { VotedParseSBCResult } from "@/lib/sbc/voted-parser";
 import { translateHaikuToLegacy } from "@/lib/sbc/legacy-adapter";
+import { validatePlanFields } from "@/lib/plan/garbage-validators";
 import type { SBCHaikuService, SBCParseResult, SBCParsedService } from "@/lib/sbc/types";
 import {
   buildPlanCoveredServiceProvenance,
@@ -350,6 +351,37 @@ export async function processPlanDocumentData(
         );
       } catch (haikuErr) {
         console.warn("[process-plan] Plan-identity recovery failed:", haikuErr);
+      }
+    }
+
+    // ── Ing-B: Garbage-pattern validators (CF-63 RC-6) ───────────────────────
+    // Single discipline point for both parser paths (SBC + plan-doc) + the
+    // Haiku identity safety net above. Nulls plan-identity fields that match
+    // known-garbage regex patterns from OCR column-wrap drift (HIOS IDs / FAQ
+    // text / footer boilerplate sitting in plan_name / insurer_name /
+    // metal_tier / group_number slots) and pushes a structured warning into
+    // parseResult.parseWarnings so the value never reaches insurance_plans
+    // or canonical_plans. Pattern-to-field map is curated (not all-patterns-
+    // apply-to-all-fields) — see src/lib/plan/garbage-validators.ts.
+    //
+    // Gated by `garbage_validators_enabled` (mig 121, default ON). Empty
+    // pattern fires + flag ON = no-op when no parser output matches.
+    const garbageValidatorsEnabled = await isFeatureEnabled(
+      "garbage_validators_enabled",
+      userForFlagCheck?.email ?? undefined,
+    );
+    if (garbageValidatorsEnabled) {
+      const garbageCheck = validatePlanFields(parseResult.plan);
+      if (garbageCheck.warnings.length > 0) {
+        parseResult.plan = garbageCheck.cleanedPlan;
+        parseResult.parseWarnings = [
+          ...(parseResult.parseWarnings || []),
+          ...garbageCheck.warnings,
+        ];
+        console.warn(
+          "[process-plan] Garbage-pattern validator nulled fields:",
+          garbageCheck.warnings.join(", "),
+        );
       }
     }
 
