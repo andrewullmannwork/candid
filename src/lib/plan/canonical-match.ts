@@ -459,8 +459,11 @@ async function createCanonicalPlan(
       plan_year: planYear,
       group_number: input.groupNumber || null,
       hios_id: input.hiosId || null,
-      deductible_individual: input.deductible || null,
-      oop_max_individual: input.oopMax || null,
+      // CF-63 RC-2 (S128): use nullish coalescing to preserve $0 deductible /
+      // $0 OOP values. `||` treats 0 as falsy → coerces legitimate Gold /
+      // Platinum $0-deductible plans to NULL.
+      deductible_individual: input.deductible ?? null,
+      oop_max_individual: input.oopMax ?? null,
       confidence_score: 0.5,
       source_count: 1,
     })
@@ -536,7 +539,8 @@ async function mergeServicesIntoCanonical(
       requires_prior_auth: s.prior_auth_required || false,
       requires_referral: false,
       deductible_applies: s.in_deductible_applies !== false,
-      annual_limit: s.annual_limit_value || null,
+      // CF-63 RC-2 (S128): nullish coalescing preserves $0 annual limits.
+      annual_limit: s.annual_limit_value ?? null,
       visit_limit: null,
       coverage_rules: {},
       confidence: s.confidence || 0.5,

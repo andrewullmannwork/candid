@@ -230,7 +230,17 @@ function toSBCParsedService(e: RawExtracted): SBCParsedService {
     outCostDescription: fixDayFormatting(e.outCostDescription),
     oonPaidAtInNetwork: false,
     annualLimit: fixDayFormatting(e.annualLimit),
-    annualLimitValue: e.annualLimit ? parseInt(e.annualLimit.match(/\d+/)?.[0] || "0", 10) || null : null,
+    // CF-63 RC-2 (S128): refactored from inline `parseInt(...) || null` which
+    // coerced legitimate $0 annual-limit values to NULL. Now: missing input or
+    // no-digit-match returns null; successful parse (including 0) returns the
+    // numeric value.
+    annualLimitValue: (() => {
+      if (!e.annualLimit) return null;
+      const digits = e.annualLimit.match(/\d+/)?.[0];
+      if (!digits) return null;
+      const parsed = parseInt(digits, 10);
+      return Number.isNaN(parsed) ? null : parsed;
+    })(),
     priorAuthRequired: e.priorAuthRequired ?? null,
     penaltyNoPrecert: null,
     covered: e.covered ?? true,
