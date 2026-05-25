@@ -842,7 +842,7 @@ function UploadForm() {
 
       const activateRes = await fetch("/api/documents/status", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
         body: JSON.stringify({ documentId, action: "activate_plan" }),
       });
       if (!activateRes.ok) {

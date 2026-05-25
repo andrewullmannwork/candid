@@ -258,6 +258,95 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Ing-J (S127) — bind canonical to the newly-activated plan when the
+    // mismatch path left canonical_plan_id NULL. process-plan.ts stores
+    // pending_canonical_match on doc.insurer_mismatch when the canonical
+    // fuzzy match returned 0.7-0.9 confidence (needsConfirmation=true);
+    // the row's canonical_plan_id stays NULL until the user resolves.
+    // User clicking "Use this plan" on the mismatch modal is an explicit
+    // assertion that the doc's plan is correct AND different from the
+    // suggested fuzzy match — so reject the pending match (decreases its
+    // confidence) + create a fresh canonical for the doc's actual plan +
+    // fire canonical-promotion (which also fires the Ing-A auto-reparse
+    // triage hook when auto_reparse_enabled flag is ON).
+    //
+    // Non-fatal — canonical binding failure can't block the activation.
+    try {
+      const { data: planRow } = await supabase
+        .from("insurance_plans")
+        .select("canonical_plan_id")
+        .eq("id", doc.linked_insurance_plan_id)
+        .single();
+
+      if (planRow && !planRow.canonical_plan_id) {
+        const { data: docFull } = await supabase
+          .from("documents")
+          .select("insurer_mismatch")
+          .eq("id", documentId)
+          .single();
+        const insurerMismatch = (docFull?.insurer_mismatch as
+          | { pending_canonical_match?: { canonicalPlanId?: string } }
+          | null) ?? null;
+        const pendingMatchCanonicalId = insurerMismatch?.pending_canonical_match?.canonicalPlanId;
+
+        if (pendingMatchCanonicalId) {
+          const { rejectCanonicalMatch } = await import("@/lib/plan/canonical-match");
+          const newCanonicalId = await rejectCanonicalMatch(
+            supabase,
+            doc.linked_insurance_plan_id,
+            pendingMatchCanonicalId,
+          );
+
+          // Clear pending_canonical_match from document metadata (superseded).
+          const updatedMismatch = { ...(insurerMismatch as Record<string, unknown>) };
+          delete updatedMismatch.pending_canonical_match;
+          await supabase.from("documents").update({
+            insurer_mismatch:
+              Object.keys(updatedMismatch).length > 0 ? updatedMismatch : null,
+          }).eq("id", documentId);
+
+          console.log(
+            `[activate_plan] Ing-J canonical-binding: rejected pending=${pendingMatchCanonicalId.slice(0, 8)}…, created new=${newCanonicalId.slice(0, 8)}… for plan=${doc.linked_insurance_plan_id.slice(0, 8)}…`,
+          );
+
+          // Fire canonical-promotion flywheel for the newly-bound canonical.
+          // Mirrors process-plan.ts:1229 / process-eoc.ts:135 call pattern so
+          // Pattern 1 #14 user-scoped writes + Ing-A auto-reparse triage hook
+          // both fire as on the original parse path. Non-fatal nested.
+          try {
+            const { commitUploadAndEvaluateCorroboration, PHASE_4_0_6_PLAN_IDENTITY_FIELDS_SBC } =
+              await import("@/lib/parser/commit-and-evaluate");
+            const candidates = PHASE_4_0_6_PLAN_IDENTITY_FIELDS_SBC.map((fieldName) => ({
+              serviceSlug: null as string | null,
+              fieldName,
+            }));
+            const result = await commitUploadAndEvaluateCorroboration(supabase, {
+              canonicalPlanId: newCanonicalId,
+              actorUserId: doc.user_id,
+              fireSource: "activate-plan-mismatch",
+              candidates,
+              documentId,
+            });
+            console.log(
+              `[canonical-promotion] [activate_plan] canonical=${newCanonicalId.slice(0, 8)}… candidates=${candidates.length} fired=${result.promotionsFired} challenges=${result.challengeCandidates} errors=${result.errors.length}`,
+            );
+          } catch (promotionErr) {
+            console.error("[activate_plan] canonical-promotion non-fatal:", promotionErr);
+          }
+        } else {
+          // Rare: row has no canonical AND no pending_canonical_match was
+          // recorded by the upstream parser. Leaves the row unbound; surfaced
+          // for investigation rather than silently fixed (don't paper over a
+          // parser-side gap).
+          console.warn(
+            `[activate_plan] Plan ${doc.linked_insurance_plan_id.slice(0, 8)}… has no canonical_plan_id and no pending_canonical_match — leaving unbound (rare; investigate if seen).`,
+          );
+        }
+      }
+    } catch (err) {
+      console.error("[activate_plan] Ing-J canonical-binding non-fatal:", err);
+    }
+
     // Card-derived fields (member_id, group_number) were cleared — user needs to re-scan
     return NextResponse.json({ success: true, needsCardRescan: true });
   }

@@ -32,7 +32,8 @@ export type FireSource =
   | "reparse"
   | "correction-challenge-resolution"
   | "admin-ui"
-  | "smoke-test";
+  | "smoke-test"
+  | "activate-plan-mismatch";
 
 /**
  * Force-override event_type emitted by apply_promotion_event. Normal callers
