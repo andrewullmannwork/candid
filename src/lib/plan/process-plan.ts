@@ -1231,6 +1231,7 @@ export async function processPlanDocumentData(
             actorUserId: userForFlagCheck?.id ?? doc.user_id,
             fireSource: "process-plan",
             candidates,
+            documentId: doc.id,
           });
 
           console.log(

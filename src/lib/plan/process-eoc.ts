@@ -137,6 +137,7 @@ export async function processEOCDocumentData(
         actorUserId: (planRow?.user_id as string | undefined) ?? doc.user_id,
         fireSource: "process-eoc",
         candidates,
+        documentId: doc.id,
       });
       console.log(
         `[canonical-promotion] [eoc] canonical=${canonicalPlanId} candidates=${candidates.length} fired=${result.promotionsFired} challenges=${result.challengeCandidates} errors=${result.errors.length}`,

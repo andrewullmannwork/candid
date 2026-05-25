@@ -22,6 +22,7 @@ const adminNav = [
   { href: "/admin/documents/blocklist", label: "  ↳ Hash Blocklist" },
   { href: "/admin/flags", label: "Feature Flags" },
   { href: "/admin/parse-audit-runs", label: "Parse Audit Runs" },
+  { href: "/admin/auto-reparse-stats", label: "  ↳ Auto-Reparse Stats" },
   { href: "/admin/review-queue", label: "Review Queue" },
   { href: "/admin/sbc-tickets", label: "SBC Tickets" },
   { href: "/admin/settings", label: "Settings" },

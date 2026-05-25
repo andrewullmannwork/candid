@@ -36,6 +36,7 @@ import {
   checkAndUpdatePendingChallenges,
   type PendingChallengeUpdate,
 } from "./correction-challenge";
+import { triageAutoReparse, type AutoReparseTraceEntry } from "./auto-reparse-triage";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
@@ -87,6 +88,14 @@ export interface CommitAndEvaluateInput {
   fireSource: FireSource;
   /** Field-level candidates to check for corroboration promotion. */
   candidates: FieldEvaluationCandidate[];
+  /**
+   * documents.id that triggered this commit cycle. Optional for backward
+   * compatibility (correction paths, admin tools), but REQUIRED for the
+   * Ing-A auto-reparse triage hook to fire — without it, telemetry can't
+   * attribute fires to an upload and the D3 per-upload cap can't be enforced.
+   * When omitted, the auto-reparse hook is a no-op for this call.
+   */
+  documentId?: string;
 }
 
 export type CommitAndEvaluateOutcome =
@@ -122,6 +131,13 @@ export interface CommitAndEvaluateResult {
   trace: CommitAndEvaluateTraceEntry[];
   /** Aggregate error messages (one per failed candidate). */
   errors: string[];
+  /**
+   * Ing-A auto-reparse triage trace. Present when `input.documentId` is
+   * provided AND `auto_reparse_enabled` flag is ON. Empty array when the
+   * triage ran but no fields matched; undefined when the hook didn't run
+   * (no documentId, flag off, cap exhausted, etc.).
+   */
+  autoReparseTrace?: AutoReparseTraceEntry[];
 }
 
 /**
@@ -526,6 +542,34 @@ export async function commitUploadAndEvaluateCorroboration(
     } else {
       // Not enough corroboration AND canonical not yet promoted — no canonical write
       result.trace.push({ serviceSlug, fieldName, outcome: "no_change" });
+    }
+  }
+
+  // ── Ing-A (S127) — auto-reparse triage hook ─────────────────────────────
+  // Runs as the final post-promotion step. Gates: documentId present + flag
+  // ON + per-upload cap not exhausted. Each gate enforced inside the helper.
+  // Non-fatal wrap — auto-reparse failure must not block the promotion path.
+  if (input.documentId) {
+    try {
+      const triageResult = await triageAutoReparse(supabase, {
+        canonicalPlanId: input.canonicalPlanId,
+        actorUserId: input.actorUserId,
+        documentId: input.documentId,
+        candidates: effectiveCandidates,
+        trace: result.trace,
+      });
+      if (triageResult.trace.length > 0) {
+        result.autoReparseTrace = triageResult.trace;
+        console.log(
+          `[auto-reparse-triage] document=${input.documentId} canonical=${input.canonicalPlanId} fields_evaluated=${triageResult.trace.length} cost_usd=${triageResult.totalCostUsd.toFixed(5)}`,
+        );
+      } else if (triageResult.skippedReason) {
+        console.log(
+          `[auto-reparse-triage] document=${input.documentId} skipped: ${triageResult.skippedReason}`,
+        );
+      }
+    } catch (err) {
+      console.error("[auto-reparse-triage] non-fatal hook error:", err);
     }
   }
 
