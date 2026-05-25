@@ -9,6 +9,7 @@ import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { verifyTurnstileToken, getRemoteIp } from "@/lib/security/turnstile";
 import { computeFileHash } from "@/lib/plan/extraction-dedup";
+import { isHashBlocked } from "@/lib/security/file-hash-blocklist";
 
 // CF-36 (Session 72) — test account exemption from per-user document caps.
 // Hardcoded single-account escape hatch so MVP testing iterations aren't
@@ -226,6 +227,22 @@ export async function POST(req: NextRequest) {
   // even bytes if the user copies one comparison to another slot; the
   // /compare flow needs distinct documents rows per slot.
   const fileHash = computeFileHash(buffer);
+
+  // Ing-G.4 — admin-curated file_hash_blocklist kill-switch (mig 119). Reject
+  // before storage write + classifier call so blocked hashes burn zero OCR/
+  // Haiku budget. Forward-only semantics: existing documents rows with this
+  // hash are unaffected. Opaque user-facing message — deliberately doesn't
+  // reveal the block reason (denies adversary feedback signal).
+  if (await isHashBlocked(supabase, fileHash)) {
+    console.warn(
+      `[upload] blocklist hit: hash=${fileHash.slice(0, 8)}… user=${user.id}`,
+    );
+    return NextResponse.json(
+      { error: "This document can't be processed. If you believe this is an error, contact support." },
+      { status: 403 },
+    );
+  }
+
   if (purpose !== "comparison") {
     // S74.5c §1.6 — only dedup against docs that have actually entered the
     // processing pipeline. `uploaded` is the limbo state before quick-classify

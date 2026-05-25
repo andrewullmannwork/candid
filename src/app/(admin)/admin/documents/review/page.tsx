@@ -24,6 +24,7 @@ interface DocRecord {
   created_at: string;
   user_id: string;
   user_email?: string;
+  file_hash: string | null;
 }
 
 interface PlanDetail {
@@ -72,6 +73,11 @@ export default function DocumentReviewPage() {
   const [bulkAction, setBulkAction] = useState<"approve" | "reject" | null>(null);
   const [showRejectConfirm, setShowRejectConfirm] = useState(false);
   const [bulkResult, setBulkResult] = useState<string | null>(null);
+  // Ing-G.4 — inline Block-hash action: target doc + reason input + busy state.
+  const [blockTarget, setBlockTarget] = useState<{ docId: string; fileName: string; fileHash: string } | null>(null);
+  const [blockReason, setBlockReason] = useState("");
+  const [blockSubmitting, setBlockSubmitting] = useState(false);
+  const [blockError, setBlockError] = useState<string | null>(null);
 
   // ─── Data Loading ───────────────────────────────────────────────────────
 
@@ -104,7 +110,7 @@ export default function DocumentReviewPage() {
     try {
       const data = await adminQuery({
         table: "documents",
-        select: "id, file_name, file_size, doc_type, classified_type, classification_confidence, type_mismatch, status, processing_step, processing_total_pages, processing_completed_pages, processing_error, processing_started_at, linked_insurance_plan_id, insurer_mismatch, created_at, user_id",
+        select: "id, file_name, file_size, doc_type, classified_type, classification_confidence, type_mismatch, status, processing_step, processing_total_pages, processing_completed_pages, processing_error, processing_started_at, linked_insurance_plan_id, insurer_mismatch, created_at, user_id, file_hash",
         order: { column: "created_at", ascending: false },
         limit: 200,
       });
@@ -242,6 +248,43 @@ export default function DocumentReviewPage() {
     }
     setBulkResult(`Approved ${processed} document${processed !== 1 ? "s" : ""}${errors > 0 ? `, ${errors} failed` : ""}`);
     setBulkAction(null);
+  }
+
+  async function submitBlockHash() {
+    if (!blockTarget) return;
+    const reason = blockReason.trim();
+    if (!reason) {
+      setBlockError("Reason is required.");
+      return;
+    }
+    setBlockError(null);
+    setBlockSubmitting(true);
+    try {
+      const idToken = await getToken();
+      const res = await fetch("/api/admin/documents/blocklist", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${idToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          file_hash: blockTarget.fileHash,
+          reason,
+          notes: `Blocked from review page; source documentId=${blockTarget.docId}`,
+        }),
+      });
+      if (res.ok) {
+        setBlockTarget(null);
+        setBlockReason("");
+        alert("Hash blocked. Future uploads of this file will be rejected at the upload route.");
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setBlockError(data.error || "Failed to block hash.");
+      }
+    } catch {
+      setBlockError("Request failed.");
+    }
+    setBlockSubmitting(false);
   }
 
   async function bulkReject() {
@@ -400,6 +443,49 @@ export default function DocumentReviewPage() {
         </div>
       )}
 
+      {/* Ing-G.4 — Block hash confirmation dialog */}
+      {blockTarget && (
+        <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-xl">
+          <p className="text-sm font-semibold text-red-800">
+            Block file hash from future uploads?
+          </p>
+          <p className="text-xs text-red-700 mt-1">
+            File: <span className="font-mono">{blockTarget.fileName}</span>
+          </p>
+          <p className="text-xs text-red-700">
+            Hash: <span className="font-mono">{blockTarget.fileHash.slice(0, 16)}…</span>
+          </p>
+          <p className="text-xs text-red-600 mt-2">
+            Future uploads matching this hash will be rejected at the upload route (before storage write or Haiku call). Existing documents rows with this hash are NOT affected. Reversible via the File Hash Blocklist admin page.
+          </p>
+          <label className="block text-xs font-medium text-red-800 mt-3 mb-1">Reason (required)</label>
+          <input
+            type="text"
+            value={blockReason}
+            onChange={(e) => setBlockReason(e.target.value)}
+            placeholder='e.g. "synthetic SBC — sample 42" or "incident #2026-005"'
+            className="w-full px-3 py-2 text-sm border border-red-200 rounded-lg focus:outline-none focus:border-red-400"
+          />
+          {blockError && <p className="text-xs text-red-600 mt-1">{blockError}</p>}
+          <div className="flex gap-2 mt-3">
+            <button
+              onClick={submitBlockHash}
+              disabled={blockSubmitting}
+              className="px-3 py-1.5 text-xs font-semibold text-white bg-red-600 rounded-lg hover:bg-red-700 disabled:opacity-50"
+            >
+              {blockSubmitting ? "Blocking…" : "Confirm Block"}
+            </button>
+            <button
+              onClick={() => { setBlockTarget(null); setBlockReason(""); setBlockError(null); }}
+              disabled={blockSubmitting}
+              className="px-3 py-1.5 text-xs font-semibold text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Bulk result banner */}
       {bulkResult && (
         <div className="mb-4 p-3 bg-blue-50 border border-blue-100 rounded-xl flex items-center justify-between">
@@ -482,6 +568,20 @@ export default function DocumentReviewPage() {
                           className="px-3 py-1.5 text-xs font-semibold text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50 disabled:opacity-50"
                         >
                           {processing === doc.id ? "..." : isStuck ? "Unstick" : "Reprocess"}
+                        </button>
+                      )}
+                      {doc.file_hash && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setBlockTarget({ docId: doc.id, fileName: doc.file_name, fileHash: doc.file_hash! });
+                            setBlockReason("");
+                            setBlockError(null);
+                          }}
+                          className="px-3 py-1.5 text-xs font-medium text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 hover:text-gray-700"
+                          title="Block this file hash from future uploads"
+                        >
+                          Block hash
                         </button>
                       )}
                       <svg

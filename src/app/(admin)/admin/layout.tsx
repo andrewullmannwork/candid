@@ -19,6 +19,7 @@ const adminNav = [
   { href: "/admin/upload-settings", label: "Upload Settings" },
   { href: "/admin/consent", label: "Consent Audit" },
   { href: "/admin/documents/review", label: "Document Review" },
+  { href: "/admin/documents/blocklist", label: "  ↳ Hash Blocklist" },
   { href: "/admin/flags", label: "Feature Flags" },
   { href: "/admin/parse-audit-runs", label: "Parse Audit Runs" },
   { href: "/admin/review-queue", label: "Review Queue" },
