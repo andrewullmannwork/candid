@@ -30,6 +30,14 @@ export interface SBCParseResult {
   services: SBCParsedService[];
   confidence: number;
   parseWarnings: string[];
+  /**
+   * ACA metal tier extracted from SBC plan-identity ("Bronze" / "Silver" /
+   * "Gold" / "Platinum" / "Catastrophic"). CF-63 RC-4 (S128): NOT on
+   * insurance_plans schema (no column); flows separately into canonical_plans.
+   * metal_level via findOrCreateCanonicalPlan → createCanonicalPlan INSERT.
+   * Optional for backward compat with consumers that don't read it.
+   */
+  metalTier?: string | null;
 }
 
 /**
