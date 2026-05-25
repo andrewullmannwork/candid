@@ -368,4 +368,76 @@ export const BENEFITS_CATALOG: Benefit[] = [
     planTypes: ALL_COMMERCIAL,
     recommendedFor: { sex: "female", minAge: 18, maxAge: 50 },
   },
+
+  // ── Therapy & Rehab (additional entries closing SLUG_TO_CATALOG drift) ──
+  {
+    id: "acupuncture",
+    category: "physical_therapy",
+    title: "Acupuncture",
+    description:
+      "Many plans cover acupuncture for pain management — chronic back pain, neck pain, migraines, and osteoarthritis. Coverage varies widely; typical limit is 10–24 sessions per year.",
+    whyUnderutilized:
+      "People assume acupuncture is alternative medicine and not covered. Since 2020, Medicare covers chronic low back pain acupuncture, and many commercial plans cover it for specific pain diagnoses.",
+    howToAccess:
+      "Confirm acupuncture is covered for your specific condition (chronic pain diagnoses are most commonly covered). Find a licensed acupuncturist in-network — your insurer's directory usually lists them under specialty providers.",
+    hsaFsaEligible: true,
+    planTypes: ALL_PLANS,
+  },
+  {
+    id: "chiro-visits",
+    category: "physical_therapy",
+    title: "Chiropractic Care",
+    description:
+      "Most commercial plans cover chiropractic care for back pain, neck pain, and joint issues. Typical limit is 12–30 visits per year. Medicare covers spinal manipulation only.",
+    whyUnderutilized:
+      "People pay out of pocket assuming chiropractic isn't covered, or stop after a few visits without checking their visit limit. Many plans allow direct access without a primary care referral.",
+    howToAccess:
+      "Check your plan's annual visit limit and whether prior authorization is required after a certain number of visits. Many PPOs let you self-refer to in-network chiropractors.",
+    hsaFsaEligible: true,
+    planTypes: ALL_COMMERCIAL,
+  },
+  {
+    id: "speech-therapy",
+    category: "physical_therapy",
+    title: "Speech Therapy",
+    description:
+      "Plans cover speech-language pathology for developmental delays, stroke recovery, swallowing disorders, and voice rehabilitation. Visit limits typically mirror PT/OT (20–60 sessions per year).",
+    whyUnderutilized:
+      "People associate speech therapy only with children's speech delays. Adults qualify for stroke recovery, post-surgical voice rehab, swallowing therapy, and aphasia treatment.",
+    howToAccess:
+      "Get a referral from your doctor specifying the diagnosis. Confirm the SLP is in-network — many speech therapists work outpatient or via telehealth.",
+    hsaFsaEligible: true,
+    planTypes: ALL_PLANS,
+  },
+  {
+    id: "prenatal-care",
+    category: "maternity",
+    title: "Prenatal & Postnatal Care",
+    description:
+      "ACA requires plans to cover prenatal visits, gestational diabetes screening, breastfeeding support, and breast pumps at no cost. Postnatal care for mother + newborn is included.",
+    whyUnderutilized:
+      "People don't realize how much prenatal care is required to be $0 cost-share under the ACA — including medically necessary ultrasounds, glucose tolerance testing, and lactation consultant visits.",
+    howToAccess:
+      "Confirm your provider codes visits as preventive maternity care (vs problem-focused). Ask about lactation consultant coverage — many plans cover several visits postpartum at no cost.",
+    hsaFsaEligible: false,
+    planTypes: ALL_COMMERCIAL,
+    recommendedFor: { sex: "female", minAge: 18, maxAge: 45 },
+  },
 ];
+
+// FE→BE request resolution: callers that have a BenefitCategory but no specific
+// slug (canonical_plan_services-sourced rows; plan_benefits-sourced rows from
+// matched_plan_id / verified-plan paths) use this helper to back-fill prose so
+// the /plan UI's "Why people miss this" + "How to access this benefit" sections
+// don't silently disappear. First-match semantics — multiple catalog entries
+// share a category; the first one wins. Lossy but better than empty.
+export function lookupBenefitProseByCategory(
+  category: string | null | undefined,
+): { whyUnderutilized: string; howToAccess: string } {
+  if (!category) return { whyUnderutilized: "", howToAccess: "" };
+  const entry = BENEFITS_CATALOG.find((b) => b.category === category);
+  return {
+    whyUnderutilized: entry?.whyUnderutilized ?? "",
+    howToAccess: entry?.howToAccess ?? "",
+  };
+}
