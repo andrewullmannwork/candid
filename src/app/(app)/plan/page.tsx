@@ -540,11 +540,14 @@ export default function CandidPlanPage() {
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  // Auto-expand benefit from URL hash (e.g. /plan#benefit-id)
+  // Auto-expand benefit from URL hash (e.g. /plan#benefit-id). Hashes prefixed
+  // with `category-` are reserved for category-section scroll (see useEffect
+  // below); they are NOT treated as benefit IDs.
   const [expandedBenefit, setExpandedBenefit] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
     const hash = window.location.hash.slice(1);
-    return hash || null;
+    if (!hash || hash.startsWith("category-")) return null;
+    return hash;
   });
   const [usedBenefits, setUsedBenefits] = useState<Set<string>>(() => {
     if (typeof window === "undefined") return new Set();
@@ -657,6 +660,19 @@ export default function CandidPlanPage() {
 
         const data: AnalyzeResponse = await res.json();
         setResult(data);
+
+        // Scroll category section into view when arriving from /dashboard tile
+        // (B3.1) — hash format `category-<categoryKey>`. Defers one frame so
+        // the category sections have rendered with their `id` attributes.
+        if (typeof window !== "undefined") {
+          const hash = window.location.hash.slice(1);
+          if (hash.startsWith("category-")) {
+            requestAnimationFrame(() => {
+              const el = document.getElementById(hash);
+              if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+            });
+          }
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : "Something went wrong");
       } finally {
@@ -892,7 +908,7 @@ export default function CandidPlanPage() {
           const worstRowDisplay = visibleRowDisplays.find((r) => r?.state === categoryAggState);
           const categoryAggReason = worstRowDisplay?.reason ?? null;
           return (
-            <div key={category} className="border border-gray-100 rounded-2xl overflow-hidden">
+            <div key={category} id={`category-${category}`} className="border border-gray-100 rounded-2xl overflow-hidden">
               {/* Category header with progress + aggregate badge */}
               <div className="flex items-center justify-between p-4 bg-gray-50/50">
                 <div className="flex items-center gap-3 min-w-0">
