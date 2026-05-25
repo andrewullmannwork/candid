@@ -271,25 +271,62 @@ export async function rejectCanonicalMatch(
     state = profile?.state || undefined;
   }
 
-  const newCanonical = await createCanonicalPlan(supabase, {
+  // Ing-J (S127) — use findOrCreateCanonicalPlan instead of bare
+  // createCanonicalPlan so we don't violate uq_canonical_plan_identity
+  // when a canonical for this exact (insurer, plan_name, plan_year)
+  // already exists (e.g., another user already uploaded the same plan).
+  // The dedup path returns the existing canonical (incrementing its
+  // source_count via Pattern 1 #3 corroboration); the create path only
+  // fires when no canonical matches. Honors the rejection by penalizing
+  // the rejected canonical's confidence (above) while still letting
+  // legitimate dedup happen for the user's actually-different plan.
+  const planYear = new Date().getFullYear();
+  const matchInput = {
     insurerId: insurer.id,
     planName: userPlan.plan_name || "Unknown Plan",
     planType: userPlan.plan_type || undefined,
     state,
     deductible: userPlan.in_deductible_individual || undefined,
     oopMax: userPlan.in_oop_max_individual || undefined,
-  }, new Date().getFullYear());
+  };
+
+  const matchResult = await findOrCreateCanonicalPlan(supabase, {
+    ...matchInput,
+    planYear,
+  });
+
+  let newCanonicalId: string;
+  let outcomeDetail: string;
+  if (matchResult.canonicalPlanId === rejectedCanonicalPlanId) {
+    // Defensive: findOrCreateCanonicalPlan scored the rejected canonical
+    // highest again (fuzzy match still wins even after the 0.05 confidence
+    // penalty). Honor the user's rejection by force-creating a new canonical.
+    // Degenerate case: rejected canonical's identity tuple == user's plan
+    // identity → uq_canonical_plan_identity blocks the INSERT and we
+    // re-throw rather than silently bind to the rejected canonical.
+    console.warn(
+      `[canonical-plan] findOrCreate returned rejected canonical ${rejectedCanonicalPlanId} again; honoring rejection via force-create`,
+    );
+    const forced = await createCanonicalPlan(supabase, matchInput, planYear);
+    newCanonicalId = forced.id;
+    outcomeDetail = `force-created ${forced.id} (rejection honored over fuzzy re-match)`;
+  } else {
+    newCanonicalId = matchResult.canonicalPlanId;
+    outcomeDetail = matchResult.isNew
+      ? `created new ${newCanonicalId} (no fuzzy match)`
+      : `linked to existing ${newCanonicalId} (isNew=false, confidence=${matchResult.confidence.toFixed(2)}, source_count++)`;
+  }
 
   // Link and merge
   await supabase
     .from("insurance_plans")
-    .update({ canonical_plan_id: newCanonical.id })
+    .update({ canonical_plan_id: newCanonicalId })
     .eq("id", insurancePlanId);
 
-  await mergeServicesIntoCanonical(supabase, insurancePlanId, newCanonical.id);
+  await mergeServicesIntoCanonical(supabase, insurancePlanId, newCanonicalId);
 
-  console.log(`[canonical-plan] Rejected ${rejectedCanonicalPlanId}, created new canonical: ${newCanonical.id}`);
-  return newCanonical.id;
+  console.log(`[canonical-plan] Rejected ${rejectedCanonicalPlanId}: ${outcomeDetail}`);
+  return newCanonicalId;
 }
 
 // ── Scoring ────────────────────────────────────────────────────────────────────
