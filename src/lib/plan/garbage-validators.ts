@@ -105,7 +105,13 @@ export const GARBAGE_PATTERNS: readonly GarbagePattern[] = [
   },
   {
     name: "referrals_fragment",
-    regex: /\bReferrals\)\s*$/i,
+    // Tightened from spec's `/\bReferrals\)\s*$/i` to require NO `(` paren
+    // anywhere in the value before `Referrals)`. PROD baseline check at S128
+    // surfaced 199 false-positives on legitimate UHC plan names like "UHC
+    // Bronze Standard (No Referrals)" — UHC markets plans with the no-referral
+    // feature in a parenthetical. Real names always have an `(` before
+    // `Referrals)`; column-wrap fragments like "Specialty Referrals)" do not.
+    regex: /^[^(]*\bReferrals\)\s*$/i,
     fields: TEXT_FIELDS,
   },
   {
