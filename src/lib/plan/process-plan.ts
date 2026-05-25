@@ -22,7 +22,7 @@ import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { votedParseSBC } from "@/lib/sbc/voted-parser";
 import type { VotedParseSBCResult } from "@/lib/sbc/voted-parser";
 import { translateHaikuToLegacy } from "@/lib/sbc/legacy-adapter";
-import { validatePlanFields } from "@/lib/plan/garbage-validators";
+import { validatePlanFields, validatePlanField } from "@/lib/plan/garbage-validators";
 import type { SBCHaikuService, SBCParseResult, SBCParsedService } from "@/lib/sbc/types";
 import {
   buildPlanCoveredServiceProvenance,
@@ -381,6 +381,21 @@ export async function processPlanDocumentData(
         console.warn(
           "[process-plan] Garbage-pattern validator nulled fields:",
           garbageCheck.warnings.join(", "),
+        );
+      }
+      // CF-63 RC-4 (S128): metalTier flows separately from parseResult.plan
+      // (not on InsurancePlanInsert schema; lands on canonical_plans.metal_level
+      // via findOrCreateCanonicalPlan). Same garbage-pattern defense applies.
+      const metalTierCheck = validatePlanField(parseResult.metalTier, "metal_tier");
+      if (metalTierCheck.warning) {
+        parseResult.metalTier = null;
+        parseResult.parseWarnings = [
+          ...(parseResult.parseWarnings || []),
+          metalTierCheck.warning,
+        ];
+        console.warn(
+          "[process-plan] Garbage-pattern validator nulled metal_tier:",
+          metalTierCheck.warning,
         );
       }
     }
@@ -887,8 +902,15 @@ export async function processPlanDocumentData(
           planYear: planInsert.plan_year || new Date().getFullYear(),
           groupNumber: profileForCanonical?.group_number || undefined,
           hiosId,
-          deductible: planInsert.in_deductible_individual || undefined,
-          oopMax: planInsert.in_oop_max_individual || undefined,
+          // CF-63 RC-2 source-side coercion (S128): `||` treated $0 deductible
+          // as falsy, converting to undefined before reaching createCanonicalPlan.
+          // Now `??` preserves $0 through the call chain.
+          deductible: planInsert.in_deductible_individual ?? undefined,
+          oopMax: planInsert.in_oop_max_individual ?? undefined,
+          // CF-63 RC-4 (S128): wire metalTier into canonical creation. Source
+          // is parseResult.metalTier (legacy-adapter surfaces this from
+          // SBCHaikuParseResult.planIdentity.metalTier — previously dropped).
+          metalTier: parseResult.metalTier ?? undefined,
         });
 
         if (canonicalResult.needsConfirmation) {

@@ -100,5 +100,10 @@ export function translateHaikuToLegacy(haiku: SBCHaikuParseResult): LegacyParseR
     confidence: avgConfidence,
     parseWarnings: haiku.parseWarnings,
     appealsContact,
+    // CF-63 RC-4 (S128): surface metalTier alongside plan-identity. NOT on the
+    // `plan` object because insurance_plans schema has no metal_tier column;
+    // routed separately into canonical_plans.metal_level via process-plan.ts
+    // → findOrCreateCanonicalPlan call.
+    metalTier: haiku.planIdentity.metalTier.value,
   };
 }

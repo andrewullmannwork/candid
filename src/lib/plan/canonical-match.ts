@@ -29,6 +29,9 @@ export interface CanonicalMatchInput {
   hiosId?: string;
   deductible?: number;
   oopMax?: number;
+  // CF-63 RC-4 (S128): ACA metal tier from SBC plan-identity. Used at INSERT
+  // time only — matching dimension addition is RC-3 territory (separate PR).
+  metalTier?: string | null;
 }
 
 export interface CanonicalMatchResult {
@@ -52,6 +55,7 @@ interface CanonicalPlanRow {
   hios_id: string | null;
   deductible_individual: number | null;
   oop_max_individual: number | null;
+  metal_level: string | null;
   confidence_score: number;
   source_count: number;
 }
@@ -464,6 +468,10 @@ async function createCanonicalPlan(
       // Platinum $0-deductible plans to NULL.
       deductible_individual: input.deductible ?? null,
       oop_max_individual: input.oopMax ?? null,
+      // CF-63 RC-4 (S128): write metal_level on canonical creation. RC-2's
+      // `?? null` semantics not needed here because metalTier is a string
+      // (no falsy-but-meaningful values like 0).
+      metal_level: input.metalTier ?? null,
       confidence_score: 0.5,
       source_count: 1,
     })
