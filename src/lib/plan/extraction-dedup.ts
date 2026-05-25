@@ -721,7 +721,8 @@ export async function linkDocumentToCanonical(
             out_deductible_applies: s.out_deductible_applies ?? null,
             covered: s.is_covered !== false,
             prior_auth_required: s.requires_prior_auth || false,
-            annual_limit_value: s.annual_limit || null,
+            // CF-63 RC-2 (S128): nullish coalescing preserves $0 annual limits.
+            annual_limit_value: s.annual_limit ?? null,
             confidence: s.confidence,
             source: "sbc_parsed" as const,
             field_provenance: provenance,
