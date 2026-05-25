@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { analyzePlan } from "@/lib/plan/analyzer";
+import { lookupBenefitProseByCategory } from "@/lib/plan/benefits-catalog";
 import { createServerClient } from "@/lib/supabase/server";
 import { loadDecorationContext, type DecorationContext } from "@/lib/plan/analyze-decoration";
 import { decorateFieldFromEntry } from "@/lib/parser/consumer-read";
@@ -199,8 +200,8 @@ export async function POST(request: NextRequest) {
             preventive_care: "annual-physical",
             mental_health_outpatient: "therapy-sessions",
             substance_abuse_outpatient: "substance-abuse",
-            pt_rehab: "pt-sessions",
-            ot_rehab: "ot-sessions",
+            pt_rehab: "physical-therapy",
+            ot_rehab: "occupational-therapy",
             speech_therapy: "speech-therapy",
             chiropractic: "chiro-visits",
             acupuncture: "acupuncture",
@@ -211,30 +212,30 @@ export async function POST(request: NextRequest) {
             prenatal_visit: "prenatal-care",
             durable_medical_equipment: "breast-pump",
             // legacy aliases (pre-S94 data; safe to remove once S94 backfill complete)
-            physical_therapy: "pt-sessions",
-            occupational_therapy: "ot-sessions",
+            physical_therapy: "physical-therapy",
+            occupational_therapy: "occupational-therapy",
             telehealth: "telehealth-primary",
             maternity_prenatal: "prenatal-care",
           };
 
-          // Only build static catalog if we have services that map to it
-          const needsCatalog = coveredServices.some((s) => SLUG_TO_CATALOG[s.service_catalog?.slug || ""]);
+          // Build static catalog unconditionally — used by both user-covered-services
+          // path (line ~280) and canonical-gap-fill path (line ~369) so prose
+          // back-fill per feedback_benefits_prose_preserve works for both sources.
+          // analyzePlan is pure compute over the in-memory BENEFITS_CATALOG; cost
+          // is negligible (~20-entry array filter).
+          const catalogResult = analyzePlan({
+            insurer: userPlan.insurer_name || profile.insurer || "",
+            planType: userPlan.plan_type || profile.plan_type || "",
+            state: profile.state || "",
+            dateOfBirth: profile.date_of_birth || undefined,
+            sex: undefined,
+            hasDependents,
+            hasChildren,
+          });
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          let catalogBenefitMap = new Map<string, any>();
-          if (needsCatalog) {
-            const catalogResult = analyzePlan({
-              insurer: userPlan.insurer_name || profile.insurer || "",
-              planType: userPlan.plan_type || profile.plan_type || "",
-              state: profile.state || "",
-              dateOfBirth: profile.date_of_birth || undefined,
-              sex: undefined,
-              hasDependents,
-              hasChildren,
-            });
-            catalogBenefitMap = new Map(
-              catalogResult.benefits.map((b) => [b.benefit.id, b.benefit])
-            );
-          }
+          const catalogBenefitMap = new Map<string, any>(
+            catalogResult.benefits.map((b) => [b.benefit.id, b.benefit])
+          );
 
           // Build a benefit per covered service
           const benefits = coveredServices.map((s) => {
@@ -349,7 +350,16 @@ export async function POST(request: NextRequest) {
               // without in_/out_ prefix; OON columns absent on canonical).
               const canonicalSourceCount = decoration?.canonicalSourceCount ?? 1;
               const canonicalLogicalSource = "canonical_inherited";
-              canonicalGapBenefits = gapServices.map((cs) => ({
+              canonicalGapBenefits = gapServices.map((cs) => {
+                // FE→BE request resolution (feedback_benefits_prose_preserve):
+                // back-fill whyUnderutilized + howToAccess from BENEFITS_CATALOG
+                // when the canonical service slug maps to a catalog entry. Reuses
+                // the same SLUG_TO_CATALOG + catalogBenefitMap that the user-row
+                // branch (line ~280) uses, so behavior is symmetric across both
+                // benefit sources.
+                const gapCatalogId = cs.service_slug ? SLUG_TO_CATALOG[cs.service_slug] : undefined;
+                const gapCatalogBenefit = gapCatalogId ? catalogBenefitMap.get(gapCatalogId) : undefined;
+                return {
                 // S99 B5: canonical_plan_services entries should be canonical
                 // slugs per Pattern 1 #14. Pass through; surface separately
                 // for response-shape consistency with the user-row branch.
@@ -366,9 +376,11 @@ export async function POST(request: NextRequest) {
                         cs.coinsurance != null && cs.coinsurance > 0 ? `${Math.round(cs.coinsurance * 100)}% coinsurance` : null,
                         cs.deductible_applies ? "after deductible" : null,
                       ].filter(Boolean).join(", ") || "Covered",
-                  whyUnderutilized: "",
-                  howToAccess: cs.is_covered === false ? "" : "Contact your insurer for details.",
-                  hsaFsaEligible: false,
+                  whyUnderutilized: gapCatalogBenefit?.whyUnderutilized || "",
+                  howToAccess: cs.is_covered === false
+                    ? ""
+                    : (gapCatalogBenefit?.howToAccess || "Contact your insurer for details."),
+                  hsaFsaEligible: gapCatalogBenefit?.hsaFsaEligible || false,
                   planTypes: [userPlan.plan_type || ""],
                 },
                 categoryLabel: "other",
@@ -397,7 +409,8 @@ export async function POST(request: NextRequest) {
                 },
                 covered: cs.is_covered,
                 dataSource: "canonical_plan",
-              }));
+                };
+              });
             }
           }
 
@@ -479,14 +492,21 @@ export async function POST(request: NextRequest) {
 
       if (matchedPlanBenefits && matchedPlanBenefits.length > 0) {
         hasRealPlanData = true;
-        const benefits = matchedPlanBenefits.map((b) => ({
+        const benefits = matchedPlanBenefits.map((b) => {
+          // FE→BE request resolution (feedback_benefits_prose_preserve):
+          // plan_benefits rows lack whyUnderutilized in schema; back-fill from
+          // BENEFITS_CATALOG by category. First-match semantics — multiple
+          // catalog entries share a category, the first one wins. Lossy but
+          // better than empty.
+          const catalogProse = lookupBenefitProseByCategory(b.benefit_category);
+          return {
           benefit: {
             id: b.id,
             category: b.benefit_category,
             title: b.title,
             description: b.description || "",
-            whyUnderutilized: "",
-            howToAccess: b.how_to_access || "Contact your insurer for details.",
+            whyUnderutilized: catalogProse.whyUnderutilized,
+            howToAccess: b.how_to_access || catalogProse.howToAccess || "Contact your insurer for details.",
             hsaFsaEligible: b.hsa_fsa_eligible,
             planTypes: [profile.plan_type || ""],
           },
@@ -494,7 +514,8 @@ export async function POST(request: NextRequest) {
           relevanceNote: "Based on your specific plan",
           relevanceScore: 90,
           isRecommended: true,
-        }));
+          };
+        });
 
         // Fetch plan name for display
         const { data: matchedPlanInfo } = await supabase
@@ -600,14 +621,19 @@ export async function POST(request: NextRequest) {
           if (realBenefits && realBenefits.length > 0) {
             hasRealPlanData = true;
             // Return real plan benefits with confidence indicator
-            const benefits = realBenefits.map((b) => ({
+            const benefits = realBenefits.map((b) => {
+              // FE→BE request resolution (feedback_benefits_prose_preserve):
+              // same back-fill as matched_plan_id path above. plan_benefits rows
+              // lack whyUnderutilized; category lookup is best-effort.
+              const catalogProse = lookupBenefitProseByCategory(b.benefit_category);
+              return {
               benefit: {
                 id: b.id,
                 category: b.benefit_category,
                 title: b.title,
                 description: b.description || "",
-                whyUnderutilized: "",
-                howToAccess: b.how_to_access || "Contact your insurer for details.",
+                whyUnderutilized: catalogProse.whyUnderutilized,
+                howToAccess: b.how_to_access || catalogProse.howToAccess || "Contact your insurer for details.",
                 hsaFsaEligible: b.hsa_fsa_eligible,
                 planTypes: [profile.plan_type || ""],
               },
@@ -615,7 +641,8 @@ export async function POST(request: NextRequest) {
               relevanceNote: `Based on your specific ${profile.insurer} plan`,
               relevanceScore: 80,
               isRecommended: true,
-            }));
+              };
+            });
 
             return NextResponse.json({
               benefits,
