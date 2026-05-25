@@ -1064,7 +1064,7 @@ function UploadForm() {
   const activePickerKey: PickerOptionKey = isBillType ? "bill" : "plan_document";
 
   // Drop-zone stage:
-  //   - uploaded=true → host slots.dropZoneContent (priorities 1-4 + 8-9 + 10)
+  //   - uploaded=true → host slots.dropZoneContent (all post-upload priorities 1-10)
   //   - uploading → DropUploading bytes-in-flight progress
   //   - isDragActive → DropHover
   //   - default → DropIdle
@@ -1227,9 +1227,6 @@ function UploadForm() {
           tips={PICKER_OPTIONS[showTips].tips}
         />
       )}
-
-      {/* Below-drop-zone slot — heavy interactive priorities 5-7 (mismatch / year_rollover / canonical_match) */}
-      {slots.belowDropZone && <div className="mt-6">{slots.belowDropZone}</div>}
 
       {/* Cloudflare Turnstile widget — preserve CF-34 mounting behavior.
           Renders when userPickedFile is true; stays mounted while waiting

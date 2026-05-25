@@ -6,30 +6,31 @@
  *
  * B2-UP.1 refactor (Andrew direction at S119 → S120): split into
  *   - `useProcessingFlowSlots` hook — emits {modal, dropZoneContent,
- *     belowDropZone, hidePathsGrid, isComplete} based on the 11-priority
- *     dispatch. Used by upload/page.tsx so the new design layout (header +
- *     type picker + drop-zone container + paths grid + share) can route
- *     content into the right visual slots per D-§1.B.1-E.
+ *     hidePathsGrid, isComplete} based on the 11-priority dispatch. Used by
+ *     upload/page.tsx so the new design layout (header + type picker +
+ *     drop-zone container + paths grid + share) can route content into the
+ *     right visual slots per D-§1.B.1-E.
  *   - `ProcessingFlow` component — backward-compatible wrapper that renders
  *     whichever slot is non-null in full-screen, matching pre-B2-UP.1 behavior.
  *
- * Priority-ordered dispatch (first match wins; UNCHANGED from S100):
+ * Priority-ordered dispatch (first match wins):
  *
  *   0  awaiting_confirmation → DocTypeConfirmationModal           [modal slot]
  *   1  pending_review        → ParseTerminalView unusable          [drop zone]
  *   2  rejected              → ParseTerminalView unusable          [drop zone]
  *   3  dedup_processed       → ParseTerminalView dedup_processed   [drop zone]
  *   4  error or stuck        → ParseTerminalView error             [drop zone]
- *   5  mismatch              → ParseTerminalView mismatch          [below DZ]
- *   6  year_rollover         → ParseTerminalView year_rollover     [below DZ]
- *   7  canonical_match       → ParseTerminalView canonical_match   [below DZ]
+ *   5  mismatch              → ParseTerminalView mismatch          [drop zone]
+ *   6  year_rollover         → ParseTerminalView year_rollover     [drop zone]
+ *   7  canonical_match       → ParseTerminalView canonical_match   [drop zone]
  *   8  complete (plan_doc)   → DropDone OR ParseTerminalView       [drop zone]
  *   9  complete (bill)       → DropDone OR ParseTerminalView       [drop zone]
  *  10  active (catch-all)    → UnifiedParseScreen                  [drop zone]
  *
- * Priorities 5-7 (heavy interactive forms) render BELOW the drop zone per
- * D-§1.B.1-E — multi-field forms don't fit drop-zone height. All other
- * non-modal priorities render INSIDE the drop-zone container.
+ * All non-modal priorities render INSIDE the drop-zone container — the
+ * container is min-h-[280px] flex-col items-center justify-center, so it
+ * stretches to fit taller content and keeps the ParseTerminalView card
+ * centered.
  *
  * State derivation (isComplete, hasMismatch, etc.) + playfulFloorActive (S71
  * 4s minimum-display floor) + progression-complete gate all happen INTERNALLY
@@ -163,7 +164,6 @@ export interface ProcessingFlowProps {
 export interface ProcessingFlowSlots {
   modal: ReactNode | null;
   dropZoneContent: ReactNode | null;
-  belowDropZone: ReactNode | null;
   /**
    * Whether the "Paths" grid below the drop zone should be hidden (D-§1.B.1-D
    * — focus during processing + exceptions; visible idle + done).
@@ -313,7 +313,6 @@ export function useProcessingFlowSlots(props: ProcessingFlowProps): ProcessingFl
   const slots: ProcessingFlowSlots = {
     modal: null,
     dropZoneContent: null,
-    belowDropZone: null,
     hidePathsGrid: true,
     isComplete: false,
   };
@@ -391,7 +390,7 @@ export function useProcessingFlowSlots(props: ProcessingFlowProps): ProcessingFl
     return slots;
   }
 
-  // Priority 5 — Mismatch (BELOW drop zone — heavy interactive form)
+  // Priority 5 — Mismatch (in drop zone)
   if (hasMismatch && processingProgress?.insurerMismatch) {
     const mm = processingProgress.insurerMismatch;
     const mismatchData: InsurerMismatchData = {
@@ -401,7 +400,7 @@ export function useProcessingFlowSlots(props: ProcessingFlowProps): ProcessingFl
       existingPlanName: mm.existingPlanName,
       parsedPlanName: mm.parsedPlanName,
     };
-    slots.belowDropZone = (
+    slots.dropZoneContent = (
       <ParseTerminalView
         variant="mismatch"
         mismatch={mismatchData}
@@ -415,10 +414,10 @@ export function useProcessingFlowSlots(props: ProcessingFlowProps): ProcessingFl
     return slots;
   }
 
-  // Priority 6 — Year rollover (BELOW drop zone)
+  // Priority 6 — Year rollover (in drop zone)
   if (hasYearRollover && processingProgress?.insurerMismatch?.year_rollover) {
     const yr: YearRolloverData = processingProgress.insurerMismatch.year_rollover;
-    slots.belowDropZone = (
+    slots.dropZoneContent = (
       <ParseTerminalView
         variant="year_rollover"
         yearRollover={yr}
@@ -432,10 +431,10 @@ export function useProcessingFlowSlots(props: ProcessingFlowProps): ProcessingFl
     return slots;
   }
 
-  // Priority 7 — Canonical match (BELOW drop zone)
+  // Priority 7 — Canonical match (in drop zone)
   if (hasCanonicalMatch && processingProgress?.insurerMismatch?.pending_canonical_match) {
     const cm: CanonicalMatchData = processingProgress.insurerMismatch.pending_canonical_match;
-    slots.belowDropZone = (
+    slots.dropZoneContent = (
       <ParseTerminalView
         variant="canonical_match"
         canonicalMatch={cm}
@@ -584,6 +583,5 @@ export function ProcessingFlow(props: ProcessingFlowProps) {
   const slots = useProcessingFlowSlots(props);
   if (slots.modal) return slots.modal;
   if (slots.dropZoneContent) return slots.dropZoneContent;
-  if (slots.belowDropZone) return slots.belowDropZone;
   return null;
 }
