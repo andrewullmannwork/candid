@@ -57,6 +57,15 @@ function votePlanIdentity(
 ): SBCPlanIdentity {
   const merged = JSON.parse(JSON.stringify(attempts[0])) as SBCPlanIdentity;
 
+  // Ing-L (S128): voting list MUST include every key on SBCPlanIdentity.
+  // Pre-Ing-L, the 4 OON keys (added CF-19c / Session 64) + 2 ACA keys (added
+  // S74.6 D1) were missing — their values silently passed through from
+  // attempts[0] without per-attempt voting. If attempts[0] returned null for
+  // OON (Haiku layout-randomness on 1st attempt) and attempts[1] / [2]
+  // succeeded, the merged result was null. Bias-toward-recall per
+  // feedback_candid_recall_over_precision is restored by voting on ALL fields.
+  // Invariant check below catches any future SBCPlanIdentity addition that
+  // forgets to update this list.
   const fields: Array<keyof SBCPlanIdentity> = [
     "planName",
     "insurerName",
@@ -69,11 +78,31 @@ function votePlanIdentity(
     "deductibleFamily",
     "oopMaxIndividual",
     "oopMaxFamily",
+    "outDeductibleIndividual",  // Ing-L: CF-19c gap closure
+    "outDeductibleFamily",      // Ing-L: CF-19c gap closure
+    "outOopMaxIndividual",      // Ing-L: CF-19c gap closure
+    "outOopMaxFamily",          // Ing-L: CF-19c gap closure
     "rxDeductibleIndividual",
     "rxDeductibleFamily",
     "referralRequired",
     "minimumValueStandard",
+    "isAcaCompliant",           // Ing-L: S74.6 D1 gap closure
+    "acaComplianceBasis",       // Ing-L: S74.6 D1 gap closure
   ];
+
+  // Runtime invariant (Ing-L): warn if SBCPlanIdentity has any keys missing
+  // from the voting list. Catches future drift when a new plan-identity field
+  // is added without updating this list. Single console.warn per parse — cheap.
+  const allKeys = Object.keys(attempts[0]) as Array<keyof SBCPlanIdentity>;
+  const fieldsSet = new Set<string>(fields as readonly string[]);
+  const missing = allKeys.filter((k) => !fieldsSet.has(k as string));
+  if (missing.length > 0) {
+    console.warn(
+      "[voted-parser] SBCPlanIdentity has keys missing from voting list (Ing-L invariant):",
+      missing.join(", "),
+      "— values for these keys default to attempts[0] without voting (recall risk).",
+    );
+  }
 
   for (const field of fields) {
     const votes = attempts.map((a) => {
