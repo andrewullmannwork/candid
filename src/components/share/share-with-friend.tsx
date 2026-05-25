@@ -59,26 +59,52 @@ export function ShareWithFriend({
   const sms = `sms:?&body=${encodeURIComponent(SMS_BODY)}`;
 
   if (variant === "soft") {
+    // Soft variant matches design's `.share-card` styling (s112-full-refresh
+    // share-with-friend.jsx + styles.css:2856-2905):
+    //   - white → blue-50 → green-50 diagonal gradient
+    //   - 2 decorative blurred blobs (blue top-left + green bottom-right)
+    //   - centered layout, 22px border-radius, blue-600 eyebrow
+    //   - "Help us grow." title + extended body copy
+    //   - 2 centered secondary buttons (white bg + thin border + blue hover)
     return (
       <div
         className={cn(
-          "rounded-2xl bg-white ring-1 ring-blue-100 p-5 sm:p-6",
+          "relative overflow-hidden rounded-[22px] p-7 flex flex-col gap-4 items-center text-center",
+          "bg-gradient-to-br from-white via-blue-50 to-green-50",
+          "ring-1 ring-blue-100",
           className,
         )}
       >
-        <h3 className="text-sm sm:text-base font-semibold text-slate-900">
-          Candid grows with every upload
-        </h3>
-        <p className="mt-1.5 text-[13px] sm:text-sm text-slate-600 leading-relaxed">
-          Every plan a friend uploads makes comparisons smarter for everyone.
-        </p>
-        <div className="mt-3 flex flex-col sm:flex-row gap-2">
+        {/* Decorative blurred blobs (design .share-blob-1 + .share-blob-2). */}
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute -top-12 -left-10 w-[200px] h-[200px] rounded-full bg-blue-400 opacity-25 blur-[36px]"
+        />
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute -bottom-14 -right-10 w-[220px] h-[220px] rounded-full bg-emerald-300 opacity-25 blur-[36px]"
+        />
+
+        <div className="relative z-10 max-w-[56ch]">
+          <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-blue-600">
+            Candid grows with every upload
+          </div>
+          <h3 className="text-[22px] font-bold tracking-[-0.015em] text-slate-900 mt-1.5">
+            Help us grow.
+          </h3>
+          <p className="text-sm text-slate-600 leading-[1.55] mt-2.5">
+            We&rsquo;re still expanding our plan database — some details may be missing today. Every
+            plan a friend uploads makes comparisons smarter and audits more accurate for everyone.
+          </p>
+        </div>
+
+        <div className="relative z-10 flex flex-wrap justify-center gap-2.5">
           <a
             href={mailto}
             onClick={() =>
               track("share_candid_clicked", { surface, channel: "email" })
             }
-            className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-white ring-1 ring-blue-200 text-[13px] font-semibold text-blue-700 hover:bg-blue-50 hover:ring-blue-300 transition-colors"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white ring-1 ring-gray-200 text-sm font-semibold text-slate-700 hover:ring-blue-300 hover:text-blue-700 hover:-translate-y-0.5 transition-all"
           >
             <svg
               className="w-3.5 h-3.5"
@@ -100,7 +126,7 @@ export function ShareWithFriend({
             onClick={() =>
               track("share_candid_clicked", { surface, channel: "sms" })
             }
-            className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-white ring-1 ring-blue-200 text-[13px] font-semibold text-blue-700 hover:bg-blue-50 hover:ring-blue-300 transition-colors"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white ring-1 ring-gray-200 text-sm font-semibold text-slate-700 hover:ring-blue-300 hover:text-blue-700 hover:-translate-y-0.5 transition-all"
           >
             <svg
               className="w-3.5 h-3.5"
