@@ -29,6 +29,7 @@ import { applyEOBPostProcess } from "./eob-postprocess";
 import { isFeatureEnabled } from "../config/product-flags";
 import { scanForSbcMarkers } from "./sbc-marker-scan";
 import { lineIsImplausible } from "./line-plausibility";
+import { recordBillTruncation } from "./truncation-telemetry";
 
 const MODEL = "claude-haiku-4-5-20251001";
 const HAIKU_MAX_OUTPUT = 32000;
@@ -377,6 +378,16 @@ export async function parseBillWithHaiku(
       });
       if (response.stop_reason === "max_tokens") {
         console.error(`[haiku-bill-parser] Output truncated even at ${HAIKU_MAX_OUTPUT}; document too large`);
+        // Bills-E.1 telemetry (S133) — capture the failure event for admin visibility
+        // before returning null. Non-fatal: never throws. See truncation-telemetry.ts.
+        await recordBillTruncation({
+          documentId,
+          userId,
+          billType,
+          inputTokensEstimate: inputTokens,
+          maxTokensAttempted: HAIKU_MAX_OUTPUT,
+          ocrTextLength: ocrText.length,
+        });
         return null;
       }
     }
