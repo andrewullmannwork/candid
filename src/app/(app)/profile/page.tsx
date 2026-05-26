@@ -7,6 +7,8 @@ import { useAuth } from "@/lib/auth/auth-context";
 import type { InsuranceCardFields } from "@/app/api/profile/scan-card/route";
 import { createBrowserClient } from "@/lib/supabase/client";
 import { ProfileDashboard } from "@/components/profile/ProfileDashboard";
+import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
+import { useMinHoldLoading } from "@/lib/loading/use-min-hold";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -661,12 +663,9 @@ function ProfileContent() {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-32">
-        <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
+  const showCubeLoader = useMinHoldLoading(loading);
+  if (showCubeLoader) {
+    return <CubeLoaderBuilding />;
   }
 
   const isLastStep = step === STEPS.length - 1;

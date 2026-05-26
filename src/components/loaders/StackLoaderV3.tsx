@@ -22,14 +22,13 @@
  * UnifiedParseScreen unchanged.
  */
 import { useEffect, useState } from "react";
+import { ROTATING_MICROCOPY } from "@/lib/microcopy/playful-microcopy";
 
-const DEFAULT_MESSAGES = [
-  "Reading your document…",
-  "We read every page twice — once for what's there, once for what isn't.",
-  "Surfacing covered benefits…",
-  "Decoding insurance-speak…",
-  "Worth the extra minute. Promise.",
-];
+// B-LOAD.1 (S131): default messages now point at the 55-line doctor's-office
+// vignette list (recovered from S93 b9d75c5). ALL other loader logic — page-tick
+// random pacing, smart-skip 250ms fast path, ProcessingFlow priority dispatcher,
+// UnifiedParseScreen state machine — UNTOUCHED per Andrew direction. Only copy.
+const DEFAULT_MESSAGES = ROTATING_MICROCOPY;
 
 const DOC_STACK_TOTAL = 5;
 const DOC_TICK_MS = 900;

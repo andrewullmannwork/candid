@@ -6,6 +6,8 @@ import { useAuth } from "@/lib/auth/auth-context";
 import { useState, useEffect, type ReactNode } from "react";
 import { EmailVerifyBanner } from "@/components/auth/EmailVerifyBanner";
 import { ParseCompleteBanner } from "@/components/notifications/ParseCompleteBanner";
+import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
+import { useMinHoldLoading } from "@/lib/loading/use-min-hold";
 
 const navItems = [
   {
@@ -102,12 +104,9 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   }, [pathname]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
+  const showCubeLoader = useMinHoldLoading(loading);
+  if (showCubeLoader) {
+    return <CubeLoaderBuilding className="min-h-screen" />;
   }
 
   if (!user) {

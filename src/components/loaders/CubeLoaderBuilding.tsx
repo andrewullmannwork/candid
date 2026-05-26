@@ -61,7 +61,11 @@ export function CubeLoaderBuilding({ className }: { className?: string }) {
               d="M7 12.5l3.2 3.2L17 9"
               style={{
                 strokeDasharray: 22,
-                animation: "cdCheckDraw 2.2s ease-in-out infinite",
+                // B-LOAD.1 follow-up (S131): sped 2.2s → 0.9s so the check is
+                // fully drawn within typical fast-load times (~450ms). Used in
+                // tandem with useMinHoldLoading (900ms) for guaranteed brand
+                // moment per Andrew direction.
+                animation: "cdCheckDraw 0.9s ease-in-out infinite",
               }}
             />
           </svg>

@@ -1,12 +1,24 @@
 "use client";
 
 /**
- * Bill Card — rich, Airbnb-trip-card-style card for each bill on the Claim page.
+ * Bill card — per-bill summary card on `/claim` Bills tab.
  *
- * Replaces the simple row-style ClaimsList. Each card surfaces the "aha" moment:
- * what the provider billed, what you owe, what's wrong, and how much you could save.
- * Click to open the full ClaimDetail line-item breakdown.
+ * Phase 2 B4.1 refactor per design source-of-truth
+ * `plans/findings/design-handoffs/s112-full-refresh/project/claim-summary.jsx`
+ * (lines 52-170 BillCard + STATE_CONFIG):
+ *   - 4-state STATE_CONFIG via shared `deriveBillState()` helper
+ *     (overcharge_drafted / overcharge_no_draft / needs_review / clean)
+ *   - Amounts diff block "You were billed → You should owe" with arrow + recovery delta
+ *   - Narrative text below amounts for flagged/review states
+ *   - Verbatim 4-state bottom-row copy per D-§1.D.1-G
+ *   - "View full breakdown" footer action
+ *
+ * State is derived by the parent (page.tsx) and passed in as a prop so the
+ * shared 4-state vocab lives in one place (`src/lib/claims/derive-bill-state.ts`).
  */
+
+import type { BillState } from "@/lib/claims/derive-bill-state";
+import { cn } from "@/lib/utils/cn";
 
 interface ClaimSummary {
   id: string;
@@ -15,14 +27,11 @@ interface ClaimSummary {
   total_billed: number | null;
   total_patient_responsibility: number | null;
   // Session 86 / mig 092 — insurer's contractual write-off sum across line items.
-  // When present, BillCard headlines the post-adjustment ("Billed (adj.)") number
-  // so the math reconciles with "You should owe" + recovery.
   total_insurance_adjusted?: number | null;
   lineItemCount: number;
   findingCount: number;
   providerName: string;
   created_at: string;
-  // Optional extended fields (from API enrichment)
   potentialSavings?: number;
   reviewNeededCount?: number;
   lineItemPatientOwedSum?: number;
@@ -38,44 +47,52 @@ interface ClaimSummary {
   };
 }
 
-const STATUS: Record<string, { label: string; className: string; dotClass: string }> = {
-  processed: {
-    label: "Clean",
-    className: "text-green-700 bg-green-50 border-green-100",
-    dotClass: "bg-green-500",
+// 4-state STATE_CONFIG per design canvas lines 54-79.
+// B4.1-FIX3 (S131): outline-only chrome per Andrew "cleaner, no fill" direction.
+// Card body stays bg-white; state is signaled by (1) border color and (2) the
+// status badge + dot. No state-tinted fills on the outer card.
+//   - `statusLabel` is the literal label shown in the header pill.
+//   - `statusPillCls` drives the badge chrome (bg + border + text colors).
+//   - `iconKey` chooses the leading icon (warn / search / check).
+//   - `iconCls` is the icon-container chrome (subtle, state-tinted).
+//   - `cardChromeCls` is the OUTER card chrome — bg-white + state-colored border.
+const STATE_CONFIG: Record<
+  BillState,
+  {
+    statusLabel: string;
+    statusPillCls: string;
+    iconKey: "warn" | "search" | "check";
+    iconCls: string;
+    cardChromeCls: string;
+  }
+> = {
+  overcharge_drafted: {
+    statusLabel: "Overcharge · dispute drafted",
+    statusPillCls: "text-red-700 bg-white border-red-200",
+    iconKey: "warn",
+    iconCls: "bg-red-50 text-red-600 ring-red-100",
+    cardChromeCls: "bg-white border-2 border-red-300",
   },
-  flagged: {
-    label: "Issues found",
-    className: "text-amber-700 bg-amber-50 border-amber-100",
-    dotClass: "bg-amber-500",
+  overcharge_no_draft: {
+    statusLabel: "Overcharge found",
+    statusPillCls: "text-red-700 bg-white border-red-200",
+    iconKey: "warn",
+    iconCls: "bg-red-50 text-red-600 ring-red-100",
+    cardChromeCls: "bg-white border-2 border-red-300",
   },
-  pending: {
-    label: "Processing",
-    className: "text-blue-700 bg-blue-50 border-blue-100",
-    dotClass: "bg-blue-500",
-  },
-  denied: {
-    label: "Denied",
-    className: "text-red-700 bg-red-50 border-red-100",
-    dotClass: "bg-red-500",
-  },
-  appealed: {
-    label: "Appealed",
-    className: "text-purple-700 bg-purple-50 border-purple-100",
-    dotClass: "bg-purple-500",
-  },
-  // Synthetic status for client-side override when review is needed
   needs_review: {
-    label: "Needs review",
-    className: "text-amber-700 bg-amber-50 border-amber-100",
-    dotClass: "bg-amber-500",
+    statusLabel: "Needs review",
+    statusPillCls: "text-amber-700 bg-amber-50 border-amber-200",
+    iconKey: "search",
+    iconCls: "bg-gray-100 text-gray-600 ring-gray-200",
+    cardChromeCls: "bg-white border-2 border-gray-300",
   },
-  // Synthetic status when plan says you shouldn't owe but the bill charges
-  // you anyway — a recoverable overcharge (Session 35 T2.8).
-  overcharge_found: {
-    label: "Overcharge found",
-    className: "text-amber-700 bg-amber-50 border-amber-100",
-    dotClass: "bg-amber-500",
+  clean: {
+    statusLabel: "Looks correct",
+    statusPillCls: "text-green-700 bg-green-50 border-green-100",
+    iconKey: "check",
+    iconCls: "bg-green-50 text-green-600 ring-green-100",
+    cardChromeCls: "bg-white border border-gray-100 hover:border-blue-200",
   },
 };
 
@@ -83,9 +100,6 @@ function formatDate(iso: string | null): string {
   if (!iso) return "Date unknown";
   try {
     // F-6 — parse YYYY-MM-DD as a LOCAL calendar date, not a UTC instant.
-    // `new Date("2025-06-02")` parses as UTC midnight, then toLocaleDateString
-    // renders in the user's tz — Pacific time then displays "Jun 1, 2025"
-    // (off by one). Split the string and construct a local Date instead.
     const match = iso.slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (match) {
       const [, y, m, d] = match;
@@ -105,266 +119,252 @@ function formatDate(iso: string | null): string {
   }
 }
 
-export function BillCard({
-  claim,
-  onSelect,
-}: {
-  claim: ClaimSummary;
-  onSelect: (claimId: string) => void;
-}) {
-  const hasIssues = claim.findingCount > 0;
-  const reviewCount = claim.reviewNeededCount || 0;
-  const savings = claim.potentialSavings || 0;
-  const billed = claim.total_billed || 0;
-  // Session 86 — Billed (adj.) = billed minus insurer contractual write-off.
-  // Lines up with the per-line "Billed (adj.)" column on /claim and makes the
-  // headline math reconcile: adj.billed minus insurer-paid + plan-share leaves
-  // what the user actually owes (or is recoverable).
-  const insuranceAdjusted = Number(claim.total_insurance_adjusted ?? 0);
-  const billedAdjusted = Math.max(0, billed - insuranceAdjusted);
-  const providerClaimedOwed = claim.total_patient_responsibility || 0;
-  // Prefer API-derived recovery figures (T2.8). Fall back to the old
-  // heuristic for legacy cached payloads before Session 35 rollout.
-  const shouldOwe = claim.recovery?.shouldOwe ?? (reviewCount > 0 ? 0 : providerClaimedOwed);
-  const potentialRecovery = claim.recovery?.potentialRecovery ?? Math.max(0, billed - shouldOwe);
-  // Synthetic status precedence (most severe wins):
-  //   1. Classic audit findings  → claim.status (typically "flagged")
-  //   2. Unverified-charge review → "needs_review"
-  //   3. Plan-vs-bill overcharge → "overcharge_found" (new — replaces the
-  //      misleading "Clean" badge when there's a clear recovery opportunity)
-  //   4. Everything else         → claim.status
-  const effectiveStatus = hasIssues
-    ? claim.status
-    : reviewCount > 0
-      ? "needs_review"
-      : potentialRecovery > 0
-        ? "overcharge_found"
-        : claim.status;
-  const status = STATUS[effectiveStatus] || STATUS.processed;
+function formatCurrency(n: number): string {
+  return n.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
 
+function StateIcon({ kind, className }: { kind: "warn" | "search" | "check"; className?: string }) {
+  if (kind === "warn") {
+    return (
+      <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth={2}
+          d="M12 9v2m0 4h.01m-6.9 4h13.8c1.5 0 2.5-1.7 1.7-2.5L13.7 4c-.8-.8-2-.8-2.7 0L4.1 16.5c-.8.8.2 2.5 1.7 2.5z"
+        />
+      </svg>
+    );
+  }
+  if (kind === "search") {
+    return (
+      <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth={2}
+          d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+        />
+      </svg>
+    );
+  }
   return (
-    <button
-      onClick={() => onSelect(claim.id)}
-      className={`group block w-full overflow-hidden rounded-2xl border bg-white text-left transition-all hover:-translate-y-0.5 hover:shadow-md ${
-        potentialRecovery > 0
-          ? "border-green-200 hover:border-green-300 ring-1 ring-green-100"
-          : "border-gray-100 hover:border-blue-200"
-      }`}
-    >
-      {/* Header: provider + date + status badge */}
-      <div className="flex items-start justify-between gap-3 border-b border-gray-50 bg-gray-50/50 px-5 py-3.5">
-        <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white text-gray-500 ring-1 ring-gray-200">
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-            </svg>
-          </div>
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-gray-900">{claim.providerName}</p>
-            <p className="text-xs text-gray-500">{formatDate(claim.date_of_service)}</p>
-          </div>
-        </div>
-        <span
-          className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${status.className}`}
-        >
-          <span className={`h-1.5 w-1.5 rounded-full ${status.dotClass}`} />
-          {status.label}
-        </span>
-      </div>
-
-      {/* Body: amounts */}
-      <div className="px-5 py-4">
-        {/* Main row: BILLED → YOU SHOULD OWE. Both columns kept equal height so
-            labels align on the top edge, numbers align on the bottom edge, and
-            the arrow sits visually centered between them. The recovery tagline
-            is moved to a separate row below so it doesn't shift the arrow. */}
-        <div className="flex items-center justify-between">
-          <div>
-            <p
-              className="text-[11px] font-medium uppercase tracking-wider text-gray-400"
-              title={
-                insuranceAdjusted > 0
-                  ? `Provider billed $${billed.toLocaleString()}; insurer wrote off $${insuranceAdjusted.toLocaleString()}.`
-                  : undefined
-              }
-            >
-              Billed Adjusted
-            </p>
-            <p className="mt-0.5 text-xl font-bold text-gray-900 tabular-nums">
-              ${billedAdjusted.toLocaleString()}
-            </p>
-          </div>
-          <svg className="h-5 w-5 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 8l4 4m0 0l-4 4m4-4H3" />
-          </svg>
-          <div className="text-right">
-            <p className="text-[11px] font-medium uppercase tracking-wider text-gray-400">You should owe</p>
-            <p
-              className={`mt-0.5 text-xl font-bold tabular-nums ${
-                shouldOwe === 0 ? "text-green-600" : "text-gray-900"
-              }`}
-            >
-              ${shouldOwe.toLocaleString()}
-            </p>
-          </div>
-        </div>
-        {potentialRecovery > 0 && (
-          <p className="mt-1.5 text-right text-[11px] font-bold text-green-700 tabular-nums">
-            +${potentialRecovery.toLocaleString()} recovery
-          </p>
-        )}
-
-        {/* F-4 (Session 85) — Warmer headline framing globally.
-            Per-line coverage takes precedence: when most lines are covered,
-            lead with "N covered services" copy. Findings detail surfaces
-            BELOW the headline, not in place of it. The status pill in the
-            header still calls out "Issues found" / "Needs review" / etc.
-            for the at-a-glance scan. */}
-        <BillCardSummaryHeadline claim={claim} hasIssues={hasIssues} reviewCount={reviewCount} potentialRecovery={potentialRecovery} shouldOwe={shouldOwe} />
-
-        {/* Findings preview — only when findings exist; nested BELOW the
-            warmer headline (no longer the lead). */}
-        {hasIssues && claim.topFindings && claim.topFindings.length > 0 && (
-          <div className="mt-3 rounded-xl border border-amber-100 bg-amber-50/60 p-3">
-            <div className="flex items-center justify-between">
-              <p className="text-xs font-semibold text-amber-900">
-                We found {claim.findingCount} {claim.findingCount === 1 ? "issue" : "issues"} to dispute
-              </p>
-              {savings > 0 && (
-                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800 tabular-nums">
-                  ~${savings.toLocaleString()} recoverable
-                </span>
-              )}
-            </div>
-            <ul className="mt-2 space-y-1">
-              {claim.topFindings.slice(0, 2).map((f, i) => (
-                <li key={i} className="text-xs text-amber-800">
-                  <span className="mr-1.5 text-amber-600">•</span>
-                  {f.title}
-                  {f.billingCode && (
-                    <span className="ml-1 text-amber-600">({f.billingCode})</span>
-                  )}
-                  {f.estimatedOvercharge > 0 && (
-                    <span className="ml-1 text-amber-900">— ~${f.estimatedOvercharge.toFixed(0)}</span>
-                  )}
-                </li>
-              ))}
-              {claim.topFindings.length > 2 && (
-                <li className="text-[11px] text-amber-700">
-                  + {claim.topFindings.length - 2} more
-                </li>
-              )}
-            </ul>
-          </div>
-        )}
-
-        {/* Footer CTA */}
-        <div className="mt-4 flex items-center justify-between">
-          <p className="text-xs text-gray-500">
-            {claim.lineItemCount} line {claim.lineItemCount === 1 ? "item" : "items"}
-          </p>
-          <span className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 transition-colors group-hover:text-blue-700">
-            View full breakdown
-            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-          </span>
-        </div>
-      </div>
-    </button>
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+    </svg>
   );
 }
 
-// ── Copy templates for the "needs review" callout ──────────────────────────
-//
-// Builders assemble the headline and explanation from independently optional
-// fragments. Any missing value causes its sentence (or sub-clause) to be
-// omitted entirely — no "undefined" artifacts, no awkward punctuation.
-
-function buildReviewHeadline(reviewCount: number): string {
-  const plural = reviewCount === 1 ? "line item" : "line items";
-  return `${reviewCount} covered ${plural} with unverified charges`;
+function buildNarrative(state: BillState, claim: ClaimSummary, potentialRecovery: number, shouldOwe: number): string | null {
+  if (state === "overcharge_drafted" || state === "overcharge_no_draft") {
+    const recoveryLabel = potentialRecovery > 0 ? `$${formatCurrency(potentialRecovery)}` : "this amount";
+    const shouldOweClause =
+      shouldOwe > 0
+        ? `Your plan says you shouldn't owe more than $${formatCurrency(shouldOwe)} for this bill`
+        : `Your plan says you shouldn't owe anything for this bill`;
+    return `${shouldOweClause} — the ${recoveryLabel} difference is recoverable.`;
+  }
+  if (state === "needs_review") {
+    const reviewCount = claim.reviewNeededCount ?? 0;
+    if (reviewCount > 0) {
+      const lineWord = reviewCount === 1 ? "line item" : "line items";
+      const verb = reviewCount === 1 ? "this service" : "these services";
+      return `Your plan covers ${verb} but the EOB shows no per-line breakdown for ${reviewCount} ${lineWord}. Reconcile below.`;
+    }
+    return "Audit raised questions we need your input to resolve.";
+  }
+  return null;
 }
 
-function buildReviewExplanation(reviewCount: number): string {
-  const serviceRef = reviewCount === 1 ? "this service" : "these services";
-  return `Your plan covers ${serviceRef}, but the EOB shows no line-item breakdown. See the full breakdown below to reconcile what's already been paid vs. what you still owe.`;
+function buildBottomRowCopy(state: BillState): { text: string; cls: string } {
+  switch (state) {
+    case "overcharge_drafted":
+      // Action taken — preserves blue affordance signal even on overcharge.
+      return { text: "Dispute letter drafted", cls: "text-blue-700" };
+    case "overcharge_no_draft":
+      // B4.1-FIX1: urgent overcharge → red (was amber); matches rose card chrome.
+      return { text: "Ready to draft dispute", cls: "text-red-700" };
+    case "needs_review":
+      return { text: "Questions for you", cls: "text-amber-700" };
+    case "clean":
+      return { text: "No issues found · plan matches bill", cls: "text-gray-600" };
+  }
 }
 
-// ── F-4 (Session 85) — Warmer headline shared across all bill states ──────
-//
-// Replaces the previous mutually-exclusive precedence (findings > review >
-// recovery > clean) with a single headline that leads with COVERAGE framing.
-// Findings detail surfaces in a separate block below. Designed so a bill
-// with one missed-adjustment finding doesn't feel scarier than it should,
-// and a bill with 4 covered preventive services doesn't lose the warm
-// "your plan has you covered" reassurance just because one line surfaced
-// an issue.
-
-function BillCardSummaryHeadline({
+export function BillCard({
   claim,
-  hasIssues,
-  reviewCount,
-  potentialRecovery,
-  shouldOwe,
+  state,
+  onSelect,
 }: {
   claim: ClaimSummary;
-  hasIssues: boolean;
-  reviewCount: number;
-  potentialRecovery: number;
-  shouldOwe: number;
+  state: BillState;
+  onSelect: (claimId: string) => void;
 }) {
-  // Case A — line items lack allocation but coverage is good → warmest framing.
-  if (reviewCount > 0) {
-    return (
-      <div className="mt-4 rounded-xl border border-amber-100 bg-amber-50/60 p-3">
-        <p className="text-xs font-semibold text-amber-900">
-          {buildReviewHeadline(reviewCount)}
-        </p>
-        <p className="mt-1 text-xs text-amber-800">
-          {buildReviewExplanation(reviewCount)}
-        </p>
-      </div>
-    );
-  }
+  const config = STATE_CONFIG[state];
+  const isFlagged = state === "overcharge_drafted" || state === "overcharge_no_draft";
+  const isReview = state === "needs_review";
+  const showAmountsBlock = isFlagged || isReview;
 
-  // Case B — recovery opportunity with no per-line review gap → plan-vs-bill copy.
-  if (potentialRecovery > 0 && !hasIssues) {
-    return (
-      <div className="mt-4 rounded-xl border border-green-100 bg-green-50/60 p-3">
-        <p className="text-xs font-semibold text-green-900">
-          Potential recovery: +${potentialRecovery.toLocaleString()}
-        </p>
-        <p className="mt-1 text-xs text-green-800">
-          Your plan says you shouldn&apos;t owe
-          {shouldOwe > 0 ? ` more than $${shouldOwe.toLocaleString()}` : " anything"}
-          {" "}for this bill. The difference is recoverable — consider disputing.
-        </p>
-      </div>
-    );
-  }
+  const billed = claim.total_billed || 0;
+  const insuranceAdjusted = Number(claim.total_insurance_adjusted ?? 0);
+  const billedAdjusted = Math.max(0, billed - insuranceAdjusted);
+  const shouldOwe = claim.recovery?.shouldOwe ?? claim.total_patient_responsibility ?? 0;
+  const potentialRecovery =
+    claim.recovery?.potentialRecovery ?? claim.potentialSavings ?? Math.max(0, billed - shouldOwe);
+  const narrative = buildNarrative(state, claim, potentialRecovery, shouldOwe);
+  const bottomRow = buildBottomRowCopy(state);
 
-  // Case C — findings exist → warm "services audited" lead; findings detail
-  // surfaces in the amber block immediately below.
-  if (hasIssues) {
-    return (
-      <div className="mt-4 rounded-xl border border-green-100 bg-green-50/60 p-3">
-        <p className="text-xs font-semibold text-green-900">
-          {claim.lineItemCount} {claim.lineItemCount === 1 ? "service" : "services"} audited · plan coverage applied
-        </p>
-        <p className="mt-1 text-xs text-green-800">
-          See the breakdown below — most of this bill is covered; the {claim.findingCount === 1 ? "issue" : "issues"} we found {claim.findingCount === 1 ? "is" : "are"} shown next.
-        </p>
-      </div>
-    );
-  }
-
-  // Case D — clean bill, no recovery, no review → minimal positive copy.
   return (
-    <div className="mt-4 rounded-xl border border-green-100 bg-green-50/60 p-3">
-      <p className="text-xs font-semibold text-green-900">
-        No billing errors detected · {claim.lineItemCount} line {claim.lineItemCount === 1 ? "item" : "items"} audited
-      </p>
-    </div>
+    <button
+      type="button"
+      onClick={() => onSelect(claim.id)}
+      className={cn(
+        "group block w-full overflow-hidden rounded-2xl border text-left transition-all hover:-translate-y-0.5 hover:shadow-md",
+        config.cardChromeCls,
+      )}
+    >
+      {/* Header: icon + provider + date + status pill — bg inherits from card chrome */}
+      <div className="flex items-start justify-between gap-3 border-b border-gray-100/70 px-5 py-3.5">
+        <div className="flex min-w-0 items-center gap-3">
+          <div
+            className={cn(
+              "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ring-1",
+              config.iconCls,
+            )}
+          >
+            <StateIcon kind={config.iconKey} className="h-4 w-4" />
+          </div>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-gray-900">{claim.providerName}</p>
+            <div className="mt-0.5 flex items-center gap-1.5 text-xs text-gray-500">
+              <span>{formatDate(claim.date_of_service)}</span>
+              <span className="text-gray-300">·</span>
+              <span>
+                {claim.lineItemCount} line {claim.lineItemCount === 1 ? "item" : "items"}
+              </span>
+              <span className="text-gray-300">·</span>
+              <span>Total billed ${formatCurrency(billed)}</span>
+            </div>
+          </div>
+        </div>
+        <span
+          className={cn(
+            "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold",
+            config.statusPillCls,
+          )}
+        >
+          <span
+            className={cn(
+              "h-1.5 w-1.5 rounded-full",
+              state === "clean"
+                ? "bg-green-500"
+                : state === "needs_review"
+                  ? "bg-amber-500"
+                  : "bg-rose-500", // overcharge_* states
+            )}
+          />
+          {config.statusLabel}
+        </span>
+      </div>
+
+      {/* Amounts diff block (flagged/review only)
+          B4.1-FIX3: neutral grey for all states — state signal lives in the
+          card outline + status badge, not the internal block. */}
+      {showAmountsBlock && (
+        <div className="px-5 pt-4">
+          <div className="flex items-center justify-between rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                You were billed
+              </p>
+              <p className="mt-0.5 text-lg font-bold tabular-nums text-gray-900">
+                ${formatCurrency(billedAdjusted)}
+              </p>
+            </div>
+            <svg
+              className="h-5 w-5 shrink-0 text-gray-400"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 8l4 4m0 0l-4 4m4-4H3" />
+            </svg>
+            <div className="text-right">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                You should owe
+              </p>
+              {isReview ? (
+                <p className="mt-0.5 text-lg font-bold tabular-nums text-amber-700">?</p>
+              ) : (
+                <p
+                  className={cn(
+                    "mt-0.5 text-lg font-bold tabular-nums",
+                    shouldOwe === 0 ? "text-green-600" : "text-gray-900",
+                  )}
+                >
+                  ${formatCurrency(shouldOwe)}
+                </p>
+              )}
+              {isFlagged && potentialRecovery > 0 && (
+                <p className="mt-0.5 text-[11px] font-bold text-green-700 tabular-nums">
+                  ↑ +${formatCurrency(potentialRecovery)} recoverable
+                </p>
+              )}
+              {isReview && (
+                <p className="mt-0.5 text-[11px] font-semibold text-amber-700">
+                  Unclear — review needed
+                </p>
+              )}
+            </div>
+          </div>
+          {narrative && (
+            <p className="mt-2 px-1 text-xs leading-relaxed text-gray-700">{narrative}</p>
+          )}
+        </div>
+      )}
+
+      {/* Findings preview — drafted/no-draft overcharge cards keep the existing
+          top-N findings list for at-a-glance context.
+          B4.1-FIX3: subtle amber styling — distinct from the card outline + badge,
+          structural sub-callout for the findings list. */}
+      {isFlagged && claim.topFindings && claim.topFindings.length > 0 && (
+        <div className="mx-5 mt-3 rounded-xl border border-amber-100 bg-amber-50/40 p-3">
+          <p className="text-xs font-semibold text-amber-900">
+            We found {claim.findingCount} {claim.findingCount === 1 ? "issue" : "issues"} to dispute
+          </p>
+          <ul className="mt-2 space-y-1">
+            {claim.topFindings.slice(0, 2).map((f, i) => (
+              <li key={i} className="text-xs text-amber-800">
+                <span className="mr-1.5 text-amber-600">•</span>
+                {f.title}
+                {f.billingCode && <span className="ml-1 text-amber-600">({f.billingCode})</span>}
+                {f.estimatedOvercharge > 0 && (
+                  <span className="ml-1 text-amber-900">— ~${f.estimatedOvercharge.toFixed(0)}</span>
+                )}
+              </li>
+            ))}
+            {claim.topFindings.length > 2 && (
+              <li className="text-[11px] text-amber-700">+ {claim.topFindings.length - 2} more</li>
+            )}
+          </ul>
+        </div>
+      )}
+
+      {/* Bottom row: state-specific copy + "View full breakdown" action.
+          B4.1-FIX2: bg inherits from card chrome — no separate gray band. */}
+      <div className="mt-4 flex items-center justify-between border-t border-gray-100/70 px-5 py-3">
+        <span className={cn("text-xs font-semibold", bottomRow.cls)}>{bottomRow.text}</span>
+        <span className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 transition-colors group-hover:text-blue-700">
+          View full breakdown
+          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </span>
+      </div>
+    </button>
   );
 }

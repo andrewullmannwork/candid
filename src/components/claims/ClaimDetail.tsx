@@ -9,6 +9,7 @@ import { disputeUrlForResult } from "@/lib/disputes/url";
 import { CategoryCorrectionModal } from "@/components/claims/CategoryCorrectionModal";
 import { legacyCategoryReviewHint } from "@/lib/billing/code-categories";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
+import { CodeCarouselLoaderV3 } from "@/components/loaders/CodeCarouselLoaderV3";
 
 interface CodeIdentityState {
   identityId: string | null;
@@ -535,7 +536,9 @@ export function ClaimDetail({
   }, [user, claimId]);
 
   if (loading) {
-    return <div className="p-8 text-center text-sm text-gray-500">Loading claim details...</div>;
+    // B-LOAD.1 (S131): in-claim navigation = Audit flow loader per Andrew #2.
+    // ClaimDetail line-item rendering UNTOUCHED below per §0.7 D2 NON-NEGOTIABLE.
+    return <CodeCarouselLoaderV3 title="Loading bill details" />;
   }
 
   if (!data) {
@@ -2545,10 +2548,22 @@ function BulkDisputeButton({
   // recovery guarantee (CROA + state UDAP exposure per Director Checkpoint
   // #5 — user-sends-letter model). Recovery info stays visible as DATA
   // (table column + amber card) but not as a promise on the action button.
-  const buttonLabel = (() => {
-    if (loading) return "Generating letter…";
-    return totalContested === 1 ? "Dispute charge" : "Dispute these charges";
-  })();
+  const buttonLabel = totalContested === 1 ? "Dispute charge" : "Dispute these charges";
+
+  // B-LOAD.1 follow-up (S131): per Andrew direction "the second I click,
+  // load the audit loader (no check box) and no generating letter."
+  // The /api/disputes/generate POST takes multiple seconds; during that time,
+  // overlay the entire viewport with the Audit flow loader so the user sees
+  // ONE consistent loader from click → letter render. NEW disputes/loading.tsx
+  // takes over during route transition + disputes/page.tsx mounts with its
+  // own CodeCarouselLoaderV3 — no cube flash, no "Generating letter…" text.
+  if (loading) {
+    return (
+      <div className="fixed inset-0 z-50 bg-white">
+        <CodeCarouselLoaderV3 title="Drafting your dispute letter" />
+      </div>
+    );
+  }
 
   return (
     <div className="mb-4">

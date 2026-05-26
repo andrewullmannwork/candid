@@ -20,6 +20,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 
 export default function AuditPage() {
   const router = useRouter();
@@ -68,10 +69,5 @@ export default function AuditPage() {
     };
   }, [router]);
 
-  return (
-    <div className="max-w-4xl mx-auto p-8 text-center">
-      <div className="animate-spin text-4xl mb-4">⚙️</div>
-      <p className="text-sm text-gray-600">Redirecting to your claims…</p>
-    </div>
-  );
+  return <CubeLoaderBuilding />;
 }

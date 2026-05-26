@@ -3,16 +3,24 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BillCard } from "@/components/claims/BillCard";
 import { ClaimDetail } from "@/components/claims/ClaimDetail";
 import { DiscrepancyList } from "@/components/claims/DiscrepancyList";
 import { FollowupBanner } from "@/components/disputes/FollowupBanner";
 import { DisputeMetrics } from "@/components/disputes/DisputeMetrics";
 import { EscalationCard } from "@/components/disputes/EscalationCard";
-import { ClaimImpactHero } from "@/components/claims/ClaimImpactHero";
+import { RecoveryHero, type RecoveryHeroStats } from "@/components/claims/RecoveryHero";
 import { ClaimPreviewEmptyState } from "@/components/claims/ClaimPreviewEmptyState";
 import { Disclaimer } from "@/components/shared/Disclaimer";
+import { PageHeader } from "@/components/page-header";
+import { CodeCarouselLoaderV3 } from "@/components/loaders/CodeCarouselLoaderV3";
+import {
+  deriveBillState,
+  type BillState,
+  type AuditFinding,
+} from "@/lib/claims/derive-bill-state";
+import { cn } from "@/lib/utils/cn";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -39,6 +47,7 @@ interface ClaimSummary {
   status: string;
   total_billed: number | null;
   total_patient_responsibility: number | null;
+  total_insurance_adjusted?: number | null;
   lineItemCount: number;
   findingCount: number;
   providerName: string;
@@ -71,7 +80,6 @@ interface ClaimStats {
   totalPatientResponsibility: number;
   totalPotentialSavings: number;
   totalIssuesFlagged: number;
-  // Session 35 T2.8
   totalPotentialRecovery?: number;
   totalRefundComponent?: number;
   totalForgivenessComponent?: number;
@@ -86,29 +94,27 @@ const TYPE_LABELS: Record<string, string> = {
   negotiation: "Self-pay Negotiation",
 };
 
-// Session 35 lifecycle vocabulary. Legacy values (filed, in_progress, settled,
-// withdrawn, *_on_escalation) remain supported for existing rows — see
-// `src/lib/disputes/persist.ts#DisputeStatus`.
+// Session 35 lifecycle vocab + legacy values (NON-NEGOTIABLE preservation per D-§1.D.1-K).
 const STATUS_STYLES: Record<string, string> = {
-  flagged: "text-amber-700 bg-amber-50",
-  filed: "text-blue-700 bg-blue-50",
-  dispute_letter_drafted: "text-blue-700 bg-blue-50",
-  court_documentation_drafted: "text-purple-700 bg-purple-50",
-  in_progress: "text-amber-700 bg-amber-50",
-  won: "text-green-700 bg-green-50",
-  lost: "text-red-700 bg-red-50",
-  settled: "text-green-700 bg-green-50",
-  withdrawn: "text-gray-700 bg-gray-50",
-  won_on_escalation: "text-green-700 bg-green-50",
-  settled_on_escalation: "text-green-700 bg-green-50",
+  flagged: "text-amber-700 bg-amber-50 ring-amber-200",
+  filed: "text-blue-700 bg-blue-50 ring-blue-200",
+  dispute_letter_drafted: "text-blue-700 bg-blue-50 ring-blue-200",
+  court_documentation_drafted: "text-purple-700 bg-purple-50 ring-purple-200",
+  in_progress: "text-amber-700 bg-amber-50 ring-amber-200",
+  won: "text-green-700 bg-green-50 ring-green-200",
+  lost: "text-red-700 bg-red-50 ring-red-200",
+  settled: "text-green-700 bg-green-50 ring-green-200",
+  withdrawn: "text-gray-700 bg-gray-50 ring-gray-200",
+  won_on_escalation: "text-green-700 bg-green-50 ring-green-200",
+  settled_on_escalation: "text-green-700 bg-green-50 ring-green-200",
 };
 
 const STATUS_LABELS: Record<string, string> = {
   flagged: "Flagged",
-  filed: "Dispute Letter Drafted",
-  dispute_letter_drafted: "Dispute Letter Drafted",
-  court_documentation_drafted: "Court Documentation Drafted",
-  in_progress: "In Progress",
+  filed: "Draft · ready to review",
+  dispute_letter_drafted: "Draft · ready to review",
+  court_documentation_drafted: "Court documentation drafted",
+  in_progress: "In progress",
   won: "Won",
   lost: "Lost",
   settled: "Settled",
@@ -119,6 +125,61 @@ const STATUS_LABELS: Record<string, string> = {
 
 type Tab = "bills" | "discrepancies" | "disputes";
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Build the BillState for a single claim by translating the existing claim
+ * shape into AuditFinding[] consumed by `deriveBillState()`. The derivation
+ * lives in `src/lib/claims/derive-bill-state.ts` (B1.3b) so the same 4-state
+ * vocab is reused by B4.2 ClaimDetail.
+ */
+function buildBillState(
+  claim: ClaimSummary,
+  allDiscrepancies: Array<{ claim_id?: string; tier?: number | null; status?: string | null }>,
+  allDisputes: Dispute[],
+): BillState {
+  const claimDiscrepancies = allDiscrepancies.filter((d) => d.claim_id === claim.id);
+  const claimDisputes = allDisputes.filter((d) => d.claimId === claim.id);
+
+  const findings: AuditFinding[] = [];
+  // B4.1-FIX1: recovery math is sufficient signal for overcharge — formal audit
+  // findings are supplementary, not gating. A bill where plan-vs-bill math shows
+  // shouldOwe < billed has a real recovery opportunity regardless of whether a
+  // named audit rule fired. $10 minimum threshold filters cosmetic deltas from
+  // user-actionable overcharges.
+  const recovery = claim.recovery?.potentialRecovery ?? claim.potentialSavings ?? 0;
+  const OVERCHARGE_THRESHOLD_USD = 10;
+  if (recovery > OVERCHARGE_THRESHOLD_USD) {
+    findings.push({ severity: "overcharge", recovery_amount: recovery, confidence: 1 });
+  }
+  if ((claim.reviewNeededCount ?? 0) > 0) {
+    findings.push({ severity: "needs_review", confidence: 0.5 });
+  }
+
+  return deriveBillState(
+    { audit_findings: findings },
+    claimDiscrepancies.map((d) => ({ tier: d.tier ?? null, status: d.status ?? null })),
+    claimDisputes.map((d) => ({ status: d.status })),
+  );
+}
+
+function formatShortDate(iso: string | null): string {
+  if (!iso) return "—";
+  try {
+    const match = iso.slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (match) {
+      const [, y, m, d] = match;
+      return new Date(Number(y), Number(m) - 1, Number(d)).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+      });
+    }
+    return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  } catch {
+    return iso;
+  }
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function CandidClaimPage() {
@@ -126,9 +187,7 @@ export default function CandidClaimPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // URL-driven selected-claim state. Using the URL (not just React state)
-  // means the browser back button returns to the claims list instead of
-  // skipping all the way back to /dashboard.
+  // URL-driven selected-claim state (NON-NEGOTIABLE preserve per D-§1.D.1-E).
   const urlClaimId = searchParams.get("claim");
   const urlFocusId = searchParams.get("focus");
   const urlFromTab = (searchParams.get("from") as Tab | null) ?? null;
@@ -157,10 +216,7 @@ export default function CandidClaimPage() {
     if (!user) return;
 
     // Load disputes. S74 (PR #66) hardened the endpoint to require a Firebase
-    // bearer token + derive userId from the decoded claims; the legacy `?userId=`
-    // query param is ignored server-side. Drop the param, send the token, and
-    // only commit the response when it has the expected shape (otherwise we
-    // crash later trying to read `.disputes.length` on the error body).
+    // bearer token + derive userId from the decoded claims.
     (async () => {
       try {
         const token = await user.firebaseUser.getIdToken();
@@ -186,7 +242,6 @@ export default function CandidClaimPage() {
         const token = await user!.firebaseUser.getIdToken();
         const headers = { Authorization: `Bearer ${token}` };
 
-        // Fetch claims + discrepancies in parallel
         const [claimsRes, discRes] = await Promise.all([
           fetch("/api/claims", { headers }),
           fetch("/api/claims/discrepancies", { headers }),
@@ -205,7 +260,6 @@ export default function CandidClaimPage() {
 
         // Synthesize "review" discrepancies client-side from claims where
         // eob_discrepancy_detection didn't run (empty claim_discrepancies table).
-        // Fallback so users always see unverified-charge items, even before backfill.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const synthesized: any[] = [];
         for (const c of (claimsData.claims || []) as ClaimSummary[]) {
@@ -259,6 +313,15 @@ export default function CandidClaimPage() {
 
   const loading = claimsLoading || disputesLoading || discrepanciesLoading;
 
+  // Derive per-claim BillState in one pass; reused by Bills list + Disputes tab + hero stats.
+  const billStates = useMemo(() => {
+    const map = new Map<string, BillState>();
+    for (const c of claims) {
+      map.set(c.id, buildBillState(c, discrepancies, disputeData?.disputes ?? []));
+    }
+    return map;
+  }, [claims, discrepancies, disputeData]);
+
   async function handleDiscrepancyStatusChange(discrepancyId: string, newStatus: string) {
     try {
       const token = await user!.firebaseUser.getIdToken();
@@ -284,8 +347,6 @@ export default function CandidClaimPage() {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function handleDiscrepancyDispute(discrepancy: any) {
-    // Open the ClaimDetail for this discrepancy's claim so the user can review
-    // the full facts and trigger the dispute letter flow from the line-item view.
     if (discrepancy?.claim_id) {
       const focus = discrepancy.claim_line_item_id || "";
       router.push(
@@ -297,29 +358,21 @@ export default function CandidClaimPage() {
   }
 
   function openClaimDetail(claimId: string, sourceTab: Tab) {
-    // URL-driven so browser back returns to the claims list instead of /dashboard.
     router.push(`/claim?claim=${claimId}&from=${sourceTab}`);
   }
 
   function closeClaimDetail() {
-    // S109 — explicit push instead of router.back(). The history-based back
-    // popped to whatever URL preceded the bill click in the browser tab —
-    // often /case (locked) or /dashboard when the user navigated between
-    // sections before drilling in. Push keeps the user inside /claim and
-    // matches the on-screen "Back to bills" label literally; scroll
-    // restoration on the bills list is acceptable to lose for that guarantee.
+    // S109 explicit push (NON-NEGOTIABLE preserve).
     router.push(`/claim?tab=${tabBeforeDetail}`);
   }
 
   if (loading) {
-    return (
-      <div className="flex min-h-[60vh] items-center justify-center">
-        <div className="h-5 w-5 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
-      </div>
-    );
+    // B-LOAD.1 (S131): entering audit context per Andrew #2 — use Audit flow
+    // loader (CodeCarouselLoaderV3), not generic spinner / CubeLoaderBuilding.
+    return <CodeCarouselLoaderV3 title="Loading your claims" />;
   }
 
-  // If viewing claim detail, render that view only
+  // If viewing claim detail, render that view only (NON-NEGOTIABLE preserve per D-§1.D.1-E).
   if (selectedClaimId) {
     return (
       <div className="mx-auto max-w-3xl">
@@ -333,65 +386,102 @@ export default function CandidClaimPage() {
     );
   }
 
-  const hasDisputes = disputeData && disputeData.disputes.length > 0;
   const hasBills = claims.length > 0;
-  const activeDisputes = disputeData?.disputes.filter((d) => d.status === "filed" || d.status === "in_progress") || [];
-  const resolvedDisputes = disputeData?.disputes.filter((d) => d.status === "won" || d.status === "settled" || d.status === "lost" || d.status === "withdrawn") || [];
+  const hasDisputes = (disputeData?.disputes.length ?? 0) > 0;
+  const activeDisputes =
+    disputeData?.disputes.filter((d) =>
+      ["filed", "in_progress", "dispute_letter_drafted", "court_documentation_drafted"].includes(d.status),
+    ) ?? [];
+  const resolvedDisputes =
+    disputeData?.disputes.filter((d) =>
+      ["won", "settled", "lost", "withdrawn", "won_on_escalation", "settled_on_escalation"].includes(
+        d.status,
+      ),
+    ) ?? [];
   const lostDisputes = resolvedDisputes.filter((d) => d.status === "lost");
 
-  // Hero stats
-  const heroStats = {
-    potentialSavings: claimStats?.totalPotentialSavings || 0,
-    totalRecovered: disputeData?.totalRecovered || 0,
-    billsAnalyzed: claimStats?.totalBills || 0,
-    issuesFlagged: claimStats?.totalIssuesFlagged || 0,
-    disputesFiled: disputeData?.disputes.length || 0,
-    totalPotentialRecovery: claimStats?.totalPotentialRecovery ?? 0,
-    totalRefundComponent: claimStats?.totalRefundComponent ?? 0,
-    totalForgivenessComponent: claimStats?.totalForgivenessComponent ?? 0,
+  // Aggregate bill-state counts for the hero. We count BILLS (not line items),
+  // matching the design's stat semantics ("Issues flagged" = bills with overcharge,
+  // "Need your input" = bills in review state, "Disputes drafted" = bills with draft).
+  const stateCounts = { overcharge: 0, drafted: 0, review: 0 };
+  for (const c of claims) {
+    const s = billStates.get(c.id);
+    if (s === "overcharge_no_draft" || s === "overcharge_drafted") stateCounts.overcharge += 1;
+    if (s === "overcharge_drafted") stateCounts.drafted += 1;
+    if (s === "needs_review") stateCounts.review += 1;
+  }
+
+  // Ready-to-draft = flagged bills without a draft yet (state === 'overcharge_no_draft').
+  const readyToDraftClaims = claims.filter(
+    (c) => billStates.get(c.id) === "overcharge_no_draft",
+  );
+
+  const heroStats: RecoveryHeroStats = {
+    totalRecovery: claimStats?.totalPotentialRecovery ?? claimStats?.totalPotentialSavings ?? 0,
+    billsCount: claims.length,
+    issuesCount: stateCounts.overcharge,
+    disputesCount: stateCounts.drafted,
+    reviewCount: stateCounts.review,
   };
+
+  // CTA destination: prefer drafted disputes tab; else surface flagged bills.
+  function handleHeroPrimary() {
+    if (stateCounts.drafted > 0 || readyToDraftClaims.length > 0) {
+      setTab("disputes");
+    }
+  }
 
   return (
     <div className="mx-auto max-w-3xl">
-      {/* ── Header ──────────────────────────────────────────────────────── */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Candid Claim</h1>
-        <p className="mt-1 text-sm text-gray-500">
-          Every bill audited. Every error found. Every dollar tracked.
-        </p>
-      </div>
+      {/* PageHeader primitive — D-§1.D.1-B */}
+      <PageHeader
+        eyebrow="Candid Claim"
+        title="Your claim, in plain English"
+        sub="Every bill audited line by line. Every overcharge flagged. Every dollar tracked."
+      />
 
-      {/* ── Follow-up banners ──────────────────────────────────────────── */}
+      {/* FollowupBanner above hero — D-§1.D.1-F + Round 2 Item 1 Option A */}
       <FollowupBanner />
 
-      {/* ── Hero impact card ──────────────────────────────────────────── */}
-      <div className="mb-6">
-        <ClaimImpactHero stats={heroStats} isEmpty={!hasBills} />
-      </div>
+      {/* Empty state replaces hero + tabs entirely (Round 2 Item 2 render rule) */}
+      {!hasBills && (
+        <>
+          <ClaimPreviewEmptyState />
+          <Disclaimer variant="coverage_check" className="mt-6" />
+        </>
+      )}
 
-      {/* ── Empty state ───────────────────────────────────────────────── */}
-      {!hasBills && <ClaimPreviewEmptyState />}
-
-      {/* ── Coverage-check disclaimer (persistent footer context) ─────── */}
-      {!hasBills && <Disclaimer variant="coverage_check" className="mt-6" />}
-
-      {/* ── Populated state ───────────────────────────────────────────── */}
       {hasBills && (
         <>
-          {/* Tabs */}
-          <div className="mb-4 flex w-fit gap-1 rounded-xl bg-gray-100 p-1">
-            <TabButton active={tab === "bills"} onClick={() => setTab("bills")}>
-              Bills
-              <TabBadge count={claims.length} active={tab === "bills"} />
-            </TabButton>
-            <TabButton active={tab === "discrepancies"} onClick={() => setTab("discrepancies")}>
-              Discrepancies
-              <TabBadge count={discrepancySummary.total} active={tab === "discrepancies"} />
-            </TabButton>
-            <TabButton active={tab === "disputes"} onClick={() => setTab("disputes")}>
-              Disputes
-              <TabBadge count={disputeData?.disputes.length || 0} active={tab === "disputes"} />
-            </TabButton>
+          {/* RecoveryHero — D-§1.D.1-A */}
+          <RecoveryHero stats={heroStats} variant="calm" onPrimary={handleHeroPrimary} />
+
+          {/* Tabbar with top-right Upload button per design canvas line 303-318 */}
+          <div className="mb-4 flex items-center justify-between gap-2">
+            <div className="flex w-fit gap-1 rounded-xl bg-gray-100 p-1">
+              <TabButton active={tab === "bills"} onClick={() => setTab("bills")}>
+                Bills
+                <TabCount count={claims.length} active={tab === "bills"} />
+              </TabButton>
+              <TabButton active={tab === "discrepancies"} onClick={() => setTab("discrepancies")}>
+                Discrepancies
+                <TabCount count={discrepancySummary.total} active={tab === "discrepancies"} />
+              </TabButton>
+              <TabButton active={tab === "disputes"} onClick={() => setTab("disputes")}>
+                Disputes
+                <TabCount count={disputeData?.disputes.length || 0} active={tab === "disputes"} />
+              </TabButton>
+            </div>
+
+            <Link
+              href="/upload"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 transition-colors hover:border-blue-300 hover:text-blue-700"
+            >
+              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+              Upload bill
+            </Link>
           </div>
 
           {/* Bills tab */}
@@ -401,26 +491,25 @@ export default function CandidClaimPage() {
                 <BillCard
                   key={claim.id}
                   claim={claim}
+                  state={billStates.get(claim.id) ?? "clean"}
                   onSelect={(id) => openClaimDetail(id, "bills")}
                 />
               ))}
 
-              {/* Upload another bill CTA */}
+              {/* "Upload another bill" full-width dashed add-tile — D-§1.D.1-H */}
               <Link
                 href="/upload"
-                className="group block rounded-2xl border-2 border-dashed border-gray-200 bg-white p-5 text-center transition-colors hover:border-blue-300 hover:bg-blue-50/30"
+                className="group block rounded-2xl border-2 border-dashed border-gray-200 bg-white px-5 py-5 text-center transition-colors hover:border-blue-300 hover:bg-blue-50/30"
               >
                 <p className="text-sm font-semibold text-gray-700 group-hover:text-blue-700">
                   + Upload another bill
-                </p>
-                <p className="mt-0.5 text-xs text-gray-500">
-                  EOB, itemized bill, or statement
+                  <span className="ml-1 font-normal text-gray-500">— EOB, itemized bill, or statement</span>
                 </p>
               </Link>
             </div>
           )}
 
-          {/* Discrepancies tab */}
+          {/* Discrepancies tab — preserve DiscrepancyList (D-§1.D.1-J + Round 2 Item 3) */}
           {tab === "discrepancies" && (
             <DiscrepancyList
               discrepancies={discrepancies}
@@ -430,12 +519,12 @@ export default function CandidClaimPage() {
             />
           )}
 
-          {/* Disputes tab */}
+          {/* Disputes tab — design chrome adoption (D-§1.D.1-K) */}
           {tab === "disputes" && (
             <>
               <DisputeMetrics />
 
-              {!hasDisputes && (
+              {!hasDisputes && readyToDraftClaims.length === 0 && (
                 <div className="rounded-2xl border border-gray-100 bg-white p-8 text-center">
                   <p className="mb-4 text-sm text-gray-500">
                     No disputes filed yet. Flag an issue on one of your bills to draft your first dispute letter.
@@ -445,7 +534,7 @@ export default function CandidClaimPage() {
                     className="inline-flex items-center gap-1 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
                   >
                     View bills
-                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                     </svg>
                   </button>
@@ -454,10 +543,35 @@ export default function CandidClaimPage() {
 
               {activeDisputes.length > 0 && (
                 <div className="mb-6">
-                  <h2 className="mb-3 text-base font-semibold text-gray-900">Active Disputes</h2>
-                  <div className="space-y-2">
+                  <SectionHeader>Active disputes</SectionHeader>
+                  <div className="space-y-3">
                     {activeDisputes.map((d) => (
-                      <DisputeCard key={d.id} dispute={d} onUpdate={(update) => handleOutcomeUpdate(d.id, update)} />
+                      <DraftedDisputeCard
+                        key={d.id}
+                        dispute={d}
+                        provider={claims.find((c) => c.id === d.claimId)?.providerName ?? ""}
+                        onOpen={() => {
+                          if (d.claimId) openClaimDetail(d.claimId, "disputes");
+                        }}
+                        onUpdate={(update) => handleOutcomeUpdate(d.id, update)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* "Ready to draft" subhead between drafted + ready — design canvas line 376 */}
+              {readyToDraftClaims.length > 0 && (
+                <div className="mb-6">
+                  <SectionHeader>Ready to draft</SectionHeader>
+                  <div className="space-y-3">
+                    {readyToDraftClaims.map((claim) => (
+                      <BillCard
+                        key={claim.id}
+                        claim={claim}
+                        state="overcharge_no_draft"
+                        onSelect={(id) => openClaimDetail(id, "disputes")}
+                      />
                     ))}
                   </div>
                 </div>
@@ -465,19 +579,26 @@ export default function CandidClaimPage() {
 
               {resolvedDisputes.length > 0 && (
                 <div className="mb-6">
-                  <h2 className="mb-3 text-base font-semibold text-gray-900">Resolved</h2>
-                  <div className="space-y-2">
+                  <SectionHeader>Resolved</SectionHeader>
+                  <div className="space-y-3">
                     {resolvedDisputes.map((d) => (
-                      <DisputeCard key={d.id} dispute={d} />
+                      <DraftedDisputeCard
+                        key={d.id}
+                        dispute={d}
+                        provider={claims.find((c) => c.id === d.claimId)?.providerName ?? ""}
+                        onOpen={() => {
+                          if (d.claimId) openClaimDetail(d.claimId, "disputes");
+                        }}
+                      />
                     ))}
                   </div>
                 </div>
               )}
 
-              {/* Escalation cards for lost disputes */}
+              {/* Escalation cards for lost disputes — PRESERVED per D-§1.D.1-F */}
               {lostDisputes.length > 0 && (
                 <div className="mb-6">
-                  <h2 className="mb-3 text-base font-semibold text-gray-900">Next Steps</h2>
+                  <SectionHeader>Next steps</SectionHeader>
                   <div className="space-y-3">
                     {lostDisputes.map((d) => (
                       <EscalationCard
@@ -495,7 +616,9 @@ export default function CandidClaimPage() {
                               headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
                               body: JSON.stringify({ disputeId: d.id, escalationType: type }),
                             });
-                          } catch { /* non-blocking */ }
+                          } catch {
+                            /* non-blocking */
+                          }
                         }}
                       />
                     ))}
@@ -504,11 +627,11 @@ export default function CandidClaimPage() {
               )}
             </>
           )}
+
+          {/* Bottom disclaimer — D-§1.D.1-N */}
+          <Disclaimer variant="coverage_check" className="mt-8" />
         </>
       )}
-
-      {/* ── Legal disclaimer footer (always visible with data) ────────── */}
-      {hasBills && <Disclaimer variant="coverage_check" className="mt-8" />}
     </div>
   );
 
@@ -518,10 +641,7 @@ export default function CandidClaimPage() {
       const token = await user.firebaseUser.getIdToken();
       const res = await fetch("/api/disputes/outcome", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           disputeId,
           status: update.status,
@@ -548,86 +668,161 @@ export default function CandidClaimPage() {
 
 // ── Sub-components ───────────────────────────────────────────────────────────
 
-function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
   return (
     <button
       onClick={onClick}
-      className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-xs font-semibold transition-colors ${
-        active ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"
-      }`}
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-xs font-semibold transition-colors",
+        active ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700",
+      )}
     >
       {children}
     </button>
   );
 }
 
-function TabBadge({ count, active }: { count: number; active: boolean }) {
+function TabCount({ count, active }: { count: number; active: boolean }) {
   if (count === 0) return null;
   return (
     <span
-      className={`inline-flex min-w-[18px] items-center justify-center rounded-full px-1.5 text-[10px] font-bold tabular-nums ${
-        active ? "bg-blue-50 text-blue-700" : "bg-gray-200 text-gray-600"
-      }`}
+      className={cn(
+        "inline-flex min-w-[18px] items-center justify-center rounded-full px-1.5 text-[10px] font-bold tabular-nums",
+        active ? "bg-blue-50 text-blue-700" : "bg-gray-200 text-gray-600",
+      )}
     >
       {count}
     </span>
   );
 }
 
-function DisputeCard({ dispute, onUpdate }: { dispute: Dispute; onUpdate?: (update: { status: string; amountRecovered?: number }) => void }) {
+function SectionHeader({ children }: { children: React.ReactNode }) {
+  return (
+    <h2 className="mb-3 text-[11px] font-bold uppercase tracking-[0.08em] text-gray-500">
+      {children}
+    </h2>
+  );
+}
+
+/**
+ * Drafted dispute card — design chrome per claim-summary.jsx lines 342-410.
+ * Visual chrome: icon + "Appeal to {insurer} · ${amount}" title + Ref ID monospace
+ * + provider + filed/resolved date + status pill + footer with outcome capture.
+ * NON-NEGOTIABLE: preserves Session 35 T2.8 lifecycle vocab + outcome capture flows.
+ */
+function DraftedDisputeCard({
+  dispute,
+  provider,
+  onOpen,
+  onUpdate,
+}: {
+  dispute: Dispute;
+  provider: string;
+  onOpen?: () => void;
+  onUpdate?: (update: { status: string; amountRecovered?: number }) => void;
+}) {
   const [showOutcome, setShowOutcome] = useState(false);
   const [recoveredAmount, setRecoveredAmount] = useState("");
-  // Active = anything not yet resolved. Includes legacy "filed" / "in_progress"
-  // plus the Session 35 T2.8 lifecycle vocab ("dispute_letter_drafted" and
-  // "court_documentation_drafted").
-  const isActive =
-    dispute.status === "filed" ||
-    dispute.status === "in_progress" ||
-    dispute.status === "dispute_letter_drafted" ||
-    dispute.status === "court_documentation_drafted";
-  const [daysAgo] = useState(() => Math.floor((Date.now() - new Date(dispute.filedDate).getTime()) / (1000 * 60 * 60 * 24)));
+
+  const isActive = ["filed", "in_progress", "dispute_letter_drafted", "court_documentation_drafted"].includes(
+    dispute.status,
+  );
+  const typeLabel = TYPE_LABELS[dispute.disputeType] || dispute.disputeType;
+  const statusLabel = STATUS_LABELS[dispute.status] || dispute.status;
+  const statusClass = STATUS_STYLES[dispute.status] || "text-gray-700 bg-gray-50 ring-gray-200";
+  const refId = dispute.id.slice(0, 8).toUpperCase();
+  const filedDateLabel = formatShortDate(dispute.filedDate);
 
   return (
-    <div className="rounded-xl border border-gray-100 bg-white p-4">
-      <div className="flex items-start justify-between">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <p className="text-sm font-semibold text-gray-900">
-              {TYPE_LABELS[dispute.disputeType] || dispute.disputeType}
-            </p>
-            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${STATUS_STYLES[dispute.status] || "text-gray-700 bg-gray-50"}`}>
-              {STATUS_LABELS[dispute.status] || dispute.status}
-            </span>
+    <div className="overflow-hidden rounded-2xl border border-gray-100 bg-white">
+      {/* Header — design chrome */}
+      <div className="flex items-start justify-between gap-3 border-b border-gray-50 bg-gray-50/50 px-5 py-3.5">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-700 ring-1 ring-blue-100">
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
           </div>
-          <p className="mt-1 text-xs text-gray-500">
-            Filed {dispute.filedDate} ({daysAgo} days ago)
-            {dispute.resolutionDate && ` · Resolved ${dispute.resolutionDate}`}
-          </p>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-gray-900">
+              {typeLabel} · ${dispute.amountDisputed.toLocaleString()}
+            </p>
+            <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-gray-500">
+              <span className="font-mono text-[11px]">Ref {refId}</span>
+              {provider && (
+                <>
+                  <span className="text-gray-300">·</span>
+                  <span className="truncate">{provider}</span>
+                </>
+              )}
+              <span className="text-gray-300">·</span>
+              <span>
+                {dispute.resolutionDate
+                  ? `Resolved ${formatShortDate(dispute.resolutionDate)}`
+                  : `Filed ${filedDateLabel}`}
+              </span>
+            </div>
+          </div>
         </div>
-        <div className="ml-4 shrink-0 text-right">
-          <p className="text-sm font-bold text-gray-900">${dispute.amountDisputed.toLocaleString()}</p>
-          {dispute.amountRecovered > 0 && (
-            <p className="text-xs font-semibold text-green-600">-${dispute.amountRecovered.toLocaleString()} recovered</p>
+        <span
+          className={cn(
+            "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1",
+            statusClass,
           )}
-        </div>
+        >
+          <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
+          {statusLabel}
+        </span>
       </div>
 
+      {/* Footer */}
+      <div className="flex items-center justify-between gap-3 px-5 py-3">
+        <span className="text-xs text-gray-500">
+          {dispute.amountRecovered > 0
+            ? `$${dispute.amountRecovered.toLocaleString()} recovered`
+            : isActive
+              ? "Awaiting response — log when it arrives"
+              : ""}
+        </span>
+        {onOpen && (
+          <button
+            type="button"
+            onClick={onOpen}
+            className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 transition-colors hover:text-blue-700"
+          >
+            {isActive ? "Open draft" : "Open"}
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
+        )}
+      </div>
+
+      {/* Outcome capture — preserved per NON-NEGOTIABLE D-§1.D.1-K */}
       {isActive && onUpdate && !showOutcome && (
-        <div className="mt-3 flex flex-wrap gap-2 border-t border-gray-100 pt-3">
+        <div className="flex flex-wrap gap-2 border-t border-gray-50 bg-gray-50/30 px-5 py-3">
           <button
             onClick={() => setShowOutcome(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-green-200 bg-green-50 px-3 py-1.5 text-xs font-semibold text-green-700 transition-colors hover:bg-green-100 hover:border-green-300"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-green-200 bg-green-50 px-3 py-1.5 text-xs font-semibold text-green-700 transition-colors hover:bg-green-100"
           >
-            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
             Mark as resolved
           </button>
           <button
             onClick={() => onUpdate({ status: "in_progress" })}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition-colors hover:bg-amber-100 hover:border-amber-300"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition-colors hover:bg-amber-100"
           >
-            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
             Mark in progress
@@ -635,17 +830,52 @@ function DisputeCard({ dispute, onUpdate }: { dispute: Dispute; onUpdate?: (upda
         </div>
       )}
 
-      {showOutcome && (
-        <div className="mt-3 border-t border-gray-100 pt-3">
+      {showOutcome && onUpdate && (
+        <div className="border-t border-gray-50 bg-gray-50/30 px-5 py-3">
           <div className="mb-2 flex items-center gap-2">
-            <label className="text-xs text-gray-500">Amount recovered:</label>
-            <input type="number" value={recoveredAmount} onChange={(e) => setRecoveredAmount(e.target.value)} placeholder="0.00" className="w-24 rounded-lg border border-gray-200 px-2 py-1 text-sm" />
+            <label className="text-xs text-gray-600">Amount recovered:</label>
+            <input
+              type="number"
+              value={recoveredAmount}
+              onChange={(e) => setRecoveredAmount(e.target.value)}
+              placeholder="0.00"
+              className="w-28 rounded-lg border border-gray-200 px-2 py-1 text-sm"
+            />
           </div>
           <div className="flex gap-2">
-            <button onClick={() => { onUpdate?.({ status: "won", amountRecovered: parseFloat(recoveredAmount) || 0 }); setShowOutcome(false); }} className="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-green-700">Won</button>
-            <button onClick={() => { onUpdate?.({ status: "settled", amountRecovered: parseFloat(recoveredAmount) || 0 }); setShowOutcome(false); }} className="rounded-lg border border-green-200 px-3 py-1.5 text-xs font-semibold text-green-700 hover:bg-green-50">Settled</button>
-            <button onClick={() => { onUpdate?.({ status: "lost" }); setShowOutcome(false); }} className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50">Lost</button>
-            <button onClick={() => setShowOutcome(false)} className="px-3 py-1.5 text-xs text-gray-500 hover:text-gray-700">Cancel</button>
+            <button
+              onClick={() => {
+                onUpdate({ status: "won", amountRecovered: parseFloat(recoveredAmount) || 0 });
+                setShowOutcome(false);
+              }}
+              className="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-green-700"
+            >
+              Won
+            </button>
+            <button
+              onClick={() => {
+                onUpdate({ status: "settled", amountRecovered: parseFloat(recoveredAmount) || 0 });
+                setShowOutcome(false);
+              }}
+              className="rounded-lg border border-green-200 px-3 py-1.5 text-xs font-semibold text-green-700 hover:bg-green-50"
+            >
+              Settled
+            </button>
+            <button
+              onClick={() => {
+                onUpdate({ status: "lost" });
+                setShowOutcome(false);
+              }}
+              className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50"
+            >
+              Lost
+            </button>
+            <button
+              onClick={() => setShowOutcome(false)}
+              className="px-3 py-1.5 text-xs text-gray-500 hover:text-gray-700"
+            >
+              Cancel
+            </button>
           </div>
         </div>
       )}

@@ -25,6 +25,7 @@ import { DownloadWarningModal } from "@/components/disputes/DownloadWarningModal
 import { EvidenceGaps } from "@/components/disputes/EvidenceGaps";
 import { InsurerAddressCorrectionModal } from "@/components/disputes/InsurerAddressCorrectionModal";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
+import { CodeCarouselLoaderV3 } from "@/components/loaders/CodeCarouselLoaderV3";
 import type {
   BoundCanonicalPlan,
   PlanContext,
@@ -36,11 +37,8 @@ export default function DisputesPage() {
   const [subscribing, setSubscribing] = useState(false);
 
   if (loading) {
-    return (
-      <div className="flex min-h-[60vh] items-center justify-center">
-        <div className="h-5 w-5 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
-      </div>
-    );
+    // B-LOAD.1 (S131): dispute context = Audit flow loader per Andrew direction.
+    return <CodeCarouselLoaderV3 title="Loading your dispute letter" />;
   }
 
   if (!isPro) {
@@ -504,11 +502,9 @@ function DisputesContent() {
 
   if (!letter) {
     if (disputeFetching) {
-      return (
-        <div className="flex min-h-[40vh] items-center justify-center">
-          <div className="h-5 w-5 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
-        </div>
-      );
+      // B-LOAD.1 (S131): "waiting for dispute letter to be created and load"
+      // → Audit flow loader per Andrew direction.
+      return <CodeCarouselLoaderV3 title="Drafting your dispute letter" />;
     }
     return (
       <div className="max-w-4xl mx-auto">
@@ -530,6 +526,14 @@ function DisputesContent() {
         </div>
       </div>
     );
+  }
+
+  // B-LOAD.1 (S131): during Re-draft, replace letter content with Audit flow
+  // loader per Andrew direction ("waiting for a dispute letter to be created and
+  // load → audit loading page"). Page chrome + sidebar from (app)/layout.tsx
+  // stay visible. Existing redraftToast pattern preserved for outcome surfacing.
+  if (redrafting) {
+    return <CodeCarouselLoaderV3 title="Re-drafting your dispute letter" />;
   }
 
   const missingYear = letter.missingPlanForYear ?? planContext?.missingForYear ?? null;

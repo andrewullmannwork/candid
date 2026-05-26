@@ -3,6 +3,29 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 
+/**
+ * Followup banner — S81 dispute outcome reminders (30-day / 14-day / post-escalation).
+ *
+ * Phase 2 B4.1 refactor per design source-of-truth:
+ *   plans/findings/design-handoffs/s117-followup-designs/batch-1-claim/batch-1.html
+ *   (Item 1 of 5 — FollowupBanner position spec, Option A)
+ *
+ * Per Item 1 Option A:
+ *   - Renders above the RecoveryHero on `/claim` (parent component placement)
+ *   - Adopt design Banner chrome (warn tone): amber gradient + icon + typography
+ *   - Dismissible per-banner via X close in top-right (calls existing dismiss API)
+ *
+ * Position:sticky to viewport is deliberately NOT applied — tab changes on `/claim`
+ * don't scroll the page (tabs render inline within the same scroll context), so
+ * the design intent ("survives tab changes") is satisfied by the existing render
+ * placement above the tab body. Viewport-sticky positioning was reviewed and
+ * deferred to avoid fighting the (app) layout sidebar positioning context.
+ *
+ * Action model preserved from prior implementation (4 outcomes:
+ * Won/Settled / Lost/Denied / Still Waiting / X-dismiss) since it's more
+ * functional than the design canvas's 2-button + X model.
+ */
+
 interface Followup {
   id: string;
   followup_type: string;
@@ -94,91 +117,111 @@ export function FollowupBanner() {
   }
 
   return (
-    <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
-      <div className="flex items-start justify-between mb-2">
-        <div>
-          <p className="text-sm font-semibold text-amber-900">
-            {isFinal ? "Last reminder:" : ""} What happened with your dispute?
-          </p>
-          <p className="text-xs text-amber-700 mt-0.5">
-            Your {typeLabel} for ${current.dispute.amount_disputed.toLocaleString()} was filed {daysAgo} days ago.
-          </p>
+    <div className="mb-4 overflow-hidden rounded-2xl border border-amber-200 bg-gradient-to-b from-amber-50 to-white">
+      <div className="flex items-start gap-3 px-4 py-3.5 sm:px-5 sm:py-4">
+        {/* Icon */}
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-700 ring-1 ring-amber-200">
+          <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 2m6-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
         </div>
-        {followups.length > 1 && (
-          <span className="text-[10px] font-semibold text-amber-600 bg-amber-100 px-2 py-0.5 rounded-full shrink-0">
-            {followups.length} pending
-          </span>
-        )}
-      </div>
 
-      {!showOutcome ? (
-        <div className="flex flex-wrap gap-2 mt-3">
-          <button
-            onClick={() => setShowOutcome(true)}
-            disabled={submitting}
-            className="px-3 py-1.5 text-xs font-semibold text-white bg-green-600 rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50"
-          >
-            Won / Settled
-          </button>
-          <button
-            onClick={() => handleAction("lost")}
-            disabled={submitting}
-            className="px-3 py-1.5 text-xs font-semibold text-red-700 border border-red-200 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50"
-          >
-            Lost / Denied
-          </button>
-          <button
-            onClick={() => handleAction("still_waiting")}
-            disabled={submitting}
-            className="px-3 py-1.5 text-xs font-semibold text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 transition-colors disabled:opacity-50"
-          >
-            Still Waiting
-          </button>
-          <button
-            onClick={() => handleAction("dismiss")}
-            disabled={submitting}
-            className="px-3 py-1.5 text-xs text-gray-500 hover:text-gray-700 transition-colors disabled:opacity-50"
-          >
-            Dismiss
-          </button>
-        </div>
-      ) : (
-        <div className="mt-3 space-y-2">
-          <div className="flex items-center gap-2">
-            <label className="text-xs text-amber-800">Amount recovered:</label>
-            <span className="text-xs text-amber-600">$</span>
-            <input
-              type="number"
-              value={recoveredAmount}
-              onChange={(e) => setRecoveredAmount(e.target.value)}
-              placeholder="0.00"
-              className="w-28 px-2 py-1 text-sm border border-amber-300 rounded-lg bg-white"
-            />
-          </div>
-          <div className="flex gap-2">
+        {/* Meta + actions */}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-amber-900">
+                {isFinal ? "Last reminder: " : ""}{daysAgo} days since you filed your {typeLabel}
+              </p>
+              <p className="mt-0.5 text-xs text-amber-800">
+                {isFinal
+                  ? "We won't ask again — please log the outcome so we can improve future disputes."
+                  : `Did you get a response? Logging it helps us flag similar disputes for other users.`}
+              </p>
+              <p className="mt-0.5 text-[11px] text-amber-700/80">
+                ${current.dispute.amount_disputed.toLocaleString()} disputed
+                {followups.length > 1 && ` · ${followups.length} pending followups`}
+              </p>
+            </div>
+
+            {/* X dismiss — top-right, calls "dismiss" action */}
             <button
-              onClick={() => handleAction("won", parseFloat(recoveredAmount) || 0)}
+              type="button"
+              onClick={() => handleAction("dismiss")}
               disabled={submitting}
-              className="px-3 py-1.5 text-xs font-semibold text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50"
+              aria-label="Dismiss this followup"
+              className="shrink-0 rounded-md p-1 text-amber-700/70 transition-colors hover:bg-amber-100 hover:text-amber-900 disabled:opacity-50"
             >
-              Won
-            </button>
-            <button
-              onClick={() => handleAction("settled", parseFloat(recoveredAmount) || 0)}
-              disabled={submitting}
-              className="px-3 py-1.5 text-xs font-semibold text-green-700 border border-green-200 rounded-lg hover:bg-green-50 disabled:opacity-50"
-            >
-              Settled
-            </button>
-            <button
-              onClick={() => { setShowOutcome(false); setRecoveredAmount(""); }}
-              className="px-3 py-1.5 text-xs text-gray-500 hover:text-gray-700"
-            >
-              Back
+              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 6l12 12M18 6L6 18" />
+              </svg>
             </button>
           </div>
+
+          {/* Action row */}
+          {!showOutcome ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                onClick={() => setShowOutcome(true)}
+                disabled={submitting}
+                className="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-green-700 disabled:opacity-50"
+              >
+                Log response
+              </button>
+              <button
+                onClick={() => handleAction("lost")}
+                disabled={submitting}
+                className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 transition-colors hover:bg-red-50 disabled:opacity-50"
+              >
+                Lost / Denied
+              </button>
+              <button
+                onClick={() => handleAction("still_waiting")}
+                disabled={submitting}
+                className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 transition-colors hover:bg-amber-50 disabled:opacity-50"
+              >
+                Still waiting
+              </button>
+            </div>
+          ) : (
+            <div className="mt-3 space-y-2">
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-medium text-amber-900">Amount recovered:</label>
+                <span className="text-xs text-amber-700">$</span>
+                <input
+                  type="number"
+                  value={recoveredAmount}
+                  onChange={(e) => setRecoveredAmount(e.target.value)}
+                  placeholder="0.00"
+                  className="w-28 rounded-lg border border-amber-300 bg-white px-2 py-1 text-sm"
+                />
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => handleAction("won", parseFloat(recoveredAmount) || 0)}
+                  disabled={submitting}
+                  className="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-green-700 disabled:opacity-50"
+                >
+                  Won
+                </button>
+                <button
+                  onClick={() => handleAction("settled", parseFloat(recoveredAmount) || 0)}
+                  disabled={submitting}
+                  className="rounded-lg border border-green-200 bg-white px-3 py-1.5 text-xs font-semibold text-green-700 hover:bg-green-50 disabled:opacity-50"
+                >
+                  Settled
+                </button>
+                <button
+                  onClick={() => { setShowOutcome(false); setRecoveredAmount(""); }}
+                  className="px-3 py-1.5 text-xs text-amber-700 hover:text-amber-900"
+                >
+                  Back
+                </button>
+              </div>
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }
