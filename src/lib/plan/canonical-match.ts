@@ -479,7 +479,7 @@ function scoreCandidate(input: CanonicalMatchInput, candidate: CanonicalPlanRow)
   return score / maxScore;
 }
 
-function cleanPlanName(name: string): string {
+export function cleanPlanName(name: string): string {
   return name
     .toLowerCase()
     .trim()

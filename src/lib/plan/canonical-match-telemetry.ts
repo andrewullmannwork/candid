@@ -15,7 +15,7 @@
 
 import { createHash } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { CanonicalMatchInput } from "./canonical-match";
+import { cleanPlanName, type CanonicalMatchInput } from "./canonical-match";
 
 export type CanonicalMatchStep =
   | "group_number"
@@ -37,33 +37,19 @@ export interface CanonicalMatchDecisionRecord {
 }
 
 /**
- * Mirror of `cleanPlanName` in canonical-match.ts. Kept inline (not exported
- * from that file) so the telemetry signature is computed against the SAME
- * normalization the matcher uses. If canonical-match.ts cleanPlanName ever
- * changes, this must change in lockstep.
- */
-function cleanPlanNameForSignature(name: string): string {
-  return name
-    .toLowerCase()
-    .trim()
-    .replace(/\b[A-Z]{2}-\d{3,}\b/gi, "")
-    .replace(/\b20\d{2}\b/g, "")
-    .replace(/\(.*?\)/g, "")
-    .replace(/\b(bronze|silver|gold|platinum|catastrophic)\b/gi, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/**
  * sha256(insurer_id + '|' + cleanPlanName(plan_name) + '|' + plan_year).
  *
  * Two uploads of the same SBC should produce the same signature. Admin
  * queries GROUP BY input_signature to surface "this signature produced N
  * canonicals" (the Ing-K bug pattern).
+ *
+ * Uses the exported `cleanPlanName` from canonical-match.ts so the telemetry
+ * signature normalization tracks matcher normalization in lockstep
+ * (Ship Gate G4 cross-module invariant; see scripts/ing-k-clean-plan-name-fixture.ts).
  */
 export function computeInputSignature(input: CanonicalMatchInput): string {
   const planYear = input.planYear || new Date().getFullYear();
-  const cleanName = cleanPlanNameForSignature(input.planName || "");
+  const cleanName = cleanPlanName(input.planName || "");
   const seed = `${input.insurerId}|${cleanName}|${planYear}`;
   return createHash("sha256").update(seed).digest("hex");
 }
