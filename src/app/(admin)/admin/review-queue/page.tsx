@@ -24,6 +24,15 @@ import { useAdminQuery } from "@/lib/admin/use-admin-query";
  * prioritize promotions ("12 users mention this slug" = strong promotion signal).
  */
 
+interface CandidateSuggestion {
+  slug: string;
+  name: string | null;
+  description: string | null;
+  concept_id: string | null;
+  match_score: number;
+  source: "trigram" | "haiku";
+}
+
 interface SlugQueueRow {
   id: string;
   source_doc_id: string;
@@ -36,9 +45,13 @@ interface SlugQueueRow {
   source_excerpt_verified: string | null;
   source_section_hint: string | null;
   context_extract: string | null;
-  status: "pending" | "promoted" | "rejected";
+  // Ing-I (S133): 'merged' added when admin folds proposed_slug into an existing
+  // canonical as alias via /api/admin/review-queue/merge.
+  status: "pending" | "promoted" | "rejected" | "merged";
   resolved_service_slug: string | null;
   rejection_reason: string | null;
+  candidate_suggestions: CandidateSuggestion[] | null;
+  candidate_suggestions_computed_at: string | null;
   created_at: string;
 }
 
@@ -65,7 +78,7 @@ const CATEGORIES = [
   "therapy", "mental_health", "maternity", "dme", "preventive", "other",
 ] as const;
 
-type StatusFilter = "all" | "pending" | "promoted" | "rejected";
+type StatusFilter = "all" | "pending" | "promoted" | "rejected" | "merged";
 
 export default function ReviewQueuePage() {
   const { user } = useAuth();
@@ -76,7 +89,8 @@ export default function ReviewQueuePage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("pending");
   const [activeTab, setActiveTab] = useState<"slugs" | "concepts">("slugs");
   const [actionRowId, setActionRowId] = useState<string | null>(null);
-  const [actionMode, setActionMode] = useState<"promote" | "reject" | null>(null);
+  // Ing-I (S133): slug-side actions extend to 'merge' (concept-side unchanged)
+  const [actionMode, setActionMode] = useState<"promote" | "reject" | "merge" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -190,6 +204,7 @@ export default function ReviewQueuePage() {
           <option value="pending">Pending ({slugRows.filter(r => r.status === "pending").length + conceptRows.filter(r => r.status === "pending").length})</option>
           <option value="promoted">Promoted</option>
           <option value="rejected">Rejected</option>
+          <option value="merged">Merged (Ing-I)</option>
           <option value="all">All</option>
         </select>
 
@@ -227,6 +242,53 @@ export default function ReviewQueuePage() {
           actionMode={actionMode}
           onAction={(id, mode) => { setActionRowId(id); setActionMode(mode); setError(null); }}
           onCancel={() => { setActionRowId(null); setActionMode(null); }}
+          onMerge={async (row, canonicalSlug) => {
+            try {
+              if (!user) throw new Error("Not signed in");
+              const token = await user.firebaseUser.getIdToken();
+              const res = await fetch("/api/admin/review-queue/merge", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({ queueId: row.id, canonicalSlug }),
+              });
+              const result = (await res.json()) as
+                | { ok: true; alias_slug: string; canonical_slug: string }
+                | { ok: false; error: string; detail?: unknown };
+              if (!res.ok || !("ok" in result) || !result.ok) {
+                const err = "error" in result ? result.error : `HTTP ${res.status}`;
+                throw new Error(`MERGE failed: ${err}`);
+              }
+              setActionRowId(null);
+              setActionMode(null);
+              await reload();
+            } catch (err) {
+              setError(err instanceof Error ? err.message : String(err));
+            }
+          }}
+          onLoadCandidates={async (row) => {
+            if (!user) throw new Error("Not signed in");
+            const token = await user.firebaseUser.getIdToken();
+            const res = await fetch("/api/admin/review-queue/candidates", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({ queueId: row.id }),
+            });
+            if (!res.ok) {
+              const body = (await res.json().catch(() => ({}))) as { error?: string };
+              throw new Error(body.error ?? `HTTP ${res.status}`);
+            }
+            const data = (await res.json()) as {
+              candidates: CandidateSuggestion[];
+              cached: boolean;
+            };
+            return data.candidates;
+          }}
           onPromote={async (row, fields) => {
             try {
               // Insert into service_catalog
@@ -282,7 +344,10 @@ export default function ReviewQueuePage() {
           rows={conceptRows}
           signalCounts={conceptSignalCounts}
           actionRowId={actionRowId}
-          actionMode={actionMode}
+          // Ing-I (S133): concept-side does NOT support merge; narrow the
+          // shared actionMode type. 'merge' on concepts collapses to null
+          // (action panel won't open).
+          actionMode={actionMode === "merge" ? null : actionMode}
           onAction={(id, mode) => { setActionRowId(id); setActionMode(mode); setError(null); }}
           onCancel={() => { setActionRowId(null); setActionMode(null); }}
           onReject={async (row, reason) => {
@@ -315,11 +380,13 @@ function SlugTable(props: {
   rows: SlugQueueRow[];
   signalCounts: Map<string, number>;
   actionRowId: string | null;
-  actionMode: "promote" | "reject" | null;
-  onAction: (id: string, mode: "promote" | "reject") => void;
+  actionMode: "promote" | "reject" | "merge" | null;
+  onAction: (id: string, mode: "promote" | "reject" | "merge") => void;
   onCancel: () => void;
   onPromote: (row: SlugQueueRow, fields: { resolvedSlug: string; name: string; category: string; description: string; isPreventiveEligible: boolean }) => Promise<void>;
   onReject: (row: SlugQueueRow, reason: string) => Promise<void>;
+  onMerge: (row: SlugQueueRow, canonicalSlug: string) => Promise<void>;
+  onLoadCandidates: (row: SlugQueueRow) => Promise<CandidateSuggestion[]>;
 }) {
   return (
     <table className="w-full text-sm">
@@ -346,6 +413,8 @@ function SlugTable(props: {
             onCancel={props.onCancel}
             onPromote={(fields) => props.onPromote(row, fields)}
             onReject={(reason) => props.onReject(row, reason)}
+            onMerge={(canonicalSlug) => props.onMerge(row, canonicalSlug)}
+            onLoadCandidates={() => props.onLoadCandidates(row)}
           />
         ))}
         {props.rows.length === 0 && (
@@ -359,12 +428,14 @@ function SlugTable(props: {
 function RowGroup(props: {
   row: SlugQueueRow;
   isActionTarget: boolean;
-  actionMode: "promote" | "reject" | null;
+  actionMode: "promote" | "reject" | "merge" | null;
   signalCount: number;
-  onAction: (mode: "promote" | "reject") => void;
+  onAction: (mode: "promote" | "reject" | "merge") => void;
   onCancel: () => void;
   onPromote: (fields: { resolvedSlug: string; name: string; category: string; description: string; isPreventiveEligible: boolean }) => Promise<void>;
   onReject: (reason: string) => Promise<void>;
+  onMerge: (canonicalSlug: string) => Promise<void>;
+  onLoadCandidates: () => Promise<CandidateSuggestion[]>;
 }) {
   const [resolvedSlug, setResolvedSlug] = useState(props.row.proposed_service_slug);
   const [name, setName] = useState(props.row.proposed_service_label ?? "");
@@ -373,6 +444,40 @@ function RowGroup(props: {
   const [isPreventive, setIsPreventive] = useState(false);
   const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  // Ing-I (S133): candidate-suggestions state lifted from CandidatePanel to
+  // RowGroup so all three action branches (promote / reject / merge) display
+  // top-K candidates as context. Read-only display for promote + reject;
+  // interactive merge buttons for the merge branch.
+  // Initial state seeds from row.candidate_suggestions (cached via backfill);
+  // lazy-loads on first action-mode selection if cache miss (post-backfill
+  // pending rows have NULL until first read).
+  const [candidates, setCandidates] = useState<CandidateSuggestion[] | null>(
+    props.row.candidate_suggestions,
+  );
+  const [candidatesLoading, setCandidatesLoading] = useState(false);
+  const [candidatesError, setCandidatesError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Auto-load when admin opens any action panel + cache miss
+    if (!props.isActionTarget || !props.actionMode) return;
+    if (candidates !== null) return;
+    if (candidatesLoading) return;
+    setCandidatesLoading(true);
+    setCandidatesError(null);
+    props
+      .onLoadCandidates()
+      .then((c) => {
+        setCandidates(c);
+        setCandidatesLoading(false);
+      })
+      .catch((err: unknown) => {
+        setCandidatesError(err instanceof Error ? err.message : String(err));
+        setCandidatesLoading(false);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.isActionTarget, props.actionMode]);
+
   return (
     <>
       <tr className="border-b border-gray-100">
@@ -390,18 +495,26 @@ function RowGroup(props: {
         <td className="py-2 pr-3 text-xs text-gray-500">{new Date(props.row.created_at).toLocaleDateString()}</td>
         <td className="py-2 pr-3 text-xs">
           {props.row.status === "pending" && !props.isActionTarget && (
-            <div className="flex gap-1">
+            <div className="flex flex-wrap gap-1">
               <button onClick={() => props.onAction("promote")} className="rounded bg-green-600 px-2 py-1 text-white hover:bg-green-700">Promote</button>
+              <button onClick={() => props.onAction("merge")} className="rounded bg-blue-600 px-2 py-1 text-white hover:bg-blue-700" title="Ing-I: fold this proposed slug into an existing canonical slug as an alias">Merge…</button>
               <button onClick={() => props.onAction("reject")} className="rounded bg-gray-400 px-2 py-1 text-white hover:bg-gray-500">Reject</button>
             </div>
           )}
           {props.row.status === "promoted" && <span className="text-green-700">→ {props.row.resolved_service_slug}</span>}
           {props.row.status === "rejected" && <span className="text-gray-500" title={props.row.rejection_reason ?? ""}>rejected</span>}
+          {props.row.status === "merged" && <span className="text-blue-700" title={`Alias of ${props.row.resolved_service_slug}`}>→ merged into {props.row.resolved_service_slug}</span>}
         </td>
       </tr>
       {props.isActionTarget && props.actionMode === "promote" && (
         <tr className="border-b border-gray-100 bg-blue-50">
           <td colSpan={7} className="p-3">
+            <CandidateContextBanner
+              candidates={candidates}
+              loading={candidatesLoading}
+              error={candidatesError}
+              mode="promote"
+            />
             <div className="grid grid-cols-2 gap-3 text-xs">
               <label>Final slug
                 <input value={resolvedSlug} onChange={(e) => setResolvedSlug(e.target.value)} className="mt-1 w-full rounded border border-gray-300 px-2 py-1 font-mono" />
@@ -442,6 +555,12 @@ function RowGroup(props: {
       {props.isActionTarget && props.actionMode === "reject" && (
         <tr className="border-b border-gray-100 bg-amber-50">
           <td colSpan={7} className="p-3">
+            <CandidateContextBanner
+              candidates={candidates}
+              loading={candidatesLoading}
+              error={candidatesError}
+              mode="reject"
+            />
             <label className="text-xs">Rejection reason (admin notes)
               <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={2} className="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-xs" placeholder="Why is this slug not valid? (e.g., 'duplicate of existing slug X', 'fragment of larger phrase', 'malformed')" />
             </label>
@@ -462,7 +581,223 @@ function RowGroup(props: {
           </td>
         </tr>
       )}
+      {props.isActionTarget && props.actionMode === "merge" && (
+        <tr className="border-b border-gray-100 bg-blue-50">
+          <td colSpan={7} className="p-3">
+            <CandidatePanel
+              row={props.row}
+              candidates={candidates}
+              loading={candidatesLoading}
+              error={candidatesError}
+              onMerge={props.onMerge}
+              onCancel={props.onCancel}
+            />
+          </td>
+        </tr>
+      )}
     </>
+  );
+}
+
+// ─── Candidate Context Banner (Ing-I S133) — read-only display ────────────
+// Used in Promote + Reject action panels to give admin full context BEFORE
+// committing to either action. Same candidate data the Merge flow uses, but
+// without interactive Merge buttons. Prevents accidental Promote-as-duplicate
+// when a strong canonical match exists + prevents accidental Reject of useful
+// signal when proposed slug is plausibly aliasable.
+function CandidateContextBanner(props: {
+  candidates: CandidateSuggestion[] | null;
+  loading: boolean;
+  error: string | null;
+  mode: "promote" | "reject";
+}) {
+  if (props.error) {
+    return (
+      <div className="mb-3 rounded border border-red-300 bg-red-50 px-2 py-1.5 text-xs text-red-800">
+        Top candidates failed to load: {props.error}
+      </div>
+    );
+  }
+  if (props.loading) {
+    return (
+      <div className="mb-3 rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-500">
+        Loading top candidates...
+      </div>
+    );
+  }
+  if (props.candidates === null) return null;
+
+  const bannerHint =
+    props.mode === "promote"
+      ? "Top canonical candidates this proposed slug may already represent. If any look like the same concept, consider MERGE instead of Promote."
+      : "Top canonical candidates this proposed slug may already represent. If any look like the same concept, consider MERGE instead of Reject.";
+
+  if (props.candidates.length === 0) {
+    return (
+      <div className="mb-3 rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-600">
+        No candidate canonicals above threshold — proposed slug is likely genuinely novel or garbage.
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-3 rounded border border-gray-200 bg-white px-2 py-2 text-xs">
+      <div className="mb-1.5 text-gray-600">{bannerHint}</div>
+      <div className="space-y-1">
+        {props.candidates.map((c) => (
+          <div
+            key={c.slug}
+            className="flex items-center gap-3 rounded border border-gray-200 px-2 py-1"
+          >
+            <div className="flex-1">
+              <div className="font-mono text-gray-900">{c.slug}</div>
+              {c.name && <div className="text-gray-700">{c.name}</div>}
+              {c.description && (
+                <div className="truncate text-gray-500" title={c.description}>
+                  {c.description}
+                </div>
+              )}
+            </div>
+            <div className="flex flex-col items-end gap-0.5">
+              <span
+                className={`rounded px-1.5 py-0.5 font-semibold ${
+                  c.match_score >= 0.8
+                    ? "bg-green-100 text-green-800"
+                    : c.match_score >= 0.6
+                      ? "bg-blue-100 text-blue-800"
+                      : "bg-gray-100 text-gray-600"
+                }`}
+              >
+                {c.match_score.toFixed(2)}
+              </span>
+              <span className="text-[10px] uppercase text-gray-500">
+                {c.source}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Candidate Panel (Ing-I S133) ───────────────────────────────────────────
+// Interactive variant for the Merge action: same candidate display + per-candidate
+// "Merge into" buttons with 2-click confirm.
+function CandidatePanel(props: {
+  row: SlugQueueRow;
+  candidates: CandidateSuggestion[] | null;
+  loading: boolean;
+  error: string | null;
+  onMerge: (canonicalSlug: string) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [confirmingSlug, setConfirmingSlug] = useState<string | null>(null);
+  const [merging, setMerging] = useState(false);
+
+  const { candidates, loading, error } = props;
+
+  return (
+    <div className="text-xs">
+      <div className="mb-2 font-medium text-blue-900">
+        Merge <span className="font-mono">{props.row.proposed_service_slug}</span> into an existing canonical slug
+      </div>
+      <div className="mb-2 text-blue-700">
+        Pick a candidate below. MERGE creates an alias row in service_catalog
+        (canonical_for_concept=FALSE) so future parses of{" "}
+        <span className="font-mono">{props.row.proposed_service_slug}</span>{" "}
+        resolve to the chosen canonical via concept_id linkage. Existing
+        already-parsed documents are NOT affected (admin reprocess required separately).
+      </div>
+      {loading && <div className="text-gray-500">Loading candidates...</div>}
+      {error && (
+        <div className="rounded border border-red-300 bg-red-50 px-2 py-1 text-red-800">
+          {error}
+        </div>
+      )}
+      {candidates !== null && candidates.length === 0 && !loading && (
+        <div className="rounded border border-gray-300 bg-white px-2 py-2 text-gray-600">
+          No matching canonical slugs found above thresholds. If this is genuinely a
+          new concept, use <strong>Promote</strong> instead. If it&apos;s a
+          fragment / malformed, use <strong>Reject</strong>.
+        </div>
+      )}
+      {candidates !== null && candidates.length > 0 && (
+        <div className="space-y-1">
+          {candidates.map((c) => (
+            <div
+              key={c.slug}
+              className="flex items-center gap-3 rounded border border-blue-200 bg-white px-2 py-1.5"
+            >
+              <div className="flex-1">
+                <div className="font-mono text-blue-900">{c.slug}</div>
+                {c.name && (
+                  <div className="text-gray-700">{c.name}</div>
+                )}
+                {c.description && (
+                  <div className="truncate text-gray-500" title={c.description}>
+                    {c.description}
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-col items-end gap-0.5">
+                <span
+                  className={`rounded px-1.5 py-0.5 font-semibold ${
+                    c.match_score >= 0.8
+                      ? "bg-green-100 text-green-800"
+                      : c.match_score >= 0.6
+                        ? "bg-blue-100 text-blue-800"
+                        : "bg-gray-100 text-gray-600"
+                  }`}
+                >
+                  {c.match_score.toFixed(2)}
+                </span>
+                <span className="text-[10px] uppercase text-gray-500">
+                  {c.source}
+                </span>
+              </div>
+              {confirmingSlug === c.slug ? (
+                <div className="flex gap-1">
+                  <button
+                    disabled={merging}
+                    onClick={async () => {
+                      setMerging(true);
+                      await props.onMerge(c.slug);
+                      setMerging(false);
+                    }}
+                    className="rounded bg-blue-600 px-2 py-1 text-white hover:bg-blue-700 disabled:bg-gray-300"
+                  >
+                    {merging ? "Merging..." : "Confirm Merge"}
+                  </button>
+                  <button
+                    disabled={merging}
+                    onClick={() => setConfirmingSlug(null)}
+                    className="rounded bg-gray-300 px-2 py-1 text-gray-700 hover:bg-gray-400"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setConfirmingSlug(c.slug)}
+                  className="rounded bg-blue-600 px-2 py-1 text-white hover:bg-blue-700"
+                >
+                  Merge into
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="mt-2">
+        <button
+          onClick={props.onCancel}
+          className="rounded bg-gray-300 px-3 py-1 text-gray-700 hover:bg-gray-400"
+        >
+          Close
+        </button>
+      </div>
+    </div>
   );
 }
 

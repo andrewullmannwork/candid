@@ -22,7 +22,8 @@ export type ParserKind =
   | "reparse_field_batch"
   | "card_scan"
   | "bill_parse"
-  | "eob_parse";
+  | "eob_parse"
+  | "admin_candidate_match"; // Ing-I (S133) — Pass 2 Haiku slug-disambiguation in /admin/review-queue
 
 export type CostSource =
   | "user_upload"
