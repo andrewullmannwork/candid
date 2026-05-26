@@ -713,12 +713,12 @@ export default function CandidPlanPage() {
   const totalUsed = Array.from(distinctCoveredTitles).filter((title) => usedBenefits.has(title)).length;
   const totalCoveredBenefitIds = distinctCoveredTitles.size;
 
-  // B3.2 \u2014 HSA-eligible benefit count drives banner copy + visibility gate.
+  // B3.2 — HSA-eligible benefit count drives banner copy + visibility gate.
   const hsaEligibleCount = result.benefits.filter((b) => b.benefit.hsaFsaEligible).length;
 
-  // B3.2 \u2014 subtitle adapts to plan state. PageHeader sub prop accepts string.
+  // B3.2 — subtitle adapts to plan state. PageHeader sub prop accepts string.
   const headerSub = isGeneric
-    ? `General benefits available with most ${result.planType || ""} plans \u2014 not specific to your plan.`
+    ? `General benefits available with most ${result.planType || ""} plans — not specific to your plan.`
     : result.planName
       ? `Benefits your ${result.planName} plan covers. Check off what you\u2019re using.`
       : "Benefits your insurance plan covers. Check off what you\u2019re using to track your progress.";
@@ -727,7 +727,7 @@ export default function CandidPlanPage() {
     <div className="max-w-3xl">
       <PageHeader title="Your Benefits" sub={headerSub} />
 
-      {/* Data source transparency \u2014 methodology disclosure per Pattern 1 #11.
+      {/* Data source transparency — methodology disclosure per Pattern 1 #11.
           Replaces S107-era AmberBanner+DataSourceBanner with the B3.1
           DataSourceContextLine primitive for cross-surface consistency
           (/dashboard already uses this). 7 copy variants \u00d7 3 tiers preserved. */}
@@ -772,7 +772,7 @@ export default function CandidPlanPage() {
                 {totalUsed === 0
                   ? "Start checking off benefits you use"
                   : totalUsed < totalCoveredBenefitIds / 2
-                    ? "Good start \u2014 keep discovering"
+                    ? "Good start — keep discovering"
                     : totalUsed < totalCoveredBenefitIds
                       ? "You\u2019re getting great value"
                       : "You\u2019re maximizing your plan!"}
@@ -794,7 +794,7 @@ export default function CandidPlanPage() {
 
         {/* HSA banner (D-\u00a71.C.2-C). B-LAND.1 / S130: always clickable; routes
             to /hsa-marketplace (coming-soon stub locked behind overlay; partner
-            sign-up form lives there). Flag gate removed per Wire B1 \u2014 page is
+            sign-up form lives there). Flag gate removed per Wire B1 — page is
             locked so no premature reveal. */}
         {hsaEligibleCount > 0 && (
           <Link
@@ -813,7 +813,7 @@ export default function CandidPlanPage() {
                 {hsaEligibleCount} {hsaEligibleCount === 1 ? "benefit is" : "benefits are"} HSA/FSA eligible
               </p>
               <p className="text-xs text-purple-700 mt-0.5">
-                Pay with pre-tax savings \u2014 and shop the HSA/FSA marketplace.
+                Pay with pre-tax savings — and shop the HSA/FSA marketplace.
               </p>
             </div>
             <svg className="w-4 h-4 text-purple-700 shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
