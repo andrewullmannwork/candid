@@ -23,6 +23,7 @@ const adminNav = [
   { href: "/admin/flags", label: "Feature Flags" },
   { href: "/admin/parse-audit-runs", label: "Parse Audit Runs" },
   { href: "/admin/auto-reparse-stats", label: "  ↳ Auto-Reparse Stats" },
+  { href: "/admin/canonical-match-decisions", label: "  ↳ Canonical Match Decisions" },
   { href: "/admin/review-queue", label: "Review Queue" },
   { href: "/admin/sbc-tickets", label: "SBC Tickets" },
   { href: "/admin/settings", label: "Settings" },
