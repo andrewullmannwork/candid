@@ -68,6 +68,7 @@ import type { FieldProvenanceEntry } from "../parser/field-categories";
 import { decorateFieldFromEntry, type DecoratedValue } from "../parser/consumer-read";
 import { readFeatureFlagConfig } from "../config/product-flags";
 import type { DecorationContext } from "./analyze-decoration";
+import { recordCostEvent, type CostSource } from "@/lib/cost/parse-cost-events";
 
 /** All SBC sections eligible for re-dispatch — DO_NOT_EXTRACT excluded. */
 const NON_DO_NOT_EXTRACT_SBC_SECTIONS: SBCSectionHint[] = [
@@ -175,6 +176,10 @@ export async function reparseFieldsBatch(
   planId: string,
   requests: BatchFieldRequest[],
   decorationContext: DecorationContext,
+  // Cost-F (S129): cost_source attribution for parse_cost_events ledger.
+  // Today's sole caller is auto-reparse-triage.ts (Ing-A) → default
+  // 'auto_reparse'. Future user-triggered batch UI passes 'user_upload'.
+  costSource: CostSource = "auto_reparse",
 ): Promise<ReparseFieldsBatchResult> {
   // ── Step 0: Filter to eligible requests (allow-list gate) ────────────────
   const eligible = requests.filter((r) => {
@@ -193,7 +198,7 @@ export async function reparseFieldsBatch(
   // ── Step 1: Load plan + verify ownership ────────────────────────────────
   const { data: plan, error: planErr } = await supabase
     .from("insurance_plans")
-    .select("id, user_id, source_document_id, field_provenance")
+    .select("id, user_id, source_document_id, field_provenance, canonical_plan_id")
     .eq("id", planId)
     .single();
   if (planErr || !plan) {
@@ -606,6 +611,26 @@ export async function reparseFieldsBatch(
       fields_requested: requests.length,
       fields_eligible: eligible.length,
       fields_dispatched: contexts.length,
+    },
+  });
+
+  // ── Step 9b: parse_cost_events ledger (Cost-F, S129) ────────────────────
+  // Parallel write to unified cost ledger. cost_source defaults to
+  // 'auto_reparse' since Ing-A triage is the sole current caller; future
+  // user-triggered batch UI passes 'user_upload' via the costSource arg.
+  await recordCostEvent(supabase, {
+    canonicalPlanId: (plan.canonical_plan_id as string | null | undefined) ?? null,
+    insurancePlanId: planId,
+    documentId: plan.source_document_id as string,
+    userId,
+    parserKind: "reparse_field_batch",
+    costSource,
+    costUsd: actualCost,
+    metadata: {
+      fields_requested: requests.length,
+      fields_eligible: eligible.length,
+      fields_dispatched: contexts.length,
+      sections_dispatched: dispatchedThisRun,
     },
   });
 

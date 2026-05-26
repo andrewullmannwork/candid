@@ -38,6 +38,7 @@ import {
   extractRowsFromEOCParseResult,
 } from "@/lib/parser/canonical-haiku-extractions";
 import { validatePlanField } from "@/lib/plan/garbage-validators";
+import { recordCostEvent } from "@/lib/cost/parse-cost-events";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
@@ -213,6 +214,35 @@ export async function processEOCDocumentData(
 
   // 4. parse_audit_runs telemetry per Pattern P-7.
   await writeParseAuditRun(supabase, doc, documentId, parsed);
+
+  // 4b. parse_cost_events ledger (Cost-F, S129) — parallel write to unified
+  // cost ledger. Same canonicalPlanId lookup as the canonical-promotion
+  // block above; done in a fresh small read here to keep the cost write
+  // self-contained (negligible round-trip cost).
+  try {
+    const { data: planRowForCost } = await supabase
+      .from("insurance_plans")
+      .select("canonical_plan_id, user_id")
+      .eq("id", targetPlanId)
+      .maybeSingle();
+    await recordCostEvent(supabase, {
+      canonicalPlanId: (planRowForCost?.canonical_plan_id as string | null | undefined) ?? null,
+      insurancePlanId: targetPlanId,
+      documentId,
+      userId: (planRowForCost?.user_id as string | undefined) ?? doc.user_id,
+      parserKind: "eoc_base",
+      costSource: "user_upload",
+      costUsd: parsed.total_cost_usd,
+      haikuTokensInput: parsed.total_input_tokens,
+      haikuTokensOutput: parsed.total_output_tokens,
+      metadata: {
+        sections_extracted: Object.keys(parsed.sections),
+        segmentation_used: parsed.segmentation_used,
+      },
+    });
+  } catch (err) {
+    console.warn("[parse-cost-events] [eoc] non-fatal:", err);
+  }
 
   // 5. documents.metadata.eoc_sections summary write.
   await supabase

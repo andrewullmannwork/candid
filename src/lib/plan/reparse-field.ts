@@ -48,6 +48,7 @@ import type { FieldProvenanceEntry } from "../parser/field-categories";
 import { decorateFieldFromEntry, type DecoratedValue } from "../parser/consumer-read";
 import { readFeatureFlagConfig } from "../config/product-flags";
 import type { DecorationContext } from "./analyze-decoration";
+import { recordCostEvent } from "@/lib/cost/parse-cost-events";
 
 /** All SBC sections that are eligible for re-dispatch — DO_NOT_EXTRACT excluded. */
 const NON_DO_NOT_EXTRACT_SBC_SECTIONS: SBCSectionHint[] = [
@@ -172,7 +173,7 @@ export async function reparseField(
   // ── Step 2: Load plan + verify ownership ─────────────────────────────────
   const { data: plan, error: planErr } = await supabase
     .from("insurance_plans")
-    .select("id, user_id, source_document_id, field_provenance")
+    .select("id, user_id, source_document_id, field_provenance, canonical_plan_id")
     .eq("id", request.planId)
     .single();
   if (planErr || !plan) return { success: false, error: "plan_not_found" };
@@ -431,6 +432,25 @@ export async function reparseField(
       service_slug: request.serviceSlug ?? null,
       sections_dispatched: dispatchedThisRun,
       final_verified_state: updatedEntry.source_excerpt_verified ?? "not_found",
+    },
+  });
+
+  // ── Step 11b: parse_cost_events ledger (Cost-F, S129) ────────────────────
+  // Parallel write to unified cost ledger. user_upload cost_source = this
+  // path is user-triggered (admin/UI button). Auto-reparse path goes
+  // through reparse-fields-batch.ts (different cost_source).
+  await recordCostEvent(supabase, {
+    canonicalPlanId: (plan.canonical_plan_id as string | null | undefined) ?? null,
+    insurancePlanId: request.planId,
+    documentId: plan.source_document_id as string,
+    userId,
+    parserKind: "reparse_field",
+    costSource: "user_upload",
+    costUsd: actualCost,
+    metadata: {
+      field_name: request.fieldName,
+      service_slug: request.serviceSlug ?? null,
+      sections_dispatched: dispatchedThisRun,
     },
   });
 
