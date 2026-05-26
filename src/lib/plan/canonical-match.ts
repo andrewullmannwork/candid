@@ -15,6 +15,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
+import { recordCanonicalMatchDecision } from "./canonical-match-telemetry";
 // normalizeInsurerName available from "./matcher" if needed for future enhancements
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -33,6 +34,12 @@ export interface CanonicalMatchInput {
   // CF-63 RC-4 (S128): ACA metal tier from SBC plan-identity. Used at INSERT
   // time only — matching dimension addition is RC-3 territory (separate PR).
   metalTier?: string | null;
+  // Ing-K Phase 1 (S129): document + insurance_plan context for decision
+  // telemetry. Optional so existing call sites (e.g., reject-canonical-match
+  // recursive call) continue to compile; populated by upload-flow call sites
+  // (process-plan.ts) so admin can group decisions by upload.
+  documentId?: string | null;
+  insurancePlanId?: string | null;
 }
 
 export interface CanonicalMatchResult {
@@ -88,6 +95,17 @@ export async function findOrCreateCanonicalPlan(
     if (groupMatch) {
       console.log(`[canonical-plan] Group number exact match: ${groupMatch.plan_name} (${groupMatch.id})`);
       await incrementSourceCount(supabase, groupMatch.id, groupMatch.source_count, groupMatch.confidence_score);
+      await recordCanonicalMatchDecision(supabase, {
+        documentId: input.documentId,
+        insurancePlanId: input.insurancePlanId,
+        stepMatched: "group_number",
+        bestScore: null,
+        candidateCount: 1,
+        matchedCanonicalId: groupMatch.id,
+        rejectedTopCandidateId: null,
+        input,
+        reason: "group_number exact match",
+      });
       return {
         canonicalPlanId: groupMatch.id,
         isNew: false,
@@ -111,6 +129,17 @@ export async function findOrCreateCanonicalPlan(
     if (hiosMatch) {
       console.log(`[canonical-plan] HIOS ID exact match: ${hiosMatch.plan_name} (${hiosMatch.id})`);
       await incrementSourceCount(supabase, hiosMatch.id, hiosMatch.source_count, hiosMatch.confidence_score);
+      await recordCanonicalMatchDecision(supabase, {
+        documentId: input.documentId,
+        insurancePlanId: input.insurancePlanId,
+        stepMatched: "hios_id",
+        bestScore: null,
+        candidateCount: 1,
+        matchedCanonicalId: hiosMatch.id,
+        rejectedTopCandidateId: null,
+        input,
+        reason: "hios_id exact match",
+      });
       return {
         canonicalPlanId: hiosMatch.id,
         isNew: false,
@@ -129,6 +158,10 @@ export async function findOrCreateCanonicalPlan(
     .eq("insurer_id", input.insurerId)
     .eq("plan_year", planYear);
 
+  const candidateCount = candidates?.length ?? 0;
+  let scoredTopCandidateId: string | null = null;
+  let scoredTopScore: number | null = null;
+
   if (candidates && candidates.length > 0) {
     const scored = candidates
       .map((c: CanonicalPlanRow) => ({
@@ -141,6 +174,8 @@ export async function findOrCreateCanonicalPlan(
     if (scored.length > 0) {
       const best = scored[0];
       const confidence = best.score;
+      scoredTopCandidateId = best.plan.id;
+      scoredTopScore = confidence;
 
       if (confidence >= 0.7) {
         console.log(`[canonical-plan] Fuzzy match (${confidence.toFixed(2)}): ${best.plan.plan_name} (${best.plan.id})`);
@@ -148,6 +183,17 @@ export async function findOrCreateCanonicalPlan(
         if (confidence >= 0.9) {
           // High confidence — auto-link
           await incrementSourceCount(supabase, best.plan.id, best.plan.source_count, best.plan.confidence_score);
+          await recordCanonicalMatchDecision(supabase, {
+            documentId: input.documentId,
+            insurancePlanId: input.insurancePlanId,
+            stepMatched: "fuzzy_auto",
+            bestScore: confidence,
+            candidateCount,
+            matchedCanonicalId: best.plan.id,
+            rejectedTopCandidateId: null,
+            input,
+            reason: `fuzzy auto-link (score ${confidence.toFixed(3)} >= 0.9)`,
+          });
           return {
             canonicalPlanId: best.plan.id,
             isNew: false,
@@ -159,6 +205,17 @@ export async function findOrCreateCanonicalPlan(
         }
 
         // Medium confidence — needs user confirmation
+        await recordCanonicalMatchDecision(supabase, {
+          documentId: input.documentId,
+          insurancePlanId: input.insurancePlanId,
+          stepMatched: "fuzzy_needs_confirmation",
+          bestScore: confidence,
+          candidateCount,
+          matchedCanonicalId: best.plan.id,
+          rejectedTopCandidateId: null,
+          input,
+          reason: `fuzzy needs user confirmation (score ${confidence.toFixed(3)} in 0.7-0.9 range)`,
+        });
         return {
           canonicalPlanId: best.plan.id,
           isNew: false,
@@ -174,6 +231,33 @@ export async function findOrCreateCanonicalPlan(
   // Step 4: No match — create new canonical plan
   console.log(`[canonical-plan] No match found, creating new canonical plan: ${input.planName}`);
   const newPlan = await createCanonicalPlan(supabase, input, planYear);
+
+  // Telemetry: capture WHY no match (the Ing-K diagnostic surface).
+  //  - candidate_count=0 → root cause A (plan_year filter excluded everything)
+  //  - candidate_count>0 + best_score=null → all candidates scored zero
+  //  - candidate_count>0 + best_score in 0.5-0.7 → near-miss (root cause B/C/D)
+  //  - candidate_count>0 + best_score below 0.5 → no real candidate
+  let createNewReason: string;
+  if (candidateCount === 0) {
+    createNewReason = `plan_year filter zero candidates (insurer_id=${input.insurerId}, plan_year=${planYear})`;
+  } else if (scoredTopScore === null) {
+    createNewReason = `${candidateCount} candidate(s) all scored zero (no shared dimensions)`;
+  } else if (scoredTopScore >= 0.5) {
+    createNewReason = `fuzzy top ${scoredTopScore.toFixed(3)} below 0.7 threshold (near-miss; ${candidateCount} candidate(s))`;
+  } else {
+    createNewReason = `fuzzy top ${scoredTopScore.toFixed(3)} below 0.5 (${candidateCount} candidate(s); no real match)`;
+  }
+  await recordCanonicalMatchDecision(supabase, {
+    documentId: input.documentId,
+    insurancePlanId: input.insurancePlanId,
+    stepMatched: "create_new",
+    bestScore: scoredTopScore,
+    candidateCount,
+    matchedCanonicalId: newPlan.id,
+    rejectedTopCandidateId: scoredTopCandidateId,
+    input,
+    reason: createNewReason,
+  });
 
   return {
     canonicalPlanId: newPlan.id,

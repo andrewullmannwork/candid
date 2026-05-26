@@ -912,6 +912,11 @@ export async function processPlanDocumentData(
           // is parseResult.metalTier (legacy-adapter surfaces this from
           // SBCHaikuParseResult.planIdentity.metalTier — previously dropped).
           metalTier: parseResult.metalTier ?? undefined,
+          // Ing-K Phase 1 (S129): document + insurance_plan context for
+          // canonical_match_decisions telemetry. Lets admin group decisions
+          // by upload to surface the "same SBC → multiple canonicals" bug.
+          documentId,
+          insurancePlanId: targetPlanId,
         });
 
         if (canonicalResult.needsConfirmation) {
