@@ -26,6 +26,7 @@
  * Plus inline "Re-draft to verify" hint when the row is not cite-grade.
  */
 import type { DisputeEvidence, LineItemEvidence } from "@/lib/disputes/evidence-resolver";
+import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 
 interface Props {
   evidence: DisputeEvidence | null;
@@ -125,7 +126,7 @@ function EvidenceItem({
               </span>
             ) : item.planBenefit.coinsurance != null ? (
               <span className="font-semibold">
-                {Math.round(item.planBenefit.coinsurance * 100)}% coinsurance
+                {normalizeCoinsurancePct(item.planBenefit.coinsurance)}% coinsurance
               </span>
             ) : (
               "cost-sharing terms"

@@ -23,6 +23,7 @@ import { votedParseSBC } from "@/lib/sbc/voted-parser";
 import type { VotedParseSBCResult } from "@/lib/sbc/voted-parser";
 import { translateHaikuToLegacy } from "@/lib/sbc/legacy-adapter";
 import { validatePlanFields, validatePlanField } from "@/lib/plan/garbage-validators";
+import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 import type { SBCHaikuService, SBCParseResult, SBCParsedService } from "@/lib/sbc/types";
 import {
   buildPlanCoveredServiceProvenance,
@@ -1149,10 +1150,10 @@ export async function processPlanDocumentData(
           service_id: slugToId.get(s.serviceSlug)!,
           concept_id: conceptIdMap.get(s.serviceSlug) || null,
           place_of_service: pos,
-          in_copay: s.inCopay, in_coinsurance: s.inCoinsurance,
+          in_copay: s.inCopay, in_coinsurance: normalizeCoinsuranceForStorage(s.inCoinsurance),
           in_deductible_applies: s.inDeductibleApplies, in_copay_waiver_condition: s.inCopayWaiverCondition,
           in_cost_description: s.inCostDescription,
-          out_copay: s.outCopay, out_coinsurance: s.outCoinsurance,
+          out_copay: s.outCopay, out_coinsurance: normalizeCoinsuranceForStorage(s.outCoinsurance),
           out_deductible_applies: s.outDeductibleApplies, out_cost_description: s.outCostDescription,
           oon_paid_at_in_network: s.oonPaidAtInNetwork,
           annual_limit: s.annualLimit, annual_limit_value: s.annualLimitValue,
@@ -1414,7 +1415,7 @@ export async function processPlanDocumentData(
                   service_id: svc.id,
                   place_of_service: "any",
                   in_copay: cs.copay,
-                  in_coinsurance: cs.coinsurance,
+                  in_coinsurance: normalizeCoinsuranceForStorage(cs.coinsurance),
                   in_deductible_applies: cs.deductible_applies,
                   covered: cs.is_covered,
                   prior_auth_required: cs.requires_prior_auth,

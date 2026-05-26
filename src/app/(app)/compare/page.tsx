@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * S70 + S70 follow-up — /compare page (Candid Compare).
+ * S70 + S70 follow-up + B3.3 — /compare page (Candid Compare).
  *
  * Unified per-slot UX: each of the (up to 3) plan slots independently supports
  * three input modes — "Use my current plan" (slot 0 only, when user has an
@@ -21,6 +21,15 @@
  *
  * Backend gate: /api/plan/compare returns 503 when benefits_comparison_v1 flag
  * is OFF — surface a "Coming soon" state at submit time.
+ *
+ * B3.3 — picker hero + plan summary cards + collapsible service-by-service
+ * categories + IN/OON cells. Adopts §1.C.3 wholesale. ShareWithFriend
+ * compare_picker placement un-gated (drops the S124 `share_with_friend_new_surfaces_v1`
+ * 406 path; matches S125 B3.1 /dashboard pattern). CF-31 debug logs stripped
+ * (flow stable since S72). Auth gates / Turnstile / consent / UnifiedParseScreen
+ * / Mig 078 purpose=comparison / browser-back popstate / 503+403 error handling
+ * / S107 canonical_plans search source / CF-31 prefer-user_plan ref all PRESERVED
+ * verbatim per §R.1 + S70/S107/Mig 078 NON-NEGOTIABLE preservation list.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -32,8 +41,6 @@ import {
 } from "@/components/security/TurnstileWidget";
 import { useConsent } from "@/lib/consent/use-consent";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
-import { CompareHeader } from "@/components/compare/CompareHeader";
-import { CompareCategories } from "@/components/compare/CompareCategories";
 import {
   PlanSlot,
   type SlotState,
@@ -45,9 +52,20 @@ import {
 } from "@/components/parsing/UnifiedParseScreen";
 import type { ComparePlanPayload, PlanRef } from "@/lib/plan/compare";
 import { ShareWithFriend } from "@/components/share/share-with-friend";
-import { createBrowserClient } from "@/lib/supabase/client";
+import { CompareTopbar } from "@/components/compare/CompareTopbar";
+import { PlanSummaryCards } from "@/components/compare/PlanSummaryCards";
+import { NumbersTable } from "@/components/compare/NumbersTable";
+import { BreadthTable } from "@/components/compare/BreadthTable";
+import { ServiceCategoryAccordions } from "@/components/compare/ServiceCategoryAccordions";
 
 type Mode = "build" | "parsing" | "results";
+
+type EditableField =
+  | "premium_monthly"
+  | "in_deductible_individual"
+  | "out_deductible_individual"
+  | "in_oop_max_individual"
+  | "out_oop_max_individual";
 
 // ── Page ─────────────────────────────────────────────────────────────────
 
@@ -218,29 +236,9 @@ function CompareInterface() {
   const turnstileTokenRef = useRef<string | null>(null);
   const turnstileRef = useRef<TurnstileWidgetHandle>(null);
 
-  // B2.4 — Gate for the NEW compare_picker ShareWithFriend embed (soft variant).
-  // Flag seeded default ON via mig 118 (S124); falls back to false until DB
-  // query resolves so we don't flash the embed if Andrew later flips it OFF.
-  const [shareWithFriendNewSurfacesEnabled, setShareWithFriendNewSurfacesEnabled] =
-    useState(false);
-
   useEffect(() => {
     turnstileTokenRef.current = turnstileToken;
   }, [turnstileToken]);
-
-  // B2.4 — Resolve `share_with_friend_new_surfaces_v1` flag on mount.
-  useEffect(() => {
-    const supabase = createBrowserClient();
-    supabase
-      .from("feature_flag_rules")
-      .select("enabled")
-      .eq("flag_key", "share_with_friend_new_surfaces_v1")
-      .eq("target_type", "global")
-      .single()
-      .then(({ data }) => {
-        if (data?.enabled) setShareWithFriendNewSurfacesEnabled(true);
-      });
-  }, []);
 
   // Session 72: Browser-back history handling. The build → parsing → results
   // transitions all happen inside this single component on the same URL, so the
@@ -267,10 +265,6 @@ function CompareInterface() {
   // Server-side endpoint (bypasses RLS). The previous browser-Supabase-client
   // chain 406'd because Firebase auth isn't visible to RLS policies that gate
   // on auth.uid(). Now: single Bearer-token GET.
-  // CF-31 (Session 72): added diagnostic logging — Session 71 server logs
-  // showed endpoint returning plan data but client wasn't rendering the
-  // affordance. Logs help isolate fetch-failure vs. null-body vs. state-set
-  // race vs. PlanSlot render gating.
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
@@ -280,32 +274,13 @@ function CompareInterface() {
         const res = await fetch("/api/plan/current", {
           headers: { Authorization: `Bearer ${idToken}` },
         });
-        console.log("[/compare] /api/plan/current status:", res.status);
-        if (!res.ok) {
-          console.warn("[/compare] /api/plan/current non-ok:", res.status);
-          return;
-        }
-        if (cancelled) {
-          console.log("[/compare] /api/plan/current cancelled before parse");
-          return;
-        }
+        if (!res.ok) return;
+        if (cancelled) return;
         const body = (await res.json()) as { plan: CurrentPlanSummary | null };
-        console.log("[/compare] /api/plan/current body:", body);
-        if (cancelled) {
-          console.log("[/compare] /api/plan/current cancelled after parse");
-          return;
-        }
-        if (body.plan) {
-          console.log("[/compare] setCurrentPlan(plan)", body.plan.planName);
-          setCurrentPlan(body.plan);
-        } else {
-          console.warn(
-            "[/compare] /api/plan/current returned plan=null — affordance won't render. " +
-              "Likely the user has no insurance_plans rows OR profile.active_insurance_plan_id is orphaned AND no fallback rows exist.",
-          );
-        }
-      } catch (err) {
-        console.error("[/compare] /api/plan/current fetch failed:", err);
+        if (cancelled) return;
+        if (body.plan) setCurrentPlan(body.plan);
+      } catch {
+        // Silent failure — affordance just won't render when fetch fails.
       }
     })();
     return () => {
@@ -681,6 +656,7 @@ function CompareInterface() {
           plans={results}
           error={resultsError}
           onStartOver={startOver}
+          userActiveInsurancePlanId={currentPlan?.insurancePlanId ?? null}
           onFieldSaved={(planId, field, value) => {
             // Optimistic update: drop the new value into the matching user_plan
             // slot's planSummary so the cell re-renders without a full API
@@ -739,7 +715,7 @@ function CompareInterface() {
       ) : (
         // Build mode
         <div>
-          <Header />
+          <BuildHeader />
 
           {/* Side-by-side on lg+; stacked on mobile/tablet. */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-5">
@@ -802,18 +778,17 @@ function CompareInterface() {
                     ? `Add at least 2 plans to compare (${filledCount}/2)`
                     : hasUploadSlot && !turnstileToken
                       ? "Verifying you're human…"
-                      : `Compare ${filledCount} plan${filledCount === 1 ? "" : "s"}`}
+                      : `Compare ${filledCount} plan${filledCount === 1 ? "" : "s"} →`}
             </button>
             {resultsError && <p className="text-sm text-rose-600 mt-3 text-center">{resultsError}</p>}
           </div>
 
-          {/* B2.4 — NEW soft-variant ShareWithFriend embed below the Compare CTA
-              (picker view only). Flag-gated via mig 118; default ON. */}
-          {shareWithFriendNewSurfacesEnabled && (
-            <div className="max-w-3xl mx-auto mt-6">
-              <ShareWithFriend variant="soft" surface="compare_picker" />
-            </div>
-          )}
+          {/* B3.3 — soft-variant ShareWithFriend embed below the Compare CTA
+              (picker view only). Un-gated inline per S125 B3.1 /dashboard
+              pattern (bypasses S124 PostgREST 406 on flag query). */}
+          <div className="max-w-3xl mx-auto mt-6">
+            <ShareWithFriend variant="soft" surface="compare_picker" />
+          </div>
         </div>
       )}
 
@@ -845,21 +820,32 @@ function isResolved(s: SlotState): boolean {
   return false;
 }
 
-function Header() {
+function BuildHeader() {
   return (
-    <div className="text-center mb-10 sm:mb-12">
-      <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-blue-700 bg-blue-50 px-3 py-1 rounded-full ring-1 ring-blue-100 mb-5">
-        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
-          <path d="M12 2l2.39 7.36H22l-6.18 4.49 2.36 7.36L12 16.71l-6.18 4.5 2.36-7.36L2 9.36h7.61z" />
+    <div className="mb-10 sm:mb-12">
+      <Link
+        href="/dashboard"
+        className="inline-flex items-center gap-1 text-sm font-semibold text-blue-600 hover:text-blue-700 mb-6"
+      >
+        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
         </svg>
-        New · Candid Compare
-      </span>
-      <h1 className="text-3xl sm:text-5xl font-bold text-slate-900 tracking-tight">
-        Compare 3 plans, side by side.
-      </h1>
-      <p className="text-base sm:text-lg text-slate-600 mt-4 max-w-xl mx-auto leading-relaxed">
-        Premiums, deductibles, OOP max, service breadth + depth — every number traced back to the source.
-      </p>
+        Back to dashboard
+      </Link>
+      <div className="text-center">
+        <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-blue-700 bg-blue-50 px-3 py-1 rounded-full ring-1 ring-blue-100 mb-5">
+          <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M12 2l2.39 7.36H22l-6.18 4.49 2.36 7.36L12 16.71l-6.18 4.5 2.36-7.36L2 9.36h7.61z" />
+          </svg>
+          New · Candid Compare
+        </span>
+        <h1 className="text-3xl sm:text-5xl font-bold text-slate-900 tracking-tight">
+          Compare 3 plans, side by side.
+        </h1>
+        <p className="text-base sm:text-lg text-slate-600 mt-4 max-w-xl mx-auto leading-relaxed">
+          Premiums, deductibles, OOP max, service breadth + depth — every number traced back to the source.
+        </p>
+      </div>
     </div>
   );
 }
@@ -870,21 +856,14 @@ function ResultsView({
   plans,
   error,
   onStartOver,
+  userActiveInsurancePlanId,
   onFieldSaved,
 }: {
   plans: ComparePlanPayload[] | null;
   error: string | null;
   onStartOver: () => void;
-  onFieldSaved?: (
-    planId: string,
-    field:
-      | "premium_monthly"
-      | "in_deductible_individual"
-      | "out_deductible_individual"
-      | "in_oop_max_individual"
-      | "out_oop_max_individual",
-    value: number,
-  ) => void;
+  userActiveInsurancePlanId: string | null;
+  onFieldSaved?: (planId: string, field: EditableField, value: number) => void;
 }) {
   if (error) {
     return (
@@ -921,37 +900,34 @@ function ResultsView({
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">Your comparison</h1>
-          <p className="text-sm text-slate-500 mt-1">
-            {plans.length} plan{plans.length === 1 ? "" : "s"} side-by-side
-          </p>
-        </div>
-        <button
-          onClick={onStartOver}
-          className="text-sm font-semibold text-blue-600 hover:text-blue-700"
-        >
-          Start over
-        </button>
+      <CompareTopbar planCount={plans.length} onStartOver={onStartOver} />
+
+      {/* B3.3 — each data table stacks 1-col on mobile (below sm) via
+          compareGridClass; no horizontal scroll needed at any viewport. */}
+      <div>
+        <PlanSummaryCards
+          plans={plans}
+          userActiveInsurancePlanId={userActiveInsurancePlanId}
+        />
+        <NumbersTable
+          plans={plans}
+          userActiveInsurancePlanId={userActiveInsurancePlanId}
+          onFieldSaved={onFieldSaved}
+        />
+        <BreadthTable plans={plans} />
+        <ServiceCategoryAccordions plans={plans} />
       </div>
 
-      <p className="sm:hidden text-xs text-slate-500 mb-3">
-        Scroll horizontally to see all columns →
+      {/* D-§1.C.3-M bottom disclaimer — Pattern 1 #11 methodology disclosure. */}
+      <p className="mt-10 text-[12px] text-slate-500 leading-relaxed max-w-3xl mx-auto text-center px-4">
+        Comparisons are built from your uploaded plan documents and verified data from Candid members
+        on the same plan. Out-of-network details vary by provider — confirm with your insurer before
+        scheduling care.
       </p>
 
-      {/* Session 72 v3: removed min-w forcing horizontal scroll; mobile uses
-          overflow-x-auto with a smaller floor so wide laptops fit naturally
-          and narrow phones still scroll if columns get too tight. Plan names
-          wrap (line-clamp-2) inside columns so they don't push width. */}
-      <div className="space-y-6 overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
-        <div className="min-w-[480px] sm:min-w-0 space-y-6">
-          <CompareHeader plans={plans} onFieldSaved={onFieldSaved} />
-          <CompareCategories plans={plans} />
-        </div>
+      <div className="mt-8">
+        <ShareWithFriend surface="compare_results" />
       </div>
-
-      <ShareWithFriend surface="compare_results" />
     </div>
   );
 }

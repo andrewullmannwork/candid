@@ -7,6 +7,7 @@ import { decorateFieldFromEntry } from "@/lib/parser/consumer-read";
 import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import { resolveCanonicalSlugs } from "@/lib/parser/canonical-resolution";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
+import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 
 export async function POST(request: NextRequest) {
   try {
@@ -125,7 +126,7 @@ export async function POST(request: NextRequest) {
           const copay = s.in_copay as number | null;
           const coinsurance = s.in_coinsurance as number | null;
           if (copay != null) parts.push(`$${copay} copay`);
-          if (coinsurance != null && coinsurance > 0) parts.push(`${Math.round(coinsurance * 100)}% coinsurance`);
+          if (coinsurance != null && coinsurance > 0) parts.push(`${normalizeCoinsurancePct(coinsurance)}% coinsurance`);
           if (s.in_deductible_applies) parts.push("after deductible");
           if (parts.length === 0 && copay === null && coinsurance === 0) return "No charge";
           if (parts.length === 0) return "Covered";
@@ -141,7 +142,7 @@ export async function POST(request: NextRequest) {
           const copay = s.out_copay as number | null;
           const coinsurance = s.out_coinsurance as number | null;
           if (copay != null) parts.push(`$${copay} copay`);
-          if (coinsurance != null && coinsurance > 0) parts.push(`${Math.round(coinsurance * 100)}% coinsurance`);
+          if (coinsurance != null && coinsurance > 0) parts.push(`${normalizeCoinsurancePct(coinsurance)}% coinsurance`);
           if (s.out_deductible_applies) parts.push("after deductible");
           if (parts.length > 0) return parts.join(", ").replace(/^./, (c: string) => c.toUpperCase());
           if (copay === 0 && coinsurance === 0) return "No charge";
@@ -373,7 +374,7 @@ export async function POST(request: NextRequest) {
                     ? "Not covered under this plan."
                     : [
                         cs.copay != null ? `$${cs.copay} copay` : null,
-                        cs.coinsurance != null && cs.coinsurance > 0 ? `${Math.round(cs.coinsurance * 100)}% coinsurance` : null,
+                        cs.coinsurance != null && cs.coinsurance > 0 ? `${normalizeCoinsurancePct(cs.coinsurance)}% coinsurance` : null,
                         cs.deductible_applies ? "after deductible" : null,
                       ].filter(Boolean).join(", ") || "Covered",
                   whyUnderutilized: gapCatalogBenefit?.whyUnderutilized || "",

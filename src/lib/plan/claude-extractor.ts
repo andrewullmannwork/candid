@@ -11,6 +11,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { parseHaikuJSON } from "@/lib/parser/safe-json";
 import type { SBCParsedService, SBCParsedAppealsContact } from "@/lib/sbc/types";
+import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 
 const MODEL = "claude-haiku-4-5-20251001";
 
@@ -119,7 +120,7 @@ For each service, include:
   "inDeductibleApplies": true/false/null,
   "inCostDescription": "Concise: '$30 copay per visit' or '10% coinsurance after deductible'",
   "outCopay": number or null,
-  "outCoinsurance": decimal or null,
+  "outCoinsurance": decimal (0.10 for 10%) or null,
   "outDeductibleApplies": true/false/null,
   "outCostDescription": "Concise out-of-network cost or empty string",
   "priorAuthRequired": true/false/null,
@@ -220,12 +221,12 @@ function toSBCParsedService(e: RawExtracted): SBCParsedService {
     serviceSlug: e.serviceSlug,
     placeOfService: "any",
     inCopay: e.inCopay ?? null,
-    inCoinsurance: e.inCoinsurance ?? null,
+    inCoinsurance: normalizeCoinsuranceForStorage(e.inCoinsurance ?? null),
     inDeductibleApplies: e.inDeductibleApplies ?? null,
     inCopayWaiverCondition: null,
     inCostDescription: fixDayFormatting(e.inCostDescription),
     outCopay: e.outCopay ?? null,
-    outCoinsurance: e.outCoinsurance ?? null,
+    outCoinsurance: normalizeCoinsuranceForStorage(e.outCoinsurance ?? null),
     outDeductibleApplies: e.outDeductibleApplies ?? null,
     outCostDescription: fixDayFormatting(e.outCostDescription),
     oonPaidAtInNetwork: false,

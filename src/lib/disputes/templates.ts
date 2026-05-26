@@ -4,6 +4,7 @@
 import type { AuditFinding, ParsedBill, DisputeLetterType } from "../billing/types";
 import type { PlanContext, ProviderContact, AppealsAddress } from "./plan-context";
 import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
+import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 
 interface LetterTemplate {
   type: DisputeLetterType;
@@ -450,7 +451,7 @@ function renderLineItemEvidence(
     const costDescriptor = li.planBenefit.copay != null
       ? `a ${formatCurrency(li.planBenefit.copay)} copay`
       : li.planBenefit.coinsurance != null
-      ? `${Math.round(li.planBenefit.coinsurance * 100)}% coinsurance`
+      ? `${normalizeCoinsurancePct(li.planBenefit.coinsurance)}% coinsurance`
       : "cost-sharing terms";
 
     let prefix: string;
@@ -693,7 +694,7 @@ Additionally, according to my insurance plan documents, the following services a
 ${planEvidence.map((pe) => {
   const parts = [`- ${pe.serviceName}`];
   if (pe.copay != null) parts.push(`(plan copay: ${formatCurrency(pe.copay)})`);
-  if (pe.coinsurance != null) parts.push(`(plan coinsurance: ${(pe.coinsurance * 100).toFixed(0)}%)`);
+  if (pe.coinsurance != null) parts.push(`(plan coinsurance: ${normalizeCoinsurancePct(pe.coinsurance)}%)`);
   if (!pe.copay && !pe.coinsurance) parts.push("(covered)");
   return parts.join(" ");
 }).join("\n")}
@@ -959,7 +960,7 @@ According to my plan documents, these services are covered with the following co
 ${planEvidence.map((pe) => {
   const parts = [`- ${pe.serviceName}`];
   if (pe.copay != null) parts.push(`(copay: ${formatCurrency(pe.copay)})`);
-  if (pe.coinsurance != null) parts.push(`(coinsurance: ${(pe.coinsurance * 100).toFixed(0)}%)`);
+  if (pe.coinsurance != null) parts.push(`(coinsurance: ${normalizeCoinsurancePct(pe.coinsurance)}%)`);
   return parts.join(" ");
 }).join("\n")}
 

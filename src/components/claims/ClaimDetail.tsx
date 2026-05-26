@@ -8,6 +8,7 @@ import { Disclaimer } from "@/components/shared/Disclaimer";
 import { disputeUrlForResult } from "@/lib/disputes/url";
 import { CategoryCorrectionModal } from "@/components/claims/CategoryCorrectionModal";
 import { legacyCategoryReviewHint } from "@/lib/billing/code-categories";
+import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 
 interface CodeIdentityState {
   identityId: string | null;
@@ -1620,7 +1621,7 @@ function buildPlanSays(planCoverage: LineItem["planCoverage"]): string {
 
   const parts: string[] = [];
   if (planCoverage?.copay != null) parts.push(`$${planCoverage.copay} copay`);
-  if (planCoverage?.coinsurance != null) parts.push(`${(planCoverage.coinsurance * 100).toFixed(0)}% coinsurance`);
+  if (planCoverage?.coinsurance != null) parts.push(`${normalizeCoinsurancePct(planCoverage.coinsurance)}% coinsurance`);
 
   if (parts.length === 0) return "Covered · $0";
   return `Covered · ${parts.join(" · ")}`;

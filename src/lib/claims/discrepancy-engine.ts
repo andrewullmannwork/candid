@@ -12,6 +12,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 
 // Thresholds
 const COST_DIFF_PERCENT_THRESHOLD = 0.15; // 15%
@@ -309,7 +310,7 @@ function computeExpectedCost(
 function formatCostExpectation(coverage: CoverageData): string {
   const parts: string[] = [];
   if (coverage.copay != null) parts.push(`copay: $${coverage.copay}`);
-  if (coverage.coinsurance != null) parts.push(`coinsurance: ${(coverage.coinsurance * 100).toFixed(0)}%`);
+  if (coverage.coinsurance != null) parts.push(`coinsurance: ${normalizeCoinsurancePct(coverage.coinsurance)}%`);
   if (parts.length === 0 && coverage.covered !== false) parts.push("covered");
   return parts.join(", ");
 }

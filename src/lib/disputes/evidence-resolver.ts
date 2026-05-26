@@ -23,6 +23,7 @@ import { extractPatternP8FromEntry, isCitationGrade } from "@/lib/parser/consume
 import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import { findPeerCodesForSlug } from "./peer-code-engine";
 import { resolveCanonicalSlugs } from "@/lib/parser/canonical-resolution";
+import { normalizeCoinsurancePct, normalizeCoinsuranceDecimal } from "@/lib/billing/coinsurance";
 
 const K_ANON_PRICING = 5;
 
@@ -1591,7 +1592,7 @@ function computeExpectedPatientCost(
 ): number | null {
   if (benefit.covered === false) return null;
   if (benefit.copay != null) return benefit.copay;
-  if (benefit.coinsurance != null) return Math.round(billed * benefit.coinsurance * 100) / 100;
+  if (benefit.coinsurance != null) return Math.round(billed * normalizeCoinsuranceDecimal(benefit.coinsurance) * 100) / 100;
   return null;
 }
 
@@ -1612,7 +1613,7 @@ function buildDiscrepancyReason(params: {
   const costDescriptor = planBenefit.copay != null
     ? `a ${formatUsd(planBenefit.copay)} copay`
     : planBenefit.coinsurance != null
-    ? `${Math.round(planBenefit.coinsurance * 100)}% coinsurance`
+    ? `${normalizeCoinsurancePct(planBenefit.coinsurance)}% coinsurance`
     : "cost-sharing terms";
   return `${planName} specifies ${costDescriptor} for this service. Billed patient responsibility is ${formatUsd(actualPatientCost)}.`;
 }
