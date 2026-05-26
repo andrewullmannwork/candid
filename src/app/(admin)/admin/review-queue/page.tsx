@@ -444,6 +444,40 @@ function RowGroup(props: {
   const [isPreventive, setIsPreventive] = useState(false);
   const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  // Ing-I (S133): candidate-suggestions state lifted from CandidatePanel to
+  // RowGroup so all three action branches (promote / reject / merge) display
+  // top-K candidates as context. Read-only display for promote + reject;
+  // interactive merge buttons for the merge branch.
+  // Initial state seeds from row.candidate_suggestions (cached via backfill);
+  // lazy-loads on first action-mode selection if cache miss (post-backfill
+  // pending rows have NULL until first read).
+  const [candidates, setCandidates] = useState<CandidateSuggestion[] | null>(
+    props.row.candidate_suggestions,
+  );
+  const [candidatesLoading, setCandidatesLoading] = useState(false);
+  const [candidatesError, setCandidatesError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Auto-load when admin opens any action panel + cache miss
+    if (!props.isActionTarget || !props.actionMode) return;
+    if (candidates !== null) return;
+    if (candidatesLoading) return;
+    setCandidatesLoading(true);
+    setCandidatesError(null);
+    props
+      .onLoadCandidates()
+      .then((c) => {
+        setCandidates(c);
+        setCandidatesLoading(false);
+      })
+      .catch((err: unknown) => {
+        setCandidatesError(err instanceof Error ? err.message : String(err));
+        setCandidatesLoading(false);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.isActionTarget, props.actionMode]);
+
   return (
     <>
       <tr className="border-b border-gray-100">
@@ -475,6 +509,12 @@ function RowGroup(props: {
       {props.isActionTarget && props.actionMode === "promote" && (
         <tr className="border-b border-gray-100 bg-blue-50">
           <td colSpan={7} className="p-3">
+            <CandidateContextBanner
+              candidates={candidates}
+              loading={candidatesLoading}
+              error={candidatesError}
+              mode="promote"
+            />
             <div className="grid grid-cols-2 gap-3 text-xs">
               <label>Final slug
                 <input value={resolvedSlug} onChange={(e) => setResolvedSlug(e.target.value)} className="mt-1 w-full rounded border border-gray-300 px-2 py-1 font-mono" />
@@ -515,6 +555,12 @@ function RowGroup(props: {
       {props.isActionTarget && props.actionMode === "reject" && (
         <tr className="border-b border-gray-100 bg-amber-50">
           <td colSpan={7} className="p-3">
+            <CandidateContextBanner
+              candidates={candidates}
+              loading={candidatesLoading}
+              error={candidatesError}
+              mode="reject"
+            />
             <label className="text-xs">Rejection reason (admin notes)
               <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={2} className="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-xs" placeholder="Why is this slug not valid? (e.g., 'duplicate of existing slug X', 'fragment of larger phrase', 'malformed')" />
             </label>
@@ -540,7 +586,9 @@ function RowGroup(props: {
           <td colSpan={7} className="p-3">
             <CandidatePanel
               row={props.row}
-              onLoadCandidates={props.onLoadCandidates}
+              candidates={candidates}
+              loading={candidatesLoading}
+              error={candidatesError}
               onMerge={props.onMerge}
               onCancel={props.onCancel}
             />
@@ -551,37 +599,103 @@ function RowGroup(props: {
   );
 }
 
+// ─── Candidate Context Banner (Ing-I S133) — read-only display ────────────
+// Used in Promote + Reject action panels to give admin full context BEFORE
+// committing to either action. Same candidate data the Merge flow uses, but
+// without interactive Merge buttons. Prevents accidental Promote-as-duplicate
+// when a strong canonical match exists + prevents accidental Reject of useful
+// signal when proposed slug is plausibly aliasable.
+function CandidateContextBanner(props: {
+  candidates: CandidateSuggestion[] | null;
+  loading: boolean;
+  error: string | null;
+  mode: "promote" | "reject";
+}) {
+  if (props.error) {
+    return (
+      <div className="mb-3 rounded border border-red-300 bg-red-50 px-2 py-1.5 text-xs text-red-800">
+        Top candidates failed to load: {props.error}
+      </div>
+    );
+  }
+  if (props.loading) {
+    return (
+      <div className="mb-3 rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-500">
+        Loading top candidates...
+      </div>
+    );
+  }
+  if (props.candidates === null) return null;
+
+  const bannerHint =
+    props.mode === "promote"
+      ? "Top canonical candidates this proposed slug may already represent. If any look like the same concept, consider MERGE instead of Promote."
+      : "Top canonical candidates this proposed slug may already represent. If any look like the same concept, consider MERGE instead of Reject.";
+
+  if (props.candidates.length === 0) {
+    return (
+      <div className="mb-3 rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-600">
+        No candidate canonicals above threshold — proposed slug is likely genuinely novel or garbage.
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-3 rounded border border-gray-200 bg-white px-2 py-2 text-xs">
+      <div className="mb-1.5 text-gray-600">{bannerHint}</div>
+      <div className="space-y-1">
+        {props.candidates.map((c) => (
+          <div
+            key={c.slug}
+            className="flex items-center gap-3 rounded border border-gray-200 px-2 py-1"
+          >
+            <div className="flex-1">
+              <div className="font-mono text-gray-900">{c.slug}</div>
+              {c.name && <div className="text-gray-700">{c.name}</div>}
+              {c.description && (
+                <div className="truncate text-gray-500" title={c.description}>
+                  {c.description}
+                </div>
+              )}
+            </div>
+            <div className="flex flex-col items-end gap-0.5">
+              <span
+                className={`rounded px-1.5 py-0.5 font-semibold ${
+                  c.match_score >= 0.8
+                    ? "bg-green-100 text-green-800"
+                    : c.match_score >= 0.6
+                      ? "bg-blue-100 text-blue-800"
+                      : "bg-gray-100 text-gray-600"
+                }`}
+              >
+                {c.match_score.toFixed(2)}
+              </span>
+              <span className="text-[10px] uppercase text-gray-500">
+                {c.source}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── Candidate Panel (Ing-I S133) ───────────────────────────────────────────
+// Interactive variant for the Merge action: same candidate display + per-candidate
+// "Merge into" buttons with 2-click confirm.
 function CandidatePanel(props: {
   row: SlugQueueRow;
-  onLoadCandidates: () => Promise<CandidateSuggestion[]>;
+  candidates: CandidateSuggestion[] | null;
+  loading: boolean;
+  error: string | null;
   onMerge: (canonicalSlug: string) => Promise<void>;
   onCancel: () => void;
 }) {
-  const [candidates, setCandidates] = useState<CandidateSuggestion[] | null>(
-    props.row.candidate_suggestions,
-  );
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [confirmingSlug, setConfirmingSlug] = useState<string | null>(null);
   const [merging, setMerging] = useState(false);
 
-  useEffect(() => {
-    if (candidates !== null) return;
-    setLoading(true);
-    setError(null);
-    props
-      .onLoadCandidates()
-      .then((c) => {
-        setCandidates(c);
-        setLoading(false);
-      })
-      .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : String(err));
-        setLoading(false);
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const { candidates, loading, error } = props;
 
   return (
     <div className="text-xs">
