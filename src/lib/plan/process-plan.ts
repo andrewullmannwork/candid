@@ -17,6 +17,7 @@ import type { SBCPlanIdentity } from "@/lib/sbc/types";
 import type { PlanDocPlanIdentity } from "@/lib/plan_doc/types";
 import { extractServicesWithClaude } from "@/lib/plan/claude-extractor";
 import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
+import { recordCostEvent } from "@/lib/cost/parse-cost-events";
 import { matchInsurerWithPlanFallback } from "@/lib/plan/insurer-match";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { votedParseSBC } from "@/lib/sbc/voted-parser";
@@ -966,6 +967,63 @@ export async function processPlanDocumentData(
       }
     } catch (err) {
       console.error("[canonical-plan] Error during canonical matching (non-fatal):", err);
+    }
+
+    // ── Cost-F (S129): unified parse_cost_events ledger write ──────────────
+    // Records base-parse Haiku cost into parse_cost_events with canonical
+    // attribution (when canonical-match resolved a canonical_plan_id above).
+    // Powers /admin/cost-per-canonical + daily cron alerts. Non-fatal.
+    //
+    // SBC path: haikuResult.costUsd (votedParseSBC output)
+    // plan_doc Haiku ON: planDocHaikuResult.costUsd
+    // plan_doc Haiku OFF (regex fallback): cost=0; still recorded for activity
+    //   attribution even though no Haiku spend occurred.
+    if (haikuResult) {
+      await recordCostEvent(supabase, {
+        canonicalPlanId: canonicalPlanId ?? null,
+        insurancePlanId: targetPlanId,
+        documentId,
+        userId: doc.user_id,
+        parserKind: "sbc_base",
+        costSource: "user_upload",
+        costUsd: haikuResult.costUsd,
+        haikuTokensInput: haikuResult.haikuTokensInput,
+        haikuTokensOutput: haikuResult.haikuTokensOutput,
+        haikuCacheReadTokens: haikuResult.haikuCacheReadTokens,
+        haikuCacheCreateTokens: haikuResult.haikuCacheCreateTokens,
+        metadata: {
+          voting_triggered: haikuResult.votingMetadata.triggered,
+          successful_attempts: haikuResult.votingMetadata.successfulAttempts,
+          dispatched_sections: haikuResult.dispatchedSections,
+        },
+      });
+    } else if (planDocHaikuResult) {
+      await recordCostEvent(supabase, {
+        canonicalPlanId: canonicalPlanId ?? null,
+        insurancePlanId: targetPlanId,
+        documentId,
+        userId: doc.user_id,
+        parserKind: "plan_doc_base",
+        costSource: "user_upload",
+        costUsd: planDocHaikuResult.costUsd,
+        metadata: {
+          haiku_used: true,
+        },
+      });
+    } else if (isFullPlanDoc) {
+      // Regex fallback path — no Haiku spend, but record event for activity
+      await recordCostEvent(supabase, {
+        canonicalPlanId: canonicalPlanId ?? null,
+        insurancePlanId: targetPlanId,
+        documentId,
+        userId: doc.user_id,
+        parserKind: "plan_doc_base",
+        costSource: "user_upload",
+        costUsd: 0,
+        metadata: {
+          haiku_used: false,
+        },
+      });
     }
 
     // ── Service catalog + plan_covered_services ─────────────────────────────
