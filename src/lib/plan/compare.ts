@@ -15,6 +15,7 @@ import { decorateFieldFromEntry } from "@/lib/parser/consumer-read";
 import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import type { DecorationContext } from "@/lib/plan/analyze-decoration";
 import type { BestForTag } from "@/lib/plan/best-for";
+import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 
 export type PlanRef =
   | { kind: "canonical"; id: string }
@@ -85,6 +86,11 @@ export interface ComparePlanPayload {
   sourceLabel: "canonical" | "user_plan";
   /** Owned by this user (for user_plan kind only) — used as defense check. */
   isOwnedByUser: boolean;
+  /** B3.3 — distinct verified users corroborating the canonical plan; sourced
+   *  from canonical_plans.verification_count. For user_plan refs, looked up via
+   *  plan.canonical_plan_id. Null when the user plan has no canonical link.
+   *  Frontend buckets to power-of-10 floor for display per Pattern 1 #11. */
+  corroborationCount: number | null;
   /** S70.A — top "Best for…" tags computed across the comparison cohort.
    *  Populated by attachBestForTags() after all plans resolve. */
   bestForTags?: BestForTag[];
@@ -129,7 +135,7 @@ function describeCost(opts: {
   const parts: string[] = [];
   if (opts.copay != null) parts.push(`$${opts.copay} copay`);
   if (opts.coinsurance != null && opts.coinsurance > 0) {
-    parts.push(`${Math.round(opts.coinsurance * 100)}% coinsurance`);
+    parts.push(`${normalizeCoinsurancePct(opts.coinsurance)}% coinsurance`);
   }
   if (opts.deductibleApplies) parts.push("after deductible");
   if (parts.length === 0 && opts.copay === 0 && opts.coinsurance === 0) {
@@ -154,7 +160,7 @@ function describeOonCost(opts: {
   const parts: string[] = [];
   if (opts.copay != null) parts.push(`$${opts.copay} copay`);
   if (opts.coinsurance != null && opts.coinsurance > 0) {
-    parts.push(`${Math.round(opts.coinsurance * 100)}% coinsurance`);
+    parts.push(`${normalizeCoinsurancePct(opts.coinsurance)}% coinsurance`);
   }
   if (opts.deductibleApplies) parts.push("after deductible");
   if (parts.length > 0) return parts.join(", ").replace(/^./, (c) => c.toUpperCase());
@@ -211,6 +217,28 @@ export async function resolveCanonicalPlan(opts: {
     .select("*")
     .eq("canonical_plan_id", canonicalPlanId);
 
+  // B3.3 — enrich each service with category from service_catalog.
+  // canonical_plan_services has service_slug TEXT but NO foreign key to
+  // service_catalog (unlike plan_covered_services which has the FK + supports
+  // Supabase's inline join syntax). Do a two-query merge: collect distinct
+  // slugs, lookup categories, build slug→category map. Allows /compare to
+  // group benefits by real category instead of collapsing all to "other".
+  const slugList = Array.from(
+    new Set((services ?? []).map((s) => s.service_slug as string | null).filter(Boolean) as string[]),
+  );
+  const categoryBySlug = new Map<string, string>();
+  if (slugList.length > 0) {
+    const { data: catalog } = await supabase
+      .from("service_catalog")
+      .select("slug, category")
+      .in("slug", slugList);
+    for (const row of catalog ?? []) {
+      const s = row.slug as string | null;
+      const c = row.category as string | null;
+      if (s && c) categoryBySlug.set(s, c);
+    }
+  }
+
   const sourceCount = decoration?.canonicalSourceCount ?? plan.verification_count ?? 1;
   const logicalSource = "canonical_inherited";
 
@@ -223,7 +251,7 @@ export async function resolveCanonicalPlan(opts: {
       // structured copay/coinsurance/deductible fields exclusively.
       return {
         serviceSlug: slug,
-        category: "other",
+        category: categoryBySlug.get(slug) ?? "other",
         title: titleCase(slug),
         costInNetworkDescription: describeCost({
           copay: s.copay ?? null,
@@ -350,6 +378,7 @@ export async function resolveCanonicalPlan(opts: {
     coveredServiceCount: benefits.filter((b) => b.covered !== false).length,
     sourceLabel: "canonical",
     isOwnedByUser: false,
+    corroborationCount: (plan.verification_count as number | null) ?? 0,
   };
 }
 
@@ -384,6 +413,21 @@ export async function resolveUserPlan(opts: {
       .eq("id", plan.insurer_id)
       .single();
     insurerName = insurer?.name ?? "";
+  }
+
+  // B3.3 — corroboration count for user plans comes from the linked canonical
+  // (when present). User plans don't carry their own count; they inherit from
+  // canonical via Pattern 1 #3 (3+ distinct EMAIL+PHONE-verified users with
+  // cite-grade extracts). Null when the user plan has no canonical link.
+  let corroborationCount: number | null = null;
+  const linkedCanonicalId = (plan.canonical_plan_id as string | null) ?? null;
+  if (linkedCanonicalId) {
+    const { data: canonical } = await supabase
+      .from("canonical_plans")
+      .select("verification_count")
+      .eq("id", linkedCanonicalId)
+      .single();
+    corroborationCount = (canonical?.verification_count as number | null) ?? null;
   }
 
   const { data: services } = await supabase
@@ -527,5 +571,6 @@ export async function resolveUserPlan(opts: {
     coveredServiceCount: benefits.filter((b) => b.covered !== false).length,
     sourceLabel: "user_plan",
     isOwnedByUser: true,
+    corroborationCount,
   };
 }

@@ -20,6 +20,7 @@ import { parseHaikuJSON } from "@/lib/parser/safe-json";
 import type { ProcessPlanResult } from "@/lib/plan/process-plan";
 import { extractImportantQuestions } from "@/lib/sbc/haiku-prompts/important-questions";
 import { verifySBCSourceExcerpts } from "@/lib/sbc/verify-source-excerpts";
+import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 import {
   buildSBCPlanIdentityProvenance,
   buildCanonicalInheritedProvenance,
@@ -696,14 +697,14 @@ export async function linkDocumentToCanonical(
             ? canonicalProvenance
             : buildCanonicalInheritedProvenance("plan_covered_services", [
                 ["in_copay", s.copay],
-                ["in_coinsurance", s.coinsurance],
+                ["in_coinsurance", normalizeCoinsuranceForStorage(s.coinsurance)],
                 ["in_deductible_applies", s.deductible_applies],
                 ["covered", s.is_covered !== false],
                 ["prior_auth_required", s.requires_prior_auth || false],
                 ["annual_limit_value", s.annual_limit],
                 // CF-19c: OON cost-sharing if canonical now carries them (mig 071)
                 ["out_copay", s.out_copay],
-                ["out_coinsurance", s.out_coinsurance],
+                ["out_coinsurance", normalizeCoinsuranceForStorage(s.out_coinsurance)],
                 ["out_deductible_applies", s.out_deductible_applies],
               ], "doc_extraction_smart_skip");
 
@@ -713,11 +714,11 @@ export async function linkDocumentToCanonical(
             concept_id: s.concept_id || null,
             place_of_service: "any",
             in_copay: s.copay,
-            in_coinsurance: s.coinsurance,
+            in_coinsurance: normalizeCoinsuranceForStorage(s.coinsurance),
             in_deductible_applies: s.deductible_applies,
             // CF-19c: OON cost-sharing from canonical (mig 071 — null until populated by promotion events)
             out_copay: s.out_copay ?? null,
-            out_coinsurance: s.out_coinsurance ?? null,
+            out_coinsurance: normalizeCoinsuranceForStorage(s.out_coinsurance),
             out_deductible_applies: s.out_deductible_applies ?? null,
             covered: s.is_covered !== false,
             prior_auth_required: s.requires_prior_auth || false,

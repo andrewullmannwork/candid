@@ -20,6 +20,7 @@
  */
 
 import { useState } from "react";
+import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 
 export type CoverageDiffVerdict = "still_valid" | "weakened" | "invalidated";
 
@@ -287,7 +288,7 @@ function CoverageSummary(props: { cov: CoverageDiffLine["before"] }) {
   const parts: string[] = [];
   if (cov.copay != null) parts.push(`$${cov.copay.toFixed(2)} copay`);
   if (cov.coinsurance != null)
-    parts.push(`${Math.round(cov.coinsurance * 100)}% coinsurance`);
+    parts.push(`${normalizeCoinsurancePct(cov.coinsurance)}% coinsurance`);
   if (cov.covered === true && parts.length === 0) parts.push("covered");
   const yearSuffix =
     cov.sourceYear != null ? (

@@ -20,6 +20,7 @@ import type { PlanContext } from "@/lib/disputes/plan-context";
 import type { DisputeEvidence, LineItemEvidence } from "@/lib/disputes/evidence-resolver";
 import { resolvePlanContext } from "@/lib/disputes/plan-context";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
+import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 
 export interface EvidenceSection {
   title: string;
@@ -266,7 +267,7 @@ function renderCoverageBullet(li: LineItemEvidence): string {
   const parts: string[] = [];
   parts.push(`  • ${li.serviceName}${li.billingCode ? ` (${li.billingCode.type} ${li.billingCode.value})` : ""}`);
   if (b.copay != null) parts.push(`      Copay: ${formatUsd(b.copay)}`);
-  if (b.coinsurance != null) parts.push(`      Coinsurance: ${Math.round(b.coinsurance * 100)}%`);
+  if (b.coinsurance != null) parts.push(`      Coinsurance: ${normalizeCoinsurancePct(b.coinsurance)}%`);
   parts.push(`      Citation: ${b.citation}`);
   if (b.sbcExcerpt) parts.push(`      SBC quote: "${b.sbcExcerpt.trim()}"`);
   return parts.join("\n");

@@ -1,0 +1,208 @@
+/**
+ * B3.3 — Pure derivation helpers for /compare aggregate displays.
+ *
+ * No backend calls; all derived from the `ComparePlanPayload[]` cohort the
+ * /api/plan/compare endpoint returns. Best-in-row badges, breadth counts,
+ * category coverage, per-category grouping all derived here.
+ *
+ * NON-NEGOTIABLE: ties get "Best" on all tied plans (honest); plans with null
+ * values are excluded from comparison; single-plan cohorts skip best-derivation
+ * entirely (no comparison meaningful).
+ */
+
+import { unwrapValue } from "@/components/display-state";
+import type { ComparePlanPayload, CompareBenefit } from "@/lib/plan/compare";
+
+// ── Numeric extraction ────────────────────────────────────────────────────
+
+/** Extract numeric value from a decorated-or-raw cell. Returns null when no value. */
+export function asNumber(value: unknown): number | null {
+  const v = unwrapValue<number | null>(value as never);
+  return typeof v === "number" && !Number.isNaN(v) ? v : null;
+}
+
+// ── Best-in-row derivation ────────────────────────────────────────────────
+
+/**
+ * Returns indices of plans tied for the best value per `accessor`.
+ *
+ * @param invert true when LOWER is better (premium, deductible, OOP, copay);
+ *               false when HIGHER is better (covered count, category coverage).
+ * Plans with null values are excluded from comparison.
+ * Returns empty array when ≤1 plan provided OR all plans have null values.
+ */
+export function bestNumericIndices<T>(
+  plans: T[],
+  accessor: (plan: T) => number | null,
+  invert: boolean,
+): number[] {
+  if (plans.length <= 1) return [];
+  const populated = plans
+    .map((p, i) => ({ v: accessor(p), i }))
+    .filter((entry): entry is { v: number; i: number } => entry.v != null);
+  if (populated.length === 0) return [];
+  const best = invert
+    ? Math.min(...populated.map((p) => p.v))
+    : Math.max(...populated.map((p) => p.v));
+  return populated.filter((p) => p.v === best).map((p) => p.i);
+}
+
+// ── Breadth + category coverage ───────────────────────────────────────────
+
+/** Per-plan distinct categories covered (excluding 'other' — that's a catch-all). */
+export function categoryCoveragePerPlan(plans: ComparePlanPayload[]): number[] {
+  return plans.map((p) => {
+    const categories = new Set<string>();
+    for (const b of p.benefits) {
+      if (b.covered === false) continue;
+      if (b.category && b.category !== "other") categories.add(b.category);
+    }
+    return categories.size;
+  });
+}
+
+/** Union of all distinct categories across the cohort (excluding 'other'). */
+export function distinctCategoriesAcrossCohort(plans: ComparePlanPayload[]): number {
+  const set = new Set<string>();
+  for (const p of plans) {
+    for (const b of p.benefits) {
+      if (b.category && b.category !== "other") set.add(b.category);
+    }
+  }
+  return set.size;
+}
+
+// ── Per-category grouping for service-by-service accordions ───────────────
+
+export interface ServiceRowAcrossPlans {
+  serviceSlug: string;
+  title: string;
+  perPlan: Array<CompareBenefit | null>;
+}
+
+export interface CategoryGroup {
+  category: string;
+  rows: ServiceRowAcrossPlans[];
+}
+
+/**
+ * Group benefits across plans by category. For each category, list services
+ * (by slug) and per-service the per-plan benefit (or null when missing).
+ * Categories with no eligible services are dropped.
+ *
+ * Backend bundled in this PR enriches canonical-resolver benefits with
+ * service_catalog.category. Pre-fix canonical benefits hardcoded category="other";
+ * post-fix categories map to the same vocabulary user-plan resolves use.
+ */
+export function groupBenefitsByCategory(
+  plans: ComparePlanPayload[],
+): CategoryGroup[] {
+  const byCategory = new Map<
+    string,
+    Map<string, { title: string; perPlan: Array<CompareBenefit | null> }>
+  >();
+  for (let planIdx = 0; planIdx < plans.length; planIdx++) {
+    for (const benefit of plans[planIdx].benefits) {
+      const category = benefit.category || "other";
+      const slug = benefit.serviceSlug;
+      if (!slug) continue;
+      if (!byCategory.has(category)) byCategory.set(category, new Map());
+      const slugMap = byCategory.get(category)!;
+      if (!slugMap.has(slug)) {
+        slugMap.set(slug, {
+          title: benefit.title,
+          perPlan: new Array(plans.length).fill(null),
+        });
+      }
+      slugMap.get(slug)!.perPlan[planIdx] = benefit;
+    }
+  }
+
+  const groups: CategoryGroup[] = [];
+  for (const [category, slugMap] of byCategory) {
+    const rows: ServiceRowAcrossPlans[] = [];
+    for (const [serviceSlug, { title, perPlan }] of slugMap) {
+      rows.push({ serviceSlug, title, perPlan });
+    }
+    rows.sort((a, b) => a.title.localeCompare(b.title));
+    groups.push({ category, rows });
+  }
+  return groups;
+}
+
+/** Stable display order for category accordions (slug → label). */
+export const CATEGORY_DISPLAY_ORDER: Array<{ slug: string; label: string }> = [
+  { slug: "office_visits", label: "Office visits" },
+  { slug: "preventive", label: "Preventive care" },
+  { slug: "specialist", label: "Specialist care" },
+  { slug: "emergency", label: "Emergency & urgent care" },
+  { slug: "hospital", label: "Hospital services" },
+  { slug: "imaging", label: "Imaging" },
+  { slug: "lab", label: "Lab & diagnostics" },
+  { slug: "prescriptions", label: "Prescriptions" },
+  { slug: "mental_health", label: "Mental health & substance use" },
+  { slug: "therapy", label: "Therapy & rehab" },
+  { slug: "maternity", label: "Maternity & newborn" },
+  { slug: "pediatric", label: "Pediatric care" },
+  { slug: "vision", label: "Vision" },
+  { slug: "dental", label: "Dental" },
+  { slug: "equipment", label: "Equipment & supplies" },
+  { slug: "home_health", label: "Home health & long-term care" },
+  { slug: "other", label: "Other covered services" },
+];
+
+/** Sort category groups by CATEGORY_DISPLAY_ORDER; unknown categories appended in title-case. */
+export function sortCategoryGroups(
+  groups: CategoryGroup[],
+): Array<CategoryGroup & { label: string }> {
+  const orderIdx = new Map(CATEGORY_DISPLAY_ORDER.map((c, i) => [c.slug, i]));
+  const labelMap = new Map(CATEGORY_DISPLAY_ORDER.map((c) => [c.slug, c.label]));
+  return groups
+    .map((g) => ({
+      group: g,
+      label: labelMap.get(g.category) ?? toTitleCase(g.category),
+      order: orderIdx.get(g.category) ?? 999,
+    }))
+    .sort((a, b) => a.order - b.order)
+    .map(({ group, label }) => ({ ...group, label }));
+}
+
+function toTitleCase(s: string): string {
+  return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// ── Per-service / per-category metric helpers ─────────────────────────────
+
+/** Per-service in-network copay extraction for best-row derivation. */
+export function inNetworkCopay(b: CompareBenefit | null): number | null {
+  if (!b || b.covered === false) return null;
+  return asNumber(b.costSharing?.inNetwork?.copay);
+}
+
+/** Per-plan wins in a category (rows where this plan has the lowest in-network copay). */
+export function winsPerPlanInCategory(
+  rows: ServiceRowAcrossPlans[],
+  planCount: number,
+): number[] {
+  const wins = new Array(planCount).fill(0);
+  for (const row of rows) {
+    const bestIdx = bestNumericIndices(row.perPlan, inNetworkCopay, true);
+    for (const i of bestIdx) wins[i] += 1;
+  }
+  return wins;
+}
+
+/** Per-plan covered count in a category (rows where this plan has covered !== false). */
+export function coveredPerPlanInCategory(
+  rows: ServiceRowAcrossPlans[],
+  planCount: number,
+): number[] {
+  const covered = new Array(planCount).fill(0);
+  for (const row of rows) {
+    for (let i = 0; i < planCount; i++) {
+      const b = row.perPlan[i];
+      if (b && b.covered !== false) covered[i] += 1;
+    }
+  }
+  return covered;
+}

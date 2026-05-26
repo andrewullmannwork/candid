@@ -80,21 +80,25 @@ export interface PlanSlotProps {
   disabled?: boolean;
 }
 
+// B3.3 — gradients aligned to compare-colors.COMPARE_PLAN_COLORS (blue / purple
+// / pink) so picker slot avatars match the per-plan summary card avatars in
+// the results view. Source colors from Phase 1 design handoff
+// (plans/findings/design-handoffs/s112-full-refresh/project/compare.jsx).
 const SLOT_GRADIENTS: Record<number, { bg: string; ring: string; chip: string }> = {
   0: {
-    bg: "bg-gradient-to-br from-blue-500 to-indigo-600",
+    bg: "bg-gradient-to-br from-blue-600 to-blue-700",
     ring: "ring-blue-200",
     chip: "bg-blue-50 text-blue-700 ring-blue-200",
   },
   1: {
-    bg: "bg-gradient-to-br from-indigo-500 to-violet-600",
-    ring: "ring-indigo-200",
-    chip: "bg-indigo-50 text-indigo-700 ring-indigo-200",
+    bg: "bg-gradient-to-br from-purple-700 to-purple-800",
+    ring: "ring-purple-200",
+    chip: "bg-purple-50 text-purple-700 ring-purple-200",
   },
   2: {
-    bg: "bg-gradient-to-br from-violet-500 to-fuchsia-600",
-    ring: "ring-violet-200",
-    chip: "bg-violet-50 text-violet-700 ring-violet-200",
+    bg: "bg-gradient-to-br from-pink-600 to-pink-700",
+    ring: "ring-pink-200",
+    chip: "bg-pink-50 text-pink-700 ring-pink-200",
   },
 };
 

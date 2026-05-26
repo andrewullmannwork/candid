@@ -14,6 +14,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 // normalizeInsurerName available from "./matcher" if needed for future enhancements
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -542,7 +543,7 @@ async function mergeServicesIntoCanonical(
       concept_id: s.concept_id || null,
       service_slug: idToSlug.get(s.service_id)!,
       copay: s.in_copay,
-      coinsurance: s.in_coinsurance,
+      coinsurance: normalizeCoinsuranceForStorage(s.in_coinsurance),
       is_covered: s.covered !== false,
       requires_prior_auth: s.prior_auth_required || false,
       requires_referral: false,
