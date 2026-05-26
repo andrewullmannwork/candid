@@ -187,6 +187,11 @@ export async function POST(
   // Mark claim audit_status stale so D7 re-runs on next fetch
   // (Stored in claims.metadata.audit_status for v1; column promotion to dedicated
   // audit_status enum is a future migration if needed.)
+  // S132 iter-8 — also stamp audit_stale_reason='user_category_correction'
+  // so maybeReauditClaim can exempt user-driven re-audits from the 5/day
+  // daily cap. User explicitly correcting categorization should never
+  // get throttled into "Findings will refresh tomorrow" — the 1/min rate
+  // limit still applies as a safety guard against double-submits.
   const { data: claimRow } = await supabase
     .from("claims")
     .select("metadata")
@@ -196,9 +201,44 @@ export async function POST(
   await supabase
     .from("claims")
     .update({
-      metadata: { ...claimMeta, audit_status: "stale", audit_stale_at: new Date().toISOString() },
+      metadata: {
+        ...claimMeta,
+        audit_status: "stale",
+        audit_stale_at: new Date().toISOString(),
+        audit_stale_reason: "user_category_correction",
+      },
     })
     .eq("id", claimId);
+
+  // S132 iter-13 — root-cause cleanup: mark stale claim_discrepancies on this
+  // line as 'resolved' with a dedicated resolved_at timestamp (mig 128).
+  // The eob_discrepancy_detection pipeline wrote them at parse time against
+  // the auto-classified slug; the user explicitly re-categorizing this line
+  // implicitly resolves any coverage_status / payment discrepancies that
+  // were keyed off the old slug. Without this, BillCard on /claim list stays
+  // in needs_review because deriveBillState reads from BOTH metadata.auditFindings
+  // (which re-audit refreshes) AND claim_discrepancies.
+  //
+  // Safe to mark ALL active discrepancies on the line resolved: re-audit runs
+  // immediately after on the next /api/claims/[claimId] fetch (audit_status=stale)
+  // and writes fresh findings; if real issues remain on the line, they re-surface
+  // through metadata.auditFindings (the source of truth for the row UI).
+  const nowIso = new Date().toISOString();
+  const { error: discrepancyUpdateError } = await supabase
+    .from("claim_discrepancies")
+    .update({
+      status: "resolved",
+      resolved_at: nowIso,
+      updated_at: nowIso,
+    })
+    .eq("claim_line_item_id", lineId)
+    .in("status", ["flagged", "verifying", "disputed"]);
+  if (discrepancyUpdateError) {
+    console.warn(
+      "[correct-category] claim_discrepancies cleanup failed",
+      { lineId, error: discrepancyUpdateError.message },
+    );
+  }
 
   return NextResponse.json(result);
 }

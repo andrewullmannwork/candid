@@ -61,11 +61,12 @@ export function CubeLoaderBuilding({ className }: { className?: string }) {
               d="M7 12.5l3.2 3.2L17 9"
               style={{
                 strokeDasharray: 22,
-                // B-LOAD.1 follow-up (S131): sped 2.2s → 0.9s so the check is
-                // fully drawn within typical fast-load times (~450ms). Used in
-                // tandem with useMinHoldLoading (900ms) for guaranteed brand
-                // moment per Andrew direction.
-                animation: "cdCheckDraw 0.9s ease-in-out infinite",
+                // S132: started at 2.2s, sped to 0.9s (S131; frantic), then
+                // 1.6s (still felt fast on /support Suspense flash). Settled
+                // at 2.0s — one full cycle (draw → hold → fade → redraw)
+                // reads deliberate. Paired with useMinHoldLoading(2000ms) so
+                // in-page mounts always show ≥1 full check before unmount.
+                animation: "cdCheckDraw 2.0s ease-in-out infinite",
               }}
             />
           </svg>

@@ -17,6 +17,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { PlanCoverageInput } from "../claims/recovery-math";
 import type { ParsedBill } from "../billing/types";
 import { buildAcaCoverageFallback } from "./aca-coverage-fallback";
+import { normalizeCoinsuranceForStorage } from "../billing/coinsurance";
 
 export type PlanCoverageMap = Map<string, PlanCoverageInput>;
 
@@ -138,7 +139,12 @@ export async function loadCoverageMapForPlan(
     map.set(slug, {
       covered: row.covered as boolean | null,
       copay: row.in_copay as number | null,
-      coinsurance: row.in_coinsurance as number | null,
+      // S132 iter-11 — plan_covered_services.in_coinsurance holds either
+      // integer percent (30) OR already-decimal (0.3); both mean 30% in
+      // plan-document language. normalizeCoinsuranceForStorage handles both
+      // formats uniformly. Prior to this, this loader read the raw value
+      // expecting decimal — broke for rows the parser wrote as integer.
+      coinsurance: normalizeCoinsuranceForStorage(row.in_coinsurance as number | null),
     });
   }
   return map;

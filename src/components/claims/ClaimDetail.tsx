@@ -9,7 +9,8 @@ import { disputeUrlForResult } from "@/lib/disputes/url";
 import { CategoryCorrectionModal } from "@/components/claims/CategoryCorrectionModal";
 import { legacyCategoryReviewHint } from "@/lib/billing/code-categories";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
-import { CodeCarouselLoaderV3 } from "@/components/loaders/CodeCarouselLoaderV3";
+import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
+import { useDisputeDraftOverlay } from "@/lib/loading/dispute-draft-overlay";
 
 interface CodeIdentityState {
   identityId: string | null;
@@ -108,11 +109,22 @@ interface ReauditOutcome {
   reason: string;
 }
 
+interface PlanCoverageEntry {
+  slug: string;
+  covered: boolean | null;
+  copay: number | null;
+  coinsurance: number | null;
+}
+
 interface ClaimData {
   claim: Record<string, unknown>;
   lineItems: LineItem[];
   disputes: Array<{ id: string; dispute_type: string; status: string; amount_disputed: number; amount_recovered: number }>;
   relatedClaims: Array<{ id: string; date_of_service: string; status: string; total_billed: number }>;
+  // S132 iter-6 Phase 1 — slugs present in user's plan_covered_services for
+  // this claim's plan_id. Drives CategoryCorrectionModal filtering + best-
+  // guess "Use this" gating. Empty array when no plan uploaded.
+  userPlanCoverage?: PlanCoverageEntry[];
   recovery?: {
     billed: number;
     alreadyPaid: number;
@@ -160,7 +172,14 @@ interface DisputeDetail {
 const COVERAGE_BADGE: Record<string, { label: string; className: string }> = {
   covered: { label: "Covered", className: "text-green-700 bg-green-50" },
   not_covered: { label: "Not Covered", className: "text-red-700 bg-red-50" },
-  unknown: { label: "Unknown", className: "text-gray-500 bg-gray-100" },
+  // S132 iter-5 — "Unknown" reframed as "Not in plan." Semantic: parser
+  // didn't find this service_slug in plan_covered_services for the user's
+  // plan. Could mean (a) plan doesn't cover it, (b) parser missed the
+  // benefit, OR (c) slug-vocabulary mismatch between bill-side and plan-side
+  // parsers (no synonym layer yet — tracked as cross-workstream FE→BE).
+  // "Not in plan" frames the user's next step (verify / re-categorize /
+  // upload more) without making a policy claim ("Not Covered") we can't back.
+  unknown: { label: "Not in plan", className: "text-gray-500 bg-gray-100" },
 };
 
 // S74.6 D1 §A.2 — Coverage-badge tooltip copy for lines covered via the
@@ -288,11 +307,19 @@ export function ClaimDetail({
   onBack,
   focusLineItemId,
   backLabel = "Back to claims",
+  onClaimUpdated,
 }: {
   claimId: string;
   onBack: () => void;
   focusLineItemId?: string | null;
   backLabel?: string;
+  /**
+   * S132 iter-6 Phase 1 — parent /claim page passes its claims-list refetch
+   * here. ClaimDetail calls it after any mutation that affects bill state
+   * (currently: line-item category correction). Without this, the /claim
+   * list shows stale coverageStatus + unknownCoverageCount + bill chrome.
+   */
+  onClaimUpdated?: () => Promise<void> | void;
 }) {
   const { user } = useAuth();
   const router = useRouter();
@@ -350,6 +377,14 @@ export function ClaimDetail({
   // D15 Q-E LOCK — dismiss-finding modal state.
   // dismissTarget = the finding to dismiss; null when modal closed.
   const [dismissTarget, setDismissTarget] = useState<AuditFinding | null>(null);
+
+  // S132 Item 2: re-draft prompt surfaces after a category change IF a dispute
+  // letter was already drafted with the previous categorization. Captures the
+  // dispute ID at submit time (closure over the pre-refetch `data.disputes`)
+  // so the toast deep-links to the right letter even after refetch updates
+  // the page. User clicks Re-draft → /disputes Re-draft button (intentional —
+  // they should see strengthen signals before re-drafting).
+  const [redraftPromptDisputeId, setRedraftPromptDisputeId] = useState<string | null>(null);
   // Show-dismissed toggle so users can see hidden findings if they want to
   // un-dismiss (un-dismiss is a Phase 2 follow-up; for now this is read-only).
   const [showDismissed, setShowDismissed] = useState(false);
@@ -470,8 +505,17 @@ export function ClaimDetail({
   }, [user, claimId]);
 
   const handleCorrectionSubmitted = useCallback(async () => {
+    // S132 Item 2: capture existing dispute BEFORE refetch so the re-draft
+    // prompt deep-links to the letter that was drafted with the prior slug.
+    // Non-cancelled disputes only — withdrawn/cancelled disputes don't need
+    // a re-draft (the user has moved on from that letter).
+    const existing = data?.disputes.find((d) => d.status !== "cancelled");
+    if (existing) setRedraftPromptDisputeId(existing.id);
     await refetchClaim();
-  }, [refetchClaim]);
+    // S132 iter-6 Phase 1: also refetch parent /claim list so the BillCard
+    // chrome (state badge, recovery, unknown count) reflects the new coverage.
+    if (onClaimUpdated) await onClaimUpdated();
+  }, [data, refetchClaim, onClaimUpdated]);
 
   const dismissLooksRight = useCallback(() => {
     if (typeof window !== "undefined") {
@@ -536,9 +580,8 @@ export function ClaimDetail({
   }, [user, claimId]);
 
   if (loading) {
-    // B-LOAD.1 (S131): in-claim navigation = Audit flow loader per Andrew #2.
-    // ClaimDetail line-item rendering UNTOUCHED below per §0.7 D2 NON-NEGOTIABLE.
-    return <CodeCarouselLoaderV3 title="Loading bill details" />;
+    // S132 iter-8 — unified cube loader.
+    return <CubeLoaderBuilding />;
   }
 
   if (!data) {
@@ -653,6 +696,42 @@ export function ClaimDetail({
           {claim.date_of_service as string || "Unknown date"} · {data.lineItems.length} line items · Total: ${((claim.total_billed as number) || 0).toLocaleString()}
         </p>
       </div>
+
+      {/* S132 Item 2 — re-draft prompt after categorization change. Surfaces
+          ONLY when the user had a non-cancelled dispute drafted before the
+          change. Deep-links to /disputes?dispute=<id>; user re-drafts there
+          (intentional — strengthen signals live on /disputes). Manual dismiss
+          via X; auto-clears when user navigates away from ClaimDetail. */}
+      {redraftPromptDisputeId && (
+        <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-blue-100 bg-blue-50 p-3">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-blue-900">
+              Categorization updated
+            </p>
+            <p className="mt-0.5 text-xs text-blue-800">
+              Your dispute letter was drafted with the previous category.
+              Re-draft to use the new one.
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => router.push(`/disputes?dispute=${redraftPromptDisputeId}`)}
+              className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
+            >
+              Re-draft letter
+            </button>
+            <button
+              type="button"
+              onClick={() => setRedraftPromptDisputeId(null)}
+              className="text-xs text-blue-700 hover:text-blue-900"
+              aria-label="Dismiss"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* S74.5c §3.8 — re-audit throttle toast. Two cases:
           (a) per-minute cooldown: short auto-dismiss after 8s.
@@ -922,7 +1001,14 @@ export function ClaimDetail({
             flywheelEnabled &&
             (item.codeIdentity != null ||
               expandCorrectionToAll ||
-              item.user_corrected_at != null);
+              item.user_corrected_at != null ||
+              // S132 iter-3: always show the category subtitle on Unknown
+              // coverage rows so the secondary re-categorize affordance is
+              // visible alongside the primary Unknown-badge click target.
+              // Important after the user picks a category that produces
+              // known coverage — the Unknown badge disappears, so the
+              // subtitle pencil becomes the only re-edit route.
+              item.coverageStatus === "unknown");
           const pillState: "user_corrected" | "needs_review" | "auto" =
             item.user_corrected_at
               ? "user_corrected"
@@ -1015,15 +1101,45 @@ export function ClaimDetail({
                   </div>
                   <div className="flex justify-between items-center gap-3">
                     <dt className="text-gray-500 uppercase tracking-wider">Coverage</dt>
-                    <dd>
+                    <dd className="flex items-center gap-1.5">
                       {coverageBadge ? (
-                        <span
-                          className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className}${acaTooltip ? " cursor-help underline decoration-dotted decoration-1 underline-offset-2" : ""}`}
-                          title={acaTooltip}
-                        >
-                          {coverageBadge.label}
-                        </span>
+                        flywheelEnabled && (item.coverageStatus === "unknown" || item.user_corrected_at != null) ? (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openCorrectionModal(item.id);
+                            }}
+                            title={item.user_corrected_at ? "Click to change your pick" : "Click to pick the right category"}
+                            className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className} cursor-pointer ring-1 ring-blue-300 hover:ring-blue-400 hover:bg-blue-50 transition-colors`}
+                          >
+                            <svg className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" aria-hidden>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                            </svg>
+                            {coverageBadge.label}
+                          </button>
+                        ) : (
+                          <span
+                            className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className}${acaTooltip ? " cursor-help underline decoration-dotted decoration-1 underline-offset-2" : ""}`}
+                            title={acaTooltip}
+                          >
+                            {coverageBadge.label}
+                          </span>
+                        )
                       ) : <span className="text-gray-300">—</span>}
+                      {pillState === "user_corrected" && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openCorrectionModal(item.id);
+                          }}
+                          title="Click to change your pick"
+                          className="rounded-sm bg-blue-100 px-1 py-px text-[9px] font-semibold text-blue-700 cursor-pointer ring-1 ring-blue-200 hover:bg-blue-200 hover:ring-blue-300 transition-colors"
+                        >
+                          Your pick
+                        </button>
+                      )}
                     </dd>
                   </div>
                 </dl>
@@ -1136,20 +1252,51 @@ export function ClaimDetail({
                     <span className="text-gray-300">—</span>
                   )}
                 </div>
-                {/* Coverage badge — Session 86: reverted to static display.
-                    Click target for category correction lives on the Service
-                    column's category subtitle. S74.6 D1 §A.2: title tooltip
-                    surfaces ACA basis when coverageSource ===
-                    'aca_zero_cost_share'. */}
-                <div className="flex items-center justify-center">
+                {/* Coverage badge — Session 86: static display by default.
+                    S132 Item 2: when coverageStatus === 'unknown' AND
+                    flywheel flag ON, the badge becomes a click target opening
+                    CategoryCorrectionModal so the user can try a different
+                    service category. UI gated on flywheelEnabled because the
+                    backend endpoint requires the same flag (mig 087). */}
+                <div className="flex items-center justify-center gap-1.5">
                   {coverageBadge ? (
-                    <span
-                      className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className}${acaTooltip ? " cursor-help underline decoration-dotted decoration-1 underline-offset-2" : ""}`}
-                      title={acaTooltip}
-                    >
-                      {coverageBadge.label}
-                    </span>
+                    flywheelEnabled && (item.coverageStatus === "unknown" || item.user_corrected_at != null) ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openCorrectionModal(item.id);
+                        }}
+                        title={item.user_corrected_at ? "Click to change your pick" : "Click to pick the right category"}
+                        className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className} cursor-pointer ring-1 ring-blue-300 hover:ring-blue-400 hover:bg-blue-50 transition-colors`}
+                      >
+                        <svg className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" aria-hidden>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
+                        {coverageBadge.label}
+                      </button>
+                    ) : (
+                      <span
+                        className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className}${acaTooltip ? " cursor-help underline decoration-dotted decoration-1 underline-offset-2" : ""}`}
+                        title={acaTooltip}
+                      >
+                        {coverageBadge.label}
+                      </span>
+                    )
                   ) : null}
+                  {pillState === "user_corrected" && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openCorrectionModal(item.id);
+                      }}
+                      title="Click to change your pick"
+                      className="rounded-sm bg-blue-100 px-1 py-px text-[9px] font-semibold text-blue-700 cursor-pointer ring-1 ring-blue-200 hover:bg-blue-200 hover:ring-blue-300 transition-colors"
+                    >
+                      Your pick
+                    </button>
+                  )}
                 </div>
                 {/* Flags column dropped in Session 85 round 3 — finding count
                     info now surfaces via the Refund/Forgive green numbers and
@@ -1188,13 +1335,16 @@ export function ClaimDetail({
                     </div>
                   </div>
 
-                  {/* Actionable steps */}
+                  {/* Actionable steps — S132 iter-5: refreshed to mirror the
+                      Candid product flow (Claim drafts the letter, Case
+                      escalates to attorneys) instead of generic "mail your
+                      appeal" copy. */}
                   <div className="rounded-lg border border-gray-200 bg-white p-3">
                     <p className="text-xs font-semibold text-gray-900">How to dispute</p>
                     <ol className="mt-1.5 space-y-1 text-xs text-gray-600">
-                      <li>1. Call the insurer claim number on your card and ask why no payment was made for this line.</li>
-                      <li>2. If denied, request a written explanation citing the plan provision.</li>
-                      <li>3. Draft a formal appeal with the letter below and mail it to the insurer&apos;s appeals address.</li>
+                      <li>1. Call the insurer claim number on your card and ask why no payment was made for this service.</li>
+                      <li>2. If they deny or stall, use Candid Claim to draft a dispute letter or information request using the Dispute button below.</li>
+                      <li>3. If still denied, use Candid Case to connect with attorneys who specialize in medical billing disputes.</li>
                     </ol>
                   </div>
 
@@ -1372,6 +1522,14 @@ export function ClaimDetail({
         showDismissed={showDismissed}
         getAuthToken={getAuthToken}
         onGenerated={(result) => router.push(disputeUrlForResult(result))}
+        // S132 Item 3: if a non-cancelled dispute already exists for this
+        // claim, the button switches to "View Dispute Letter" + navigates
+        // straight to the most recent letter (no re-draft). Re-draft entry
+        // point stays exclusively on /disputes Re-draft toolbar button so
+        // user can review strengthen-this-letter signals first.
+        existingDisputeId={
+          data.disputes.find((d) => d.status !== "cancelled")?.id ?? null
+        }
       />
 
       {/* Quality-reporting codes — collapsed by default */}
@@ -1418,6 +1576,7 @@ export function ClaimDetail({
           description={modalLineItem.description}
           currentSlug={modalLineItem.service_slug}
           catalog={catalog}
+          userPlanCoverage={data?.userPlanCoverage ?? []}
           onClose={() => setCorrectionModalLineId(null)}
           onSubmitted={handleCorrectionSubmitted}
           getAuthToken={getAuthToken}
@@ -1601,9 +1760,16 @@ function buildGapExplanation(
   billed: number,
   planCoverage: LineItem["planCoverage"],
 ): string {
-  const coverageSentence = planCoverage?.covered !== false
-    ? "Your plan covers this service, but the EOB records $0 insurance payment and $0 patient responsibility."
-    : "The EOB records $0 insurance payment and $0 patient responsibility.";
+  // S132 iter-5: planCoverage=null now framed as "Not in your uploaded plan"
+  // (matches the COVERAGE_BADGE.unknown label change). Previous "we don't
+  // have coverage info" was accurate but too vague — "Not in plan" tells
+  // the user what to do (verify or re-categorize) without overclaiming
+  // ("Not Covered" implies an insurer policy we can't back from missing data).
+  const coverageSentence = planCoverage == null
+    ? "This service isn't in your uploaded plan. The EOB records $0 insurance payment and $0 patient responsibility."
+    : planCoverage.covered === false
+      ? "The EOB records $0 insurance payment and $0 patient responsibility."
+      : "Your plan covers this service, but the EOB records $0 insurance payment and $0 patient responsibility.";
 
   const amountSentence = billed > 0
     ? `The $${billed.toLocaleString()} charge is likely a denial, write-off, or missing EOB data.`
@@ -1613,18 +1779,17 @@ function buildGapExplanation(
 }
 
 function buildPlanSays(planCoverage: LineItem["planCoverage"]): string {
-  // F-9 (Session 85) — always surface a specific dollar number so the panel
-  // contrasts cleanly with the EOB-shows side. When plan data is missing OR
-  // the row is "covered" without a specific copay/coinsurance, default to
-  // "Covered · $0" (assumes the most-permissive interpretation, matching
-  // Andrew's expectation that a covered service with no cost-share = $0).
-  // Don't fall back to vague "contact insurer to confirm" — that doesn't
-  // give the user anything to compare against.
-  if (planCoverage?.covered === false) return "Not covered";
+  // S132 iter-5: null planCoverage → "Not in plan." Same reframe as the
+  // COVERAGE_BADGE.unknown label — "Not in plan" gives the user a clear
+  // next step (re-categorize / verify with insurer / upload plan supplement)
+  // without overclaiming ("Not covered" is an insurer policy assertion we
+  // can't back from missing data).
+  if (planCoverage == null) return "Not in plan";
+  if (planCoverage.covered === false) return "Not covered";
 
   const parts: string[] = [];
-  if (planCoverage?.copay != null) parts.push(`$${planCoverage.copay} copay`);
-  if (planCoverage?.coinsurance != null) parts.push(`${normalizeCoinsurancePct(planCoverage.coinsurance)}% coinsurance`);
+  if (planCoverage.copay != null) parts.push(`$${planCoverage.copay} copay`);
+  if (planCoverage.coinsurance != null) parts.push(`${normalizeCoinsurancePct(planCoverage.coinsurance)}% coinsurance`);
 
   if (parts.length === 0) return "Covered · $0";
   return `Covered · ${parts.join(" · ")}`;
@@ -2344,6 +2509,7 @@ function BulkDisputeButton({
   showDismissed,
   getAuthToken,
   onGenerated,
+  existingDisputeId,
 }: {
   claimId: string;
   claim: Record<string, unknown>;
@@ -2352,9 +2518,16 @@ function BulkDisputeButton({
   showDismissed: boolean;
   getAuthToken: () => Promise<string | null>;
   onGenerated: (result: { disputeId?: string | null; deduplicated?: boolean }) => void;
+  existingDisputeId?: string | null;
 }) {
+  const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // S132 iter-2 — overlay is hoisted to (app)/layout.tsx so it survives the
+  // /claim → /disputes navigation as a single persistent React mount (no
+  // carousel/microcopy reset). BulkDisputeButton drives start()/stop();
+  // disputes/page.tsx stops the overlay when its letter is ready.
+  const disputeDraftOverlay = useDisputeDraftOverlay();
 
   // 1. Per-line actionable findings keyed back to their owning line item.
   const lineLevelActionable: Array<{ lineItemId: string; lineNumber: number; finding: AuditFinding; billedAmount: number }> = [];
@@ -2437,6 +2610,26 @@ function BulkDisputeButton({
 
   const aggregated = [...lineLevelActionable, ...gapSynthetic];
   const totalContested = aggregated.length + claimActionable.length;
+
+  // S132 Item 3: short-circuit when a non-cancelled dispute already exists.
+  // The button becomes a navigation affordance to the existing letter — no
+  // re-draft, no API call, no draft overlay. Stays mounted even when
+  // totalContested === 0 (e.g., user dismissed all findings post-draft) so
+  // the user retains access to their drafted letter.
+  if (existingDisputeId) {
+    return (
+      <div className="mb-4">
+        <button
+          type="button"
+          onClick={() => router.push(`/disputes?dispute=${existingDisputeId}`)}
+          className="w-full rounded-lg bg-blue-600 py-3 text-sm font-semibold text-white hover:bg-blue-700 transition-colors"
+        >
+          View Dispute Letter
+        </button>
+      </div>
+    );
+  }
+
   if (totalContested === 0) return null;
 
   const distinctLineItemIds = Array.from(new Set(aggregated.map((e) => e.lineItemId)));
@@ -2461,6 +2654,7 @@ function BulkDisputeButton({
     if (loading) return;
     setLoading(true);
     setError(null);
+    disputeDraftOverlay.start();
     try {
       const token = await getAuthToken();
       if (!token) throw new Error("Sign-in expired. Please reload and try again.");
@@ -2536,10 +2730,14 @@ function BulkDisputeButton({
       }
       const result = await res.json();
       onGenerated(result);
+      // S132 iter-2: do NOT setLoading(false) on success + do NOT stop the
+      // overlay here. router.push to /disputes is triggered by onGenerated;
+      // overlay must persist through nav so disputes/page.tsx can stop() once
+      // the letter is fetched. Stopping here would briefly expose /claim.
     } catch (err) {
       setError(err instanceof Error ? err.message : "Dispute generation failed");
-    } finally {
       setLoading(false);
+      disputeDraftOverlay.stop();
     }
   }
 
@@ -2550,20 +2748,9 @@ function BulkDisputeButton({
   // (table column + amber card) but not as a promise on the action button.
   const buttonLabel = totalContested === 1 ? "Dispute charge" : "Dispute these charges";
 
-  // B-LOAD.1 follow-up (S131): per Andrew direction "the second I click,
-  // load the audit loader (no check box) and no generating letter."
-  // The /api/disputes/generate POST takes multiple seconds; during that time,
-  // overlay the entire viewport with the Audit flow loader so the user sees
-  // ONE consistent loader from click → letter render. NEW disputes/loading.tsx
-  // takes over during route transition + disputes/page.tsx mounts with its
-  // own CodeCarouselLoaderV3 — no cube flash, no "Generating letter…" text.
-  if (loading) {
-    return (
-      <div className="fixed inset-0 z-50 bg-white">
-        <CodeCarouselLoaderV3 title="Drafting your dispute letter" />
-      </div>
-    );
-  }
+  // S132 iter-2: overlay moved to (app)/layout.tsx via DisputeDraftOverlayProvider
+  // so it persists across /claim → /disputes navigation as a single React mount.
+  // S132 iter-8: overlay loader is now cube (audit loader retired).
 
   return (
     <div className="mb-4">

@@ -167,9 +167,10 @@ export function computeRecoveryV2(args: ComputeRecoveryArgs): RecoveryMetrics {
   const billed = args.billed;
   const patientResponsibility = Math.max(0, args.patientResponsibility);
   const patientPaid = Math.max(0, args.patientPaid ?? 0);
+  const insuranceAdjusted = args.insuranceAdjusted ?? 0;
   const shouldOwe = computeShouldOwe({
     billed,
-    insuranceAdjusted: args.insuranceAdjusted ?? 0,
+    insuranceAdjusted,
     providerAdjusted: args.providerAdjusted ?? 0,
     planCoverage: args.planCoverage,
   });
@@ -180,10 +181,22 @@ export function computeRecoveryV2(args: ComputeRecoveryArgs): RecoveryMetrics {
   // is less than the proportional patient_paid backfill), the burden is still
   // the larger of the two. Without this, potentialRecovery silently drops
   // below refundComponent and forgive clamps to 0 even when paid > should_owe.
-  const userBurden = Math.max(patientPaid, patientResponsibility);
-  const potentialRecovery = Math.max(0, userBurden - shouldOwe);
+  //
+  // S132 iter-9 — mystery gap recovery: when paid=0 AND owed=0 AND billed>0
+  // AND coverage is known, the user has no current burden but the insurer
+  // owes the provider (billed − adjusted − shouldOwe). Treat the adjusted
+  // billed as the effective burden so recovery surfaces the dispute target
+  // (= forgiveness of the unpaid insurer share). Gap WITHOUT coverage stays
+  // at 0 recovery (defensive — we don't claim a dispute target on unknowns).
+  const adjustedBilled = Math.max(0, billed - insuranceAdjusted);
+  const isMysteryGap = patientResponsibility === 0 && patientPaid === 0 && billed > 0;
+  const effectiveBurden =
+    isMysteryGap && args.planCoverage != null
+      ? adjustedBilled
+      : Math.max(patientPaid, patientResponsibility);
+  const potentialRecovery = Math.max(0, effectiveBurden - shouldOwe);
   const refundComponent = Math.max(0, patientPaid - shouldOwe);
-  // Invariant: refundComponent ≤ potentialRecovery (since patientPaid ≤ userBurden).
+  // Invariant: refundComponent ≤ potentialRecovery.
   // forgivenessComponent is the "Insured" amount in the UI — what the insurer
   // should have paid the provider that they didn't (reduces outstanding balance).
   const forgivenessComponent = Math.max(0, potentialRecovery - refundComponent);

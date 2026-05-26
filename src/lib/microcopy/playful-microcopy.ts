@@ -17,10 +17,11 @@
  *
  * Consumers:
  *   - StackLoaderV3 (plan + document upload flow at /upload + /compare)
- *   - CodeCarouselLoaderV3 (audit flow: /claim navigation + dispute drafting)
  *
  * CubeLoaderBuilding does NOT consume — it's a navigation transition cue with
- * no rotating-message slot (pure visual signal).
+ * no rotating-message slot (pure visual signal). S132 iter-8 retired the
+ * audit-context loader (CodeCarouselLoaderV3); only StackLoaderV3 carries
+ * rotating microcopy now.
  */
 
 export const ROTATING_MICROCOPY: string[] = [

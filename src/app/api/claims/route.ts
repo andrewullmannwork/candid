@@ -12,6 +12,7 @@ import {
   resolveStillOutstanding,
   type PlanCoverageInput,
 } from "@/lib/claims/recovery-math";
+import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -154,10 +155,11 @@ export async function GET(req: NextRequest) {
       coveragePerPlan.get(planId)!.set(slug, {
         covered: svc.covered,
         copay: svc.in_copay,
-        // S120 — coinsurance stored as integer percent (0-100) in
-        // plan_covered_services.in_coinsurance; PlanCoverageInput expects
-        // decimal fraction (0-1). Normalize at the boundary.
-        coinsurance: svc.in_coinsurance != null ? Number(svc.in_coinsurance) / 100 : null,
+        // S132 iter-11 — plan_covered_services.in_coinsurance holds EITHER
+        // integer percent (e.g., 30) OR already-decimal (e.g., 0.3); both
+        // mean 30% in plan-document language. normalizeCoinsuranceForStorage
+        // handles both forms and returns decimal 0-1 uniformly.
+        coinsurance: normalizeCoinsuranceForStorage(svc.in_coinsurance as number | null),
       });
     }
   }
@@ -185,6 +187,12 @@ export async function GET(req: NextRequest) {
       let findingCount = 0;
       let potentialSavings = 0;
       let reviewNeededCount = 0;
+      // S132 Item 1: count line items with Unknown coverage (service_slug
+      // present but no row in plan_covered_services for the user's plan).
+      // Mirrors the coverageStatus="unknown" branch in /api/claims/[claimId].
+      // Surfaces uncertainty signal to BillState so an Unknown bill never
+      // displays as overcharge — recovery math is unreliable without coverage.
+      let unknownCoverageCount = 0;
       let lineItemPatientOwedSum = 0;
       let claimPotentialRecovery = 0;
       let claimAlreadyPaid = 0;
@@ -254,7 +262,16 @@ export async function GET(req: NextRequest) {
         claimRefund += rec.refundComponent;
         claimForgiveness += rec.forgivenessComponent;
 
-        if (billed > 0 && paid === 0 && owed === 0) {
+        if (!coverage && item.service_slug) {
+          unknownCoverageCount++;
+        }
+
+        // S132 iter-9: gap-without-coverage = needs review; gap-with-coverage
+        // flips to overcharge (recovery math now surfaces the unpaid insurer
+        // share as forgiveness). Without this guard, user-corrected lines
+        // (coverage resolved post-pick) stay forever-flagged as needs_review
+        // even though the dispute target is computable.
+        if (billed > 0 && paid === 0 && owed === 0 && !coverage) {
           reviewNeededCount++;
           reviewLineItems.push({
             id: item.id,
@@ -338,6 +355,7 @@ export async function GET(req: NextRequest) {
         lineItemCount: items.length,
         findingCount,
         reviewNeededCount,
+        unknownCoverageCount,
         reviewLineItems,
         potentialSavings,
         lineItemPatientOwedSum,

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { BillCard } from "@/components/claims/BillCard";
 import { ClaimDetail } from "@/components/claims/ClaimDetail";
 import { DiscrepancyList } from "@/components/claims/DiscrepancyList";
@@ -14,7 +14,8 @@ import { RecoveryHero, type RecoveryHeroStats } from "@/components/claims/Recove
 import { ClaimPreviewEmptyState } from "@/components/claims/ClaimPreviewEmptyState";
 import { Disclaimer } from "@/components/shared/Disclaimer";
 import { PageHeader } from "@/components/page-header";
-import { CodeCarouselLoaderV3 } from "@/components/loaders/CodeCarouselLoaderV3";
+import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
+import { useMinHoldLoading } from "@/lib/loading/use-min-hold";
 import {
   deriveBillState,
   type BillState,
@@ -54,6 +55,7 @@ interface ClaimSummary {
   created_at: string;
   potentialSavings?: number;
   reviewNeededCount?: number;
+  unknownCoverageCount?: number;
   reviewLineItems?: Array<{
     id: string;
     description: string | null;
@@ -152,7 +154,17 @@ function buildBillState(
   if (recovery > OVERCHARGE_THRESHOLD_USD) {
     findings.push({ severity: "overcharge", recovery_amount: recovery, confidence: 1 });
   }
-  if ((claim.reviewNeededCount ?? 0) > 0) {
+  // S132 Item 1: surface uncertainty when ANY line item has Unknown coverage
+  // (no plan_covered_services row for that service_slug). deriveBillState
+  // precedence flip (S131 FIX3) then gates the overcharge claim — an Unknown
+  // bill can't claim recovery dollars because recovery math is unreliable
+  // without coverage. reviewNeededCount alone misses this: it only fires on
+  // the "mystery gap" pattern (billed > 0 && paid === 0 && owed === 0) and
+  // skips bills with Unknown coverage that have non-zero insurance payment.
+  if (
+    (claim.reviewNeededCount ?? 0) > 0 ||
+    (claim.unknownCoverageCount ?? 0) > 0
+  ) {
     findings.push({ severity: "needs_review", confidence: 0.5 });
   }
 
@@ -212,6 +224,88 @@ export default function CandidClaimPage() {
   const [disputeData, setDisputeData] = useState<DisputeData | null>(null);
   const [disputesLoading, setDisputesLoading] = useState(true);
 
+  // S132 iter-6 Phase 1 — extracted to useCallback so ClaimDetail can trigger
+  // a list-wide refetch after the user changes a line-item category. Without
+  // this, the bill card on /claim list shows stale state (old coverageStatus,
+  // old recovery math, old unknownCoverageCount) until the page is reloaded.
+  const refetchClaims = useCallback(async () => {
+    if (!user) return;
+    try {
+      const token = await user.firebaseUser.getIdToken();
+      const headers = { Authorization: `Bearer ${token}` };
+
+      const [claimsRes, discRes] = await Promise.all([
+        fetch("/api/claims", { headers }),
+        fetch("/api/claims/discrepancies", { headers }),
+      ]);
+
+      const claimsData = claimsRes.ok ? await claimsRes.json() : { claims: [], stats: null };
+      setClaims(claimsData.claims || []);
+      setClaimStats(claimsData.stats || null);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let persistedDiscrepancies: any[] = [];
+      if (discRes.ok) {
+        const data = await discRes.json();
+        persistedDiscrepancies = data.discrepancies || [];
+      }
+      // S132 iter-11 — frontend filter on user_corrected_at REMOVED. Root cause
+      // now fixed at /api/claims/[claimId]/line-items/[lineId]/correct-category
+      // (marks discrepancies on the line as 'resolved' on every category
+      // change). The /api/claims/discrepancies endpoint excludes 'resolved'
+      // rows from its default query, so stale entries no longer surface here.
+
+      // Synthesize "review" discrepancies client-side from claims where
+      // eob_discrepancy_detection didn't run (empty claim_discrepancies table).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const synthesized: any[] = [];
+      for (const c of (claimsData.claims || []) as ClaimSummary[]) {
+        for (const li of c.reviewLineItems || []) {
+          const alreadyPersisted = persistedDiscrepancies.some(
+            (d) => d.claim_line_item_id === li.id,
+          );
+          if (alreadyPersisted) continue;
+          synthesized.push({
+            id: `synth-${li.id}`,
+            claim_id: c.id,
+            claim_line_item_id: li.id,
+            service_slug: li.service_slug || "unknown",
+            tier: 2,
+            field: "coverage_status",
+            expected_value: "Covered — see plan",
+            actual_value: `$${(li.billed_amount || 0).toLocaleString()} billed · $0 paid · $0 owed`,
+            expected_source: "user_plan",
+            expected_confidence: 0.5,
+            status: "flagged",
+            is_systemic: false,
+            systemic_user_count: null,
+            metadata: { synthesized: true, providerName: c.providerName, dateOfService: c.date_of_service },
+            claim_line_items: {
+              description: li.description,
+              billing_code: li.billing_code,
+              billing_code_type: null,
+              billed_amount: li.billed_amount,
+              patient_owes: 0,
+            },
+          });
+        }
+      }
+
+      const allDiscrepancies = [...persistedDiscrepancies, ...synthesized];
+      setDiscrepancies(allDiscrepancies);
+      setDiscrepancySummary({
+        total: allDiscrepancies.length,
+        tier2: allDiscrepancies.filter((d) => d.tier === 2).length,
+        tier3: allDiscrepancies.filter((d) => d.tier === 3).length,
+        systemic: allDiscrepancies.filter((d) => d.is_systemic).length,
+      });
+    } catch (err) {
+      console.error("Failed to load data:", err);
+    }
+    setClaimsLoading(false);
+    setDiscrepanciesLoading(false);
+  }, [user]);
+
   useEffect(() => {
     if (!user) return;
 
@@ -236,82 +330,11 @@ export default function CandidClaimPage() {
       }
     })();
 
-    // Load claims + discrepancies
-    async function loadData() {
-      try {
-        const token = await user!.firebaseUser.getIdToken();
-        const headers = { Authorization: `Bearer ${token}` };
+    refetchClaims();
+  }, [user, refetchClaims]);
 
-        const [claimsRes, discRes] = await Promise.all([
-          fetch("/api/claims", { headers }),
-          fetch("/api/claims/discrepancies", { headers }),
-        ]);
-
-        const claimsData = claimsRes.ok ? await claimsRes.json() : { claims: [], stats: null };
-        setClaims(claimsData.claims || []);
-        setClaimStats(claimsData.stats || null);
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        let persistedDiscrepancies: any[] = [];
-        if (discRes.ok) {
-          const data = await discRes.json();
-          persistedDiscrepancies = data.discrepancies || [];
-        }
-
-        // Synthesize "review" discrepancies client-side from claims where
-        // eob_discrepancy_detection didn't run (empty claim_discrepancies table).
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const synthesized: any[] = [];
-        for (const c of (claimsData.claims || []) as ClaimSummary[]) {
-          for (const li of c.reviewLineItems || []) {
-            const alreadyPersisted = persistedDiscrepancies.some(
-              (d) => d.claim_line_item_id === li.id,
-            );
-            if (alreadyPersisted) continue;
-            synthesized.push({
-              id: `synth-${li.id}`,
-              claim_id: c.id,
-              claim_line_item_id: li.id,
-              service_slug: li.service_slug || "unknown",
-              tier: 2,
-              field: "coverage_status",
-              expected_value: "Covered — see plan",
-              actual_value: `$${(li.billed_amount || 0).toLocaleString()} billed · $0 paid · $0 owed`,
-              expected_source: "user_plan",
-              expected_confidence: 0.5,
-              status: "flagged",
-              is_systemic: false,
-              systemic_user_count: null,
-              metadata: { synthesized: true, providerName: c.providerName, dateOfService: c.date_of_service },
-              claim_line_items: {
-                description: li.description,
-                billing_code: li.billing_code,
-                billing_code_type: null,
-                billed_amount: li.billed_amount,
-                patient_owes: 0,
-              },
-            });
-          }
-        }
-
-        const allDiscrepancies = [...persistedDiscrepancies, ...synthesized];
-        setDiscrepancies(allDiscrepancies);
-        setDiscrepancySummary({
-          total: allDiscrepancies.length,
-          tier2: allDiscrepancies.filter((d) => d.tier === 2).length,
-          tier3: allDiscrepancies.filter((d) => d.tier === 3).length,
-          systemic: allDiscrepancies.filter((d) => d.is_systemic).length,
-        });
-      } catch (err) {
-        console.error("Failed to load data:", err);
-      }
-      setClaimsLoading(false);
-      setDiscrepanciesLoading(false);
-    }
-    loadData();
-  }, [user]);
-
-  const loading = claimsLoading || disputesLoading || discrepanciesLoading;
+  const dataLoading = claimsLoading || disputesLoading || discrepanciesLoading;
+  const loading = useMinHoldLoading(dataLoading);
 
   // Derive per-claim BillState in one pass; reused by Bills list + Disputes tab + hero stats.
   const billStates = useMemo(() => {
@@ -367,9 +390,8 @@ export default function CandidClaimPage() {
   }
 
   if (loading) {
-    // B-LOAD.1 (S131): entering audit context per Andrew #2 — use Audit flow
-    // loader (CodeCarouselLoaderV3), not generic spinner / CubeLoaderBuilding.
-    return <CodeCarouselLoaderV3 title="Loading your claims" />;
+    // S132 iter-8 — unified cube loader; audit loader retired.
+    return <CubeLoaderBuilding />;
   }
 
   // If viewing claim detail, render that view only (NON-NEGOTIABLE preserve per D-§1.D.1-E).
@@ -381,6 +403,7 @@ export default function CandidClaimPage() {
           onBack={closeClaimDetail}
           focusLineItemId={focusLineItemId}
           backLabel={tabBeforeDetail === "discrepancies" ? "Back to discrepancies" : "Back to bills"}
+          onClaimUpdated={refetchClaims}
         />
       </div>
     );

@@ -124,7 +124,16 @@ export async function maybeReauditClaim(
   );
   const lastAt = meta.last_re_audit_at as string | undefined;
 
-  if (todayAudits.length >= DAILY_CAP) {
+  // S132 iter-8 — user-driven category corrections bypass the daily cap.
+  // /correct-category stamps `audit_stale_reason='user_category_correction'`
+  // when marking the claim stale. The 5/day cap was a safety net against
+  // runaway auto-staleness; explicit user picks should never get throttled
+  // into "Findings will refresh tomorrow." 1/min rate limit still applies
+  // as protection against double-submits.
+  const staleReason = meta.audit_stale_reason as string | undefined;
+  const isUserDrivenCorrection = staleReason === "user_category_correction";
+
+  if (!isUserDrivenCorrection && todayAudits.length >= DAILY_CAP) {
     return { reaudited: false, reason: "throttle_daily_cap_5" };
   }
   if (lastAt) {
@@ -336,23 +345,30 @@ export async function maybeReauditClaim(
 
   // Clear stale flag + record throttle state on claim. Status flips to
   // 'flagged' or 'processed' based on whether any findings remain.
-  todayAudits.push(now.toISOString());
+  // S132 iter-8 — user-driven corrections don't count toward the daily cap;
+  // only auto-staleness re-audits get tallied. Also clear `audit_stale_reason`
+  // post-run so the next staleness event starts fresh.
+  if (!isUserDrivenCorrection) {
+    todayAudits.push(now.toISOString());
+  }
   const nextStatus = auditReport.findings.length > 0 ? "flagged" : "processed";
   const persistedSummary = {
     ...auditReport.summary,
     claimLevelFindings: claimLevelOut,
   };
+  const nextMeta: Record<string, unknown> = {
+    ...meta,
+    audit_status: "fresh",
+    audit_refreshed_at: now.toISOString(),
+    last_re_audit_at: now.toISOString(),
+    re_audits_today: todayAudits,
+    auditSummary: persistedSummary,
+  };
+  delete nextMeta.audit_stale_reason;
   await supabase
     .from("claims")
     .update({
-      metadata: {
-        ...meta,
-        audit_status: "fresh",
-        audit_refreshed_at: now.toISOString(),
-        last_re_audit_at: now.toISOString(),
-        re_audits_today: todayAudits,
-        auditSummary: persistedSummary,
-      },
+      metadata: nextMeta,
       status: nextStatus,
     })
     .eq("id", claim.id);
