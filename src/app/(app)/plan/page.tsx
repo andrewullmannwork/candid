@@ -462,10 +462,6 @@ export default function CandidPlanPage() {
   // Feature flags
   const [correctionsEnabled, setCorrectionsEnabled] = useState(false);
   const [yearRolloverEnabled, setYearRolloverEnabled] = useState(false);
-  // B3.2 — gates HSA banner click target. When OFF: banner renders as a static
-  // informational block (current behavior). When ON: clickable → /hsa-marketplace
-  // (B3-HSA.2 future route).
-  const [hsaMarketplaceEnabled, setHsaMarketplaceEnabled] = useState(false);
 
   // Historical plans state
   const [historicalPlans, setHistoricalPlans] = useState<Array<{
@@ -612,7 +608,7 @@ export default function CandidPlanPage() {
     (async () => {
       try {
         const supabase = createBrowserClient();
-        const [plansRes, flagRes, rolloverFlagRes, hsaFlagRes] = await Promise.all([
+        const [plansRes, flagRes, rolloverFlagRes] = await Promise.all([
           supabase
             .from("insurance_plans")
             .select("id, plan_name, insurer_name, plan_type, plan_year, is_active, created_at")
@@ -630,18 +626,11 @@ export default function CandidPlanPage() {
             .eq("flag_key", "plan_year_rollover")
             .eq("target_type", "global")
             .single(),
-          supabase
-            .from("feature_flag_rules")
-            .select("enabled")
-            .eq("flag_key", "hsa_marketplace_v1")
-            .eq("target_type", "global")
-            .single(),
         ]);
         if (plansRes.data) setHistoricalPlans(plansRes.data);
         if (flagRes.data?.enabled) setCorrectionsEnabled(true);
         if (rolloverFlagRes.data?.enabled) setYearRolloverEnabled(true);
-        if (hsaFlagRes.data?.enabled) setHsaMarketplaceEnabled(true);
-      } catch { /* non-critical — falls back to static HSA banner when flag missing */ }
+      } catch { /* non-critical — corrections + rollover flags fall back to OFF */ }
     })();
   }, [user]);
 
@@ -803,44 +792,34 @@ export default function CandidPlanPage() {
           </div>
         </div>
 
-        {/* HSA banner (D-\u00a71.C.2-C). When `hsa_marketplace_v1` flag is ON,
-            clickable card routes to /hsa-marketplace (B3-HSA.2 future route).
-            When OFF (current default), static informational block (preserves
-            prior PROD behavior). */}
+        {/* HSA banner (D-\u00a71.C.2-C). B-LAND.1 / S130: always clickable; routes
+            to /hsa-marketplace (coming-soon stub locked behind overlay; partner
+            sign-up form lives there). Flag gate removed per Wire B1 \u2014 page is
+            locked so no premature reveal. */}
         {hsaEligibleCount > 0 && (
-          hsaMarketplaceEnabled ? (
-            <Link
-              href="/hsa-marketplace?tab=plan"
-              className="flex-[1_1_280px] min-w-0 flex items-center gap-3 p-4 bg-purple-50 border border-purple-100 rounded-2xl hover:bg-purple-100/70 hover:border-purple-200 transition-colors"
-            >
-              <div className="w-9 h-9 rounded-lg bg-purple-100 flex items-center justify-center shrink-0">
-                <svg className="w-4 h-4 text-purple-700" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v12m-6-6h12" />
-                </svg>
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold text-purple-900 leading-tight">
-                  {hsaEligibleCount} {hsaEligibleCount === 1 ? "benefit is" : "benefits are"} HSA/FSA eligible
-                </p>
-                <p className="text-xs text-purple-700 mt-0.5">
-                  Pay with pre-tax savings \u2014 and shop the HSA/FSA marketplace.
-                </p>
-              </div>
-              <svg className="w-4 h-4 text-purple-700 shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          <Link
+            href="/hsa-marketplace?tab=plan"
+            className="flex-[1_1_280px] min-w-0 flex items-center gap-3 p-4 bg-purple-50 border border-purple-100 rounded-2xl hover:bg-purple-100/70 hover:border-purple-200 transition-colors"
+          >
+            <div className="w-9 h-9 rounded-lg bg-purple-100 flex items-center justify-center shrink-0">
+              <svg className="w-4 h-4 text-purple-700" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+                <path d="M21 12V7H5a2 2 0 0 1 0-4h14v4" />
+                <path d="M3 5v14a2 2 0 0 0 2 2h16v-5" />
+                <path d="M18 12a2 2 0 0 0 0 4h4v-4Z" />
               </svg>
-            </Link>
-          ) : (
-            <div className="flex-[1_1_280px] min-w-0 p-4 bg-purple-50 border border-purple-100 rounded-2xl">
+            </div>
+            <div className="min-w-0 flex-1">
               <p className="text-sm font-semibold text-purple-900 leading-tight">
                 {hsaEligibleCount} {hsaEligibleCount === 1 ? "benefit is" : "benefits are"} HSA/FSA eligible
               </p>
-              <p className="text-xs text-purple-700 mt-1">
-                Benefits marked <span className="font-semibold">HSA/FSA</span> can be paid with
-                your health savings or flexible spending account.
+              <p className="text-xs text-purple-700 mt-0.5">
+                Pay with pre-tax savings \u2014 and shop the HSA/FSA marketplace.
               </p>
             </div>
-          )
+            <svg className="w-4 h-4 text-purple-700 shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+          </Link>
         )}
       </div>
 

@@ -224,8 +224,8 @@ export default function LandingPage() {
             title="Candid Case"
             tagline="Build your case. Find your lawyer."
             desc="Compile your audit, dispute letters, and evidence into a downloadable case file. Browse healthcare billing attorneys if you need legal help — no referral fees."
-            tag="Pro"
-            tagColor="blue"
+            tag="Coming Soon"
+            tagColor="gray"
           />
           <ProductCard
             title="Candid Care"
@@ -234,6 +234,15 @@ export default function LandingPage() {
             tag="Coming Soon"
             tagColor="gray"
           />
+          <Link href="/hsa-marketplace" className="sm:col-span-2 block">
+            <ProductCard
+              title="Candid HSA"
+              tagline="Pre-tax money, fully used."
+              desc="Find HSA/FSA-eligible benefits in your plan, and shop a curated marketplace of products that qualify — from telehealth to vision to therapy."
+              tag="Coming Soon"
+              tagColor="gray"
+            />
+          </Link>
         </div>
       </section>
 
