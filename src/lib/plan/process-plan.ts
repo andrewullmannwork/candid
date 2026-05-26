@@ -239,6 +239,14 @@ export async function processPlanDocumentData(
     const sbcParserV1Enabled = !isFullPlanDoc
       ? await isFeatureEnabled("sbc_parser_v1", userForFlagCheck?.email ?? undefined)
       : false;
+    // Ing-H (CF-44, S129): resolve cf44_selective_self_check flag — when ON,
+    // parser fires self-check ONLY when column_wrap_score > 0.6. Default ON
+    // in PROD per S129 "test on prod" decision; missing flag falls back to
+    // false (preserves current always-fire behavior).
+    const selectiveSelfCheckEnabled = await isFeatureEnabled(
+      "cf44_selective_self_check",
+      userForFlagCheck?.email ?? undefined,
+    );
     // Bundle PR #1 (Session 55, audit item #8) — Pattern 1 #1 admin gate context
     // for unknown slug routing. Threaded through votedParseSBC → parseSBC →
     // validateServiceSlugs. Unknowns hit service_catalog_admin_review_queue (mig 065)
@@ -271,6 +279,7 @@ export async function processPlanDocumentData(
           extractionMethod: "pdftotext",
           canonicalMatchExists: false, // v1: always cold-start vote (N=3) for safety; v1.5 add canonical pre-check
           enqueueContext: slugEnqueueContext,
+          selectiveSelfCheckEnabled,
         });
       } catch (err) {
         console.error("[process-plan] sbc_parser_v1 failed:", err);
@@ -1024,6 +1033,35 @@ export async function processPlanDocumentData(
           haiku_used: false,
         },
       });
+    }
+
+    // ── Ing-H (CF-44, S129): persist column_wrap_decision to documents.metadata ─
+    // For admin observability + heuristic threshold calibration. Only SBC path
+    // populates columnWrapDecision (plan_doc self-check is OFF per S77; heuristic
+    // N/A there). Uses read-spread-write to avoid overwriting other metadata
+    // keys (safer than process-eoc's overwrite pattern; future cleanup should
+    // backport this safer write to process-eoc).
+    if (haikuResult?.columnWrapDecision) {
+      try {
+        const { data: docMeta } = await supabase
+          .from("documents")
+          .select("metadata")
+          .eq("id", documentId)
+          .single();
+        const existingMetadata =
+          (docMeta?.metadata as Record<string, unknown> | null) ?? {};
+        await supabase
+          .from("documents")
+          .update({
+            metadata: {
+              ...existingMetadata,
+              column_wrap_decision: haikuResult.columnWrapDecision,
+            },
+          })
+          .eq("id", documentId);
+      } catch (err) {
+        console.warn("[process-plan] column_wrap_decision metadata write (non-fatal):", err);
+      }
     }
 
     // ── Service catalog + plan_covered_services ─────────────────────────────

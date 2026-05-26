@@ -63,6 +63,12 @@ export async function processEOCDocumentData(
   const { doc, ocrText, documentId } = input;
   const parseWarnings: string[] = [];
 
+  // Ing-H (CF-44, S129): resolve cf44_selective_self_check flag — when ON,
+  // EOC self-check fires ONLY when column_wrap_score > 0.6. Default ON in
+  // PROD per S129 test-on-prod decision; missing flag falls back to false
+  // (preserves current always-fire behavior).
+  const selectiveSelfCheckEnabled = await isFeatureEnabled("cf44_selective_self_check");
+
   // 1. Run EOC parser (Pattern P-D + P-8 inheritance via Task 3.1A-C).
   let parsed: EOCParseResult;
   try {
@@ -70,6 +76,7 @@ export async function processEOCDocumentData(
       documentId,
       extractionMethod: "pdftotext", // upload pipeline uses pdftotext-then-OCR-fallback;
                                       // OCR fallback is refused upstream (Q-P3.1A-12 image-PDF refusal)
+      selectiveSelfCheckEnabled,
     });
   } catch (err) {
     const reason = `EOC parser exception: ${err instanceof Error ? err.message : String(err)}`;
@@ -244,7 +251,10 @@ export async function processEOCDocumentData(
     console.warn("[parse-cost-events] [eoc] non-fatal:", err);
   }
 
-  // 5. documents.metadata.eoc_sections summary write.
+  // 5. documents.metadata.eoc_sections + Ing-H column_wrap_decision summary write.
+  // Ing-H (CF-44, S129) decision struct is co-located with eoc_sections_summary
+  // so admin can see "which heuristic decision drove this parse's self-check"
+  // alongside the parse output stats.
   await supabase
     .from("documents")
     .update({
@@ -258,6 +268,9 @@ export async function processEOCDocumentData(
           parse_errors: parsed.parse_errors,
           warning_count: parsed.warnings.length,
         },
+        ...(parsed.column_wrap_decision
+          ? { column_wrap_decision: parsed.column_wrap_decision }
+          : {}),
       },
     })
     .eq("id", documentId);

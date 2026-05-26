@@ -244,6 +244,14 @@ export interface SBCHaikuParseResult {
    *     provenance-builders.ts (forward-compat hook from Phase 4.0).
    */
   dispatchedSections: SBCSectionHint[];
+  /**
+   * Ing-H (CF-44, S129). Column-wrap heuristic decision for this parse —
+   * score + fire/skip outcome + signal breakdown. Persisted to
+   * documents.metadata.column_wrap_decision by the caller for admin
+   * observability + heuristic calibration. Undefined when the parser was
+   * called from a context that does not pass a heuristic (legacy tests).
+   */
+  columnWrapDecision?: import("./column-wrap-detector").ColumnWrapDecision;
 }
 
 /**

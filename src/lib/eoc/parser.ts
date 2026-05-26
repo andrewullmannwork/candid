@@ -64,6 +64,7 @@ import { extractDefinitions } from "./haiku-prompts/definitions";
 import { extractAcaCompliance, type EocAcaComplianceData } from "./haiku-prompts/aca-compliance";
 import { type Chunk, type Granularity, subSegmentSection } from "./sub-segment";
 import { isSelfCheckEnabled, selfCheckExcerpts } from "./self-check";
+import { computeColumnWrapDecision } from "../sbc/column-wrap-detector";
 
 const COST_HARD_CAP_USD = 1.0;
 const COST_GUARD_THRESHOLD_USD = 0.9; // 90% of hard cap; pre-dispatch chunk-skip guard
@@ -404,9 +405,14 @@ export async function parseEOC(
   options: {
     documentId: string;
     extractionMethod: ExtractionMethod;
+    // Ing-H (CF-44, S129) — caller-resolved cf44_selective_self_check flag.
+    // When true, self-check fires only when column_wrap_score > 0.6.
+    // When false (or omitted), preserves current always-fire behavior.
+    selectiveSelfCheckEnabled?: boolean;
   },
 ): Promise<EOCParseResult> {
   const { documentId, extractionMethod } = options;
+  const selectiveSelfCheckEnabled = options.selectiveSelfCheckEnabled ?? false;
   const warnings: string[] = [];
   const parseErrors: Array<{ section: EOCSectionHint; error: string }> = [];
 
@@ -660,7 +666,19 @@ export async function parseEOC(
   let final = verifyEOCSourceExcerpts(workingText, preliminary, sectionRanges);
 
   // 8. Self-check loop (Iter 2 contingency) — env-var gated per DR-3.1A.1-B-4.
-  if (isSelfCheckEnabled()) {
+  //
+  // Ing-H (CF-44, S129) selective gate: when cf44_selective_self_check flag
+  // is ON (resolved by caller + passed as options.selectiveSelfCheckEnabled),
+  // self-check fires ONLY when column_wrap_score > 0.6. When flag OFF,
+  // decision.fired=true always (preserves current behavior). Decision struct
+  // is attached to result for caller to persist to
+  // documents.metadata.column_wrap_decision.
+  const columnWrapDecision = computeColumnWrapDecision(
+    workingText,
+    "eoc",
+    selectiveSelfCheckEnabled,
+  );
+  if (isSelfCheckEnabled() && columnWrapDecision.fired) {
     const { updatedResult } = await selfCheckExcerpts(final, workingText, sectionRanges);
     // Re-run verifier on corrected excerpts to refresh source_excerpt_verified +
     // source_section_verified flags.
@@ -671,5 +689,5 @@ export async function parseEOC(
     }
   }
 
-  return final;
+  return { ...final, column_wrap_decision: columnWrapDecision };
 }
