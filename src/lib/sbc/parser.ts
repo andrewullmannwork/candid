@@ -33,6 +33,7 @@ import { extractAppealsGrievances } from "./haiku-prompts/appeals-grievances";
 import { validateServiceSlugs, type SlugEnqueueContext } from "./concept-resolver";
 import { verifySBCSourceExcerpts } from "./verify-source-excerpts";
 import { isSBCSelfCheckEnabled, selfCheckSBCExcerpts } from "./self-check";
+import { computeColumnWrapDecision } from "./column-wrap-detector";
 
 const COST_HARD_CAP_USD = 2.0;
 const COST_GUARD_THRESHOLD_USD = 0.9; // 90% of hard cap; pre-dispatch chunk-skip guard
@@ -128,10 +129,15 @@ export interface ParseSBCInput {
   // unknowns are dropped with warning (legacy behavior). When present (production
   // parse path), unknowns are enqueued to service_catalog_admin_review_queue.
   enqueueContext?: Omit<SlugEnqueueContext, "sectionHint"> | null;
+  // Ing-H (CF-44, S129) — caller-resolved cf44_selective_self_check flag value.
+  // When true, self-check fires only when column_wrap_score > 0.6. When false
+  // (or omitted), preserves current always-fire behavior (env-var-gated).
+  selectiveSelfCheckEnabled?: boolean;
 }
 
 export async function parseSBC(input: ParseSBCInput): Promise<SBCHaikuParseResult> {
   const { ocrText, extractionMethod, enqueueContext } = input;
+  const selectiveSelfCheckEnabled = input.selectiveSelfCheckEnabled ?? false;
   const warnings: string[] = [];
   const costTracker: CostTracker = { totalUsd: 0 };
 
@@ -273,10 +279,23 @@ export async function parseSBC(input: ParseSBCInput): Promise<SBCHaikuParseResul
   // multi-column tabular SBC layouts produce pdftotext column-wrap garbling
   // that first-pass verbatim verification rejects despite correct extraction.
   // Empirical (Kaiser Gold 80): services cite-grade 74.5% → 97.9% with self-check.
-  if (isSBCSelfCheckEnabled()) {
+  //
+  // Ing-H (CF-44, S129) selective gate: when cf44_selective_self_check flag is
+  // ON (resolved by caller + passed as input.selectiveSelfCheckEnabled),
+  // self-check fires ONLY when column_wrap_score > 0.6. Estimated ~90% cost
+  // reduction on self-check pass while preserving recall benefit on the docs
+  // that actually need it. When flag OFF, decision.fired=true always
+  // (preserves current behavior). Decision struct is attached to result for
+  // caller to persist to documents.metadata.column_wrap_decision.
+  const columnWrapDecision = computeColumnWrapDecision(
+    ocrText,
+    "sbc",
+    selectiveSelfCheckEnabled,
+  );
+  if (isSBCSelfCheckEnabled() && columnWrapDecision.fired) {
     const { updatedResult } = await selfCheckSBCExcerpts(verifiedResult, ocrText, sectionRanges);
     verifiedResult = verifySBCSourceExcerpts(ocrText, updatedResult, sectionRanges);
   }
 
-  return verifiedResult;
+  return { ...verifiedResult, columnWrapDecision };
 }
