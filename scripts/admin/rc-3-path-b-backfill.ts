@@ -203,7 +203,6 @@ async function backfillCanonicalPlans(stats: Stats) {
   const PAGE_SIZE = 500;
   let lastId: string | null = RESUME_FROM;
 
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     let q = sb
       .from("canonical_plans")
@@ -287,7 +286,6 @@ async function backfillCanonicalPlanServices(stats: Stats) {
   const PAGE_SIZE = 500;
   let lastId: string | null = null;
 
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     let q = sb
       .from("canonical_plan_services")
