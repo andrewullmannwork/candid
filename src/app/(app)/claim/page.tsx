@@ -55,7 +55,6 @@ interface ClaimSummary {
   created_at: string;
   potentialSavings?: number;
   reviewNeededCount?: number;
-  unknownCoverageCount?: number;
   reviewLineItems?: Array<{
     id: string;
     description: string | null;
@@ -154,17 +153,11 @@ function buildBillState(
   if (recovery > OVERCHARGE_THRESHOLD_USD) {
     findings.push({ severity: "overcharge", recovery_amount: recovery, confidence: 1 });
   }
-  // S132 Item 1: surface uncertainty when ANY line item has Unknown coverage
-  // (no plan_covered_services row for that service_slug). deriveBillState
-  // precedence flip (S131 FIX3) then gates the overcharge claim — an Unknown
-  // bill can't claim recovery dollars because recovery math is unreliable
-  // without coverage. reviewNeededCount alone misses this: it only fires on
-  // the "mystery gap" pattern (billed > 0 && paid === 0 && owed === 0) and
-  // skips bills with Unknown coverage that have non-zero insurance payment.
-  if (
-    (claim.reviewNeededCount ?? 0) > 0 ||
-    (claim.unknownCoverageCount ?? 0) > 0
-  ) {
+  // Surface uncertainty when any gap row remains unresolved (billed > 0,
+  // no insurer payment, no patient assignment). Once a user resolves
+  // coverage via the modal, the resulting line is treated identically to
+  // a system-classified line — no separate uncategorized-count branch.
+  if ((claim.reviewNeededCount ?? 0) > 0) {
     findings.push({ severity: "needs_review", confidence: 0.5 });
   }
 

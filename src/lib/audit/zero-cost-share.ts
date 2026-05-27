@@ -19,6 +19,7 @@ import { createServerClient } from "../supabase/server";
 import { isFeatureEnabled } from "../config/product-flags";
 import type { ParsedBill, AuditFinding, BillLineItem } from "../billing/types";
 import { inferProcedureCodeType } from "../billing/code-type-inference";
+import type { PlanCoverageMap } from "./coverage-loader";
 import { randomUUID } from "crypto";
 
 export interface UserDemographics {
@@ -161,6 +162,7 @@ interface ZeroCostShareRow {
 
 export async function runZeroCostShareCheck(
   bill: ParsedBill,
+  planCoverage: PlanCoverageMap | null = null,
 ): Promise<AuditFinding[]> {
   const flagOn = await isFeatureEnabled("s74_5_categorization_flywheel_v1");
   if (!flagOn) return [];
@@ -250,6 +252,17 @@ export async function runZeroCostShareCheck(
     );
     if (matchingRows.length === 0) continue;
 
+    // S135 — D13 fires ONLY when slug coverage is unknown (no plan_covered_services
+    // row). When the plan has the slug — whether it agrees with the ACA mandate
+    // ($0 cost-share), contradicts it (non-$0 cost-share), OR explicitly
+    // excludes it (covered=false) — the plan-vs-ACA reconciliation is handled
+    // upstream in `resolveLineCoverage` (coverage-loader.ts). The override
+    // surfaces inline in the green plan-says box (UI) and is available to the
+    // dispute pipeline via the same helper. No separate D13 amber card needed.
+    const slug = k.item.category ?? null;
+    const slugCov = planCoverage && slug ? planCoverage.get(slug) ?? null : null;
+    if (slugCov) continue;
+
     // Prefer the most specific row (oldest first, ACA preventive before ACIP if both match)
     const row = matchingRows[0];
     findings.push(buildFinding(k.item, row));
@@ -258,7 +271,10 @@ export async function runZeroCostShareCheck(
   return findings;
 }
 
-function buildFinding(item: BillLineItem, row: ZeroCostShareRow): AuditFinding {
+function buildFinding(
+  item: BillLineItem,
+  row: ZeroCostShareRow,
+): AuditFinding {
   const charged = item.patientResponsibility ?? 0;
   const basisLabel =
     row.coverage_basis === "ACA_preventive"
@@ -267,17 +283,24 @@ function buildFinding(item: BillLineItem, row: ZeroCostShareRow): AuditFinding {
 
   const eligibilityNote = formatEligibilityNote(row);
 
+  // S135 — single-variant copy: coverage is unknown (no plan_covered_services
+  // row), federal mandate provides the $0 backstop. Plan-vs-ACA conflicts
+  // (plan with non-$0 cost-share OR explicit exclusion) are surfaced inline
+  // in the green plan-says box, not as separate D13 amber cards.
+  const title = `Likely $0 service — ${row.display_name}`;
+  const description = `You were charged $${charged.toFixed(
+    2,
+  )} for this service. Under federal law (${basisLabel}), ACA-compliant plans must cover this at $0 patient cost-share when delivered in-network.${
+    eligibilityNote ? " " + eligibilityNote : ""
+  } Source: ${row.source_label}.`;
+
   return {
     id: randomUUID(),
     type: "zero_cost_share_overcharge",
     severity: charged >= 100 ? "high" : charged >= 25 ? "medium" : "low",
     lineItems: [item.lineNumber],
-    title: `Likely $0 service — ${row.display_name}`,
-    description: `You were charged $${charged.toFixed(
-      2,
-    )} for this service. Under federal law (${basisLabel}), ACA-compliant plans must cover this at $0 patient cost-share when delivered in-network.${
-      eligibilityNote ? " " + eligibilityNote : ""
-    } Source: ${row.source_label}.`,
+    title,
+    description,
     estimatedOvercharge: charged,
     benchmarkSource: row.source_url,
     benchmarkAmount: 0,

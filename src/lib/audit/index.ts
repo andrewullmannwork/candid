@@ -69,8 +69,10 @@ export async function runAudit(
 
   // Step 2b: S74.5 D13 — Zero-cost-share registry check (ACA preventive + ACIP
   // vaccine). Runs BEFORE plan-coverage check semantically; fires only when
-  // s74_5_categorization_flywheel_v1 flag is ON.
-  const zeroCostFindings = await runZeroCostShareCheck(bill);
+  // s74_5_categorization_flywheel_v1 flag is ON. S135 PR-2 — planCoverage
+  // threaded so D13 can pick the right copy variant (Likely $0 vs Federal
+  // mandate overrides plan) per the rules in zero-cost-share.ts.
+  const zeroCostFindings = await runZeroCostShareCheck(bill, planCoverage);
   allFindings.push(...zeroCostFindings);
 
   // Step 2c: S74.5 D15 — Claim-header arithmetic check. Catches unallocated
@@ -84,7 +86,19 @@ export async function runAudit(
   // OOP on a covered service the insurer never processed). Recovery target
   // is the user-recovery delta (patient_responsibility − should_owe), not the
   // contractual writeoff. Address dispute to the INSURER, not the provider.
-  const underpayFindings = runInsuranceUnderpaymentCheck(bill, planCoverage, acaFallback);
+  // S135 PR-2 — skip lines where D13 already fired so users don't see duplicate
+  // findings with the same recovery dollar amount on ACA-preventive codes.
+  const d13FiredLineNumbers = new Set<number>(
+    zeroCostFindings.flatMap((f) =>
+      Array.isArray(f.lineItems) ? f.lineItems : [],
+    ),
+  );
+  const underpayFindings = runInsuranceUnderpaymentCheck(
+    bill,
+    planCoverage,
+    acaFallback,
+    d13FiredLineNumbers,
+  );
   allFindings.push(...underpayFindings);
 
   // Step 2e: S74.6 D4 — Description → service_catalog Haiku similarity match.

@@ -16,10 +16,44 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { PlanCoverageInput } from "../claims/recovery-math";
 import type { ParsedBill } from "../billing/types";
-import { buildAcaCoverageFallback } from "./aca-coverage-fallback";
+import {
+  buildAcaCoverageFallback,
+  type AcaFallbackResult,
+} from "./aca-coverage-fallback";
 import { normalizeCoinsuranceForStorage } from "../billing/coinsurance";
 
 export type PlanCoverageMap = Map<string, PlanCoverageInput>;
+
+/**
+ * S135 — ACA-mandate override capture.
+ *
+ * Populated by `resolveLineCoverage` when an ACA-compliant plan's
+ * `plan_covered_services` row disagrees with the federal ACA mandate (either
+ * the plan assigns a non-$0 cost-share OR explicitly excludes the service)
+ * AND the line is an ACA-preventive or ACIP-vaccine code. ACA wins for
+ * math + bill state; this struct preserves the original plan terms for two
+ * downstream consumers:
+ *
+ *   1. UI green plan-says box renders an inline override line ("Plan says
+ *      $20 copay, but federal law (ACA) requires $0 for this preventive
+ *      service") so the user sees the conflict in one place.
+ *
+ *   2. Dispute letter generation (future backend session) — strong citation
+ *      that the plan may be violating federal law as an ACA-compliant plan.
+ *      The dispute pipeline can call `resolveLineCoverage` at letter-gen time
+ *      to recompute the override (helper is pure + deterministic), so no
+ *      persistent metadata field is required for this hook.
+ */
+export interface AcaOverride {
+  /** Original plan copay (before ACA override). May be null when plan didn't have a copay field. */
+  planCopay: number | null;
+  /** Original plan coinsurance (decimal 0-1, before ACA override). */
+  planCoinsurance: number | null;
+  /** Original plan covered status. `false` = plan-excludes-mandate case; `true` (or null) = plan-contradicts-mandate. */
+  planCovered: boolean | null;
+  /** ACA mandate basis: 'ACA_preventive' | 'ACIP_vaccine'. */
+  basis: string | null;
+}
 
 /**
  * S74.6 D2 §B — audit-side ACA fallback. Coverage indexed by line number for
@@ -115,6 +149,53 @@ export async function loadAcaFallbackForAudit(opts: {
   return {
     bySlug: fallback.bySlug,
     byLineNumber: fallback.byLineNumber,
+  };
+}
+
+/**
+ * S135 — Per-line coverage resolution implementing the 4-state ACA matrix.
+ *
+ * State 1 (plan + ACA both say $0 cost-share):    use plan, no override
+ * State 2 (plan says non-$0, ACA says $0):         use ACA, override captured
+ * State 2b (plan says NOT COVERED, ACA says $0):   use ACA, override captured
+ * State 3 (plan missing slug, ACA mandate applies): use ACA, no override (no plan to override)
+ * State 4 (ACA mandate doesn't apply):             use plan as-is
+ *
+ * Returns `{coverage, acaOverride}`. `coverage` drives shouldOwe math + bill
+ * state. `acaOverride` is non-null only in States 2 and 2b — surfaces the
+ * plan-vs-ACA conflict for inline UI rendering + dispute letter citation.
+ */
+export interface ResolvedLineCoverage {
+  coverage: PlanCoverageInput | null;
+  acaOverride: AcaOverride | null;
+}
+
+export function resolveLineCoverage(
+  planCov: PlanCoverageInput | null,
+  acaCov: PlanCoverageInput | null,
+  planMeta: AcaFallbackResult["planMeta"] | null = null,
+): ResolvedLineCoverage {
+  // State 4 — ACA doesn't apply to this line/plan.
+  if (!acaCov) return { coverage: planCov, acaOverride: null };
+  // State 3 — plan has no row for this slug; ACA fallback is the only source.
+  if (!planCov) return { coverage: acaCov, acaOverride: null };
+  // Both planCov and acaCov exist — check for conflict.
+  const planExcludes = planCov.covered === false;
+  const planSaysZero =
+    !planExcludes &&
+    (planCov.copay == null || planCov.copay === 0) &&
+    (planCov.coinsurance == null || planCov.coinsurance === 0);
+  // State 1 — plan and ACA agree on $0; plan row wins (preserves source attribution).
+  if (planSaysZero) return { coverage: planCov, acaOverride: null };
+  // States 2 / 2b — conflict; ACA wins. Capture original plan terms for UI + dispute.
+  return {
+    coverage: acaCov,
+    acaOverride: {
+      planCopay: planCov.copay,
+      planCoinsurance: planCov.coinsurance,
+      planCovered: planCov.covered,
+      basis: planMeta?.basis ?? null,
+    },
   };
 }
 

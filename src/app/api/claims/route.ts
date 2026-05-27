@@ -13,6 +13,8 @@ import {
   type PlanCoverageInput,
 } from "@/lib/claims/recovery-math";
 import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
+import { buildAcaCoverageFallback } from "@/lib/audit/aca-coverage-fallback";
+import { resolveLineCoverage } from "@/lib/audit/coverage-loader";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -169,7 +171,7 @@ export async function GET(req: NextRequest) {
     (claims || []).map(async (claim) => {
       const { data: lineItems } = await supabase
         .from("claim_line_items")
-        .select("id, service_slug, billing_code, metadata, billed_amount, patient_owes, insurance_paid, description, amount_still_outstanding, patient_paid_amount, insurance_adjusted_amount")
+        .select("id, line_number, service_slug, billing_code, billing_code_type, metadata, billed_amount, patient_owes, insurance_paid, description, amount_still_outstanding, patient_paid_amount, insurance_adjusted_amount")
         .eq("claim_id", claim.id);
 
       const items = lineItems || [];
@@ -184,15 +186,29 @@ export async function GET(req: NextRequest) {
             ? Number(claim.total_patient_responsibility)
             : null;
 
+      // S135 — ACA fallback per claim. Mirrors detail endpoint's logic so the
+      // list endpoint's bill-state decision honors ACA-mandated coverage on
+      // lines whose slug isn't in plan_covered_services. Without this, ACA-
+      // covered lines (e.g., 99385 Annual Physical on a plan that doesn't
+      // enumerate preventive_visit_adult) count toward reviewNeededCount even
+      // though the detail UI shows them as "Covered" via federal mandate.
+      const acaFallback = await buildAcaCoverageFallback({
+        supabase,
+        planId: claim.insurance_plan_id as string | null,
+        userId: claim.user_id as string,
+        patientName: (claim.patient_name as string | null | undefined) ?? null,
+        lineItems: items.map((li) => ({
+          lineNumber: Number(li.line_number ?? 0),
+          procedureCode: (li.billing_code as string | null) ?? null,
+          procedureCodeType: (li.billing_code_type as string | null) ?? null,
+          serviceSlug: (li.service_slug as string | null) ?? null,
+        })),
+        existingCoverageBySlug: new Set(coverageMap?.keys() ?? []),
+      });
+
       let findingCount = 0;
       let potentialSavings = 0;
       let reviewNeededCount = 0;
-      // S132 Item 1: count line items with Unknown coverage (service_slug
-      // present but no row in plan_covered_services for the user's plan).
-      // Mirrors the coverageStatus="unknown" branch in /api/claims/[claimId].
-      // Surfaces uncertainty signal to BillState so an Unknown bill never
-      // displays as overcharge — recovery math is unreliable without coverage.
-      let unknownCoverageCount = 0;
       let lineItemPatientOwedSum = 0;
       let claimPotentialRecovery = 0;
       let claimAlreadyPaid = 0;
@@ -238,7 +254,18 @@ export async function GET(req: NextRequest) {
         // rather than the legacy `stillOutstanding` heuristic. patient_owes is
         // the total assigned share; patient_paid_amount is how much the user
         // has paid OOP. Refund/forgiveness split derives from those two.
-        const coverage = (item.service_slug && coverageMap?.get(item.service_slug)) || null;
+        // S135 — coverage resolved via the 4-state ACA matrix helper. ACA wins
+        // on conflict for math + bill state; plan wins on match. ACA-only when
+        // plan missing slug. Symmetric with detail endpoint.
+        const rawPlanCoverage: PlanCoverageInput | null =
+          (item.service_slug && coverageMap?.get(item.service_slug)) || null;
+        const acaCoverage: PlanCoverageInput | null =
+          acaFallback.byLineNumber.get(Number(item.line_number ?? 0)) || null;
+        const { coverage } = resolveLineCoverage(
+          rawPlanCoverage,
+          acaCoverage,
+          acaFallback.planMeta,
+        );
         const patientResponsibility = owed || resolveStillOutstanding({
           lineBilled: billed,
           lineStillOutstanding: item.amount_still_outstanding != null ? Number(item.amount_still_outstanding) : null,
@@ -262,15 +289,14 @@ export async function GET(req: NextRequest) {
         claimRefund += rec.refundComponent;
         claimForgiveness += rec.forgivenessComponent;
 
-        if (!coverage && item.service_slug) {
-          unknownCoverageCount++;
-        }
-
-        // S132 iter-9: gap-without-coverage = needs review; gap-with-coverage
-        // flips to overcharge (recovery math now surfaces the unpaid insurer
-        // share as forgiveness). Without this guard, user-corrected lines
-        // (coverage resolved post-pick) stay forever-flagged as needs_review
-        // even though the dispute target is computable.
+        // needs_review counts gap rows ONLY when coverage is unknown — i.e.,
+        // when the user still has something to act on. Once the user resolves
+        // a slug (or Haiku auto-classifies to one with a plan_covered_services
+        // row), the line is RESOLVED from the user's perspective even if the
+        // EOB never allocated dollars to it. The unallocated-dollars signal
+        // still surfaces per-line via the gap-explanation panel; it just
+        // doesn't bubble up to the bill-level "Needs review" badge once the
+        // user has done everything they can do.
         if (billed > 0 && paid === 0 && owed === 0 && !coverage) {
           reviewNeededCount++;
           reviewLineItems.push({
@@ -355,7 +381,6 @@ export async function GET(req: NextRequest) {
         lineItemCount: items.length,
         findingCount,
         reviewNeededCount,
-        unknownCoverageCount,
         reviewLineItems,
         potentialSavings,
         lineItemPatientOwedSum,
