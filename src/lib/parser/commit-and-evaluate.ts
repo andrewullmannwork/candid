@@ -67,6 +67,7 @@ export const PHASE_4_0_6_PLAN_IDENTITY_FIELDS_SBC: readonly string[] = [
   "plan_name",
   "plan_year",
   "plan_type",
+  "metal_level",
 ] as const;
 
 export const PHASE_4_0_6_PLAN_IDENTITY_FIELDS_EOC: readonly string[] = [
@@ -77,6 +78,7 @@ export const PHASE_4_0_6_PLAN_IDENTITY_FIELDS_EOC: readonly string[] = [
   "in_oop_max_individual",
   "out_deductible_individual",
   "out_oop_max_individual",
+  "metal_level",
 ] as const;
 
 export interface CommitAndEvaluateInput {
