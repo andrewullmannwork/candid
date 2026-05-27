@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
 
   let query = supabase
     .from("claim_discrepancies")
-    .select("*, claim_line_items!inner(description, billing_code, billing_code_type, billed_amount, patient_owes)")
+    .select("*, claim_line_items!inner(description, billing_code, billing_code_type, billed_amount, patient_owes, user_corrected_at)")
     .eq("user_id", user.id)
     .order("created_at", { ascending: false })
     .limit(limit);
@@ -124,9 +124,17 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "Discrepancy not found" }, { status: 404 });
   }
 
+  // S132 iter-13 — stamp resolved_at when status flips to 'resolved' so the
+  // resolution timestamp survives subsequent metadata-only updates (mig 128
+  // dedicated lifecycle column).
+  const nowIso = new Date().toISOString();
+  const updates: Record<string, unknown> = { status, updated_at: nowIso };
+  if (status === "resolved") {
+    updates.resolved_at = nowIso;
+  }
   const { error } = await supabase
     .from("claim_discrepancies")
-    .update({ status, updated_at: new Date().toISOString() })
+    .update(updates)
     .eq("id", discrepancyId);
 
   if (error) {

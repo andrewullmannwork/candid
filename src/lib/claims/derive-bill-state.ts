@@ -103,7 +103,12 @@ export function deriveBillState(
 
   const hasDraftedDispute = disputes.some((d) => d.status !== 'cancelled');
 
-  if (hasUncertainty && !hasOvercharge) return 'needs_review';
+  // B4.1-FIX3 (S131): needs_review takes precedence over overcharge per Andrew
+  // direction — "we don't know if it is an overcharge until it is confirmed."
+  // Any uncertainty in the bill (audit needs_review + low-confidence findings +
+  // unresolved tier 2/3 discrepancies) gates the overcharge claim. The bill
+  // flips to overcharge_* only once uncertainty resolves.
+  if (hasUncertainty) return 'needs_review';
   if (hasOvercharge && hasDraftedDispute) return 'overcharge_drafted';
   if (hasOvercharge && !hasDraftedDispute) return 'overcharge_no_draft';
   return 'clean';

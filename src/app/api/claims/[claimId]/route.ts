@@ -11,6 +11,7 @@ import {
   resolveStillOutstanding,
   type PlanCoverageInput,
 } from "@/lib/claims/recovery-math";
+import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { maybeReauditClaim } from "@/lib/audit/reaudit";
 import { buildAcaCoverageFallback } from "@/lib/audit/aca-coverage-fallback";
@@ -170,10 +171,11 @@ export async function GET(
           coverageMap.set(slug, {
             covered: svc.covered,
             copay: svc.in_copay,
-            // S120 — coinsurance stored as integer percent (0-100) in
-            // plan_covered_services.in_coinsurance; PlanCoverageInput expects
-            // decimal fraction (0-1). Normalize at the boundary.
-            coinsurance: svc.in_coinsurance != null ? Number(svc.in_coinsurance) / 100 : null,
+            // S132 iter-11 — plan_covered_services.in_coinsurance holds either
+            // integer percent (30) OR already-decimal (0.3); both mean 30% in
+            // plan-document language. normalizeCoinsuranceForStorage detects
+            // both forms and returns decimal 0-1 uniformly.
+            coinsurance: normalizeCoinsuranceForStorage(svc.in_coinsurance as number | null),
             source: svc.source,
           });
         }
@@ -366,6 +368,19 @@ export async function GET(
     relatedClaims = grouped || [];
   }
 
+  // S132 iter-6 Phase 1 (cross-workstream §R.2): expose the user's plan
+  // coverage as a flat array so CategoryCorrectionModal can (a) filter the
+  // catalog to slugs the user's plan actually lists, (b) render an inline
+  // coverage badge per row, and (c) gate the "Use this" best-guess button
+  // when the current slug isn't in plan. Backend already builds coverageMap
+  // above; this is a zero-extra-query exposure.
+  const userPlanCoverage = Array.from(coverageMap.entries()).map(([slug, c]) => ({
+    slug,
+    covered: c.covered,
+    copay: c.copay,
+    coinsurance: c.coinsurance,
+  }));
+
   return NextResponse.json({
     claim,
     lineItems: enrichedLineItems,
@@ -375,6 +390,7 @@ export async function GET(
     flags: {
       categorizationFlywheelV1: flywheelEnabled,
     },
+    userPlanCoverage,
     // S74.5 D7 — surface re-audit outcome for telemetry + client toasts.
     // null when flag off or claim wasn't stale.
     reaudit: reauditResult,

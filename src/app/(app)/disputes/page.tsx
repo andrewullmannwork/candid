@@ -25,6 +25,8 @@ import { DownloadWarningModal } from "@/components/disputes/DownloadWarningModal
 import { EvidenceGaps } from "@/components/disputes/EvidenceGaps";
 import { InsurerAddressCorrectionModal } from "@/components/disputes/InsurerAddressCorrectionModal";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
+import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
+import { useDisputeDraftOverlay } from "@/lib/loading/dispute-draft-overlay";
 import type {
   BoundCanonicalPlan,
   PlanContext,
@@ -36,11 +38,8 @@ export default function DisputesPage() {
   const [subscribing, setSubscribing] = useState(false);
 
   if (loading) {
-    return (
-      <div className="flex min-h-[60vh] items-center justify-center">
-        <div className="h-5 w-5 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
-      </div>
-    );
+    // S132 iter-8 — unified cube loader.
+    return <CubeLoaderBuilding />;
   }
 
   if (!isPro) {
@@ -188,7 +187,13 @@ function DisputesContent() {
     }
     return "";
   });
-  const [disputeFetching, setDisputeFetching] = useState(false);
+  // S132 iter-2 — initialize true when ?dispute=ID present so the in-page
+  // loader renders synchronously on first paint (before the fetch useEffect
+  // toggles it). Avoids a single-frame blank flash under the layout-level
+  // DisputeDraftOverlay (which dismisses once disputeFetching → false).
+  const [disputeFetching, setDisputeFetching] = useState(
+    () => !!searchParams.get("dispute"),
+  );
   const [planContext, setPlanContext] = useState<PlanContext | null>(null);
   const [evidence, setEvidence] = useState<DisputeEvidence | null>(null);
   const [downloadWarnOpen, setDownloadWarnOpen] = useState(false);
@@ -237,6 +242,15 @@ function DisputesContent() {
   const [outcomeModalOpen, setOutcomeModalOpen] = useState(false);
   const [outcomeToast, setOutcomeToast] = useState<string | null>(null);
   const disputeId = searchParams.get("dispute");
+
+  // S132 iter-2 — drop the layout-level DisputeDraftOverlay once the fetch
+  // settles (letter ready OR fetch errored). Cleanup on unmount as safety so
+  // mid-flow nav-away can't leave the overlay stuck.
+  const { stop: stopDisputeDraftOverlay } = useDisputeDraftOverlay();
+  useEffect(() => {
+    if (!disputeFetching) stopDisputeDraftOverlay();
+  }, [disputeFetching, stopDisputeDraftOverlay]);
+  useEffect(() => () => stopDisputeDraftOverlay(), [stopDisputeDraftOverlay]);
 
   // S74 — bearer-token fetch helper shared by the inline forms (InsurerAddressCorrectionModal,
   // ProviderAddressForm) so they don't need to know about useAuth() internals.
@@ -504,11 +518,8 @@ function DisputesContent() {
 
   if (!letter) {
     if (disputeFetching) {
-      return (
-        <div className="flex min-h-[40vh] items-center justify-center">
-          <div className="h-5 w-5 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
-        </div>
-      );
+      // S132 iter-8 — unified cube loader.
+      return <CubeLoaderBuilding />;
     }
     return (
       <div className="max-w-4xl mx-auto">
@@ -530,6 +541,15 @@ function DisputesContent() {
         </div>
       </div>
     );
+  }
+
+  // B-LOAD.1 (S131): during Re-draft, replace letter content with Audit flow
+  // loader per Andrew direction ("waiting for a dispute letter to be created and
+  // load → audit loading page"). Page chrome + sidebar from (app)/layout.tsx
+  // stay visible. Existing redraftToast pattern preserved for outcome surfacing.
+  if (redrafting) {
+    // S132 iter-8 — unified cube loader.
+    return <CubeLoaderBuilding />;
   }
 
   const missingYear = letter.missingPlanForYear ?? planContext?.missingForYear ?? null;

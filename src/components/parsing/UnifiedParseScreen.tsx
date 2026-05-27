@@ -35,6 +35,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { pickNextTickInterval } from "@/lib/parsing/parseProgressUx";
 import { StackLoaderV3 } from "@/components/loaders/StackLoaderV3";
+import { ROTATING_MICROCOPY, MICROCOPY_INTERVAL_MS } from "@/lib/microcopy/playful-microcopy";
 
 export type ParseDocPhase = "queued" | "uploading" | "parsing" | "complete" | "error";
 
@@ -93,82 +94,12 @@ interface UnifiedParseScreenProps {
   loaderVariant?: "default" | "stackV3";
 }
 
-// Brand-voice messages for stackV3 loader variant (single-doc /upload path).
-const STACK_V3_AUDIT_MESSAGES = [
-  "Reading the fine print so you don't have to.",
-  "Cross-checking codes against fair-price data…",
-  "We read each bill twice — once for what's there, once for what isn't.",
-  "Looking for duplicate charges…",
-  "Flagging anything that smells off…",
-];
-const STACK_V3_PLAN_MESSAGES = [
-  "Reading your plan document…",
-  "We read every page twice — once for what's there, once for what isn't.",
-  "Surfacing covered benefits…",
-  "Decoding insurance-speak…",
-  "Worth the extra minute. Promise.",
-];
-
-// Whimsical doctor's-office vignettes. S93 lock: 55 lines, 4s rotation.
-const ROTATING_MICROCOPY: string[] = [
-  "Taking a pen from behind our ear.",
-  "Adjusting the reading lamp on our desk.",
-  "Sliding glasses down to the tip of our nose.",
-  "Doodling a tiny stethoscope in the margin.",
-  "Sharpening a #2 pencil. Just the way we like it.",
-  "Highlighting the important bits in yellow.",
-  "Adding a sticky note for later.",
-  "Pouring a fresh cup of coffee.",
-  "Stacking the pages. Aligning pens.",
-  "Underlining the fine print twice.",
-  "Tapping the desk thoughtfully.",
-  "Cross-referencing with the big binder on the shelf.",
-  "Drawing a little arrow next to the most important number.",
-  "Stamping a smiley face in the corner.",
-  "Almost done. Just polishing the apple on the desk.",
-  "Squinting at the small print.",
-  "Reaching for the second pair of glasses.",
-  "Untangling the phone cord.",
-  "Filing the folder under “important.”",
-  "Wiping a smudge off the desk lamp.",
-  "Tearing a fresh page from the notepad.",
-  "Clicking the pen twice. Just to be sure.",
-  "Pinning a note to the corkboard.",
-  "Sliding the manila folder open.",
-  "Counting the pages a second time.",
-  "Refilling the stapler.",
-  "Erasing a faint pencil mark.",
-  "Fluffing the cushion on the rolling chair.",
-  "Straightening the diploma on the wall.",
-  "Watering the office fern.",
-  "Reading aloud, just to ourselves.",
-  "Reaching for the calculator.",
-  "Adjusting the desk fan.",
-  "Folding a paper airplane out of habit.",
-  "Squaring the corners of the stack.",
-  "Writing “TBD” then scratching it out.",
-  "Locating the missing paperclip.",
-  "Tapping the stapler. Empty.",
-  "Refilling the coffee pot.",
-  "Brushing crumbs off the manila folder.",
-  "Glancing at the wall clock.",
-  "Lining up the post-it notes.",
-  "Drawing a star next to the deductible.",
-  "Re-reading the appendix, just in case.",
-  "Cracking our knuckles.",
-  "Switching from blue ink to red.",
-  "Spotting the typo on page three.",
-  "Sliding a bookmark into the right spot.",
-  "Sketching a tiny clipboard in the margin.",
-  "Whispering “interesting” under our breath.",
-  "Wiping the magnifying glass clean.",
-  "Shuffling the pages back into order.",
-  "Pinning the receipt to the rest.",
-  "Folding down the corner of page seven.",
-  "Smiling at the well-organized notes.",
-];
-
-const MICROCOPY_INTERVAL_MS = 4000;
+// B-LOAD.1 (S131): single source of truth for rotating microcopy. The
+// previously-inline ROTATING_MICROCOPY (55 lines, S93 lock) + narrow stackV3
+// AUDIT/PLAN palettes (5 lines each) consolidated into
+// `src/lib/microcopy/playful-microcopy.ts` per Andrew direction "use the
+// 40 or so playful texts we had on the old loader" for the stackV3 variant too.
+// Logic preserved: rotation interval + cycling effect at line 732 unchanged.
 
 // ─── Phase derivation (exported helper for callers) ─────────────────────────
 
@@ -867,14 +798,11 @@ function StackLoaderV3Variant({
     return null; // page counter rendered by StackLoaderV3 when subPhaseText is null
   })();
 
-  // Doc-kind detection for message palette. fileName + step are unreliable
-  // — phase derivation gives us "parsing" only; the original /upload
-  // ProcessingFlow passes docType through, so we use the explicit kind via
-  // ParseDoc.label when set. Default to plan palette (more generic).
-  // Future: parameterize via prop if /compare ever uses stackV3.
-  const messages = doc.fileName.match(/eob|bill|claim/i)
-    ? STACK_V3_AUDIT_MESSAGES
-    : STACK_V3_PLAN_MESSAGES;
+  // B-LOAD.1 (S131): unified 55-line ROTATING_MICROCOPY for all doc types per
+  // Andrew direction. Doc-kind detection retired — the doctor's-office palette
+  // works equally for SBC/EOC/plan-doc and EOB/itemized-bill flows. Detection
+  // logic preserved for git-blame traceability only.
+  const messages = ROTATING_MICROCOPY;
 
   useEffect(() => {
     if (subPhase === "complete" && onProgressionComplete) {

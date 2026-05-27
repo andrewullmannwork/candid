@@ -57,6 +57,8 @@ import { PlanSummaryCards } from "@/components/compare/PlanSummaryCards";
 import { NumbersTable } from "@/components/compare/NumbersTable";
 import { BreadthTable } from "@/components/compare/BreadthTable";
 import { ServiceCategoryAccordions } from "@/components/compare/ServiceCategoryAccordions";
+import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
+import { useMinHoldLoading } from "@/lib/loading/use-min-hold";
 
 type Mode = "build" | "parsing" | "results";
 
@@ -71,8 +73,9 @@ type EditableField =
 
 export default function ComparePage() {
   const { user, loading: authLoading } = useAuth();
+  const showCubeLoader = useMinHoldLoading(authLoading);
 
-  if (authLoading) {
+  if (showCubeLoader) {
     return (
       <PageShell>
         <LoadingState />
@@ -114,11 +117,7 @@ function PageShell({ children }: { children: React.ReactNode }) {
 }
 
 function LoadingState() {
-  return (
-    <div className="flex items-center justify-center py-24">
-      <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-    </div>
-  );
+  return <CubeLoaderBuilding />;
 }
 
 function SignedOutState() {

@@ -28,6 +28,8 @@ import { CancelModal } from "@/components/billing/CancelModal";
 import { ChangePlanModal } from "@/components/billing/ChangePlanModal";
 import { InvoiceList } from "@/components/billing/InvoiceList";
 import { PlanCard } from "@/components/billing/PlanCard";
+import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
+import { useMinHoldLoading } from "@/lib/loading/use-min-hold";
 import { UsageStatsCard } from "@/components/billing/UsageStatsCard";
 import { VisualCreditCard } from "@/components/billing/VisualCreditCard";
 
@@ -166,12 +168,9 @@ export default function BillingPage() {
     });
   }
 
-  if (loading) {
-    return (
-      <div className="flex min-h-[40vh] items-center justify-center">
-        <div className="h-5 w-5 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
-      </div>
-    );
+  const showLoader = useMinHoldLoading(loading);
+  if (showLoader) {
+    return <CubeLoaderBuilding />;
   }
 
   return (

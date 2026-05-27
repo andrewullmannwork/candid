@@ -6,6 +6,8 @@ import { useSearchParams } from "next/navigation";
 import { createBrowserClient } from "@/lib/supabase/client";
 import { SmallClaimsPrep } from "@/components/legal/SmallClaimsPrep";
 import { Disclaimer } from "@/components/shared/Disclaimer";
+import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
+import { useMinHoldLoading } from "@/lib/loading/use-min-hold";
 
 /**
  * /small-claims — Small claims court preparation page
@@ -54,12 +56,9 @@ export default function SmallClaimsPage() {
     }
   }, [user]);
 
-  if (flagLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-32">
-        <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
+  const showCubeLoader = useMinHoldLoading(flagLoading);
+  if (showCubeLoader) {
+    return <CubeLoaderBuilding />;
   }
 
   if (!flagEnabled) {
