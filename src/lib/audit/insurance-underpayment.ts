@@ -23,12 +23,16 @@
  * insurer process/reprocess the claim and either remit payment to the
  * provider (refund to patient cascades) or refund the patient directly.
  *
- * Skipped when:
- *   - plan coverage is unknown for the slug (we don't know if it's covered)
- *   - coverage indicates the service is NOT covered (then balance is legit)
- *   - insurance_paid is non-trivial (covered case is the under-payment OR
- *     missing-adjustment rules; not this one)
- *   - billed_amount is missing or zero
+ * Skipped when (S135 Gap 2 invert):
+ *   - slug coverage is KNOWN (covered OR not_covered): BILL SHOWS panel +
+ *     computeRecoveryV2 already surface the math via known plan coverage;
+ *     F-14's amber card would double-emit the same dollar amount.
+ *   - slug coverage unknown but no ACA-fallback: no defensible shouldOwe
+ *     basis to claim insurer underpayment.
+ *   - D13 already fired on the line (zero-cost-share dedup; S135 PR-2).
+ *   - insurance_paid is non-trivial (above $1 threshold).
+ *   - billed_amount is missing or zero.
+ *   - patient burden (responsibility + paid) is zero.
  */
 
 import type { ParsedBill, AuditFinding } from "../billing/types";
@@ -42,6 +46,7 @@ export function runInsuranceUnderpaymentCheck(
   bill: ParsedBill,
   planCoverage: PlanCoverageMap | null,
   acaFallback: AcaFallbackLineCoverageMap | null = null,
+  d13FiredLineNumbers: Set<number> = new Set(),
 ): AuditFinding[] {
   // S74.6 D2 §B: ACA fallback can supply coverage even when slug-keyed plan
   // coverage is empty (ACA-mandated vaccine on a plan whose plan_covered_services
@@ -52,20 +57,32 @@ export function runInsuranceUnderpaymentCheck(
 
   for (const item of bill.lineItems) {
     if (!(item.billedAmount > 0)) continue;
+    // S135 PR-2 — skip F-14 when D13 already emitted a finding on this line.
+    // Both rules surface the same recovery target ($X above plan share) on
+    // ACA-preventive codes; D13's federal-mandate framing is the more
+    // specific signal. Without this guard the user sees two near-identical
+    // amber cards per line (Andrew's symptom 4: duplicate finding bug).
+    if (d13FiredLineNumbers.has(item.lineNumber)) continue;
     // Insurance under-payment defined as ≤ $1 actually paid by insurer
     // (after our parser fix correctly separates `insurance_paid` from
     // `ins_adjusted`). Per-line `insurance_paid` is the canonical source.
     const insPaid = item.insurancePaid ?? null;
     if (insPaid == null || insPaid > INSURANCE_PAID_ZERO_THRESHOLD) continue;
 
-    // Coverage lookup: prefer ACA-mandated zero-cost-share by line number,
-    // fall back to slug-keyed plan coverage. ACA-mandated lines may have no
-    // slug (D4 hasn't bound one yet) — line-level lookup handles that case.
+    // S135 — Gap 2 invert: F-14 fires ONLY when slug coverage is unknown AND
+    // ACA-fallback supplies a defensible shouldOwe basis. Three skip cases:
+    //   - covered (known): BILL SHOWS panel + computeRecoveryV2 already surface
+    //     the math; F-14's amber card would double-emit the same dollar amount.
+    //   - not_covered (known): the patient's balance is legitimate per plan
+    //     terms; nothing to claim against the insurer.
+    //   - unknown without ACA fallback: no source-of-truth for shouldOwe; can't
+    //     confidently say the insurer underpaid.
     const slug = item.category ?? null;
     const acaCov = acaFallback?.get(item.lineNumber) ?? null;
     const slugCov = planCoverage && slug ? planCoverage.get(slug) ?? null : null;
-    const coverage = acaCov ?? slugCov;
-    if (!coverage || coverage.covered !== true) continue;
+    if (slugCov !== null) continue;
+    if (!acaCov || acaCov.covered !== true) continue;
+    const coverage = acaCov;
 
     // Patient must actually be carrying a burden — either still-outstanding
     // OR already paid OOP. If both are 0 there's nothing to dispute.

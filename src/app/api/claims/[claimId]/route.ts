@@ -15,6 +15,7 @@ import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { maybeReauditClaim } from "@/lib/audit/reaudit";
 import { buildAcaCoverageFallback } from "@/lib/audit/aca-coverage-fallback";
+import { resolveLineCoverage } from "@/lib/audit/coverage-loader";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -216,19 +217,29 @@ export async function GET(
 
   // Enrich line items with coverage status + recovery metrics
   const enrichedLineItems = (lineItems || []).map((item) => {
-    // Plan-covered-services row wins when present (even non-zero copay rows).
-    // ACA registry fallback fires only when plan coverage is absent.
-    const planCoverage: PlanCoverageInput | null = item.service_slug
+    // S135 — 4-state ACA matrix via shared helper. Plan wins on match; ACA wins
+    // on conflict (non-$0 plan vs $0 ACA mandate OR plan-excludes vs ACA-covers);
+    // ACA-only when plan missing slug. Override info preserved for UI inline
+    // render + dispute pipeline citation.
+    const rawPlanCoverage: PlanCoverageInput | null = item.service_slug
       ? coverageMap.get(item.service_slug) || null
       : null;
-    const acaCoverage: PlanCoverageInput | null = planCoverage
-      ? null
-      : acaFallback.byLineNumber.get(Number(item.line_number ?? 0)) || null;
-    const coverage = planCoverage || acaCoverage;
-    const coverageSource = planCoverage
-      ? coverageMap.get(item.service_slug as string)?.source ?? null
-      : acaCoverage
-        ? "aca_zero_cost_share"
+    const acaCoverage: PlanCoverageInput | null =
+      acaFallback.byLineNumber.get(Number(item.line_number ?? 0)) || null;
+    const resolved = resolveLineCoverage(
+      rawPlanCoverage,
+      acaCoverage,
+      acaFallback.planMeta,
+    );
+    const coverage = resolved.coverage;
+    const acaOverride = resolved.acaOverride;
+    // Coverage source attribution for tooltip + telemetry. ACA wins → 'aca_*';
+    // plan wins → plan_covered_services.source ('sbc_parser' etc).
+    const coverageFromAca = coverage === acaCoverage && coverage != null;
+    const coverageSource = coverageFromAca
+      ? "aca_zero_cost_share"
+      : coverage && item.service_slug
+        ? coverageMap.get(item.service_slug as string)?.source ?? null
         : null;
 
     const billed = Number(item.billed_amount || 0);
@@ -274,17 +285,26 @@ export async function GET(
 
     return {
       ...item,
-      coverageStatus: coverage
-        ? coverage.covered === false
-          ? "not_covered"
-          : "covered"
-        : item.service_slug
-          ? "unknown"
-          : null,
+      // Coverage cascade (4 tokens):
+      //   - billed === 0: no badge ($0 lines are informational receipts)
+      //   - plan_covered_services row exists: use it (covered / not_covered)
+      //   - no plan row (whether slug present or not): 'unknown' — user
+      //     resolves via CategoryCorrectionModal picker
+      coverageStatus: billed === 0
+        ? null
+        : coverage
+          ? coverage.covered === false
+            ? "not_covered"
+            : "covered"
+          : "unknown",
       planCoverage: coverage || null,
       // S74.6 D2 — surface which path produced the coverage so the UI can render
       // "Covered (ACA)" vs "Covered (plan)" tooltip distinction.
       coverageSource,
+      // S135 — plan-vs-ACA override info (non-null in States 2 / 2b). UI green
+      // plan-says box renders an inline "Plan says $X, federal law $0" line
+      // when present. Dispute pipeline uses for federal-law citation.
+      acaOverride,
       recovery,
       codeIdentity: flywheelEnabled
         ? {

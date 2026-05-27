@@ -7,6 +7,7 @@ import { useSubscription } from "@/lib/subscription/use-subscription";
 import { Disclaimer } from "@/components/shared/Disclaimer";
 import { disputeUrlForResult } from "@/lib/disputes/url";
 import { CategoryCorrectionModal } from "@/components/claims/CategoryCorrectionModal";
+import { UploadPlanDocModal } from "@/components/claims/UploadPlanDocModal";
 import { legacyCategoryReviewHint } from "@/lib/billing/code-categories";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
@@ -20,6 +21,19 @@ interface CodeIdentityState {
   conflictsWithCommunity: boolean;
   userCorrectedAt: string | null;
   userCorrectionLockedAt: string | null;
+}
+
+// S135 — ACA-mandate override info from /api/claims/[claimId]. Non-null when
+// the line is an ACA-mandated preventive/vaccine code on an ACA-compliant plan
+// AND the plan's plan_covered_services row disagrees with the federal $0
+// cost-share mandate (either assigns a non-$0 cost-share OR explicitly
+// excludes the service). Drives the inline "Plan says X, federal law $0"
+// message in the green plan-says box.
+interface AcaOverride {
+  planCopay: number | null;
+  planCoinsurance: number | null;
+  planCovered: boolean | null;
+  basis: string | null;
 }
 
 interface LineItem {
@@ -53,6 +67,9 @@ interface LineItem {
   // S74.6 D2 — which path produced the line's coverage row. Drives the §A.2
   // ACA tooltip on the Coverage badge (only when 'aca_zero_cost_share').
   coverageSource?: string | null;
+  // S135 — plan-vs-ACA override (see AcaOverride above). Drives inline override
+  // message in the green plan-says box. Null when no override applies.
+  acaOverride?: AcaOverride | null;
   recovery?: {
     billed: number;
     // Mig 092 / Session 85 — patient-aware fields take precedence; legacy
@@ -171,15 +188,14 @@ interface DisputeDetail {
 
 const COVERAGE_BADGE: Record<string, { label: string; className: string }> = {
   covered: { label: "Covered", className: "text-green-700 bg-green-50" },
-  not_covered: { label: "Not Covered", className: "text-red-700 bg-red-50" },
-  // S132 iter-5 — "Unknown" reframed as "Not in plan." Semantic: parser
-  // didn't find this service_slug in plan_covered_services for the user's
-  // plan. Could mean (a) plan doesn't cover it, (b) parser missed the
-  // benefit, OR (c) slug-vocabulary mismatch between bill-side and plan-side
-  // parsers (no synonym layer yet — tracked as cross-workstream FE→BE).
-  // "Not in plan" frames the user's next step (verify / re-categorize /
-  // upload more) without making a policy claim ("Not Covered") we can't back.
-  unknown: { label: "Not in plan", className: "text-gray-500 bg-gray-100" },
+  // not_covered fires when plan_covered_services explicitly excludes the
+  // service. Clicking opens UploadPlanDocModal (upload-only, no re-pick) —
+  // re-picking wouldn't help when the underlying plan data confirms exclusion.
+  not_covered: { label: "Not in plan", className: "text-gray-500 bg-gray-100" },
+  // unknown fires when no plan_covered_services row exists for the line
+  // (whether the line has a slug or not). User resolves via
+  // CategoryCorrectionModal picker.
+  unknown: { label: "Unknown", className: "text-gray-500 bg-gray-100" },
 };
 
 // S74.6 D1 §A.2 — Coverage-badge tooltip copy for lines covered via the
@@ -346,6 +362,11 @@ export function ClaimDetail({
   const [catalog, setCatalog] = useState<CatalogSlug[] | null>(null);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [correctionModalLineId, setCorrectionModalLineId] = useState<string | null>(null);
+  // S135 PR-3 — separate modal state for not_covered rows: clicking the
+  // "Not in plan" badge or "Your pick" pill opens an upload-only modal,
+  // not the category-correction dropdown. Re-picking the same catalog
+  // wouldn't help if the user's plan data is missing the service.
+  const [uploadPlanModalLineId, setUploadPlanModalLineId] = useState<string | null>(null);
   // G5 LOCK — bill-wide "Looks right?" prompt; localStorage-keyed per claim so
   // it never reappears once dismissed. Dismissal-only — never logs corroboration.
   const looksRightStorageKey = `claim-${claimId}-looks-right-dismissed`;
@@ -480,6 +501,26 @@ export function ClaimDetail({
       void ensureCatalog();
     },
     [ensureCatalog],
+  );
+
+  // S135 PR-3 — open upload-only modal for not_covered rows. No catalog
+  // load (UploadPlanDocModal doesn't list slugs).
+  const openUploadPlanModal = useCallback((lineId: string) => {
+    setUploadPlanModalLineId(lineId);
+  }, []);
+
+  // S135 PR-3 — route the click to the right modal based on coverage state.
+  // not_covered → upload-only modal. Anything else (unknown / covered
+  // user-corrected) → existing dropdown picker.
+  const openBadgeModal = useCallback(
+    (lineId: string, coverageStatus: string | null | undefined) => {
+      if (coverageStatus === "not_covered") {
+        openUploadPlanModal(lineId);
+      } else {
+        openCorrectionModal(lineId);
+      }
+    },
+    [openCorrectionModal, openUploadPlanModal],
   );
 
   const getAuthToken = useCallback(async () => {
@@ -917,7 +958,7 @@ export function ClaimDetail({
             scans down each metric naturally. */}
       <div className="bg-white border border-gray-100 rounded-xl mb-4">
         {/* Desktop table header — hidden at mobile */}
-        <div className="hidden md:grid grid-cols-[minmax(0,_1fr)_55px_70px_70px_50px_75px_minmax(95px,_1.4fr)] gap-3 items-center px-5 py-3 bg-gray-50 text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+        <div className="hidden md:grid grid-cols-[minmax(0,_1fr)_55px_70px_70px_50px_60px_75px_minmax(95px,_1.4fr)] gap-3 items-center px-5 py-3 bg-gray-50 text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
           <div className="min-w-0">Service</div>
           <div className="min-w-0">Code</div>
           <div
@@ -928,6 +969,7 @@ export function ClaimDetail({
           </div>
           <div className="text-right">Paid</div>
           <div className="text-right" title="What your plan says you should owe — copay, coinsurance, or deductible.">Plan</div>
+          <div className="text-right" title="What the bill assigns you. Recovery is the difference between this and your plan share.">You owe</div>
           <div className="text-right" title="Money you're owed when your insurer corrects an under-payment.">Recovery</div>
           <div className="text-center">Coverage</div>
         </div>
@@ -1002,13 +1044,13 @@ export function ClaimDetail({
             (item.codeIdentity != null ||
               expandCorrectionToAll ||
               item.user_corrected_at != null ||
-              // S132 iter-3: always show the category subtitle on Unknown
-              // coverage rows so the secondary re-categorize affordance is
-              // visible alongside the primary Unknown-badge click target.
-              // Important after the user picks a category that produces
-              // known coverage — the Unknown badge disappears, so the
-              // subtitle pencil becomes the only re-edit route.
-              item.coverageStatus === "unknown");
+              // S132 iter-3 / S135 PR-3: always show the category subtitle
+              // on unknown rows so the secondary re-categorize affordance
+              // is visible alongside the primary badge click target.
+              // Not_covered rows also get the pencil so users can navigate
+              // to upload via either entry point.
+              item.coverageStatus === "unknown" ||
+              item.coverageStatus === "not_covered");
           const pillState: "user_corrected" | "needs_review" | "auto" =
             item.user_corrected_at
               ? "user_corrected"
@@ -1048,14 +1090,16 @@ export function ClaimDetail({
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        openCorrectionModal(item.id);
+                        openBadgeModal(item.id, item.coverageStatus);
                       }}
                       title={
-                        pillState === "user_corrected"
-                          ? "You changed this category. Click to edit again."
-                          : pillState === "needs_review"
-                            ? "We couldn't auto-categorize this. Click to set."
-                            : "Click to change category"
+                        item.coverageStatus === "not_covered"
+                          ? "Click to upload your plan and update coverage"
+                          : pillState === "user_corrected"
+                            ? "You changed this category. Click to edit again."
+                            : pillState === "needs_review"
+                              ? "We couldn't auto-categorize this. Click to set."
+                              : "Click to change category"
                       }
                       className="mt-1 inline-flex items-center gap-1 -ml-1 rounded px-1 py-0.5 text-xs text-blue-600 hover:bg-blue-50 hover:text-blue-700 transition-colors group/cat-mobile"
                     >
@@ -1090,6 +1134,10 @@ export function ClaimDetail({
                     <dd className={`tabular-nums font-semibold ${shouldOwe === 0 ? "text-green-600" : "text-gray-900"}`}>${shouldOwe.toLocaleString()}</dd>
                   </div>
                   <div className="flex justify-between gap-3">
+                    <dt className="text-gray-500 uppercase tracking-wider">You owe</dt>
+                    <dd className="tabular-nums text-gray-900">${owed.toLocaleString()}</dd>
+                  </div>
+                  <div className="flex justify-between gap-3">
                     <dt className="text-gray-500 uppercase tracking-wider">Recovery</dt>
                     <dd className="tabular-nums font-bold">
                       {refundComponent + forgivenessComponent >= 1 ? (
@@ -1103,14 +1151,20 @@ export function ClaimDetail({
                     <dt className="text-gray-500 uppercase tracking-wider">Coverage</dt>
                     <dd className="flex items-center gap-1.5">
                       {coverageBadge ? (
-                        flywheelEnabled && (item.coverageStatus === "unknown" || item.user_corrected_at != null) ? (
+                        flywheelEnabled && (item.coverageStatus === "unknown" || item.coverageStatus === "not_covered" || item.user_corrected_at != null) ? (
                           <button
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              openCorrectionModal(item.id);
+                              openBadgeModal(item.id, item.coverageStatus);
                             }}
-                            title={item.user_corrected_at ? "Click to change your pick" : "Click to pick the right category"}
+                            title={
+                              item.coverageStatus === "not_covered"
+                                ? "Click to upload your plan and update coverage"
+                                : item.user_corrected_at
+                                  ? "Click to change your pick"
+                                  : "Click to pick the right category"
+                            }
                             className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className} cursor-pointer ring-1 ring-blue-300 hover:ring-blue-400 hover:bg-blue-50 transition-colors`}
                           >
                             <svg className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" aria-hidden>
@@ -1132,9 +1186,9 @@ export function ClaimDetail({
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            openCorrectionModal(item.id);
+                            openBadgeModal(item.id, item.coverageStatus);
                           }}
-                          title="Click to change your pick"
+                          title={item.coverageStatus === "not_covered" ? "Click to upload your plan and update coverage" : "Click to change your pick"}
                           className="rounded-sm bg-blue-100 px-1 py-px text-[9px] font-semibold text-blue-700 cursor-pointer ring-1 ring-blue-200 hover:bg-blue-200 hover:ring-blue-300 transition-colors"
                         >
                           Your pick
@@ -1155,7 +1209,7 @@ export function ClaimDetail({
                     toggleRowCollapsed(item.id);
                   }
                 }}
-                className="hidden md:grid w-full grid-cols-[minmax(0,_1fr)_55px_70px_70px_50px_75px_minmax(95px,_1.4fr)] gap-3 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
+                className="hidden md:grid w-full grid-cols-[minmax(0,_1fr)_55px_70px_70px_50px_60px_75px_minmax(95px,_1.4fr)] gap-3 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
               >
                 <div className="min-w-0 text-xs text-gray-900">
                   <div className="truncate">
@@ -1171,14 +1225,16 @@ export function ClaimDetail({
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        openCorrectionModal(item.id);
+                        openBadgeModal(item.id, item.coverageStatus);
                       }}
                       title={
-                        pillState === "user_corrected"
-                          ? "You changed this category. Click to edit again."
-                          : pillState === "needs_review"
-                            ? "We couldn't auto-categorize this. Click to set."
-                            : "Click to change category"
+                        item.coverageStatus === "not_covered"
+                          ? "Click to upload your plan and update coverage"
+                          : pillState === "user_corrected"
+                            ? "You changed this category. Click to edit again."
+                            : pillState === "needs_review"
+                              ? "We couldn't auto-categorize this. Click to set."
+                              : "Click to change category"
                       }
                       className="mt-1 inline-flex items-center gap-1 -ml-1 rounded px-1 py-0.5 text-[10px] text-blue-600 hover:bg-blue-50 hover:text-blue-700 transition-colors group/cat"
                     >
@@ -1234,6 +1290,17 @@ export function ClaimDetail({
                 >
                   ${shouldOwe.toLocaleString()}
                 </div>
+                {/* S135 PR-3 — "You owe" column makes the recovery formula
+                    traceable. Recovery = You owe (patient_owes assigned by
+                    the bill) − Plan share (what plan says is fair). Without
+                    this column users see "Recovery $15.76" and can't trace
+                    it from the billed / paid / plan columns visible. */}
+                <div
+                  className="text-xs text-right tabular-nums whitespace-nowrap text-gray-900"
+                  title={`The bill assigns you $${owed.toLocaleString()} for this service.`}
+                >
+                  ${owed.toLocaleString()}
+                </div>
                 {/* Recovery — single combined value (refund + insured).
                     The breakdown into Refund vs Insured surfaces in the
                     amber-card explanation below; the column itself stays
@@ -1253,21 +1320,28 @@ export function ClaimDetail({
                   )}
                 </div>
                 {/* Coverage badge — Session 86: static display by default.
-                    S132 Item 2: when coverageStatus === 'unknown' AND
-                    flywheel flag ON, the badge becomes a click target opening
-                    CategoryCorrectionModal so the user can try a different
-                    service category. UI gated on flywheelEnabled because the
-                    backend endpoint requires the same flag (mig 087). */}
+                    S135 PR-3: badge becomes clickable when coverageStatus
+                    is unknown / not_covered / user-corrected. Routes via
+                    openBadgeModal — not_covered opens the upload-plan-doc
+                    modal (no dropdown), everything else opens the dropdown
+                    picker. UI gated on flywheelEnabled because the backend
+                    endpoint requires the same flag (mig 087). */}
                 <div className="flex items-center justify-center gap-1.5">
                   {coverageBadge ? (
-                    flywheelEnabled && (item.coverageStatus === "unknown" || item.user_corrected_at != null) ? (
+                    flywheelEnabled && (item.coverageStatus === "unknown" || item.coverageStatus === "not_covered" || item.user_corrected_at != null) ? (
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          openCorrectionModal(item.id);
+                          openBadgeModal(item.id, item.coverageStatus);
                         }}
-                        title={item.user_corrected_at ? "Click to change your pick" : "Click to pick the right category"}
+                        title={
+                          item.coverageStatus === "not_covered"
+                            ? "Click to upload your plan and update coverage"
+                            : item.user_corrected_at
+                              ? "Click to change your pick"
+                              : "Click to pick the right category"
+                        }
                         className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className} cursor-pointer ring-1 ring-blue-300 hover:ring-blue-400 hover:bg-blue-50 transition-colors`}
                       >
                         <svg className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" aria-hidden>
@@ -1289,9 +1363,9 @@ export function ClaimDetail({
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        openCorrectionModal(item.id);
+                        openBadgeModal(item.id, item.coverageStatus);
                       }}
-                      title="Click to change your pick"
+                      title={item.coverageStatus === "not_covered" ? "Click to upload your plan and update coverage" : "Click to change your pick"}
                       className="rounded-sm bg-blue-100 px-1 py-px text-[9px] font-semibold text-blue-700 cursor-pointer ring-1 ring-blue-200 hover:bg-blue-200 hover:ring-blue-300 transition-colors"
                     >
                       Your pick
@@ -1303,10 +1377,11 @@ export function ClaimDetail({
                     the expanded-row state. */}
               </div>
 
-              {/* Inline gap explanation when expanded and there's a gap.
-                  Amber replaced with white per user preference — colors were
-                  too busy. Green "YOUR PLAN SAYS" and red "EOB SHOWS" boxes
-                  kept because they carry semantic meaning. */}
+              {/* S135 — gap-explanation panel: header + actionable steps only.
+                  Plan-says/bill-shows moved to the expansion panel below so a
+                  single source-of-truth pair renders per row (was duplicated
+                  pre-S135). Expansion panel's gate now includes gap rows so
+                  it always fires alongside this panel. */}
               {isExpanded && gapRelevant && findings.length === 0 && (
                 <div className="px-4 py-4 bg-white border-t border-gray-100 space-y-3">
                   {/* Header */}
@@ -1317,22 +1392,6 @@ export function ClaimDetail({
                     <p className="mt-1 text-xs text-gray-600">
                       {buildGapExplanation(billed, item.planCoverage)}
                     </p>
-                  </div>
-
-                  {/* Fact grid: plan says vs EOB says */}
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="rounded-lg border border-green-100 bg-green-50 p-2.5">
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-green-700">Your plan says</p>
-                      <p className="mt-0.5 text-xs font-semibold text-green-900">
-                        {buildPlanSays(item.planCoverage)}
-                      </p>
-                    </div>
-                    <div className="rounded-lg border border-red-100 bg-red-50 p-2.5">
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-red-700">EOB shows</p>
-                      <p className="mt-0.5 text-xs font-semibold text-red-900">
-                        ${billed.toLocaleString()} billed · $0 insurance paid · $0 insurance owed
-                      </p>
-                    </div>
                   </div>
 
                   {/* Actionable steps — S132 iter-5: refreshed to mirror the
@@ -1360,11 +1419,15 @@ export function ClaimDetail({
                   put in it. Need EITHER findings to render the amber card OR
                   planCoverage + recovery values to render the green/red
                   compare. Without either, the panel would be empty save for
-                  a lonely "Hide details" link, which is confusing. */}
+                  a lonely "Hide details" link, which is confusing.
+                  S135 — also fire on gap rows with planCoverage so the single
+                  plan-says/bill-shows pair (now consolidated here) renders for
+                  the gap-explanation case too. */}
               {isExpanded && (
                 findings.length > 0 ||
                 (item.planCoverage != null && (refundComponent >= 1 || forgivenessComponent >= 1)) ||
-                (showDismissed && dismissedCount > 0)
+                (showDismissed && dismissedCount > 0) ||
+                (gapRelevant && item.planCoverage != null)
               ) && (
                 <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 space-y-3">
                   {/* Session 85 round 3 — bring back the Plan-says / Bill-shows
@@ -1380,6 +1443,15 @@ export function ClaimDetail({
                         <p className="mt-1 text-sm font-bold text-green-900">
                           {buildPlanSays(item.planCoverage)}
                         </p>
+                        {/* S135 — inline ACA override when plan terms conflict
+                            with the federal $0 mandate. Replaces what was
+                            previously a separate D13 amber card; per Andrew's
+                            "all money-in info in this one box" direction. */}
+                        {item.acaOverride && (
+                          <p className="mt-1.5 text-xs text-green-800">
+                            {buildAcaOverrideLine(item.acaOverride)}
+                          </p>
+                        )}
                       </div>
                       <div className="rounded-lg border border-red-200 bg-red-50 p-3">
                         <p className="text-[10px] font-semibold uppercase tracking-wider text-red-700">Bill shows</p>
@@ -1582,6 +1654,24 @@ export function ClaimDetail({
           getAuthToken={getAuthToken}
         />
       )}
+
+      {/* S135 PR-3 — Upload-plan-doc modal for not_covered rows. Mounts
+          independently of the catalog so users can navigate to upload even
+          before the category catalog finishes loading. */}
+      {(() => {
+        const uploadLineItem =
+          uploadPlanModalLineId != null
+            ? primaryLineItems.find((li) => li.id === uploadPlanModalLineId) ?? null
+            : null;
+        return flywheelEnabled && uploadLineItem ? (
+          <UploadPlanDocModal
+            open={true}
+            description={uploadLineItem.description}
+            billingCode={uploadLineItem.billing_code}
+            onClose={() => setUploadPlanModalLineId(null)}
+          />
+        ) : null;
+      })()}
 
       {/* S74.5 D6 G4 LOCK — community-vs-user conflict modal. Surfaces when
           a community/admin promotion landed a slug that differs from the
@@ -1793,6 +1883,33 @@ function buildPlanSays(planCoverage: LineItem["planCoverage"]): string {
 
   if (parts.length === 0) return "Covered · $0";
   return `Covered · ${parts.join(" · ")}`;
+}
+
+// S135 — inline override message rendered in the green plan-says box when the
+// plan's terms disagree with the ACA federal mandate. Returns null when no
+// override applies. ACA-compliant plans must cover preventive/vaccine services
+// at $0 patient cost-share in-network regardless of stated plan terms.
+function buildAcaOverrideLine(
+  acaOverride: AcaOverride | null | undefined,
+): string | null {
+  if (!acaOverride) return null;
+  if (acaOverride.planCovered === false) {
+    return "Plan lists as not covered, but federal law (ACA) requires $0 for this preventive service.";
+  }
+  const parts: string[] = [];
+  if (acaOverride.planCopay != null && acaOverride.planCopay > 0) {
+    parts.push(`$${acaOverride.planCopay} copay`);
+  }
+  if (
+    acaOverride.planCoinsurance != null &&
+    acaOverride.planCoinsurance > 0
+  ) {
+    parts.push(
+      `${normalizeCoinsurancePct(acaOverride.planCoinsurance)}% coinsurance`,
+    );
+  }
+  const planTerms = parts.length > 0 ? parts.join(" + ") : "non-$0 cost share";
+  return `Plan says ${planTerms}, but federal law (ACA) requires $0 for this preventive service.`;
 }
 
 // ── Quality reporting codes ───────────────────────────────────────────────

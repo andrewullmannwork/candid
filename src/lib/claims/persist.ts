@@ -15,6 +15,32 @@ import { buildProvenanceEntry, type FieldProvenanceEntry } from "@/lib/parser/fi
 import { reconcileHaikuCodeType } from "@/lib/billing/code-type-inference";
 
 /**
+ * S135 bandaid — Haiku parser writes `insurance_adjusted_amount` and
+ * `insurance_paid` (and their totals) with negative signs on at least one PROD
+ * bill. Parser convention per `haiku-bill-parser.ts:102` is positive magnitudes
+ * (writeoffs and payments). Negative values cascade into BillCard / BILL SHOWS
+ * inflation and confusing audit body text.
+ *
+ * This guard coerces to abs() on write + warns to telemetry so we can audit
+ * how often Haiku regresses post-deploy. Root-cause prompt fix + reject-not-
+ * coerce invariant tracked in plans/findings/parser_sign_hardening_followup.md.
+ */
+function normalizeBillingSign(
+  value: number | null | undefined,
+  field: string,
+  ctx: Record<string, unknown> = {},
+): number | null {
+  if (value == null) return null;
+  const v = Number(value);
+  if (Number.isNaN(v)) return null;
+  if (v < 0) {
+    console.warn(`[persist] sign-violation: ${field}=${v} flipped to ${Math.abs(v)}`, ctx);
+    return Math.abs(v);
+  }
+  return v;
+}
+
+/**
  * Build a field_provenance JSONB payload for a parsed bill line item per DR-3B
  * (Q-DR-3B-1 + Q-DR-3B-2). Source is `doc_extraction` for EOBs (insurer record) and
  * `bill_observed` for itemized bills (provider claim) — Q-DR-3A-4-final hierarchy
@@ -142,8 +168,8 @@ export async function persistAuditResults(
         date_of_service: parsedBill.serviceDate || null,
         total_billed: parsedBill.totals.totalBilled,
         total_allowed: parsedBill.totals.totalAllowed || null,
-        total_insurance_paid: parsedBill.totals.totalInsurancePaid ?? null,
-        total_insurance_adjusted: parsedBill.totals.totalInsAdjusted ?? 0,
+        total_insurance_paid: normalizeBillingSign(parsedBill.totals.totalInsurancePaid, "total_insurance_paid", { userId, documentId }),
+        total_insurance_adjusted: normalizeBillingSign(parsedBill.totals.totalInsAdjusted, "total_insurance_adjusted", { userId, documentId }) ?? 0,
         total_patient_responsibility: parsedBill.totals.totalPatientResponsibility ?? null,
         total_patient_paid: parsedBill.totals.totalPatientPaid ?? 0,
         claim_number: null, // Not always present on bills
@@ -232,11 +258,11 @@ export async function persistAuditResults(
         units: item.quantity || 1,
         billed_amount: item.billedAmount,
         allowed_amount: item.allowedAmount || null,
-        insurance_paid: item.insurancePaid ?? null,
+        insurance_paid: normalizeBillingSign(item.insurancePaid, "insurance_paid", { lineNumber: item.lineNumber }),
         // Mig 092 — contractual writeoff distinct from insurance_paid. Defaults
         // to 0 (rather than null) so downstream math can sum without null guards;
         // null indicates "parser didn't extract" which we treat as 0 too here.
-        insurance_adjusted_amount: item.ins_adjusted ?? 0,
+        insurance_adjusted_amount: normalizeBillingSign(item.ins_adjusted, "insurance_adjusted_amount", { lineNumber: item.lineNumber }) ?? 0,
         patient_owes: item.patientResponsibility ?? null,
         // Mig 092 — patient out-of-pocket payments. Default 0; populated by
         // parser when "Paid [date] -$X" footer lines are present on the bill.
