@@ -73,6 +73,22 @@ export interface RecoveryMetrics {
   alreadyPaid: number;
   /** @deprecated Use remainingBalance. */
   stillOutstanding: number;
+  /**
+   * S140 — cite-grade provenance. Populated by /api/claims/[claimId] when
+   * the per-line map runs through `resolvePerLinePatientPaid`. Signals
+   * whether `patientPaid` / `patientResponsibility` were cite-grade
+   * per-line reads or synthesized from claim-header pro-rate. Consumers
+   * without this check default to today's cite-grade-assumed behavior
+   * (computeRecoveryV2 itself does NOT populate this — keeps the helper
+   * pure; the route layer attaches it after).
+   */
+  provenance?: {
+    patientPaidSource: "per_line" | "header_prorated";
+    patientResponsibilitySource: "per_line" | "header_prorated";
+    /** false when ANY input was synthesized — gates per-line LineDrawer
+     *  recovery strip + per-line dispute letter citations. */
+    isCitablePerLine: boolean;
+  };
 }
 
 /**
