@@ -12,6 +12,8 @@ import { UploadPlanDocModal } from "@/components/claims/UploadPlanDocModal";
 import { legacyCategoryReviewHint } from "@/lib/billing/code-categories";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 import { buildAcaOverrideLine, type AcaOverride } from "@/lib/claims/aca-override-line";
+import { LineDrawer } from "@/components/claims/LineDrawer";
+import { BundleSuggestion } from "@/components/claims/BundleSuggestion";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useDisputeDraftOverlay } from "@/lib/loading/dispute-draft-overlay";
 
@@ -132,7 +134,7 @@ interface ClaimData {
   claim: Record<string, unknown>;
   lineItems: LineItem[];
   disputes: Array<{ id: string; dispute_type: string; status: string; amount_disputed: number; amount_recovered: number }>;
-  relatedClaims: Array<{ id: string; date_of_service: string; status: string; total_billed: number }>;
+  relatedClaims: Array<{ id: string; date_of_service: string; status: string; total_billed: number; provider_name: string | null }>;
   // S132 iter-6 Phase 1 — slugs present in user's plan_covered_services for
   // this claim's plan_id. Drives CategoryCorrectionModal filtering + best-
   // guess "Use this" gating. Empty array when no plan uploaded.
@@ -707,6 +709,28 @@ export function ClaimDetail({
     };
   })();
   const billState = billStateProp ?? null;
+
+  // S139 B4.2 multi-line — drives chevron column + LineDrawer rendering in
+  // the line-items table AND multi-line branches in FlaggedBody (different
+  // pill copy + row labels for "N services" vs single coverage). flaggedLineCount
+  // = lines with recovery (refund + forgiveness) > 0; isMultiLine = flagged
+  // bill state AND ≥2 flagged lines. Single-flagged-line bills keep the S138
+  // single-line treatment (no chevron column; no LineDrawer; existing
+  // expansion panel preserved).
+  const isFlagged = billState === "overcharge_drafted" || billState === "overcharge_no_draft";
+  const flaggedLineCount = primaryLineItems.filter((li) => {
+    const refund = li.recovery?.refundComponent ?? 0;
+    const forgive = li.recovery?.forgivenessComponent ?? 0;
+    return refund + forgive > 0;
+  }).length;
+  const isMultiLine = isFlagged && flaggedLineCount > 1;
+  // Sum of raw billed across primary lines — drives "Total billed" row in
+  // multi-line FlaggedBody (single-line uses billTotals.billedAdjusted).
+  const totalsBilledSum = primaryLineItems.reduce(
+    (s, li) => s + Number(li.billed_amount ?? 0),
+    0,
+  );
+
   const fmtMoney = (n: number) =>
     n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -957,14 +981,9 @@ export function ClaimDetail({
         />
       )}
 
-      {/* Related claims */}
-      {data.relatedClaims.length > 0 && (
-        <div className="mb-4 p-3 bg-blue-50 border border-blue-100 rounded-xl">
-          <p className="text-xs font-semibold text-blue-700">
-            Related documents ({data.relatedClaims.length}): This bill is linked to other documents from the same provider/date.
-          </p>
-        </div>
-      )}
+      {/* S139 — Related-documents sidebar banner removed; BundleSuggestion at
+          the bottom of the bill view replaces it with design's tile-list
+          treatment per S139 plan A.1 + Q2 (no bundle CTA, peer-bill links). */}
 
       {/* S74.5 D6 — Case C/D plan-doc nudge banner. Soft prompt for /claim
           per Q-C LOCK; HARD gate for dispute generation lives elsewhere. */}
@@ -1135,7 +1154,11 @@ export function ClaimDetail({
             + gap-2 (8px × 7 = 56px) + 504px fixed = 560px + ~168px flex. */}
         <div
           className="hidden lg:grid gap-2 items-center px-5 py-3 bg-gray-50 text-[10px] font-semibold text-gray-500 uppercase tracking-[0.06em] border-b border-gray-100"
-          style={{ gridTemplateColumns: "minmax(0, 1.5fr) 56px 64px 64px 64px 72px 80px 88px" }}
+          style={{
+            gridTemplateColumns: isMultiLine
+              ? "minmax(0, 1.5fr) 56px 64px 64px 64px 72px 80px 88px 40px"
+              : "minmax(0, 1.5fr) 56px 64px 64px 64px 72px 80px 88px",
+          }}
         >
           <div className="min-w-0">Service</div>
           <div className="min-w-0">Code</div>
@@ -1165,6 +1188,10 @@ export function ClaimDetail({
             Forgiveness
           </div>
           <div className="text-center">Coverage</div>
+          {/* S139 — chevron column header (multi-line bills only); empty header so
+              column width allocates correctly. Chevron button per row provides
+              expand affordance for LineDrawer. */}
+          {isMultiLine && <div aria-hidden />}
         </div>
 
         {primaryLineItems.map((item) => {
@@ -1404,11 +1431,15 @@ export function ClaimDetail({
                     toggleRowCollapsed(item.id);
                   }
                 }}
-                className="hidden lg:grid w-full gap-2 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
-                style={{ gridTemplateColumns: "minmax(0, 1.5fr) 56px 64px 64px 64px 72px 80px 88px" }}
+                className={`hidden lg:grid w-full gap-2 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 cursor-pointer ${isMultiLine && isExpanded ? "bg-blue-50/40 hover:bg-blue-50/60" : "hover:bg-gray-50"}`}
+                style={{
+                  gridTemplateColumns: isMultiLine
+                    ? "minmax(0, 1.5fr) 56px 64px 64px 64px 72px 80px 88px 40px"
+                    : "minmax(0, 1.5fr) 56px 64px 64px 64px 72px 80px 88px",
+                }}
               >
                 <div className="min-w-0 text-sm text-gray-900">
-                  <div className="truncate font-semibold">
+                  <div id={`line-${item.id}-svc`} className="truncate font-semibold">
                     {item.description || item.service_slug?.replace(/_/g, " ") || "Unknown"}
                   </div>
                   {/* Session 86 — category subtitle is the click target for
@@ -1588,17 +1619,71 @@ export function ClaimDetail({
                     </button>
                   )}
                 </div>
+                {/* S139 — chevron column (multi-line bills only). hasFix gate:
+                    only render button on rows with recoverable money; empty
+                    cell on clean rows so grid aligns. Click toggles existing
+                    collapsedRows state (same mechanism as full-row click;
+                    stopPropagation prevents double-toggle). */}
+                {isMultiLine && (
+                  <div className="flex items-center justify-center">
+                    {(refundComponent + forgivenessComponent) > 0 && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleRowCollapsed(item.id);
+                        }}
+                        aria-label={isExpanded ? "Hide breakdown" : "Show breakdown"}
+                        aria-expanded={isExpanded}
+                        className={`grid h-7 w-7 place-items-center rounded-md transition-colors ${isExpanded ? "bg-blue-600 text-white shadow-sm" : "bg-gray-100 text-gray-500 hover:bg-blue-50 hover:text-blue-700"}`}
+                      >
+                        <svg
+                          className={`h-3.5 w-3.5 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth={2.5}
+                          aria-hidden
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                )}
                 {/* Flags column dropped in Session 85 round 3 — finding count
                     info now surfaces via the Refund/Forgive green numbers and
                     the expanded-row state. */}
               </div>
 
+              {/* S139 — LineDrawer for multi-line bills (replaces existing gray
+                  expansion panels on multi-line rows with design's polished
+                  plan/bill cards + OVERCHARGE pill + recoverable strip).
+                  Uses same toggleRowCollapsed state as single-line — only
+                  the rendered chrome differs. Gated on hasFix matching the
+                  chevron button visibility. */}
+              {isMultiLine && isExpanded && (refundComponent + forgivenessComponent) > 0 && (
+                <LineDrawer
+                  planSaysAmount={shouldOwe}
+                  billedAmount={billed}
+                  patientPaidAmount={patientPaid}
+                  insurancePaidAmount={Number(item.insurance_paid ?? 0)}
+                  coverageLabel={item.planCoverage ? buildPlanSays(item.planCoverage) : "Coverage unknown"}
+                  recovery={refundComponent}
+                  forgiveness={forgivenessComponent}
+                  acaOverride={item.acaOverride}
+                  ariaLabelledBy={`line-${item.id}-svc`}
+                />
+              )}
+
               {/* S135 — gap-explanation panel: header + actionable steps only.
                   Plan-says/bill-shows moved to the expansion panel below so a
                   single source-of-truth pair renders per row (was duplicated
                   pre-S135). Expansion panel's gate now includes gap rows so
-                  it always fires alongside this panel. */}
-              {isExpanded && gapRelevant && findings.length === 0 && (
+                  it always fires alongside this panel.
+                  S139 — gated on !isMultiLine; multi-line bills use LineDrawer
+                  above instead. */}
+              {!isMultiLine && isExpanded && gapRelevant && findings.length === 0 && (
                 <div className="px-4 py-4 bg-white border-t border-gray-100 space-y-3">
                   {/* Header */}
                   <div>
@@ -1638,8 +1723,10 @@ export function ClaimDetail({
                   a lonely "Hide details" link, which is confusing.
                   S135 — also fire on gap rows with planCoverage so the single
                   plan-says/bill-shows pair (now consolidated here) renders for
-                  the gap-explanation case too. */}
-              {isExpanded && (
+                  the gap-explanation case too.
+                  S139 — gated on !isMultiLine; multi-line bills use LineDrawer
+                  above instead of this expansion panel. */}
+              {!isMultiLine && isExpanded && (
                 findings.length > 0 ||
                 (item.planCoverage != null && (refundComponent >= 1 || forgivenessComponent >= 1)) ||
                 (showDismissed && dismissedCount > 0) ||
@@ -1814,16 +1901,22 @@ export function ClaimDetail({
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} aria-hidden>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                 </svg>
-                Covered by your plan
+                {isMultiLine
+                  ? `${flaggedLineCount} services — all covered`
+                  : "Covered by your plan"}
               </span>
               <div className="mt-0.5 flex items-baseline gap-2 text-[34px] font-bold leading-none tracking-[-0.02em] tabular-nums text-emerald-800">
                 ${fmtMoney(billTotals.shouldOwe)}
-                <span className="text-[15px] font-medium text-gray-500">· your responsibility</span>
+                <span className="text-[15px] font-medium text-gray-500">
+                  {isMultiLine ? " · your total responsibility" : " · your responsibility"}
+                </span>
               </div>
               <div className="mt-1.5 flex flex-col gap-1.5">
                 <div className="flex justify-between gap-3 text-xs text-gray-600">
-                  <span>Allowed amount</span>
-                  <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.billedAdjusted)}</strong>
+                  <span>{isMultiLine ? "Total billed" : "Allowed amount"}</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">
+                    ${fmtMoney(isMultiLine ? totalsBilledSum : billTotals.billedAdjusted)}
+                  </strong>
                 </div>
                 <div className="flex justify-between gap-3 text-xs text-gray-600">
                   <span>Insurer should pay</span>
@@ -1867,16 +1960,23 @@ export function ClaimDetail({
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} aria-hidden>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.9 4h13.8c1.5 0 2.5-1.7 1.7-2.5L13.7 4c-.8-.8-2-.8-2.7 0L4.1 16.5c-.8.8.2 2.5 1.7 2.5z" />
                 </svg>
-                You&apos;re paying ${fmtMoney(billTotals.billedAdjusted)}
+                You&apos;re paying ${fmtMoney(billTotals.patientPaid)}
               </span>
+              {/* S139 big-1 — bill side big number always shows patient OOP
+                  (was billedAdjusted; switched per Andrew direction for
+                  semantic consistency across single + multi-line). Visual
+                  equal on single-line bills where billedAdjusted = patientPaid;
+                  divergent only on bills with outstanding balance. */}
               <div className="mt-0.5 flex items-baseline gap-2 text-[34px] font-bold leading-none tracking-[-0.02em] tabular-nums text-red-800">
-                ${fmtMoney(billTotals.billedAdjusted)}
+                ${fmtMoney(billTotals.patientPaid)}
                 <span className="text-[15px] font-medium text-gray-500">· charged to you</span>
               </div>
               <div className="mt-1.5 flex flex-col gap-1.5">
                 <div className="flex justify-between gap-3 text-xs text-gray-600">
-                  <span>Allowed amount</span>
-                  <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.billedAdjusted)}</strong>
+                  <span>{isMultiLine ? "Total billed" : "Allowed amount"}</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">
+                    ${fmtMoney(isMultiLine ? totalsBilledSum : billTotals.billedAdjusted)}
+                  </strong>
                 </div>
                 <div className="flex justify-between gap-3 text-xs text-gray-600">
                   <span>Insurer paid</span>
@@ -2118,6 +2218,17 @@ export function ClaimDetail({
           getAuthToken={getAuthToken}
           onGenerated={(result) => router.push(disputeUrlForResult(result))}
           existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
+        />
+      )}
+
+      {/* S139 — BundleSuggestion: peer bills in the same claim_group_id at the
+          bottom of bill-detail. Replaces the legacy "Related documents (N)"
+          sidebar banner with design's tile-list. No bundle CTA per Q2 defer;
+          tiles link to peer bills via existing /claim?claim=ID route. */}
+      {data.relatedClaims.length > 0 && (
+        <BundleSuggestion
+          peers={data.relatedClaims}
+          onSelectBill={(peerId) => router.push(`/claim?claim=${peerId}`)}
         />
       )}
 
