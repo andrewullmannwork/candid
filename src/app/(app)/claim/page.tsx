@@ -397,6 +397,7 @@ export default function CandidClaimPage() {
           focusLineItemId={focusLineItemId}
           backLabel={tabBeforeDetail === "discrepancies" ? "Back to discrepancies" : "Back to bills"}
           onClaimUpdated={refetchClaims}
+          billState={billStates.get(selectedClaimId) ?? null}
         />
       </div>
     );
@@ -472,14 +473,19 @@ export default function CandidClaimPage() {
           {/* RecoveryHero — D-§1.D.1-A */}
           <RecoveryHero stats={heroStats} variant="calm" onPrimary={handleHeroPrimary} />
 
-          {/* Tabbar with top-right Upload button per design canvas line 303-318 */}
-          <div className="mb-4 flex items-center justify-between gap-2">
-            <div className="flex w-fit gap-1 rounded-xl bg-gray-100 p-1">
+          {/* Tabbar with top-right Upload button per design canvas line 303-318
+              + styles.css .tabs / .tab / .tab-count family.
+              S138: white bg + gray border + larger padding to match design. */}
+          <div className="mb-5 mt-8 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex w-fit gap-1 rounded-2xl border border-gray-200 bg-white p-1">
               <TabButton active={tab === "bills"} onClick={() => setTab("bills")}>
                 Bills
                 <TabCount count={claims.length} active={tab === "bills"} />
               </TabButton>
-              <TabButton active={tab === "discrepancies"} onClick={() => setTab("discrepancies")}>
+              <TabButton
+                active={tab === "discrepancies"}
+                onClick={() => setTab("discrepancies")}
+              >
                 Discrepancies
                 <TabCount count={discrepancySummary.total} active={tab === "discrepancies"} />
               </TabButton>
@@ -491,10 +497,21 @@ export default function CandidClaimPage() {
 
             <Link
               href="/upload"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 transition-colors hover:border-blue-300 hover:text-blue-700"
+              className="inline-flex items-center gap-1.5 rounded-[10px] border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 transition-colors hover:border-blue-300 hover:bg-gray-50 hover:text-blue-700"
             >
-              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              <svg
+                className="h-3.5 w-3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 16V4m0 0l-4 4m4-4l4 4M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"
+                />
               </svg>
               Upload bill
             </Link>
@@ -684,6 +701,11 @@ export default function CandidClaimPage() {
 
 // ── Sub-components ───────────────────────────────────────────────────────────
 
+// Design .tab + .tab-count (styles.css lines 219-231):
+//   .tab { padding: 8px 14px; border-radius: 10px; font-size: 13px; font-weight: 500; color: var(--fg-4); }
+//   .tab.is-active { background: var(--bg-3); color: var(--fg-2); font-weight: 600; }
+//   .tab-count { background: var(--bg-3); color: var(--fg-3); }
+//   .tab.is-active .tab-count { background: #fff; color: var(--candid-blue-700); }
 function TabButton({
   active,
   onClick,
@@ -697,8 +719,10 @@ function TabButton({
     <button
       onClick={onClick}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-xs font-semibold transition-colors",
-        active ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700",
+        "inline-flex items-center gap-2 rounded-[10px] px-3.5 py-2 text-[13px] transition-colors",
+        active
+          ? "bg-gray-100 font-semibold text-gray-900"
+          : "font-medium text-gray-500 hover:text-gray-900",
       )}
     >
       {children}
@@ -711,8 +735,8 @@ function TabCount({ count, active }: { count: number; active: boolean }) {
   return (
     <span
       className={cn(
-        "inline-flex min-w-[18px] items-center justify-center rounded-full px-1.5 text-[10px] font-bold tabular-nums",
-        active ? "bg-blue-50 text-blue-700" : "bg-gray-200 text-gray-600",
+        "inline-flex min-w-[18px] items-center justify-center rounded-full px-1.5 py-[1px] text-[10px] font-bold tabular-nums",
+        active ? "bg-white text-blue-700" : "bg-gray-100 text-gray-600",
       )}
     >
       {count}

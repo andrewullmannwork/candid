@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
+import type { BillState } from "@/lib/claims/derive-bill-state";
 import { useSubscription } from "@/lib/subscription/use-subscription";
 import { Disclaimer } from "@/components/shared/Disclaimer";
 import { disputeUrlForResult } from "@/lib/disputes/url";
@@ -324,6 +325,7 @@ export function ClaimDetail({
   focusLineItemId,
   backLabel = "Back to claims",
   onClaimUpdated,
+  billState: billStateProp,
 }: {
   claimId: string;
   onBack: () => void;
@@ -336,6 +338,13 @@ export function ClaimDetail({
    * list shows stale coverageStatus + unknownCoverageCount + bill chrome.
    */
   onClaimUpdated?: () => Promise<void> | void;
+  /**
+   * B4.2 — parent /claim page passes the same `BillState` it computed for
+   * the list view's BillCard so the bill-detail screen renders the matching
+   * FlaggedBody / ReviewBody / CleanBody headline below the line items.
+   * Optional for back-compat; when absent, no state-specific headline renders.
+   */
+  billState?: BillState | null;
 }) {
   const { user } = useAuth();
   const router = useRouter();
@@ -528,6 +537,37 @@ export function ClaimDetail({
     return user.firebaseUser.getIdToken();
   }, [user]);
 
+  // B4.2 — "View uploaded bill" header icon (bonus per Andrew direction).
+  // Fetches a short-lived signed URL for claims.source_document_id from
+  // /api/claims/[claimId]/source-document/url and opens it in a new tab.
+  const [viewBillLoading, setViewBillLoading] = useState(false);
+  const [viewBillError, setViewBillError] = useState<string | null>(null);
+  const handleViewBill = useCallback(async () => {
+    if (viewBillLoading) return;
+    setViewBillLoading(true);
+    setViewBillError(null);
+    try {
+      const token = await getAuthToken();
+      if (!token) throw new Error("Sign-in expired. Please reload and try again.");
+      const res = await fetch(`/api/claims/${claimId}/source-document/url`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        if (res.status === 404) {
+          throw new Error("Source bill no longer available.");
+        }
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || `Could not open the bill (${res.status}).`);
+      }
+      const body = (await res.json()) as { url: string };
+      window.open(body.url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      setViewBillError(err instanceof Error ? err.message : "Could not open the bill.");
+    } finally {
+      setViewBillLoading(false);
+    }
+  }, [claimId, getAuthToken, viewBillLoading]);
+
   // Refetch claim after a correction lands so the row reflects new slug + the
   // audit-status=stale mark triggers D7 re-audit on next view (separate todo).
   const refetchClaim = useCallback(async () => {
@@ -643,6 +683,39 @@ export function ClaimDetail({
     else primaryLineItems.push(item);
   }
 
+  // B4.2 — bill-level aggregates for FlaggedBody / CleanBody. data.recovery
+  // already carries refund / forgive / shouldOwe / potentialRecovery at the
+  // claim level (S85 math). insurance_adjusted_amount + insurance_paid +
+  // patient_paid_amount aren't on data.recovery; sum across primary lines.
+  const billTotals = (() => {
+    let insuranceAdjusted = 0;
+    let insurancePaid = 0;
+    let patientPaid = 0;
+    for (const li of primaryLineItems) {
+      insuranceAdjusted += Number(li.insurance_adjusted_amount ?? 0);
+      insurancePaid += Number(li.insurance_paid ?? 0);
+      patientPaid += Number(li.patient_paid_amount ?? 0);
+    }
+    const billed = (claim.total_billed as number) || 0;
+    const billedAdjusted = Math.max(0, billed - insuranceAdjusted);
+    const shouldOwe = data.recovery?.shouldOwe ?? 0;
+    const insurerShouldHavePaid = Math.max(0, billedAdjusted - shouldOwe);
+    return {
+      billed,
+      billedAdjusted,
+      insurancePaid,
+      patientPaid,
+      shouldOwe,
+      insurerShouldHavePaid,
+      refundComponent: data.recovery?.refundComponent ?? 0,
+      forgivenessComponent: data.recovery?.forgivenessComponent ?? 0,
+      potentialRecovery: data.recovery?.potentialRecovery ?? 0,
+    };
+  })();
+  const billState = billStateProp ?? null;
+  const fmtMoney = (n: number) =>
+    n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
   // S74.5 D6 — detect triggers for surface elements.
   //
   // G5 "Looks right?" trigger: at least one primary line item has a
@@ -724,19 +797,123 @@ export function ClaimDetail({
     flywheelEnabled &&
     (throttleMinuteSecondsRemaining !== null || throttleDailyExceeded);
 
+  // B4.2 — surface the "View uploaded bill" icon only when claims.source_document_id
+  // links to a real document. Auto-typed claims (no source) hide the icon entirely.
+  const hasSourceDocument = Boolean(
+    (claim as { source_document_id?: string | null }).source_document_id,
+  );
+
   return (
     <div>
-      {/* Back button + header */}
-      <button onClick={onBack} className="text-sm text-blue-600 hover:text-blue-700 mb-4 flex items-center gap-1">
-        <span>&larr;</span> {backLabel}
+      {/* Back button — B4.2 design chrome */}
+      <button
+        onClick={onBack}
+        className="mb-4 inline-flex items-center gap-1.5 border-none bg-transparent p-0 text-[13px] font-medium text-gray-500 transition-colors hover:text-blue-600"
+      >
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="M19 12H5M12 19l-7-7 7-7" />
+        </svg>
+        {backLabel}
       </button>
 
-      <div className="mb-4">
-        <h2 className="text-lg font-bold text-gray-900">{providerName}</h2>
-        <p className="text-xs text-gray-500">
-          {claim.date_of_service as string || "Unknown date"} · {data.lineItems.length} line items · Total: ${((claim.total_billed as number) || 0).toLocaleString()}
-        </p>
+      {/* Bill-head — B4.2 redesign per plans/b4.2_bill_detail_redesign.md §4.1 */}
+      <div className="mb-6">
+        <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-gray-400">
+          Bill from
+        </div>
+        <div className="flex items-center gap-2.5">
+          <h1 className="m-0 text-[28px] font-bold leading-tight tracking-[-0.02em] text-gray-900">
+            {providerName}
+          </h1>
+          {hasSourceDocument && (
+            <button
+              type="button"
+              onClick={handleViewBill}
+              disabled={viewBillLoading}
+              className="grid h-9 w-9 place-items-center rounded-lg text-gray-400 transition-colors hover:bg-gray-100 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+              title="View uploaded bill"
+              aria-label="View uploaded bill"
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.8}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <path d="M4 2v20l2-2 2 2 2-2 2 2 2-2 2 2 2-2 2 2V2H4z" />
+                <path d="M8 7h8" />
+                <path d="M8 11h8" />
+                <path d="M8 15h5" />
+              </svg>
+            </button>
+          )}
+        </div>
+        <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[13px] text-gray-500">
+          <span>
+            Date of service:{" "}
+            <strong className="font-semibold text-gray-900">
+              {(claim.date_of_service as string) || "Unknown date"}
+            </strong>
+          </span>
+          <span className="h-[3px] w-[3px] rounded-full bg-gray-400" aria-hidden />
+          <span>
+            {data.lineItems.length} line item{data.lineItems.length !== 1 ? "s" : ""}
+          </span>
+          <span className="h-[3px] w-[3px] rounded-full bg-gray-400" aria-hidden />
+          <span>
+            Total billed{" "}
+            <strong className="font-semibold text-gray-900">
+              ${((claim.total_billed as number) || 0).toLocaleString("en-US", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })}
+            </strong>
+          </span>
+          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-[3px] text-[11px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-300">
+            <svg
+              width="9"
+              height="9"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={3.5}
+              aria-hidden
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+            Verified bill
+          </span>
+        </div>
       </div>
+
+      {viewBillError && (
+        <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          <span>{viewBillError}</span>
+          <button
+            type="button"
+            onClick={() => setViewBillError(null)}
+            className="text-xs text-red-700 hover:text-red-900"
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* S132 Item 2 — re-draft prompt after categorization change. Surfaces
           ONLY when the user had a non-cancelled dispute drafted before the
@@ -957,20 +1134,39 @@ export function ClaimDetail({
             label/value pairs. Horizontal scroll dropped (bad UX); user
             scans down each metric naturally. */}
       <div className="bg-white border border-gray-100 rounded-xl mb-4">
-        {/* Desktop table header — hidden at mobile */}
-        <div className="hidden md:grid grid-cols-[minmax(0,_1fr)_55px_70px_70px_50px_60px_75px_minmax(95px,_1.4fr)] gap-3 items-center px-5 py-3 bg-gray-50 text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+        {/* Desktop table header — hidden at mobile. B4.2: 8-col grid with
+            Recovery + Forgiveness split (was single Recovery col); You-owe
+            dropped per Open Q A lock; Paid → "You paid"; Plan → "Plan says".
+            Grid sized for max-w-3xl container (~728px inner): 8 fixed/flex cols
+            + gap-2 (8px × 7 = 56px) + 504px fixed = 560px + ~168px flex. */}
+        <div className="hidden md:grid grid-cols-[minmax(0,_1.5fr)_56px_64px_64px_64px_72px_80px_88px] gap-2 items-center px-5 py-3 bg-gray-50 text-[10px] font-semibold text-gray-500 uppercase tracking-[0.06em] border-b border-gray-100">
           <div className="min-w-0">Service</div>
           <div className="min-w-0">Code</div>
           <div
             className="text-right"
-            title="Amount the provider billed before insurance write-off. The breakdown below shows what your insurer wrote off and what you actually paid."
+            title="Amount the provider billed before insurance write-off."
           >
             Billed
           </div>
-          <div className="text-right">Paid</div>
-          <div className="text-right" title="What your plan says you should owe — copay, coinsurance, or deductible.">Plan</div>
-          <div className="text-right" title="What the bill assigns you. Recovery is the difference between this and your plan share.">You owe</div>
-          <div className="text-right" title="Money you're owed when your insurer corrects an under-payment.">Recovery</div>
+          <div className="text-right">You paid</div>
+          <div
+            className="text-right"
+            title="What your plan says you should owe — copay, coinsurance, or deductible."
+          >
+            Plan says
+          </div>
+          <div
+            className="text-right"
+            title="Money you're owed back — already paid out-of-pocket above your plan share."
+          >
+            Recovery
+          </div>
+          <div
+            className="text-right"
+            title="Provider must forgive — billed above the plan-allowed amount."
+          >
+            Forgiveness
+          </div>
           <div className="text-center">Coverage</div>
         </div>
 
@@ -1126,27 +1322,29 @@ export function ClaimDetail({
                     <dd className="tabular-nums text-gray-900">${billed.toLocaleString()}</dd>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <dt className="text-gray-500 uppercase tracking-wider">Paid</dt>
+                    <dt className="text-gray-500 uppercase tracking-wider">You paid</dt>
                     <dd className="tabular-nums text-gray-600">${paid.toLocaleString()}</dd>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <dt className="text-gray-500 uppercase tracking-wider">Plan</dt>
-                    <dd className={`tabular-nums font-semibold ${shouldOwe === 0 ? "text-green-600" : "text-gray-900"}`}>${shouldOwe.toLocaleString()}</dd>
+                    <dt className="text-gray-500 uppercase tracking-wider">Plan says</dt>
+                    <dd className={`tabular-nums font-semibold ${shouldOwe === 0 ? "text-green-700" : "text-gray-900"}`}>${shouldOwe.toLocaleString()}</dd>
                   </div>
-                  <div className="flex justify-between gap-3">
-                    <dt className="text-gray-500 uppercase tracking-wider">You owe</dt>
-                    <dd className="tabular-nums text-gray-900">${owed.toLocaleString()}</dd>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <dt className="text-gray-500 uppercase tracking-wider">Recovery</dt>
-                    <dd className="tabular-nums font-bold">
-                      {refundComponent + forgivenessComponent >= 1 ? (
-                        <span className="text-green-700">+${(refundComponent + forgivenessComponent).toLocaleString()}</span>
-                      ) : (
-                        <span className="text-gray-300">—</span>
-                      )}
-                    </dd>
-                  </div>
+                  {/* B4.2: "You owe" mobile row DROPPED per Open Q A lock. */}
+                  {/* B4.2: Recovery + Forgiveness rows render only when value
+                      ≥ 1 — keeps mobile card lean. Both rendered when both
+                      apply (mixed-pay cases). */}
+                  {refundComponent >= 1 && (
+                    <div className="flex justify-between gap-3">
+                      <dt className="uppercase tracking-wider text-green-700">Recovery</dt>
+                      <dd className="tabular-nums font-bold text-green-700">+${refundComponent.toLocaleString()}</dd>
+                    </div>
+                  )}
+                  {forgivenessComponent >= 1 && (
+                    <div className="flex justify-between gap-3">
+                      <dt className="uppercase tracking-wider text-green-700">Forgiveness</dt>
+                      <dd className="tabular-nums font-bold text-green-700">${forgivenessComponent.toLocaleString()}</dd>
+                    </div>
+                  )}
                   <div className="flex justify-between items-center gap-3">
                     <dt className="text-gray-500 uppercase tracking-wider">Coverage</dt>
                     <dd className="flex items-center gap-1.5">
@@ -1209,7 +1407,7 @@ export function ClaimDetail({
                     toggleRowCollapsed(item.id);
                   }
                 }}
-                className="hidden md:grid w-full grid-cols-[minmax(0,_1fr)_55px_70px_70px_50px_60px_75px_minmax(95px,_1.4fr)] gap-3 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
+                className="hidden md:grid w-full grid-cols-[minmax(0,_1.5fr)_56px_64px_64px_64px_72px_80px_88px] gap-2 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
               >
                 <div className="min-w-0 text-xs text-gray-900">
                   <div className="truncate">
@@ -1283,40 +1481,58 @@ export function ClaimDetail({
                 <div className="text-xs text-gray-500 text-right tabular-nums whitespace-nowrap">
                   ${paid.toLocaleString()}
                 </div>
-                {/* Plan Share — what your plan says you should owe. */}
+                {/* Plan says — what your plan says you should owe. */}
                 <div
-                  className={`text-xs font-semibold text-right tabular-nums whitespace-nowrap ${shouldOwe === 0 ? "text-green-600" : "text-gray-900"}`}
+                  className={`text-xs font-semibold text-right tabular-nums whitespace-nowrap ${shouldOwe === 0 ? "text-green-700" : "text-gray-900"}`}
                   title={`Per your plan, you should owe $${shouldOwe.toLocaleString()} for this service.`}
                 >
                   ${shouldOwe.toLocaleString()}
                 </div>
-                {/* S135 PR-3 — "You owe" column makes the recovery formula
-                    traceable. Recovery = You owe (patient_owes assigned by
-                    the bill) − Plan share (what plan says is fair). Without
-                    this column users see "Recovery $15.76" and can't trace
-                    it from the billed / paid / plan columns visible. */}
+                {/* B4.2 (Open Q A lock): "You owe" column DROPPED — design
+                    leans on "Plan says" to convey what the user should pay; a
+                    9th column was crowding the desktop grid. */}
+                {/* B4.2: Recovery column — refund component only.
+                    refundComponent = max(0, patient_paid − should_owe) — money
+                    already paid OOP above plan share, recoverable via insurer
+                    refund or provider credit. Source: recovery-math.ts. */}
                 <div
-                  className="text-xs text-right tabular-nums whitespace-nowrap text-gray-900"
-                  title={`The bill assigns you $${owed.toLocaleString()} for this service.`}
-                >
-                  ${owed.toLocaleString()}
-                </div>
-                {/* Recovery — single combined value (refund + insured).
-                    The breakdown into Refund vs Insured surfaces in the
-                    amber-card explanation below; the column itself stays
-                    clean with one bold green number per line. */}
-                <div
-                  className="text-right text-xs font-bold tabular-nums whitespace-nowrap"
+                  className="text-right text-xs tabular-nums whitespace-nowrap"
                   title={
-                    refundComponent + forgivenessComponent >= 1
-                      ? `Total recoverable: $${(refundComponent + forgivenessComponent).toLocaleString()} ($${refundComponent.toLocaleString()} refund + $${forgivenessComponent.toLocaleString()} insurer should have insured).`
-                      : "Nothing recoverable on this line — bill is within plan share."
+                    item.planCoverage == null
+                      ? "We need plan coverage info to compute refund recoverable."
+                      : refundComponent >= 1
+                        ? `Refund recoverable: $${refundComponent.toLocaleString()} — already paid out-of-pocket above your plan share.`
+                        : "No refund recoverable — patient hasn't paid above plan share."
                   }
                 >
-                  {refundComponent + forgivenessComponent >= 1 ? (
-                    <span className="text-green-700">+${(refundComponent + forgivenessComponent).toLocaleString()}</span>
-                  ) : (
+                  {item.planCoverage == null ? (
                     <span className="text-gray-300">—</span>
+                  ) : refundComponent >= 1 ? (
+                    <span className="font-bold text-green-700">+${refundComponent.toLocaleString()}</span>
+                  ) : (
+                    <span className="text-gray-400">$0.00</span>
+                  )}
+                </div>
+                {/* B4.2: Forgiveness column — forgivenessComponent.
+                    = max(0, potentialRecovery − refundComponent) — remaining
+                    outstanding above plan share that the provider must write
+                    off. Source: recovery-math.ts. */}
+                <div
+                  className="text-right text-xs tabular-nums whitespace-nowrap"
+                  title={
+                    item.planCoverage == null
+                      ? "We need plan coverage info to compute forgiveness due."
+                      : forgivenessComponent >= 1
+                        ? `Forgiveness due: $${forgivenessComponent.toLocaleString()} — provider must write off the amount above plan-allowed.`
+                        : "No forgiveness due — bill is within plan-allowed."
+                  }
+                >
+                  {item.planCoverage == null ? (
+                    <span className="text-gray-300">—</span>
+                  ) : forgivenessComponent >= 1 ? (
+                    <span className="font-bold text-green-700">${forgivenessComponent.toLocaleString()}</span>
+                  ) : (
+                    <span className="text-gray-400">$0.00</span>
                   )}
                 </div>
                 {/* Coverage badge — Session 86: static display by default.
@@ -1580,29 +1796,328 @@ export function ClaimDetail({
         })}
       </div>{/* /table outer (rounded-xl) */}
 
-      {/* Session 86 — bill-level "Dispute all charges" button. Surfaces when
-          there are ≥2 actionable un-dismissed findings on the bill (line-level
-          + claim-level combined). Per the design write-up: aggregates all
-          findings + claimLineItemIds into ONE letter + ONE dispute_outcomes
-          row. Per-line buttons remain for users who want to chase recoveries
-          one at a time. */}
-      <BulkDisputeButton
-        claimId={claimId}
-        claim={claim}
-        primaryLineItems={primaryLineItems}
-        claimLevelFindings={visibleClaimLevelFindings}
-        showDismissed={showDismissed}
-        getAuthToken={getAuthToken}
-        onGenerated={(result) => router.push(disputeUrlForResult(result))}
-        // S132 Item 3: if a non-cancelled dispute already exists for this
-        // claim, the button switches to "View Dispute Letter" + navigates
-        // straight to the most recent letter (no re-draft). Re-draft entry
-        // point stays exclusively on /disputes Re-draft toolbar button so
-        // user can review strengthen-this-letter signals first.
-        existingDisputeId={
-          data.disputes.find((d) => d.status !== "cancelled")?.id ?? null
+      {/* B4.2 — Bill-level state body (FlaggedBody / ReviewBody / CleanBody)
+          per design's bill-detail.jsx. Aggregates plan-vs-bill totals across
+          all line items so the user sees the headline before scrolling into
+          per-line detail above. */}
+      {(billState === "overcharge_drafted" || billState === "overcharge_no_draft") && (
+        <>
+          {/* FlaggedBody — side-by-side diff card per design styles.css .diff family.
+              Grid: 1fr 90px 1fr with vertical separator chrome in the middle. */}
+          <div className="mt-[22px] grid grid-cols-1 overflow-hidden rounded-[18px] border border-gray-200 bg-white md:grid-cols-[1fr_90px_1fr]">
+            {/* Plan side — green gradient */}
+            <div className="flex flex-col gap-3 bg-gradient-to-b from-emerald-50 via-emerald-50/40 to-white px-6 py-[22px]">
+              <h4 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-emerald-700">
+                Your plan says
+              </h4>
+              <span className="inline-flex items-center gap-[5px] self-start rounded-full bg-emerald-50 px-[9px] py-[3px] text-[11px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-300">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+                Covered by your plan
+              </span>
+              <div className="mt-0.5 flex items-baseline gap-2 text-[34px] font-bold leading-none tracking-[-0.02em] tabular-nums text-emerald-800">
+                ${fmtMoney(billTotals.shouldOwe)}
+                <span className="text-[15px] font-medium text-gray-500">· your responsibility</span>
+              </div>
+              <div className="mt-1.5 flex flex-col gap-1.5">
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>Allowed amount</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.billedAdjusted)}</strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>Insurer should pay</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.insurerShouldHavePaid)}</strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>You pay</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.shouldOwe)}</strong>
+                </div>
+                {billTotals.refundComponent >= 1 && (
+                  <div className="mt-1 flex justify-between gap-3 border-t border-emerald-200 pt-[6px] text-xs">
+                    <span className="font-semibold text-emerald-700">Refund to you</span>
+                    <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong>
+                  </div>
+                )}
+              </div>
+              {/* Cite-grade source hint per design .hint family. Generic enough
+                  to be true without per-finding field_provenance lookup at the
+                  bill level — the per-line cite chrome lives inside expansions. */}
+              <div className="mt-1 inline-flex items-center gap-[6px] text-[11px] text-gray-500">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <span>Based on your uploaded plan benefits</span>
+              </div>
+            </div>
+            {/* VS chrome (desktop only) — design .diff-mid with vertical separators */}
+            <div className="relative hidden border-l border-r border-gray-100 bg-white md:flex md:flex-col md:items-center md:justify-center">
+              <div className="absolute left-1/2 top-0 h-[calc(50%-22px)] w-px -translate-x-1/2 bg-gray-200" />
+              <div className="z-10 grid h-11 w-11 place-items-center rounded-full border border-gray-200 bg-white text-[11px] font-bold uppercase tracking-[0.06em] text-gray-500">
+                vs
+              </div>
+              <div className="absolute bottom-0 left-1/2 h-[calc(50%-22px)] w-px -translate-x-1/2 bg-gray-200" />
+            </div>
+            {/* Bill side — red gradient */}
+            <div className="flex flex-col gap-3 border-t border-gray-100 bg-gradient-to-b from-red-50 via-red-50/40 to-white px-6 py-[22px] md:border-l md:border-t-0">
+              <h4 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-red-700">
+                Your bill shows
+              </h4>
+              <span className="inline-flex items-center gap-[5px] self-start rounded-full bg-red-50 px-[9px] py-[3px] text-[11px] font-semibold text-red-700 ring-1 ring-inset ring-red-200">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.9 4h13.8c1.5 0 2.5-1.7 1.7-2.5L13.7 4c-.8-.8-2-.8-2.7 0L4.1 16.5c-.8.8.2 2.5 1.7 2.5z" />
+                </svg>
+                You&apos;re paying ${fmtMoney(billTotals.billedAdjusted)}
+              </span>
+              <div className="mt-0.5 flex items-baseline gap-2 text-[34px] font-bold leading-none tracking-[-0.02em] tabular-nums text-red-800">
+                ${fmtMoney(billTotals.billedAdjusted)}
+                <span className="text-[15px] font-medium text-gray-500">· charged to you</span>
+              </div>
+              <div className="mt-1.5 flex flex-col gap-1.5">
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>Allowed amount</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.billedAdjusted)}</strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>Insurer paid</span>
+                  <strong className="font-semibold tabular-nums text-red-700">${fmtMoney(billTotals.insurancePaid)}</strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>You paid</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.patientPaid)} OOP</strong>
+                </div>
+                {billTotals.forgivenessComponent >= 1 && (
+                  <div className="mt-1 flex justify-between gap-3 border-t border-red-200 pt-[6px] text-xs">
+                    <span className="font-semibold text-emerald-700">Provider must forgive</span>
+                    <strong className="font-bold tabular-nums text-emerald-700">${fmtMoney(billTotals.forgivenessComponent)}</strong>
+                  </div>
+                )}
+              </div>
+              <div className="mt-1 inline-flex items-center gap-[6px] text-[11px] text-gray-500">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <span>From {providerName} bill · {data.lineItems.length} line item{data.lineItems.length !== 1 ? "s" : ""}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Recovery bar — green band */}
+          {billTotals.potentialRecovery >= 1 && (
+            <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-emerald-300 bg-gradient-to-br from-emerald-50 to-teal-50/50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-3.5">
+                <div className="grid h-[42px] w-[42px] place-items-center rounded-xl bg-emerald-600 text-white">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+                <div>
+                  <div className="text-sm font-semibold text-gray-900">Recoverable from this bill</div>
+                  {(billTotals.refundComponent >= 1 || billTotals.forgivenessComponent >= 1) && (
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-gray-700">
+                      {billTotals.refundComponent >= 1 && (
+                        <span>
+                          <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong> refunded to you
+                        </span>
+                      )}
+                      {billTotals.refundComponent >= 1 && billTotals.forgivenessComponent >= 1 && (
+                        <span className="h-[3px] w-[3px] rounded-full bg-gray-400" aria-hidden />
+                      )}
+                      {billTotals.forgivenessComponent >= 1 && (
+                        <span>
+                          <strong className="font-bold tabular-nums text-emerald-700">${fmtMoney(billTotals.forgivenessComponent)}</strong> forgiven by provider
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="text-[26px] font-bold tracking-[-0.02em] tabular-nums text-emerald-700">
+                +${fmtMoney(billTotals.potentialRecovery)}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {billState === "needs_review" && (() => {
+        // Synthesize a "Specific blockers" list from line-item state so the
+        // user sees what specifically needs their input. Mirrors design's
+        // bill.reviewReasons[] array (which we don't store at bill level).
+        const blockers: string[] = [];
+        const unknownLines = primaryLineItems.filter(
+          (li) => li.coverageStatus === "unknown" && !li.user_corrected_at,
+        );
+        const notInPlanLines = primaryLineItems.filter(
+          (li) => li.coverageStatus === "not_covered",
+        );
+        const gapLines = primaryLineItems.filter((li) => {
+          const liBilled = li.billed_amount || 0;
+          const liInsPaid = Number(li.insurance_paid ?? 0);
+          const liOwed = li.patient_owes || 0;
+          return liBilled > 0 && liInsPaid === 0 && liOwed === 0;
+        });
+        if (unknownLines.length > 0) {
+          blockers.push(
+            `${unknownLines.length} line item${unknownLines.length === 1 ? "" : "s"} need${unknownLines.length === 1 ? "s" : ""} a category — pick the right service in the table above.`,
+          );
         }
-      />
+        if (notInPlanLines.length > 0) {
+          blockers.push(
+            `${notInPlanLines.length} line item${notInPlanLines.length === 1 ? "" : "s"} ${notInPlanLines.length === 1 ? "isn't" : "aren't"} listed in your uploaded plan — upload the latest plan document or confirm exclusion.`,
+          );
+        }
+        if (gapLines.length > 0 && unknownLines.length === 0) {
+          blockers.push(
+            `${gapLines.length} line item${gapLines.length === 1 ? "" : "s"} show${gapLines.length === 1 ? "s" : ""} no insurer payment and no patient balance — the EOB may be incomplete.`,
+          );
+        }
+        if (!hasAnyPlanCoverage) {
+          blockers.push(
+            "We don't have your plan document on file for this bill — upload your SBC or plan summary so Candid can audit coverage.",
+          );
+        }
+        return (
+          <div className="mt-[22px] rounded-[18px] border border-orange-200 bg-gradient-to-b from-orange-50 via-orange-50/40 to-white px-6 py-[22px]">
+            <div className="text-[11px] font-bold uppercase tracking-[0.1em] text-orange-700">
+              Why we couldn&apos;t decide
+            </div>
+            <h3 className="mb-3.5 mt-2 text-lg font-bold text-gray-900">
+              We need more info to tell you if this is an overcharge
+            </h3>
+            <p className="m-0 text-sm leading-[1.55] text-gray-600">
+              Some line items don&apos;t match a clear plan benefit. Resolve them below — pick the right category for each row marked Unknown, or upload your plan if you haven&apos;t yet.
+            </p>
+            {blockers.length > 0 && (
+              <div className="mt-4 rounded-xl border border-orange-200 bg-white p-3.5">
+                <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.08em] text-gray-500">
+                  Specific blockers
+                </div>
+                <ul className="m-0 list-disc space-y-1.5 pl-5">
+                  {blockers.map((b, i) => (
+                    <li key={i} className="text-[13px] leading-[1.55] text-gray-700">
+                      {b}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {billState === "clean" && (
+        <div className="mt-6 flex flex-col gap-4 rounded-2xl border border-emerald-300 bg-gradient-to-br from-emerald-50 to-green-50/40 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3.5">
+            <div className="grid h-[42px] w-[42px] place-items-center rounded-xl bg-emerald-600 text-white">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <div>
+              <div className="text-sm font-semibold text-gray-900">This bill looks correct</div>
+              <div className="mt-1 text-[13px] text-emerald-700">
+                The amount billed matches what your plan says you owe — nothing to dispute.
+              </div>
+            </div>
+          </div>
+          <div className="text-[22px] font-bold tracking-[-0.02em] text-emerald-700">Verified</div>
+        </div>
+      )}
+
+      {/* B4.2 — Bill action footer per design's .bill-action chrome */}
+      {billState === "overcharge_no_draft" ? (
+        <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-blue-200 bg-gradient-to-br from-blue-50 to-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="max-w-prose text-[13px] text-gray-700">
+            <div className="mb-1 inline-flex items-center gap-1.5 text-sm font-bold text-blue-900">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+              Recover ${fmtMoney(billTotals.potentialRecovery)} from this bill
+            </div>
+            Candid will write the appeal letter for you using your uploaded plan, the EOB, and Medicare benchmark comparisons. You review and mail it — we never send anything on your behalf.
+          </div>
+          <div className="sm:flex-shrink-0">
+            <BulkDisputeButton
+              claimId={claimId}
+              claim={claim}
+              primaryLineItems={primaryLineItems}
+              claimLevelFindings={visibleClaimLevelFindings}
+              showDismissed={showDismissed}
+              getAuthToken={getAuthToken}
+              onGenerated={(result) => router.push(disputeUrlForResult(result))}
+              existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
+            />
+          </div>
+        </div>
+      ) : billState === "overcharge_drafted" ? (
+        <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-gray-200 bg-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="max-w-prose text-[13px] text-gray-500">
+            We drafted an <strong className="font-semibold text-gray-900">appeal letter</strong> for you. Review, edit anything, and send by certified mail.
+          </div>
+          <div className="sm:flex-shrink-0">
+            <BulkDisputeButton
+              claimId={claimId}
+              claim={claim}
+              primaryLineItems={primaryLineItems}
+              claimLevelFindings={visibleClaimLevelFindings}
+              showDismissed={showDismissed}
+              getAuthToken={getAuthToken}
+              onGenerated={(result) => router.push(disputeUrlForResult(result))}
+              existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
+            />
+          </div>
+        </div>
+      ) : billState === "needs_review" ? (
+        <>
+          <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-gray-200 bg-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="max-w-prose text-[13px] text-gray-500">
+              Help us answer the questions above. Once we have your plan details, we&apos;ll know if this bill is an overcharge — and draft the appeal in one click.
+            </div>
+            <div className="sm:flex-shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  const first = primaryLineItems[0];
+                  if (first) openUploadPlanModal(first.id);
+                }}
+                disabled={primaryLineItems.length === 0}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-[9px] text-[13px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M12 16V4m0 0l-4 4m4-4l4 4M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
+                </svg>
+                Upload my plan
+              </button>
+            </div>
+          </div>
+          {/* Bulk dispute still available for needs_review when findings exist —
+              user may want to dispute uncertain charges. */}
+          <BulkDisputeButton
+            claimId={claimId}
+            claim={claim}
+            primaryLineItems={primaryLineItems}
+            claimLevelFindings={visibleClaimLevelFindings}
+            showDismissed={showDismissed}
+            getAuthToken={getAuthToken}
+            onGenerated={(result) => router.push(disputeUrlForResult(result))}
+            existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
+          />
+        </>
+      ) : (
+        // billState is null/clean — back-compat: render BulkDisputeButton standalone.
+        // For clean state it self-suppresses when there's nothing to dispute.
+        <BulkDisputeButton
+          claimId={claimId}
+          claim={claim}
+          primaryLineItems={primaryLineItems}
+          claimLevelFindings={visibleClaimLevelFindings}
+          showDismissed={showDismissed}
+          getAuthToken={getAuthToken}
+          onGenerated={(result) => router.push(disputeUrlForResult(result))}
+          existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
+        />
+      )}
 
       {/* Quality-reporting codes — collapsed by default */}
       {qualityLineItems.length > 0 && (
@@ -2863,7 +3378,16 @@ function BulkDisputeButton({
   // recovery guarantee (CROA + state UDAP exposure per Director Checkpoint
   // #5 — user-sends-letter model). Recovery info stays visible as DATA
   // (table column + amber card) but not as a promise on the action button.
-  const buttonLabel = totalContested === 1 ? "Dispute charge" : "Dispute these charges";
+  // B4.2: design's FlaggedDraftedAction labels the CTA "Open dispute letter"
+  // when a draft already exists. Mirror that here so the chrome wrapper at
+  // bill-level reads as "View Dispute Letter" instead of "Dispute charges"
+  // (the latter implied a re-draft, which we don't want — see existingDisputeId
+  // routing in handleClick).
+  const buttonLabel = existingDisputeId
+    ? "View Dispute Letter"
+    : totalContested === 1
+      ? "Dispute charge"
+      : "Dispute these charges";
 
   // S132 iter-2: overlay moved to (app)/layout.tsx via DisputeDraftOverlayProvider
   // so it persists across /claim → /disputes navigation as a single React mount.
