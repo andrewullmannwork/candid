@@ -81,6 +81,14 @@ interface LineItem {
     potentialRecovery: number;
     refundComponent: number;
     forgivenessComponent: number;
+    // S140 — cite-grade provenance attached by /api/claims/[claimId]. Gates
+    // per-line LineDrawer recovery strip (suppressed when isCitablePerLine
+    // is false; aggregate bar below shows the one accurate number).
+    provenance?: {
+      patientPaidSource: "per_line" | "header_prorated";
+      patientResponsibilitySource: "per_line" | "header_prorated";
+      isCitablePerLine: boolean;
+    };
   };
   codeIdentity?: CodeIdentityState | null;
 }
@@ -147,6 +155,25 @@ interface ClaimData {
     potentialRecovery: number;
     refundComponent: number;
     forgivenessComponent: number;
+    // S140 — citation source for claim-level recovery. Mirrors per-line
+    // recovery.provenance.isCitablePerLine but at claim aggregate level.
+    provenance?: {
+      citationSource: "per_line_sum" | "claim_header";
+    };
+  };
+  // S140 — cite-grade effective totals from /api/claims/[claimId]. Drives
+  // billTotals aggregator below (replaces sum-of-per-line-nulls bug).
+  effectiveTotals?: {
+    patientPaid: number;
+    insurancePaid: number;
+    insuranceAdjusted: number;
+    patientResponsibility: number;
+    provenance: {
+      patientPaidSource: "per_line_sum" | "claim_header";
+      insurancePaidSource: "per_line_sum" | "claim_header";
+      insuranceAdjustedSource: "per_line_sum" | "claim_header";
+      patientResponsibilitySource: "per_line_sum" | "claim_header";
+    };
   };
   flags?: {
     categorizationFlywheelV1?: boolean;
@@ -679,19 +706,17 @@ export function ClaimDetail({
     else primaryLineItems.push(item);
   }
 
-  // B4.2 — bill-level aggregates for FlaggedBody / CleanBody. data.recovery
-  // already carries refund / forgive / shouldOwe / potentialRecovery at the
-  // claim level (S85 math). insurance_adjusted_amount + insurance_paid +
-  // patient_paid_amount aren't on data.recovery; sum across primary lines.
+  // B4.2 — bill-level aggregates for FlaggedBody / CleanBody.
+  // S140 — read cite-grade values from API's effectiveTotals (per-line
+  // sum when available; claim-header fallback when per-line sparse).
+  // Replaces sum-of-per-line-nulls bug that was showing $0 insurance paid
+  // on Dec 12-style bills where Haiku populated only the header. Display
+  // numbers now match dispute letter citations exactly.
   const billTotals = (() => {
-    let insuranceAdjusted = 0;
-    let insurancePaid = 0;
-    let patientPaid = 0;
-    for (const li of primaryLineItems) {
-      insuranceAdjusted += Number(li.insurance_adjusted_amount ?? 0);
-      insurancePaid += Number(li.insurance_paid ?? 0);
-      patientPaid += Number(li.patient_paid_amount ?? 0);
-    }
+    const eff = data.effectiveTotals;
+    const insurancePaid = eff?.insurancePaid ?? 0;
+    const patientPaid = eff?.patientPaid ?? 0;
+    const insuranceAdjusted = eff?.insuranceAdjusted ?? 0;
     const billed = (claim.total_billed as number) || 0;
     const billedAdjusted = Math.max(0, billed - insuranceAdjusted);
     const shouldOwe = data.recovery?.shouldOwe ?? 0;
@@ -1673,8 +1698,13 @@ export function ClaimDetail({
                   patientPaidAmount={patientPaid}
                   insurancePaidAmount={Number(item.insurance_paid ?? 0)}
                   coverageLabel={item.planCoverage ? buildPlanSays(item.planCoverage) : "Coverage unknown"}
-                  recovery={refundComponent}
-                  forgiveness={forgivenessComponent}
+                  // S140 — suppress per-line recovery strip when patientPaid is
+                  // header-prorated (not cite-grade per-line). Plan + bill cards
+                  // above still render with raw per-line billed amounts. The
+                  // bill-level recovery bar below shows the ONE accurate
+                  // aggregate; no double-counting risk.
+                  recovery={item.recovery?.provenance?.isCitablePerLine ? refundComponent : 0}
+                  forgiveness={item.recovery?.provenance?.isCitablePerLine ? forgivenessComponent : 0}
                   acaOverride={item.acaOverride}
                   ariaLabelledBy={`line-${item.id}-svc`}
                 />
@@ -1930,12 +1960,9 @@ export function ClaimDetail({
                   <span>You pay</span>
                   <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.shouldOwe)}</strong>
                 </div>
-                {billTotals.refundComponent >= 1 && (
-                  <div className="mt-1 flex justify-between gap-3 border-t border-emerald-200 pt-[6px] text-xs">
-                    <span className="font-semibold text-emerald-700">Refund to you</span>
-                    <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong>
-                  </div>
-                )}
+                {/* S140 — Refund row moved to RIGHT (Bill) side per Andrew's
+                    locked S139 schema. LEFT (Plan) side now ends after
+                    "You pay" — purely about what the plan says you owe. */}
               </div>
               {/* Cite-grade source hint per design .hint family. Generic enough
                   to be true without per-finding field_provenance lookup at the
@@ -1994,6 +2021,16 @@ export function ClaimDetail({
                   <div className="mt-1 flex justify-between gap-3 border-t border-red-200 pt-[6px] text-xs">
                     <span className="font-semibold text-emerald-700">Provider must forgive</span>
                     <strong className="font-bold tabular-nums text-emerald-700">${fmtMoney(billTotals.forgivenessComponent)}</strong>
+                  </div>
+                )}
+                {/* S140 — Refund row moved here from LEFT side per Andrew's
+                    locked S139 schema. Gated ≥$1 (same as Forgive). For
+                    Dec 12: refundComponent = max(0, $129.01 - $36) = $93.01
+                    renders; forgivenessComponent ≈ $0 → hidden. */}
+                {billTotals.refundComponent >= 1 && (
+                  <div className="flex justify-between gap-3 text-xs">
+                    <span className="font-semibold text-emerald-700">Refund</span>
+                    <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong>
                   </div>
                 )}
               </div>
