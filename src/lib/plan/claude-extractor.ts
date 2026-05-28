@@ -301,6 +301,7 @@ export async function extractServicesWithClaude(
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 8192,
+      temperature: 0,
       messages: [{ role: "user", content: prompt }],
     });
 
@@ -321,6 +322,7 @@ export async function extractServicesWithClaude(
         const contResponse = await client.messages.create({
           model: MODEL,
           max_tokens: 8192,
+          temperature: 0,
           messages: [{ role: "user", content: contPrompt }],
         });
         const contText = contResponse.content[0].type === "text" ? contResponse.content[0].text : "";

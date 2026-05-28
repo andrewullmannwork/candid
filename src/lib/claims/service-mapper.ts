@@ -185,6 +185,7 @@ Return JSON array, one object per line item:
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 2048,
+      temperature: 0,
       messages: [{ role: "user", content: prompt }],
     });
 

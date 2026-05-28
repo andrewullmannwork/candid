@@ -333,6 +333,7 @@ async function defaultAnthropicCall(
   const response = await client.messages.create({
     model: HAIKU_MODEL,
     max_tokens: HAIKU_MAX_OUTPUT,
+    temperature: 0,
     messages: [{ role: "user", content: prompt }],
   });
   const text =

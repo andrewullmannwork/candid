@@ -190,6 +190,7 @@ export async function extractPlanIdentifiersWithHaiku(
     const response = await client.messages.create({
       model: HAIKU_MODEL,
       max_tokens: 200,
+      temperature: 0,
       messages: [{
         role: "user",
         content: `Extract the insurance plan identifiers from this document header. Return ONLY a JSON object with these fields (use null if not found):
