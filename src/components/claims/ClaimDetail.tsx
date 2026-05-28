@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
+import type { BillState } from "@/lib/claims/derive-bill-state";
 import { useSubscription } from "@/lib/subscription/use-subscription";
 import { Disclaimer } from "@/components/shared/Disclaimer";
 import { disputeUrlForResult } from "@/lib/disputes/url";
@@ -10,6 +11,9 @@ import { CategoryCorrectionModal } from "@/components/claims/CategoryCorrectionM
 import { UploadPlanDocModal } from "@/components/claims/UploadPlanDocModal";
 import { legacyCategoryReviewHint } from "@/lib/billing/code-categories";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
+import { buildAcaOverrideLine, type AcaOverride } from "@/lib/claims/aca-override-line";
+import { LineDrawer } from "@/components/claims/LineDrawer";
+import { BundleSuggestion } from "@/components/claims/BundleSuggestion";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useDisputeDraftOverlay } from "@/lib/loading/dispute-draft-overlay";
 
@@ -29,13 +33,6 @@ interface CodeIdentityState {
 // cost-share mandate (either assigns a non-$0 cost-share OR explicitly
 // excludes the service). Drives the inline "Plan says X, federal law $0"
 // message in the green plan-says box.
-interface AcaOverride {
-  planCopay: number | null;
-  planCoinsurance: number | null;
-  planCovered: boolean | null;
-  basis: string | null;
-}
-
 interface LineItem {
   id: string;
   line_number: number;
@@ -84,7 +81,28 @@ interface LineItem {
     potentialRecovery: number;
     refundComponent: number;
     forgivenessComponent: number;
+    // S140 — cite-grade provenance attached by /api/claims/[claimId]. Gates
+    // per-line LineDrawer recovery strip (suppressed when isCitablePerLine
+    // is false; aggregate bar below shows the one accurate number).
+    // H1 — insuranceAdjustedSource added to track writeoff cite-grade too.
+    // H5 — insurancePaidSource added so isCitablePerLine requires ALL 4
+    // numeric fields per-line cite-grade.
+    provenance?: {
+      patientPaidSource: "per_line" | "header_prorated";
+      patientResponsibilitySource: "per_line" | "header_prorated";
+      insuranceAdjustedSource?: "per_line" | "header_prorated";
+      insurancePaidSource?: "per_line" | "header_prorated";
+      isCitablePerLine: boolean;
+    };
   };
+  // S140 fix-pass H1 — per-line adjusted billed (= raw billed − resolved
+  // writeoff). Drives UI BILLED column + LineDrawer Bill card + OVERCHARGE
+  // pill calc. Falls back to raw billed_amount when undefined (legacy).
+  adjustedBilled?: number;
+  // S140 fix-pass H5 — per-line insurer payment (pro-rated from header
+  // when per-line is sparse). Drives LineDrawer Bill card "Insurer paid $X"
+  // + desktop/mobile YOU PAID column. Falls back to raw insurance_paid.
+  insurancePaidResolved?: number;
   codeIdentity?: CodeIdentityState | null;
 }
 
@@ -137,7 +155,7 @@ interface ClaimData {
   claim: Record<string, unknown>;
   lineItems: LineItem[];
   disputes: Array<{ id: string; dispute_type: string; status: string; amount_disputed: number; amount_recovered: number }>;
-  relatedClaims: Array<{ id: string; date_of_service: string; status: string; total_billed: number }>;
+  relatedClaims: Array<{ id: string; date_of_service: string; status: string; total_billed: number; provider_name: string | null }>;
   // S132 iter-6 Phase 1 — slugs present in user's plan_covered_services for
   // this claim's plan_id. Drives CategoryCorrectionModal filtering + best-
   // guess "Use this" gating. Empty array when no plan uploaded.
@@ -150,6 +168,25 @@ interface ClaimData {
     potentialRecovery: number;
     refundComponent: number;
     forgivenessComponent: number;
+    // S140 — citation source for claim-level recovery. Mirrors per-line
+    // recovery.provenance.isCitablePerLine but at claim aggregate level.
+    provenance?: {
+      citationSource: "per_line_sum" | "claim_header";
+    };
+  };
+  // S140 — cite-grade effective totals from /api/claims/[claimId]. Drives
+  // billTotals aggregator below (replaces sum-of-per-line-nulls bug).
+  effectiveTotals?: {
+    patientPaid: number;
+    insurancePaid: number;
+    insuranceAdjusted: number;
+    patientResponsibility: number;
+    provenance: {
+      patientPaidSource: "per_line_sum" | "claim_header";
+      insurancePaidSource: "per_line_sum" | "claim_header";
+      insuranceAdjustedSource: "per_line_sum" | "claim_header";
+      patientResponsibilitySource: "per_line_sum" | "claim_header";
+    };
   };
   flags?: {
     categorizationFlywheelV1?: boolean;
@@ -324,6 +361,7 @@ export function ClaimDetail({
   focusLineItemId,
   backLabel = "Back to claims",
   onClaimUpdated,
+  billState: billStateProp,
 }: {
   claimId: string;
   onBack: () => void;
@@ -336,6 +374,13 @@ export function ClaimDetail({
    * list shows stale coverageStatus + unknownCoverageCount + bill chrome.
    */
   onClaimUpdated?: () => Promise<void> | void;
+  /**
+   * B4.2 — parent /claim page passes the same `BillState` it computed for
+   * the list view's BillCard so the bill-detail screen renders the matching
+   * FlaggedBody / ReviewBody / CleanBody headline below the line items.
+   * Optional for back-compat; when absent, no state-specific headline renders.
+   */
+  billState?: BillState | null;
 }) {
   const { user } = useAuth();
   const router = useRouter();
@@ -528,6 +573,37 @@ export function ClaimDetail({
     return user.firebaseUser.getIdToken();
   }, [user]);
 
+  // B4.2 — "View uploaded bill" header icon (bonus per Andrew direction).
+  // Fetches a short-lived signed URL for claims.source_document_id from
+  // /api/claims/[claimId]/source-document/url and opens it in a new tab.
+  const [viewBillLoading, setViewBillLoading] = useState(false);
+  const [viewBillError, setViewBillError] = useState<string | null>(null);
+  const handleViewBill = useCallback(async () => {
+    if (viewBillLoading) return;
+    setViewBillLoading(true);
+    setViewBillError(null);
+    try {
+      const token = await getAuthToken();
+      if (!token) throw new Error("Sign-in expired. Please reload and try again.");
+      const res = await fetch(`/api/claims/${claimId}/source-document/url`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        if (res.status === 404) {
+          throw new Error("Source bill no longer available.");
+        }
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || `Could not open the bill (${res.status}).`);
+      }
+      const body = (await res.json()) as { url: string };
+      window.open(body.url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      setViewBillError(err instanceof Error ? err.message : "Could not open the bill.");
+    } finally {
+      setViewBillLoading(false);
+    }
+  }, [claimId, getAuthToken, viewBillLoading]);
+
   // Refetch claim after a correction lands so the row reflects new slug + the
   // audit-status=stale mark triggers D7 re-audit on next view (separate todo).
   const refetchClaim = useCallback(async () => {
@@ -643,6 +719,55 @@ export function ClaimDetail({
     else primaryLineItems.push(item);
   }
 
+  // B4.2 — bill-level aggregates for FlaggedBody / CleanBody.
+  // S140 — read cite-grade values from API's effectiveTotals (per-line
+  // sum when available; claim-header fallback when per-line sparse).
+  // Replaces sum-of-per-line-nulls bug that was showing $0 insurance paid
+  // on Dec 12-style bills where Haiku populated only the header. Display
+  // numbers now match dispute letter citations exactly.
+  const billTotals = (() => {
+    const eff = data.effectiveTotals;
+    const insurancePaid = eff?.insurancePaid ?? 0;
+    const patientPaid = eff?.patientPaid ?? 0;
+    const insuranceAdjusted = eff?.insuranceAdjusted ?? 0;
+    const billed = (claim.total_billed as number) || 0;
+    const billedAdjusted = Math.max(0, billed - insuranceAdjusted);
+    const shouldOwe = data.recovery?.shouldOwe ?? 0;
+    const insurerShouldHavePaid = Math.max(0, billedAdjusted - shouldOwe);
+    return {
+      billed,
+      billedAdjusted,
+      insurancePaid,
+      patientPaid,
+      shouldOwe,
+      insurerShouldHavePaid,
+      refundComponent: data.recovery?.refundComponent ?? 0,
+      forgivenessComponent: data.recovery?.forgivenessComponent ?? 0,
+      potentialRecovery: data.recovery?.potentialRecovery ?? 0,
+    };
+  })();
+  const billState = billStateProp ?? null;
+
+  // S139 B4.2 multi-line — drives chevron column + LineDrawer rendering in
+  // the line-items table AND multi-line branches in FlaggedBody (different
+  // pill copy + row labels for "N services" vs single coverage). flaggedLineCount
+  // = lines with recovery (refund + forgiveness) > 0; isMultiLine = flagged
+  // bill state AND ≥2 flagged lines. Single-flagged-line bills keep the S138
+  // single-line treatment (no chevron column; no LineDrawer; existing
+  // expansion panel preserved).
+  const isFlagged = billState === "overcharge_drafted" || billState === "overcharge_no_draft";
+  const flaggedLineCount = primaryLineItems.filter((li) => {
+    const refund = li.recovery?.refundComponent ?? 0;
+    const forgive = li.recovery?.forgivenessComponent ?? 0;
+    return refund + forgive > 0;
+  }).length;
+  const isMultiLine = isFlagged && flaggedLineCount > 1;
+  // S140 fix-pass H2 — totalsBilledSum (raw billed sum) removed; FlaggedBody
+  // Row 1 now always uses billTotals.billedAdjusted regardless of multi-line.
+
+  const fmtMoney = (n: number) =>
+    n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
   // S74.5 D6 — detect triggers for surface elements.
   //
   // G5 "Looks right?" trigger: at least one primary line item has a
@@ -724,19 +849,123 @@ export function ClaimDetail({
     flywheelEnabled &&
     (throttleMinuteSecondsRemaining !== null || throttleDailyExceeded);
 
+  // B4.2 — surface the "View uploaded bill" icon only when claims.source_document_id
+  // links to a real document. Auto-typed claims (no source) hide the icon entirely.
+  const hasSourceDocument = Boolean(
+    (claim as { source_document_id?: string | null }).source_document_id,
+  );
+
   return (
     <div>
-      {/* Back button + header */}
-      <button onClick={onBack} className="text-sm text-blue-600 hover:text-blue-700 mb-4 flex items-center gap-1">
-        <span>&larr;</span> {backLabel}
+      {/* Back button — B4.2 design chrome */}
+      <button
+        onClick={onBack}
+        className="mb-4 inline-flex items-center gap-1.5 border-none bg-transparent p-0 text-[13px] font-medium text-gray-500 transition-colors hover:text-blue-600"
+      >
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="M19 12H5M12 19l-7-7 7-7" />
+        </svg>
+        {backLabel}
       </button>
 
-      <div className="mb-4">
-        <h2 className="text-lg font-bold text-gray-900">{providerName}</h2>
-        <p className="text-xs text-gray-500">
-          {claim.date_of_service as string || "Unknown date"} · {data.lineItems.length} line items · Total: ${((claim.total_billed as number) || 0).toLocaleString()}
-        </p>
+      {/* Bill-head — B4.2 redesign per plans/b4.2_bill_detail_redesign.md §4.1 */}
+      <div className="mb-6">
+        <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-gray-400">
+          Bill from
+        </div>
+        <div className="flex items-center gap-2.5">
+          <h1 className="m-0 text-[28px] font-bold leading-tight tracking-[-0.02em] text-gray-900">
+            {providerName}
+          </h1>
+          {hasSourceDocument && (
+            <button
+              type="button"
+              onClick={handleViewBill}
+              disabled={viewBillLoading}
+              className="grid h-9 w-9 place-items-center rounded-lg text-gray-400 transition-colors hover:bg-gray-100 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+              title="View uploaded bill"
+              aria-label="View uploaded bill"
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.8}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <path d="M4 2v20l2-2 2 2 2-2 2 2 2-2 2 2 2-2 2 2V2H4z" />
+                <path d="M8 7h8" />
+                <path d="M8 11h8" />
+                <path d="M8 15h5" />
+              </svg>
+            </button>
+          )}
+        </div>
+        <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[13px] text-gray-500">
+          <span>
+            Date of service:{" "}
+            <strong className="font-semibold text-gray-900">
+              {(claim.date_of_service as string) || "Unknown date"}
+            </strong>
+          </span>
+          <span className="h-[3px] w-[3px] rounded-full bg-gray-400" aria-hidden />
+          <span>
+            {data.lineItems.length} line item{data.lineItems.length !== 1 ? "s" : ""}
+          </span>
+          <span className="h-[3px] w-[3px] rounded-full bg-gray-400" aria-hidden />
+          <span>
+            Total billed{" "}
+            <strong className="font-semibold text-gray-900">
+              ${((claim.total_billed as number) || 0).toLocaleString("en-US", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })}
+            </strong>
+          </span>
+          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-[3px] text-[11px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-300">
+            <svg
+              width="9"
+              height="9"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={3.5}
+              aria-hidden
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+            Verified bill
+          </span>
+        </div>
       </div>
+
+      {viewBillError && (
+        <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          <span>{viewBillError}</span>
+          <button
+            type="button"
+            onClick={() => setViewBillError(null)}
+            className="text-xs text-red-700 hover:text-red-900"
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* S132 Item 2 — re-draft prompt after categorization change. Surfaces
           ONLY when the user had a non-cancelled dispute drafted before the
@@ -786,14 +1015,9 @@ export function ClaimDetail({
         />
       )}
 
-      {/* Related claims */}
-      {data.relatedClaims.length > 0 && (
-        <div className="mb-4 p-3 bg-blue-50 border border-blue-100 rounded-xl">
-          <p className="text-xs font-semibold text-blue-700">
-            Related documents ({data.relatedClaims.length}): This bill is linked to other documents from the same provider/date.
-          </p>
-        </div>
-      )}
+      {/* S139 — Related-documents sidebar banner removed; BundleSuggestion at
+          the bottom of the bill view replaces it with design's tile-list
+          treatment per S139 plan A.1 + Q2 (no bundle CTA, peer-bill links). */}
 
       {/* S74.5 D6 — Case C/D plan-doc nudge banner. Soft prompt for /claim
           per Q-C LOCK; HARD gate for dispute generation lives elsewhere. */}
@@ -957,21 +1181,51 @@ export function ClaimDetail({
             label/value pairs. Horizontal scroll dropped (bad UX); user
             scans down each metric naturally. */}
       <div className="bg-white border border-gray-100 rounded-xl mb-4">
-        {/* Desktop table header — hidden at mobile */}
-        <div className="hidden md:grid grid-cols-[minmax(0,_1fr)_55px_70px_70px_50px_60px_75px_minmax(95px,_1.4fr)] gap-3 items-center px-5 py-3 bg-gray-50 text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+        {/* Desktop table header — hidden at mobile. B4.2: 8-col grid with
+            Recovery + Forgiveness split (was single Recovery col); You-owe
+            dropped per Open Q A lock; Paid → "You paid"; Plan → "Plan says".
+            Grid sized for max-w-3xl container (~728px inner): 8 fixed/flex cols
+            + gap-2 (8px × 7 = 56px) + 504px fixed = 560px + ~168px flex. */}
+        <div
+          className="hidden lg:grid gap-2 items-center px-5 py-3 bg-gray-50 text-[10px] font-semibold text-gray-500 uppercase tracking-[0.06em] border-b border-gray-100"
+          style={{
+            gridTemplateColumns: isMultiLine
+              ? "minmax(0, 1.5fr) 56px 64px 64px 64px 72px 80px 88px 40px"
+              : "minmax(0, 1.5fr) 56px 64px 64px 64px 72px 80px 88px",
+          }}
+        >
           <div className="min-w-0">Service</div>
           <div className="min-w-0">Code</div>
           <div
             className="text-right"
-            title="Amount the provider billed before insurance write-off. The breakdown below shows what your insurer wrote off and what you actually paid."
+            title="Amount the provider billed before insurance write-off."
           >
             Billed
           </div>
-          <div className="text-right">Paid</div>
-          <div className="text-right" title="What your plan says you should owe — copay, coinsurance, or deductible.">Plan</div>
-          <div className="text-right" title="What the bill assigns you. Recovery is the difference between this and your plan share.">You owe</div>
-          <div className="text-right" title="Money you're owed when your insurer corrects an under-payment.">Recovery</div>
+          <div className="text-right">You paid</div>
+          <div
+            className="text-right"
+            title="What your plan says you should owe — copay, coinsurance, or deductible."
+          >
+            Plan says
+          </div>
+          <div
+            className="text-right"
+            title="Money you're owed back — already paid out-of-pocket above your plan share."
+          >
+            Recovery
+          </div>
+          <div
+            className="text-right"
+            title="Provider must forgive — billed above the plan-allowed amount."
+          >
+            Forgiveness
+          </div>
           <div className="text-center">Coverage</div>
+          {/* S139 — chevron column header (multi-line bills only); empty header so
+              column width allocates correctly. Chevron button per row provides
+              expand affordance for LineDrawer. */}
+          {isMultiLine && <div aria-hidden />}
         </div>
 
         {primaryLineItems.map((item) => {
@@ -1004,13 +1258,21 @@ export function ClaimDetail({
           // `paid` here would hide gaps on any line where the API pro-rated
           // a non-zero "already paid" from the claim header.
           const billed = item.billed_amount || 0;
-          // Session 86 — "Billed (adj.)" column = billed minus the insurer's
-          // contractual write-off. Reconciles with the rest of the row math
-          // (Paid + Plan + Recovery) which all operate on the post-adjustment
-          // balance. Falls back to raw billed when insurance_adjusted_amount
-          // is null/0 (legacy rows pre-mig 092).
-          const insuranceAdjusted = Number(item.insurance_adjusted_amount ?? 0);
-          const billedAdjusted = Math.max(0, billed - insuranceAdjusted);
+          // S140 fix-pass H2 — per-line BILLED display now uses adjusted
+          // billed everywhere (raw minus resolved writeoff). Reconciles with
+          // bill-level "Adjusted total billed" and with coinsurance × adjusted
+          // math. Server-computed `adjustedBilled` is authoritative; raw
+          // fallback only when API didn't surface it (legacy or empty rows).
+          const billedDisplay = item.adjustedBilled ?? billed;
+          // S140 fix-pass H5 — resolved insurer payment per line (pro-rated
+          // when sparse). Replaces raw item.insurance_paid in display sites.
+          const insurancePaidDisplay =
+            item.insurancePaidResolved ?? Number(item.insurance_paid ?? 0);
+          // S140 — resolved patient paid per line (from H1; surfaces via
+          // recovery.patientPaid which carries the pro-rated value through
+          // computeRecoveryV2). Falls back to raw for safety.
+          const patientPaidDisplay =
+            item.recovery?.patientPaid ?? Number(item.patient_paid_amount ?? 0);
           // Session 85 round 5 — "Paid" column = insurance_paid + patient_paid
           // (total cleared on this line by either party). For Bill 1 with
           // insurance_paid=$0 and patient_paid=$292.41, this reads $292.41
@@ -1018,9 +1280,10 @@ export function ClaimDetail({
           // and OOP=$48.25, reads $217.04 (the allowed amount). The breakdown
           // ("Your insurer actually paid" vs "You paid OOP") lives in the
           // red box for full transparency.
-          const paid =
-            Number(item.insurance_paid ?? 0) +
-            Number(item.patient_paid_amount ?? 0);
+          // S140 fix-pass H5 — YOU PAID column = resolved insurer paid +
+          // resolved patient paid (both pro-rated when per-line sparse).
+          // For Dec 12 Line 1: $91.74 + $49.63 = $141.37 (was $0 raw).
+          const paid = insurancePaidDisplay + patientPaidDisplay;
           const owed = item.patient_owes || 0;
           // Session 85 — new column values:
           //   shouldOwe = plan-defined cost share (copay / coinsurance applied to billed)
@@ -1079,41 +1342,67 @@ export function ClaimDetail({
                     toggleRowCollapsed(item.id);
                   }
                 }}
-                className="md:hidden block w-full text-left px-5 py-4 border-t border-gray-100 transition-colors hover:bg-gray-50 cursor-pointer"
+                className="lg:hidden block w-full text-left px-5 py-4 border-t border-gray-100 transition-colors hover:bg-gray-50 cursor-pointer"
               >
-                <div className="mb-3">
-                  <div className="text-sm font-medium text-gray-900 truncate">
-                    {item.description || item.service_slug?.replace(/_/g, " ") || "Unknown"}
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium text-gray-900 truncate">
+                      {item.description || item.service_slug?.replace(/_/g, " ") || "Unknown"}
+                    </div>
+                    {showCategoryPill && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openBadgeModal(item.id, item.coverageStatus);
+                        }}
+                        title={
+                          item.coverageStatus === "not_covered"
+                            ? "Click to upload your plan and update coverage"
+                            : pillState === "user_corrected"
+                              ? "You changed this category. Click to edit again."
+                              : pillState === "needs_review"
+                                ? "We couldn't auto-categorize this. Click to set."
+                                : "Click to change category"
+                        }
+                        className="mt-1 inline-flex items-center gap-1 -ml-1 rounded px-1 py-0.5 text-xs text-blue-600 hover:bg-blue-50 hover:text-blue-700 transition-colors group/cat-mobile"
+                      >
+                        <span className={item.service_slug ? "" : "italic"}>
+                          {item.service_slug
+                            ? humanizeSlug(item.service_slug)
+                            : item.billing_code
+                              ? legacyCategoryReviewHint(item.billing_code)
+                              : "Set category"}
+                        </span>
+                        <svg className="h-3 w-3 opacity-60 group-hover/cat-mobile:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
+                      </button>
+                    )}
                   </div>
-                  {showCategoryPill && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openBadgeModal(item.id, item.coverageStatus);
-                      }}
-                      title={
-                        item.coverageStatus === "not_covered"
-                          ? "Click to upload your plan and update coverage"
-                          : pillState === "user_corrected"
-                            ? "You changed this category. Click to edit again."
-                            : pillState === "needs_review"
-                              ? "We couldn't auto-categorize this. Click to set."
-                              : "Click to change category"
-                      }
-                      className="mt-1 inline-flex items-center gap-1 -ml-1 rounded px-1 py-0.5 text-xs text-blue-600 hover:bg-blue-50 hover:text-blue-700 transition-colors group/cat-mobile"
-                    >
-                      <span className={item.service_slug ? "" : "italic"}>
-                        {item.service_slug
-                          ? humanizeSlug(item.service_slug)
-                          : item.billing_code
-                            ? legacyCategoryReviewHint(item.billing_code)
-                            : "Set category"}
-                      </span>
-                      <svg className="h-3 w-3 opacity-60 group-hover/cat-mobile:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                      </svg>
-                    </button>
+                  {/* S140 fix-pass H2 — mobile chevron affordance. Card is
+                      whole-clickable for expand toggle (line 1320 onClick);
+                      chevron icon visually communicates that affordance.
+                      Same gate as desktop: isMultiLine + has recoverable
+                      money. Rotates on expand state. */}
+                  {isMultiLine && (refundComponent + forgivenessComponent) > 0 && (
+                    <div className="flex-shrink-0 pt-0.5">
+                      <div
+                        aria-label={isExpanded ? "Hide breakdown" : "Show breakdown"}
+                        className={`grid h-7 w-7 place-items-center rounded-md transition-colors ${isExpanded ? "bg-blue-600 text-white shadow-sm" : "bg-gray-100 text-gray-500"}`}
+                      >
+                        <svg
+                          className={`h-3.5 w-3.5 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth={2.5}
+                          aria-hidden
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+                        </svg>
+                      </div>
+                    </div>
                   )}
                 </div>
                 <dl className="space-y-1.5 text-xs">
@@ -1123,30 +1412,32 @@ export function ClaimDetail({
                   </div>
                   <div className="flex justify-between gap-3">
                     <dt className="text-gray-500 uppercase tracking-wider">Billed</dt>
-                    <dd className="tabular-nums text-gray-900">${billed.toLocaleString()}</dd>
+                    <dd className="tabular-nums text-gray-900">${billedDisplay.toLocaleString()}</dd>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <dt className="text-gray-500 uppercase tracking-wider">Paid</dt>
+                    <dt className="text-gray-500 uppercase tracking-wider">You paid</dt>
                     <dd className="tabular-nums text-gray-600">${paid.toLocaleString()}</dd>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <dt className="text-gray-500 uppercase tracking-wider">Plan</dt>
-                    <dd className={`tabular-nums font-semibold ${shouldOwe === 0 ? "text-green-600" : "text-gray-900"}`}>${shouldOwe.toLocaleString()}</dd>
+                    <dt className="text-gray-500 uppercase tracking-wider">Plan says</dt>
+                    <dd className={`tabular-nums font-semibold ${shouldOwe === 0 ? "text-green-700" : "text-gray-900"}`}>${shouldOwe.toLocaleString()}</dd>
                   </div>
-                  <div className="flex justify-between gap-3">
-                    <dt className="text-gray-500 uppercase tracking-wider">You owe</dt>
-                    <dd className="tabular-nums text-gray-900">${owed.toLocaleString()}</dd>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <dt className="text-gray-500 uppercase tracking-wider">Recovery</dt>
-                    <dd className="tabular-nums font-bold">
-                      {refundComponent + forgivenessComponent >= 1 ? (
-                        <span className="text-green-700">+${(refundComponent + forgivenessComponent).toLocaleString()}</span>
-                      ) : (
-                        <span className="text-gray-300">—</span>
-                      )}
-                    </dd>
-                  </div>
+                  {/* B4.2: "You owe" mobile row DROPPED per Open Q A lock. */}
+                  {/* B4.2: Recovery + Forgiveness rows render only when value
+                      ≥ 1 — keeps mobile card lean. Both rendered when both
+                      apply (mixed-pay cases). */}
+                  {refundComponent >= 1 && (
+                    <div className="flex justify-between gap-3">
+                      <dt className="uppercase tracking-wider text-green-700">Recovery</dt>
+                      <dd className="tabular-nums font-bold text-green-700">+${refundComponent.toLocaleString()}</dd>
+                    </div>
+                  )}
+                  {forgivenessComponent >= 1 && (
+                    <div className="flex justify-between gap-3">
+                      <dt className="uppercase tracking-wider text-green-700">Forgiveness</dt>
+                      <dd className="tabular-nums font-bold text-green-700">${forgivenessComponent.toLocaleString()}</dd>
+                    </div>
+                  )}
                   <div className="flex justify-between items-center gap-3">
                     <dt className="text-gray-500 uppercase tracking-wider">Coverage</dt>
                     <dd className="flex items-center gap-1.5">
@@ -1209,10 +1500,15 @@ export function ClaimDetail({
                     toggleRowCollapsed(item.id);
                   }
                 }}
-                className="hidden md:grid w-full grid-cols-[minmax(0,_1fr)_55px_70px_70px_50px_60px_75px_minmax(95px,_1.4fr)] gap-3 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
+                className={`hidden lg:grid w-full gap-2 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 cursor-pointer ${isMultiLine && isExpanded ? "bg-blue-50/40 hover:bg-blue-50/60" : "hover:bg-gray-50"}`}
+                style={{
+                  gridTemplateColumns: isMultiLine
+                    ? "minmax(0, 1.5fr) 56px 64px 64px 64px 72px 80px 88px 40px"
+                    : "minmax(0, 1.5fr) 56px 64px 64px 64px 72px 80px 88px",
+                }}
               >
-                <div className="min-w-0 text-xs text-gray-900">
-                  <div className="truncate">
+                <div className="min-w-0 text-sm text-gray-900">
+                  <div id={`line-${item.id}-svc`} className="truncate font-semibold">
                     {item.description || item.service_slug?.replace(/_/g, " ") || "Unknown"}
                   </div>
                   {/* Session 86 — category subtitle is the click target for
@@ -1263,60 +1559,80 @@ export function ClaimDetail({
                   )}
                 </div>
                 <div className="min-w-0 text-xs text-gray-500 font-mono truncate">
-                  {item.billing_code || "—"}
+                  <span className="rounded-md bg-gray-100 px-1.5 py-0.5 text-[12px]">
+                    {item.billing_code || "—"}
+                  </span>
                 </div>
-                {/* Session 86 round 5 — Billed column shows the RAW provider-
-                    billed amount. The Plan-says/Bill-shows compare below
-                    explains the insurer write-off and what the user actually
-                    paid OOP. BillCard list view keeps "Billed Adjusted" since
-                    its top-level summary number needs the post-writeoff value. */}
+                {/* S140 fix-pass H2 — Billed column shows ADJUSTED billed
+                    (raw - resolved writeoff). Reconciles with bill-level
+                    "Adjusted total billed" + coinsurance × adjusted math
+                    everywhere else. Tooltip retains the raw-vs-adjusted
+                    explainer when writeoff is non-zero. */}
                 <div
-                  className="text-xs text-gray-900 text-right tabular-nums whitespace-nowrap"
+                  className="text-sm font-semibold text-gray-700 text-right tabular-nums whitespace-nowrap"
                   title={
-                    (item.insurance_adjusted_amount ?? 0) > 0
-                      ? `Provider billed $${billed.toLocaleString()}; insurer wrote off $${(item.insurance_adjusted_amount ?? 0).toLocaleString()}, leaving an adjusted balance of $${billedAdjusted.toLocaleString()}.`
+                    billedDisplay !== billed
+                      ? `Provider billed $${billed.toLocaleString()}; insurer wrote off $${(billed - billedDisplay).toLocaleString()}, leaving an adjusted balance of $${billedDisplay.toLocaleString()}.`
                       : `$${billed.toLocaleString()} billed.`
                   }
                 >
-                  ${billed.toLocaleString()}
+                  ${billedDisplay.toLocaleString()}
                 </div>
-                <div className="text-xs text-gray-500 text-right tabular-nums whitespace-nowrap">
+                <div className="text-sm font-semibold text-gray-700 text-right tabular-nums whitespace-nowrap">
                   ${paid.toLocaleString()}
                 </div>
-                {/* Plan Share — what your plan says you should owe. */}
+                {/* Plan says — what your plan says you should owe. */}
                 <div
-                  className={`text-xs font-semibold text-right tabular-nums whitespace-nowrap ${shouldOwe === 0 ? "text-green-600" : "text-gray-900"}`}
+                  className={`text-sm font-bold text-right tabular-nums whitespace-nowrap ${shouldOwe === 0 ? "text-emerald-700" : "text-gray-900"}`}
                   title={`Per your plan, you should owe $${shouldOwe.toLocaleString()} for this service.`}
                 >
                   ${shouldOwe.toLocaleString()}
                 </div>
-                {/* S135 PR-3 — "You owe" column makes the recovery formula
-                    traceable. Recovery = You owe (patient_owes assigned by
-                    the bill) − Plan share (what plan says is fair). Without
-                    this column users see "Recovery $15.76" and can't trace
-                    it from the billed / paid / plan columns visible. */}
+                {/* B4.2 (Open Q A lock): "You owe" column DROPPED — design
+                    leans on "Plan says" to convey what the user should pay; a
+                    9th column was crowding the desktop grid. */}
+                {/* B4.2: Recovery column — refund component only.
+                    refundComponent = max(0, patient_paid − should_owe) — money
+                    already paid OOP above plan share, recoverable via insurer
+                    refund or provider credit. Source: recovery-math.ts. */}
                 <div
-                  className="text-xs text-right tabular-nums whitespace-nowrap text-gray-900"
-                  title={`The bill assigns you $${owed.toLocaleString()} for this service.`}
-                >
-                  ${owed.toLocaleString()}
-                </div>
-                {/* Recovery — single combined value (refund + insured).
-                    The breakdown into Refund vs Insured surfaces in the
-                    amber-card explanation below; the column itself stays
-                    clean with one bold green number per line. */}
-                <div
-                  className="text-right text-xs font-bold tabular-nums whitespace-nowrap"
+                  className="text-right text-sm tabular-nums whitespace-nowrap"
                   title={
-                    refundComponent + forgivenessComponent >= 1
-                      ? `Total recoverable: $${(refundComponent + forgivenessComponent).toLocaleString()} ($${refundComponent.toLocaleString()} refund + $${forgivenessComponent.toLocaleString()} insurer should have insured).`
-                      : "Nothing recoverable on this line — bill is within plan share."
+                    item.planCoverage == null
+                      ? "We need plan coverage info to compute refund recoverable."
+                      : refundComponent >= 1
+                        ? `Refund recoverable: $${refundComponent.toLocaleString()} — already paid out-of-pocket above your plan share.`
+                        : "No refund recoverable — patient hasn't paid above plan share."
                   }
                 >
-                  {refundComponent + forgivenessComponent >= 1 ? (
-                    <span className="text-green-700">+${(refundComponent + forgivenessComponent).toLocaleString()}</span>
-                  ) : (
+                  {item.planCoverage == null ? (
                     <span className="text-gray-300">—</span>
+                  ) : refundComponent >= 1 ? (
+                    <span className="font-bold text-emerald-700">+${refundComponent.toLocaleString()}</span>
+                  ) : (
+                    <span className="text-gray-400">$0.00</span>
+                  )}
+                </div>
+                {/* B4.2: Forgiveness column — forgivenessComponent.
+                    = max(0, potentialRecovery − refundComponent) — remaining
+                    outstanding above plan share that the provider must write
+                    off. Source: recovery-math.ts. */}
+                <div
+                  className="text-right text-sm tabular-nums whitespace-nowrap"
+                  title={
+                    item.planCoverage == null
+                      ? "We need plan coverage info to compute forgiveness due."
+                      : forgivenessComponent >= 1
+                        ? `Forgiveness due: $${forgivenessComponent.toLocaleString()} — provider must write off the amount above plan-allowed.`
+                        : "No forgiveness due — bill is within plan-allowed."
+                  }
+                >
+                  {item.planCoverage == null ? (
+                    <span className="text-gray-300">—</span>
+                  ) : forgivenessComponent >= 1 ? (
+                    <span className="font-bold text-emerald-700">${forgivenessComponent.toLocaleString()}</span>
+                  ) : (
+                    <span className="text-gray-400">$0.00</span>
                   )}
                 </div>
                 {/* Coverage badge — Session 86: static display by default.
@@ -1326,7 +1642,11 @@ export function ClaimDetail({
                     modal (no dropdown), everything else opens the dropdown
                     picker. UI gated on flywheelEnabled because the backend
                     endpoint requires the same flag (mig 087). */}
-                <div className="flex items-center justify-center gap-1.5">
+                {/* S139 — flex-wrap allows "Your pick" pill to wrap below "Covered"
+                    when both present, instead of overflowing 88px column into
+                    Forgiveness cell. whitespace-nowrap on each pill prevents
+                    in-pill text wrap ("Your\npick"). */}
+                <div className="flex flex-wrap items-center justify-center gap-1.5">
                   {coverageBadge ? (
                     flywheelEnabled && (item.coverageStatus === "unknown" || item.coverageStatus === "not_covered" || item.user_corrected_at != null) ? (
                       <button
@@ -1342,7 +1662,7 @@ export function ClaimDetail({
                               ? "Click to change your pick"
                               : "Click to pick the right category"
                         }
-                        className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className} cursor-pointer ring-1 ring-blue-300 hover:ring-blue-400 hover:bg-blue-50 transition-colors`}
+                        className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full whitespace-nowrap ${coverageBadge.className} cursor-pointer ring-1 ring-blue-300 hover:ring-blue-400 hover:bg-blue-50 transition-colors`}
                       >
                         <svg className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" aria-hidden>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
@@ -1351,7 +1671,7 @@ export function ClaimDetail({
                       </button>
                     ) : (
                       <span
-                        className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className}${acaTooltip ? " cursor-help underline decoration-dotted decoration-1 underline-offset-2" : ""}`}
+                        className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full whitespace-nowrap ${coverageBadge.className}${acaTooltip ? " cursor-help underline decoration-dotted decoration-1 underline-offset-2" : ""}`}
                         title={acaTooltip}
                       >
                         {coverageBadge.label}
@@ -1366,23 +1686,82 @@ export function ClaimDetail({
                         openBadgeModal(item.id, item.coverageStatus);
                       }}
                       title={item.coverageStatus === "not_covered" ? "Click to upload your plan and update coverage" : "Click to change your pick"}
-                      className="rounded-sm bg-blue-100 px-1 py-px text-[9px] font-semibold text-blue-700 cursor-pointer ring-1 ring-blue-200 hover:bg-blue-200 hover:ring-blue-300 transition-colors"
+                      className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700 whitespace-nowrap cursor-pointer ring-1 ring-blue-200 hover:bg-blue-100 hover:ring-blue-300 transition-colors"
                     >
                       Your pick
                     </button>
                   )}
                 </div>
+                {/* S139 — chevron column (multi-line bills only). hasFix gate:
+                    only render button on rows with recoverable money; empty
+                    cell on clean rows so grid aligns. Click toggles existing
+                    collapsedRows state (same mechanism as full-row click;
+                    stopPropagation prevents double-toggle). */}
+                {isMultiLine && (
+                  <div className="flex items-center justify-center">
+                    {(refundComponent + forgivenessComponent) > 0 && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleRowCollapsed(item.id);
+                        }}
+                        aria-label={isExpanded ? "Hide breakdown" : "Show breakdown"}
+                        aria-expanded={isExpanded}
+                        className={`grid h-7 w-7 place-items-center rounded-md transition-colors ${isExpanded ? "bg-blue-600 text-white shadow-sm" : "bg-gray-100 text-gray-500 hover:bg-blue-50 hover:text-blue-700"}`}
+                      >
+                        <svg
+                          className={`h-3.5 w-3.5 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth={2.5}
+                          aria-hidden
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                )}
                 {/* Flags column dropped in Session 85 round 3 — finding count
                     info now surfaces via the Refund/Forgive green numbers and
                     the expanded-row state. */}
               </div>
 
+              {/* S139 — LineDrawer for multi-line bills (replaces existing gray
+                  expansion panels on multi-line rows with design's polished
+                  plan/bill cards + OVERCHARGE pill + recoverable strip).
+                  Uses same toggleRowCollapsed state as single-line — only
+                  the rendered chrome differs. Gated on hasFix matching the
+                  chevron button visibility. */}
+              {isMultiLine && isExpanded && (refundComponent + forgivenessComponent) > 0 && (
+                <LineDrawer
+                  planSaysAmount={shouldOwe}
+                  adjustedBilledAmount={billedDisplay}
+                  patientPaidAmount={patientPaid}
+                  insurancePaidAmount={insurancePaidDisplay}
+                  coverageLabel={item.planCoverage ? buildPlanSays(item.planCoverage) : "Coverage unknown"}
+                  // S140 — suppress per-line recovery strip when patientPaid is
+                  // header-prorated (not cite-grade per-line). Plan + bill cards
+                  // above still render with adjusted per-line billed amounts.
+                  // The bill-level recovery bar below shows the ONE accurate
+                  // aggregate; no double-counting risk.
+                  recovery={item.recovery?.provenance?.isCitablePerLine ? refundComponent : 0}
+                  forgiveness={item.recovery?.provenance?.isCitablePerLine ? forgivenessComponent : 0}
+                  acaOverride={item.acaOverride}
+                  ariaLabelledBy={`line-${item.id}-svc`}
+                />
+              )}
+
               {/* S135 — gap-explanation panel: header + actionable steps only.
                   Plan-says/bill-shows moved to the expansion panel below so a
                   single source-of-truth pair renders per row (was duplicated
                   pre-S135). Expansion panel's gate now includes gap rows so
-                  it always fires alongside this panel. */}
-              {isExpanded && gapRelevant && findings.length === 0 && (
+                  it always fires alongside this panel.
+                  S139 — gated on !isMultiLine; multi-line bills use LineDrawer
+                  above instead. */}
+              {!isMultiLine && isExpanded && gapRelevant && findings.length === 0 && (
                 <div className="px-4 py-4 bg-white border-t border-gray-100 space-y-3">
                   {/* Header */}
                   <div>
@@ -1422,8 +1801,10 @@ export function ClaimDetail({
                   a lonely "Hide details" link, which is confusing.
                   S135 — also fire on gap rows with planCoverage so the single
                   plan-says/bill-shows pair (now consolidated here) renders for
-                  the gap-explanation case too. */}
-              {isExpanded && (
+                  the gap-explanation case too.
+                  S139 — gated on !isMultiLine; multi-line bills use LineDrawer
+                  above instead of this expansion panel. */}
+              {!isMultiLine && isExpanded && (
                 findings.length > 0 ||
                 (item.planCoverage != null && (refundComponent >= 1 || forgivenessComponent >= 1)) ||
                 (showDismissed && dismissedCount > 0) ||
@@ -1580,29 +1961,357 @@ export function ClaimDetail({
         })}
       </div>{/* /table outer (rounded-xl) */}
 
-      {/* Session 86 — bill-level "Dispute all charges" button. Surfaces when
-          there are ≥2 actionable un-dismissed findings on the bill (line-level
-          + claim-level combined). Per the design write-up: aggregates all
-          findings + claimLineItemIds into ONE letter + ONE dispute_outcomes
-          row. Per-line buttons remain for users who want to chase recoveries
-          one at a time. */}
-      <BulkDisputeButton
-        claimId={claimId}
-        claim={claim}
-        primaryLineItems={primaryLineItems}
-        claimLevelFindings={visibleClaimLevelFindings}
-        showDismissed={showDismissed}
-        getAuthToken={getAuthToken}
-        onGenerated={(result) => router.push(disputeUrlForResult(result))}
-        // S132 Item 3: if a non-cancelled dispute already exists for this
-        // claim, the button switches to "View Dispute Letter" + navigates
-        // straight to the most recent letter (no re-draft). Re-draft entry
-        // point stays exclusively on /disputes Re-draft toolbar button so
-        // user can review strengthen-this-letter signals first.
-        existingDisputeId={
-          data.disputes.find((d) => d.status !== "cancelled")?.id ?? null
+      {/* B4.2 — Bill-level state body (FlaggedBody / ReviewBody / CleanBody)
+          per design's bill-detail.jsx. Aggregates plan-vs-bill totals across
+          all line items so the user sees the headline before scrolling into
+          per-line detail above. */}
+      {(billState === "overcharge_drafted" || billState === "overcharge_no_draft") && (
+        <>
+          {/* FlaggedBody — side-by-side diff card per design styles.css .diff family.
+              Grid: 1fr 90px 1fr with vertical separator chrome in the middle. */}
+          <div className="mt-[22px] grid grid-cols-1 overflow-hidden rounded-[18px] border border-gray-200 bg-white md:grid-cols-[1fr_90px_1fr]">
+            {/* Plan side — green gradient */}
+            <div className="flex flex-col gap-3 bg-gradient-to-b from-emerald-50 via-emerald-50/40 to-white px-6 py-[22px]">
+              <h4 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-emerald-700">
+                Your plan says
+              </h4>
+              <span className="inline-flex items-center gap-[5px] self-start rounded-full bg-emerald-50 px-[9px] py-[3px] text-[11px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-300">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+                {isMultiLine
+                  ? `${flaggedLineCount} services — all covered`
+                  : "Covered by your plan"}
+              </span>
+              <div className="mt-0.5 flex items-baseline gap-2 text-[34px] font-bold leading-none tracking-[-0.02em] tabular-nums text-emerald-800">
+                ${fmtMoney(billTotals.shouldOwe)}
+                <span className="text-[15px] font-medium text-gray-500 whitespace-nowrap">
+                  {isMultiLine ? "your total responsibility" : "your responsibility"}
+                </span>
+              </div>
+              <div className="mt-1.5 flex flex-col gap-1.5">
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>Adjusted total billed</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">
+                    ${fmtMoney(billTotals.billedAdjusted)}
+                  </strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>Insurer should pay</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.insurerShouldHavePaid)}</strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>You pay</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.shouldOwe)}</strong>
+                </div>
+                {/* S140 — Refund row moved to RIGHT (Bill) side per Andrew's
+                    locked S139 schema. LEFT (Plan) side now ends after
+                    "You pay" — purely about what the plan says you owe. */}
+              </div>
+              {/* Cite-grade source hint per design .hint family. Generic enough
+                  to be true without per-finding field_provenance lookup at the
+                  bill level — the per-line cite chrome lives inside expansions. */}
+              <div className="mt-1 inline-flex items-center gap-[6px] text-[11px] text-gray-500">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <span>Based on your uploaded plan benefits</span>
+              </div>
+            </div>
+            {/* VS chrome (desktop only) — design .diff-mid with vertical separators */}
+            <div className="relative hidden border-l border-r border-gray-100 bg-white md:flex md:flex-col md:items-center md:justify-center">
+              <div className="absolute left-1/2 top-0 h-[calc(50%-22px)] w-px -translate-x-1/2 bg-gray-200" />
+              <div className="z-10 grid h-11 w-11 place-items-center rounded-full border border-gray-200 bg-white text-[11px] font-bold uppercase tracking-[0.06em] text-gray-500">
+                vs
+              </div>
+              <div className="absolute bottom-0 left-1/2 h-[calc(50%-22px)] w-px -translate-x-1/2 bg-gray-200" />
+            </div>
+            {/* Bill side — red gradient */}
+            <div className="flex flex-col gap-3 border-t border-gray-100 bg-gradient-to-b from-red-50 via-red-50/40 to-white px-6 py-[22px] md:border-l md:border-t-0">
+              <h4 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-red-700">
+                Your bill shows
+              </h4>
+              <span className="inline-flex items-center gap-[5px] self-start rounded-full bg-red-50 px-[9px] py-[3px] text-[11px] font-semibold text-red-700 ring-1 ring-inset ring-red-200">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.9 4h13.8c1.5 0 2.5-1.7 1.7-2.5L13.7 4c-.8-.8-2-.8-2.7 0L4.1 16.5c-.8.8.2 2.5 1.7 2.5z" />
+                </svg>
+                You&apos;re paying ${fmtMoney(billTotals.patientPaid)}
+              </span>
+              {/* S139 big-1 — bill side big number always shows patient OOP
+                  (was billedAdjusted; switched per Andrew direction for
+                  semantic consistency across single + multi-line). Visual
+                  equal on single-line bills where billedAdjusted = patientPaid;
+                  divergent only on bills with outstanding balance. */}
+              <div className="mt-0.5 flex items-baseline gap-2 text-[34px] font-bold leading-none tracking-[-0.02em] tabular-nums text-red-800">
+                ${fmtMoney(billTotals.patientPaid)}
+                <span className="text-[15px] font-medium text-gray-500 whitespace-nowrap">charged to you</span>
+              </div>
+              <div className="mt-1.5 flex flex-col gap-1.5">
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>Adjusted total billed</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">
+                    ${fmtMoney(billTotals.billedAdjusted)}
+                  </strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>Insurer paid</span>
+                  <strong className="font-semibold tabular-nums text-red-700">${fmtMoney(billTotals.insurancePaid)}</strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>You paid</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.patientPaid)} OOP</strong>
+                </div>
+                {/* S140 fix-pass H2 — Refund + Forgive: Refund row first,
+                    Forgive row second. Both always render (≥$1 gate
+                    dropped) so users see both buckets even at $0; clarifies
+                    that we tracked both possibilities. */}
+                <div className="mt-1 flex justify-between gap-3 border-t border-red-200 pt-[6px] text-xs">
+                  <span className="font-semibold text-emerald-700">Refund</span>
+                  <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs">
+                  <span className="font-semibold text-emerald-700">Provider must forgive</span>
+                  <strong className="font-bold tabular-nums text-emerald-700">${fmtMoney(billTotals.forgivenessComponent)}</strong>
+                </div>
+              </div>
+              <div className="mt-1 inline-flex items-center gap-[6px] text-[11px] text-gray-500">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <span>From {providerName} bill · {data.lineItems.length} line item{data.lineItems.length !== 1 ? "s" : ""}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Recovery bar — green band */}
+          {billTotals.potentialRecovery >= 1 && (
+            <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-emerald-300 bg-gradient-to-br from-emerald-50 to-teal-50/50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-3.5">
+                <div className="grid h-[42px] w-[42px] place-items-center rounded-xl bg-emerald-600 text-white">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+                <div>
+                  <div className="text-sm font-semibold text-gray-900">Recoverable from this bill</div>
+                  {(billTotals.refundComponent >= 1 || billTotals.forgivenessComponent >= 1) && (
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-gray-700">
+                      {billTotals.refundComponent >= 1 && (
+                        <span>
+                          <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong> refunded to you
+                        </span>
+                      )}
+                      {billTotals.refundComponent >= 1 && billTotals.forgivenessComponent >= 1 && (
+                        <span className="h-[3px] w-[3px] rounded-full bg-gray-400" aria-hidden />
+                      )}
+                      {billTotals.forgivenessComponent >= 1 && (
+                        <span>
+                          <strong className="font-bold tabular-nums text-emerald-700">${fmtMoney(billTotals.forgivenessComponent)}</strong> forgiven by provider
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="text-[26px] font-bold tracking-[-0.02em] tabular-nums text-emerald-700">
+                +${fmtMoney(billTotals.potentialRecovery)}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {billState === "needs_review" && (() => {
+        // Synthesize a "Specific blockers" list from line-item state so the
+        // user sees what specifically needs their input. Mirrors design's
+        // bill.reviewReasons[] array (which we don't store at bill level).
+        const blockers: string[] = [];
+        const unknownLines = primaryLineItems.filter(
+          (li) => li.coverageStatus === "unknown" && !li.user_corrected_at,
+        );
+        const notInPlanLines = primaryLineItems.filter(
+          (li) => li.coverageStatus === "not_covered",
+        );
+        const gapLines = primaryLineItems.filter((li) => {
+          const liBilled = li.billed_amount || 0;
+          const liInsPaid = Number(li.insurance_paid ?? 0);
+          const liOwed = li.patient_owes || 0;
+          return liBilled > 0 && liInsPaid === 0 && liOwed === 0;
+        });
+        if (unknownLines.length > 0) {
+          blockers.push(
+            `${unknownLines.length} line item${unknownLines.length === 1 ? "" : "s"} need${unknownLines.length === 1 ? "s" : ""} a category — pick the right service in the table above.`,
+          );
         }
-      />
+        if (notInPlanLines.length > 0) {
+          blockers.push(
+            `${notInPlanLines.length} line item${notInPlanLines.length === 1 ? "" : "s"} ${notInPlanLines.length === 1 ? "isn't" : "aren't"} listed in your uploaded plan — upload the latest plan document or confirm exclusion.`,
+          );
+        }
+        if (gapLines.length > 0 && unknownLines.length === 0) {
+          blockers.push(
+            `${gapLines.length} line item${gapLines.length === 1 ? "" : "s"} show${gapLines.length === 1 ? "s" : ""} no insurer payment and no patient balance — the EOB may be incomplete.`,
+          );
+        }
+        if (!hasAnyPlanCoverage) {
+          blockers.push(
+            "We don't have your plan document on file for this bill — upload your SBC or plan summary so Candid can audit coverage.",
+          );
+        }
+        return (
+          <div className="mt-[22px] rounded-[18px] border border-orange-200 bg-gradient-to-b from-orange-50 via-orange-50/40 to-white px-6 py-[22px]">
+            <div className="text-[11px] font-bold uppercase tracking-[0.1em] text-orange-700">
+              Why we couldn&apos;t decide
+            </div>
+            <h3 className="mb-3.5 mt-2 text-lg font-bold text-gray-900">
+              We need more info to tell you if this is an overcharge
+            </h3>
+            <p className="m-0 text-sm leading-[1.55] text-gray-600">
+              Some line items don&apos;t match a clear plan benefit. Resolve them below — pick the right category for each row marked Unknown, or upload your plan if you haven&apos;t yet.
+            </p>
+            {blockers.length > 0 && (
+              <div className="mt-4 rounded-xl border border-orange-200 bg-white p-3.5">
+                <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.08em] text-gray-500">
+                  Specific blockers
+                </div>
+                <ul className="m-0 list-disc space-y-1.5 pl-5">
+                  {blockers.map((b, i) => (
+                    <li key={i} className="text-[13px] leading-[1.55] text-gray-700">
+                      {b}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {billState === "clean" && (
+        <div className="mt-6 flex flex-col gap-4 rounded-2xl border border-emerald-300 bg-gradient-to-br from-emerald-50 to-green-50/40 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3.5">
+            <div className="grid h-[42px] w-[42px] place-items-center rounded-xl bg-emerald-600 text-white">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <div>
+              <div className="text-sm font-semibold text-gray-900">This bill looks correct</div>
+              <div className="mt-1 text-[13px] text-emerald-700">
+                The amount billed matches what your plan says you owe — nothing to dispute.
+              </div>
+            </div>
+          </div>
+          <div className="text-[22px] font-bold tracking-[-0.02em] text-emerald-700">Verified</div>
+        </div>
+      )}
+
+      {/* B4.2 — Bill action footer per design's .bill-action chrome */}
+      {billState === "overcharge_no_draft" ? (
+        <div className="mt-7 flex flex-col gap-4 rounded-[18px] border border-blue-200 bg-gradient-to-br from-blue-50 to-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="max-w-[50ch] text-[13px] leading-[1.55] text-gray-600">
+            <div className="mb-1.5 flex items-center gap-1.5 text-sm font-bold text-blue-900">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+              Recover ${fmtMoney(billTotals.potentialRecovery)} from this bill
+            </div>
+            <p className="m-0">
+              Candid will write the appeal letter for you using your uploaded plan, the EOB, and Medicare benchmark comparisons. You review and mail it — we never send anything on your behalf.
+            </p>
+          </div>
+          <div className="sm:flex-shrink-0">
+            <BulkDisputeButton
+              claimId={claimId}
+              claim={claim}
+              primaryLineItems={primaryLineItems}
+              claimLevelFindings={visibleClaimLevelFindings}
+              showDismissed={showDismissed}
+              getAuthToken={getAuthToken}
+              onGenerated={(result) => router.push(disputeUrlForResult(result))}
+              existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
+            />
+          </div>
+        </div>
+      ) : billState === "overcharge_drafted" ? (
+        <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-gray-200 bg-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="max-w-prose text-[13px] text-gray-500">
+            We drafted an <strong className="font-semibold text-gray-900">appeal letter</strong> for you. Review, edit anything, and send by certified mail.
+          </div>
+          <div className="sm:flex-shrink-0">
+            <BulkDisputeButton
+              claimId={claimId}
+              claim={claim}
+              primaryLineItems={primaryLineItems}
+              claimLevelFindings={visibleClaimLevelFindings}
+              showDismissed={showDismissed}
+              getAuthToken={getAuthToken}
+              onGenerated={(result) => router.push(disputeUrlForResult(result))}
+              existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
+            />
+          </div>
+        </div>
+      ) : billState === "needs_review" ? (
+        <>
+          <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-gray-200 bg-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="max-w-prose text-[13px] text-gray-500">
+              Help us answer the questions above. Once we have your plan details, we&apos;ll know if this bill is an overcharge — and draft the appeal in one click.
+            </div>
+            <div className="sm:flex-shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  const first = primaryLineItems[0];
+                  if (first) openUploadPlanModal(first.id);
+                }}
+                disabled={primaryLineItems.length === 0}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-[9px] text-[13px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M12 16V4m0 0l-4 4m4-4l4 4M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
+                </svg>
+                Upload my plan
+              </button>
+            </div>
+          </div>
+          {/* Bulk dispute still available for needs_review when findings exist —
+              user may want to dispute uncertain charges. */}
+          <BulkDisputeButton
+            claimId={claimId}
+            claim={claim}
+            primaryLineItems={primaryLineItems}
+            claimLevelFindings={visibleClaimLevelFindings}
+            showDismissed={showDismissed}
+            getAuthToken={getAuthToken}
+            onGenerated={(result) => router.push(disputeUrlForResult(result))}
+            existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
+          />
+        </>
+      ) : (
+        // billState is null/clean — back-compat: render BulkDisputeButton standalone.
+        // For clean state it self-suppresses when there's nothing to dispute.
+        <BulkDisputeButton
+          claimId={claimId}
+          claim={claim}
+          primaryLineItems={primaryLineItems}
+          claimLevelFindings={visibleClaimLevelFindings}
+          showDismissed={showDismissed}
+          getAuthToken={getAuthToken}
+          onGenerated={(result) => router.push(disputeUrlForResult(result))}
+          existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
+        />
+      )}
+
+      {/* S139 — BundleSuggestion: peer bills in the same claim_group_id at the
+          bottom of bill-detail. Replaces the legacy "Related documents (N)"
+          sidebar banner with design's tile-list. No bundle CTA per Q2 defer;
+          tiles link to peer bills via existing /claim?claim=ID route. */}
+      {data.relatedClaims.length > 0 && (
+        <BundleSuggestion
+          peers={data.relatedClaims}
+          onSelectBill={(peerId) => router.push(`/claim?claim=${peerId}`)}
+        />
+      )}
 
       {/* Quality-reporting codes — collapsed by default */}
       {qualityLineItems.length > 0 && (
@@ -1883,33 +2592,6 @@ function buildPlanSays(planCoverage: LineItem["planCoverage"]): string {
 
   if (parts.length === 0) return "Covered · $0";
   return `Covered · ${parts.join(" · ")}`;
-}
-
-// S135 — inline override message rendered in the green plan-says box when the
-// plan's terms disagree with the ACA federal mandate. Returns null when no
-// override applies. ACA-compliant plans must cover preventive/vaccine services
-// at $0 patient cost-share in-network regardless of stated plan terms.
-function buildAcaOverrideLine(
-  acaOverride: AcaOverride | null | undefined,
-): string | null {
-  if (!acaOverride) return null;
-  if (acaOverride.planCovered === false) {
-    return "Plan lists as not covered, but federal law (ACA) requires $0 for this preventive service.";
-  }
-  const parts: string[] = [];
-  if (acaOverride.planCopay != null && acaOverride.planCopay > 0) {
-    parts.push(`$${acaOverride.planCopay} copay`);
-  }
-  if (
-    acaOverride.planCoinsurance != null &&
-    acaOverride.planCoinsurance > 0
-  ) {
-    parts.push(
-      `${normalizeCoinsurancePct(acaOverride.planCoinsurance)}% coinsurance`,
-    );
-  }
-  const planTerms = parts.length > 0 ? parts.join(" + ") : "non-$0 cost share";
-  return `Plan says ${planTerms}, but federal law (ACA) requires $0 for this preventive service.`;
 }
 
 // ── Quality reporting codes ───────────────────────────────────────────────
@@ -2735,15 +3417,16 @@ function BulkDisputeButton({
   // the user retains access to their drafted letter.
   if (existingDisputeId) {
     return (
-      <div className="mb-4">
-        <button
-          type="button"
-          onClick={() => router.push(`/disputes?dispute=${existingDisputeId}`)}
-          className="w-full rounded-lg bg-blue-600 py-3 text-sm font-semibold text-white hover:bg-blue-700 transition-colors"
-        >
-          View Dispute Letter
-        </button>
-      </div>
+      <button
+        type="button"
+        onClick={() => router.push(`/disputes?dispute=${existingDisputeId}`)}
+        className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-[9px] text-[13px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)]"
+      >
+        Open dispute letter
+        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M13 5l7 7-7 7" />
+        </svg>
+      </button>
     );
   }
 
@@ -2863,25 +3546,38 @@ function BulkDisputeButton({
   // recovery guarantee (CROA + state UDAP exposure per Director Checkpoint
   // #5 — user-sends-letter model). Recovery info stays visible as DATA
   // (table column + amber card) but not as a promise on the action button.
-  const buttonLabel = totalContested === 1 ? "Dispute charge" : "Dispute these charges";
+  // S138 — adopts design's FlaggedNoDraftAction label "Draft my dispute letter"
+  // (bill-detail.jsx line 536) for all non-drafted states. Singular variant
+  // also reads as "Draft my dispute letter" since the user perceives one bill,
+  // not one finding.
+  const buttonLabel = loading
+    ? "Drafting…"
+    : "Draft my dispute letter";
 
   // S132 iter-2: overlay moved to (app)/layout.tsx via DisputeDraftOverlayProvider
   // so it persists across /claim → /disputes navigation as a single React mount.
   // S132 iter-8: overlay loader is now cube (audit loader retired).
+  // S138: chrome adopts design .btn.btn-primary.btn-md — inline button + arrow,
+  // not full-width. Parent action footer dictates layout via flex.
 
   return (
-    <div className="mb-4">
+    <>
       <button
         type="button"
         onClick={handleClick}
         disabled={loading}
-        className="w-full rounded-lg bg-blue-600 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
+        className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-[9px] text-[13px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
       >
         {buttonLabel}
+        {!loading && (
+          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M13 5l7 7-7 7" />
+          </svg>
+        )}
       </button>
       {error && (
         <p className="mt-2 text-xs text-red-700">{error}</p>
       )}
-    </div>
+    </>
   );
 }

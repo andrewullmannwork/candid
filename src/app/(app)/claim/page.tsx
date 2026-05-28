@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BillCard } from "@/components/claims/BillCard";
+import { VisitGroupCard } from "@/components/claims/VisitGroupCard";
 import { ClaimDetail } from "@/components/claims/ClaimDetail";
 import { DiscrepancyList } from "@/components/claims/DiscrepancyList";
 import { FollowupBanner } from "@/components/disputes/FollowupBanner";
@@ -53,6 +54,10 @@ interface ClaimSummary {
   findingCount: number;
   providerName: string;
   created_at: string;
+  // S139 — visit-group grouping key (claim-matching.ts auto-assigns at parse
+  // time when 2+ bills share date_of_service + provider). Bills tab renders
+  // VisitGroupCard for ≥2-member groups; singletons render BillCard.
+  claim_group_id?: string | null;
   potentialSavings?: number;
   reviewNeededCount?: number;
   reviewLineItems?: Array<{
@@ -338,6 +343,46 @@ export default function CandidClaimPage() {
     return map;
   }, [claims, discrepancies, disputeData]);
 
+  // S139 — group claims by claim_group_id for VisitGroupCard rendering on
+  // Bills tab. Singletons (group_id null OR group of 1) render as BillCard;
+  // ≥2-member groups render as VisitGroupCard. Preserves original sort order
+  // via first-seen anchor per group. Disputes tab unchanged — drafted
+  // disputes render as individual BillCards intentionally (per-letter focus).
+  const renderUnits = useMemo(() => {
+    type Unit =
+      | { kind: "singleton"; claim: ClaimSummary }
+      | { kind: "group"; groupId: string; bills: ClaimSummary[] };
+    const groupBuckets = new Map<string, ClaimSummary[]>();
+    const order: Array<{ key: string; isGroup: boolean }> = [];
+    for (const c of claims) {
+      if (c.claim_group_id) {
+        if (!groupBuckets.has(c.claim_group_id)) {
+          groupBuckets.set(c.claim_group_id, []);
+          order.push({ key: c.claim_group_id, isGroup: true });
+        }
+        groupBuckets.get(c.claim_group_id)!.push(c);
+      } else {
+        order.push({ key: c.id, isGroup: false });
+      }
+    }
+    const units: Unit[] = [];
+    for (const entry of order) {
+      if (entry.isGroup) {
+        const bills = groupBuckets.get(entry.key)!;
+        if (bills.length >= 2) {
+          units.push({ kind: "group", groupId: entry.key, bills });
+        } else {
+          // Group-of-1 (peer was deleted or never created) — render as singleton.
+          units.push({ kind: "singleton", claim: bills[0] });
+        }
+      } else {
+        const claim = claims.find((c) => c.id === entry.key);
+        if (claim) units.push({ kind: "singleton", claim });
+      }
+    }
+    return units;
+  }, [claims]);
+
   async function handleDiscrepancyStatusChange(discrepancyId: string, newStatus: string) {
     try {
       const token = await user!.firebaseUser.getIdToken();
@@ -388,15 +433,20 @@ export default function CandidClaimPage() {
   }
 
   // If viewing claim detail, render that view only (NON-NEGOTIABLE preserve per D-§1.D.1-E).
+  // S138: detail container bumped to max-w-4xl (896px) — design uses 1120px content
+  // area; the 8-col line-items grid needs ~880px minimum (488 fixed + 56 gaps + 40
+  // padding + 296 service flex). Previously at max-w-3xl (768px) the service col
+  // collapsed to 0px because fixed cols exceeded available width.
   if (selectedClaimId) {
     return (
-      <div className="mx-auto max-w-3xl">
+      <div className="mx-auto max-w-4xl">
         <ClaimDetail
           claimId={selectedClaimId}
           onBack={closeClaimDetail}
           focusLineItemId={focusLineItemId}
           backLabel={tabBeforeDetail === "discrepancies" ? "Back to discrepancies" : "Back to bills"}
           onClaimUpdated={refetchClaims}
+          billState={billStates.get(selectedClaimId) ?? null}
         />
       </div>
     );
@@ -448,7 +498,7 @@ export default function CandidClaimPage() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl">
+    <div className="mx-auto max-w-4xl">
       {/* PageHeader primitive — D-§1.D.1-B */}
       <PageHeader
         eyebrow="Candid Claim"
@@ -472,14 +522,19 @@ export default function CandidClaimPage() {
           {/* RecoveryHero — D-§1.D.1-A */}
           <RecoveryHero stats={heroStats} variant="calm" onPrimary={handleHeroPrimary} />
 
-          {/* Tabbar with top-right Upload button per design canvas line 303-318 */}
-          <div className="mb-4 flex items-center justify-between gap-2">
-            <div className="flex w-fit gap-1 rounded-xl bg-gray-100 p-1">
+          {/* Tabbar with top-right Upload button per design canvas line 303-318
+              + styles.css .tabs / .tab / .tab-count family.
+              S138: white bg + gray border + larger padding to match design. */}
+          <div className="mb-5 mt-8 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex w-fit gap-1 rounded-2xl border border-gray-200 bg-white p-1">
               <TabButton active={tab === "bills"} onClick={() => setTab("bills")}>
                 Bills
                 <TabCount count={claims.length} active={tab === "bills"} />
               </TabButton>
-              <TabButton active={tab === "discrepancies"} onClick={() => setTab("discrepancies")}>
+              <TabButton
+                active={tab === "discrepancies"}
+                onClick={() => setTab("discrepancies")}
+              >
                 Discrepancies
                 <TabCount count={discrepancySummary.total} active={tab === "discrepancies"} />
               </TabButton>
@@ -491,10 +546,21 @@ export default function CandidClaimPage() {
 
             <Link
               href="/upload"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 transition-colors hover:border-blue-300 hover:text-blue-700"
+              className="inline-flex items-center gap-1.5 rounded-[10px] border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 transition-colors hover:border-blue-300 hover:bg-gray-50 hover:text-blue-700"
             >
-              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              <svg
+                className="h-3.5 w-3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 16V4m0 0l-4 4m4-4l4 4M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"
+                />
               </svg>
               Upload bill
             </Link>
@@ -503,14 +569,26 @@ export default function CandidClaimPage() {
           {/* Bills tab */}
           {tab === "bills" && (
             <div className="space-y-3">
-              {claims.map((claim) => (
-                <BillCard
-                  key={claim.id}
-                  claim={claim}
-                  state={billStates.get(claim.id) ?? "clean"}
-                  onSelect={(id) => openClaimDetail(id, "bills")}
-                />
-              ))}
+              {/* S139 — grouped rendering via claim_group_id. Singletons →
+                  BillCard (unchanged S138 chrome); ≥2-member groups →
+                  VisitGroupCard with MiniBillRow per member. */}
+              {renderUnits.map((unit) =>
+                unit.kind === "singleton" ? (
+                  <BillCard
+                    key={unit.claim.id}
+                    claim={unit.claim}
+                    state={billStates.get(unit.claim.id) ?? "clean"}
+                    onSelect={(id) => openClaimDetail(id, "bills")}
+                  />
+                ) : (
+                  <VisitGroupCard
+                    key={unit.groupId}
+                    bills={unit.bills}
+                    billStates={billStates}
+                    onSelectBill={(id) => openClaimDetail(id, "bills")}
+                  />
+                ),
+              )}
 
               {/* "Upload another bill" full-width dashed add-tile — D-§1.D.1-H */}
               <Link
@@ -684,6 +762,11 @@ export default function CandidClaimPage() {
 
 // ── Sub-components ───────────────────────────────────────────────────────────
 
+// Design .tab + .tab-count (styles.css lines 219-231):
+//   .tab { padding: 8px 14px; border-radius: 10px; font-size: 13px; font-weight: 500; color: var(--fg-4); }
+//   .tab.is-active { background: var(--bg-3); color: var(--fg-2); font-weight: 600; }
+//   .tab-count { background: var(--bg-3); color: var(--fg-3); }
+//   .tab.is-active .tab-count { background: #fff; color: var(--candid-blue-700); }
 function TabButton({
   active,
   onClick,
@@ -697,8 +780,10 @@ function TabButton({
     <button
       onClick={onClick}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-xs font-semibold transition-colors",
-        active ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700",
+        "inline-flex items-center gap-2 rounded-[10px] px-3.5 py-2 text-[13px] transition-colors",
+        active
+          ? "bg-gray-100 font-semibold text-gray-900"
+          : "font-medium text-gray-500 hover:text-gray-900",
       )}
     >
       {children}
@@ -711,8 +796,8 @@ function TabCount({ count, active }: { count: number; active: boolean }) {
   return (
     <span
       className={cn(
-        "inline-flex min-w-[18px] items-center justify-center rounded-full px-1.5 text-[10px] font-bold tabular-nums",
-        active ? "bg-blue-50 text-blue-700" : "bg-gray-200 text-gray-600",
+        "inline-flex min-w-[18px] items-center justify-center rounded-full px-1.5 py-[1px] text-[10px] font-bold tabular-nums",
+        active ? "bg-white text-blue-700" : "bg-gray-100 text-gray-600",
       )}
     >
       {count}
@@ -730,6 +815,8 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 
 /**
  * Drafted dispute card — design chrome per claim-summary.jsx lines 342-410.
+ * S138 (design fidelity sweep): adopts design's blue-tinted .billcard variant
+ * for active drafts (3 items would strengthen this letter copy + Open draft chev).
  * Visual chrome: icon + "Appeal to {insurer} · ${amount}" title + Ref ID monospace
  * + provider + filed/resolved date + status pill + footer with outcome capture.
  * NON-NEGOTIABLE: preserves Session 35 T2.8 lifecycle vocab + outcome capture flows.
@@ -757,29 +844,56 @@ function DraftedDisputeCard({
   const refId = dispute.id.slice(0, 8).toUpperCase();
   const filedDateLabel = formatShortDate(dispute.filedDate);
 
+  // S138 — active drafts get the blue-tinted .billcard variant per design;
+  // resolved disputes stay neutral white.
+  const cardChromeCls = isActive
+    ? "border-blue-100 bg-gradient-to-br from-blue-50/40 to-white hover:border-blue-200 hover:shadow-blue-100/40"
+    : "border-gray-200 bg-white hover:border-gray-300";
+
   return (
-    <div className="overflow-hidden rounded-2xl border border-gray-100 bg-white">
-      {/* Header — design chrome */}
-      <div className="flex items-start justify-between gap-3 border-b border-gray-50 bg-gray-50/50 px-5 py-3.5">
+    <div className={cn("overflow-hidden rounded-2xl border transition-all", cardChromeCls)}>
+      {/* Header — design chrome with .billcard.flagged blue-tinted icon container */}
+      <div
+        className={cn(
+          "flex items-start justify-between gap-3 border-b px-5 py-4",
+          isActive ? "border-blue-100/60" : "border-gray-100",
+        )}
+      >
         <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-700 ring-1 ring-blue-100">
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          <div
+            className={cn(
+              "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl",
+              isActive ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600",
+            )}
+          >
+            <svg
+              className="h-4 w-4"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+              />
             </svg>
           </div>
           <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-gray-900">
+            <p className="truncate text-[15px] font-semibold leading-snug text-gray-900">
               {typeLabel} · ${dispute.amountDisputed.toLocaleString()}
             </p>
-            <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-gray-500">
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-gray-500">
               <span className="font-mono text-[11px]">Ref {refId}</span>
               {provider && (
                 <>
-                  <span className="text-gray-300">·</span>
+                  <span className="h-[3px] w-[3px] rounded-full bg-gray-400" aria-hidden="true" />
                   <span className="truncate">{provider}</span>
                 </>
               )}
-              <span className="text-gray-300">·</span>
+              <span className="h-[3px] w-[3px] rounded-full bg-gray-400" aria-hidden="true" />
               <span>
                 {dispute.resolutionDate
                   ? `Resolved ${formatShortDate(dispute.resolutionDate)}`
@@ -790,7 +904,7 @@ function DraftedDisputeCard({
         </div>
         <span
           className={cn(
-            "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1",
+            "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ring-inset",
             statusClass,
           )}
         >
@@ -800,7 +914,12 @@ function DraftedDisputeCard({
       </div>
 
       {/* Footer */}
-      <div className="flex items-center justify-between gap-3 px-5 py-3">
+      <div
+        className={cn(
+          "flex items-center justify-between gap-3 px-5 py-3",
+          isActive && "bg-blue-50/30",
+        )}
+      >
         <span className="text-xs text-gray-500">
           {dispute.amountRecovered > 0
             ? `$${dispute.amountRecovered.toLocaleString()} recovered`
@@ -812,7 +931,7 @@ function DraftedDisputeCard({
           <button
             type="button"
             onClick={onOpen}
-            className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 transition-colors hover:text-blue-700"
+            className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 transition-all hover:gap-1.5 hover:text-blue-700"
           >
             {isActive ? "Open draft" : "Open"}
             <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">

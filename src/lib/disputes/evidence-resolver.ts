@@ -24,6 +24,10 @@ import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import { findPeerCodesForSlug } from "./peer-code-engine";
 import { resolveCanonicalSlugs } from "@/lib/parser/canonical-resolution";
 import { normalizeCoinsurancePct, normalizeCoinsuranceDecimal } from "@/lib/billing/coinsurance";
+import {
+  resolveEffectiveClaimTotals,
+  type EffectiveClaimTotals,
+} from "@/lib/claims/effective-totals";
 
 const K_ANON_PRICING = 5;
 
@@ -210,6 +214,12 @@ export interface ClaimEvidence {
   totalBilled: number;
   planYear: number | null;
   lineItemEvidence: LineItemEvidence[];
+  /**
+   * S140 — cite-grade effective claim totals + per-field provenance. Used by
+   * dispute templates for aggregate citations (replaces sum-of-nulls bug) and
+   * citation framing prefix ("EOB summary records…" when header-sourced).
+   */
+  effectiveTotals: EffectiveClaimTotals;
 }
 
 export interface PlanEvidenceDetail {
@@ -358,12 +368,19 @@ export async function resolveEvidence(
   const [{ data: claims }, { data: lineItems }] = await Promise.all([
     supabase
       .from("claims")
-      .select("id, date_of_service, total_billed, plan_year, metadata, insurance_plan_id")
+      // S140 fix-pass H4 — header total fields needed by resolveEffectiveClaimTotals
+      // helper. Without them, helper sees null headers, defaults all provenance
+      // to 'per_line_sum' (broken telemetry signal + wrong Case D citation
+      // framing prefix).
+      .select("id, date_of_service, total_billed, total_insurance_paid, total_insurance_adjusted, total_patient_paid, total_patient_responsibility, amount_still_outstanding, plan_year, metadata, insurance_plan_id")
       .in("id", claimIds)
       .eq("user_id", userId),
     supabase
       .from("claim_line_items")
-      .select("id, claim_id, line_number, billing_code, billing_code_type, service_slug, description, billed_amount, insurance_paid, patient_owes, plan_year, metadata")
+      // S140 fix-pass H4 — per-line numeric fields needed by helper to compute
+      // accurate per-line sums against claim header. patient_paid_amount +
+      // insurance_adjusted_amount were missing, causing sums = 0 always.
+      .select("id, claim_id, line_number, billing_code, billing_code_type, service_slug, description, billed_amount, insurance_paid, insurance_adjusted_amount, patient_owes, patient_paid_amount, plan_year, metadata")
       .in("claim_id", claimIds),
   ]);
 
@@ -484,8 +501,19 @@ export async function resolveEvidence(
   });
 
   // Build per-claim evidence.
+  // S140 — pre-group filteredLineItems by claim_id so we can compute
+  // effectiveTotals per claim in the same loop (avoids a second scan).
+  // Helper accepts raw DB row shape via structural typing.
+  const lineItemsByClaimId = new Map<string, typeof filteredLineItems>();
+  for (const li of filteredLineItems) {
+    const arr = lineItemsByClaimId.get(li.claim_id) ?? [];
+    arr.push(li);
+    lineItemsByClaimId.set(li.claim_id, arr);
+  }
+
   const byClaim = new Map<string, ClaimEvidence>();
   for (const c of claimRows) {
+    const claimLineItems = lineItemsByClaimId.get(c.id) ?? [];
     byClaim.set(c.id, {
       claimId: c.id,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -496,6 +524,10 @@ export async function resolveEvidence(
       totalBilled: Number(c.total_billed ?? 0),
       planYear: c.plan_year ?? null,
       lineItemEvidence: [],
+      effectiveTotals: resolveEffectiveClaimTotals({
+        claim: c,
+        lineItems: claimLineItems,
+      }),
     });
   }
 

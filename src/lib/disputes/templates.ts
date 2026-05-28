@@ -316,18 +316,39 @@ function buildClosingArgument(
 
   // Case D — no plan OR fallback-only without confirmation (Chunk A default).
   // Aggregate EOB math across all claims for the inconsistency framing.
-  const allLineItems = evidence.claims.flatMap((c) => c.lineItemEvidence);
-  const totalBilled = allLineItems.reduce((s, li) => s + (li.billedAmount ?? 0), 0);
-  const totalInsurancePaid = allLineItems.reduce((s, li) => s + (li.insurancePaid ?? 0), 0);
-  const totalPatientResp = allLineItems.reduce((s, li) => s + (li.patientOwes ?? 0), 0);
+  // S140 — replaced sum-of-nulls reduce with effectiveTotals per claim (cite-grade
+  // per-line sum when available; claim-header fallback when per-line sparse).
+  // S140 fix-pass H3 — totalBilledAdjusted (= header total_billed minus
+  // resolved insurance_adjusted) is the cite-grade dispute anchor; raw
+  // gross billed isn't load-bearing for refund/forgive disputes. Citation
+  // framing prefix flips to "summary records" when ANY claim's aggregates
+  // came from header.
+  let totalBilledAdjusted = 0;
+  let totalInsurancePaid = 0;
+  let totalPatientResp = 0;
+  let anyHeaderSourced = false;
+  for (const c of evidence.claims) {
+    totalBilledAdjusted += Math.max(0, c.totalBilled - c.effectiveTotals.insuranceAdjusted);
+    totalInsurancePaid += c.effectiveTotals.insurancePaid;
+    totalPatientResp += c.effectiveTotals.patientResponsibility;
+    if (
+      c.effectiveTotals.provenance.insurancePaidSource === "claim_header" ||
+      c.effectiveTotals.provenance.patientResponsibilitySource === "claim_header"
+    ) {
+      anyHeaderSourced = true;
+    }
+  }
+  const citationPrefix = anyHeaderSourced
+    ? "The Explanation of Benefits summary records"
+    : "The Explanation of Benefits records";
 
   const parts: string[] = [
     "Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based.",
     "Per 29 USC §1024(b)(4), please provide the applicable Summary Plan Description and plan document within the 30-day statutory period.",
   ];
-  if (totalBilled > 0) {
+  if (totalBilledAdjusted > 0) {
     parts.push(
-      `The Explanation of Benefits records ${formatCurrency(totalInsurancePaid)} insurance paid on a ${formatCurrency(totalBilled)} billed charge, leaving ${formatCurrency(totalPatientResp)} as my responsibility. This treatment warrants a specific provision-level explanation.`,
+      `${citationPrefix} ${formatCurrency(totalInsurancePaid)} insurance paid on a ${formatCurrency(totalBilledAdjusted)} adjusted billed amount, leaving ${formatCurrency(totalPatientResp)} as my responsibility. This treatment warrants a specific provision-level explanation.`,
     );
   }
   return parts.join(" ");
@@ -419,10 +440,19 @@ function renderLineItemEvidence(
   const codeLabel = li.billingCode
     ? `${li.billingCode.type} ${li.billingCode.value}`
     : null;
+  // S140 fix-pass H3 — per-line "billed $X" cited only in Case 2 (per-line
+  // breakdown available + cite-grade). Per-line gate: insurance_paid AND
+  // patient_owes both non-null on this line. Case 1 (sparse per-line)
+  // skips the dollar entirely — the aggregate "$X adjusted billed amount"
+  // sentence carries the dollar argument; per-line section here just
+  // identifies the services and their plan-rule coverage.
+  const perLineCitable = li.insurancePaid != null && li.patientOwes != null;
   const headline = [
     `${index}. ${li.serviceName}`,
     codeLabel ? `(${codeLabel})` : null,
-    li.billedAmount > 0 ? `— billed ${formatCurrency(li.billedAmount)}` : null,
+    li.billedAmount > 0 && perLineCitable
+      ? `— billed ${formatCurrency(li.billedAmount)}`
+      : null,
   ].filter(Boolean).join(" ");
 
   const bullets: string[] = [];
@@ -502,10 +532,17 @@ function renderLineItemEvidence(
   }
 
   if (li.insurancePaid != null || li.patientOwes != null) {
+    // S140 — skip null fields instead of citing as $0 (cite-grade violation).
+    // When parser populates only one of (insurance_paid, patient_owes), cite
+    // only what we actually have. billedAmount always present.
     const eobParts: string[] = [];
     eobParts.push(`${formatCurrency(li.billedAmount)} billed`);
-    eobParts.push(`${formatCurrency(li.insurancePaid ?? 0)} insurance paid`);
-    eobParts.push(`${formatCurrency(li.patientOwes ?? 0)} patient responsibility`);
+    if (li.insurancePaid != null) {
+      eobParts.push(`${formatCurrency(li.insurancePaid)} insurance paid`);
+    }
+    if (li.patientOwes != null) {
+      eobParts.push(`${formatCurrency(li.patientOwes)} patient responsibility`);
+    }
     bullets.push(`   - EOB shows: ${eobParts.join(" · ")}.`);
   }
 

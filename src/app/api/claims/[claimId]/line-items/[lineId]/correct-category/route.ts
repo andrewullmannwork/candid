@@ -8,8 +8,11 @@
  * Body: { slug: string }
  * Auth: Firebase bearer token. Verifies user owns the claim.
  *
- * Spam throttle: 1 correction per line item per minute (Q3 LOCK partial).
- * Per-claim per-day throttle lives in D7 re-audit pipeline.
+ * Spam throttle (B4.2 Pattern Y per plans/b4.2_bill_detail_redesign.md §8):
+ * grace window allows quick re-correction (user typo-fixing their first pick
+ * within 30s of their previous one), then the full 60s throttle kicks in for
+ * the rest of the minute. Past 60s, allowed again. Per-claim per-day throttle
+ * lives in D7 re-audit pipeline.
  *
  * Returns:
  *   {
@@ -50,6 +53,10 @@ async function getAuthUser(req: NextRequest) {
 }
 
 const THROTTLE_SECONDS = 60;
+// B4.2 Pattern Y (Open Q E lock): seconds inside which a re-correction is
+// allowed without throttling. Lets the user typo-fix their first pick. Beyond
+// this, the full THROTTLE_SECONDS gate applies until 60s elapse.
+const GRACE_RECENT_SECONDS = 30;
 
 export async function POST(
   req: NextRequest,
@@ -135,11 +142,16 @@ export async function POST(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  // Throttle: 1 correction per line item per minute
+  // B4.2 Pattern Y throttle: grace window (≤30s since prior correction) allows
+  // quick re-correction freely; once past grace but still inside the 60s
+  // throttle window, returns 429. Past the throttle window, allowed.
   if (lineItem.user_corrected_at) {
     const lastCorrected = new Date(lineItem.user_corrected_at as string).getTime();
     const secondsSince = (Date.now() - lastCorrected) / 1000;
-    if (secondsSince < THROTTLE_SECONDS) {
+    if (
+      secondsSince >= GRACE_RECENT_SECONDS &&
+      secondsSince < THROTTLE_SECONDS
+    ) {
       return NextResponse.json(
         {
           error: "Throttled",
