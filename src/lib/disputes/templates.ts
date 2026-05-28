@@ -318,15 +318,17 @@ function buildClosingArgument(
   // Aggregate EOB math across all claims for the inconsistency framing.
   // S140 — replaced sum-of-nulls reduce with effectiveTotals per claim (cite-grade
   // per-line sum when available; claim-header fallback when per-line sparse).
-  // Citation framing prefix flips to "summary records" when ANY claim's
-  // aggregates came from header — signals to insurer that we're citing
-  // EOB summary rows rather than per-line line items.
-  let totalBilled = 0;
+  // S140 fix-pass H3 — totalBilledAdjusted (= header total_billed minus
+  // resolved insurance_adjusted) is the cite-grade dispute anchor; raw
+  // gross billed isn't load-bearing for refund/forgive disputes. Citation
+  // framing prefix flips to "summary records" when ANY claim's aggregates
+  // came from header.
+  let totalBilledAdjusted = 0;
   let totalInsurancePaid = 0;
   let totalPatientResp = 0;
   let anyHeaderSourced = false;
   for (const c of evidence.claims) {
-    totalBilled += c.totalBilled;
+    totalBilledAdjusted += Math.max(0, c.totalBilled - c.effectiveTotals.insuranceAdjusted);
     totalInsurancePaid += c.effectiveTotals.insurancePaid;
     totalPatientResp += c.effectiveTotals.patientResponsibility;
     if (
@@ -344,9 +346,9 @@ function buildClosingArgument(
     "Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based.",
     "Per 29 USC §1024(b)(4), please provide the applicable Summary Plan Description and plan document within the 30-day statutory period.",
   ];
-  if (totalBilled > 0) {
+  if (totalBilledAdjusted > 0) {
     parts.push(
-      `${citationPrefix} ${formatCurrency(totalInsurancePaid)} insurance paid on a ${formatCurrency(totalBilled)} billed charge, leaving ${formatCurrency(totalPatientResp)} as my responsibility. This treatment warrants a specific provision-level explanation.`,
+      `${citationPrefix} ${formatCurrency(totalInsurancePaid)} insurance paid on a ${formatCurrency(totalBilledAdjusted)} adjusted billed amount, leaving ${formatCurrency(totalPatientResp)} as my responsibility. This treatment warrants a specific provision-level explanation.`,
     );
   }
   return parts.join(" ");
@@ -438,10 +440,19 @@ function renderLineItemEvidence(
   const codeLabel = li.billingCode
     ? `${li.billingCode.type} ${li.billingCode.value}`
     : null;
+  // S140 fix-pass H3 — per-line "billed $X" cited only in Case 2 (per-line
+  // breakdown available + cite-grade). Per-line gate: insurance_paid AND
+  // patient_owes both non-null on this line. Case 1 (sparse per-line)
+  // skips the dollar entirely — the aggregate "$X adjusted billed amount"
+  // sentence carries the dollar argument; per-line section here just
+  // identifies the services and their plan-rule coverage.
+  const perLineCitable = li.insurancePaid != null && li.patientOwes != null;
   const headline = [
     `${index}. ${li.serviceName}`,
     codeLabel ? `(${codeLabel})` : null,
-    li.billedAmount > 0 ? `— billed ${formatCurrency(li.billedAmount)}` : null,
+    li.billedAmount > 0 && perLineCitable
+      ? `— billed ${formatCurrency(li.billedAmount)}`
+      : null,
   ].filter(Boolean).join(" ");
 
   const bullets: string[] = [];
