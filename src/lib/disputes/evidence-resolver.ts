@@ -368,12 +368,19 @@ export async function resolveEvidence(
   const [{ data: claims }, { data: lineItems }] = await Promise.all([
     supabase
       .from("claims")
-      .select("id, date_of_service, total_billed, plan_year, metadata, insurance_plan_id")
+      // S140 fix-pass H4 — header total fields needed by resolveEffectiveClaimTotals
+      // helper. Without them, helper sees null headers, defaults all provenance
+      // to 'per_line_sum' (broken telemetry signal + wrong Case D citation
+      // framing prefix).
+      .select("id, date_of_service, total_billed, total_insurance_paid, total_insurance_adjusted, total_patient_paid, total_patient_responsibility, amount_still_outstanding, plan_year, metadata, insurance_plan_id")
       .in("id", claimIds)
       .eq("user_id", userId),
     supabase
       .from("claim_line_items")
-      .select("id, claim_id, line_number, billing_code, billing_code_type, service_slug, description, billed_amount, insurance_paid, patient_owes, plan_year, metadata")
+      // S140 fix-pass H4 — per-line numeric fields needed by helper to compute
+      // accurate per-line sums against claim header. patient_paid_amount +
+      // insurance_adjusted_amount were missing, causing sums = 0 always.
+      .select("id, claim_id, line_number, billing_code, billing_code_type, service_slug, description, billed_amount, insurance_paid, insurance_adjusted_amount, patient_owes, patient_paid_amount, plan_year, metadata")
       .in("claim_id", claimIds),
   ]);
 
