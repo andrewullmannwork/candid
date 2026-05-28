@@ -1573,7 +1573,11 @@ export function ClaimDetail({
                     modal (no dropdown), everything else opens the dropdown
                     picker. UI gated on flywheelEnabled because the backend
                     endpoint requires the same flag (mig 087). */}
-                <div className="flex items-center justify-center gap-1.5">
+                {/* S139 — flex-wrap allows "Your pick" pill to wrap below "Covered"
+                    when both present, instead of overflowing 88px column into
+                    Forgiveness cell. whitespace-nowrap on each pill prevents
+                    in-pill text wrap ("Your\npick"). */}
+                <div className="flex flex-wrap items-center justify-center gap-1.5">
                   {coverageBadge ? (
                     flywheelEnabled && (item.coverageStatus === "unknown" || item.coverageStatus === "not_covered" || item.user_corrected_at != null) ? (
                       <button
@@ -1589,7 +1593,7 @@ export function ClaimDetail({
                               ? "Click to change your pick"
                               : "Click to pick the right category"
                         }
-                        className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full ${coverageBadge.className} cursor-pointer ring-1 ring-blue-300 hover:ring-blue-400 hover:bg-blue-50 transition-colors`}
+                        className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full whitespace-nowrap ${coverageBadge.className} cursor-pointer ring-1 ring-blue-300 hover:ring-blue-400 hover:bg-blue-50 transition-colors`}
                       >
                         <svg className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" aria-hidden>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
@@ -1598,7 +1602,7 @@ export function ClaimDetail({
                       </button>
                     ) : (
                       <span
-                        className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full ${coverageBadge.className}${acaTooltip ? " cursor-help underline decoration-dotted decoration-1 underline-offset-2" : ""}`}
+                        className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full whitespace-nowrap ${coverageBadge.className}${acaTooltip ? " cursor-help underline decoration-dotted decoration-1 underline-offset-2" : ""}`}
                         title={acaTooltip}
                       >
                         {coverageBadge.label}
@@ -1613,7 +1617,7 @@ export function ClaimDetail({
                         openBadgeModal(item.id, item.coverageStatus);
                       }}
                       title={item.coverageStatus === "not_covered" ? "Click to upload your plan and update coverage" : "Click to change your pick"}
-                      className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700 cursor-pointer ring-1 ring-blue-200 hover:bg-blue-100 hover:ring-blue-300 transition-colors"
+                      className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700 whitespace-nowrap cursor-pointer ring-1 ring-blue-200 hover:bg-blue-100 hover:ring-blue-300 transition-colors"
                     >
                       Your pick
                     </button>
