@@ -398,7 +398,7 @@ export async function GET(req: NextRequest) {
   // issues counts match what the paginated /claim view actually shows.
   const { data: allClaimsRaw } = await supabase
     .from("claims")
-    .select("id, status, total_billed, total_patient_responsibility, source_document_id, date_of_service, metadata, created_at")
+    .select("id, status, total_billed, total_patient_responsibility, source_document_id, date_of_service, metadata, created_at, claim_group_id, insurance_plan_id, amount_still_outstanding")
     .eq("user_id", user.id)
     .is("deleted_at", null)
     .order("created_at", { ascending: false });

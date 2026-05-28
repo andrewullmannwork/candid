@@ -11,6 +11,7 @@ import { CategoryCorrectionModal } from "@/components/claims/CategoryCorrectionM
 import { UploadPlanDocModal } from "@/components/claims/UploadPlanDocModal";
 import { legacyCategoryReviewHint } from "@/lib/billing/code-categories";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
+import { buildAcaOverrideLine, type AcaOverride } from "@/lib/claims/aca-override-line";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useDisputeDraftOverlay } from "@/lib/loading/dispute-draft-overlay";
 
@@ -30,13 +31,6 @@ interface CodeIdentityState {
 // cost-share mandate (either assigns a non-$0 cost-share OR explicitly
 // excludes the service). Drives the inline "Plan says X, federal law $0"
 // message in the green plan-says box.
-interface AcaOverride {
-  planCopay: number | null;
-  planCoinsurance: number | null;
-  planCovered: boolean | null;
-  basis: string | null;
-}
-
 interface LineItem {
   id: string;
   line_number: number;
@@ -2406,33 +2400,6 @@ function buildPlanSays(planCoverage: LineItem["planCoverage"]): string {
 
   if (parts.length === 0) return "Covered · $0";
   return `Covered · ${parts.join(" · ")}`;
-}
-
-// S135 — inline override message rendered in the green plan-says box when the
-// plan's terms disagree with the ACA federal mandate. Returns null when no
-// override applies. ACA-compliant plans must cover preventive/vaccine services
-// at $0 patient cost-share in-network regardless of stated plan terms.
-function buildAcaOverrideLine(
-  acaOverride: AcaOverride | null | undefined,
-): string | null {
-  if (!acaOverride) return null;
-  if (acaOverride.planCovered === false) {
-    return "Plan lists as not covered, but federal law (ACA) requires $0 for this preventive service.";
-  }
-  const parts: string[] = [];
-  if (acaOverride.planCopay != null && acaOverride.planCopay > 0) {
-    parts.push(`$${acaOverride.planCopay} copay`);
-  }
-  if (
-    acaOverride.planCoinsurance != null &&
-    acaOverride.planCoinsurance > 0
-  ) {
-    parts.push(
-      `${normalizeCoinsurancePct(acaOverride.planCoinsurance)}% coinsurance`,
-    );
-  }
-  const planTerms = parts.length > 0 ? parts.join(" + ") : "non-$0 cost share";
-  return `Plan says ${planTerms}, but federal law (ACA) requires $0 for this preventive service.`;
 }
 
 // ── Quality reporting codes ───────────────────────────────────────────────

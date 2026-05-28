@@ -377,15 +377,36 @@ export async function GET(
     .select("id, dispute_type, status, amount_disputed, amount_recovered, filed_date, resolution_date")
     .eq("claim_id", claimId);
 
-  // Fetch related claims in same group
-  let relatedClaims: Array<{ id: string; date_of_service: string; status: string; total_billed: number }> = [];
+  // Fetch related claims in same group. S139 (B4.2 multi-line) — lift
+  // provider_name from claim metadata so BundleSuggestion + MiniBillRow can
+  // render peer rows with the source provider, not just an ID. Matches the
+  // metadata.provider.name path used by claim-matching.ts (S?? when group
+  // matching first landed).
+  let relatedClaims: Array<{
+    id: string;
+    date_of_service: string;
+    status: string;
+    total_billed: number;
+    provider_name: string | null;
+  }> = [];
   if (claim.claim_group_id) {
     const { data: grouped } = await supabase
       .from("claims")
-      .select("id, date_of_service, status, total_billed")
+      .select("id, date_of_service, status, total_billed, metadata")
       .eq("claim_group_id", claim.claim_group_id)
       .neq("id", claimId);
-    relatedClaims = grouped || [];
+    relatedClaims = (grouped || []).map((g) => {
+      const meta = (g.metadata as Record<string, unknown>) || {};
+      const provider = (meta.provider as Record<string, unknown> | undefined) || {};
+      const provider_name = (provider.name as string | undefined) ?? null;
+      return {
+        id: g.id as string,
+        date_of_service: g.date_of_service as string,
+        status: g.status as string,
+        total_billed: g.total_billed as number,
+        provider_name,
+      };
+    });
   }
 
   // S132 iter-6 Phase 1 (cross-workstream §R.2): expose the user's plan
