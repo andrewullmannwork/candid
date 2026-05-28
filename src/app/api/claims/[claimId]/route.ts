@@ -14,6 +14,7 @@ import {
 import {
   resolveEffectiveClaimTotals,
   resolvePerLinePatientPaid,
+  resolvePerLineInsuranceAdjusted,
 } from "@/lib/claims/effective-totals";
 import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
@@ -272,6 +273,26 @@ export async function GET(
         claimTotalBilled,
         effectiveClaimPatientPaid: effectiveTotals,
       });
+    // S140 fix-pass H1 — pro-rate per-line writeoff when sparse so that
+    // computeShouldOwe applies coinsurance to ADJUSTED billed (correct
+    // insurance math: coinsurance % is contractually applied to allowed
+    // amount, not gross billed). Reverses the earlier "keep raw" trade-off
+    // — the trade-off was avoiding shouldOwe shift, but the prior math was
+    // applying coinsurance to gross which over-counts cost-share. Fixing.
+    const lineInsuranceAdjustedRaw =
+      item.insurance_adjusted_amount != null
+        ? Number(item.insurance_adjusted_amount)
+        : null;
+    const {
+      value: lineInsuranceAdjusted,
+      source: insuranceAdjustedSource,
+    } = resolvePerLineInsuranceAdjusted({
+      lineBilled: billed,
+      lineInsuranceAdjusted: lineInsuranceAdjustedRaw,
+      claimTotalBilled,
+      effectiveClaimInsuranceAdjusted: effectiveTotals,
+    });
+    const adjustedBilled = Math.max(0, billed - lineInsuranceAdjusted);
     const patientResponsibility = item.patient_owes != null
       ? Number(item.patient_owes)
       : resolveStillOutstanding({
@@ -286,15 +307,19 @@ export async function GET(
       patientResponsibility,
       patientPaid,
       // S120 — apply coinsurance to ADJUSTED billed (post-writeoff), not gross.
-      // S140 NOTE: per-line insurance_adjusted_amount stays RAW (no header
-      // pro-rate) to preserve shouldOwe semantics — pro-rating writeoff
-      // would shift coinsurance-line shouldOwe (Dec 12 L2: $9 stable vs
-      // $4-5 with prorate). Revisit when backend B-1 per-line populated.
-      insuranceAdjusted: Number(item.insurance_adjusted_amount ?? 0),
+      // S140 fix-pass H1 — insuranceAdjusted now reflects pro-rated per-line
+      // writeoff when the per-line column is sparse. Restores coinsurance
+      // math correctness (Dec 12 L2 10% coinsurance: shouldOwe $4 from
+      // $41.10 adjusted, vs old buggy $9 from $89 gross).
+      insuranceAdjusted: lineInsuranceAdjusted,
       planCoverage: coverage,
     });
     // S140 — attach provenance so downstream consumers (LineDrawer recovery
     // strip + dispute letter per-line cites) can gate on cite-grade.
+    // isCitablePerLine now requires ALL three numeric fields (patientPaid +
+    // patientResponsibility + insuranceAdjusted) to be per-line raw —
+    // otherwise the line's recovery math has at least one derived input
+    // and shouldn't be cited verbatim per-line.
     const recoveryWithProvenance = {
       ...recovery,
       provenance: {
@@ -302,8 +327,11 @@ export async function GET(
         patientResponsibilitySource: (item.patient_owes != null
           ? "per_line"
           : "header_prorated") as "per_line" | "header_prorated",
+        insuranceAdjustedSource,
         isCitablePerLine:
-          patientPaidSource === "per_line" && item.patient_owes != null,
+          patientPaidSource === "per_line" &&
+          item.patient_owes != null &&
+          insuranceAdjustedSource === "per_line",
       },
     };
 
@@ -349,6 +377,9 @@ export async function GET(
       // plan-says box renders an inline "Plan says $X, federal law $0" line
       // when present. Dispute pipeline uses for federal-law citation.
       acaOverride,
+      // S140 fix-pass H1 — per-line adjusted billed (raw - resolved writeoff).
+      // Drives UI BILLED column + LineDrawer Bill card + OVERCHARGE pill calc.
+      adjustedBilled,
       recovery: recoveryWithProvenance,
       codeIdentity: flywheelEnabled
         ? {

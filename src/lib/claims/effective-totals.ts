@@ -185,3 +185,43 @@ export function resolvePerLinePatientPaid(args: {
     ) / 100;
   return { value: prorated, source: "header_prorated" };
 }
+
+/**
+ * Resolve per-line insurance_adjusted_amount (the contractual writeoff) with
+ * provenance, used to feed computeRecoveryV2's `insuranceAdjusted` arg. When
+ * per-line writeoff is sparse but claim header `total_insurance_adjusted` is
+ * populated, pro-rate the header value by line-billed share.
+ *
+ * Critical for coinsurance correctness: computeShouldOwe applies coinsurance
+ * to (billed - writeoff). Without per-line writeoff, coinsurance ends up
+ * applied to gross billed (~2-3× too high). Pro-rate fallback corrects this.
+ *
+ * Defensive: claimTotalBilled <= 0 → return 0 (no division by zero).
+ */
+export function resolvePerLineInsuranceAdjusted(args: {
+  lineBilled: number;
+  lineInsuranceAdjusted: number | null;
+  claimTotalBilled: number;
+  effectiveClaimInsuranceAdjusted: EffectiveClaimTotals;
+}): ResolvedPerLineValue {
+  const citeGradeOk =
+    args.effectiveClaimInsuranceAdjusted.provenance
+      .insuranceAdjustedSource === "per_line_sum" &&
+    args.lineInsuranceAdjusted != null;
+  if (citeGradeOk) {
+    return {
+      value: args.lineInsuranceAdjusted as number,
+      source: "per_line",
+    };
+  }
+  if (args.claimTotalBilled <= 0) {
+    return { value: 0, source: "header_prorated" };
+  }
+  const prorated =
+    Math.round(
+      (args.lineBilled / args.claimTotalBilled) *
+        args.effectiveClaimInsuranceAdjusted.insuranceAdjusted *
+        100,
+    ) / 100;
+  return { value: prorated, source: "header_prorated" };
+}
