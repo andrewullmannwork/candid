@@ -304,7 +304,7 @@ export function BillCard({
               <p className="text-[10px] font-bold uppercase tracking-[0.08em] text-gray-500">
                 You were billed
               </p>
-              <p className="mt-0.5 text-[22px] font-bold leading-none tabular-nums tracking-[-0.02em] text-gray-900">
+              <p className="mt-1 text-[24px] font-bold leading-none tabular-nums tracking-[-0.02em] text-gray-900">
                 ${formatCurrency(billedAdjusted)}
               </p>
             </div>
@@ -322,11 +322,11 @@ export function BillCard({
                 You should owe
               </p>
               {isReview ? (
-                <p className="mt-0.5 text-[22px] font-bold leading-none tabular-nums text-orange-700">?</p>
+                <p className="mt-1 text-[24px] font-bold leading-none tabular-nums text-orange-700">?</p>
               ) : (
                 <p
                   className={cn(
-                    "mt-0.5 text-[22px] font-bold leading-none tabular-nums tracking-[-0.02em]",
+                    "mt-1 text-[24px] font-bold leading-none tabular-nums tracking-[-0.02em]",
                     shouldOwe === 0 ? "text-emerald-600" : "text-gray-900",
                   )}
                 >

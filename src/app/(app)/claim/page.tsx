@@ -388,9 +388,13 @@ export default function CandidClaimPage() {
   }
 
   // If viewing claim detail, render that view only (NON-NEGOTIABLE preserve per D-§1.D.1-E).
+  // S138: detail container bumped to max-w-4xl (896px) — design uses 1120px content
+  // area; the 8-col line-items grid needs ~880px minimum (488 fixed + 56 gaps + 40
+  // padding + 296 service flex). Previously at max-w-3xl (768px) the service col
+  // collapsed to 0px because fixed cols exceeded available width.
   if (selectedClaimId) {
     return (
-      <div className="mx-auto max-w-3xl">
+      <div className="mx-auto max-w-4xl">
         <ClaimDetail
           claimId={selectedClaimId}
           onBack={closeClaimDetail}
@@ -449,7 +453,7 @@ export default function CandidClaimPage() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl">
+    <div className="mx-auto max-w-4xl">
       {/* PageHeader primitive — D-§1.D.1-B */}
       <PageHeader
         eyebrow="Candid Claim"
@@ -754,6 +758,8 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 
 /**
  * Drafted dispute card — design chrome per claim-summary.jsx lines 342-410.
+ * S138 (design fidelity sweep): adopts design's blue-tinted .billcard variant
+ * for active drafts (3 items would strengthen this letter copy + Open draft chev).
  * Visual chrome: icon + "Appeal to {insurer} · ${amount}" title + Ref ID monospace
  * + provider + filed/resolved date + status pill + footer with outcome capture.
  * NON-NEGOTIABLE: preserves Session 35 T2.8 lifecycle vocab + outcome capture flows.
@@ -781,29 +787,56 @@ function DraftedDisputeCard({
   const refId = dispute.id.slice(0, 8).toUpperCase();
   const filedDateLabel = formatShortDate(dispute.filedDate);
 
+  // S138 — active drafts get the blue-tinted .billcard variant per design;
+  // resolved disputes stay neutral white.
+  const cardChromeCls = isActive
+    ? "border-blue-100 bg-gradient-to-br from-blue-50/40 to-white hover:border-blue-200 hover:shadow-blue-100/40"
+    : "border-gray-200 bg-white hover:border-gray-300";
+
   return (
-    <div className="overflow-hidden rounded-2xl border border-gray-100 bg-white">
-      {/* Header — design chrome */}
-      <div className="flex items-start justify-between gap-3 border-b border-gray-50 bg-gray-50/50 px-5 py-3.5">
+    <div className={cn("overflow-hidden rounded-2xl border transition-all", cardChromeCls)}>
+      {/* Header — design chrome with .billcard.flagged blue-tinted icon container */}
+      <div
+        className={cn(
+          "flex items-start justify-between gap-3 border-b px-5 py-4",
+          isActive ? "border-blue-100/60" : "border-gray-100",
+        )}
+      >
         <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-700 ring-1 ring-blue-100">
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          <div
+            className={cn(
+              "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl",
+              isActive ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600",
+            )}
+          >
+            <svg
+              className="h-4 w-4"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+              />
             </svg>
           </div>
           <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-gray-900">
+            <p className="truncate text-[15px] font-semibold leading-snug text-gray-900">
               {typeLabel} · ${dispute.amountDisputed.toLocaleString()}
             </p>
-            <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-gray-500">
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-gray-500">
               <span className="font-mono text-[11px]">Ref {refId}</span>
               {provider && (
                 <>
-                  <span className="text-gray-300">·</span>
+                  <span className="h-[3px] w-[3px] rounded-full bg-gray-400" aria-hidden="true" />
                   <span className="truncate">{provider}</span>
                 </>
               )}
-              <span className="text-gray-300">·</span>
+              <span className="h-[3px] w-[3px] rounded-full bg-gray-400" aria-hidden="true" />
               <span>
                 {dispute.resolutionDate
                   ? `Resolved ${formatShortDate(dispute.resolutionDate)}`
@@ -814,7 +847,7 @@ function DraftedDisputeCard({
         </div>
         <span
           className={cn(
-            "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1",
+            "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ring-inset",
             statusClass,
           )}
         >
@@ -824,7 +857,12 @@ function DraftedDisputeCard({
       </div>
 
       {/* Footer */}
-      <div className="flex items-center justify-between gap-3 px-5 py-3">
+      <div
+        className={cn(
+          "flex items-center justify-between gap-3 px-5 py-3",
+          isActive && "bg-blue-50/30",
+        )}
+      >
         <span className="text-xs text-gray-500">
           {dispute.amountRecovered > 0
             ? `$${dispute.amountRecovered.toLocaleString()} recovered`
@@ -836,7 +874,7 @@ function DraftedDisputeCard({
           <button
             type="button"
             onClick={onOpen}
-            className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 transition-colors hover:text-blue-700"
+            className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 transition-all hover:gap-1.5 hover:text-blue-700"
           >
             {isActive ? "Open draft" : "Open"}
             <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">

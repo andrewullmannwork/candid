@@ -1139,7 +1139,10 @@ export function ClaimDetail({
             dropped per Open Q A lock; Paid → "You paid"; Plan → "Plan says".
             Grid sized for max-w-3xl container (~728px inner): 8 fixed/flex cols
             + gap-2 (8px × 7 = 56px) + 504px fixed = 560px + ~168px flex. */}
-        <div className="hidden md:grid grid-cols-[minmax(0,_1.5fr)_56px_64px_64px_64px_72px_80px_88px] gap-2 items-center px-5 py-3 bg-gray-50 text-[10px] font-semibold text-gray-500 uppercase tracking-[0.06em] border-b border-gray-100">
+        <div
+          className="hidden lg:grid gap-2 items-center px-5 py-3 bg-gray-50 text-[10px] font-semibold text-gray-500 uppercase tracking-[0.06em] border-b border-gray-100"
+          style={{ gridTemplateColumns: "minmax(0, 1.5fr) 56px 64px 64px 64px 72px 80px 88px" }}
+        >
           <div className="min-w-0">Service</div>
           <div className="min-w-0">Code</div>
           <div
@@ -1275,7 +1278,7 @@ export function ClaimDetail({
                     toggleRowCollapsed(item.id);
                   }
                 }}
-                className="md:hidden block w-full text-left px-5 py-4 border-t border-gray-100 transition-colors hover:bg-gray-50 cursor-pointer"
+                className="lg:hidden block w-full text-left px-5 py-4 border-t border-gray-100 transition-colors hover:bg-gray-50 cursor-pointer"
               >
                 <div className="mb-3">
                   <div className="text-sm font-medium text-gray-900 truncate">
@@ -1407,10 +1410,11 @@ export function ClaimDetail({
                     toggleRowCollapsed(item.id);
                   }
                 }}
-                className="hidden md:grid w-full grid-cols-[minmax(0,_1.5fr)_56px_64px_64px_64px_72px_80px_88px] gap-2 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
+                className="hidden lg:grid w-full gap-2 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
+                style={{ gridTemplateColumns: "minmax(0, 1.5fr) 56px 64px 64px 64px 72px 80px 88px" }}
               >
-                <div className="min-w-0 text-xs text-gray-900">
-                  <div className="truncate">
+                <div className="min-w-0 text-sm text-gray-900">
+                  <div className="truncate font-semibold">
                     {item.description || item.service_slug?.replace(/_/g, " ") || "Unknown"}
                   </div>
                   {/* Session 86 — category subtitle is the click target for
@@ -1461,7 +1465,9 @@ export function ClaimDetail({
                   )}
                 </div>
                 <div className="min-w-0 text-xs text-gray-500 font-mono truncate">
-                  {item.billing_code || "—"}
+                  <span className="rounded-md bg-gray-100 px-1.5 py-0.5 text-[12px]">
+                    {item.billing_code || "—"}
+                  </span>
                 </div>
                 {/* Session 86 round 5 — Billed column shows the RAW provider-
                     billed amount. The Plan-says/Bill-shows compare below
@@ -1469,7 +1475,7 @@ export function ClaimDetail({
                     paid OOP. BillCard list view keeps "Billed Adjusted" since
                     its top-level summary number needs the post-writeoff value. */}
                 <div
-                  className="text-xs text-gray-900 text-right tabular-nums whitespace-nowrap"
+                  className="text-sm font-semibold text-gray-700 text-right tabular-nums whitespace-nowrap"
                   title={
                     (item.insurance_adjusted_amount ?? 0) > 0
                       ? `Provider billed $${billed.toLocaleString()}; insurer wrote off $${(item.insurance_adjusted_amount ?? 0).toLocaleString()}, leaving an adjusted balance of $${billedAdjusted.toLocaleString()}.`
@@ -1478,12 +1484,12 @@ export function ClaimDetail({
                 >
                   ${billed.toLocaleString()}
                 </div>
-                <div className="text-xs text-gray-500 text-right tabular-nums whitespace-nowrap">
+                <div className="text-sm font-semibold text-gray-700 text-right tabular-nums whitespace-nowrap">
                   ${paid.toLocaleString()}
                 </div>
                 {/* Plan says — what your plan says you should owe. */}
                 <div
-                  className={`text-xs font-semibold text-right tabular-nums whitespace-nowrap ${shouldOwe === 0 ? "text-green-700" : "text-gray-900"}`}
+                  className={`text-sm font-bold text-right tabular-nums whitespace-nowrap ${shouldOwe === 0 ? "text-emerald-700" : "text-gray-900"}`}
                   title={`Per your plan, you should owe $${shouldOwe.toLocaleString()} for this service.`}
                 >
                   ${shouldOwe.toLocaleString()}
@@ -1496,7 +1502,7 @@ export function ClaimDetail({
                     already paid OOP above plan share, recoverable via insurer
                     refund or provider credit. Source: recovery-math.ts. */}
                 <div
-                  className="text-right text-xs tabular-nums whitespace-nowrap"
+                  className="text-right text-sm tabular-nums whitespace-nowrap"
                   title={
                     item.planCoverage == null
                       ? "We need plan coverage info to compute refund recoverable."
@@ -1508,7 +1514,7 @@ export function ClaimDetail({
                   {item.planCoverage == null ? (
                     <span className="text-gray-300">—</span>
                   ) : refundComponent >= 1 ? (
-                    <span className="font-bold text-green-700">+${refundComponent.toLocaleString()}</span>
+                    <span className="font-bold text-emerald-700">+${refundComponent.toLocaleString()}</span>
                   ) : (
                     <span className="text-gray-400">$0.00</span>
                   )}
@@ -1518,7 +1524,7 @@ export function ClaimDetail({
                     outstanding above plan share that the provider must write
                     off. Source: recovery-math.ts. */}
                 <div
-                  className="text-right text-xs tabular-nums whitespace-nowrap"
+                  className="text-right text-sm tabular-nums whitespace-nowrap"
                   title={
                     item.planCoverage == null
                       ? "We need plan coverage info to compute forgiveness due."
@@ -1530,7 +1536,7 @@ export function ClaimDetail({
                   {item.planCoverage == null ? (
                     <span className="text-gray-300">—</span>
                   ) : forgivenessComponent >= 1 ? (
-                    <span className="font-bold text-green-700">${forgivenessComponent.toLocaleString()}</span>
+                    <span className="font-bold text-emerald-700">${forgivenessComponent.toLocaleString()}</span>
                   ) : (
                     <span className="text-gray-400">$0.00</span>
                   )}
@@ -1558,7 +1564,7 @@ export function ClaimDetail({
                               ? "Click to change your pick"
                               : "Click to pick the right category"
                         }
-                        className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className} cursor-pointer ring-1 ring-blue-300 hover:ring-blue-400 hover:bg-blue-50 transition-colors`}
+                        className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full ${coverageBadge.className} cursor-pointer ring-1 ring-blue-300 hover:ring-blue-400 hover:bg-blue-50 transition-colors`}
                       >
                         <svg className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" aria-hidden>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
@@ -1567,7 +1573,7 @@ export function ClaimDetail({
                       </button>
                     ) : (
                       <span
-                        className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className}${acaTooltip ? " cursor-help underline decoration-dotted decoration-1 underline-offset-2" : ""}`}
+                        className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full ${coverageBadge.className}${acaTooltip ? " cursor-help underline decoration-dotted decoration-1 underline-offset-2" : ""}`}
                         title={acaTooltip}
                       >
                         {coverageBadge.label}
@@ -1582,7 +1588,7 @@ export function ClaimDetail({
                         openBadgeModal(item.id, item.coverageStatus);
                       }}
                       title={item.coverageStatus === "not_covered" ? "Click to upload your plan and update coverage" : "Click to change your pick"}
-                      className="rounded-sm bg-blue-100 px-1 py-px text-[9px] font-semibold text-blue-700 cursor-pointer ring-1 ring-blue-200 hover:bg-blue-200 hover:ring-blue-300 transition-colors"
+                      className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700 cursor-pointer ring-1 ring-blue-200 hover:bg-blue-100 hover:ring-blue-300 transition-colors"
                     >
                       Your pick
                     </button>
@@ -2027,15 +2033,17 @@ export function ClaimDetail({
 
       {/* B4.2 — Bill action footer per design's .bill-action chrome */}
       {billState === "overcharge_no_draft" ? (
-        <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-blue-200 bg-gradient-to-br from-blue-50 to-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="max-w-prose text-[13px] text-gray-700">
-            <div className="mb-1 inline-flex items-center gap-1.5 text-sm font-bold text-blue-900">
+        <div className="mt-7 flex flex-col gap-4 rounded-[18px] border border-blue-200 bg-gradient-to-br from-blue-50 to-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="max-w-[50ch] text-[13px] leading-[1.55] text-gray-600">
+            <div className="mb-1.5 flex items-center gap-1.5 text-sm font-bold text-blue-900">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                 <path d="M13 10V3L4 14h7v7l9-11h-7z" />
               </svg>
               Recover ${fmtMoney(billTotals.potentialRecovery)} from this bill
             </div>
-            Candid will write the appeal letter for you using your uploaded plan, the EOB, and Medicare benchmark comparisons. You review and mail it — we never send anything on your behalf.
+            <p className="m-0">
+              Candid will write the appeal letter for you using your uploaded plan, the EOB, and Medicare benchmark comparisons. You review and mail it — we never send anything on your behalf.
+            </p>
           </div>
           <div className="sm:flex-shrink-0">
             <BulkDisputeButton
@@ -3250,15 +3258,16 @@ function BulkDisputeButton({
   // the user retains access to their drafted letter.
   if (existingDisputeId) {
     return (
-      <div className="mb-4">
-        <button
-          type="button"
-          onClick={() => router.push(`/disputes?dispute=${existingDisputeId}`)}
-          className="w-full rounded-lg bg-blue-600 py-3 text-sm font-semibold text-white hover:bg-blue-700 transition-colors"
-        >
-          View Dispute Letter
-        </button>
-      </div>
+      <button
+        type="button"
+        onClick={() => router.push(`/disputes?dispute=${existingDisputeId}`)}
+        className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-[9px] text-[13px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)]"
+      >
+        Open dispute letter
+        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M13 5l7 7-7 7" />
+        </svg>
+      </button>
     );
   }
 
@@ -3378,34 +3387,38 @@ function BulkDisputeButton({
   // recovery guarantee (CROA + state UDAP exposure per Director Checkpoint
   // #5 — user-sends-letter model). Recovery info stays visible as DATA
   // (table column + amber card) but not as a promise on the action button.
-  // B4.2: design's FlaggedDraftedAction labels the CTA "Open dispute letter"
-  // when a draft already exists. Mirror that here so the chrome wrapper at
-  // bill-level reads as "View Dispute Letter" instead of "Dispute charges"
-  // (the latter implied a re-draft, which we don't want — see existingDisputeId
-  // routing in handleClick).
-  const buttonLabel = existingDisputeId
-    ? "View Dispute Letter"
-    : totalContested === 1
-      ? "Dispute charge"
-      : "Dispute these charges";
+  // S138 — adopts design's FlaggedNoDraftAction label "Draft my dispute letter"
+  // (bill-detail.jsx line 536) for all non-drafted states. Singular variant
+  // also reads as "Draft my dispute letter" since the user perceives one bill,
+  // not one finding.
+  const buttonLabel = loading
+    ? "Drafting…"
+    : "Draft my dispute letter";
 
   // S132 iter-2: overlay moved to (app)/layout.tsx via DisputeDraftOverlayProvider
   // so it persists across /claim → /disputes navigation as a single React mount.
   // S132 iter-8: overlay loader is now cube (audit loader retired).
+  // S138: chrome adopts design .btn.btn-primary.btn-md — inline button + arrow,
+  // not full-width. Parent action footer dictates layout via flex.
 
   return (
-    <div className="mb-4">
+    <>
       <button
         type="button"
         onClick={handleClick}
         disabled={loading}
-        className="w-full rounded-lg bg-blue-600 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
+        className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-[9px] text-[13px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
       >
         {buttonLabel}
+        {!loading && (
+          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M13 5l7 7-7 7" />
+          </svg>
+        )}
       </button>
       {error && (
         <p className="mt-2 text-xs text-red-700">{error}</p>
       )}
-    </div>
+    </>
   );
 }
