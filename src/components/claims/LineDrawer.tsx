@@ -20,8 +20,12 @@ import { buildAcaOverrideLine, type AcaOverride } from "@/lib/claims/aca-overrid
 interface LineDrawerProps {
   /** What plan says the patient owes for this line (copay/coinsurance amount). */
   planSaysAmount: number;
-  /** Raw billed amount on the line (claim_line_items.billed_amount). */
-  billedAmount: number;
+  /**
+   * S140 fix-pass H2 — adjusted billed amount on the line (raw - resolved
+   * writeoff). Drives the Bill card display + OVERCHARGE pill calc.
+   * Reconciles with bill-level "Adjusted total billed" everywhere else.
+   */
+  adjustedBilledAmount: number;
   /** Patient OOP paid for this line (claim_line_items.patient_paid_amount or fallback). */
   patientPaidAmount: number;
   /** Insurer-paid amount for this line (claim_line_items.insurance_paid). */
@@ -44,7 +48,7 @@ function fmt$(v: number): string {
 
 export function LineDrawer({
   planSaysAmount,
-  billedAmount,
+  adjustedBilledAmount,
   patientPaidAmount,
   insurancePaidAmount,
   coverageLabel,
@@ -53,7 +57,9 @@ export function LineDrawer({
   acaOverride,
   ariaLabelledBy,
 }: LineDrawerProps) {
-  const overcharge = Math.max(0, billedAmount - planSaysAmount);
+  // S140 fix-pass H2 — overcharge calc against adjusted billed (not raw).
+  // Reconciles with everywhere else in the UI that shows adjusted.
+  const overcharge = Math.max(0, adjustedBilledAmount - planSaysAmount);
   const acaLine = buildAcaOverrideLine(acaOverride);
   const showRefund = recovery >= 1;
   const showForgive = forgiveness >= 1;
@@ -105,7 +111,7 @@ export function LineDrawer({
               </svg>
               Bill shows
             </div>
-            <div className="text-sm font-semibold text-gray-900">Billed ${fmt$(billedAmount)}</div>
+            <div className="text-sm font-semibold text-gray-900">Billed ${fmt$(adjustedBilledAmount)}</div>
             <div className="text-[12.5px] text-gray-600">
               You paid <strong className="font-semibold text-gray-900">${fmt$(patientPaidAmount)}</strong> · Insurer paid ${fmt$(insurancePaidAmount)}
             </div>

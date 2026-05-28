@@ -84,12 +84,18 @@ interface LineItem {
     // S140 — cite-grade provenance attached by /api/claims/[claimId]. Gates
     // per-line LineDrawer recovery strip (suppressed when isCitablePerLine
     // is false; aggregate bar below shows the one accurate number).
+    // H1 — insuranceAdjustedSource added to track writeoff cite-grade too.
     provenance?: {
       patientPaidSource: "per_line" | "header_prorated";
       patientResponsibilitySource: "per_line" | "header_prorated";
+      insuranceAdjustedSource?: "per_line" | "header_prorated";
       isCitablePerLine: boolean;
     };
   };
+  // S140 fix-pass H1 — per-line adjusted billed (= raw billed − resolved
+  // writeoff). Drives UI BILLED column + LineDrawer Bill card + OVERCHARGE
+  // pill calc. Falls back to raw billed_amount when undefined (legacy).
+  adjustedBilled?: number;
   codeIdentity?: CodeIdentityState | null;
 }
 
@@ -749,12 +755,8 @@ export function ClaimDetail({
     return refund + forgive > 0;
   }).length;
   const isMultiLine = isFlagged && flaggedLineCount > 1;
-  // Sum of raw billed across primary lines — drives "Total billed" row in
-  // multi-line FlaggedBody (single-line uses billTotals.billedAdjusted).
-  const totalsBilledSum = primaryLineItems.reduce(
-    (s, li) => s + Number(li.billed_amount ?? 0),
-    0,
-  );
+  // S140 fix-pass H2 — totalsBilledSum (raw billed sum) removed; FlaggedBody
+  // Row 1 now always uses billTotals.billedAdjusted regardless of multi-line.
 
   const fmtMoney = (n: number) =>
     n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -1249,13 +1251,12 @@ export function ClaimDetail({
           // `paid` here would hide gaps on any line where the API pro-rated
           // a non-zero "already paid" from the claim header.
           const billed = item.billed_amount || 0;
-          // Session 86 — "Billed (adj.)" column = billed minus the insurer's
-          // contractual write-off. Reconciles with the rest of the row math
-          // (Paid + Plan + Recovery) which all operate on the post-adjustment
-          // balance. Falls back to raw billed when insurance_adjusted_amount
-          // is null/0 (legacy rows pre-mig 092).
-          const insuranceAdjusted = Number(item.insurance_adjusted_amount ?? 0);
-          const billedAdjusted = Math.max(0, billed - insuranceAdjusted);
+          // S140 fix-pass H2 — per-line BILLED display now uses adjusted
+          // billed everywhere (raw minus resolved writeoff). Reconciles with
+          // bill-level "Adjusted total billed" and with coinsurance × adjusted
+          // math. Server-computed `adjustedBilled` is authoritative; raw
+          // fallback only when API didn't surface it (legacy or empty rows).
+          const billedDisplay = item.adjustedBilled ?? billed;
           // Session 85 round 5 — "Paid" column = insurance_paid + patient_paid
           // (total cleared on this line by either party). For Bill 1 with
           // insurance_paid=$0 and patient_paid=$292.41, this reads $292.41
@@ -1326,39 +1327,65 @@ export function ClaimDetail({
                 }}
                 className="lg:hidden block w-full text-left px-5 py-4 border-t border-gray-100 transition-colors hover:bg-gray-50 cursor-pointer"
               >
-                <div className="mb-3">
-                  <div className="text-sm font-medium text-gray-900 truncate">
-                    {item.description || item.service_slug?.replace(/_/g, " ") || "Unknown"}
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium text-gray-900 truncate">
+                      {item.description || item.service_slug?.replace(/_/g, " ") || "Unknown"}
+                    </div>
+                    {showCategoryPill && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openBadgeModal(item.id, item.coverageStatus);
+                        }}
+                        title={
+                          item.coverageStatus === "not_covered"
+                            ? "Click to upload your plan and update coverage"
+                            : pillState === "user_corrected"
+                              ? "You changed this category. Click to edit again."
+                              : pillState === "needs_review"
+                                ? "We couldn't auto-categorize this. Click to set."
+                                : "Click to change category"
+                        }
+                        className="mt-1 inline-flex items-center gap-1 -ml-1 rounded px-1 py-0.5 text-xs text-blue-600 hover:bg-blue-50 hover:text-blue-700 transition-colors group/cat-mobile"
+                      >
+                        <span className={item.service_slug ? "" : "italic"}>
+                          {item.service_slug
+                            ? humanizeSlug(item.service_slug)
+                            : item.billing_code
+                              ? legacyCategoryReviewHint(item.billing_code)
+                              : "Set category"}
+                        </span>
+                        <svg className="h-3 w-3 opacity-60 group-hover/cat-mobile:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
+                      </button>
+                    )}
                   </div>
-                  {showCategoryPill && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openBadgeModal(item.id, item.coverageStatus);
-                      }}
-                      title={
-                        item.coverageStatus === "not_covered"
-                          ? "Click to upload your plan and update coverage"
-                          : pillState === "user_corrected"
-                            ? "You changed this category. Click to edit again."
-                            : pillState === "needs_review"
-                              ? "We couldn't auto-categorize this. Click to set."
-                              : "Click to change category"
-                      }
-                      className="mt-1 inline-flex items-center gap-1 -ml-1 rounded px-1 py-0.5 text-xs text-blue-600 hover:bg-blue-50 hover:text-blue-700 transition-colors group/cat-mobile"
-                    >
-                      <span className={item.service_slug ? "" : "italic"}>
-                        {item.service_slug
-                          ? humanizeSlug(item.service_slug)
-                          : item.billing_code
-                            ? legacyCategoryReviewHint(item.billing_code)
-                            : "Set category"}
-                      </span>
-                      <svg className="h-3 w-3 opacity-60 group-hover/cat-mobile:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                      </svg>
-                    </button>
+                  {/* S140 fix-pass H2 — mobile chevron affordance. Card is
+                      whole-clickable for expand toggle (line 1320 onClick);
+                      chevron icon visually communicates that affordance.
+                      Same gate as desktop: isMultiLine + has recoverable
+                      money. Rotates on expand state. */}
+                  {isMultiLine && (refundComponent + forgivenessComponent) > 0 && (
+                    <div className="flex-shrink-0 pt-0.5">
+                      <div
+                        aria-label={isExpanded ? "Hide breakdown" : "Show breakdown"}
+                        className={`grid h-7 w-7 place-items-center rounded-md transition-colors ${isExpanded ? "bg-blue-600 text-white shadow-sm" : "bg-gray-100 text-gray-500"}`}
+                      >
+                        <svg
+                          className={`h-3.5 w-3.5 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth={2.5}
+                          aria-hidden
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+                        </svg>
+                      </div>
+                    </div>
                   )}
                 </div>
                 <dl className="space-y-1.5 text-xs">
@@ -1368,7 +1395,7 @@ export function ClaimDetail({
                   </div>
                   <div className="flex justify-between gap-3">
                     <dt className="text-gray-500 uppercase tracking-wider">Billed</dt>
-                    <dd className="tabular-nums text-gray-900">${billed.toLocaleString()}</dd>
+                    <dd className="tabular-nums text-gray-900">${billedDisplay.toLocaleString()}</dd>
                   </div>
                   <div className="flex justify-between gap-3">
                     <dt className="text-gray-500 uppercase tracking-wider">You paid</dt>
@@ -1519,20 +1546,20 @@ export function ClaimDetail({
                     {item.billing_code || "—"}
                   </span>
                 </div>
-                {/* Session 86 round 5 — Billed column shows the RAW provider-
-                    billed amount. The Plan-says/Bill-shows compare below
-                    explains the insurer write-off and what the user actually
-                    paid OOP. BillCard list view keeps "Billed Adjusted" since
-                    its top-level summary number needs the post-writeoff value. */}
+                {/* S140 fix-pass H2 — Billed column shows ADJUSTED billed
+                    (raw - resolved writeoff). Reconciles with bill-level
+                    "Adjusted total billed" + coinsurance × adjusted math
+                    everywhere else. Tooltip retains the raw-vs-adjusted
+                    explainer when writeoff is non-zero. */}
                 <div
                   className="text-sm font-semibold text-gray-700 text-right tabular-nums whitespace-nowrap"
                   title={
-                    (item.insurance_adjusted_amount ?? 0) > 0
-                      ? `Provider billed $${billed.toLocaleString()}; insurer wrote off $${(item.insurance_adjusted_amount ?? 0).toLocaleString()}, leaving an adjusted balance of $${billedAdjusted.toLocaleString()}.`
+                    billedDisplay !== billed
+                      ? `Provider billed $${billed.toLocaleString()}; insurer wrote off $${(billed - billedDisplay).toLocaleString()}, leaving an adjusted balance of $${billedDisplay.toLocaleString()}.`
                       : `$${billed.toLocaleString()} billed.`
                   }
                 >
-                  ${billed.toLocaleString()}
+                  ${billedDisplay.toLocaleString()}
                 </div>
                 <div className="text-sm font-semibold text-gray-700 text-right tabular-nums whitespace-nowrap">
                   ${paid.toLocaleString()}
@@ -1694,14 +1721,14 @@ export function ClaimDetail({
               {isMultiLine && isExpanded && (refundComponent + forgivenessComponent) > 0 && (
                 <LineDrawer
                   planSaysAmount={shouldOwe}
-                  billedAmount={billed}
+                  adjustedBilledAmount={billedDisplay}
                   patientPaidAmount={patientPaid}
                   insurancePaidAmount={Number(item.insurance_paid ?? 0)}
                   coverageLabel={item.planCoverage ? buildPlanSays(item.planCoverage) : "Coverage unknown"}
                   // S140 — suppress per-line recovery strip when patientPaid is
                   // header-prorated (not cite-grade per-line). Plan + bill cards
-                  // above still render with raw per-line billed amounts. The
-                  // bill-level recovery bar below shows the ONE accurate
+                  // above still render with adjusted per-line billed amounts.
+                  // The bill-level recovery bar below shows the ONE accurate
                   // aggregate; no double-counting risk.
                   recovery={item.recovery?.provenance?.isCitablePerLine ? refundComponent : 0}
                   forgiveness={item.recovery?.provenance?.isCitablePerLine ? forgivenessComponent : 0}
@@ -1941,15 +1968,15 @@ export function ClaimDetail({
               </span>
               <div className="mt-0.5 flex items-baseline gap-2 text-[34px] font-bold leading-none tracking-[-0.02em] tabular-nums text-emerald-800">
                 ${fmtMoney(billTotals.shouldOwe)}
-                <span className="text-[15px] font-medium text-gray-500">
-                  {isMultiLine ? " · your total responsibility" : " · your responsibility"}
+                <span className="text-[15px] font-medium text-gray-500 whitespace-nowrap">
+                  {isMultiLine ? "your total responsibility" : "your responsibility"}
                 </span>
               </div>
               <div className="mt-1.5 flex flex-col gap-1.5">
                 <div className="flex justify-between gap-3 text-xs text-gray-600">
-                  <span>{isMultiLine ? "Total billed" : "Allowed amount"}</span>
+                  <span>Adjusted total billed</span>
                   <strong className="font-semibold tabular-nums text-gray-900">
-                    ${fmtMoney(isMultiLine ? totalsBilledSum : billTotals.billedAdjusted)}
+                    ${fmtMoney(billTotals.billedAdjusted)}
                   </strong>
                 </div>
                 <div className="flex justify-between gap-3 text-xs text-gray-600">
@@ -2000,13 +2027,13 @@ export function ClaimDetail({
                   divergent only on bills with outstanding balance. */}
               <div className="mt-0.5 flex items-baseline gap-2 text-[34px] font-bold leading-none tracking-[-0.02em] tabular-nums text-red-800">
                 ${fmtMoney(billTotals.patientPaid)}
-                <span className="text-[15px] font-medium text-gray-500">· charged to you</span>
+                <span className="text-[15px] font-medium text-gray-500 whitespace-nowrap">charged to you</span>
               </div>
               <div className="mt-1.5 flex flex-col gap-1.5">
                 <div className="flex justify-between gap-3 text-xs text-gray-600">
-                  <span>{isMultiLine ? "Total billed" : "Allowed amount"}</span>
+                  <span>Adjusted total billed</span>
                   <strong className="font-semibold tabular-nums text-gray-900">
-                    ${fmtMoney(isMultiLine ? totalsBilledSum : billTotals.billedAdjusted)}
+                    ${fmtMoney(billTotals.billedAdjusted)}
                   </strong>
                 </div>
                 <div className="flex justify-between gap-3 text-xs text-gray-600">
@@ -2017,22 +2044,18 @@ export function ClaimDetail({
                   <span>You paid</span>
                   <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.patientPaid)} OOP</strong>
                 </div>
-                {billTotals.forgivenessComponent >= 1 && (
-                  <div className="mt-1 flex justify-between gap-3 border-t border-red-200 pt-[6px] text-xs">
-                    <span className="font-semibold text-emerald-700">Provider must forgive</span>
-                    <strong className="font-bold tabular-nums text-emerald-700">${fmtMoney(billTotals.forgivenessComponent)}</strong>
-                  </div>
-                )}
-                {/* S140 — Refund row moved here from LEFT side per Andrew's
-                    locked S139 schema. Gated ≥$1 (same as Forgive). For
-                    Dec 12: refundComponent = max(0, $129.01 - $36) = $93.01
-                    renders; forgivenessComponent ≈ $0 → hidden. */}
-                {billTotals.refundComponent >= 1 && (
-                  <div className="flex justify-between gap-3 text-xs">
-                    <span className="font-semibold text-emerald-700">Refund</span>
-                    <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong>
-                  </div>
-                )}
+                {/* S140 fix-pass H2 — Refund + Forgive: Refund row first,
+                    Forgive row second. Both always render (≥$1 gate
+                    dropped) so users see both buckets even at $0; clarifies
+                    that we tracked both possibilities. */}
+                <div className="mt-1 flex justify-between gap-3 border-t border-red-200 pt-[6px] text-xs">
+                  <span className="font-semibold text-emerald-700">Refund</span>
+                  <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs">
+                  <span className="font-semibold text-emerald-700">Provider must forgive</span>
+                  <strong className="font-bold tabular-nums text-emerald-700">${fmtMoney(billTotals.forgivenessComponent)}</strong>
+                </div>
               </div>
               <div className="mt-1 inline-flex items-center gap-[6px] text-[11px] text-gray-500">
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden>
