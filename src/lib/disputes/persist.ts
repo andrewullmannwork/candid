@@ -19,6 +19,14 @@ export interface PersistDisputeInput {
   conceptId?: string;
   /** Full letter text so users can revisit what was drafted. */
   letterContent?: string;
+  /**
+   * S140 — cite-grade citation source for telemetry. 'per_line_sum' = aggregate
+   * cited per-line evidence directly; 'claim_header' = aggregate fell back to
+   * claim-header totals (Haiku per-line sparsity). Persisted to
+   * dispute_outcomes.metadata.citation_source — sole signal for backend B-4
+   * "when can we remove Path B fallback?" trigger query.
+   */
+  citationSource?: "per_line_sum" | "claim_header";
 }
 
 /**
@@ -111,6 +119,11 @@ export async function persistDisputeLetter(
             metadata: {
               letterType: input.letterType,
               claimLineItemIds: input.claimLineItemIds || [],
+              // S140 telemetry — citation_source captured per re-draft so we
+              // see how many re-drafts still hit header-fallback over time.
+              ...(input.citationSource
+                ? { citation_source: input.citationSource }
+                : {}),
             },
           })
           .eq("id", existing.id);
@@ -142,6 +155,14 @@ export async function persistDisputeLetter(
         metadata: {
           letterType: input.letterType,
           claimLineItemIds: input.claimLineItemIds || [],
+          // S140 telemetry — citation_source on initial INSERT. Query via:
+          //   SELECT metadata->>'citation_source' AS source, COUNT(*) FROM
+          //   dispute_outcomes WHERE created_at > NOW() - INTERVAL '30 days'
+          //   GROUP BY 1;
+          // Goal: 'claim_header' rate <1% sustained 14d post-backend B-1.
+          ...(input.citationSource
+            ? { citation_source: input.citationSource }
+            : {}),
         },
       })
       .select("id")

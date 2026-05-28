@@ -316,10 +316,29 @@ function buildClosingArgument(
 
   // Case D — no plan OR fallback-only without confirmation (Chunk A default).
   // Aggregate EOB math across all claims for the inconsistency framing.
-  const allLineItems = evidence.claims.flatMap((c) => c.lineItemEvidence);
-  const totalBilled = allLineItems.reduce((s, li) => s + (li.billedAmount ?? 0), 0);
-  const totalInsurancePaid = allLineItems.reduce((s, li) => s + (li.insurancePaid ?? 0), 0);
-  const totalPatientResp = allLineItems.reduce((s, li) => s + (li.patientOwes ?? 0), 0);
+  // S140 — replaced sum-of-nulls reduce with effectiveTotals per claim (cite-grade
+  // per-line sum when available; claim-header fallback when per-line sparse).
+  // Citation framing prefix flips to "summary records" when ANY claim's
+  // aggregates came from header — signals to insurer that we're citing
+  // EOB summary rows rather than per-line line items.
+  let totalBilled = 0;
+  let totalInsurancePaid = 0;
+  let totalPatientResp = 0;
+  let anyHeaderSourced = false;
+  for (const c of evidence.claims) {
+    totalBilled += c.totalBilled;
+    totalInsurancePaid += c.effectiveTotals.insurancePaid;
+    totalPatientResp += c.effectiveTotals.patientResponsibility;
+    if (
+      c.effectiveTotals.provenance.insurancePaidSource === "claim_header" ||
+      c.effectiveTotals.provenance.patientResponsibilitySource === "claim_header"
+    ) {
+      anyHeaderSourced = true;
+    }
+  }
+  const citationPrefix = anyHeaderSourced
+    ? "The Explanation of Benefits summary records"
+    : "The Explanation of Benefits records";
 
   const parts: string[] = [
     "Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based.",
@@ -327,7 +346,7 @@ function buildClosingArgument(
   ];
   if (totalBilled > 0) {
     parts.push(
-      `The Explanation of Benefits records ${formatCurrency(totalInsurancePaid)} insurance paid on a ${formatCurrency(totalBilled)} billed charge, leaving ${formatCurrency(totalPatientResp)} as my responsibility. This treatment warrants a specific provision-level explanation.`,
+      `${citationPrefix} ${formatCurrency(totalInsurancePaid)} insurance paid on a ${formatCurrency(totalBilled)} billed charge, leaving ${formatCurrency(totalPatientResp)} as my responsibility. This treatment warrants a specific provision-level explanation.`,
     );
   }
   return parts.join(" ");
@@ -502,10 +521,17 @@ function renderLineItemEvidence(
   }
 
   if (li.insurancePaid != null || li.patientOwes != null) {
+    // S140 — skip null fields instead of citing as $0 (cite-grade violation).
+    // When parser populates only one of (insurance_paid, patient_owes), cite
+    // only what we actually have. billedAmount always present.
     const eobParts: string[] = [];
     eobParts.push(`${formatCurrency(li.billedAmount)} billed`);
-    eobParts.push(`${formatCurrency(li.insurancePaid ?? 0)} insurance paid`);
-    eobParts.push(`${formatCurrency(li.patientOwes ?? 0)} patient responsibility`);
+    if (li.insurancePaid != null) {
+      eobParts.push(`${formatCurrency(li.insurancePaid)} insurance paid`);
+    }
+    if (li.patientOwes != null) {
+      eobParts.push(`${formatCurrency(li.patientOwes)} patient responsibility`);
+    }
     bullets.push(`   - EOB shows: ${eobParts.join(" · ")}.`);
   }
 

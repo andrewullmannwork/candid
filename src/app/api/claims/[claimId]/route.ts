@@ -11,6 +11,10 @@ import {
   resolveStillOutstanding,
   type PlanCoverageInput,
 } from "@/lib/claims/recovery-math";
+import {
+  resolveEffectiveClaimTotals,
+  resolvePerLinePatientPaid,
+} from "@/lib/claims/effective-totals";
 import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { maybeReauditClaim } from "@/lib/audit/reaudit";
@@ -215,6 +219,17 @@ export async function GET(
         ? Number(claim.total_patient_responsibility)
         : null;
 
+  // S140 — Compute effective claim-level totals with per-field provenance.
+  // When per-line numeric columns (patient_paid_amount, insurance_paid,
+  // insurance_adjusted_amount, patient_owes) are sparse or inflated vs the
+  // claim header, the helper falls back to header values and marks the
+  // source. Powers per-line LineDrawer cite-grade gating + bill-level
+  // FlaggedBody display + dispute pipeline citation framing.
+  const effectiveTotals = resolveEffectiveClaimTotals({
+    claim,
+    lineItems: lineItems || [],
+  });
+
   // Enrich line items with coverage status + recovery metrics
   const enrichedLineItems = (lineItems || []).map((item) => {
     // S135 — 4-state ACA matrix via shared helper. Plan wins on match; ACA wins
@@ -244,7 +259,19 @@ export async function GET(
 
     const billed = Number(item.billed_amount || 0);
     // F-1 / mig 092 — patient_paid_amount column drives refund/forgiveness split.
-    const patientPaid = Number(item.patient_paid_amount ?? 0);
+    // S140 — resolvePerLinePatientPaid returns per-line raw when cite-grade
+    // (sum matches header) AND value is non-null; otherwise pro-rates from
+    // the effective claim-header patientPaid. Gates per-line LineDrawer
+    // recovery strip rendering downstream.
+    const linePatientPaidRaw =
+      item.patient_paid_amount != null ? Number(item.patient_paid_amount) : null;
+    const { value: patientPaid, source: patientPaidSource } =
+      resolvePerLinePatientPaid({
+        lineBilled: billed,
+        linePatientPaid: linePatientPaidRaw,
+        claimTotalBilled,
+        effectiveClaimPatientPaid: effectiveTotals,
+      });
     const patientResponsibility = item.patient_owes != null
       ? Number(item.patient_owes)
       : resolveStillOutstanding({
@@ -259,9 +286,26 @@ export async function GET(
       patientResponsibility,
       patientPaid,
       // S120 — apply coinsurance to ADJUSTED billed (post-writeoff), not gross.
+      // S140 NOTE: per-line insurance_adjusted_amount stays RAW (no header
+      // pro-rate) to preserve shouldOwe semantics — pro-rating writeoff
+      // would shift coinsurance-line shouldOwe (Dec 12 L2: $9 stable vs
+      // $4-5 with prorate). Revisit when backend B-1 per-line populated.
       insuranceAdjusted: Number(item.insurance_adjusted_amount ?? 0),
       planCoverage: coverage,
     });
+    // S140 — attach provenance so downstream consumers (LineDrawer recovery
+    // strip + dispute letter per-line cites) can gate on cite-grade.
+    const recoveryWithProvenance = {
+      ...recovery,
+      provenance: {
+        patientPaidSource,
+        patientResponsibilitySource: (item.patient_owes != null
+          ? "per_line"
+          : "header_prorated") as "per_line" | "header_prorated",
+        isCitablePerLine:
+          patientPaidSource === "per_line" && item.patient_owes != null,
+      },
+    };
 
     // S74.5 D6 — enrich with code-identity state for the correction pill +
     // G4 conflict modal trigger. Only populated when flywheel flag is ON.
@@ -305,7 +349,7 @@ export async function GET(
       // plan-says box renders an inline "Plan says $X, federal law $0" line
       // when present. Dispute pipeline uses for federal-law citation.
       acaOverride,
-      recovery,
+      recovery: recoveryWithProvenance,
       codeIdentity: flywheelEnabled
         ? {
             identityId,
@@ -344,32 +388,73 @@ export async function GET(
     },
   );
 
-  // Header-only fallback: when line items weren't extracted (common for EOBs
-  // where Haiku captured the header totals but no per-line allocation), derive
-  // recovery directly from the claim header so the UI still surfaces a
-  // meaningful Potential Recovery number instead of $0.
-  const claimRecovery =
-    enrichedLineItems.length === 0 && claimTotalBilled > 0
-      ? (() => {
-          const stillOutstanding = claimStillOutstanding ?? 0;
-          const alreadyPaid = Math.max(0, claimTotalBilled - stillOutstanding);
-          // Without line-level service_slug we can't resolve a plan copay; assume
-          // $0 should-owe for header-only claims (the dispute is "you shouldn't
-          // owe any of this"). Session 36 reconciler will fix by synthesizing
-          // line items from the header before this branch ever fires.
-          const shouldOwe = 0;
-          const potentialRecovery = Math.max(0, claimTotalBilled - shouldOwe);
-          return {
-            billed: claimTotalBilled,
-            alreadyPaid,
-            stillOutstanding,
-            shouldOwe,
-            potentialRecovery,
-            refundComponent: Math.max(0, alreadyPaid - shouldOwe),
-            forgivenessComponent: Math.max(0, stillOutstanding - shouldOwe),
-          };
-        })()
-      : lineSummedRecovery;
+  // S140 — claim-level recovery branches on cite-grade provenance:
+  // - Empty line items + header signal → existing header-only fallback IIFE
+  // - Any per-line synthesized → recompute refund/forgive from CLAIM HEADER
+  //   directly (exact math, no rounding drift from pro-rated per-line sum)
+  // - All per-line cite-grade → use lineSummedRecovery (today's behavior)
+  // Math mirrors computeRecoveryV2:184-190 (effectiveBurden = max(paid,
+  // assigned); refund = max(0, paid - shouldOwe); forgive = potential - refund).
+  const anyLinePerLineCiteGradeMissing = enrichedLineItems.some(
+    (li) => li.recovery.provenance && !li.recovery.provenance.isCitablePerLine,
+  );
+
+  type ClaimRecovery = typeof lineSummedRecovery & {
+    provenance?: { citationSource: "per_line_sum" | "claim_header" };
+  };
+
+  let claimRecovery: ClaimRecovery;
+  if (enrichedLineItems.length === 0 && claimTotalBilled > 0) {
+    // Header-only fallback: when line items weren't extracted (common for EOBs
+    // where Haiku captured the header totals but no per-line allocation),
+    // derive recovery directly from the claim header so the UI still surfaces
+    // a meaningful Potential Recovery number instead of $0.
+    const stillOutstanding = claimStillOutstanding ?? 0;
+    const alreadyPaid = Math.max(0, claimTotalBilled - stillOutstanding);
+    // Without line-level service_slug we can't resolve a plan copay; assume
+    // $0 should-owe for header-only claims (the dispute is "you shouldn't
+    // owe any of this"). Session 36 reconciler will fix by synthesizing
+    // line items from the header before this branch ever fires.
+    const shouldOwe = 0;
+    const potentialRecovery = Math.max(0, claimTotalBilled - shouldOwe);
+    claimRecovery = {
+      billed: claimTotalBilled,
+      alreadyPaid,
+      stillOutstanding,
+      shouldOwe,
+      potentialRecovery,
+      refundComponent: Math.max(0, alreadyPaid - shouldOwe),
+      forgivenessComponent: Math.max(0, stillOutstanding - shouldOwe),
+      provenance: { citationSource: "claim_header" },
+    };
+  } else if (anyLinePerLineCiteGradeMissing) {
+    // S140 — recompute claim-level refund/forgive from CLAIM HEADER values
+    // (exact, no pro-rate drift). shouldOwe stays as the per-line sum since
+    // each line's shouldOwe is computed from plan coverage rules on raw
+    // billed (independent of patient_paid sparsity).
+    const claimLevelShouldOwe = lineSummedRecovery.shouldOwe;
+    const headerPatientPaid = effectiveTotals.patientPaid;
+    const headerPatientResp = effectiveTotals.patientResponsibility;
+    const effectiveBurden = Math.max(headerPatientPaid, headerPatientResp);
+    const potentialRecovery = Math.max(0, effectiveBurden - claimLevelShouldOwe);
+    const refundComponent = Math.max(0, headerPatientPaid - claimLevelShouldOwe);
+    const forgivenessComponent = Math.max(0, potentialRecovery - refundComponent);
+    claimRecovery = {
+      billed: claimTotalBilled,
+      alreadyPaid: Math.max(0, claimTotalBilled - headerPatientResp),
+      stillOutstanding: Math.max(0, headerPatientResp - headerPatientPaid),
+      shouldOwe: claimLevelShouldOwe,
+      potentialRecovery,
+      refundComponent,
+      forgivenessComponent,
+      provenance: { citationSource: "claim_header" },
+    };
+  } else {
+    claimRecovery = {
+      ...lineSummedRecovery,
+      provenance: { citationSource: "per_line_sum" },
+    };
+  }
 
   // Fetch linked disputes
   const { data: disputes } = await supabase
@@ -428,6 +513,10 @@ export async function GET(
     disputes: disputes || [],
     relatedClaims,
     recovery: claimRecovery,
+    // S140 — surface effective claim totals + per-field provenance so the
+    // frontend FlaggedBody can read claim-header values directly (vs the
+    // sum-of-nulls bug that produced $0 displays for Dec 12-style bills).
+    effectiveTotals,
     flags: {
       categorizationFlywheelV1: flywheelEnabled,
     },

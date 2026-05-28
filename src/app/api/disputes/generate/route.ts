@@ -260,6 +260,22 @@ export async function POST(req: NextRequest) {
         const selectedFindings = auditReport.findings.filter((f) => findingIds.includes(f.id));
         const totalDisputed = selectedFindings.reduce((sum, f) => sum + f.estimatedOvercharge, 0);
 
+        // S140 telemetry — derive citation_source from the resolved evidence.
+        // 'claim_header' if ANY claim's aggregates fell back to header (the
+        // signal that Path B is still load-bearing for this dispute); else
+        // 'per_line_sum' (cite-grade per-line). Sole signal for backend B-4
+        // Path B removal trigger.
+        const citationSource: "per_line_sum" | "claim_header" =
+          evidence?.claims.some(
+            (c) =>
+              c.effectiveTotals.provenance.insurancePaidSource ===
+                "claim_header" ||
+              c.effectiveTotals.provenance.patientResponsibilitySource ===
+                "claim_header",
+          )
+            ? "claim_header"
+            : "per_line_sum";
+
         const result = await persistDisputeLetter(supabase, {
           userId: auditReport.userId,
           claimId: body.claimId || undefined,
@@ -267,6 +283,7 @@ export async function POST(req: NextRequest) {
           letterType: letterType || "overcharge",
           amountDisputed: totalDisputed,
           letterContent: letter.body,
+          citationSource,
         });
         disputeId = result?.disputeId || null;
         deduplicated = result?.deduplicated ?? false;
