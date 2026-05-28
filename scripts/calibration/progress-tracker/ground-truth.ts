@@ -1,24 +1,31 @@
 /**
  * Option E — derive per-(doc, field) ground truth from ceiling states.
  *
- * Inputs: Opus baseline + Haiku-comprehensive baseline states.
- * Output: GroundTruth — one entry per (doc, canonical_field).
+ * S138 PR2 extension: per-site axis added. Sites without an Opus baseline rely on
+ * single_source semantics (Haiku-comprehensive ceiling alone serves as GT source).
+ * Sites without any ceiling state (e.g., when calibration runner hasn't shipped
+ * yet) produce empty ground truth — all fields scored as 'unknown'.
  *
- * Logic:
- *   - Both ceiling sources non-null AND values agree → present_in_doc='yes', value=Opus value
+ * Logic per (site, doc, field):
+ *   - Both Opus + Haiku ceiling sources non-null AND values agree → present_in_doc='yes', value=Opus value
  *   - Both ceiling sources null → present_in_doc='no'
  *   - One non-null + one null (OR both non-null but disagree) → present_in_doc='ambiguous'
- *   - Field missing from BOTH ceiling sources → present_in_doc='unknown' (Opus doesn't cover ACA fields)
- *   - Field present in only ONE ceiling source → single_source=true; treat as 'yes' with caveat
+ *   - Field missing from BOTH ceiling sources → present_in_doc='unknown'
+ *   - Only one ceiling source covers field → single_source=true
+ *   - No Opus state defined for this site → Haiku ceiling becomes sole GT source
+ *     (single_source=true on every entry)
  */
 
 import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
-import type { CalibrationState, CanonicalField, DocSlug, GroundTruth, GroundTruthEntry } from './types';
-import { CANONICAL_PLAN_IDENTITY_FIELDS, CALIBRATION_DOCS } from './types';
-
-const OPUS_STATE_ID = 'opus-baseline-2026-05-28';
-const HAIKU_CEILING_STATE_ID = 'haiku-comprehensive-temp1-2026-05-28';
+import type {
+  CalibrationState,
+  CanonicalField,
+  GroundTruth,
+  GroundTruthEntry,
+  ParserSite,
+} from './types';
+import { PARSER_SITE_REGISTRY } from './types';
 
 /** Equality check tolerant to string/number normalization. */
 function valuesAgree(a: unknown, b: unknown): boolean {
@@ -35,30 +42,50 @@ function valuesAgree(a: unknown, b: unknown): boolean {
   return a === b;
 }
 
-export function deriveGroundTruth(states: CalibrationState[]): GroundTruth {
-  const opus = states.find((s) => s.id === OPUS_STATE_ID);
-  const haikuCeiling = states.find((s) => s.id === HAIKU_CEILING_STATE_ID);
-  if (!opus || !haikuCeiling) {
-    throw new Error('Ground truth derivation requires both Opus + Haiku-comprehensive ceiling states');
+export function deriveGroundTruth(states: CalibrationState[], site: ParserSite): GroundTruth {
+  const cfg = PARSER_SITE_REGISTRY[site];
+  const opusStateId = cfg.ground_truth_opus_state_id;
+  const ceilingStateId = cfg.ground_truth_haiku_ceiling_state_id;
+
+  const opus = opusStateId ? states.find((s) => s.id === opusStateId) : null;
+  const ceiling = ceilingStateId ? states.find((s) => s.id === ceilingStateId) : null;
+
+  // No ceiling states available → empty GT (all fields scored as 'unknown')
+  if (!opus && !ceiling) {
+    const gt: GroundTruth = {};
+    for (const doc of cfg.doc_slugs) {
+      gt[doc] = {};
+      for (const field of cfg.canonical_fields) {
+        gt[doc]![field] = {
+          present_in_doc: 'unknown',
+          value: null,
+          opus_excerpt: null,
+          haiku_ceiling_excerpt: null,
+          single_source: false,
+          notes: 'No ceiling state available for this site yet',
+        };
+      }
+    }
+    return gt;
   }
 
   const gt: GroundTruth = {};
 
-  for (const doc of CALIBRATION_DOCS) {
-    const opusRuns = opus.by_doc[doc];
-    const haikuRuns = haikuCeiling.by_doc[doc];
-    if (!opusRuns?.[0] && !haikuRuns?.[0]) continue;
+  for (const doc of cfg.doc_slugs) {
+    const opusRuns = opus?.by_doc[doc];
+    const ceilingRuns = ceiling?.by_doc[doc];
+    if (!opusRuns?.[0] && !ceilingRuns?.[0]) continue;
     const opusFields = opusRuns?.[0]?.fields ?? {};
-    const haikuFields = haikuRuns?.[0]?.fields ?? {};
+    const ceilingFields = ceilingRuns?.[0]?.fields ?? {};
 
     gt[doc] = {};
 
-    for (const field of CANONICAL_PLAN_IDENTITY_FIELDS) {
+    for (const field of cfg.canonical_fields) {
       const opusF = opusFields[field];
-      const haikuF = haikuFields[field];
+      const ceilingF = ceilingFields[field];
 
       // Both sources missing this field entry entirely
-      if (!opusF && !haikuF) {
+      if (!opusF && !ceilingF) {
         gt[doc]![field] = {
           present_in_doc: 'unknown',
           value: null,
@@ -71,21 +98,23 @@ export function deriveGroundTruth(states: CalibrationState[]): GroundTruth {
       }
 
       const opusVal = opusF?.value ?? null;
-      const haikuVal = haikuF?.value ?? null;
+      const ceilingVal = ceilingF?.value ?? null;
 
-      // Only one source covers this field
-      if (!opusF && haikuF) {
+      // Only one source covers this field (or site has no Opus by design)
+      if (!opusF && ceilingF) {
         gt[doc]![field] = {
-          present_in_doc: haikuVal === null ? 'no' : 'yes',
-          value: haikuVal,
+          present_in_doc: ceilingVal === null ? 'no' : 'yes',
+          value: ceilingVal,
           opus_excerpt: null,
-          haiku_ceiling_excerpt: haikuF.source_excerpt ?? null,
+          haiku_ceiling_excerpt: ceilingF.source_excerpt ?? null,
           single_source: true,
-          notes: 'Opus does not cover this field; Haiku-ceiling is the only ground-truth source',
+          notes: opus
+            ? 'Opus does not cover this field; Haiku-ceiling is sole GT source'
+            : 'No Opus baseline for this site; Haiku-ceiling is sole GT source',
         };
         continue;
       }
-      if (opusF && !haikuF) {
+      if (opusF && !ceilingF) {
         gt[doc]![field] = {
           present_in_doc: opusVal === null ? 'no' : 'yes',
           value: opusVal,
@@ -99,8 +128,8 @@ export function deriveGroundTruth(states: CalibrationState[]): GroundTruth {
 
       // Both sources cover this field; apply consistency logic
       const opusEntry = opusF as NonNullable<typeof opusF>;
-      const haikuEntry = haikuF as NonNullable<typeof haikuF>;
-      if (opusVal === null && haikuVal === null) {
+      const ceilingEntry = ceilingF as NonNullable<typeof ceilingF>;
+      if (opusVal === null && ceilingVal === null) {
         gt[doc]![field] = {
           present_in_doc: 'no',
           value: null,
@@ -111,12 +140,12 @@ export function deriveGroundTruth(states: CalibrationState[]): GroundTruth {
         };
         continue;
       }
-      if (opusVal !== null && haikuVal !== null && valuesAgree(opusVal, haikuVal)) {
+      if (opusVal !== null && ceilingVal !== null && valuesAgree(opusVal, ceilingVal)) {
         gt[doc]![field] = {
           present_in_doc: 'yes',
           value: opusVal,
           opus_excerpt: opusEntry.source_excerpt ?? null,
-          haiku_ceiling_excerpt: haikuEntry.source_excerpt ?? null,
+          haiku_ceiling_excerpt: ceilingEntry.source_excerpt ?? null,
           single_source: false,
           notes: 'Both ceiling sources agree on non-null value',
         };
@@ -127,9 +156,9 @@ export function deriveGroundTruth(states: CalibrationState[]): GroundTruth {
         present_in_doc: 'ambiguous',
         value: null,
         opus_excerpt: opusEntry.source_excerpt ?? null,
-        haiku_ceiling_excerpt: haikuEntry.source_excerpt ?? null,
+        haiku_ceiling_excerpt: ceilingEntry.source_excerpt ?? null,
         single_source: false,
-        notes: `Ambiguous: opus=${JSON.stringify(opusVal)} haiku-ceiling=${JSON.stringify(haikuVal)}`,
+        notes: `Ambiguous: opus=${JSON.stringify(opusVal)} haiku-ceiling=${JSON.stringify(ceilingVal)}`,
       };
     }
   }
@@ -143,21 +172,17 @@ export function deriveGroundTruth(states: CalibrationState[]): GroundTruth {
  * Per Andrew direction (2026-05-28): "neither Opus nor Haiku-ceiling can be gold;
  * adjudicate disagreements + unknown-GT fields manually". Overlay structure:
  *
- *   { "<doc-slug>": { "<canonical-field>": { value: <truth>, rationale: "..." } } }
+ *   { "<site>": { "<doc-slug>": { "<canonical-field>": { value: <truth>, rationale: "..." } } } }
  *
- * When loaded, overrides replace the auto-derived GT entry: `present_in_doc='yes'`
- * if override value is non-null; `'no'` if null. The override `value` becomes the
- * ground-truth value used by `value_matches_ground_truth` scoring.
- *
- * Adjudication is conservative: only set overrides when the OCR + reasoning support
- * a clear truth. Otherwise leave as 'unknown' (the scorer marks those as
- * `unscored_unknown` — they don't penalize or credit).
+ * S138 PR2 extension: keyed by site at the top level so each parser site has its own
+ * adjudication overlay. Pre-PR2 file shape (flat doc→field map) auto-detected and
+ * promoted to plan_identity site for backwards compatibility.
  */
 export interface GoldOverride {
   value: unknown;
   rationale: string;
 }
-export type GoldOverrides = Partial<Record<DocSlug, Partial<Record<CanonicalField, GoldOverride>>>>;
+export type GoldOverrides = Partial<Record<ParserSite, Record<string, Partial<Record<CanonicalField, GoldOverride>>>>>;
 
 const VAULT_BASE =
   '/Users/andrewullmann/Desktop/du_weldenvarden/04_Professional/Airgetlam Labs LLC/Candid/plans/findings/opus-parser-calibration-2026-05-28';
@@ -165,18 +190,41 @@ const VAULT_BASE =
 export function loadGoldOverrides(): GoldOverrides {
   const path = resolve(VAULT_BASE, 'gold_overrides.json');
   if (!existsSync(path)) return {};
-  const raw = JSON.parse(readFileSync(path, 'utf-8')) as GoldOverrides;
-  return raw;
+  const raw = JSON.parse(readFileSync(path, 'utf-8')) as unknown;
+  if (!raw || typeof raw !== 'object') return {};
+
+  // Detect shape: is it the new {site: {doc: {field: ...}}} layout, OR the pre-PR2
+  // flat {doc: {field: ...}} layout that implicitly meant plan_identity?
+  // `_meta` keys are allowed in both layouts (metadata, not site/doc data).
+  const obj = raw as Record<string, unknown>;
+  const KNOWN_SITES = ['plan_identity', 'sbc', 'plan_doc', 'code_identity', 'description_match', 'eoc'];
+  const nonMetaKeys = Object.keys(obj).filter((k) => k !== '_meta');
+  const looksLikeSiteKeyed = nonMetaKeys.length > 0 && nonMetaKeys.every((k) => KNOWN_SITES.includes(k));
+  if (looksLikeSiteKeyed) {
+    // Strip `_meta` from the returned overrides (it's documentation, not field data)
+    const { _meta: _ignored, ...siteData } = obj;
+    void _ignored;
+    return siteData as GoldOverrides;
+  }
+  // Legacy flat layout — promote to plan_identity (drop `_meta` if present)
+  const { _meta: _ignored, ...flatData } = obj;
+  void _ignored;
+  return { plan_identity: flatData as Record<string, Partial<Record<CanonicalField, GoldOverride>>> };
 }
 
-export function applyGoldOverrides(gt: GroundTruth, overrides: GoldOverrides): GroundTruth {
+export function applyGoldOverrides(
+  gt: GroundTruth,
+  overrides: GoldOverrides,
+  site: ParserSite,
+): GroundTruth {
   const result: GroundTruth = JSON.parse(JSON.stringify(gt));
-  for (const [doc, fields] of Object.entries(overrides)) {
-    if (!result[doc as DocSlug]) result[doc as DocSlug] = {};
+  const siteOverrides = overrides[site] ?? {};
+  for (const [doc, fields] of Object.entries(siteOverrides)) {
+    if (!result[doc]) result[doc] = {};
     for (const [field, override] of Object.entries(fields ?? {})) {
       const o = override as GoldOverride;
-      const prior = result[doc as DocSlug]![field as CanonicalField];
-      result[doc as DocSlug]![field as CanonicalField] = {
+      const prior = result[doc]![field as CanonicalField];
+      result[doc]![field as CanonicalField] = {
         present_in_doc: o.value === null ? 'no' : 'yes',
         value: o.value,
         opus_excerpt: prior?.opus_excerpt ?? null,
