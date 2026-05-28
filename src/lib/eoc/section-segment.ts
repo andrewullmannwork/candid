@@ -210,6 +210,7 @@ ${rawDocText.slice(0, 50000)}`;
     const response = await client.messages.create({
       model: HAIKU_MODEL,
       max_tokens: 1024,
+      temperature: 0,
       messages: [{ role: "user", content: prompt }],
     });
     const text = response.content[0].type === "text" ? response.content[0].text : "";

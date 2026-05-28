@@ -138,6 +138,7 @@ export async function extractCardWithHaiku(
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 1024,
+      temperature: 0,
       messages: [{ role: "user", content: PROMPT + ocrText }],
     });
 

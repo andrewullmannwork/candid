@@ -353,6 +353,7 @@ export async function parseBillWithHaiku(
     let response = await client.messages.create({
       model: MODEL,
       max_tokens: maxTokens,
+      temperature: 0,
       messages: [{
         role: "user",
         content: [
@@ -368,6 +369,7 @@ export async function parseBillWithHaiku(
       response = await client.messages.create({
         model: MODEL,
         max_tokens: HAIKU_MAX_OUTPUT,
+        temperature: 0,
         messages: [{
           role: "user",
           content: [
@@ -405,6 +407,7 @@ export async function parseBillWithHaiku(
       const retryResponse = await client.messages.create({
         model: MODEL,
         max_tokens: HAIKU_MAX_OUTPUT, // retry at max budget; the failed call may have been near limit
+        temperature: 0,
         messages: [{
           role: "user",
           content: [
