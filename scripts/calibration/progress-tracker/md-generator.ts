@@ -1,31 +1,53 @@
 /**
- * Generate progress-tracker.md — human-readable pivot table.
+ * Generate progress-tracker.md — human-readable pivot tables per parser_site.
  *
- * Two main views:
- *   1. Per-state per-doc summary table (fields_verifiable / spurious_null / drift / fmt_fail / cost)
- *   2. Per-state per-field disagreements-with-Opus drill-down (for review)
- *   3. Ground truth coverage summary (how many fields have unambiguous truth per doc)
+ * S138 PR2 extension: per-site axis.
+ *
+ * Output structure (multi-site):
+ *   1. Header + methodology (shared across sites)
+ *   2. Cross-site summary table (top-line monotonic-improvement status per site)
+ *   3. Per-site sections (ground truth coverage, per-state per-doc summary, detailed
+ *      metrics, monotonic improvement check, adjudication queue, Opus disagreements)
  */
 
-import type { CalibrationState, GroundTruth, StateScore } from './types';
-import { CALIBRATION_DOCS, CANONICAL_PLAN_IDENTITY_FIELDS } from './types';
+import type { CalibrationState, GroundTruth, ParserSite, StateScore } from './types';
+import { PARSER_SITE_REGISTRY } from './types';
 import { summarizeGroundTruth } from './ground-truth';
 
-function padRight(s: string, w: number): string {
-  return s.length >= w ? s : s + ' '.repeat(w - s.length);
-}
-
-function padLeft(s: string, w: number): string {
-  return s.length >= w ? s : ' '.repeat(w - s.length) + s;
-}
-
-export function generateMd(args: {
+export interface SiteSectionInput {
+  site: ParserSite;
   scores: StateScore[];
   states: CalibrationState[];
   groundTruth: GroundTruth;
-}): string {
-  const { scores, states, groundTruth } = args;
+}
 
+function deltaCell(cur: number | null, ref: number | null): string {
+  if (cur === null || ref === null) return '—';
+  const d = cur - ref;
+  if (d > 0) return `+${d}`;
+  if (d < 0) return `**${d}**`;
+  return '0';
+}
+
+function verdictOf(
+  curScore: StateScore,
+  ref: StateScore,
+  docSlugs: readonly string[],
+): string {
+  let regressed = false;
+  let improved = false;
+  for (const doc of docSlugs) {
+    const c = curScore.by_doc[doc]?.fields_verifiable ?? null;
+    const r = ref.by_doc[doc]?.fields_verifiable ?? null;
+    if (c === null || r === null) continue;
+    if (c - r < 0) regressed = true;
+    if (c - r > 0) improved = true;
+  }
+  return regressed ? '**REGRESSED**' : improved ? 'IMPROVED' : 'NEUTRAL';
+}
+
+/** Header + shared methodology (once at top of multi-site file). */
+function generateHeader(): string {
   const lines: string[] = [];
   lines.push('# Calibration Progress Tracker');
   lines.push('');
@@ -35,22 +57,87 @@ export function generateMd(args: {
   lines.push('');
   lines.push('---');
   lines.push('');
-
-  // ── Section 1: Methodology ────────────────────────────────────────────────
   lines.push('## Methodology');
   lines.push('');
   lines.push('**Primary metric**: `fields_verifiable` per (state, doc) — count of canonical fields where the Haiku-extracted value\'s `source_excerpt` round-trips against the OCR text via Pattern P-8 verification. **Monotonic improvement is the ship gate** — every new state must have `fields_verifiable >= prior_state_count` on every doc.');
   lines.push('');
   lines.push('**Opus role**: reference signal, not gold standard. Disagreements flagged for review but don\'t penalize the metric. (Per Andrew direction 2026-05-28 — "neither can be gold; Opus provides better reference data".)');
   lines.push('');
-  lines.push('**Ground truth (Option E)**: per-(doc, field), derived from cross-state consistency of Opus baseline + Haiku-comprehensive ceiling. Both non-null and agreeing → field IS in doc; both null → field NOT in doc; otherwise ambiguous.');
+  lines.push('**Ground truth (Option E)**: per-(doc, field), derived from cross-state consistency of Opus baseline + Haiku-comprehensive ceiling. Both non-null and agreeing → field IS in doc; both null → field NOT in doc; otherwise ambiguous. Sites without Opus baseline use Haiku-comprehensive ceiling as sole GT source (single_source semantics).');
   lines.push('');
   lines.push('**Verified null vs spurious null**: when Haiku returns null on a field where ground truth says the field is IN the doc, that\'s a spurious null (regression). When ground truth confirms absence, null is verified.');
   lines.push('');
-
-  // ── Section 2: Ground truth coverage ──────────────────────────────────────
-  lines.push('## Ground truth coverage');
+  lines.push('**S138 PR2 extension**: multi-site axis (plan_identity / sbc / plan_doc / code_identity / description_match / eoc). Each site is calibrated independently. PR1 (temp=0 default in `callHaikuWithCache`) ships only after this harness shows monotonic non-regression vs DEFECT floor on every site.');
   lines.push('');
+  return lines.join('\n');
+}
+
+/** Cross-site summary table — top-line monotonic-improvement status. */
+function generateCrossSiteSummary(siteInputs: SiteSectionInput[]): string {
+  const lines: string[] = [];
+  lines.push('## Cross-site summary (top-line monotonic-improvement status)');
+  lines.push('');
+  lines.push('Each row is one parser_site. `DEFECT Σ` = sum of `fields_verifiable` across all docs at the DEFECT floor (current PROD behavior at temp=1.0). `Best Σ` = same for the best post-PR1-or-tool-use state. `Δ vs floor` = total improvement.');
+  lines.push('');
+  lines.push('| Site | Docs | Fields | DEFECT Σ verifiable | Best Σ verifiable | Δ vs floor | Best-state ID |');
+  lines.push('|---|---|---|---|---|---|---|');
+  for (const input of siteInputs) {
+    const cfg = PARSER_SITE_REGISTRY[input.site];
+    const totalFields = cfg.canonical_fields.length;
+    const totalDocs = cfg.doc_slugs.length;
+    const possibleMax = totalDocs * totalFields;
+    const defectScore = input.scores.find((s) => s.state_id === cfg.defect_floor_state_id);
+    if (!defectScore) {
+      lines.push(`| ${input.site} | ${totalDocs} | ${totalFields} | — (no DEFECT floor data) | — | — | — |`);
+      continue;
+    }
+    const defectSum = Object.values(defectScore.by_doc).reduce(
+      (s, d) => s + (d?.fields_verifiable ?? 0),
+      0,
+    );
+    let bestSum = defectSum;
+    let bestId = defectScore.state_id;
+    for (const sc of input.scores) {
+      if (sc.state_id === cfg.defect_floor_state_id) continue;
+      if (sc.state_id.startsWith('opus-')) continue;
+      if (sc.state_id.startsWith('haiku-comprehensive-')) continue;
+      const sum = Object.values(sc.by_doc).reduce((s, d) => s + (d?.fields_verifiable ?? 0), 0);
+      if (sum > bestSum) {
+        bestSum = sum;
+        bestId = sc.state_id;
+      }
+    }
+    const delta = bestSum - defectSum;
+    const deltaStr = delta > 0 ? `**+${delta}**` : delta < 0 ? `**${delta}**` : '0';
+    lines.push(
+      `| ${input.site} | ${totalDocs} | ${totalFields} | ${defectSum}/${possibleMax} | ${bestSum}/${possibleMax} | ${deltaStr} | \`${bestId}\` |`,
+    );
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
+/** Per-site section. */
+function generateSiteSection(input: SiteSectionInput): string {
+  const { site, scores, states, groundTruth } = input;
+  const cfg = PARSER_SITE_REGISTRY[site];
+  const lines: string[] = [];
+
+  lines.push(`# Site: ${site}`);
+  lines.push('');
+  lines.push(`**Label**: ${cfg.label}`);
+  lines.push('');
+  lines.push(cfg.description);
+  lines.push('');
+  lines.push(`**Calibration units (${cfg.doc_slugs.length})**: ${cfg.doc_slugs.map((d) => `\`${d}\``).join(', ')}`);
+  lines.push('');
+  lines.push(`**Canonical fields (${cfg.canonical_fields.length})**: ${cfg.canonical_fields.map((f) => `\`${f}\``).join(', ')}`);
+  lines.push('');
+
+  // ── Ground truth coverage ────────────────────────────────────────────────
+  lines.push(`## ${site} — Ground truth coverage`);
+  lines.push('');
+  // Filter groundTruth to this site's docs only (caller-passed groundTruth is per-site).
   const gtSummary = summarizeGroundTruth(groundTruth);
   lines.push('| Doc | yes (present) | no (absent) | ambiguous | unknown | single_source |');
   lines.push('|---|---|---|---|---|---|');
@@ -60,34 +147,31 @@ export function generateMd(args: {
   lines.push(`| **Total** | **${gtSummary.total.yes}** | **${gtSummary.total.no}** | **${gtSummary.total.ambiguous}** | **${gtSummary.total.unknown}** | **${gtSummary.total.single_source}** |`);
   lines.push('');
 
-  // ── Section 3: Per-state per-doc summary ──────────────────────────────────
-  lines.push('## State-vs-state progress (per doc)');
+  // ── Per-state per-doc summary ────────────────────────────────────────────
+  lines.push(`## ${site} — State-vs-state progress (per doc)`);
   lines.push('');
-  lines.push('Each row is a calibration state; each column group is a doc. Cells: `verifiable/17 | spurious-null | drift | fmt-fail | $`.');
+  lines.push(`Each row is a calibration state; each column group is a doc. Cells: \`verifiable/${cfg.canonical_fields.length} | spurious-null | drift | fmt-fail | $\`.`);
   lines.push('');
-
-  // Column headers
   const headerCells = ['State'];
-  for (const doc of CALIBRATION_DOCS) {
+  for (const doc of cfg.doc_slugs) {
     headerCells.push(doc.length > 18 ? doc.slice(0, 18) + '…' : doc);
   }
   headerCells.push('Σ cost');
   lines.push('| ' + headerCells.join(' | ') + ' |');
   lines.push('|' + headerCells.map(() => '---').join('|') + '|');
-
   for (const sc of scores) {
     const state = states.find((s) => s.id === sc.state_id);
     const label = state ? state.label.slice(0, 40) : sc.state_id;
     const row: string[] = [label];
     let totalCost = 0;
-    for (const doc of CALIBRATION_DOCS) {
+    for (const doc of cfg.doc_slugs) {
       const ds = sc.by_doc[doc];
       if (!ds) {
         row.push('—');
         continue;
       }
       totalCost += ds.cost_usd_total;
-      const verifiable = `${ds.fields_verifiable}/${CANONICAL_PLAN_IDENTITY_FIELDS.length}`;
+      const verifiable = `${ds.fields_verifiable}/${cfg.canonical_fields.length}`;
       const spurious = ds.spurious_null_count > 0 ? `**${ds.spurious_null_count}**` : '0';
       const drift = ds.drift_count > 0 ? `**${ds.drift_count}**` : '0';
       const fmt = ds.format_failure_count > 0 ? `**${ds.format_failure_count}**` : '0';
@@ -101,8 +185,8 @@ export function generateMd(args: {
   lines.push('Legend: `sn` = spurious-null count, `d` = drift-key count, `f` = format-failure count. **Bold** = non-zero (problem signal).');
   lines.push('');
 
-  // ── Section 4: Detailed per-state metrics ─────────────────────────────────
-  lines.push('## Detailed per-state metrics');
+  // ── Detailed per-state metrics ───────────────────────────────────────────
+  lines.push(`## ${site} — Detailed per-state metrics`);
   lines.push('');
   for (const sc of scores) {
     const state = states.find((s) => s.id === sc.state_id);
@@ -118,7 +202,7 @@ export function generateMd(args: {
     lines.push('');
     lines.push('| Doc | verifiable | verified-null | unverifiable | spurious-null | drift | fmt-fail | Opus-agree | Opus-disagree | runs | $ | p50ms |');
     lines.push('|---|---|---|---|---|---|---|---|---|---|---|---|');
-    for (const doc of CALIBRATION_DOCS) {
+    for (const doc of cfg.doc_slugs) {
       const ds = sc.by_doc[doc];
       if (!ds) {
         lines.push(`| ${doc} | — | — | — | — | — | — | — | — | — | — | — |`);
@@ -134,7 +218,7 @@ export function generateMd(args: {
     lines.push('');
     lines.push('| Doc | correct | wrong | verified_absent | false_positive | unscored_unknown | unscored_ambiguous |');
     lines.push('|---|---|---|---|---|---|---|');
-    for (const doc of CALIBRATION_DOCS) {
+    for (const doc of cfg.doc_slugs) {
       const ds = sc.by_doc[doc];
       if (!ds) {
         lines.push(`| ${doc} | — | — | — | — | — | — |`);
@@ -147,7 +231,7 @@ export function generateMd(args: {
     lines.push('');
     // Drift keys detail
     const allDrift = new Set<string>();
-    for (const doc of CALIBRATION_DOCS) {
+    for (const doc of cfg.doc_slugs) {
       const ds = sc.by_doc[doc];
       ds?.drift_keys.forEach((k) => allDrift.add(k));
     }
@@ -157,66 +241,53 @@ export function generateMd(args: {
     }
   }
 
-  // ── Section 5: Monotonic improvement check ────────────────────────────────
-  lines.push('## Monotonic improvement check (Ship Gate G2 evidence)');
+  // ── Monotonic improvement check ──────────────────────────────────────────
+  lines.push(`## ${site} — Monotonic improvement check (Ship Gate G2 evidence)`);
   lines.push('');
   lines.push('Each Haiku state\'s `fields_verifiable` count compared against **two reference points**:');
   lines.push('');
-  lines.push('- **vs DEFECT floor** (`haiku-live-prod-temp1-2026-05-28`) — the pre-Session-2 production baseline we\'re trying to improve. **Ship gate**: any new Haiku state must NOT regress vs DEFECT floor on any doc.');
-  lines.push('- **vs Opus reference** (informational; Opus is reference data not gold) — track whether Haiku approaches or exceeds Opus.');
+  lines.push(`- **vs DEFECT floor** (\`${cfg.defect_floor_state_id}\`) — the pre-Session-2 production baseline we\'re trying to improve. **Ship gate**: any new Haiku state must NOT regress vs DEFECT floor on any doc.`);
+  lines.push('- **vs Opus reference** (informational; Opus is reference data not gold) — track whether Haiku approaches or exceeds Opus. Only meaningful for sites with Opus baseline.');
   lines.push('');
-  const defectFloor = scores.find((s) => s.state_id.includes('haiku-live-prod-temp1'));
-  const opusBaseline = scores.find((s) => s.state_id.startsWith('opus-baseline'));
-
-  function deltaCell(cur: number | null, ref: number | null): string {
-    if (cur === null || ref === null) return '—';
-    const d = cur - ref;
-    if (d > 0) return `+${d}`;
-    if (d < 0) return `**${d}**`;
-    return '0';
-  }
-
-  function verdictOf(curScore: typeof scores[number], ref: typeof scores[number]): string {
-    let regressed = false;
-    let improved = false;
-    for (const doc of CALIBRATION_DOCS) {
-      const c = curScore.by_doc[doc]?.fields_verifiable ?? null;
-      const r = ref.by_doc[doc]?.fields_verifiable ?? null;
-      if (c === null || r === null) continue;
-      if (c - r < 0) regressed = true;
-      if (c - r > 0) improved = true;
-    }
-    return regressed ? '**REGRESSED**' : improved ? 'IMPROVED' : 'NEUTRAL';
-  }
+  const defectFloor = scores.find((s) => s.state_id === cfg.defect_floor_state_id);
+  const opusBaseline = cfg.ground_truth_opus_state_id
+    ? scores.find((s) => s.state_id === cfg.ground_truth_opus_state_id)
+    : undefined;
 
   if (defectFloor) {
     lines.push(`### Δ vs DEFECT floor (\`${defectFloor.state_id}\`)`);
     lines.push('');
-    lines.push('| State | OAP Δ | Ambetter Δ | Gold80 Δ | AnthemIN Δ | ECM-EOC Δ | Verdict |');
-    lines.push('|---|---|---|---|---|---|---|');
+    const docHeaders = cfg.doc_slugs.map((d) => `${d.slice(0, 12)} Δ`).join(' | ');
+    lines.push(`| State | ${docHeaders} | Verdict |`);
+    lines.push('|---' + cfg.doc_slugs.map(() => '|---').join('') + '|---|');
     for (const sc of scores) {
       if (sc.state_id === defectFloor.state_id) continue;
       if (sc.state_id.startsWith('opus-')) continue;
       if (sc.state_id.startsWith('haiku-comprehensive-')) continue;
+      if (sc.state_id === cfg.ground_truth_haiku_ceiling_state_id) continue;
       const cells: string[] = [];
       const state = states.find((s) => s.id === sc.state_id);
       cells.push((state?.label ?? sc.state_id).slice(0, 50));
-      for (const doc of CALIBRATION_DOCS) {
+      for (const doc of cfg.doc_slugs) {
         const c = sc.by_doc[doc]?.fields_verifiable ?? null;
         const r = defectFloor.by_doc[doc]?.fields_verifiable ?? null;
         cells.push(deltaCell(c, r));
       }
-      cells.push(verdictOf(sc, defectFloor));
+      cells.push(verdictOf(sc, defectFloor, cfg.doc_slugs));
       lines.push('| ' + cells.join(' | ') + ' |');
     }
+    lines.push('');
+  } else {
+    lines.push(`*(No DEFECT floor state loaded — calibration runner has not shipped \`${cfg.defect_floor_state_id}\` artifacts yet.)*`);
     lines.push('');
   }
 
   if (opusBaseline) {
     lines.push(`### Δ vs Opus reference (\`${opusBaseline.state_id}\`) — informational`);
     lines.push('');
-    lines.push('| State | OAP Δ | Ambetter Δ | Gold80 Δ | AnthemIN Δ | ECM-EOC Δ | Total Δ |');
-    lines.push('|---|---|---|---|---|---|---|');
+    const docHeaders = cfg.doc_slugs.map((d) => `${d.slice(0, 12)} Δ`).join(' | ');
+    lines.push(`| State | ${docHeaders} | Total Δ |`);
+    lines.push('|---' + cfg.doc_slugs.map(() => '|---').join('') + '|---|');
     for (const sc of scores) {
       if (sc.state_id === opusBaseline.state_id) continue;
       const cells: string[] = [];
@@ -224,7 +295,7 @@ export function generateMd(args: {
       cells.push((state?.label ?? sc.state_id).slice(0, 50));
       let totalDelta = 0;
       let hasData = false;
-      for (const doc of CALIBRATION_DOCS) {
+      for (const doc of cfg.doc_slugs) {
         const c = sc.by_doc[doc]?.fields_verifiable ?? null;
         const r = opusBaseline.by_doc[doc]?.fields_verifiable ?? null;
         cells.push(deltaCell(c, r));
@@ -239,18 +310,20 @@ export function generateMd(args: {
     lines.push('');
   }
 
-  // ── Adjudication queue: unknown-GT fields with tool-use extractions ───────
+  // ── Adjudication queue: unknown-GT fields ────────────────────────────────
   const toolUseScore = scores.find((s) => s.state_id.includes('toolUse'));
   if (toolUseScore) {
-    lines.push('## Adjudication queue — unknown-GT fields (tool-use extractions for manual review)');
+    lines.push(`## ${site} — Adjudication queue (unknown-GT fields with tool-use extractions)`);
     lines.push('');
-    lines.push('Per Andrew direction (2026-05-28): Opus doesn\'t cover `groupNumber` / `isAcaCompliant` / `acaComplianceBasis`, so the harness can\'t auto-score them. Tool-use\'s extractions for these fields need manual review and persistence to `gold_overrides.json`.');
+    lines.push(`Per Andrew direction (2026-05-28): adjudicated GT entries persist to \`gold_overrides.json\` (site-keyed). For \`${site}\`, the unknown-GT fields below need manual review.`);
     lines.push('');
-    for (const doc of CALIBRATION_DOCS) {
+    let anyShown = false;
+    for (const doc of cfg.doc_slugs) {
       const ds = toolUseScore.by_doc[doc];
       if (!ds) continue;
       const unknownFields = ds.per_field.filter((f) => f.value_match === 'unscored_unknown');
       if (unknownFields.length === 0) continue;
+      anyShown = true;
       lines.push(`### ${doc}`);
       lines.push('');
       for (const f of unknownFields) {
@@ -259,32 +332,58 @@ export function generateMd(args: {
       }
       lines.push('');
     }
+    if (!anyShown) {
+      lines.push('*(No unknown-GT fields under tool-use for this site.)*');
+      lines.push('');
+    }
   }
 
-  // ── Section 6: Opus disagreements (review queue) ──────────────────────────
-  lines.push('## Opus disagreements (informational — for review, not penalty)');
-  lines.push('');
-  lines.push('Cases where Haiku state disagrees with Opus on a non-null value. Review to determine whether Opus is right OR Haiku is right OR both have plausible interpretations.');
-  lines.push('');
-  for (const sc of scores) {
-    if (sc.state_id.startsWith('opus-')) continue; // don't compare Opus to itself
-    const state = states.find((s) => s.id === sc.state_id);
-    const disagreements: string[] = [];
-    for (const doc of CALIBRATION_DOCS) {
-      const ds = sc.by_doc[doc];
-      if (!ds) continue;
-      for (const f of ds.per_field) {
-        if (f.disagrees_with_opus) {
-          disagreements.push(`- **${doc}** / \`${f.field}\`: haiku=\`${JSON.stringify(f.haiku_value)}\` vs opus`);
+  // ── Opus disagreements ───────────────────────────────────────────────────
+  if (cfg.ground_truth_opus_state_id) {
+    lines.push(`## ${site} — Opus disagreements (informational — for review, not penalty)`);
+    lines.push('');
+    lines.push('Cases where Haiku state disagrees with Opus on a non-null value. Review to determine whether Opus is right OR Haiku is right OR both have plausible interpretations.');
+    lines.push('');
+    let anyDisagreement = false;
+    for (const sc of scores) {
+      if (sc.state_id.startsWith('opus-')) continue;
+      const state = states.find((s) => s.id === sc.state_id);
+      const disagreements: string[] = [];
+      for (const doc of cfg.doc_slugs) {
+        const ds = sc.by_doc[doc];
+        if (!ds) continue;
+        for (const f of ds.per_field) {
+          if (f.disagrees_with_opus) {
+            disagreements.push(`- **${doc}** / \`${f.field}\`: haiku=\`${JSON.stringify(f.haiku_value)}\` vs opus`);
+          }
         }
       }
+      if (disagreements.length === 0) continue;
+      anyDisagreement = true;
+      lines.push(`### ${state?.label ?? sc.state_id}`);
+      lines.push('');
+      for (const d of disagreements) lines.push(d);
+      lines.push('');
     }
-    if (disagreements.length === 0) continue;
-    lines.push(`### ${state?.label ?? sc.state_id}`);
-    lines.push('');
-    for (const d of disagreements) lines.push(d);
-    lines.push('');
+    if (!anyDisagreement) {
+      lines.push('*(No Opus disagreements detected this run.)*');
+      lines.push('');
+    }
   }
 
+  lines.push('---');
+  lines.push('');
   return lines.join('\n');
+}
+
+export function generateMd(siteInputs: SiteSectionInput[]): string {
+  const parts: string[] = [];
+  parts.push(generateHeader());
+  if (siteInputs.length > 1) {
+    parts.push(generateCrossSiteSummary(siteInputs));
+  }
+  for (const input of siteInputs) {
+    parts.push(generateSiteSection(input));
+  }
+  return parts.join('\n');
 }
