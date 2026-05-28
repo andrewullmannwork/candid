@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BillCard } from "@/components/claims/BillCard";
+import { VisitGroupCard } from "@/components/claims/VisitGroupCard";
 import { ClaimDetail } from "@/components/claims/ClaimDetail";
 import { DiscrepancyList } from "@/components/claims/DiscrepancyList";
 import { FollowupBanner } from "@/components/disputes/FollowupBanner";
@@ -53,6 +54,10 @@ interface ClaimSummary {
   findingCount: number;
   providerName: string;
   created_at: string;
+  // S139 — visit-group grouping key (claim-matching.ts auto-assigns at parse
+  // time when 2+ bills share date_of_service + provider). Bills tab renders
+  // VisitGroupCard for ≥2-member groups; singletons render BillCard.
+  claim_group_id?: string | null;
   potentialSavings?: number;
   reviewNeededCount?: number;
   reviewLineItems?: Array<{
@@ -338,6 +343,46 @@ export default function CandidClaimPage() {
     return map;
   }, [claims, discrepancies, disputeData]);
 
+  // S139 — group claims by claim_group_id for VisitGroupCard rendering on
+  // Bills tab. Singletons (group_id null OR group of 1) render as BillCard;
+  // ≥2-member groups render as VisitGroupCard. Preserves original sort order
+  // via first-seen anchor per group. Disputes tab unchanged — drafted
+  // disputes render as individual BillCards intentionally (per-letter focus).
+  const renderUnits = useMemo(() => {
+    type Unit =
+      | { kind: "singleton"; claim: ClaimSummary }
+      | { kind: "group"; groupId: string; bills: ClaimSummary[] };
+    const groupBuckets = new Map<string, ClaimSummary[]>();
+    const order: Array<{ key: string; isGroup: boolean }> = [];
+    for (const c of claims) {
+      if (c.claim_group_id) {
+        if (!groupBuckets.has(c.claim_group_id)) {
+          groupBuckets.set(c.claim_group_id, []);
+          order.push({ key: c.claim_group_id, isGroup: true });
+        }
+        groupBuckets.get(c.claim_group_id)!.push(c);
+      } else {
+        order.push({ key: c.id, isGroup: false });
+      }
+    }
+    const units: Unit[] = [];
+    for (const entry of order) {
+      if (entry.isGroup) {
+        const bills = groupBuckets.get(entry.key)!;
+        if (bills.length >= 2) {
+          units.push({ kind: "group", groupId: entry.key, bills });
+        } else {
+          // Group-of-1 (peer was deleted or never created) — render as singleton.
+          units.push({ kind: "singleton", claim: bills[0] });
+        }
+      } else {
+        const claim = claims.find((c) => c.id === entry.key);
+        if (claim) units.push({ kind: "singleton", claim });
+      }
+    }
+    return units;
+  }, [claims]);
+
   async function handleDiscrepancyStatusChange(discrepancyId: string, newStatus: string) {
     try {
       const token = await user!.firebaseUser.getIdToken();
@@ -524,14 +569,26 @@ export default function CandidClaimPage() {
           {/* Bills tab */}
           {tab === "bills" && (
             <div className="space-y-3">
-              {claims.map((claim) => (
-                <BillCard
-                  key={claim.id}
-                  claim={claim}
-                  state={billStates.get(claim.id) ?? "clean"}
-                  onSelect={(id) => openClaimDetail(id, "bills")}
-                />
-              ))}
+              {/* S139 — grouped rendering via claim_group_id. Singletons →
+                  BillCard (unchanged S138 chrome); ≥2-member groups →
+                  VisitGroupCard with MiniBillRow per member. */}
+              {renderUnits.map((unit) =>
+                unit.kind === "singleton" ? (
+                  <BillCard
+                    key={unit.claim.id}
+                    claim={unit.claim}
+                    state={billStates.get(unit.claim.id) ?? "clean"}
+                    onSelect={(id) => openClaimDetail(id, "bills")}
+                  />
+                ) : (
+                  <VisitGroupCard
+                    key={unit.groupId}
+                    bills={unit.bills}
+                    billStates={billStates}
+                    onSelectBill={(id) => openClaimDetail(id, "bills")}
+                  />
+                ),
+              )}
 
               {/* "Upload another bill" full-width dashed add-tile — D-§1.D.1-H */}
               <Link
