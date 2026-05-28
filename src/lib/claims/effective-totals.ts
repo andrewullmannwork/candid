@@ -187,6 +187,43 @@ export function resolvePerLinePatientPaid(args: {
 }
 
 /**
+ * Resolve per-line insurance_paid (insurer payment) with provenance, used
+ * for DISPLAY ONLY in LineDrawer Bill card + desktop YOU PAID column. When
+ * per-line is sparse but claim header `total_insurance_paid` is populated,
+ * pro-rate by line-billed share. Without this, LineDrawer shows
+ * "Insurer paid $0.00" on every line for header-only EOBs (Dec 12 case)
+ * while bill-level FlaggedBody shows the actual header value — confusing.
+ *
+ * Math layer (computeShouldOwe / computeRecoveryV2) does NOT consume
+ * insurance_paid as an input, so no recovery math ripple.
+ *
+ * Defensive: claimTotalBilled <= 0 → return 0.
+ */
+export function resolvePerLineInsurancePaid(args: {
+  lineBilled: number;
+  lineInsurancePaid: number | null;
+  claimTotalBilled: number;
+  effectiveClaimInsurancePaid: EffectiveClaimTotals;
+}): ResolvedPerLineValue {
+  const citeGradeOk =
+    args.effectiveClaimInsurancePaid.provenance.insurancePaidSource ===
+      "per_line_sum" && args.lineInsurancePaid != null;
+  if (citeGradeOk) {
+    return { value: args.lineInsurancePaid as number, source: "per_line" };
+  }
+  if (args.claimTotalBilled <= 0) {
+    return { value: 0, source: "header_prorated" };
+  }
+  const prorated =
+    Math.round(
+      (args.lineBilled / args.claimTotalBilled) *
+        args.effectiveClaimInsurancePaid.insurancePaid *
+        100,
+    ) / 100;
+  return { value: prorated, source: "header_prorated" };
+}
+
+/**
  * Resolve per-line insurance_adjusted_amount (the contractual writeoff) with
  * provenance, used to feed computeRecoveryV2's `insuranceAdjusted` arg. When
  * per-line writeoff is sparse but claim header `total_insurance_adjusted` is

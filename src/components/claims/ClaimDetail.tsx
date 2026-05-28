@@ -85,10 +85,13 @@ interface LineItem {
     // per-line LineDrawer recovery strip (suppressed when isCitablePerLine
     // is false; aggregate bar below shows the one accurate number).
     // H1 — insuranceAdjustedSource added to track writeoff cite-grade too.
+    // H5 — insurancePaidSource added so isCitablePerLine requires ALL 4
+    // numeric fields per-line cite-grade.
     provenance?: {
       patientPaidSource: "per_line" | "header_prorated";
       patientResponsibilitySource: "per_line" | "header_prorated";
       insuranceAdjustedSource?: "per_line" | "header_prorated";
+      insurancePaidSource?: "per_line" | "header_prorated";
       isCitablePerLine: boolean;
     };
   };
@@ -96,6 +99,10 @@ interface LineItem {
   // writeoff). Drives UI BILLED column + LineDrawer Bill card + OVERCHARGE
   // pill calc. Falls back to raw billed_amount when undefined (legacy).
   adjustedBilled?: number;
+  // S140 fix-pass H5 — per-line insurer payment (pro-rated from header
+  // when per-line is sparse). Drives LineDrawer Bill card "Insurer paid $X"
+  // + desktop/mobile YOU PAID column. Falls back to raw insurance_paid.
+  insurancePaidResolved?: number;
   codeIdentity?: CodeIdentityState | null;
 }
 
@@ -1257,6 +1264,15 @@ export function ClaimDetail({
           // math. Server-computed `adjustedBilled` is authoritative; raw
           // fallback only when API didn't surface it (legacy or empty rows).
           const billedDisplay = item.adjustedBilled ?? billed;
+          // S140 fix-pass H5 — resolved insurer payment per line (pro-rated
+          // when sparse). Replaces raw item.insurance_paid in display sites.
+          const insurancePaidDisplay =
+            item.insurancePaidResolved ?? Number(item.insurance_paid ?? 0);
+          // S140 — resolved patient paid per line (from H1; surfaces via
+          // recovery.patientPaid which carries the pro-rated value through
+          // computeRecoveryV2). Falls back to raw for safety.
+          const patientPaidDisplay =
+            item.recovery?.patientPaid ?? Number(item.patient_paid_amount ?? 0);
           // Session 85 round 5 — "Paid" column = insurance_paid + patient_paid
           // (total cleared on this line by either party). For Bill 1 with
           // insurance_paid=$0 and patient_paid=$292.41, this reads $292.41
@@ -1264,9 +1280,10 @@ export function ClaimDetail({
           // and OOP=$48.25, reads $217.04 (the allowed amount). The breakdown
           // ("Your insurer actually paid" vs "You paid OOP") lives in the
           // red box for full transparency.
-          const paid =
-            Number(item.insurance_paid ?? 0) +
-            Number(item.patient_paid_amount ?? 0);
+          // S140 fix-pass H5 — YOU PAID column = resolved insurer paid +
+          // resolved patient paid (both pro-rated when per-line sparse).
+          // For Dec 12 Line 1: $91.74 + $49.63 = $141.37 (was $0 raw).
+          const paid = insurancePaidDisplay + patientPaidDisplay;
           const owed = item.patient_owes || 0;
           // Session 85 — new column values:
           //   shouldOwe = plan-defined cost share (copay / coinsurance applied to billed)
@@ -1723,7 +1740,7 @@ export function ClaimDetail({
                   planSaysAmount={shouldOwe}
                   adjustedBilledAmount={billedDisplay}
                   patientPaidAmount={patientPaid}
-                  insurancePaidAmount={Number(item.insurance_paid ?? 0)}
+                  insurancePaidAmount={insurancePaidDisplay}
                   coverageLabel={item.planCoverage ? buildPlanSays(item.planCoverage) : "Coverage unknown"}
                   // S140 — suppress per-line recovery strip when patientPaid is
                   // header-prorated (not cite-grade per-line). Plan + bill cards

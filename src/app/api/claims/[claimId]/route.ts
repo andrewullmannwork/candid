@@ -15,6 +15,7 @@ import {
   resolveEffectiveClaimTotals,
   resolvePerLinePatientPaid,
   resolvePerLineInsuranceAdjusted,
+  resolvePerLineInsurancePaid,
 } from "@/lib/claims/effective-totals";
 import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
@@ -293,6 +294,21 @@ export async function GET(
       effectiveClaimInsuranceAdjusted: effectiveTotals,
     });
     const adjustedBilled = Math.max(0, billed - lineInsuranceAdjusted);
+    // S140 fix-pass H5 — pro-rate per-line insurance_paid (display only;
+    // not consumed by recovery math). Without this, LineDrawer Bill card
+    // + desktop YOU PAID column show "Insurer paid $0" on every line for
+    // header-only EOBs while bill-level FlaggedBody shows the real total.
+    const lineInsurancePaidRaw =
+      item.insurance_paid != null ? Number(item.insurance_paid) : null;
+    const {
+      value: insurancePaidResolved,
+      source: insurancePaidSource,
+    } = resolvePerLineInsurancePaid({
+      lineBilled: billed,
+      lineInsurancePaid: lineInsurancePaidRaw,
+      claimTotalBilled,
+      effectiveClaimInsurancePaid: effectiveTotals,
+    });
     const patientResponsibility = item.patient_owes != null
       ? Number(item.patient_owes)
       : resolveStillOutstanding({
@@ -328,10 +344,12 @@ export async function GET(
           ? "per_line"
           : "header_prorated") as "per_line" | "header_prorated",
         insuranceAdjustedSource,
+        insurancePaidSource,
         isCitablePerLine:
           patientPaidSource === "per_line" &&
           item.patient_owes != null &&
-          insuranceAdjustedSource === "per_line",
+          insuranceAdjustedSource === "per_line" &&
+          insurancePaidSource === "per_line",
       },
     };
 
@@ -380,6 +398,10 @@ export async function GET(
       // S140 fix-pass H1 — per-line adjusted billed (raw - resolved writeoff).
       // Drives UI BILLED column + LineDrawer Bill card + OVERCHARGE pill calc.
       adjustedBilled,
+      // S140 fix-pass H5 — per-line insurer payment (pro-rated when sparse;
+      // raw when cite-grade match). Drives LineDrawer Bill card "Insurer
+      // paid $X" + desktop/mobile YOU PAID column derivation.
+      insurancePaidResolved,
       recovery: recoveryWithProvenance,
       codeIdentity: flywheelEnabled
         ? {
