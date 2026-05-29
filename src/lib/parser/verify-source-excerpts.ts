@@ -54,7 +54,11 @@ export interface VerifyContext {
  *   - Strips zero-width chars (ZWSP/ZWNJ/ZWJ/BOM)
  *   - Folds curly single quotes → straight apostrophe (')
  *   - Folds curly double quotes → straight double quote (")
- *   - Folds em-dash, en-dash, figure-dash, minus-sign → hyphen-minus (-)
+ *   - Folds soft-hyphen (U+00AD), em-dash, en-dash, figure-dash, hyphenation
+ *     dashes, minus-sign → hyphen-minus (-) (soft-hyphen added S137 carry —
+ *     pdftotext preserves embedded U+00AD line-break hints literally; Haiku
+ *     reads rendered text with no U+00AD; folding to "-" lets the verifier
+ *     accept source "out­of­network" as matching Haiku's "out-of-network")
  *   - Folds bullet/list-marker chars → space (Phase 3.2 SBC iter 5 finding:
  *     Haiku stochastically includes/excludes bullets in quotes; treating them
  *     as whitespace makes verification consistent regardless of bullet capture.
@@ -71,7 +75,7 @@ export function normalizeWhitespace(text: string): string {
     .replace(/[​-‍﻿]/g, "")
     .replace(/[‘’‚‛]/g, "'")
     .replace(/[“”„‟]/g, '"')
-    .replace(/[‐‑‒–—―−]/g, "-")
+    .replace(/[­‐-―−]/g, "-")
     .replace(/[•·◦‣⁃▪▫●○◆◇★☆]/g, " ")
     // S94 B1 — de-hyphenate pdftotext line-wrap artifacts. PDFs that wrap
     // mid-hyphenated-word output "<word>-\n<word>"; after \n→space we'd see
