@@ -172,6 +172,14 @@ export interface ParsedBill {
   network_status?: NetworkTier;
   accumulators?: Accumulator[];
   extractionMeta?: EOBExtractionMeta; // Q-DR-3D-6 per-field confidence + warnings
+
+  // PR4 (S142) — transient parser-path label. Set by parseBillWithHaiku +
+  // parseBillWithHaikuToolUse so persistAuditResults can attribute
+  // bill_parser_decisions rows without re-reading the flag. NOT persisted to
+  // the database (lives only on the in-memory result). Defaults to 'raw_json'
+  // when unset (the legacy JSON-in-prompt code path; also the regex fallback
+  // path via parseBillFromOCR doesn't stamp this field).
+  parserPath?: "raw_json" | "tool_use";
 }
 
 // Audit findings

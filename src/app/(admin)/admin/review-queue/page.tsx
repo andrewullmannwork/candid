@@ -73,6 +73,40 @@ interface ConceptQueueRow {
   created_at: string;
 }
 
+// PR4 (S142) — Bills tab rows. Sourced from bill_parser_decisions (mig 133).
+// Bills-C Option B precedent: reuse this surface rather than build a new
+// /admin/billing-review page.
+interface BillDecisionRow {
+  id: string;
+  document_id: string | null;
+  claim_id: string | null;
+  user_id: string | null;
+  verdict:
+    | "clean"
+    | "sign_violation"
+    | "per_line_sparse"
+    | "header_reconciliation_failed"
+    | "multi";
+  sign_violation_fields: string[] | null;
+  per_line_sum_details: Array<{
+    field: string;
+    line_sum: number | null;
+    header: number | null;
+    delta: number | null;
+    tolerance: number;
+    within_tolerance: boolean;
+  }> | null;
+  header_reconciliation_delta: number | null;
+  header_reconciliation_tolerance: number | null;
+  parser_path: "raw_json" | "tool_use";
+  metadata: Record<string, unknown>;
+  review_state: "pending" | "dismissed" | "escalated" | "resolved";
+  review_reason: string | null;
+  reviewed_by_user_id: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+}
+
 const CATEGORIES = [
   "office_visit", "emergency", "hospital", "imaging", "lab", "rx",
   "therapy", "mental_health", "maternity", "dme", "preventive", "other",
@@ -85,9 +119,30 @@ export default function ReviewQueuePage() {
   const { query, update, insert } = useAdminQuery();
   const [slugRows, setSlugRows] = useState<SlugQueueRow[]>([]);
   const [conceptRows, setConceptRows] = useState<ConceptQueueRow[]>([]);
+  const [billRows, setBillRows] = useState<BillDecisionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("pending");
-  const [activeTab, setActiveTab] = useState<"slugs" | "concepts">("slugs");
+  // PR4 (S142) — bills tab added per Bills-C Option B (extend existing surface).
+  const [activeTab, setActiveTab] = useState<"slugs" | "concepts" | "bills">("slugs");
+  const [billReviewFilter, setBillReviewFilter] = useState<
+    "all" | "pending" | "dismissed" | "escalated" | "resolved"
+  >("pending");
+  const [deepLinkDecisionId, setDeepLinkDecisionId] = useState<string | null>(null);
+
+  // PR4 (S142) — deep link from Slack notification: #bill-decision-<id>
+  // lands the admin on the Bills tab with the matching row highlighted.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const hash = window.location.hash;
+    const m = hash.match(/^#bill-decision-([0-9a-fA-F-]{36})$/);
+    if (m) {
+      setActiveTab("bills");
+      setDeepLinkDecisionId(m[1]);
+      // Loosen the default review filter so the row is visible even if it's
+      // already been actioned by another admin.
+      setBillReviewFilter("all");
+    }
+  }, []);
   const [actionRowId, setActionRowId] = useState<string | null>(null);
   // Ing-I (S133): slug-side actions extend to 'merge' (concept-side unchanged)
   const [actionMode, setActionMode] = useState<"promote" | "reject" | "merge" | null>(null);
@@ -102,7 +157,13 @@ export default function ReviewQueuePage() {
         if (statusFilter !== "all") {
           filters.push({ column: "status", op: "eq", value: statusFilter });
         }
-        const [slugData, conceptData] = await Promise.all([
+        // Bills tab filters on review_state independently (different column +
+        // values than the slug/concept queue rows).
+        const billFilters: Array<{ column: string; op: string; value: unknown }> = [];
+        if (billReviewFilter !== "all") {
+          billFilters.push({ column: "review_state", op: "eq", value: billReviewFilter });
+        }
+        const [slugData, conceptData, billData] = await Promise.all([
           query({
             table: "service_catalog_admin_review_queue",
             filters,
@@ -115,9 +176,16 @@ export default function ReviewQueuePage() {
             order: { column: "created_at", ascending: false },
             limit: 200,
           }),
+          query({
+            table: "bill_parser_decisions",
+            filters: billFilters,
+            order: { column: "created_at", ascending: false },
+            limit: 200,
+          }),
         ]);
         setSlugRows((slugData as SlugQueueRow[]) || []);
         setConceptRows((conceptData as ConceptQueueRow[]) || []);
+        setBillRows((billData as BillDecisionRow[]) || []);
       } catch (err) {
         console.error("Failed to load review queue:", err);
         setError(err instanceof Error ? err.message : String(err));
@@ -126,7 +194,7 @@ export default function ReviewQueuePage() {
     }
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, statusFilter]);
+  }, [user, statusFilter, billReviewFilter]);
 
   // Aggregate signal: count of distinct source_doc_id per proposed_service_slug.
   // Strong promotion candidates have many docs proposing the same slug.
@@ -159,7 +227,11 @@ export default function ReviewQueuePage() {
     if (statusFilter !== "all") {
       filters.push({ column: "status", op: "eq", value: statusFilter });
     }
-    const [slugData, conceptData] = await Promise.all([
+    const billFilters: Array<{ column: string; op: string; value: unknown }> = [];
+    if (billReviewFilter !== "all") {
+      billFilters.push({ column: "review_state", op: "eq", value: billReviewFilter });
+    }
+    const [slugData, conceptData, billData] = await Promise.all([
       query({
         table: "service_catalog_admin_review_queue",
         filters,
@@ -172,9 +244,16 @@ export default function ReviewQueuePage() {
         order: { column: "created_at", ascending: false },
         limit: 200,
       }),
+      query({
+        table: "bill_parser_decisions",
+        filters: billFilters,
+        order: { column: "created_at", ascending: false },
+        limit: 200,
+      }),
     ]);
     setSlugRows((slugData as SlugQueueRow[]) || []);
     setConceptRows((conceptData as ConceptQueueRow[]) || []);
+    setBillRows((billData as BillDecisionRow[]) || []);
     setLoading(false);
   }
 
@@ -228,6 +307,16 @@ export default function ReviewQueuePage() {
             }`}
           >
             Billing Codes ({conceptRows.length})
+          </button>
+          <button
+            onClick={() => setActiveTab("bills")}
+            className={`px-4 py-2 text-sm font-medium ${
+              activeTab === "bills"
+                ? "border-b-2 border-blue-600 text-blue-600"
+                : "text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            Bills ({billRows.filter((r) => r.verdict !== "clean").length} fire / {billRows.length} total)
           </button>
         </div>
       </div>
@@ -331,6 +420,30 @@ export default function ReviewQueuePage() {
               });
               setActionRowId(null);
               setActionMode(null);
+              await reload();
+            } catch (err) {
+              setError(err instanceof Error ? err.message : String(err));
+            }
+          }}
+        />
+      )}
+
+      {!loading && activeTab === "bills" && (
+        <BillDecisionTable
+          rows={billRows}
+          reviewFilter={billReviewFilter}
+          onReviewFilterChange={setBillReviewFilter}
+          highlightDecisionId={deepLinkDecisionId}
+          onUpdateReviewState={async (row, nextState, reason) => {
+            try {
+              await update("bill_parser_decisions", row.id, {
+                review_state: nextState,
+                review_reason: reason ?? row.review_reason,
+                // v1: admin UUID not exposed in client auth context; defer to
+                // server-side admin attribution pass.
+                reviewed_by_user_id: null,
+                reviewed_at: new Date().toISOString(),
+              });
               await reload();
             } catch (err) {
               setError(err instanceof Error ? err.message : String(err));
@@ -919,4 +1032,188 @@ function StatusBadge({ status }: { status: string }) {
     status === "rejected" ? "bg-gray-200 text-gray-600" :
     "bg-gray-100 text-gray-500";
   return <span className={`rounded px-2 py-0.5 text-xs ${classes}`}>{status}</span>;
+}
+
+// ─── Bills Decision Table (PR4 / S142) ──────────────────────────────────────
+function BillDecisionTable(props: {
+  rows: BillDecisionRow[];
+  reviewFilter: "all" | "pending" | "dismissed" | "escalated" | "resolved";
+  onReviewFilterChange: (f: "all" | "pending" | "dismissed" | "escalated" | "resolved") => void;
+  onUpdateReviewState: (
+    row: BillDecisionRow,
+    next: "pending" | "dismissed" | "escalated" | "resolved",
+    reason?: string,
+  ) => Promise<void>;
+  highlightDecisionId?: string | null;
+}) {
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const counts = {
+    clean: props.rows.filter((r) => r.verdict === "clean").length,
+    sign_violation: props.rows.filter((r) => r.verdict === "sign_violation").length,
+    per_line_sparse: props.rows.filter((r) => r.verdict === "per_line_sparse").length,
+    header_reconciliation_failed: props.rows.filter((r) => r.verdict === "header_reconciliation_failed").length,
+    multi: props.rows.filter((r) => r.verdict === "multi").length,
+  };
+  return (
+    <div>
+      <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-gray-600">
+        <span className="font-semibold uppercase tracking-wide text-gray-500">Review state:</span>
+        {(["pending", "dismissed", "escalated", "resolved", "all"] as const).map((f) => (
+          <button
+            key={f}
+            onClick={() => props.onReviewFilterChange(f)}
+            className={`rounded px-2 py-0.5 ${
+              props.reviewFilter === f ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+            }`}
+          >
+            {f}
+          </button>
+        ))}
+        <span className="ml-4 text-gray-500">
+          Verdicts in view: clean {counts.clean} · sign {counts.sign_violation} · sparse {counts.per_line_sparse}
+          {" "}· header {counts.header_reconciliation_failed} · multi {counts.multi}
+        </span>
+      </div>
+      <table className="w-full text-sm">
+        <thead className="border-b border-gray-200 text-left text-xs uppercase text-gray-500">
+          <tr>
+            <th className="py-2 pr-3">When</th>
+            <th className="py-2 pr-3">Verdict</th>
+            <th className="py-2 pr-3">Sign Violations</th>
+            <th className="py-2 pr-3">Per-line Sum Δ</th>
+            <th className="py-2 pr-3">Header Δ / Tol</th>
+            <th className="py-2 pr-3">Parser</th>
+            <th className="py-2 pr-3">State</th>
+            <th className="py-2 pr-3">Doc / Claim</th>
+            <th className="py-2 pr-3">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {props.rows.length === 0 && (
+            <tr>
+              <td colSpan={9} className="py-4 text-center text-sm text-gray-500">
+                No bill_parser_decisions rows for the selected review filter.
+              </td>
+            </tr>
+          )}
+          {props.rows.map((row) => {
+            const isFire = row.verdict !== "clean";
+            const isHighlighted = props.highlightDecisionId === row.id;
+            return (
+              <tr
+                key={row.id}
+                id={`bill-decision-${row.id}`}
+                className={`border-b border-gray-100 align-top ${
+                  isHighlighted ? "bg-yellow-50 ring-2 ring-yellow-300" : ""
+                }`}
+              >
+                <td className="py-2 pr-3 text-xs text-gray-500">{new Date(row.created_at).toLocaleString()}</td>
+                <td className="py-2 pr-3">
+                  <span
+                    className={`rounded px-2 py-0.5 text-xs ${
+                      row.verdict === "clean"
+                        ? "bg-emerald-100 text-emerald-700"
+                        : row.verdict === "multi"
+                        ? "bg-red-200 text-red-800"
+                        : "bg-amber-100 text-amber-700"
+                    }`}
+                  >
+                    {row.verdict}
+                  </span>
+                </td>
+                <td className="py-2 pr-3 text-xs">
+                  {row.sign_violation_fields?.length
+                    ? row.sign_violation_fields.join(", ")
+                    : "—"}
+                </td>
+                <td className="py-2 pr-3 text-xs">
+                  {row.per_line_sum_details && row.per_line_sum_details.length > 0
+                    ? row.per_line_sum_details
+                        .filter((d) => !d.within_tolerance)
+                        .map((d) => `${d.field}: line_sum=${d.line_sum} hdr=${d.header} Δ=${d.delta} > ${d.tolerance}`)
+                        .join(" · ") || "all within tol"
+                    : "—"}
+                </td>
+                <td className="py-2 pr-3 text-xs">
+                  {row.header_reconciliation_delta != null
+                    ? `Δ=${row.header_reconciliation_delta} / tol=${row.header_reconciliation_tolerance ?? "—"}`
+                    : "—"}
+                </td>
+                <td className="py-2 pr-3">
+                  <span className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-700">
+                    {row.parser_path}
+                  </span>
+                </td>
+                <td className="py-2 pr-3">
+                  <span
+                    className={`rounded px-2 py-0.5 text-xs ${
+                      row.review_state === "pending"
+                        ? "bg-amber-100 text-amber-700"
+                        : row.review_state === "dismissed"
+                        ? "bg-gray-200 text-gray-600"
+                        : row.review_state === "escalated"
+                        ? "bg-red-100 text-red-700"
+                        : "bg-green-100 text-green-700"
+                    }`}
+                  >
+                    {row.review_state}
+                  </span>
+                </td>
+                <td className="py-2 pr-3 font-mono text-[10px] text-gray-500">
+                  {row.document_id ? `doc:${row.document_id.slice(0, 8)}…` : "—"}
+                  <br />
+                  {row.claim_id ? `claim:${row.claim_id.slice(0, 8)}…` : "—"}
+                </td>
+                <td className="py-2 pr-3">
+                  {isFire && row.review_state === "pending" && (
+                    <div className="flex flex-wrap gap-1">
+                      <button
+                        disabled={busyId === row.id}
+                        onClick={async () => {
+                          setBusyId(row.id);
+                          const reason = window.prompt("Dismissal reason (false-positive / out-of-scope / etc.)") ?? undefined;
+                          if (reason) await props.onUpdateReviewState(row, "dismissed", reason);
+                          setBusyId(null);
+                        }}
+                        className="rounded bg-gray-200 px-2 py-0.5 text-xs text-gray-700 hover:bg-gray-300 disabled:opacity-50"
+                      >
+                        Dismiss
+                      </button>
+                      <button
+                        disabled={busyId === row.id}
+                        onClick={async () => {
+                          setBusyId(row.id);
+                          const reason = window.prompt("Escalation reason (engineering follow-up needed)") ?? undefined;
+                          if (reason) await props.onUpdateReviewState(row, "escalated", reason);
+                          setBusyId(null);
+                        }}
+                        className="rounded bg-red-100 px-2 py-0.5 text-xs text-red-700 hover:bg-red-200 disabled:opacity-50"
+                      >
+                        Escalate
+                      </button>
+                      <button
+                        disabled={busyId === row.id}
+                        onClick={async () => {
+                          setBusyId(row.id);
+                          const reason = window.prompt("Resolution note (reparse / manual edit / etc.)") ?? undefined;
+                          if (reason) await props.onUpdateReviewState(row, "resolved", reason);
+                          setBusyId(null);
+                        }}
+                        className="rounded bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700 hover:bg-emerald-200 disabled:opacity-50"
+                      >
+                        Resolve
+                      </button>
+                    </div>
+                  )}
+                  {(!isFire || row.review_state !== "pending") && (
+                    <span className="text-xs text-gray-400">{row.review_reason ?? "—"}</span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
 }

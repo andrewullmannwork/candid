@@ -13,31 +13,30 @@ import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { notifyUnmappedLineItems } from "@/lib/notifications";
 import { buildProvenanceEntry, type FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import { reconcileHaikuCodeType } from "@/lib/billing/code-type-inference";
+import {
+  detectSignViolations,
+  loadVerifierTolerances,
+  verifyHeaderReconciliation,
+  verifyPerLineSums,
+} from "@/lib/billing/sum-invariants";
+import {
+  recordBillParserDecision,
+  type BillParserPath,
+} from "@/lib/billing/bill-parser-decisions";
 
 /**
- * S135 bandaid — Haiku parser writes `insurance_adjusted_amount` and
- * `insurance_paid` (and their totals) with negative signs on at least one PROD
- * bill. Parser convention per `haiku-bill-parser.ts:102` is positive magnitudes
- * (writeoffs and payments). Negative values cascade into BillCard / BILL SHOWS
- * inflation and confusing audit body text.
- *
- * This guard coerces to abs() on write + warns to telemetry so we can audit
- * how often Haiku regresses post-deploy. Root-cause prompt fix + reject-not-
- * coerce invariant tracked in plans/findings/parser_sign_hardening_followup.md.
+ * PR4 (S142) — replace the S135 silent-Math.abs bandaid with an audited
+ * magnitude write. Negative inputs are still coerced to magnitude at write
+ * time (downstream math depends on positives), but every coercion produces a
+ * `bill_parser_decisions` row with verdict='sign_violation', so admin can
+ * detect regressions. The structural fix is upstream (B-3 prompt + B-1
+ * tool-use minimum:0 schema constraint); this is defense-in-depth.
  */
-function normalizeBillingSign(
-  value: number | null | undefined,
-  field: string,
-  ctx: Record<string, unknown> = {},
-): number | null {
+function absOrNull(value: number | null | undefined): number | null {
   if (value == null) return null;
   const v = Number(value);
   if (Number.isNaN(v)) return null;
-  if (v < 0) {
-    console.warn(`[persist] sign-violation: ${field}=${v} flipped to ${Math.abs(v)}`, ctx);
-    return Math.abs(v);
-  }
-  return v;
+  return Math.abs(v);
 }
 
 /**
@@ -137,9 +136,18 @@ export async function persistAuditResults(
     documentId: string;
     parsedBill: ParsedBill;
     auditReport: AuditReport;
+    // PR4 (S142) — which parser code path produced parsedBill. Default 'raw_json'
+    // because the bill_parser_tool_use_v1 flag ships OFF in PROD. Caller threads
+    // the actual path through so bill_parser_decisions rows can attribute
+    // verdict-rate trends to parser-path drift across the migration soak.
+    parserPath?: BillParserPath;
   }
 ): Promise<PersistClaimResult | null> {
   const { userId, insurancePlanId, planYear, documentId, parsedBill, auditReport } = params;
+  // Explicit param wins; otherwise inherit the transient label that the parser
+  // stamped on the result. Defaults to 'raw_json' when both are missing
+  // (regex-fallback path via parseBillFromOCR).
+  const parserPath: BillParserPath = params.parserPath ?? parsedBill.parserPath ?? "raw_json";
 
   try {
     // Resolve plan year if not provided — fall back to the linked plan, then DOS year.
@@ -157,7 +165,35 @@ export async function persistAuditResults(
       if (m) resolvedPlanYear = parseInt(m[1], 10);
     }
 
-    // Insert claims row
+    // PR4 (S142) — run B-1 / B-2 / B-3 verifiers upfront. Used to:
+    //   1. Decide whether to populate per-line numeric fields (sparse-mismatch
+    //      drops them so frontend Path B helper pro-rates from header)
+    //   2. Set metadata flags on the claim so frontend can suppress dispute
+    //      generation on flagged claims (B-2 contract per S140 cite-grade fix)
+    //   3. Drive the bill_parser_decisions row (B-3 admin queue)
+    const tolerances = await loadVerifierTolerances();
+    const signViolations = detectSignViolations(parsedBill);
+    const perLineVerdicts = verifyPerLineSums(parsedBill, tolerances);
+    const headerVerdict = verifyHeaderReconciliation(parsedBill, tolerances);
+    // Per-line fields to DROP to NULL on insert (sparse-mismatch fallback).
+    // A field is dropped when it was populated AND its line-sum didn't match
+    // the header total within tolerance — that means the parser emitted
+    // inconsistent values per-line, so the frontend Path B helper should
+    // pro-rate from the trustworthy header instead.
+    const perLineDropFields = new Set(
+      perLineVerdicts.filter((v) => v.populated && !v.withinTolerance).map((v) => v.perLineKey),
+    );
+    const billParserVerdictFlags: Record<string, boolean> = {};
+    if (signViolations.length > 0) billParserVerdictFlags.bill_parser_sign_violation = true;
+    if (perLineDropFields.size > 0) billParserVerdictFlags.per_line_breakdown_sparse = true;
+    if (headerVerdict.allHeaderTotalsPresent && !headerVerdict.withinTolerance) {
+      billParserVerdictFlags.header_reconciliation_failed = true;
+    }
+
+    // Insert claims row. Sign-violation handling: write magnitude so downstream
+    // BillCard / BILL SHOWS / recovery math stays sane, but the decision row +
+    // metadata flag preserve the audit trail (replaces silent S135 Math.abs
+    // bandaid).
     const { data: claim, error: claimError } = await supabase
       .from("claims")
       .insert({
@@ -168,10 +204,10 @@ export async function persistAuditResults(
         date_of_service: parsedBill.serviceDate || null,
         total_billed: parsedBill.totals.totalBilled,
         total_allowed: parsedBill.totals.totalAllowed || null,
-        total_insurance_paid: normalizeBillingSign(parsedBill.totals.totalInsurancePaid, "total_insurance_paid", { userId, documentId }),
-        total_insurance_adjusted: normalizeBillingSign(parsedBill.totals.totalInsAdjusted, "total_insurance_adjusted", { userId, documentId }) ?? 0,
+        total_insurance_paid: absOrNull(parsedBill.totals.totalInsurancePaid),
+        total_insurance_adjusted: absOrNull(parsedBill.totals.totalInsAdjusted) ?? 0,
         total_patient_responsibility: parsedBill.totals.totalPatientResponsibility ?? null,
-        total_patient_paid: parsedBill.totals.totalPatientPaid ?? 0,
+        total_patient_paid: absOrNull(parsedBill.totals.totalPatientPaid) ?? 0,
         claim_number: null, // Not always present on bills
         status: auditReport.findings.length > 0 ? "flagged" : "processed",
         metadata: {
@@ -180,6 +216,7 @@ export async function persistAuditResults(
           patient: parsedBill.patient,
           insurer: parsedBill.insurer,
           auditSummary: auditReport.summary,
+          ...billParserVerdictFlags,
         },
       })
       .select("id")
@@ -247,6 +284,15 @@ export async function persistAuditResults(
       const resolvedSlugSource = item.serviceSlugSource ?? null;
       const resolvedIdentityId = item.billingCodeIdentityId ?? null;
 
+      // PR4 (S142) B-1 — when a per-line field's sum doesn't match the header,
+      // drop the per-line value to NULL so the frontend Path B helper
+      // pro-rates from the trustworthy header total. Per-line-sparse path is
+      // signaled at the document/claim level via metadata.per_line_breakdown_sparse;
+      // dispute pipeline marks provenance.citationSource='claim_header'.
+      const dropInsurancePaid = perLineDropFields.has("insurancePaid");
+      const dropInsAdjusted = perLineDropFields.has("ins_adjusted");
+      const dropPatientPaid = perLineDropFields.has("patient_paid");
+
       const baseRow: Record<string, unknown> = {
         claim_id: claim.id,
         line_number: item.lineNumber,
@@ -258,15 +304,19 @@ export async function persistAuditResults(
         units: item.quantity || 1,
         billed_amount: item.billedAmount,
         allowed_amount: item.allowedAmount || null,
-        insurance_paid: normalizeBillingSign(item.insurancePaid, "insurance_paid", { lineNumber: item.lineNumber }),
+        insurance_paid: dropInsurancePaid ? null : absOrNull(item.insurancePaid),
         // Mig 092 — contractual writeoff distinct from insurance_paid. Defaults
         // to 0 (rather than null) so downstream math can sum without null guards;
         // null indicates "parser didn't extract" which we treat as 0 too here.
-        insurance_adjusted_amount: normalizeBillingSign(item.ins_adjusted, "insurance_adjusted_amount", { lineNumber: item.lineNumber }) ?? 0,
+        // PR4: when the sum-equals-header verifier failed for this field, drop
+        // to null so frontend Path B helper pro-rates from header (which is
+        // the trustworthy total per B-2).
+        insurance_adjusted_amount: dropInsAdjusted ? null : absOrNull(item.ins_adjusted) ?? 0,
         patient_owes: item.patientResponsibility ?? null,
         // Mig 092 — patient out-of-pocket payments. Default 0; populated by
         // parser when "Paid [date] -$X" footer lines are present on the bill.
-        patient_paid_amount: item.patient_paid ?? 0,
+        // PR4: same sparse-drop semantics as insurance_paid / ins_adjusted.
+        patient_paid_amount: dropPatientPaid ? null : absOrNull(item.patient_paid) ?? 0,
         plan_year: resolvedPlanYear,
         adjustment_reason_code: null,
         modifier_codes: item.modifier ? [item.modifier] : null,
@@ -422,6 +472,60 @@ export async function persistAuditResults(
         .map((li) => li.description as string);
       if (unmapped.length > 0) {
         notifyUnmappedLineItems(claim.id, unmapped).catch(() => {});
+      }
+    }
+
+    // PR4 (S142) — append bill_parser_decisions row capturing B-1 / B-2 / B-3
+    // verdicts. Non-fatal: failures swallowed inside the helper. Recorded for
+    // EVERY persist (clean + fire) per Ship Gate G7 silent-regression detection
+    // — so admin can compute (clean / total) rates and detect drift.
+    void recordBillParserDecision({
+      supabase,
+      documentId,
+      claimId: claim.id,
+      userId,
+      parserPath,
+      signViolations,
+      perLineVerdicts,
+      headerVerdict,
+      metadata: {
+        bill_type: parsedBill.billType,
+        plan_year: resolvedPlanYear,
+        total_billed: parsedBill.totals.totalBilled,
+      },
+    });
+
+    // PR4 (S142) — also reflect verdict flags onto documents.metadata so the
+    // dispute-letter pipeline + admin doc surfaces can read header-level
+    // verdicts without joining through claims. Non-fatal; failures logged.
+    if (Object.keys(billParserVerdictFlags).length > 0) {
+      try {
+        const { data: docRow } = await supabase
+          .from("documents")
+          .select("metadata")
+          .eq("id", documentId)
+          .maybeSingle();
+        const existingMeta = (docRow?.metadata ?? {}) as Record<string, unknown>;
+        const { error: docUpdateErr } = await supabase
+          .from("documents")
+          .update({
+            metadata: {
+              ...existingMeta,
+              ...billParserVerdictFlags,
+              bill_parser_decision_summary: {
+                claim_id: claim.id,
+                parser_path: parserPath,
+                verdict_flags: billParserVerdictFlags,
+                recorded_at: new Date().toISOString(),
+              },
+            },
+          })
+          .eq("id", documentId);
+        if (docUpdateErr) {
+          console.warn("[claims-persist] documents.metadata flag update failed (non-fatal):", docUpdateErr);
+        }
+      } catch (metaErr) {
+        console.warn("[claims-persist] documents.metadata flag update threw (non-fatal):", metaErr);
       }
     }
 
