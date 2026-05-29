@@ -10,7 +10,7 @@ import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useMinHoldLoading } from "@/lib/loading/use-min-hold";
 import { DisputeDraftOverlayProvider } from "@/lib/loading/dispute-draft-overlay";
 
-const navItems = [
+const mainItems = [
   {
     href: "/dashboard",
     label: "Dashboard",
@@ -57,10 +57,13 @@ const navItems = [
     icon: (
       <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
-          d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+          d="M22 12h-4l-3 9L9 3l-3 9H2" />
       </svg>
     ),
   },
+];
+
+const accountItems = [
   {
     href: "/billing",
     label: "Billing",
@@ -142,7 +145,27 @@ export default function AppLayout({ children }: { children: ReactNode }) {
 
       {/* Nav */}
       <nav className="flex-1 px-3 py-4 space-y-0.5">
-        {navItems.map((item) => {
+        {mainItems.map((item) => {
+          const isActive = pathname === item.href;
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-[13px] font-medium transition-colors ${
+                isActive
+                  ? "bg-blue-50 text-blue-700"
+                  : "text-gray-500 hover:text-gray-900 hover:bg-gray-50"
+              }`}
+            >
+              <span className={isActive ? "text-blue-600" : "text-gray-400"}>{item.icon}</span>
+              {item.label}
+            </Link>
+          );
+        })}
+        <div className="px-3 pt-4 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+          Account
+        </div>
+        {accountItems.map((item) => {
           const isActive = pathname === item.href;
           return (
             <Link
