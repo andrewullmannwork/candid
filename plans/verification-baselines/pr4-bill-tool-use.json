@@ -1,0 +1,86 @@
+{
+  "block_id": "PR4",
+  "block_name": "Bill parser tool-use migration (sign + per-line + header reconciliation)",
+  "ship_gate_gate": "G2 Positive-Path Validation",
+  "captured_at": "2026-05-28",
+  "captured_by_session": "S142",
+  "captured_by_branch": "candid/backend-pr4-bill-tool-use",
+  "spec_sources": [
+    "plans/pre_launch_backend_hardening.md §3 row PR4",
+    "plans/s140_flagged_body_cite_grade_fix.md",
+    "plans/findings/bill-parser-sign-convention-2026-05-27.md",
+    "plans/parser-fix-docket-2026-05-28.md"
+  ],
+  "baseline_state": {
+    "description": "Pre-PR4 PROD state: persist.ts S135 Math.abs bandaid silently coerces negative writeoff/payment values; no admin observability of sign violations; per-line numeric fields routinely NULL on most PROD bills (frontend Path B helper pro-rates from header — citationSource='claim_header' is the common case); no header-reconciliation invariant (Jun 23 PROD claim 4d8c0cad has mutually incoherent header totals that go undetected).",
+    "prod_bills_total": 14,
+    "prod_bills_with_per_line_breakdown_populated_estimate": "low (S139 finding: per-line ins_paid/ins_adjusted NULL on Dec 12 PROD claim 3fa90e73; partial NULL on Jun 23 PROD claim 4d8c0cad)",
+    "prod_bills_with_sign_violation_known": [
+      "f2c36497-525c-46df-9509-eabc5e94398d (Dec 12 2022 Swedish; pre-mig-132 had negatives; S135 mig 132 backfilled to abs)"
+    ],
+    "prod_bills_with_header_reconciliation_anomaly_known": [
+      "4d8c0cad-... (Jun 23 incoherent: total_insurance_adjusted == total_billed AND nonzero total_insurance_paid)"
+    ],
+    "bill_parser_decisions_rows_count": 0,
+    "flag_state_pre_pr4": {
+      "bill_parser_tool_use_v1": "absent (mig 133 NOT yet applied)"
+    }
+  },
+  "pass_criteria_pre_declared": {
+    "G2_a_sign_violation_rate": {
+      "description": "After PR4 PROD ship + 30d soak window, sign_violation verdict rate among bill_parser_decisions rows whose parser_path='tool_use' must be < 0.1% of bill uploads. Flag-OFF (raw_json) rows are not included in this metric (legacy path still has the Math.abs bandaid + new audit row).",
+      "query": "SELECT COUNT(*) FILTER (WHERE verdict='sign_violation' AND parser_path='tool_use') * 100.0 / NULLIF(COUNT(*) FILTER (WHERE parser_path='tool_use'), 0) AS sign_violation_pct FROM bill_parser_decisions WHERE created_at > NOW() - INTERVAL '30 days';",
+      "threshold_pct": 0.1,
+      "evaluation_window_days": 30,
+      "evaluation_starts_after": "30 days post-PROD flag flip to ON"
+    },
+    "G2_b_per_line_populated_rate": {
+      "description": "After PR4 PROD ship + flag flipped ON, per-line numeric fields populated (verdict NOT in per_line_sparse) on tool_use rows MUST be ≥ baseline_rate + delta. Today baseline rate is ~0% per S139 finding; PR4 target ≥30% populated by 30d post-flag-flip.",
+      "query": "SELECT COUNT(*) FILTER (WHERE verdict NOT IN ('per_line_sparse', 'multi') AND parser_path='tool_use') * 100.0 / NULLIF(COUNT(*) FILTER (WHERE parser_path='tool_use'), 0) AS per_line_populated_pct FROM bill_parser_decisions WHERE created_at > NOW() - INTERVAL '30 days';",
+      "baseline_pct": 0,
+      "target_min_pct": 30,
+      "evaluation_window_days": 30,
+      "evaluation_starts_after": "30 days post-PROD flag flip to ON"
+    },
+    "G2_c_header_reconciliation_failure_rate": {
+      "description": "After PR4 PROD ship, header_reconciliation_failed verdict rate must stay < 5% (residual noise from legitimately-incomplete header data; today Jun 23 PROD claim is the only known case).",
+      "query": "SELECT COUNT(*) FILTER (WHERE verdict='header_reconciliation_failed' OR (verdict='multi' AND header_reconciliation_delta IS NOT NULL)) * 100.0 / NULLIF(COUNT(*), 0) AS header_failure_pct FROM bill_parser_decisions WHERE created_at > NOW() - INTERVAL '30 days';",
+      "threshold_pct": 5.0,
+      "evaluation_window_days": 30,
+      "evaluation_starts_after": "30 days post-PROD ship (flag OFF or ON; B-2 fires regardless of parser path)"
+    },
+    "G2_d_b_4_telemetry_signal_trigger": {
+      "description": "B-4 trigger query for frontend Path B helper + persist.ts Math.abs guard removal (Pattern D sunset). After PR4 PROD ship: dispute_outcomes.metadata.citation_source rate of 'claim_header' must drop to < 1% sustained 14 days. Until then, frontend Math.abs guard stays.",
+      "query": "SELECT metadata->>'citation_source' AS source, COUNT(*) FROM dispute_outcomes WHERE created_at > NOW() - INTERVAL '14 days' GROUP BY 1;",
+      "threshold_claim_header_pct": 1.0,
+      "evaluation_window_days": 14,
+      "evaluation_starts_after": "30 days post-PR4 PROD ship (frontend bandaid stays for 30d soak; then B-4 trigger query runs weekly)"
+    }
+  },
+  "rollout_plan": {
+    "ship": "PR4 merged to main + bundled PROD push promotes mig 133 (flag default OFF). Code lives in PROD under flag-off semantics (legacy raw_json code path active; new audit infra fires on every persist).",
+    "smoke_pre_pr": {
+      "description": "Re-process all 14 PROD bills on local dev server with flag OFF + flag ON; record bill_parser_decisions verdicts in both modes. Goal: parity on raw_json path + new per-line breakdown on tool_use path on bills where the source PDF actually shows the column.",
+      "corpus_size": 14,
+      "corpus_source": "all bill-type documents in PROD as of S140 close",
+      "evaluation_criteria": [
+        "raw_json path produces same persisted claim totals as today (regression test)",
+        "tool_use path produces additional per-line numeric populated rows on bills with breakdown column",
+        "zero sign_violation verdicts on the 14-bill corpus (mig 132 already cleaned existing negatives; new parses shouldn't regress)"
+      ]
+    },
+    "smoke_post_alpha": {
+      "description": "Alpha+30d trigger: re-run smoke at ≥100-bill corpus per Ship Gate G3 rare-event scale (S136 reframe). Until alpha launches, the 14-bill corpus is the strongest pre-PR signal we have.",
+      "corpus_min": 100,
+      "carriers_min": 5,
+      "plan_years_min": 2,
+      "trigger": "B10 alpha launch + 30 days OR ≥100 bill uploads accumulated post-launch"
+    },
+    "flag_flip_to_on": {
+      "description": "Soak window AFTER PR4 PROD ship before flipping bill_parser_tool_use_v1 to ON globally. Allows the audit infra (raw_json path) to surface verdict-rate baseline first.",
+      "soak_days": 7,
+      "evaluation_query": "SELECT verdict, parser_path, COUNT(*) FROM bill_parser_decisions WHERE created_at > NOW() - INTERVAL '7 days' GROUP BY 1, 2;",
+      "pass_criteria": "raw_json baseline verdict distribution matches expected (clean dominant; sign_violation 0%; per_line_sparse high — matches today's PROD reality)"
+    }
+  }
+}

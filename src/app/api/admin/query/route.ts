@@ -37,6 +37,10 @@ const ALLOWED_TABLES = [
   "billing_code_identity",
   "mapping_promotion_events",
   "zero_cost_share_codes",
+  // PR4 (S142) — bill_parser_decisions event log. Read for the Bills tab on
+  // /admin/review-queue; updated when admin dismisses / escalates / resolves
+  // a fire-verdict row.
+  "bill_parser_decisions",
 ] as const;
 
 type AllowedTable = (typeof ALLOWED_TABLES)[number];

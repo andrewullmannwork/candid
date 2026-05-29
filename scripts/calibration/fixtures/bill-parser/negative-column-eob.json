@@ -1,0 +1,138 @@
+{
+  "fixture_id": "bill-parser-negative-column-eob-2026-05-28",
+  "description": "PR4 (S142) Ship Gate G4 fixture. Synthetic EOB modeled on Dec 12 2022 Swedish PROD claim f2c36497-525c-46df-9509-eabc5e94398d (the bill that surfaced the parser sign-convention bug at S135 frontend cluster-fix diagnostic). Tests B-1 per-line breakdown extraction + B-2 header reconciliation invariant + B-3 sign-magnitude positive-value rule + persist verifier outcomes. Run via scripts/calibration/runners/run-bill-parser-fixture.ts.",
+  "block_id": "PR4",
+  "block_name": "Bill parser tool-use migration (sign + per-line + header reconciliation)",
+  "spec_sources": [
+    "plans/findings/bill-parser-sign-convention-2026-05-27.md",
+    "plans/s140_flagged_body_cite_grade_fix.md",
+    "plans/pre_launch_backend_hardening.md §3 row PR4"
+  ],
+  "input": {
+    "bill_type": "eob",
+    "extraction_method": "pdftotext",
+    "ocr_text": "Claim # f2c36497 / Service date: 12/12/2022 / Swedish Medical Group / IN NETWORK\n\nLine  Date     Description       Code   Billed    Ins adjusted   Ins paid    Patient owes\n1     12/12/22 OFFICE VISIT      99214  312.00    -109.68        -59.92      142.40\n2     12/12/22 URINE DRUG TEST   80305  89.00     -31.15         -17.09      40.76\n3     12/12/22 PREVENTIVE EXAM   99385  403.00    -218.04        -118.65     66.31\n\nTotals: $804 billed, -$358.87 ins adjusted, -$195.66 ins paid, $249.47 patient owes\n\nNotes: A1 - PATIENT COPAY APPLIED PER PLAN BENEFIT."
+  },
+  "expected_parser_output": {
+    "service_date": "2022-12-12",
+    "network_status": "in_network",
+    "provider": { "name": "Swedish Medical Group" },
+    "lineItems": [
+      {
+        "line_number_in_eob": "1",
+        "procedure_code": "99214",
+        "billed_amount": 312.0,
+        "ins_adjusted": 109.68,
+        "insurance_paid": 59.92,
+        "patient_responsibility": 142.4
+      },
+      {
+        "line_number_in_eob": "2",
+        "procedure_code": "80305",
+        "billed_amount": 89.0,
+        "ins_adjusted": 31.15,
+        "insurance_paid": 17.09,
+        "patient_responsibility": 40.76
+      },
+      {
+        "line_number_in_eob": "3",
+        "procedure_code": "99385",
+        "billed_amount": 403.0,
+        "ins_adjusted": 218.04,
+        "insurance_paid": 118.65,
+        "patient_responsibility": 66.31
+      }
+    ],
+    "totals": {
+      "total_billed": 804.0,
+      "total_ins_adjusted": 358.87,
+      "total_insurance_paid": 195.66,
+      "total_patient_responsibility": 249.47
+    }
+  },
+  "assertions": {
+    "sign_convention": {
+      "description": "B-3: ALL per-line ins_adjusted, insurance_paid, patient_paid values + their header totals must be POSITIVE magnitudes regardless of literal '-$X' input formatting.",
+      "fields_must_be_positive_or_undefined": [
+        "lineItems[*].ins_adjusted",
+        "lineItems[*].insurance_paid",
+        "lineItems[*].patient_paid",
+        "totals.total_ins_adjusted",
+        "totals.total_insurance_paid",
+        "totals.total_patient_paid"
+      ]
+    },
+    "per_line_breakdown": {
+      "description": "B-1: per-line numeric fields populated for EVERY line (parser must not emit header-only and skip the per-line breakdown when the column is shown).",
+      "lines_with_populated_per_line": 3,
+      "tolerance_abs": 0.01,
+      "tolerance_rel": 0.001
+    },
+    "sum_equals_header": {
+      "description": "B-1: sum of per-line magnitudes equals header total within tolerance.",
+      "checks": [
+        { "field": "ins_adjusted", "line_sum": 358.87, "header": 358.87, "delta_max": 0.36 },
+        { "field": "insurance_paid", "line_sum": 195.66, "header": 195.66, "delta_max": 0.20 },
+        { "field": "patient_responsibility", "line_sum": 249.47, "header": 249.47, "delta_max": 0.25 }
+      ]
+    },
+    "header_reconciliation": {
+      "description": "B-2: |billed - adjusted - paid - patient| within tolerance. Note: this fixture uses patient_responsibility (assigned share) instead of patient_paid (actually paid). For B-2 header check, total_patient_paid is null in this fixture so allHeaderTotalsPresent=false and B-2 skips (no violation). Header reconciliation invariant fires only when all four header totals are present.",
+      "expected_verdict": "skipped_header_reconciliation_missing_patient_paid",
+      "billed_minus_other_components": 0.0
+    },
+    "persist_verdict": {
+      "description": "Expected verdict at bill_parser_decisions row level when this fixture is end-to-end run through persistAuditResults.",
+      "expected": "clean",
+      "notes": "If parser fails B-3 (emits negatives), expected becomes 'sign_violation'. If parser fails B-1 (omits per-line OR sum doesn't match), expected becomes 'per_line_sparse'. clean = all three layers passed."
+    }
+  },
+  "cross_module_invariants": [
+    {
+      "name": "persist_round_trip_positive_magnitudes",
+      "description": "After persistAuditResults runs on the expected parser output, claim_line_items rows must have insurance_paid >= 0 AND insurance_adjusted_amount >= 0 AND patient_paid_amount >= 0 for every line, AND claims.total_insurance_paid >= 0 AND claims.total_insurance_adjusted >= 0 AND claims.total_patient_paid >= 0."
+    },
+    {
+      "name": "sum_equals_header_verifier_clean",
+      "description": "verifyPerLineSums on the expected parser output must return withinTolerance=true for all three numeric fields (sums match headers exactly here)."
+    },
+    {
+      "name": "no_sparse_drop_on_clean_path",
+      "description": "When parser emits clean output matching this fixture, persistAuditResults must NOT drop per-line fields to NULL (per_line_breakdown_sparse flag stays false). Frontend Path B receives populated per-line numerics and emits citationSource='per_line_sum'."
+    }
+  ],
+  "negative_cases": [
+    {
+      "name": "haiku_emits_literal_negatives",
+      "description": "If Haiku ignores the positive-magnitude rule and emits ins_adjusted=-109.68, persist must record verdict='sign_violation' + persist magnitudes (abs) + set documents.metadata.bill_parser_sign_violation=true.",
+      "input_overrides": {
+        "lineItems[0].ins_adjusted": -109.68,
+        "lineItems[0].insurance_paid": -59.92
+      },
+      "expected_persist_verdict": "sign_violation"
+    },
+    {
+      "name": "haiku_omits_per_line_breakdown",
+      "description": "If Haiku emits only the header totals and leaves per-line numerics null (the today's behavior on most PROD bills per S139 finding), verdict is NOT 'per_line_sparse' (sparse-all-null is the documented Path B fallback path; not a violation). bill_parser_decisions row records verdict='clean' (or whatever B-2 + B-3 say).",
+      "input_overrides": {
+        "lineItems[0].ins_adjusted": null,
+        "lineItems[0].insurance_paid": null,
+        "lineItems[1].ins_adjusted": null,
+        "lineItems[1].insurance_paid": null,
+        "lineItems[2].ins_adjusted": null,
+        "lineItems[2].insurance_paid": null
+      },
+      "expected_persist_verdict": "clean",
+      "notes": "Frontend Path B helper handles header-only via pro-ration; cite-grade marker citationSource='claim_header'."
+    },
+    {
+      "name": "haiku_emits_per_line_mismatch",
+      "description": "If Haiku emits per-line numerics but sum doesn't match header (e.g., one line dropped, or arithmetic broken), verdict='per_line_sparse'. persist drops per-line fields to NULL so frontend Path B pro-rates from header.",
+      "input_overrides": {
+        "lineItems[0].ins_adjusted": 50.0
+      },
+      "expected_persist_verdict": "per_line_sparse",
+      "expected_dropped_per_line_fields": ["insurance_adjusted_amount"]
+    }
+  ]
+}

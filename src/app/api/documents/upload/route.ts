@@ -703,7 +703,20 @@ export async function POST(req: NextRequest) {
   const effectiveType = userSelectedHealthcareType ? docType : classification.classifiedType;
   const PLAN_DOC_TYPES = new Set(["sbc", "eoc", "plan_document"]);
   const BILL_TYPES_SET = new Set(["eob", "itemized_bill"]);
-  const CONFIDENCE_BILL_AUTO_FLOOR = 0.6;
+  // PR4 (S142) — bumped 0.60 → 0.55 after smoke surfaced a multi-line Cigna
+  // EOB (cignaEOB.pdf) clocking 0.59 classifier confidence routed to
+  // pending_review when content + math identified it as a clean EOB. The
+  // classifier is documented-noisy (see route comment ~L680: "0.6 vs 0.99 on
+  // identical-shape SBC uploads"). Lowering the floor 5pp absorbs the
+  // immediate boundary case + similar near-floor uploads. Trade-off: more
+  // 0.55-0.6 confidence bills auto-process; risk = false-positive on actually-
+  // misclassified docs producing nonsense audit results. Mitigated by PR4's
+  // bill_parser_decisions verifier infra (B-2 header reconciliation + B-3 sign
+  // convention + B-1 sum-equals-header) — incoherent extractions surface in
+  // /admin/review-queue Bills tab + Slack alert to C0B6EMR0AET. Proper fix
+  // (flag-tunable threshold + Haiku re-classify pass at boundary) deferred to
+  // Ing-F (out of pre-launch scope per S123).
+  const CONFIDENCE_BILL_AUTO_FLOOR = 0.55;
   const isPlanDocPath = PLAN_DOC_TYPES.has(effectiveType);
   const isBillPath = BILL_TYPES_SET.has(effectiveType);
 
