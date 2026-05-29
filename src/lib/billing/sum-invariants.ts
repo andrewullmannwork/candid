@@ -213,13 +213,21 @@ export interface HeaderReconciliationVerdict {
   totalInsAdjusted: number | null;
   totalInsurancePaid: number | null;
   totalPatientPaid: number | null;
-  delta: number; // |billed - adjusted - paid - patient_paid|
+  // PR4b (S143) — provider_adjusted is part of the reconciliation formula:
+  // billed = ins_adjusted + provider_adjusted + insurance_paid + patient_paid.
+  // PR4 (S142) initial verifier omitted this; Opus calibration baseline
+  // (2026-05-29) surfaced false-fires on bills with non-zero provider_adjusted
+  // (e.g., Swedish 7_1.pdf $33.85 provider_adjusted, 12_12.pdf $7.00).
+  totalProviderAdjusted: number | null;
+  delta: number; // |billed - adjusted - provider_adjusted - paid - patient_paid|
   tolerance: number;
   withinTolerance: boolean;
   // Distinguishes "header totals incomplete (NULLs)" from "header totals all
   // present + mathematically incoherent". Persist treats only the latter as a
   // B-2 violation; missing header totals are normal for itemized-bill uploads
-  // that the parser couldn't decompose.
+  // that the parser couldn't decompose. provider_adjusted is treated as 0
+  // when null (some bills don't have a provider writeoff column at all — the
+  // formula degrades to the 4-field form without firing a violation).
   allHeaderTotalsPresent: boolean;
 }
 
@@ -231,7 +239,11 @@ export function verifyHeaderReconciliation(
   const totalInsAdjusted = parsedBill.totals.totalInsAdjusted ?? null;
   const totalInsurancePaid = parsedBill.totals.totalInsurancePaid ?? null;
   const totalPatientPaid = parsedBill.totals.totalPatientPaid ?? null;
+  const totalProviderAdjusted = parsedBill.totals.totalProviderAdjusted ?? null;
 
+  // The 4 core totals must all be present for the verifier to fire. provider_adjusted
+  // is OPTIONAL — many bills don't have a provider writeoff at all; treat null as 0
+  // in the formula so the verifier doesn't false-fire on bills that omit it.
   const allPresent =
     totalBilled != null &&
     totalInsAdjusted != null &&
@@ -239,12 +251,16 @@ export function verifyHeaderReconciliation(
     totalPatientPaid != null;
 
   // Magnitude-only math; B-3 sign violations are detected upstream. Header
-  // reconciliation asks "do the four totals balance under positive
-  // convention?" — silent abs() here would let a sign-flipped header look
-  // balanced.
+  // reconciliation asks "do the totals balance under positive convention?"
   const mag = (n: number | null) => (n != null ? Math.abs(n) : 0);
   const delta = allPresent
-    ? Math.abs(mag(totalBilled) - mag(totalInsAdjusted) - mag(totalInsurancePaid) - mag(totalPatientPaid))
+    ? Math.abs(
+        mag(totalBilled) -
+          mag(totalInsAdjusted) -
+          mag(totalProviderAdjusted) -
+          mag(totalInsurancePaid) -
+          mag(totalPatientPaid),
+      )
     : NaN;
   const tolerance = Math.max(
     tolerances.headerReconciliationAbs,
@@ -257,6 +273,7 @@ export function verifyHeaderReconciliation(
     totalInsAdjusted,
     totalInsurancePaid,
     totalPatientPaid,
+    totalProviderAdjusted,
     delta,
     tolerance,
     withinTolerance,

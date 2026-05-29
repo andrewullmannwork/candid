@@ -51,3 +51,7 @@ next-env.d.ts
 # Contain real document text echoed in source_excerpt fields (potential PHI).
 .haiku_snapshots/
 scripts/snapshots/
+
+# S143 (PR4b) — local-only calibration corpora + per-bill artifacts containing
+# real PHI. Per memory project_candid_bill_calibration_corpus: never committed.
+/local-only/
