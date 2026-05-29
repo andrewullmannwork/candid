@@ -56,11 +56,17 @@ const BILL_PARSER_TOOL_DESCRIPTION = [
   "",
   "POSITIVE-MAGNITUDE RULE (mirrors INSTRUCTIONS Rule #13): ins_adjusted, insurance_paid, patient_paid, denied_amount (except reversal lines), contract_discount, provider_adjusted, member_copay, member_coinsurance, member_applied_to_deductible, total_ins_adjusted, total_insurance_paid, total_patient_paid are POSITIVE MAGNITUDES. Strip literal minus-sign formatting (e.g., \"-$109.68\" → 109.68). The only legitimate negatives are billed_amount and denied_amount on adjustment-reversal cycle lines (per Rule #5).",
   "",
-  "DERIVATION RULE (mirrors INSTRUCTIONS Rule #13b — CRITICAL for dispute pipeline): when the bill shows allowed_amount per line but no explicit 'Insurance adjusted' / 'Plan discount' / 'Contractual adjustment' column, you MUST compute ins_adjusted = max(0, billed_amount - allowed_amount) per line AND aggregate the header total: total_ins_adjusted = sum(per-line ins_adjusted). Same applies to patient_responsibility derivation when allowed + insurance_paid are shown: patient_responsibility = max(0, allowed_amount - insurance_paid). Do NOT emit null/0 for these fields when the inputs to the derivation are present — that loses data the downstream dispute pipeline needs to cite specific lines.",
+  "NULL vs ZERO RULE (PR4b / S143 v3 — CRITICAL): emit `null` when no value is shown for a field on a line. Emit `0` only when the bill explicitly displays \"$0.00\" / \"$0\" / \"0.00\" in the relevant cell. Do NOT default to 0 when uncertain — null is the correct signal for \"absent\". Same applies to header totals.",
   "",
-  "INVARIANT CHECK (every line): billed_amount ≈ ins_adjusted + provider_adjusted + insurance_paid + patient_responsibility (sometimes ± denied/contract_discount). Use this to validate your extraction. If the math doesn't close, re-read the columns rather than guess. Schema accepts null only when the value is genuinely absent from the bill AND cannot be derived from sibling fields.",
+  "TABLE-STRUCTURE CHECK (PR4b / S143 v3 — CRITICAL): BEFORE applying derivation OR extracting per-line numerics, identify whether the bill's adjudication table has explicit per-line columns for ins_adjusted / insurance_paid / patient_responsibility / patient_paid. Signals: column header row labels (\"Ins adjusted\", \"Cost Reduction\", \"Plan Paid\", \"Insurance paid\", \"Patient owes\", etc.) with per-line values aligned under those columns. If the bill has NO per-line columns for a given field (e.g., a provider \"Itemized receipt\" that shows only billed amounts per line + summary deductions in a header/footer block), emit `null` for that per-line field — DO NOT derive it via billed-allowed math. Per-line derivation requires per-line allowed_amount + an implicit per-line adjustment, NOT a header-only total.",
   "",
-  "PER-LINE BREAKDOWN (mirrors INSTRUCTIONS Rule #13a): populate per-line numeric fields for EVERY line when the bill shows per-line columns OR when derivation applies. Header-only emission is for aggregate-only bills (rare).",
+  "DEDUCTION COLUMN SYNONYMS (PR4b / S143 v2 — CRITICAL): the insurer-contractual writeoff column appears under many labels across carriers. When the bill's table has a per-line column with ANY of the following headers, extract that value (positive magnitude) into per-line ins_adjusted: 'Cost Reduction' (Cigna) | 'Contract Discount' | 'Plan Discount' | 'Negotiated Rate' | 'Allowed-Less-Paid' | 'Contractual Adjustment' | 'Network Discount' | 'PPO Discount' | 'Insurance adjusted' | 'Insurance adjustment' | 'Plan paid adjustment'. If the column value displays a literal minus-sign (e.g., '-$109.68'), strip the sign per the positive-magnitude rule and store 109.68. This is NOT denied_amount (which is for explicit denials with CARC code 96 or 'Denied' label).",
+  "",
+  "DERIVATION RULE (mirrors INSTRUCTIONS Rule #13b — CRITICAL for dispute pipeline): per-line ins_adjusted derivation applies ONLY when the bill's table shows BOTH a per-line billed_amount AND a per-line allowed_amount column for the same line. In that case (and ONLY in that case), if no recognized deduction column from the synonyms above is present, compute ins_adjusted = max(0, billed_amount - allowed_amount) per line. If the bill has no per-line allowed_amount column (e.g., provider itemized receipts that show only billed amounts), emit per-line ins_adjusted = null and rely on the header-block total for total_ins_adjusted.",
+  "",
+  "INVARIANT CHECK (every line — when all four fields populated): billed_amount ≈ ins_adjusted + provider_adjusted + insurance_paid + patient_responsibility (sometimes ± denied/contract_discount). Use this to validate your extraction. If the math doesn't close, re-read the columns rather than guess.",
+  "",
+  "PER-LINE BREAKDOWN PRIORITY (PR4b / S143 v3 — CRITICAL): when the bill's table shows per-line columns for the fields above, populate per-line numerics for EVERY line — extract from the table directly, do not derive when extraction is possible. When the table does NOT show those columns at all, emit per-line null and emit only the header totals from the summary block. Either populated-per-line OR header-only — never invent per-line values via derivation when the table structure doesn't support it.",
 ].join("\n");
 
 const BILL_PARSER_TOOL_INPUT_SCHEMA = {
@@ -126,7 +132,7 @@ const BILL_PARSER_TOOL_INPUT_SCHEMA = {
             type: ["number", "null"],
             minimum: 0,
             description:
-              "Contractual writeoff per line (positive magnitude — strip literal minus-sign formatting). DERIVATION (CRITICAL): when the line shows allowed_amount but no explicit 'Insurance adjusted' / 'Plan discount' / 'Contractual adjustment' column, you MUST compute ins_adjusted = max(0, billed_amount - allowed_amount). Do NOT emit null in that case. Example: billed=$705, allowed=$563.81, insurance_paid=$563.81 → ins_adjusted = $705 - $563.81 = $141.19. Only emit null/0 when (a) allowed_amount is also null AND no explicit column shown, OR (b) billed equals allowed (no writeoff — legitimate zero).",
+              "Contractual writeoff per line (positive magnitude — strip literal minus-sign formatting). SYNONYMS (PR4b / S143 v2): extract the column value when the per-line table column header matches any of: 'Cost Reduction' (Cigna), 'Contract Discount', 'Plan Discount', 'Negotiated Rate', 'Allowed-Less-Paid', 'Contractual Adjustment', 'Network Discount', 'PPO Discount', 'Insurance adjusted', 'Insurance adjustment', 'Plan paid adjustment'. This is the insurer-contractual writeoff (NOT a denial; NOT a provider writeoff). DERIVATION (PR4b / S143 v3 — CRITICAL): the billed - allowed fallback applies ONLY when the bill's table has BOTH a per-line billed_amount column AND a per-line allowed_amount column AND no recognized synonym column. Provider 'itemized receipts' that show only billed per line + summary deductions in a header block do NOT meet this precondition — emit null for per-line ins_adjusted and rely on header total_ins_adjusted. Example (passes precondition): billed=$705, allowed=$563.81, no 'Insurance adjusted' column → ins_adjusted = $705 - $563.81 = $141.19. Emit null when (a) the table has no per-line allowed_amount column, OR (b) allowed_amount is null on this line, OR (c) the cell for the deduction synonym column is genuinely empty (not '$0.00').",
           },
           provider_adjusted: { type: ["number", "null"], minimum: 0, description: "Provider write-off (e.g., 'Provider adjusted' column). Positive magnitude. Distinct from ins_adjusted (which is insurer-contractual)." },
           insurance_paid: { type: ["number", "null"], minimum: 0, description: "Insurer ACTUAL PAYMENT to provider for this line (positive magnitude). NOT the writeoff (that's ins_adjusted). Often equals allowed_amount when insurer pays 100% of allowed (e.g., post-deductible covered service)." },
@@ -280,9 +286,13 @@ const INSTRUCTIONS = `You are extracting structured data from a medical bill or 
 12. **Procedure code type discriminator**: Set procedureCodeType based on format: 5-digit numeric = "CPT"; letter+4digit (e.g., J7298) = "HCPCS_L2"; 4-digit revenue = "REV"; 3-digit numeric DRG = "DRG"; 11-digit NDC = "NDC"; G+4digit = "G_CODE"; 4-digit ending in F = "CAT_II".
 13. **Adjustment splits** (CRITICAL — never conflate with insurance_paid): "Ins adjusted" / "Insurance adjusted" / "Contractual adjustment" / "Plan discount" is a CONTRACTUAL WRITEOFF — the amount the insurer negotiates down before paying. It is NOT money paid to the provider. Put it in ins_adjusted (per-line) AND total_ins_adjusted (header). "Ins paid" / "Insurance paid" / "Plan paid" is the insurer's ACTUAL PAYMENT to the provider — put it in insurance_paid (per-line) AND total_insurance_paid (header). On Providence-style bills these are TWO DIFFERENT LINES in the totals box. "Provider adjusted" / "Provider write-off" goes in provider_adjusted. Lump-sum unsplit adjustments still go in the adjustments field. **Invariant check**: billed_amount ≈ ins_adjusted + provider_adjusted + insurance_paid + patient_responsibility (sometimes ± denied/contract_discount). If the math doesn't close, re-read the totals labels rather than dump everything into insurance_paid. **POSITIVE-MAGNITUDE RULE (PR4 / S142 — CRITICAL)**: ins_adjusted, insurance_paid, patient_paid, denied_amount, contract_discount, provider_adjusted, member_copay, member_coinsurance, member_applied_to_deductible, and ALL their header-total counterparts (total_ins_adjusted, total_insurance_paid, total_patient_paid, etc.) are STORED AS POSITIVE MAGNITUDES. Many EOBs display writeoff / payment columns with literal "-$X" formatting (deduction-as-negative display convention; e.g., "Insurance adjusted: -$109.68" means a $109.68 writeoff). When you see this literal minus-sign formatting, STRIP THE SIGN and store the magnitude (109.68). Negative values in these fields are invalid input. The only fields that may legitimately carry a negative value are billed_amount and denied_amount on adjustment-reversal cycle lines (per Rule #5 — reversal lines preserve their original sign so the post-process cycle detector can pair them). Reversal-cycle lines are the only exception.
 
-13a. **Per-line breakdown extraction (PR4 / S142 — CRITICAL for dispute pipeline)**: When the bill's claim-adjudication table shows per-line columns for "Insurance paid", "Insurance adjusted", "Plan paid", "Plan discount", or "Patient paid", populate the corresponding per-line numeric fields (insurance_paid, ins_adjusted, patient_paid) for EVERY line — do not emit header-only totals and leave per-line fields empty. The downstream dispute-letter pipeline needs per-line numerics to cite specific lines in the dispute body (header totals are insufficient for line-level dispute strength). If the bill's table genuinely doesn't include the column (e.g., aggregate-only EOB; header totals appear but no per-line breakdown), omit the per-line field — DO NOT invent a number. The persist verifier checks: |sum(per_line.X) - total.X| <= max(0.01, total.X * 0.001). If your per-line values don't sum to the header total within tolerance, re-read the table rather than guess.
+13a. **Per-line breakdown extraction (PR4 / S142 + PR4b / S143 v3 — CRITICAL for dispute pipeline)**: BEFORE deciding what to emit per-line, perform a TABLE-STRUCTURE CHECK: does the bill's claim-adjudication table have explicit per-line columns for "Insurance paid", "Insurance adjusted", "Plan paid", "Cost Reduction" (Cigna), "Contract Discount", "Negotiated Rate", or "Patient owes" / "Patient paid"? If YES (per-line columns present), populate the corresponding per-line numeric fields for EVERY line — extract from the table directly. If NO (e.g., a provider "Itemized receipt" that shows only billed amounts per line + summary deductions in a header/footer block; common for in-network provider bills), emit JSON null for per-line ins_adjusted / insurance_paid / patient_responsibility / patient_paid and rely on the header summary block for the total_X fields. Do NOT invent per-line numerics via derivation when the table structure does not support per-line extraction. The persist verifier checks: |sum(per_line.X) - total.X| <= max(0.01, total.X * 0.001) — if per-line values sum to a different total than the header reports, you mis-classified the table structure; re-read.
 
-13b. **DERIVATION rule for ins_adjusted (PR4 / S142 — CRITICAL)**: When the bill shows BOTH "Billed" and "Allowed" (or "Eligible amount" / "Approved amount" / "Plan-allowed") columns per line, but does NOT show an explicit "Insurance adjusted" / "Contractual adjustment" / "Plan discount" column, you MUST compute the per-line writeoff as: ins_adjusted = max(0, billed_amount - allowed_amount). This is the contractual amount the insurer negotiates down (provider billed X, insurer says only Y is allowed, writeoff = X - Y). Apply per line AND aggregate the header total: total_ins_adjusted = sum(per-line ins_adjusted). DO NOT emit null or 0 for ins_adjusted when allowed_amount is present and billed_amount > allowed_amount — that loses data the dispute pipeline needs. Example: L1 billed=$705, allowed=$563.81, insurance_paid=$563.81, patient_owes=$0 → ins_adjusted = $705 - $563.81 = $141.19 per line; sum across 8 lines yields total_ins_adjusted accordingly. If billed_amount equals allowed_amount (no writeoff), ins_adjusted = 0 is correct (and that's a real signal, not an omission).
+13b. **DERIVATION rule for ins_adjusted (PR4 / S142 + PR4b / S143 v3 — CRITICAL precondition)**: ins_adjusted derivation applies ONLY when (a) the bill's table has BOTH a per-line billed_amount column AND a per-line allowed_amount column AND (b) there is no recognized deduction-synonym column (see Rule #13c) present. In that case, compute the per-line writeoff as: ins_adjusted = max(0, billed_amount - allowed_amount). Provider itemized receipts that show only a per-line billed_amount + summary deductions in a header block do NOT meet this precondition — emit per-line ins_adjusted = null. Example (passes precondition): L1 billed=$705, allowed=$563.81, no deduction synonym column → ins_adjusted = $705 - $563.81 = $141.19. If billed_amount equals allowed_amount on a line that passes the precondition (no writeoff), ins_adjusted = 0 is correct (and that's a real signal). Emit null whenever the precondition fails.
+
+13c. **Deduction column synonyms (PR4b / S143 v2 — CRITICAL vocab recognition)**: when the bill's per-line adjudication table includes a column whose header matches ANY of these labels, extract that value (positive magnitude per Rule #13) into per-line ins_adjusted: 'Cost Reduction' (Cigna), 'Contract Discount', 'Plan Discount', 'Negotiated Rate', 'Allowed-Less-Paid', 'Contractual Adjustment', 'Network Discount', 'PPO Discount', 'Insurance adjusted', 'Insurance adjustment', 'Plan paid adjustment'. Treat all as synonyms of "Insurance adjusted". Do NOT route these into denied_amount or contract_discount.
+
+13d. **NULL vs ZERO discipline (PR4b / S143 v3 — CRITICAL)**: emit JSON null when no value is shown for a field on a line. Emit numeric 0 only when the bill EXPLICITLY displays "$0.00" / "$0" / "0.00" in that cell. Do NOT default to 0 when the field is absent or uncertain — null is the correct signal for "absent". Header totals follow the same discipline: null when not shown; 0 only when the summary explicitly displays $0.
 
 14. **Patient out-of-pocket payments** (CRITICAL — distinct from patient_responsibility): If the bill shows "Paid [date] -$X" / "Patient payment" / "Amount paid" entries near the bottom (e.g., "Paid Jun 27, 2025 -$292.41"), these represent money the PATIENT has already paid out of pocket. Sum them into total_patient_paid (header). If a per-line patient-payment is shown, also populate patient_paid on the line item. DO NOT lump these into insurance_paid. They reduce the remaining balance (Total Due) but do NOT change the patient's assigned patient_responsibility (which is the total share assigned regardless of when it's paid).
 15. **Citation-grade source provenance (Pattern P-8 — CRITICAL)**: For each high-leverage field's _meta entry (see field list below), include TWO additional sub-keys alongside 'confidence':
@@ -535,7 +545,78 @@ INCORRECT (DO NOT EMIT — literal sign preserved; downstream math inflates):
 
 Sanity-check the math on every line: billed_amount = ins_adjusted + insurance_paid + patient_responsibility (± denied / contract_discount). Line 1: 312 = 109.68 + 59.92 + 142.40 ✓. Line 2: 89 = 31.15 + 17.09 + 40.76 ✓. Line 3: 403 = 218.04 + 118.65 + 66.31 ✓. If the math doesn't close with positive magnitudes, re-read the columns rather than flip signs.
 
+## EXAMPLE 6 — Cigna single-line EOB with "Cost Reduction" column (PR4b / S143 v2 — vocab recognition)
+
+Some insurers label the contractual writeoff column with insurer-specific terminology. Cigna uses "Cost Reduction". Anthem may use "Contract Discount". Aetna often uses "Negotiated Rate". UHC uses "PPO Discount". Regardless of label, when the column represents the insurer-contractual writeoff, the value belongs in ins_adjusted (NOT denied_amount, NOT contract_discount).
+
+Input excerpt (Cigna single-line EOB; per-line table HAS columns):
+Claim # 9912345 / Service date: 08/15/2024 / Medical Plaza Inc / IN NETWORK
+Line  Date     Description       Code   Billed    Cost Reduction   Plan Paid   Patient Owes
+1     08/15/24 OFFICE VISIT      99214  153.74    38.74            115.00      0.00
+
+Output (per-line table HAS Cost Reduction column → extract directly):
+{
+  "lineItems": [
+    { "line_number_in_eob": "1", "billed_amount": 153.74, "ins_adjusted": 38.74, "insurance_paid": 115.00, "patient_responsibility": 0.00 }
+  ],
+  "totals": { "total_billed": 153.74, "total_ins_adjusted": 38.74, "total_insurance_paid": 115.00, "total_patient_responsibility": 0.00 }
+}
+
+## EXAMPLE 7 — Provider itemized receipt without per-line breakdown (PR4b / S143 v3 — table-structure check)
+
+Many in-network provider bills are "Itemized receipts" that show ONLY billed amounts per line + a summary deduction block at the top or bottom. There is NO per-line ins_adjusted / insurance_paid column. In this case, emit per-line null and capture totals from the summary block.
+
+Input excerpt (Itemized receipt; per-line table has ONLY billed):
+Provider: Swedish Medical Group
+Claim # ABC123 / Service date: 06/23/2024
+
+Summary (top of receipt):
+Total billed:      $1,297.00
+Ins adjusted:     -$639.29
+Ins paid:         -$511.50
+Amount due:        $146.21
+
+Detail:
+Date     Description              Code   Billed
+06/23/24 OFFICE VISIT             99214  $428.00
+06/23/24 X-RAY HAND               73120  $390.00
+06/23/24 INJECTION                20610  $317.00
+...
+
+Output (per-line table has ONLY billed column → emit null per-line; totals from summary):
+{
+  "lineItems": [
+    { "line_number_in_eob": "1", "billed_amount": 428.00, "ins_adjusted": null, "insurance_paid": null, "patient_responsibility": null },
+    { "line_number_in_eob": "2", "billed_amount": 390.00, "ins_adjusted": null, "insurance_paid": null, "patient_responsibility": null },
+    { "line_number_in_eob": "3", "billed_amount": 317.00, "ins_adjusted": null, "insurance_paid": null, "patient_responsibility": null }
+  ],
+  "totals": { "total_billed": 1297.00, "total_ins_adjusted": 639.29, "total_insurance_paid": 511.50, "total_patient_responsibility": 146.21 }
+}
+
+INCORRECT (DO NOT EMIT — derives per-line ins_adjusted via billed-allowed math when the table has no allowed column AND no per-line deduction column):
+{
+  "lineItems": [
+    { "line_number_in_eob": "1", "billed_amount": 428.00, "ins_adjusted": 428.00, "insurance_paid": null },
+    { "line_number_in_eob": "2", "billed_amount": 390.00, "ins_adjusted": 390.00, "insurance_paid": null }
+  ]
+}
+
+The math doesn't close: sum of fabricated per-line ($428 + $390 + ...) = $1,297 = total_billed, not $639.29 = total_ins_adjusted. Per-line derivation is ILLEGAL when the precondition (per-line billed + per-line allowed columns BOTH present) fails.
+
 ## NOW EXTRACT FROM THIS DOCUMENT:`;
+
+/**
+ * PR4b (S143) calibration options.
+ * Optional + PROD callers omit; behavior unchanged when undefined.
+ */
+export interface ParseBillCalibrationOpts {
+  forceMode?: "raw_json" | "tool_use";
+  onTrace?: (trace: {
+    mode: "raw_json" | "tool_use";
+    usage: Anthropic.Usage;
+    durationMs: number;
+  }) => void;
+}
 
 /**
  * Parse a bill or EOB using Haiku. Falls back to null on failure.
@@ -551,6 +632,7 @@ export async function parseBillWithHaiku(
   // running OCR on image-only PDFs should pass 'ocr' explicitly so verification
   // returns 'ocr_unverifiable' rather than 'not_found' on misses.
   extractionMethod: ExtractionMethod = "pdftotext",
+  opts?: ParseBillCalibrationOpts,
 ): Promise<ParsedBill | null> {
   // S94 B4 Fix #1b — SBC marker scan. Refuse to parse documents that look
   // like an SBC (Summary of Benefits and Coverage). User-uploaded SBCs
@@ -582,8 +664,15 @@ export async function parseBillWithHaiku(
   // Both paths return ParsedBill of the same shape; downstream callers
   // (persist) can't tell which path produced the result without checking the
   // flag separately + threading parserPath through.
-  const toolUseEnabled = await isFeatureEnabled("bill_parser_tool_use_v1");
-  if (toolUseEnabled) {
+  //
+  // PR4b (S143) — calibration runner supplies `opts.forceMode` to exercise
+  // either path deterministically without touching the flag in dev DB.
+  // Production callers never pass opts, so `mode` falls back to the flag
+  // check (zero behavior change).
+  const mode: "raw_json" | "tool_use" =
+    opts?.forceMode ??
+    ((await isFeatureEnabled("bill_parser_tool_use_v1")) ? "tool_use" : "raw_json");
+  if (mode === "tool_use") {
     return parseBillWithHaikuToolUse(
       client,
       ocrText,
@@ -593,9 +682,11 @@ export async function parseBillWithHaiku(
       extractionMethod,
       inputTokens,
       maxTokens,
+      opts?.onTrace,
     );
   }
 
+  const callStart = Date.now();
   try {
     let response = await client.messages.create({
       model: MODEL,
@@ -814,6 +905,11 @@ export async function parseBillWithHaiku(
     console.log(
       `[haiku-bill-parser] Extracted ${lineItems.length} line items, total billed $${parsedBill.totals.totalBilled}; usage in=${response.usage.input_tokens} out=${response.usage.output_tokens}`
     );
+    opts?.onTrace?.({
+      mode: "raw_json",
+      usage: response.usage,
+      durationMs: Date.now() - callStart,
+    });
     return parsedBill;
   } catch (err) {
     console.error("[haiku-bill-parser] Extraction failed:", err);
@@ -849,7 +945,9 @@ async function parseBillWithHaikuToolUse(
   extractionMethod: ExtractionMethod,
   inputTokens: number,
   maxTokens: number,
+  onTrace?: ParseBillCalibrationOpts["onTrace"],
 ): Promise<ParsedBill | null> {
+  const callStart = Date.now();
   try {
     let response = await client.messages.create({
       model: MODEL,
@@ -1049,6 +1147,11 @@ async function parseBillWithHaikuToolUse(
     console.log(
       `[haiku-bill-parser:tool] Extracted ${lineItems.length} line items, total billed $${parsedBill.totals.totalBilled}; usage in=${response.usage.input_tokens} out=${response.usage.output_tokens}`
     );
+    onTrace?.({
+      mode: "tool_use",
+      usage: response.usage,
+      durationMs: Date.now() - callStart,
+    });
     return parsedBill;
   } catch (err) {
     console.error("[haiku-bill-parser:tool] Extraction failed:", err);
