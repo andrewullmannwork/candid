@@ -89,7 +89,7 @@ function TopNav({ loggedIn }: { loggedIn: boolean }) {
         ) : (
           <>
             <Link href="/auth/signin" className="btn btn-ghost">Sign in</Link>
-            <Link href="/auth/signup" className="btn btn-primary">Sign up<span className="hidden sm:inline"> — it&apos;s free</span></Link>
+            <Link href="/auth/signup" className="btn btn-primary">Sign up</Link>
           </>
         )}
       </div>
