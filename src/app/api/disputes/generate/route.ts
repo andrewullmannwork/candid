@@ -23,6 +23,7 @@ import {
 } from "@/lib/disputes/evidence-fingerprint";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
+import { loadServerSubscription } from "@/lib/subscription/server";
 
 export async function POST(req: NextRequest) {
   try {
@@ -57,6 +58,22 @@ export async function POST(req: NextRequest) {
       }
 
       const supabase = createServerClient();
+
+      // Block B (P6) — server-side Stream-1 tier gate. The audit-backed dispute
+      // letter is a Pro feature (FEATURE_ACCESS.disputeLetters); both UI entry
+      // points already gate on isPro, so this closes the direct-API bypass
+      // (defense-in-depth). Only this Case 1 branch is gated — itemized-bill
+      // requests (Case 2) + uninsured negotiation letters (Case 3) stay free.
+      const subscription = await loadServerSubscription(supabase, authedUser.id);
+      if (!subscription.isPro) {
+        console.log(
+          `[disputes/generate] tier gate blocked: user ${authedUser.id} tier=${subscription.tier} status=${subscription.status} → 403`,
+        );
+        return NextResponse.json(
+          { error: "subscription_required", requiredTier: "pro" },
+          { status: 403 },
+        );
+      }
 
       // Phase 1: resolve plan context — insurer name + appeals address from
       // the user's plan matching the bill's date of service.

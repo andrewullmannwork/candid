@@ -16,6 +16,7 @@ import {
   compileEvidencePackage,
   formatEvidencePackageAsText,
 } from "@/lib/legal/evidence-compiler";
+import { loadServerSubscription } from "@/lib/subscription/server";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -51,6 +52,20 @@ export async function GET(req: NextRequest) {
 
   if (!user) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
+  }
+
+  // Block B (P6) — server-side Stream-1 tier gate. Case File / evidence-package
+  // compilation is a Pro feature (FEATURE_ACCESS.documentationAggregation);
+  // closes the direct-API bypass.
+  const subscription = await loadServerSubscription(supabase, user.id);
+  if (!subscription.isPro) {
+    console.log(
+      `[legal/evidence-package] tier gate blocked: user ${user.id} tier=${subscription.tier} status=${subscription.status} → 403`,
+    );
+    return NextResponse.json(
+      { error: "subscription_required", requiredTier: "pro" },
+      { status: 403 },
+    );
   }
 
   // If a disputeId is provided, pull the persisted letter body so Section 0
