@@ -2,10 +2,17 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
+import { isPaidTier } from "./tier";
+import type {
+  SubscriptionTier,
+  SubscriptionStatus,
+  TierCycle,
+} from "./tier";
 
-export type SubscriptionTier = "free" | "pro";
-export type SubscriptionStatus = "none" | "trialing" | "active" | "canceled" | "past_due";
-export type TierCycle = "monthly" | "annual";
+// Canonical definitions live in ./tier (isomorphic, server-safe). Re-exported
+// here so existing consumers that import these types from this module
+// (PlanCard, ChangePlanModal, subscription-gate) keep working unchanged.
+export type { SubscriptionTier, SubscriptionStatus, TierCycle };
 
 export interface PastDueRetryEvent {
   at: string;
@@ -182,7 +189,7 @@ export function useSubscription(): SubscriptionState {
     status,
     tierCycle,
     loading,
-    isPro: tier === "pro" && (status === "active" || status === "trialing"),
+    isPro: isPaidTier(tier, status),
     cancelAtPeriodEnd,
     periodEnd,
     cardholderName,

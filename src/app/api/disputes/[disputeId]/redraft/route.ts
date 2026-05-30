@@ -30,6 +30,7 @@ import { rerenderDisputeLetter } from "@/lib/disputes/rerender";
 import { reparseField } from "@/lib/plan/reparse-field";
 import { loadDecorationContext } from "@/lib/plan/analyze-decoration";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { loadServerSubscription } from "@/lib/subscription/server";
 import type { DisputeLetterType } from "@/lib/billing/types";
 
 async function getAuthUser(req: NextRequest) {
@@ -77,6 +78,20 @@ export async function POST(
     .single();
   if (!user) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
+  }
+
+  // Block B (P6) — server-side Stream-1 tier gate (re-drafting a dispute letter
+  // is a Pro feature; closes the direct-API bypass). Before the dispute load so
+  // a free caller can't probe dispute existence.
+  const subscription = await loadServerSubscription(supabase, user.id);
+  if (!subscription.isPro) {
+    console.log(
+      `[disputes/redraft] tier gate blocked: user ${user.id} tier=${subscription.tier} status=${subscription.status} → 403`,
+    );
+    return NextResponse.json(
+      { error: "subscription_required", requiredTier: "pro" },
+      { status: 403 },
+    );
   }
 
   const { data: dispute, error } = await supabase
