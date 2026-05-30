@@ -7,6 +7,11 @@ import { generateDisputeLetter, generateItemizedBillRequest } from "@/lib/disput
 import type { PlanBenefitEvidence } from "@/lib/disputes";
 import { resolvePlanContext } from "@/lib/disputes/plan-context";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
+import {
+  computeDisputeStrength,
+  loadStrengthConfig,
+  type StrengthResult,
+} from "@/lib/disputes/strength-scoring";
 import { persistDisputeLetter } from "@/lib/disputes/persist";
 import { createServerClient } from "@/lib/supabase/server";
 import { reparseField } from "@/lib/plan/reparse-field";
@@ -232,6 +237,34 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // Block A — three-axis dispute strength. Computed UNGATED (additive
+      // payload + G7 fire/non-fire telemetry); the data-trust HARD STOP it
+      // carries is enforced only when dispute_letter_v3_design is ON (default
+      // OFF → today's behavior). Non-fatal: any failure leaves strength null and
+      // the letter still generates. See plans/dispute_letter_overhaul.md §1a.
+      let strength: StrengthResult | null = null;
+      let v3DesignOn = false;
+      try {
+        v3DesignOn = await isFeatureEnabled("dispute_letter_v3_design");
+        const strengthConfig = await loadStrengthConfig(supabase);
+        strength = computeDisputeStrength(evidence, { config: strengthConfig });
+      } catch (err) {
+        console.error("[disputes] strength computation failed (non-fatal):", err);
+      }
+
+      // Data-trust HARD STOP — suppress generation for a recon-failed bill when
+      // the flag is ON. Returns 200 + a blocked reason so the UI can render the
+      // "we're checking this bill" banner instead of a letter. §1a.
+      if (v3DesignOn && strength?.dataTrust.gate === "hard_stop") {
+        return NextResponse.json({
+          success: false,
+          blocked: true,
+          reason: strength.dataTrust.reason,
+          strength,
+          missingPlanForYear: planContext?.missingForYear ?? null,
+        });
+      }
+
       // Phase 4 Task 4-E: when consumer_read_filter_v1 flag is ON, gate
       // letter blockquote rendering by Pattern P-8 cite-grade verification
       // (3-case logic in templates.ts per Q-DR-4E-2 LOCK). Reads flag once
@@ -247,7 +280,22 @@ export async function POST(req: NextRequest) {
         planContext,
         evidence,
         gateUnverified,
+        enforceDataTrustGate: v3DesignOn,
       });
+
+      // Defense-in-depth: generateDisputeLetter returns null when the data-trust
+      // gate fires. The explicit hard_stop check above already returns on the
+      // common path; this catches any case where the gate trips but strength
+      // wasn't computed. §1a / legal L3 (the gate is a shield).
+      if (!letter) {
+        return NextResponse.json({
+          success: false,
+          blocked: true,
+          reason: "bill_reconciliation_pending",
+          strength,
+          missingPlanForYear: planContext?.missingForYear ?? null,
+        });
+      }
 
       // Persist dispute to database (feature-flagged)
       let disputeId: string | null = null;
@@ -331,6 +379,9 @@ export async function POST(req: NextRequest) {
         letter,
         disputeId,
         deduplicated,
+        // Block A — additive; null when computation failed (non-fatal) or no
+        // evidence resolved. Consumed by the Block C v3 UI; ignored by today's.
+        strength,
         missingPlanForYear: planContext?.missingForYear ?? null,
       });
     }

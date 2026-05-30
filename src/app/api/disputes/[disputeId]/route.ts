@@ -17,6 +17,11 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { resolvePlanContext } from "@/lib/disputes/plan-context";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
+import {
+  computeDisputeStrength,
+  loadStrengthConfig,
+  type StrengthResult,
+} from "@/lib/disputes/strength-scoring";
 import { resolveAccountName } from "@/lib/disputes/rerender";
 import {
   captureCoverageSnapshot,
@@ -71,6 +76,14 @@ export async function GET(
   // evaluation logic on the client side.
   const gateUnverified = await isFeatureEnabled(
     "consumer_read_filter_v1",
+    user.email ?? undefined,
+  );
+
+  // Block A — dispute_letter_v3_design gates the data-trust HARD STOP (the
+  // letterContent suppression below). Resolved once per request; default OFF →
+  // today's behavior (letter always served). See plans/dispute_letter_overhaul.md §1a.
+  const v3DesignOn = await isFeatureEnabled(
+    "dispute_letter_v3_design",
     user.email ?? undefined,
   );
 
@@ -359,6 +372,36 @@ export async function GET(
     console.warn("[disputes/[disputeId]] patient-name compare failed (non-fatal):", err);
   }
 
+  // Block A — three-axis strength for the payload + the data-trust HARD STOP.
+  // Computed UNGATED (additive); letterContent suppression applies only when
+  // dispute_letter_v3_design is ON. patientIdentityResolved reuses the
+  // name-match check above. Non-fatal: failure leaves strength null + serves the
+  // letter as before. See plans/dispute_letter_overhaul.md §1a.
+  let strength: StrengthResult | null = null;
+  try {
+    const strengthConfig = await loadStrengthConfig(supabase);
+    strength = computeDisputeStrength(evidence, {
+      config: strengthConfig,
+      patientIdentityResolved: !patientNameMismatch,
+    });
+  } catch (err) {
+    console.error("[disputes/[disputeId]] strength computation failed (non-fatal):", err);
+  }
+
+  // HARD STOP: when the flag is ON and a bill failed reconciliation, serve no
+  // letter (the UI renders the banner). Suppression is display-only — the stored
+  // dispute.letter_content is preserved for when the bill is later reconciled.
+  const dataTrustHardStop =
+    v3DesignOn && strength?.dataTrust.gate === "hard_stop";
+  const resolvedLetterContent =
+    flywheelOn && sentAt && dispute.sent_letter
+      ? typeof dispute.sent_letter === "string"
+        ? (dispute.sent_letter as string)
+        : ((dispute.sent_letter as Record<string, unknown>).body as string) ??
+          (regeneratedLetterContent ?? dispute.letter_content)
+      : regeneratedLetterContent ?? dispute.letter_content;
+  const letterContent = dataTrustHardStop ? null : resolvedLetterContent;
+
   return NextResponse.json({
     id: dispute.id,
     disputeType: dispute.dispute_type,
@@ -371,14 +414,9 @@ export async function GET(
     claimId: dispute.claim_id,
     // S74.5 D16 — if sent_at is set, serve the immutable sent_letter as the
     // letter content; UI surfaces drift banner via driftState when current
-    // findings differ.
-    letterContent:
-      flywheelOn && sentAt && dispute.sent_letter
-        ? typeof dispute.sent_letter === "string"
-          ? (dispute.sent_letter as string)
-          : ((dispute.sent_letter as Record<string, unknown>).body as string) ??
-            (regeneratedLetterContent ?? dispute.letter_content)
-        : regeneratedLetterContent ?? dispute.letter_content,
+    // findings differ. Block A — null when the data-trust HARD STOP fires (flag
+    // ON); resolved above into `letterContent`.
+    letterContent,
     evidencePackage: dispute.evidence_package,
     lineItems,
     planContext: planContext
@@ -403,6 +441,12 @@ export async function GET(
     evidence,
     patientNameMismatch,
     gateUnverified,
+    // Block A — additive three-axis strength + data-trust state. Consumed by the
+    // Block C v3 UI (data-trust banner + evidence band + readiness rail); ignored
+    // by today's frontend. dataTrust surfaced even when the flag is OFF (G7
+    // fire/non-fire telemetry).
+    strength,
+    dataTrust: strength?.dataTrust ?? null,
     // S109 PR #2 (Chunk B) — current same-plan-confirmation answer, used by
     // VerifStrip to derive question / fallback / bound-proxy / confirm-archive.
     userConfirmedSamePlan: ((): "yes" | "no" | "not_sure" | null => {

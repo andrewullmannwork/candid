@@ -37,6 +37,16 @@ export interface GenerateDisputeLetterOptions {
    * (legacy / flag OFF behavior — all blockquotes render unconditionally).
    */
   gateUnverified?: boolean;
+  /**
+   * Block A — data-trust HARD STOP enforcement. When true AND the resolved
+   * evidence carries a header-reconciliation failure, generation is suppressed
+   * (returns null). The caller passes the `dispute_letter_v3_design` flag state;
+   * default false preserves today's behavior (letters generate regardless of
+   * reconciliation state). Defense-in-depth — the generate route also gates,
+   * but enforcing here means no caller can route around it (legal L3: the gate
+   * is a shield). See plans/dispute_letter_overhaul.md §1a.
+   */
+  enforceDataTrustGate?: boolean;
 }
 
 export function generateDisputeLetter(
@@ -44,7 +54,7 @@ export function generateDisputeLetter(
   findingIds: string[],
   letterType?: DisputeLetterType,
   optionsOrPlanEvidence?: GenerateDisputeLetterOptions | PlanBenefitEvidence[]
-): DisputeLetter {
+): DisputeLetter | null {
   const findings = report.findings.filter((f) => findingIds.includes(f.id));
 
   if (findings.length === 0) {
@@ -56,7 +66,15 @@ export function generateDisputeLetter(
   const options: GenerateDisputeLetterOptions = Array.isArray(optionsOrPlanEvidence)
     ? { planEvidence: optionsOrPlanEvidence }
     : (optionsOrPlanEvidence ?? {});
-  const { planEvidence, planContext, evidence, gateUnverified } = options;
+  const { planEvidence, planContext, evidence, gateUnverified, enforceDataTrustGate } = options;
+
+  // Block A — data-trust HARD STOP. A bill that failed header reconciliation has
+  // numbers we don't trust enough to cite, so we suppress generation and let the
+  // caller surface the "checking this bill" banner. Flag-gated by the caller
+  // (default OFF → status quo). §1a.
+  if (enforceDataTrustGate && evidence?.dataTrust?.headerReconciliationFailed) {
+    return null;
+  }
 
   // Auto-detect letter type from findings if not specified
   const resolvedType =
