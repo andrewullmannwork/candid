@@ -28,6 +28,13 @@ import {
   resolveEffectiveClaimTotals,
   type EffectiveClaimTotals,
 } from "@/lib/claims/effective-totals";
+import {
+  classifyDisputeType,
+  deriveCiteGradeTier,
+  deriveDollarAtStake,
+  type DisputeTypeClass,
+  type CiteGradeTier,
+} from "./strength-scoring";
 
 const K_ANON_PRICING = 5;
 
@@ -205,6 +212,15 @@ export interface LineItemEvidence {
     confidence: number;
     promotionState: "corroborated" | "admin_verified";
   }> | null;
+  /**
+   * Block A — the EvidenceBundle normalization (plans/dispute_letter_overhaul.md
+   * §1e). `disputeType` selects which signal is this line's spine; `citeGradeTier`
+   * grades the spine quote; `dollarAtStake` is the §1a money weight w_i.
+   * Populated once here (single producer) and consumed by computeDisputeStrength.
+   */
+  disputeType: DisputeTypeClass;
+  citeGradeTier: CiteGradeTier;
+  dollarAtStake: number;
 }
 
 export interface ClaimEvidence {
@@ -220,6 +236,17 @@ export interface ClaimEvidence {
    * citation framing prefix ("EOB summary records…" when header-sourced).
    */
   effectiveTotals: EffectiveClaimTotals;
+  /**
+   * Block A — per-bill data-trust flags mirrored onto claims.metadata by the
+   * S142 PR4 bill-parser verifiers. Surfaced here (the resolver already fetches
+   * claim.metadata) so computeDisputeStrength's data-trust GATE reads it without
+   * a second query. header_reconciliation_failed → HARD STOP; signViolation →
+   * WARN (§1a). Backend-owned contract — see workstream_coordination.md.
+   */
+  dataTrust: {
+    headerReconciliationFailed: boolean;
+    signViolation: boolean;
+  };
 }
 
 export interface PlanEvidenceDetail {
@@ -317,6 +344,17 @@ export interface DisputeEvidence {
    * renders each as an actionable upload/refresh prompt.
    */
   gaps: EvidenceGap[];
+  /**
+   * Block A — dispute-level data-trust rollup (any-claim OR across §1a). The
+   * data-trust GATE (computeDisputeStrength axis a) reads per-claim state; this
+   * convenience aggregate drives the API payload + the letter-generation HARD
+   * STOP. recon-failed precedence over sign-violation is applied by
+   * evaluateDataTrust, not here.
+   */
+  dataTrust: {
+    headerReconciliationFailed: boolean;
+    signViolation: boolean;
+  };
 }
 
 export async function resolveEvidence(
@@ -528,6 +566,14 @@ export async function resolveEvidence(
         claim: c,
         lineItems: claimLineItems,
       }),
+      // Block A — read the S142 PR4 verdict flags mirrored onto claims.metadata
+      // by claims/persist.ts. Absent key (clean bill) → false (pass).
+      dataTrust: {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        headerReconciliationFailed: (c.metadata as any)?.header_reconciliation_failed === true,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        signViolation: (c.metadata as any)?.bill_parser_sign_violation === true,
+      },
     });
   }
 
@@ -630,6 +676,13 @@ export async function resolveEvidence(
     communityEvidence: claimLevelCommunity,
     legalBasis: resolveLegalBasis(letterType),
     gaps,
+    // Block A — any-claim rollup of the per-claim data-trust flags.
+    dataTrust: {
+      headerReconciliationFailed: claimsArr.some(
+        (c) => c.dataTrust.headerReconciliationFailed,
+      ),
+      signViolation: claimsArr.some((c) => c.dataTrust.signViolation),
+    },
   };
 }
 
@@ -938,6 +991,7 @@ function emptyEvidence(
     communityEvidence: null,
     legalBasis: resolveLegalBasis(letterType),
     gaps: [],
+    dataTrust: { headerReconciliationFailed: false, signViolation: false },
   };
 }
 
@@ -1578,6 +1632,20 @@ function buildLineItemEvidence(
     ? peerCodesBySlug.get(resolvedSlug) ?? null
     : null;
 
+  // Block A — derive the EvidenceBundle normalization fields (§1e) from the
+  // signals assembled above. Single producer; computeDisputeStrength consumes.
+  const disputeType = classifyDisputeType({
+    planBenefit,
+    peerCodes,
+    communityOutcome,
+    siblingCodes,
+    pricingBenchmark,
+    auditFindings,
+    discrepancyAmount,
+  });
+  const citeGradeTier = deriveCiteGradeTier({ planBenefit });
+  const dollarAtStake = deriveDollarAtStake({ discrepancyAmount, auditFindings });
+
   return {
     lineItemId: li.id,
     billingCode: li.billing_code && li.billing_code_type
@@ -1598,6 +1666,9 @@ function buildLineItemEvidence(
     pricingBenchmark,
     auditFindings,
     peerCodes,
+    disputeType,
+    citeGradeTier,
+    dollarAtStake,
   };
 }
 

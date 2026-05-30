@@ -36,6 +36,16 @@ export async function rerenderDisputeLetter(
   const template = LETTER_TEMPLATES[letterType];
   if (!template) return null;
 
+  // Block A — data-trust HARD STOP (flag-gated). Symmetric with
+  // generateDisputeLetter: a header-reconciliation failure suppresses
+  // regeneration so the [disputeId] GET serves no letter (it surfaces the
+  // banner instead). Flag read only when recon actually failed (cheap). Default
+  // OFF → status quo. See plans/dispute_letter_overhaul.md §1a / legal L3.
+  if (evidence?.dataTrust?.headerReconciliationFailed) {
+    const enforceGate = await isFeatureEnabled("dispute_letter_v3_design");
+    if (enforceGate) return null;
+  }
+
   // Hydrate a minimal ParsedBill so templates can read patient + provider,
   // and pull the user's display name as a fallback when the bill metadata's
   // patient name is missing, placeholder-looking, or mis-OCR'd.
