@@ -26,7 +26,13 @@
  * Plus inline "Re-draft to verify" hint when the row is not cite-grade.
  */
 import type { DisputeEvidence, LineItemEvidence } from "@/lib/disputes/evidence-resolver";
+import type { EvidenceBand } from "@/lib/disputes/strength-scoring";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
+import { StrengthBand } from "./StrengthBand";
+import {
+  ServiceAttestationFlow,
+  type AttestationLine,
+} from "./ServiceAttestationFlow";
 
 interface Props {
   evidence: DisputeEvidence | null;
@@ -43,6 +49,32 @@ interface Props {
    * UI is byte-identical to pre-Block-C.
    */
   showExtendedSlots?: boolean;
+  /**
+   * Block C2 — per-line qualitative band keyed by lineItemId (from
+   * strength.evidenceStrength.perLine). Shown next to each line (L1: band only,
+   * never the score).
+   */
+  bandByLineId?: Record<string, EvidenceBand>;
+  /** Block C2 — claim_line_item ids the user has attested were not rendered. */
+  attestedLineItemIds?: string[];
+  /**
+   * Block C2 — commit the full attestation payload (service-not-rendered lines +
+   * the gate-reviewed flag + the adopted attesting name). When provided (v3 only),
+   * renders the attestation flow + per-line markers. Omitted → read-only.
+   */
+  onAttest?: (payload: {
+    attestedLineItemIds: string[];
+    serviceAttestationReviewed: boolean;
+    attestingAsName?: string;
+  }) => void | Promise<void>;
+  /** Block C2 item 2 — whether the attestation gate was already answered (no re-prompt). */
+  attestationReviewed?: boolean;
+  /** Block C2 item 1 — default attesting name (account holder; users.display_name). */
+  accountName?: string;
+  /** Block C2 item 1 — persisted adopted attesting name (dispute.metadata.attestingAsName). */
+  attestingAsName?: string | null;
+  /** Block C2 — disables the attestation confirm while a write is in flight. */
+  attestBusy?: boolean;
 }
 
 export function EvidenceBlock({
@@ -50,6 +82,13 @@ export function EvidenceBlock({
   planLabel,
   gateUnverified = false,
   showExtendedSlots = false,
+  bandByLineId,
+  attestedLineItemIds,
+  onAttest,
+  attestationReviewed = false,
+  accountName = "",
+  attestingAsName,
+  attestBusy = false,
 }: Props) {
   if (!evidence || evidence.claims.length === 0) return null;
 
@@ -69,6 +108,19 @@ export function EvidenceBlock({
   );
   if (useful.length === 0) return null;
 
+  // Block C2 — every billed line is a candidate for the attestation picker (the
+  // user picks which were not rendered), independent of the display filter above.
+  const attestationLines: AttestationLine[] = evidence.claims.flatMap((c) =>
+    c.lineItemEvidence.map((li) => ({
+      lineItemId: li.lineItemId,
+      serviceName: li.serviceName,
+      codeLabel: li.billingCode
+        ? `${li.billingCode.type} ${li.billingCode.value}`
+        : null,
+      billedAmount: li.billedAmount,
+    })),
+  );
+
   return (
     <div className="rounded-2xl border border-indigo-100 bg-indigo-50/40 p-5 md:p-6">
       <div className="text-sm font-semibold uppercase tracking-wide text-indigo-700">
@@ -78,6 +130,23 @@ export function EvidenceBlock({
         Plain-language evidence drawn from your plan + this bill. The same
         analysis is embedded in your downloadable letter.
       </p>
+
+      {/* Block C2 — service-not-rendered attestation flow (§1c/§1f L2). v3-only;
+          read-only when onAttest is absent. */}
+      {showExtendedSlots && onAttest ? (
+        <div className="mt-4">
+          <ServiceAttestationFlow
+            lines={attestationLines}
+            attested={attestedLineItemIds ?? []}
+            reviewed={attestationReviewed}
+            accountName={accountName}
+            attestingAsName={attestingAsName}
+            onSubmit={onAttest}
+            busy={attestBusy}
+          />
+        </div>
+      ) : null}
+
       <ol className="mt-4 space-y-4">
         {evidence.claims.map((claim) =>
           claim.lineItemEvidence.map((li, idx) => (
@@ -87,6 +156,18 @@ export function EvidenceBlock({
               planLabel={planLabel}
               gateUnverified={gateUnverified}
               showExtendedSlots={showExtendedSlots}
+              band={bandByLineId?.[li.lineItemId]}
+              onUndoAttest={
+                onAttest && li.serviceNotRenderedAttested
+                  ? () =>
+                      onAttest({
+                        attestedLineItemIds: (attestedLineItemIds ?? []).filter(
+                          (id) => id !== li.lineItemId,
+                        ),
+                        serviceAttestationReviewed: true,
+                      })
+                  : undefined
+              }
             />
           )),
         )}
@@ -100,11 +181,15 @@ function EvidenceItem({
   planLabel,
   gateUnverified,
   showExtendedSlots,
+  band,
+  onUndoAttest,
 }: {
   item: LineItemEvidence;
   planLabel: string | null;
   gateUnverified: boolean;
   showExtendedSlots: boolean;
+  band?: EvidenceBand;
+  onUndoAttest?: () => void;
 }) {
   const codeLabel = item.billingCode
     ? `${item.billingCode.type} ${item.billingCode.value}`
@@ -136,13 +221,16 @@ function EvidenceItem({
             </div>
           ) : null}
         </div>
-        <div className="text-sm text-slate-500">
-          Billed {formatUsd(item.billedAmount)}
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
+          <div className="text-sm text-slate-500">
+            Billed {formatUsd(item.billedAmount)}
+          </div>
+          {band ? <StrengthBand band={band} /> : null}
         </div>
       </div>
 
       <div className="mt-3 space-y-2 text-sm">
-        {item.planBenefit && planBenefitTrusted ? (
+        {item.planBenefit && planBenefitTrusted && !item.serviceNotRenderedAttested ? (
           <div className="text-slate-700">
             <span className="font-medium text-slate-900">
               {planLabel ?? "Your plan"}
@@ -192,7 +280,7 @@ function EvidenceItem({
           </div>
         ) : null}
 
-        {item.discrepancyAmount != null && item.discrepancyAmount > 0 && planBenefitTrusted ? (
+        {item.discrepancyAmount != null && item.discrepancyAmount > 0 && planBenefitTrusted && !item.serviceNotRenderedAttested ? (
           <div className="text-slate-900">
             Expected patient cost per plan:{" "}
             <span className="font-semibold">
@@ -207,8 +295,25 @@ function EvidenceItem({
               Discrepancy: {formatUsd(item.discrepancyAmount)}.
             </span>
           </div>
-        ) : item.discrepancyReason && planBenefitTrusted ? (
+        ) : item.discrepancyReason && planBenefitTrusted && !item.serviceNotRenderedAttested ? (
           <div className="text-slate-700">{item.discrepancyReason}</div>
+        ) : null}
+
+        {/* Block C2 item 3 — attested line: cost-share is secondary. Mirror the
+            letter — suppress the lead citation/discrepancy above; reintroduce a
+            real overage once here as a de-weighted "in the alternative" line. */}
+        {item.serviceNotRenderedAttested &&
+        item.planBenefit &&
+        planBenefitTrusted &&
+        item.expectedPatientCost != null &&
+        item.actualPatientCost != null &&
+        (item.discrepancyAmount ?? 0) > 0 ? (
+          <div className="text-xs italic text-slate-500">
+            In the alternative, even had this service been provided, the
+            plan&apos;s cost-sharing terms appear misapplied (responsibility{" "}
+            {formatUsd(item.expectedPatientCost)}, not{" "}
+            {formatUsd(item.actualPatientCost)}).
+          </div>
         ) : null}
 
         {/* Block C — gated corroborating slots. Each null-guarded; the engines
@@ -217,6 +322,36 @@ function EvidenceItem({
             bullets (templates.ts). v3-only via showExtendedSlots. */}
         {showExtendedSlots ? <ExtendedSlots item={item} /> : null}
       </div>
+
+      {showExtendedSlots && item.serviceNotRenderedAttested ? (
+        <div className="mt-3 flex items-center gap-2.5 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2.5">
+          <span className="grid h-[18px] w-[18px] shrink-0 place-items-center rounded bg-slate-700 text-white">
+            <svg
+              className="h-2.5 w-2.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              aria-hidden
+            >
+              <path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+            </svg>
+          </span>
+          <span className="flex-1 text-xs text-slate-600">
+            <span className="font-semibold text-slate-900">Attested:</span> not
+            provided — your statement, added to the letter.
+          </span>
+          {onUndoAttest ? (
+            <button
+              type="button"
+              onClick={onUndoAttest}
+              className="shrink-0 text-[11.5px] font-semibold text-blue-600 hover:text-blue-700 hover:underline"
+            >
+              Undo
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </li>
   );
 }

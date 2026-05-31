@@ -153,6 +153,12 @@ export async function POST(
     const v = (dispute.metadata as Record<string, unknown> | null)?.canonicalPlanIdForBillYear;
     return typeof v === "string" && v.length > 0 ? v : null;
   })();
+  // Block C2 — service-not-rendered attestations; threaded into both resolveEvidence
+  // passes so the re-drafted letter preserves the attested reclassification.
+  const serviceAttestedLineIds = ((): string[] => {
+    const v = (dispute.metadata as Record<string, unknown> | null)?.serviceAttestedLineIds;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  })();
   // Step 1: resolve plan context + initial evidence pass.
   const planContext = await resolvePlanContext(supabase, {
     userId: user.id,
@@ -168,6 +174,7 @@ export async function POST(
     disputeId: dispute.id,
     userConfirmedSamePlan,
     canonicalPlanIdForBillYear,
+    attestedLineItemIds: serviceAttestedLineIds,
   });
 
   // Step 2: CF-20 re-parse-on-flag — mirrors /api/disputes/generate logic.
@@ -228,6 +235,7 @@ export async function POST(
                 disputeId: dispute.id,
                 userConfirmedSamePlan,
                 canonicalPlanIdForBillYear,
+                attestedLineItemIds: serviceAttestedLineIds,
               });
             }
           }
@@ -240,6 +248,11 @@ export async function POST(
 
   // Step 3: regenerate letter body using refreshed evidence.
   const letterTypeForRender = resolveLetterTypeFromDispute(dispute);
+  // Block C2 item 1 — thread the adopted attesting name into String 2 on redraft.
+  const attestingAsName = ((): string | undefined => {
+    const v = (dispute.metadata as Record<string, unknown> | null)?.attestingAsName;
+    return typeof v === "string" && v.trim() ? v.trim() : undefined;
+  })();
   const newBody = await rerenderDisputeLetter(supabase, {
     disputeId: dispute.id,
     userId: user.id,
@@ -248,6 +261,7 @@ export async function POST(
     lineItemIds: allLineItemIds,
     planContext,
     evidence,
+    attestingName: attestingAsName,
   });
 
   if (!newBody) {
