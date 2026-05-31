@@ -524,10 +524,15 @@ function renderLineItemEvidence(
       }
     }
     bullets.push(`   - ${prefix}. Source: ${li.planBenefit.citation}.`);
-    // Blockquote (Case 1 only): render the verbatim excerpt only when cite-grade
-    // verified OR gating is off entirely (legacy behavior).
+    // Verbatim plan excerpt (Case 1 only): render only when cite-grade verified
+    // OR gating is off entirely (legacy behavior). Plain-text "Plan language:"
+    // label — NOT Markdown. The letter body renders as plain text everywhere it
+    // matters (whitespace-pre-wrap on-page + downloaded .txt + the copy the user
+    // mails to the insurer); the prior `> *"..."*` Markdown rendered as literal
+    // noise in all three. The quoted excerpt itself stays verbatim — CF-60 inv1:
+    // do NOT alter the text inside the quotes.
     if (li.planBenefit.sbcExcerpt && (!gateUnverified || li.planBenefit.sbcExcerptVerified)) {
-      bullets.push(`     > *"${li.planBenefit.sbcExcerpt.trim()}"*`);
+      bullets.push(`     Plan language: "${li.planBenefit.sbcExcerpt.trim()}"`);
     }
   }
 
