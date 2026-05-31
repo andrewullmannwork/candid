@@ -15,6 +15,7 @@
  */
 import type { DisputeLetter } from "@/lib/billing/types";
 import type { DisputeEvidence } from "@/lib/disputes/evidence-resolver";
+import type { StrengthResult, EvidenceBand } from "@/lib/disputes/strength-scoring";
 
 interface Props {
   letter: DisputeLetter;
@@ -24,6 +25,12 @@ interface Props {
   potentialRecovery: number | null;
   /** S74 — drives the cite-grade quality summary. */
   evidence?: DisputeEvidence | null;
+  /**
+   * Block C (dispute_letter_v3_design) — three-axis strength. When present, the
+   * hero renders the evidence-strength band as a qualitative chip (§1a readout).
+   * Optional + only passed by the v3 UI, so the flag-OFF hero is unchanged.
+   */
+  strength?: StrengthResult | null;
   /** S74 — called when the user clicks the "Re-draft to upgrade" link in the
    *  quality summary chip. Should run the same redraft POST as the toolbar. */
   onRedraft?: () => void;
@@ -47,6 +54,7 @@ export function DisputeLetterHero({
   askSummary,
   potentialRecovery,
   evidence,
+  strength,
   onRedraft,
   redraftInFlight,
 }: Props) {
@@ -59,6 +67,9 @@ export function DisputeLetterHero({
     .join(" · ");
 
   const qualitySummary = computeQualitySummary(evidence);
+  // Block C — evidence-strength band (§1a). Qualitative only; the numeric
+  // score is never surfaced (§1f L1 — evidence quality, not odds of winning).
+  const band = strength ? bandPresentation(strength.evidenceStrength.band) : null;
 
   return (
     <div className="relative overflow-hidden rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-50 via-indigo-50 to-white px-6 py-7 shadow-sm md:px-8">
@@ -75,24 +86,35 @@ export function DisputeLetterHero({
               {askSummary}
             </p>
           ) : null}
-          {qualitySummary ? (
+          {band || qualitySummary ? (
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <span
-                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${
-                  qualitySummary.allVerified
-                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                    : qualitySummary.verified === 0
-                    ? "border-amber-200 bg-amber-50 text-amber-800"
-                    : "border-indigo-200 bg-indigo-50 text-indigo-700"
-                }`}
-                title={qualitySummary.allVerified
-                  ? "Every plan-benefit citation in this letter is backed by a verbatim quote from your plan document (or a corroborating member's parse)."
-                  : "Some plan-benefit citations don't yet have a verbatim plan-document quote. Re-draft attempts a cite-grade upgrade via a bounded re-parse."}
-              >
-                <QualityDot allVerified={qualitySummary.allVerified} />
-                {qualitySummary.verified} of {qualitySummary.total} citation{qualitySummary.total === 1 ? "" : "s"} verified
-              </span>
-              {!qualitySummary.allVerified && onRedraft ? (
+              {band ? (
+                <span
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${band.chip}`}
+                  title="How well-backed this dispute is by the evidence on file — a measure of evidence quality, not a prediction of whether the insurer will agree."
+                >
+                  <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${band.dot}`} />
+                  Evidence: {band.label}
+                </span>
+              ) : null}
+              {qualitySummary ? (
+                <span
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${
+                    qualitySummary.allVerified
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                      : qualitySummary.verified === 0
+                      ? "border-amber-200 bg-amber-50 text-amber-800"
+                      : "border-indigo-200 bg-indigo-50 text-indigo-700"
+                  }`}
+                  title={qualitySummary.allVerified
+                    ? "Every plan-benefit citation in this letter is backed by a verbatim quote from your plan document (or a corroborating member's parse)."
+                    : "Some plan-benefit citations don't yet have a verbatim plan-document quote. Re-draft attempts a cite-grade upgrade via a bounded re-parse."}
+                >
+                  <QualityDot allVerified={qualitySummary.allVerified} />
+                  {qualitySummary.verified} of {qualitySummary.total} citation{qualitySummary.total === 1 ? "" : "s"} verified
+                </span>
+              ) : null}
+              {qualitySummary && !qualitySummary.allVerified && onRedraft ? (
                 <button
                   type="button"
                   onClick={onRedraft}
@@ -126,6 +148,32 @@ function computeQualitySummary(
   if (rows.length === 0) return null;
   const verified = rows.filter((li) => li.planBenefit?.sbcExcerptVerified).length;
   return { verified, total: rows.length, allVerified: verified === rows.length };
+}
+
+function bandPresentation(
+  band: EvidenceBand,
+): { label: string; chip: string; dot: string } {
+  switch (band) {
+    case "well_supported":
+      return {
+        label: "Well supported",
+        chip: "border-emerald-200 bg-emerald-50 text-emerald-700",
+        dot: "bg-emerald-500",
+      };
+    case "partially_supported":
+      return {
+        label: "Partially supported",
+        chip: "border-indigo-200 bg-indigo-50 text-indigo-700",
+        dot: "bg-indigo-500",
+      };
+    case "needs_support":
+    default:
+      return {
+        label: "Needs support",
+        chip: "border-amber-200 bg-amber-50 text-amber-800",
+        dot: "bg-amber-500",
+      };
+  }
 }
 
 function QualityDot({ allVerified }: { allVerified: boolean }) {

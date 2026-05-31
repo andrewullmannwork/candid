@@ -34,13 +34,38 @@ interface Props {
   /** Phase 4 Task 4-E. When true, plan-benefit blockquote rendering is gated by
    *  Pattern P-8 cite-grade verification per Q-P4-2 LOCK (legal surface). */
   gateUnverified?: boolean;
+  /**
+   * Block C (dispute_letter_v3_design) — when true, render the gated corroborating
+   * evidence slots (community "what others paid", pricing benchmark, peer-code
+   * coding suggestion) that mirror the letter body. Each slot is null-guarded +
+   * hidden when empty (engines emit nothing on empty PROD per k-anon ≥5 / ≥2-peer
+   * floors), so they auto-light when the flywheel fills. Default false → flag-OFF
+   * UI is byte-identical to pre-Block-C.
+   */
+  showExtendedSlots?: boolean;
 }
 
-export function EvidenceBlock({ evidence, planLabel, gateUnverified = false }: Props) {
+export function EvidenceBlock({
+  evidence,
+  planLabel,
+  gateUnverified = false,
+  showExtendedSlots = false,
+}: Props) {
   if (!evidence || evidence.claims.length === 0) return null;
 
+  // Section shows when any line has plan-benefit or discrepancy prose. In v3,
+  // also show when a line carries a corroborating slot, so a line backed only
+  // by cross-user evidence isn't hidden.
   const useful = evidence.claims.flatMap((c) =>
-    c.lineItemEvidence.filter((li) => li.planBenefit || li.discrepancyReason),
+    c.lineItemEvidence.filter(
+      (li) =>
+        li.planBenefit ||
+        li.discrepancyReason ||
+        (showExtendedSlots &&
+          (li.communityOutcome ||
+            li.pricingBenchmark ||
+            (li.peerCodes && li.peerCodes.length >= 2))),
+    ),
   );
   if (useful.length === 0) return null;
 
@@ -61,6 +86,7 @@ export function EvidenceBlock({ evidence, planLabel, gateUnverified = false }: P
               item={li}
               planLabel={planLabel}
               gateUnverified={gateUnverified}
+              showExtendedSlots={showExtendedSlots}
             />
           )),
         )}
@@ -73,10 +99,12 @@ function EvidenceItem({
   item,
   planLabel,
   gateUnverified,
+  showExtendedSlots,
 }: {
   item: LineItemEvidence;
   planLabel: string | null;
   gateUnverified: boolean;
+  showExtendedSlots: boolean;
 }) {
   const codeLabel = item.billingCode
     ? `${item.billingCode.type} ${item.billingCode.value}`
@@ -182,8 +210,76 @@ function EvidenceItem({
         ) : item.discrepancyReason && planBenefitTrusted ? (
           <div className="text-slate-700">{item.discrepancyReason}</div>
         ) : null}
+
+        {/* Block C — gated corroborating slots. Each null-guarded; the engines
+            emit nothing on empty PROD (k-anon ≥5 / ≥2-peer floors), so these
+            auto-light only when the flywheel fills. Mirrors the letter body
+            bullets (templates.ts). v3-only via showExtendedSlots. */}
+        {showExtendedSlots ? <ExtendedSlots item={item} /> : null}
       </div>
     </li>
+  );
+}
+
+/**
+ * Block C corroborating-evidence slots — the on-page mirror of the letter's
+ * community / benchmark / peer-code bullets. Phrasing matches templates.ts
+ * (AMA-compliant for peer codes: "verify whether X more accurately reflects",
+ * never "should be coded as X"). Renders nothing when no slot has data.
+ */
+function ExtendedSlots({ item }: { item: LineItemEvidence }) {
+  const community = item.communityOutcome;
+  const pricing = item.pricingBenchmark;
+  const peers = item.peerCodes && item.peerCodes.length >= 2 ? item.peerCodes : null;
+
+  const hasCommunity = !!community && community.totalClaims > 0;
+  const hasPricing = !!pricing && pricing.medianBilled != null && item.billedAmount > 0;
+  if (!hasCommunity && !hasPricing && !peers) return null;
+
+  return (
+    <div className="space-y-2 border-t border-slate-100 pt-2">
+      {hasCommunity ? (
+        <div className="text-slate-600">
+          <SlotLabel>What others paid</SlotLabel>{" "}
+          {community!.paidCount > 0
+            ? `${community!.paidCount} of ${community!.totalClaims} claims for this code on this plan have been paid`
+            : `${community!.totalClaims} claims for this code on this plan are on record`}
+          {community!.avgPaidAmount != null && community!.paidCount > 0
+            ? `; average payment ${formatUsd(community!.avgPaidAmount)}`
+            : ""}
+          .{" "}
+          <span className="text-slate-400">(anonymized, aggregated Candid member data)</span>
+        </div>
+      ) : null}
+
+      {hasPricing ? (
+        <div className="text-slate-600">
+          <SlotLabel>Benchmark</SlotLabel>{" "}
+          Median billed rate for this code
+          {pricing!.region ? ` in ${pricing!.region}` : ""} is{" "}
+          <span className="font-semibold">{formatUsd(pricing!.medianBilled!)}</span> across{" "}
+          {pricing!.sampleSize} anonymized member report
+          {pricing!.sampleSize === 1 ? "" : "s"}.
+        </div>
+      ) : null}
+
+      {peers ? (
+        <div className="text-slate-600">
+          <SlotLabel>Coding</SlotLabel>{" "}
+          Similar charges have been resolved when re-coded. Please verify whether{" "}
+          <span className="font-semibold">{peers[0].code}</span> more accurately
+          reflects the service provided, and reprocess accordingly if applicable.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SlotLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+      {children}:
+    </span>
   );
 }
 

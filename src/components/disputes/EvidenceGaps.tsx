@@ -96,7 +96,7 @@ export function EvidenceGaps({
   };
 
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
+    <section className="@container rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
       <div className="mb-3">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
           Strengthen this letter
@@ -118,7 +118,7 @@ export function EvidenceGaps({
               key={`${gap.kind}-${i}`}
               className="rounded-xl border border-slate-100 bg-slate-50/50 px-4 py-3"
             >
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div className="flex flex-col gap-3 @md:flex-row @md:items-center @md:justify-between">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <GapIcon />
@@ -190,7 +190,7 @@ function renderCta(
         type="button"
         onClick={ctx.onAuditRerun}
         disabled={ctx.rerunStatus === "running"}
-        className="inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow disabled:cursor-wait disabled:opacity-70 md:ml-4"
+        className="inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow disabled:cursor-wait disabled:opacity-70 @md:ml-4"
       >
         {label}
       </button>
@@ -212,7 +212,7 @@ function renderCta(
         type="button"
         onClick={ctx.onRedraft}
         disabled={ctx.redraftStatus === "running"}
-        className="inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow disabled:cursor-wait disabled:opacity-70 md:ml-4"
+        className="inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow disabled:cursor-wait disabled:opacity-70 @md:ml-4"
       >
         {label}
       </button>
@@ -228,7 +228,7 @@ function renderCta(
       <button
         type="button"
         onClick={ctx.onUploadInModal}
-        className="inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow md:ml-4"
+        className="inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow @md:ml-4"
       >
         {gap.ctaLabel ?? "Upload my plan"}
       </button>
@@ -241,7 +241,7 @@ function renderCta(
       <button
         type="button"
         onClick={ctx.onOpenProviderForm}
-        className="inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow md:ml-4"
+        className="inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow @md:ml-4"
       >
         {ctx.providerFormOpen ? "Form open below" : "Add provider address"}
       </button>
@@ -252,7 +252,7 @@ function renderCta(
     return (
       <Link
         href={gap.ctaHref}
-        className="inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow md:ml-4"
+        className="inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow @md:ml-4"
       >
         {gap.ctaLabel}
       </Link>

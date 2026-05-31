@@ -32,6 +32,10 @@ import type {
   PlanContext,
 } from "@/lib/disputes/plan-context";
 import type { DisputeEvidence } from "@/lib/disputes/evidence-resolver";
+// Block C (dispute_letter_v3_design) — the three-axis strength readouts.
+import { DataTrustBanner } from "@/components/disputes/DataTrustBanner";
+import { ReadinessRail } from "@/components/disputes/ReadinessRail";
+import type { StrengthResult } from "@/lib/disputes/strength-scoring";
 
 export default function DisputesPage() {
   const { isPro, loading, waitFor } = useSubscription();
@@ -228,6 +232,13 @@ function DisputesContent() {
   // the letter via CoverageDiffPanel when present. Cleared via the
   // clear-coverage-diff endpoint when user proceeds with the dispute.
   const [coverageDiff, setCoverageDiff] = useState<CoverageDiff | null>(null);
+  // Block C (dispute_letter_v3_design) — the reskin gate + the 3-axis strength
+  // payload it renders. v3DesignOn is server-resolved (per-user-targeted) and
+  // surfaced on the [disputeId] GET; strength carries the data-trust / evidence
+  // band / readiness axes. Both default to today's behavior when absent: flag
+  // OFF → v3DesignOn false → current single-column UI; strength ignored.
+  const [v3DesignOn, setV3DesignOn] = useState(false);
+  const [strength, setStrength] = useState<StrengthResult | null>(null);
   // S111 — unified modal state. Replaces the S110 SearchCanonicalPlanModal
   // open boolean; mode controls the 5-mode morph in PlanSearchModal.
   const [planSearchModalOpen, setPlanSearchModalOpen] = useState(false);
@@ -294,6 +305,9 @@ function DisputesContent() {
     // S111 smoke #5 — wrong-year banner dismissal + coverage diff.
     setWrongYearBannerDismissed(data.wrongYearBannerDismissed === true);
     setCoverageDiff((data.coverageDiff as CoverageDiff | null) ?? null);
+    // Block C — flag gate + 3-axis strength (additive; ignored by the OLD UI).
+    setV3DesignOn(data.v3DesignOn === true);
+    setStrength((data.strength as StrengthResult | null) ?? null);
     if (data.letterContent) {
       // Server-resolved letter type (S74). Authoritative — reads metadata.letterType
       // first, then maps from legacy dispute_type vocab. Without this, the recipient
@@ -563,8 +577,283 @@ function DisputesContent() {
 
   const shortRef = letter.id.slice(0, 8).toUpperCase();
 
+  // ===================================================================
+  // Block C node extraction. Each middle section is defined once as a
+  // node, then arranged two ways below and branched on `v3DesignOn`:
+  //   - flag OFF → the OLD single-column order (byte-identical to before;
+  //     heroNode gets strength=undefined so the hero is unchanged).
+  //   - flag ON  → the v3 two-column reskin (letter-stack + rail) with the
+  //     three strength readouts (data-trust banner / evidence band in the
+  //     hero / readiness rail).
+  // Single source per node — no forked wiring, no duplicated handlers.
+  // ===================================================================
+
+  // Readout 1 (data-trust banner) + readout 3 (readiness rail) — v3-only.
+  const dataTrustBannerNode = <DataTrustBanner dataTrust={strength?.dataTrust} />;
+  const readinessRailNode = <ReadinessRail readiness={strength?.readiness} />;
+
+  const heroNode = (
+    <DisputeLetterHero
+      letter={letter}
+      providerName={providerName}
+      serviceDate={serviceDate}
+      askSummary={buildAskSummary(letter, potentialRecovery)}
+      potentialRecovery={potentialRecovery}
+      evidence={evidence}
+      // Readout 2 (evidence band) — only fed in v3 so the OLD hero is unchanged.
+      strength={v3DesignOn ? strength : undefined}
+      onRedraft={handleRedraft}
+      redraftInFlight={redrafting}
+    />
+  );
+
+  const recipientNode = (
+    <DisputeRecipientCard
+      recipient={letter.recipient}
+      insurer={planContext?.insurer ?? null}
+      requestedAction={letter.requestedAction}
+      letterTypeLabel={letterTypeLabel}
+      planYear={planContext?.plan?.planYear ?? null}
+      referenceId={letter.id}
+      onConfirmAddress={handleConfirmAddress}
+      onProposeCorrection={planContext?.insurer ? handleProposeInsurerCorrection : undefined}
+    />
+  );
+
+  const evidenceNode = (
+    <EvidenceBlock
+      evidence={evidence}
+      planLabel={planLabel}
+      gateUnverified={gateUnverified}
+      // v3-only gated corroborating slots; flag OFF → byte-identical to today.
+      showExtendedSlots={v3DesignOn}
+    />
+  );
+
+  const gapsNode = (
+    <EvidenceGaps
+      gaps={evidence?.gaps ?? []}
+      onAuditRerun={
+        disputeId
+          ? async () => {
+              if (!user) return;
+              const token = await user.firebaseUser.getIdToken();
+              const res = await fetch(
+                `/api/disputes/${disputeId}/rerun-audit`,
+                {
+                  method: "POST",
+                  headers: { Authorization: `Bearer ${token}` },
+                },
+              );
+              if (!res.ok) throw new Error("rerun-audit failed");
+              await fetchDispute(disputeId);
+            }
+          : undefined
+      }
+      onRedraft={disputeId ? handleRedraft : undefined}
+      disputeId={disputeId}
+      providerSeed={planContext?.providerContact ?? null}
+      getAuthToken={getAuthToken}
+      onProviderContactSaved={refetchAfterChange}
+      onUploadInModal={() => {
+        setPlanSearchModalMode("upload");
+        setPlanSearchModalOpen(true);
+      }}
+    />
+  );
+
+  const nameMismatchNode = nameMismatch ? (
+    <div className="flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 shadow-sm md:flex-row md:items-start md:justify-between">
+      <div className="flex flex-1 items-start gap-3">
+        <NameMismatchIcon />
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-amber-900">
+            Verify the patient name before sending
+          </div>
+          <p className="mt-1 text-sm leading-relaxed text-amber-800">
+            We&apos;re using your account name{" "}
+            <span className="font-semibold">{nameMismatch.profileName}</span>{" "}
+            in the letter. The bill listed{" "}
+            <span className="font-semibold">&ldquo;{nameMismatch.billName}&rdquo;</span>{" "}
+            — confirm this matches the patient of record. Edit the letter if a
+            dependent or family member should be named instead.
+          </p>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => setIsEditing(true)}
+        className="inline-flex shrink-0 items-center justify-center rounded-lg bg-amber-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-amber-700"
+      >
+        Edit letter
+      </button>
+    </div>
+  ) : null;
+
+  const toolbarNode = (
+    <div className="sticky top-4 z-10 rounded-2xl border border-slate-200 bg-white/90 px-4 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-white/70">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+            {letterTypeLabel}
+          </div>
+          <div className="truncate text-sm font-semibold text-slate-900">
+            Formal appeal · Ref {shortRef}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <ToolbarButton
+            onClick={() => setIsEditing(!isEditing)}
+            icon={isEditing ? "preview" : "edit"}
+            label={isEditing ? "Preview" : "Edit"}
+          />
+          <ToolbarButton
+            onClick={handleRedraft}
+            icon="redraft"
+            label={redrafting ? "Re-drafting…" : "Re-draft"}
+          />
+          <ToolbarButton
+            onClick={handleCopy}
+            icon="copy"
+            label={copied ? "Copied" : "Copy"}
+            tone={copied ? "success" : "default"}
+          />
+          <ToolbarButton
+            onClick={handleDownload}
+            icon="letter"
+            label="Download letter"
+          />
+          {alreadySent ? (
+            <>
+              <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-700">
+                <SentCheckIcon />
+                Sent{disputeFiledDate ? ` ${formatFiledDate(disputeFiledDate)}` : ""}
+              </span>
+              <ToolbarButton
+                onClick={() => setOutcomeModalOpen(true)}
+                icon="sent"
+                label="Report outcome"
+              />
+            </>
+          ) : (
+            <ToolbarButton
+              onClick={handleMarkSent}
+              icon="sent"
+              label={markingSent ? "Marking…" : "Mark as sent"}
+              tone="primary"
+            />
+          )}
+        </div>
+      </div>
+      {redraftToast && (
+        <div
+          className={`mt-2 rounded-md px-3 py-2 text-xs ${
+            redraftToast.kind === "error"
+              ? "bg-amber-50 text-amber-800"
+              : "bg-emerald-50 text-emerald-800"
+          }`}
+        >
+          {redraftToast.text}
+        </div>
+      )}
+      {markSentToast && (
+        <div className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+          {markSentToast}
+        </div>
+      )}
+      {outcomeToast && (
+        <div className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+          {outcomeToast}
+        </div>
+      )}
+    </div>
+  );
+
+  const articleNode = (
+    <article className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      {isEditing ? (
+        <div className="relative">
+          <div className="absolute right-4 top-3 text-[11px] font-medium text-slate-400">
+            Saved · just now
+          </div>
+          <textarea
+            ref={textRef}
+            value={editedBody}
+            onChange={(e) => setEditedBody(e.target.value)}
+            className="block w-full resize-y bg-transparent px-10 py-12 font-serif text-[15px] leading-[1.7] text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-300/60"
+            style={{ minHeight: 620 }}
+          />
+        </div>
+      ) : (
+        <div className="whitespace-pre-wrap px-10 py-12 font-serif text-[15px] leading-[1.7] text-slate-900 md:px-14 md:py-14">
+          {editedBody}
+        </div>
+      )}
+      {letter.legalBasis ? (
+        <div className="border-t border-slate-100 px-10 py-3 text-xs text-slate-500 md:px-14">
+          Legal basis referenced: <span className="text-slate-700">{letter.legalBasis}</span>
+        </div>
+      ) : null}
+    </article>
+  );
+
+  const nextStepsNode = (
+    <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm md:p-7">
+      <div className="flex items-baseline justify-between gap-4">
+        <div>
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+            What to do next
+          </h3>
+          <p className="mt-1 text-sm text-slate-600">
+            Five steps once your letter looks right. Download the full Case File below.
+          </p>
+        </div>
+      </div>
+      <ol className="mt-5 space-y-3.5 text-sm text-slate-700">
+        <NextStep n={1} title="Review the letter" body="Scan above and make any edits you want before downloading." />
+        <NextStep n={2} title="Send by certified mail" body="Use USPS Form 3811 (return receipt requested) so you have a paper trail." />
+        <NextStep n={3} title="Keep your copy" body="File the signed letter and the downloaded Case File with your records." />
+        <NextStep n={4} title="Follow up in 30 days" body="Most insurers must respond within 30 days. If they don't, call to escalate." />
+        <NextStep
+          n={5}
+          title="Escalate if unresolved"
+          body={
+            <>
+              Contact your state Insurance Commissioner or a healthcare attorney. Track outcomes on the{" "}
+              <a href="/claim" className="font-medium text-blue-600 underline-offset-2 hover:underline">
+                Claims page
+              </a>{" "}
+              so Candid can improve for everyone.
+            </>
+          }
+        />
+      </ol>
+    </section>
+  );
+
+  const caseFileNode = (
+    <section className="rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-50 to-indigo-50 p-6 shadow-sm md:p-7">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div className="min-w-0">
+          <h3 className="text-base font-semibold text-slate-900">Download your full Case File</h3>
+          <p className="mt-1 text-sm text-slate-600">
+            Dispute letter, audit findings, evidence log, follow-up checklist, and escalation guide — one styled PDF.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={handleDownloadCaseFile}
+          className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow"
+        >
+          <ToolbarIcon name="casefile" />
+          Download Case File
+        </button>
+      </div>
+    </section>
+  );
+
   return (
-    <div className="max-w-4xl mx-auto space-y-5">
+    <div className={v3DesignOn ? "mx-auto max-w-6xl space-y-5" : "max-w-4xl mx-auto space-y-5"}>
       {/* S109 PR #2 — Back link to claim view. Uses letter.auditReportId
           (set from data.claimId in fetchDispute) so the user always has a
           path back to the source bill / claim list. Hidden when claim id
@@ -780,252 +1069,43 @@ function DisputesContent() {
         />
       )}
 
-      <DisputeLetterHero
-        letter={letter}
-        providerName={providerName}
-        serviceDate={serviceDate}
-        askSummary={buildAskSummary(letter, potentialRecovery)}
-        potentialRecovery={potentialRecovery}
-        evidence={evidence}
-        onRedraft={handleRedraft}
-        redraftInFlight={redrafting}
-      />
-
-      <DisputeRecipientCard
-        recipient={letter.recipient}
-        insurer={planContext?.insurer ?? null}
-        requestedAction={letter.requestedAction}
-        letterTypeLabel={letterTypeLabel}
-        planYear={planContext?.plan?.planYear ?? null}
-        referenceId={letter.id}
-        onConfirmAddress={handleConfirmAddress}
-        onProposeCorrection={planContext?.insurer ? handleProposeInsurerCorrection : undefined}
-      />
-
-      <EvidenceBlock evidence={evidence} planLabel={planLabel} gateUnverified={gateUnverified} />
-
-      <EvidenceGaps
-        gaps={evidence?.gaps ?? []}
-        onAuditRerun={
-          disputeId
-            ? async () => {
-                if (!user) return;
-                const token = await user.firebaseUser.getIdToken();
-                const res = await fetch(
-                  `/api/disputes/${disputeId}/rerun-audit`,
-                  {
-                    method: "POST",
-                    headers: { Authorization: `Bearer ${token}` },
-                  },
-                );
-                if (!res.ok) throw new Error("rerun-audit failed");
-                await fetchDispute(disputeId);
-              }
-            : undefined
-        }
-        onRedraft={disputeId ? handleRedraft : undefined}
-        disputeId={disputeId}
-        providerSeed={planContext?.providerContact ?? null}
-        getAuthToken={getAuthToken}
-        onProviderContactSaved={refetchAfterChange}
-        // S111 D6 — bound_canonical_coverage_thin CTA opens PlanSearchModal
-        // in upload mode rather than navigating to /upload. Keeps the user
-        // in-context on the dispute view.
-        onUploadInModal={() => {
-          setPlanSearchModalMode("upload");
-          setPlanSearchModalOpen(true);
-        }}
-      />
-
-      {nameMismatch ? (
-        <div className="flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 shadow-sm md:flex-row md:items-start md:justify-between">
-          <div className="flex flex-1 items-start gap-3">
-            <NameMismatchIcon />
-            <div className="min-w-0">
-              <div className="text-sm font-semibold text-amber-900">
-                Verify the patient name before sending
-              </div>
-              <p className="mt-1 text-sm leading-relaxed text-amber-800">
-                We&apos;re using your account name{" "}
-                <span className="font-semibold">{nameMismatch.profileName}</span>{" "}
-                in the letter. The bill listed{" "}
-                <span className="font-semibold">&ldquo;{nameMismatch.billName}&rdquo;</span>{" "}
-                — confirm this matches the patient of record. Edit the letter if a
-                dependent or family member should be named instead.
-              </p>
-            </div>
+      {/* ===== Letter + evidence + toolbar + next-steps (Block C) =====
+          Single source per node (consts above). Branched on the per-user flag
+          so each path renders the SAME nodes — no duplicated wiring.
+          OLD (flag OFF): byte-identical node order to pre-Block-C.
+          NEW (flag ON): two-column reskin (letter-stack + rail) + 3 readouts
+          (data-trust banner + evidence band in hero + readiness rail). */}
+      {v3DesignOn ? (
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]">
+          <div className="min-w-0 space-y-5">
+            {dataTrustBannerNode}
+            {heroNode}
+            {recipientNode}
+            {nameMismatchNode}
+            {toolbarNode}
+            {articleNode}
+            {evidenceNode}
           </div>
-          <button
-            type="button"
-            onClick={() => setIsEditing(true)}
-            className="inline-flex shrink-0 items-center justify-center rounded-lg bg-amber-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-amber-700"
-          >
-            Edit letter
-          </button>
+          <aside className="space-y-5 lg:sticky lg:top-4 lg:self-start">
+            {readinessRailNode}
+            {gapsNode}
+            {nextStepsNode}
+            {caseFileNode}
+          </aside>
         </div>
-      ) : null}
-
-      {/* Toolbar — sticky on scroll; title uses uppercase ref id */}
-      <div className="sticky top-4 z-10 rounded-2xl border border-slate-200 bg-white/90 px-4 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-white/70">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-              {letterTypeLabel}
-            </div>
-            <div className="truncate text-sm font-semibold text-slate-900">
-              Formal appeal · Ref {shortRef}
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <ToolbarButton
-              onClick={() => setIsEditing(!isEditing)}
-              icon={isEditing ? "preview" : "edit"}
-              label={isEditing ? "Preview" : "Edit"}
-            />
-            <ToolbarButton
-              onClick={handleRedraft}
-              icon="redraft"
-              label={redrafting ? "Re-drafting…" : "Re-draft"}
-            />
-            <ToolbarButton
-              onClick={handleCopy}
-              icon="copy"
-              label={copied ? "Copied" : "Copy"}
-              tone={copied ? "success" : "default"}
-            />
-            <ToolbarButton
-              onClick={handleDownload}
-              icon="letter"
-              label="Download letter"
-            />
-            {alreadySent ? (
-              <>
-                <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-700">
-                  <SentCheckIcon />
-                  Sent{disputeFiledDate ? ` ${formatFiledDate(disputeFiledDate)}` : ""}
-                </span>
-                {/* S74.6 D5 §E.2 — let user report the outcome (won / lost /
-                    won_on_escalation / settled) after sending. Captures
-                    recodedAs when won_on_escalation so the §E.1 flywheel
-                    vote fires server-side. */}
-                <ToolbarButton
-                  onClick={() => setOutcomeModalOpen(true)}
-                  icon="sent"
-                  label="Report outcome"
-                />
-              </>
-            ) : (
-              <ToolbarButton
-                onClick={handleMarkSent}
-                icon="sent"
-                label={markingSent ? "Marking…" : "Mark as sent"}
-                tone="primary"
-              />
-            )}
-          </div>
-        </div>
-        {redraftToast && (
-          <div
-            className={`mt-2 rounded-md px-3 py-2 text-xs ${
-              redraftToast.kind === "error"
-                ? "bg-amber-50 text-amber-800"
-                : "bg-emerald-50 text-emerald-800"
-            }`}
-          >
-            {redraftToast.text}
-          </div>
-        )}
-        {markSentToast && (
-          <div className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
-            {markSentToast}
-          </div>
-        )}
-        {outcomeToast && (
-          <div className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
-            {outcomeToast}
-          </div>
-        )}
-      </div>
-
-      {/* Letter body — paper card, serif, letter-style */}
-      <article className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-        {isEditing ? (
-          <div className="relative">
-            <div className="absolute right-4 top-3 text-[11px] font-medium text-slate-400">
-              Saved · just now
-            </div>
-            <textarea
-              ref={textRef}
-              value={editedBody}
-              onChange={(e) => setEditedBody(e.target.value)}
-              className="block w-full resize-y bg-transparent px-10 py-12 font-serif text-[15px] leading-[1.7] text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-300/60"
-              style={{ minHeight: 620 }}
-            />
-          </div>
-        ) : (
-          <div className="whitespace-pre-wrap px-10 py-12 font-serif text-[15px] leading-[1.7] text-slate-900 md:px-14 md:py-14">
-            {editedBody}
-          </div>
-        )}
-        {letter.legalBasis ? (
-          <div className="border-t border-slate-100 px-10 py-3 text-xs text-slate-500 md:px-14">
-            Legal basis referenced: <span className="text-slate-700">{letter.legalBasis}</span>
-          </div>
-        ) : null}
-      </article>
-
-      {/* What to do next — merged Next Steps + Track + Case File download */}
-      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm md:p-7">
-        <div className="flex items-baseline justify-between gap-4">
-          <div>
-            <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-              What to do next
-            </h3>
-            <p className="mt-1 text-sm text-slate-600">
-              Five steps once your letter looks right. Download the full Case File below.
-            </p>
-          </div>
-        </div>
-        <ol className="mt-5 space-y-3.5 text-sm text-slate-700">
-          <NextStep n={1} title="Review the letter" body="Scan above and make any edits you want before downloading." />
-          <NextStep n={2} title="Send by certified mail" body="Use USPS Form 3811 (return receipt requested) so you have a paper trail." />
-          <NextStep n={3} title="Keep your copy" body="File the signed letter and the downloaded Case File with your records." />
-          <NextStep n={4} title="Follow up in 30 days" body="Most insurers must respond within 30 days. If they don't, call to escalate." />
-          <NextStep
-            n={5}
-            title="Escalate if unresolved"
-            body={
-              <>
-                Contact your state Insurance Commissioner or a healthcare attorney. Track outcomes on the{" "}
-                <a href="/claim" className="font-medium text-blue-600 underline-offset-2 hover:underline">
-                  Claims page
-                </a>{" "}
-                so Candid can improve for everyone.
-              </>
-            }
-          />
-        </ol>
-      </section>
-
-      {/* Case File download — moved to bottom, single prominent CTA */}
-      <section className="rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-50 to-indigo-50 p-6 shadow-sm md:p-7">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="min-w-0">
-            <h3 className="text-base font-semibold text-slate-900">Download your full Case File</h3>
-            <p className="mt-1 text-sm text-slate-600">
-              Dispute letter, audit findings, evidence log, follow-up checklist, and escalation guide — one styled PDF.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={handleDownloadCaseFile}
-            className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow"
-          >
-            <ToolbarIcon name="casefile" />
-            Download Case File
-          </button>
-        </div>
-      </section>
+      ) : (
+        <>
+          {heroNode}
+          {recipientNode}
+          {evidenceNode}
+          {gapsNode}
+          {nameMismatchNode}
+          {toolbarNode}
+          {articleNode}
+          {nextStepsNode}
+          {caseFileNode}
+        </>
+      )}
 
       {missingYear ? (
         <DownloadWarningModal

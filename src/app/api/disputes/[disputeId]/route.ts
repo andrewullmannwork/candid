@@ -441,6 +441,11 @@ export async function GET(
     evidence,
     patientNameMismatch,
     gateUnverified,
+    // Block C (dispute_letter_v3_design) — surface the already-computed,
+    // per-user-targeted flag so the client can branch the v3 reskin. Mirrors
+    // gateUnverified above (also a flag-derived boolean in this payload).
+    // Correct for Block F staged rollout: v3DesignOn uses user.email targeting.
+    v3DesignOn,
     // Block A — additive three-axis strength + data-trust state. Consumed by the
     // Block C v3 UI (data-trust banner + evidence band + readiness rail); ignored
     // by today's frontend. dataTrust surfaced even when the flag is OFF (G7
