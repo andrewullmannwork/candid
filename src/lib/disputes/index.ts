@@ -97,6 +97,9 @@ export function generateDisputeLetter(
     planContext: planContext ?? null,
     evidence: evidence ?? null,
     gateUnverified: gateUnverified ?? false,
+    // Block C2 item 4 — the caller passes the dispute_letter_v3_design flag as
+    // enforceDataTrustGate; it is the same flag that switches on the request tree.
+    v3DesignOn: enforceDataTrustGate ?? false,
   });
 
   // Recipient: insurance appeals use insurer + appeals address when available;

@@ -137,6 +137,14 @@ export interface LineItemEvidence {
   billedAmount: number;
   insurancePaid: number | null;
   patientOwes: number | null;
+  /**
+   * Block C2 (item 4) — what the patient has already PAID on this line
+   * (claim_line_items.patient_paid_amount). Paired with patientOwes (still
+   * billed/unpaid), this drives the refund (recovery) vs write-off
+   * (forgiveness) split in the letter's request block. Null when the parser
+   * didn't populate it (→ request degrades to "reverse the charge").
+   */
+  patientPaid: number | null;
   planBenefit: PlanBenefitDetail | null;
   expectedPatientCost: number | null;
   actualPatientCost: number | null;
@@ -221,6 +229,14 @@ export interface LineItemEvidence {
   disputeType: DisputeTypeClass;
   citeGradeTier: CiteGradeTier;
   dollarAtStake: number;
+  /**
+   * Block C2 — true when the user has attested (under their own name) that this
+   * service was not rendered. Forces `disputeType` to `service_not_rendered`
+   * (documentary spine, §1d) and is the truthy signal `isSpinePresent` reads for
+   * that type. Sourced from `dispute.metadata.serviceAttestedLineIds`, threaded by
+   * the caller as `attestedLineItemIds`. Absent/false on every non-attested line.
+   */
+  serviceNotRenderedAttested?: boolean;
 }
 
 export interface ClaimEvidence {
@@ -390,11 +406,21 @@ export async function resolveEvidence(
      * bind action itself IS the confirmation.
      */
     canonicalPlanIdForBillYear?: string | null;
+    /**
+     * Block C2 — claim_line_item ids the user attested were NOT rendered. Read
+     * from `dispute.metadata.serviceAttestedLineIds` by the caller (GET /
+     * case-file / redraft) and passed in. Each matching line is reclassified to
+     * `service_not_rendered` (documentary spine, Tier-1) in buildLineItemEvidence.
+     * Same metadata→typed-param pipeline as `userConfirmedSamePlan`; absent on
+     * first-draft generate calls (no attestation exists yet).
+     */
+    attestedLineItemIds?: string[];
   },
 ): Promise<DisputeEvidence> {
   const { userId, claimIds, lineItemIds, planContext, letterType, disputeId } = params;
   const userConfirmedSamePlan = params.userConfirmedSamePlan ?? null;
   const canonicalPlanIdForBillYear = params.canonicalPlanIdForBillYear ?? null;
+  const attestedLineItemIds = new Set(params.attestedLineItemIds ?? []);
 
   if (claimIds.length === 0) {
     return emptyEvidence(planContext, letterType);
@@ -633,6 +659,7 @@ export async function resolveEvidence(
       planContext,
       peerCodesBySlug,
       lineItemCanonicalMap,
+      attestedLineItemIds.has(li.id),
     );
     totalBilled += evidence.billedAmount;
     totalDiscrepancy += evidence.discrepancyAmount ?? 0;
@@ -1560,6 +1587,7 @@ function buildLineItemEvidence(
     billed_amount: number | null;
     insurance_paid: number | null;
     patient_owes: number | null;
+    patient_paid_amount: number | null;
     metadata?: Record<string, unknown>;
   },
   coverageByServiceSlug: Map<string, PlanBenefitDetail>,
@@ -1576,10 +1604,19 @@ function buildLineItemEvidence(
    * buildLineItemEvidence for each line item.
    */
   lineItemCanonicalMap: Map<string, string>,
+  /**
+   * Block C2 — true when the user attested this line's service was not rendered.
+   * Overrides the signal-derived disputeType to `service_not_rendered` and forces
+   * the spine grade to `statute` (the attestation IS the spine; no plan quote
+   * backs it — §1f L2 truthfulness, never inflate to verbatim). The full billed
+   * amount becomes the money weight (the whole charge is disputed).
+   */
+  attested: boolean,
 ): LineItemEvidence {
   const billed = Number(li.billed_amount ?? 0);
   const insurancePaid = li.insurance_paid != null ? Number(li.insurance_paid) : null;
   const patientOwes = li.patient_owes != null ? Number(li.patient_owes) : null;
+  const patientPaid = li.patient_paid_amount != null ? Number(li.patient_paid_amount) : null;
   const actualPatientCost = patientOwes != null
     ? patientOwes
     : insurancePaid != null
@@ -1634,7 +1671,12 @@ function buildLineItemEvidence(
 
   // Block A — derive the EvidenceBundle normalization fields (§1e) from the
   // signals assembled above. Single producer; computeDisputeStrength consumes.
-  const disputeType = classifyDisputeType({
+  // Block C2 — a user attestation that the service was not rendered OVERRIDES the
+  // signal-derived classification: the dispute is now "service not rendered"
+  // (documentary spine, §1d), graded `statute` because the spine is the user's
+  // attestation — no plan quote backs it (§1f L2; never inflate to verbatim) — and
+  // the whole billed amount is at stake (not just a cost-share delta).
+  const signalDisputeType = classifyDisputeType({
     planBenefit,
     peerCodes,
     communityOutcome,
@@ -1643,8 +1685,16 @@ function buildLineItemEvidence(
     auditFindings,
     discrepancyAmount,
   });
-  const citeGradeTier = deriveCiteGradeTier({ planBenefit });
-  const dollarAtStake = deriveDollarAtStake({ discrepancyAmount, auditFindings });
+  const baseDollarAtStake = deriveDollarAtStake({ discrepancyAmount, auditFindings });
+  const disputeType: DisputeTypeClass = attested
+    ? "service_not_rendered"
+    : signalDisputeType;
+  const citeGradeTier: CiteGradeTier = attested
+    ? "statute"
+    : deriveCiteGradeTier({ planBenefit });
+  const dollarAtStake = attested
+    ? Math.max(baseDollarAtStake, billed)
+    : baseDollarAtStake;
 
   return {
     lineItemId: li.id,
@@ -1656,6 +1706,7 @@ function buildLineItemEvidence(
     billedAmount: billed,
     insurancePaid,
     patientOwes,
+    patientPaid,
     planBenefit,
     expectedPatientCost,
     actualPatientCost,
@@ -1669,6 +1720,7 @@ function buildLineItemEvidence(
     disputeType,
     citeGradeTier,
     dollarAtStake,
+    serviceNotRenderedAttested: attested,
   };
 }
 

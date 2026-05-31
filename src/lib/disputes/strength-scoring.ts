@@ -250,8 +250,12 @@ export interface PerLineScore {
   disputeType: DisputeTypeClass;
   citeGradeTier: CiteGradeTier;
   dollarAtStake: number;
-  /** Line evidence score in [0,1]. */
+  /** Line evidence score in [0,1]. Internal — never surfaced raw to the client (L1). */
   score: number;
+  /** Block C2 — qualitative band for this line (the client's per-line readout;
+   *  L1: bands only, never the score). Derived from `score` via the same §1e
+   *  thresholds as the letter-level aggregate. */
+  band: EvidenceBand;
   /** False when the dispute type's spine evidence is absent — the readiness
    *  rail surfaces these as "back up this charge" (§1a). */
   spinePresent: boolean;
@@ -278,7 +282,11 @@ function isSpinePresent(
         !!li.pricingBenchmark ||
         (li.auditFindings ?? []).some((f) => f.benchmarkAmount != null)
       );
-    case "service_not_rendered": // attestation — Block C
+    case "service_not_rendered":
+      // Block C2 — spine present iff the user attested (under their own name)
+      // that this service was not rendered. The attestation IS the documentary
+      // spine (§1d); no signal-derived evidence is required.
+      return !!li.serviceNotRenderedAttested;
     case "other":
     default:
       return false;
@@ -293,7 +301,20 @@ function isSpinePresent(
  * grades the documentary spine quote — statistical boosts aren't quote-based, so
  * they enter at full statistical weight.
  */
-function scoreLine(li: LineItemEvidence, weights: StrengthWeights): PerLineScore {
+/** Map a line/aggregate score in [0,1] to its qualitative band (§1e thresholds). */
+function bandForScore(score: number, thresholds: StrengthThresholds): EvidenceBand {
+  return score >= thresholds.wellSupported
+    ? "well_supported"
+    : score >= thresholds.partiallySupported
+      ? "partially_supported"
+      : "needs_support";
+}
+
+function scoreLine(
+  li: LineItemEvidence,
+  weights: StrengthWeights,
+  thresholds: StrengthThresholds,
+): PerLineScore {
   const disputeType: DisputeTypeClass = li.disputeType ?? "other";
   const citeGradeTier: CiteGradeTier = li.citeGradeTier ?? "statute";
   const dollarAtStake = Math.max(0, li.dollarAtStake ?? 0);
@@ -333,7 +354,15 @@ function scoreLine(li: LineItemEvidence, weights: StrengthWeights): PerLineScore
     1,
     terms.reduce((a, b) => a + b, 0),
   );
-  return { lineItemId: li.lineItemId, disputeType, citeGradeTier, dollarAtStake, score, spinePresent };
+  return {
+    lineItemId: li.lineItemId,
+    disputeType,
+    citeGradeTier,
+    dollarAtStake,
+    score,
+    band: bandForScore(score, thresholds),
+    spinePresent,
+  };
 }
 
 // ============================================================================
@@ -419,7 +448,7 @@ export function computeDisputeStrength(
 
   // Axis (b) — evidence strength (money-weighted per line).
   const lines = (evidence?.claims ?? []).flatMap((c) => c.lineItemEvidence ?? []);
-  const perLine = lines.map((li) => scoreLine(li, weights));
+  const perLine = lines.map((li) => scoreLine(li, weights, thresholds));
   const totalDollarAtStake = perLine.reduce((s, p) => s + p.dollarAtStake, 0);
 
   // Money-weighted aggregate. Σw_i = 0 (no dollars at stake / empty letter) →
@@ -430,12 +459,7 @@ export function computeDisputeStrength(
       perLine.reduce((s, p) => s + p.dollarAtStake * p.score, 0) /
       totalDollarAtStake;
   }
-  const band: EvidenceBand =
-    score >= thresholds.wellSupported
-      ? "well_supported"
-      : score >= thresholds.partiallySupported
-        ? "partially_supported"
-        : "needs_support";
+  const band: EvidenceBand = bandForScore(score, thresholds);
 
   // Axis (c) — readiness (MVDL §1b).
   const gapKinds = new Set((evidence?.gaps ?? []).map((g) => g.kind as string));

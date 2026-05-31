@@ -100,6 +100,15 @@ export async function GET(
 
   // Linked line items — primary + any extras in metadata.claimLineItemIds
   const extraIds = (dispute.metadata?.claimLineItemIds as string[] | undefined) || [];
+  // Block C2 (items 1+2) — the name the user adopted when attesting + whether they
+  // have answered the attestation gate. Persisted by attest-service; read once
+  // here for the rerender (String 2 threading) and the payload (UI hydration).
+  const attestingAsName = ((): string | null => {
+    const v = (dispute.metadata as Record<string, unknown> | null)?.attestingAsName;
+    return typeof v === "string" && v.trim() ? v.trim() : null;
+  })();
+  const serviceAttestationReviewed =
+    (dispute.metadata as Record<string, unknown> | null)?.serviceAttestationReviewed === true;
   const allLineItemIds = Array.from(
     new Set([dispute.claim_line_item_id, ...extraIds].filter(Boolean)),
   ) as string[];
@@ -188,6 +197,13 @@ export async function GET(
         const v = (dispute.metadata as Record<string, unknown> | null)?.canonicalPlanIdForBillYear;
         return typeof v === "string" && v.length > 0 ? v : null;
       })();
+      // Block C2 — read the user's service-not-rendered attestations (claim_line_item
+      // ids) so resolveEvidence reclassifies each attested line to
+      // `service_not_rendered`. Stored via POST /api/disputes/[disputeId]/attest-service.
+      const serviceAttestedLineIds = ((): string[] => {
+        const v = (dispute.metadata as Record<string, unknown> | null)?.serviceAttestedLineIds;
+        return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+      })();
       planContext = await resolvePlanContext(supabase, {
         userId: user.id,
         claimId: dispute.claim_id,
@@ -202,6 +218,7 @@ export async function GET(
         disputeId: dispute.id,
         userConfirmedSamePlan,
         canonicalPlanIdForBillYear,
+        attestedLineItemIds: serviceAttestedLineIds,
       });
 
       // S111 smoke iteration 5 — compute coverage diff vs the stored
@@ -305,6 +322,7 @@ export async function GET(
           lineItemIds: allLineItemIds,
           planContext,
           evidence,
+          attestingName: attestingAsName ?? undefined,
         });
         if (regeneratedLetterContent) {
           console.log("[disputes/[disputeId]] regenerated letter body", {
@@ -320,6 +338,10 @@ export async function GET(
                 ...(dispute.metadata ?? {}),
                 planContextFingerprint: fingerprint,
                 planContextUpdatedAt: new Date().toISOString(),
+                // Block C2 item 4 — record which statutory backbone produced this
+                // letter so the P2 flywheel can A/B framings once volume exists.
+                // Only when v3 actually rendered the tree (OFF = legacy backbone).
+                ...(v3DesignOn ? { letterBackbone: "commercial_v1" } : {}),
               },
               // S74.5 D16 — fingerprint + debounce timer refresh on every
               // successful regenerate. Cooldown_until is set only at
@@ -350,6 +372,9 @@ export async function GET(
   // field lets the UI show a subtle "we used your account name — bill said
   // X" note above the letter.
   let patientNameMismatch: { billName: string; profileName: string } | null = null;
+  // Block C2 item 1 — the account holder's name (users.display_name) is the default
+  // "Attesting as" name for the attestation flow; surfaced in the payload below.
+  let accountName = "";
   try {
     const [{ data: claim }, { data: userRow }] = await Promise.all([
       supabase
@@ -364,12 +389,23 @@ export async function GET(
         .maybeSingle(),
     ]);
     const billName = (claim?.metadata as { patient?: { name?: string } } | undefined)?.patient?.name?.trim() ?? "";
-    const accountName = resolveAccountName(userRow?.display_name, userRow?.email);
+    accountName = resolveAccountName(userRow?.display_name, userRow?.email);
     if (billName && accountName && normalizeNameForCompare(billName) !== normalizeNameForCompare(accountName)) {
       patientNameMismatch = { billName, profileName: accountName };
     }
   } catch (err) {
     console.warn("[disputes/[disputeId]] patient-name compare failed (non-fatal):", err);
+  }
+
+  // Block C2 — once the user confirms their identity (POST confirm-patient-identity),
+  // the resolved state is sticky: suppress the mismatch regardless of the live name
+  // compare, so patientIdentityResolved (= !patientNameMismatch below) stays true and
+  // the MVDL readiness item is closed even across later profile-name changes. True
+  // ONLY on explicit confirmation — distinct from a natural name match.
+  const patientIdentityResolved =
+    (dispute.metadata as Record<string, unknown> | null)?.patientIdentityResolved === true;
+  if (patientIdentityResolved) {
+    patientNameMismatch = null;
   }
 
   // Block A — three-axis strength for the payload + the data-trust HARD STOP.
@@ -440,6 +476,26 @@ export async function GET(
     missingPlanForYear: planContext?.missingForYear ?? null,
     evidence,
     patientNameMismatch,
+    // Block C2 — sticky patient-identity confirmation flag (set via POST
+    // confirm-patient-identity). True ONLY when the user explicitly confirmed (lets
+    // the rail offer "Undo"); distinct from a natural name match (mismatch null,
+    // flag false). patientNameMismatch is nulled above when this is true.
+    patientIdentityResolved,
+    // Block C2 — the user's current service-not-rendered attestation set
+    // (claim_line_item ids). The per-line `serviceNotRenderedAttested` flags on
+    // `evidence` derive from this; surfaced as an array for the attestation UI state.
+    serviceAttestedLineIds: ((): string[] => {
+      const v = (dispute.metadata as Record<string, unknown> | null)?.serviceAttestedLineIds;
+      return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+    })(),
+    // Block C2 (item 2) — persist-all-input: the gate-reviewed flag (so the
+    // attestation gate does not re-prompt once answered) + the adopted attesting
+    // name (the client defaults to the account name when null). Both hydrate the
+    // ServiceAttestationFlow on load.
+    serviceAttestationReviewed,
+    attestingAsName,
+    // Block C2 item 1 — default attesting name (account holder; users.display_name).
+    accountName,
     gateUnverified,
     // Block C (dispute_letter_v3_design) — surface the already-computed,
     // per-user-targeted flag so the client can branch the v3 reskin. Mirrors

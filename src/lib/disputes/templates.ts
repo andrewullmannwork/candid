@@ -58,6 +58,21 @@ interface TemplateParams {
    * back to bullet-without-quote (Case 2) or drop bullet entirely (Case 3).
    */
   gateUnverified?: boolean;
+  /**
+   * Block C2 (item 4) — when true (dispute_letter_v3_design ON), the body renders
+   * the conditional request-structure tree (type × payment-state asks + deadline +
+   * claim/account reference) in place of the fixed boilerplate request list, and
+   * reorders to detail → relief. Default false → the legacy letter renders
+   * byte-identically. Threaded from the generators (the flag they already load).
+   */
+  v3DesignOn?: boolean;
+  /**
+   * Block C2 (item 1) — the name the user adopted when attesting
+   * (dispute.metadata.attestingAsName), defaulting to the account name. Flows into
+   * String 2 (the attestation sentence) and the request block; falls back to
+   * patientName when absent.
+   */
+  attestingName?: string;
 }
 
 // ============================================================================
@@ -355,6 +370,184 @@ function buildClosingArgument(
 }
 
 // ============================================================================
+// Block C2 item 4 — conditional request-structure tree
+// ============================================================================
+// A world-class demand letter's force is in what surrounds the evidence: a
+// SPECIFIC, recipient-appropriate REQUEST (with the exact dollar relief), a
+// DEADLINE tied to a real right, and a claim reference. This builder derives the
+// relief from (dispute type × payment state × evidence availability), so the ask
+// reads "refund the $X" / "write off the $Y" / "reverse the charge" instead of a
+// generic "please review." Recipient voice differs: an insurer reprocesses /
+// reverses / covers; a provider corrects the bill / refunds / writes off.
+//
+// v3-gated by the caller (flag OFF → the fixed legacy list renders, byte-
+// identical). Statutory backbone = COMMERCIAL DEFAULT this session: the broadly-
+// correct external-review hook (ACA §2719 / 45 CFR §147.136) + plain-English
+// determination/itemized-statement asks. The ERISA document-penalty teeth
+// (§1024(b)(4)/§1132(c)) are a plan-type-gated upgrade once plan_source is
+// threaded (L1, next session); medicare/medicaid then suppress §2719. Guards:
+// one ask per line (priority-bucketed); never demand reversal of correctly-
+// applied cost-share (cost_share fires only on a computed overage); never name
+// an amount we cannot compute; skip $0 lines; clamp amounts ≥ 0.
+
+function joinClauses(items: string[]): string {
+  if (items.length === 0) return "";
+  if (items.length === 1) return items[0];
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
+}
+
+function capFirst(s: string): string {
+  return s.length > 0 ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+
+function buildRequestSection(params: {
+  evidence: DisputeEvidence | null | undefined;
+  planContext: PlanContext | null | undefined;
+  recipient: "insurer" | "provider";
+}): string {
+  const { evidence, planContext, recipient } = params;
+  if (!evidence) return "";
+  const allLines = evidence.claims.flatMap((c) => c.lineItemEvidence);
+  if (allLines.length === 0) return "";
+
+  const isInsurer = recipient === "insurer";
+  const payee = isInsurer ? (planContext?.insurer?.name || "the plan") : "the provider";
+  const label = (li: LineItemEvidence): string =>
+    li.billingCode ? `${li.serviceName} (${li.billingCode.type} ${li.billingCode.value})` : li.serviceName;
+  const sumOf = (arr: LineItemEvidence[], pick: (li: LineItemEvidence) => number | null | undefined): number =>
+    arr.reduce((s, li) => s + Math.max(0, pick(li) ?? 0), 0);
+
+  // One ask per line, priority-bucketed (guard: no double-asks).
+  const b: Record<"attested" | "costShare" | "coverage" | "balanceBilling" | "coding", LineItemEvidence[]> = {
+    attested: [], costShare: [], coverage: [], balanceBilling: [], coding: [],
+  };
+  for (const li of allLines) {
+    // Skip lines with no money at stake (e.g. $0 quality-measure codes).
+    if ((li.billedAmount || 0) === 0 && !li.patientOwes && !li.patientPaid) continue;
+    if (li.serviceNotRenderedAttested) { b.attested.push(li); continue; }
+    if (li.disputeType === "balance_billing") { b.balanceBilling.push(li); continue; }
+    if (li.disputeType === "cost_share_misapplication" && (li.discrepancyAmount ?? 0) > 0) { b.costShare.push(li); continue; }
+    if (li.disputeType === "coding_peer" && (li.peerCodes?.length ?? 0) >= 2) { b.coding.push(li); continue; }
+    if (li.planBenefit || li.disputeType === "coverage_contradiction") { b.coverage.push(li); continue; }
+    // No actionable standalone ground — leave to the fallback if everything is empty.
+  }
+
+  const asks: string[] = [];
+
+  // 1) service_not_rendered (attested) — strongest; leads.
+  if (b.attested.length > 0) {
+    const names = joinClauses(b.attested.map(label));
+    const many = b.attested.length > 1;
+    const it = many ? "them" : "it";
+    const billed = sumOf(b.attested, (li) => li.billedAmount);
+    const refund = sumOf(b.attested, (li) => li.patientPaid);
+    const forgive = sumOf(b.attested, (li) => li.patientOwes);
+    const insPaid = isInsurer ? sumOf(b.attested, (li) => li.insurancePaid) : 0;
+    const clauses: string[] = [];
+    if (isInsurer) {
+      clauses.push(
+        insPaid > 0
+          ? `reverse the ${formatCurrency(insPaid)} paid for the ${many ? "services" : "service"} I have attested I did not receive (${names})`
+          : `deny and reverse any payment for the ${many ? "services" : "service"} I have attested I did not receive (${names}${billed > 0 ? `, billed ${formatCurrency(billed)}` : ""})`,
+      );
+      if (refund > 0) clauses.push(`refund the ${formatCurrency(refund)} I paid`);
+      if (forgive > 0) clauses.push(`ensure the ${formatCurrency(forgive)} billed to me is removed`);
+      clauses.push(`confirm I bear no responsibility for ${it}`);
+      clauses.push(`investigate and recoup any payment made for a service not rendered`);
+      asks.push(`${capFirst(joinClauses(clauses))}. If you have documentation that the ${many ? "services were" : "service was"} provided to me, please send it.`);
+    } else {
+      clauses.push(
+        forgive > 0
+          ? `write off and remove the ${formatCurrency(forgive)} balance for the ${many ? "services" : "service"} I did not receive (${names})`
+          : `remove the ${many ? "charges" : "charge"} for ${names}${billed > 0 ? ` (${formatCurrency(billed)})` : ""}, which I did not receive`,
+      );
+      if (refund > 0) clauses.push(`refund the ${formatCurrency(refund)} I paid`);
+      clauses.push(`ensure ${many ? "they are" : "it is"} not referred to collections or reported to a credit bureau`);
+      asks.push(`${capFirst(joinClauses(clauses))}. If you contend the ${many ? "services were" : "service was"} provided, please send documentation that ${many ? "they were" : "it was"} rendered to me.`);
+    }
+  }
+
+  // 2) cost_share_misapplication — only with a real, computed overage.
+  if (b.costShare.length > 0) {
+    const many = b.costShare.length > 1;
+    const refund = b.costShare.reduce((s, li) => s + Math.min(li.discrepancyAmount ?? 0, li.patientPaid ?? 0), 0);
+    const writeOff = b.costShare.reduce((s, li) => {
+      const over = li.discrepancyAmount ?? 0;
+      return s + Math.max(0, over - Math.min(over, li.patientPaid ?? 0));
+    }, 0);
+    const verb = isInsurer
+      ? `reprocess the affected ${many ? "charges" : "charge"} applying the cost-sharing my plan specifies (cited above)`
+      : `correct my bill to the cost-sharing my plan specifies (cited above)`;
+    const remedy: string[] = [];
+    if (refund > 0) remedy.push(`refund the ${formatCurrency(refund)} I overpaid`);
+    if (writeOff > 0) remedy.push(`write off the ${formatCurrency(writeOff)} billed above my correct responsibility`);
+    asks.push(`${capFirst(verb)}${remedy.length ? `, and ${joinClauses(remedy)}` : ""}.`);
+  }
+
+  // 3) coverage_contradiction (+ any covered line not otherwise asked) — insurer.
+  if (b.coverage.length > 0 && isInsurer) {
+    const many = b.coverage.length > 1;
+    asks.push(
+      `Cover ${many ? "these services" : "this service"} under the plan terms cited above, reprocess the claim, and pay the provider the plan-allowed ${many ? "amounts" : "amount"} so that I am not balance-billed; for any continued denial, issue a written determination identifying the specific plan provision relied upon.`,
+    );
+  } else if (b.coverage.length > 0 && !isInsurer) {
+    // Provider can't decide coverage — ask them to bill only per the EOB.
+    asks.push(`Correct my bill to reflect only my cost-sharing under my plan's coverage of ${b.coverage.length > 1 ? "these services" : "this service"}, as determined by my insurer.`);
+  }
+
+  // 4) balance_billing — limit to in-network; NSA only when detected upstream.
+  if (b.balanceBilling.length > 0) {
+    const many = b.balanceBilling.length > 1;
+    const over = sumOf(b.balanceBilling, (li) => li.discrepancyAmount);
+    asks.push(
+      `Limit my responsibility for ${many ? "these services" : "this service"} to my in-network cost-sharing and apply any applicable No Surprises Act protections${over > 0 ? `; write off the ${formatCurrency(over)} billed above it` : ""}.`,
+    );
+  }
+
+  // 5) coding_peer — AMA-compliant "verify whether" (never "should be coded as").
+  if (b.coding.length > 0) {
+    const peer = b.coding[0].peerCodes?.[0]?.code;
+    if (peer) asks.push(`Verify whether ${peer} more accurately reflects the service provided, and reprocess accordingly.`);
+  }
+
+  // Fallback — never emit an empty request block.
+  if (asks.length === 0) {
+    asks.push(
+      isInsurer
+        ? `Review the charges identified above and issue a written determination identifying the specific plan provision relied upon for any denial.`
+        : `Review the charges identified above and provide a corrected, itemized bill.`,
+    );
+  }
+
+  // Tail — itemized statement when no per-line EOB breakdown is on file.
+  const hasPerLineBreakdown = allLines.some((li) => li.insurancePaid != null && li.patientOwes != null);
+  if (!hasPerLineBreakdown) {
+    asks.push(`Provide a complete itemized statement of all charges, including CPT/HCPCS codes, dates of service, and amounts.`);
+  }
+
+  // Assemble: numbered relief + deadline + recipient-appropriate consequence.
+  // Deadline anchored to the §1024(b)(4) document-production window (30 days);
+  // L1 will plan-type-tune (ERISA penalty / urgency-shortening).
+  const numbered = asks.map((a, i) => `${i + 1}. ${a}`).join("\n");
+  const state = planContext?.userState ?? null;
+  const regulator = state ? `the ${state} Department of Insurance` : "the appropriate state insurance regulator";
+  const consequence = isInsurer
+    ? ` If this matter is not resolved, I intend to pursue external review under ACA §2719 / 45 CFR §147.136 and may file a complaint with ${regulator}.`
+    : ` If this matter is not resolved, I may file a complaint with ${regulator} and, where applicable, the federal No Surprises Help Desk.`;
+
+  return [
+    "RELIEF REQUESTED",
+    "",
+    `I request that ${payee} respond in writing within 30 days of receipt and:`,
+    "",
+    numbered,
+    "",
+    `Please treat this as a formal ${isInsurer ? "appeal and request for review" : "billing dispute"}.${consequence}`,
+  ].join("\n");
+}
+
+// ============================================================================
 // Shared "Why this service should be covered" renderer
 // ============================================================================
 // Returns a formatted block (with trailing blank line) or "" when we don't have
@@ -367,6 +560,8 @@ function renderEvidenceBlock(
   planContext: PlanContext | null | undefined,
   title: string = "Why this service should be covered",
   gateUnverified: boolean = false,
+  attestingName: string = "",
+  v3DesignOn: boolean = false,
 ): string {
   if (!evidence || evidence.claims.length === 0) return "";
 
@@ -397,7 +592,7 @@ function renderEvidenceBlock(
     }
 
     for (const li of claim.lineItemEvidence) {
-      const block = renderLineItemEvidence(li, itemNumber, planContext, gateUnverified);
+      const block = renderLineItemEvidence(li, itemNumber, planContext, gateUnverified, attestingName, v3DesignOn);
       if (block) {
         lines.push(block, "");
         itemNumber++;
@@ -433,6 +628,8 @@ function renderLineItemEvidence(
   index: number,
   planContext: PlanContext | null | undefined,
   gateUnverified: boolean = false,
+  attestingName: string = "",
+  v3DesignOn: boolean = false,
 ): string {
   // Bare minimum to render: a code OR a billed amount. Skip phantom items.
   if (!li.billingCode && li.billedAmount === 0 && !li.patientOwes) return "";
@@ -450,12 +647,28 @@ function renderLineItemEvidence(
   const headline = [
     `${index}. ${li.serviceName}`,
     codeLabel ? `(${codeLabel})` : null,
-    li.billedAmount > 0 && perLineCitable
+    // Block C2 item 4 — in v3 the billed amount is always shown per line. It is
+    // the charge from the bill itself (always reliable); perLineCitable only
+    // governs the EOB split, not the billed figure. OFF → unchanged (byte-identical).
+    li.billedAmount > 0 && (perLineCitable || v3DesignOn)
       ? `— billed ${formatCurrency(li.billedAmount)}`
       : null,
   ].filter(Boolean).join(" ");
 
   const bullets: string[] = [];
+
+  // Block C2 (item 1, §1f L2) — lead with the user's service-not-rendered
+  // attestation in the LOCKED copy (String 2): first-person, neutral, under the
+  // name the user adopted when attesting. The attestation IS the spine — never
+  // coached, never inflated to a cite-grade quote. Item 3: an attested line LEADS
+  // with this; the plan cost-share citation is suppressed below (secondary).
+  if (li.serviceNotRenderedAttested) {
+    const svcLabel = codeLabel ? `${li.serviceName} (${codeLabel})` : li.serviceName;
+    const attestPrefix = attestingName ? `I, ${attestingName}, attest` : "I attest";
+    bullets.push(
+      `   - ${attestPrefix}, based on my own records and recollection, that I did not receive the following service billed on this claim: ${svcLabel}.`,
+    );
+  }
 
   // Phase 4 Task 4-E: planBenefit-derived bullets are gated by trust level
   // when gateUnverified is true. 3-case logic per Q-DR-4E-2 LOCK:
@@ -472,7 +685,10 @@ function renderLineItemEvidence(
         (li.planBenefit.copay !== null || li.planBenefit.coinsurance !== null)))
   );
 
-  if (li.planBenefit && planBenefitTrusted) {
+  // Block C2 item 3 — on an attested (service-not-rendered) line the plan
+  // cost-share citation is SECONDARY: suppress it here so the attestation leads.
+  // It returns only as an explicit "in the alternative" fallback below.
+  if (li.planBenefit && planBenefitTrusted && !li.serviceNotRenderedAttested) {
     // S109 PR #2 (Chunk A) — bullet prefix varies by sourcedFrom per the
     // lawyer-pass decision tree §3a, so the letter discloses honestly which
     // plan data backs the citation (user's exact-year plan vs current-plan-
@@ -551,19 +767,35 @@ function renderLineItemEvidence(
     bullets.push(`   - EOB shows: ${eobParts.join(" · ")}.`);
   }
 
-  if (li.expectedPatientCost != null && li.actualPatientCost != null && planBenefitTrusted) {
+  if (li.expectedPatientCost != null && li.actualPatientCost != null && planBenefitTrusted && !li.serviceNotRenderedAttested) {
     const overage = li.discrepancyAmount ?? 0;
     if (overage > 0) {
       bullets.push(
         `   - Expected patient cost per plan: ${formatCurrency(li.expectedPatientCost)}. Actual patient responsibility: ${formatCurrency(li.actualPatientCost)}. Discrepancy: ${formatCurrency(overage)}.`,
       );
     }
-  } else if (li.discrepancyReason && planBenefitTrusted) {
+  } else if (li.discrepancyReason && planBenefitTrusted && !li.serviceNotRenderedAttested) {
     bullets.push(`   - ${li.discrepancyReason}`);
-  } else if (!li.planBenefit && li.patientOwes != null && li.patientOwes > 0) {
+  } else if (!li.planBenefit && li.patientOwes != null && li.patientOwes > 0 && !li.serviceNotRenderedAttested) {
     // No plan match — at minimum explain the request crisply.
     bullets.push(
       `   - I request the plan determine the allowed amount for this code and apply the applicable cost-sharing; any amount above my in-network cost-sharing should be written off per plan terms.`,
+    );
+  }
+
+  // Block C2 item 3 — attested line: cost-share is SECONDARY. The plan citation
+  // and the discrepancy ask above were suppressed. If a real overage exists,
+  // reintroduce it ONCE here as an explicit, de-weighted fallback — never the lead.
+  if (
+    li.serviceNotRenderedAttested &&
+    li.planBenefit &&
+    planBenefitTrusted &&
+    li.expectedPatientCost != null &&
+    li.actualPatientCost != null &&
+    (li.discrepancyAmount ?? 0) > 0
+  ) {
+    bullets.push(
+      `   - In the alternative, even had this service been provided, the plan's cost-sharing terms appear to have been misapplied: my responsibility would be ${formatCurrency(li.expectedPatientCost)}, not ${formatCurrency(li.actualPatientCost)}.`,
     );
   }
 
@@ -692,6 +924,8 @@ const overchargeTemplate: LetterTemplate = {
     evidence,
     gateUnverified,
     bill,
+    v3DesignOn,
+    attestingName,
   }) => {
     const findingDetails = findings
       .map(
@@ -710,10 +944,24 @@ const overchargeTemplate: LetterTemplate = {
       planContext,
       "Supporting evidence for each charge",
       gateUnverified ?? false,
+      attestingName ?? patientName,
+      v3DesignOn ?? false,
     );
 
     const recipientBlock = buildProviderRecipientBlock(providerName, planContext?.providerContact, bill);
     const patientRefBlock = buildPatientReferenceBlock(patientName, undefined, planContext?.providerContact, bill);
+
+    // Block C2 item 4 — v3 replaces the fixed "I am requesting 1/2/3" list with
+    // the conditional request tree (provider voice). OFF → byte-identical.
+    const requestBlock = (v3DesignOn ?? false)
+      ? buildRequestSection({ evidence, planContext, recipient: "provider" })
+      : `I am requesting the following:
+
+1. A detailed, itemized bill showing all charges, procedure codes (CPT/HCPCS), and quantities.
+2. A review and explanation of the charges identified above.
+3. An appropriate adjustment to my account if these charges are found to be in error.
+
+Under the No Surprises Act and applicable state consumer protection laws, I am entitled to a clear and accurate bill. I request a written response within 30 days of receipt of this letter.`;
 
     return `${formatDate(new Date().toISOString())}
 
@@ -751,13 +999,7 @@ I am one of ${systemicEvidence.affectedMemberCount} members on ${systemicEvidenc
 ` : ""}${codeSubstitutionEvidence ? `
 The billing code ${codeSubstitutionEvidence.deniedCode} used on my bill maps to ${codeSubstitutionEvidence.serviceName}, which my plan covers. Code ${codeSubstitutionEvidence.siblingCode} for the same service has been approved ${(codeSubstitutionEvidence.siblingPayRate * 100).toFixed(0)}% of the time on this plan. This suggests either a coding error or a systematic classification discrepancy.
 ` : ""}
-I am requesting the following:
-
-1. A detailed, itemized bill showing all charges, procedure codes (CPT/HCPCS), and quantities.
-2. A review and explanation of the charges identified above.
-3. An appropriate adjustment to my account if these charges are found to be in error.
-
-Under the No Surprises Act and applicable state consumer protection laws, I am entitled to a clear and accurate bill. I request a written response within 30 days of receipt of this letter.
+${requestBlock}
 
 Please send your response to the address above or contact me to discuss this matter.
 
@@ -830,6 +1072,8 @@ const insuranceAppealTemplate: LetterTemplate = {
     planContext,
     evidence,
     gateUnverified,
+    v3DesignOn,
+    attestingName,
   }) => {
     // S111 smoke #3/#4 — insurer precedence:
     //   1. planContext.insurer (resolved in plan-context.ts preferring
@@ -877,8 +1121,10 @@ const insuranceAppealTemplate: LetterTemplate = {
     const evidenceBlock = renderEvidenceBlock(
       evidence,
       planContext,
-      "Why this service should be covered",
+      (v3DesignOn ?? false) ? "Supporting detail" : "Why this service should be covered",
       gateUnverified ?? false,
+      attestingName ?? patientName,
+      v3DesignOn ?? false,
     );
 
     const recipientBlock = buildInsurerRecipientBlock(insurerName, planContext);
@@ -909,6 +1155,18 @@ const insuranceAppealTemplate: LetterTemplate = {
     const closingArgument = buildClosingArgument(planContext, evidence ?? null);
     const escalationParagraph = buildEscalationParagraph(planContext);
 
+    // Block C2 item 4 — v3 reorders to detail → relief: the top boilerplate
+    // "full review 1/2/3" list becomes a one-line pointer, and the ERISA closing
+    // + escalation paragraphs are replaced by the conditional request tree (which
+    // carries its own deadline + §2719 consequence). OFF → byte-identical.
+    const v3 = v3DesignOn ?? false;
+    const reviewSection = v3
+      ? ` The specific relief I am requesting is set out below, following the supporting detail.`
+      : ` I am requesting a full review of this denial, including:\n\n1. The specific reason for denial, including the applicable plan provision or exclusion\n2. The clinical criteria used to determine medical necessity\n3. Instructions for requesting an external review if this internal appeal is denied`;
+    const reliefSection = v3
+      ? buildRequestSection({ evidence, planContext, recipient: "insurer" })
+      : `${closingArgument ? `${closingArgument}\n\n` : ""}${escalationParagraph}`;
+
     return `${formatDate(new Date().toISOString())}
 
 ${recipientBlock}
@@ -919,13 +1177,9 @@ To Whom It May Concern:
 
 I am writing to formally appeal the denial of my claim for services rendered on ${formatDate(serviceDate)} by ${providerName}.${planLabelSentence}
 
-The services provided were medically necessary and should be covered under my plan. I am requesting a full review of this denial, including:
+The services provided were medically necessary and should be covered under my plan.${reviewSection}
 
-1. The specific reason for denial, including the applicable plan provision or exclusion
-2. The clinical criteria used to determine medical necessity
-3. Instructions for requesting an external review if this internal appeal is denied
-
-${evidenceBlock ? `${evidenceBlock}` : ""}${closingArgument ? `${closingArgument}\n\n` : ""}${escalationParagraph}
+${evidenceBlock ? `${evidenceBlock}` : ""}${reliefSection}
 
 I reserve all rights to pursue any other remedies available under federal and state law.
 
@@ -956,12 +1210,16 @@ const balanceBillingTemplate: LetterTemplate = {
     evidence,
     gateUnverified,
     bill,
+    v3DesignOn,
+    attestingName,
   }) => {
     const evidenceBlock = renderEvidenceBlock(
       evidence,
       planContext,
       "Why these charges violate my plan's cost-sharing terms",
       gateUnverified ?? false,
+      attestingName ?? patientName,
+      v3DesignOn ?? false,
     );
     const findingDetails = findings
       .map(
@@ -977,6 +1235,18 @@ const balanceBillingTemplate: LetterTemplate = {
 
     const recipientBlock = buildProviderRecipientBlock(providerName, planContext?.providerContact, bill);
     const patientRefBlock = buildPatientReferenceBlock(patientName, undefined, planContext?.providerContact, bill);
+
+    // Block C2 item 4 — v3 replaces the fixed "I am requesting 1/2/3" list with
+    // the conditional request tree (provider voice). OFF → byte-identical.
+    const requestBlock = (v3DesignOn ?? false)
+      ? buildRequestSection({ evidence, planContext, recipient: "provider" })
+      : `I am requesting:
+
+1. An immediate review of these charges
+2. Adjustment of my bill to reflect only my legitimate cost-sharing obligations (copay, coinsurance, and deductible)
+3. A corrected bill reflecting the appropriate patient responsibility
+
+Please respond within 30 days. If I do not receive a satisfactory resolution, I intend to file complaints with my state insurance commissioner and the federal No Surprises Help Desk.`;
 
     return `${formatDate(new Date().toISOString())}
 
@@ -1008,13 +1278,7 @@ ${planEvidence.map((pe) => {
 
 My patient responsibility should be limited to these cost-sharing amounts.
 ` : ""}
-I am requesting:
-
-1. An immediate review of these charges
-2. Adjustment of my bill to reflect only my legitimate cost-sharing obligations (copay, coinsurance, and deductible)
-3. A corrected bill reflecting the appropriate patient responsibility
-
-Please respond within 30 days. If I do not receive a satisfactory resolution, I intend to file complaints with my state insurance commissioner and the federal No Surprises Help Desk.
+${requestBlock}
 
 Sincerely,
 

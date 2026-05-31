@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState, useEffect, useRef, useCallback } from "react";
+import { Suspense, useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import type { DisputeLetter } from "@/lib/billing/types";
 import { useAuth } from "@/lib/auth/auth-context";
@@ -35,7 +35,7 @@ import type { DisputeEvidence } from "@/lib/disputes/evidence-resolver";
 // Block C (dispute_letter_v3_design) — the three-axis strength readouts.
 import { DataTrustBanner } from "@/components/disputes/DataTrustBanner";
 import { ReadinessRail } from "@/components/disputes/ReadinessRail";
-import type { StrengthResult } from "@/lib/disputes/strength-scoring";
+import type { StrengthResult, EvidenceBand } from "@/lib/disputes/strength-scoring";
 
 export default function DisputesPage() {
   const { isPro, loading, waitFor } = useSubscription();
@@ -239,6 +239,18 @@ function DisputesContent() {
   // OFF → v3DesignOn false → current single-column UI; strength ignored.
   const [v3DesignOn, setV3DesignOn] = useState(false);
   const [strength, setStrength] = useState<StrengthResult | null>(null);
+  // Block C2 — sticky patient-identity confirmation + the service-not-rendered
+  // attestation set, both from the GET payload. Drive the resolve banner/rail CTAs
+  // and the attestation flow + per-line markers.
+  const [patientIdentityResolved, setPatientIdentityResolved] = useState(false);
+  const [serviceAttestedLineIds, setServiceAttestedLineIds] = useState<string[]>(
+    [],
+  );
+  // Block C2 item 2 — persisted attestation gate state + adopted name + the
+  // account-holder default, all hydrated from the GET payload (no re-prompt).
+  const [serviceAttestationReviewed, setServiceAttestationReviewed] = useState(false);
+  const [attestingAsName, setAttestingAsName] = useState<string | null>(null);
+  const [accountName, setAccountName] = useState("");
   // S111 — unified modal state. Replaces the S110 SearchCanonicalPlanModal
   // open boolean; mode controls the 5-mode morph in PlanSearchModal.
   const [planSearchModalOpen, setPlanSearchModalOpen] = useState(false);
@@ -308,6 +320,21 @@ function DisputesContent() {
     // Block C — flag gate + 3-axis strength (additive; ignored by the OLD UI).
     setV3DesignOn(data.v3DesignOn === true);
     setStrength((data.strength as StrengthResult | null) ?? null);
+    // Block C2 — sticky identity confirmation + attestation set from the payload.
+    setPatientIdentityResolved(data.patientIdentityResolved === true);
+    setServiceAttestedLineIds(
+      Array.isArray(data.serviceAttestedLineIds)
+        ? (data.serviceAttestedLineIds as unknown[]).filter(
+            (x): x is string => typeof x === "string",
+          )
+        : [],
+    );
+    // Block C2 item 2 — gate-reviewed flag + adopted name + account default.
+    setServiceAttestationReviewed(data.serviceAttestationReviewed === true);
+    setAttestingAsName(
+      typeof data.attestingAsName === "string" ? data.attestingAsName : null,
+    );
+    setAccountName(typeof data.accountName === "string" ? data.accountName : "");
     if (data.letterContent) {
       // Server-resolved letter type (S74). Authoritative — reads metadata.letterType
       // first, then maps from legacy dispute_type vocab. Without this, the recipient
@@ -341,6 +368,57 @@ function DisputesContent() {
       setEditedBody(data.letterContent);
     }
   }, [user]);
+
+  // Block C2 — confirm/undo patient identity (POST confirm-patient-identity) then
+  // refetch. Mirrors the inline POST+refetch shape used across this page.
+  const handleResolvePatientIdentity = useCallback(
+    async (confirmed: boolean) => {
+      if (!user || !disputeId) return;
+      const token = await user.firebaseUser.getIdToken();
+      await fetch(`/api/disputes/${disputeId}/confirm-patient-identity`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ confirmed }),
+      });
+      await fetchDispute(disputeId);
+    },
+    [user, disputeId, fetchDispute],
+  );
+
+  // Block C2 — commit the full service-not-rendered attestation set (POST
+  // attest-service) then refetch so the reclassification + markers land.
+  const handleAttestServices = useCallback(
+    async (payload: {
+      attestedLineItemIds: string[];
+      serviceAttestationReviewed: boolean;
+      attestingAsName?: string;
+    }) => {
+      if (!user || !disputeId) return;
+      const token = await user.firebaseUser.getIdToken();
+      await fetch(`/api/disputes/${disputeId}/attest-service`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+      await fetchDispute(disputeId);
+    },
+    [user, disputeId, fetchDispute],
+  );
+
+  // Block C2 — per-line bands keyed by lineItemId for EvidenceBlock (L1: band only).
+  const bandByLineId = useMemo(() => {
+    const m: Record<string, EvidenceBand> = {};
+    for (const p of strength?.evidenceStrength.perLine ?? []) {
+      m[p.lineItemId] = p.band;
+    }
+    return m;
+  }, [strength]);
 
   // ?dispute=<id> flow — initial fetch.
   useEffect(() => {
@@ -590,7 +668,17 @@ function DisputesContent() {
 
   // Readout 1 (data-trust banner) + readout 3 (readiness rail) — v3-only.
   const dataTrustBannerNode = <DataTrustBanner dataTrust={strength?.dataTrust} />;
-  const readinessRailNode = <ReadinessRail readiness={strength?.readiness} />;
+  const readinessRailNode = (
+    <ReadinessRail
+      readiness={strength?.readiness}
+      // Block C2 — inline confirm/undo + edit affordances (v3-only).
+      onResolvePatientIdentity={
+        disputeId && v3DesignOn ? handleResolvePatientIdentity : undefined
+      }
+      onEditLetter={v3DesignOn ? () => setIsEditing(true) : undefined}
+      patientIdentityResolved={patientIdentityResolved}
+    />
+  );
 
   const heroNode = (
     <DisputeLetterHero
@@ -627,6 +715,14 @@ function DisputesContent() {
       gateUnverified={gateUnverified}
       // v3-only gated corroborating slots; flag OFF → byte-identical to today.
       showExtendedSlots={v3DesignOn}
+      // Block C2 — per-line bands + attestation flow, all v3-only (band prop +
+      // onAttest omitted when flag OFF → unchanged OLD evidence card).
+      bandByLineId={v3DesignOn ? bandByLineId : undefined}
+      attestedLineItemIds={serviceAttestedLineIds}
+      onAttest={disputeId && v3DesignOn ? handleAttestServices : undefined}
+      attestationReviewed={serviceAttestationReviewed}
+      accountName={accountName}
+      attestingAsName={attestingAsName}
     />
   );
 
@@ -680,13 +776,45 @@ function DisputesContent() {
           </p>
         </div>
       </div>
-      <button
-        type="button"
-        onClick={() => setIsEditing(true)}
-        className="inline-flex shrink-0 items-center justify-center rounded-lg bg-amber-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-amber-700"
-      >
-        Edit letter
-      </button>
+      {v3DesignOn ? (
+        <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+          <button
+            type="button"
+            onClick={() => handleResolvePatientIdentity(true)}
+            className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-amber-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-amber-700"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M5 13l4 4L19 7" />
+            </svg>
+            This is me — confirm
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsEditing(true)}
+            className="inline-flex items-center justify-center rounded-lg border border-amber-300 bg-white px-3.5 py-2 text-sm font-semibold text-amber-800 shadow-sm hover:bg-amber-50"
+          >
+            Edit letter
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setIsEditing(true)}
+          className="inline-flex shrink-0 items-center justify-center rounded-lg bg-amber-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-amber-700"
+        >
+          Edit letter
+        </button>
+      )}
     </div>
   ) : null;
 

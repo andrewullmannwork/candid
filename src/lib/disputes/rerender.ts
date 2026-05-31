@@ -25,6 +25,13 @@ interface RerenderParams {
   lineItemIds: string[];
   planContext: PlanContext | null;
   evidence: DisputeEvidence | null;
+  /**
+   * Block C2 (item 1) — the name the user adopted when attesting
+   * (dispute.metadata.attestingAsName). Passed from the [disputeId] GET (which
+   * reads dispute.metadata). Flows into String 2 + the request block; the
+   * templates fall back to patientName when absent.
+   */
+  attestingName?: string;
 }
 
 export async function rerenderDisputeLetter(
@@ -36,14 +43,17 @@ export async function rerenderDisputeLetter(
   const template = LETTER_TEMPLATES[letterType];
   if (!template) return null;
 
+  // Block C2 item 4 — load the v3 flag once: it both enforces the Block A
+  // data-trust HARD STOP and switches the body into the conditional request tree
+  // (passed to template.body below). OFF → legacy letter, byte-identical.
+  const v3DesignOn = await isFeatureEnabled("dispute_letter_v3_design");
+
   // Block A — data-trust HARD STOP (flag-gated). Symmetric with
   // generateDisputeLetter: a header-reconciliation failure suppresses
   // regeneration so the [disputeId] GET serves no letter (it surfaces the
-  // banner instead). Flag read only when recon actually failed (cheap). Default
-  // OFF → status quo. See plans/dispute_letter_overhaul.md §1a / legal L3.
-  if (evidence?.dataTrust?.headerReconciliationFailed) {
-    const enforceGate = await isFeatureEnabled("dispute_letter_v3_design");
-    if (enforceGate) return null;
+  // banner instead). Default OFF → status quo. See §1a / legal L3.
+  if (evidence?.dataTrust?.headerReconciliationFailed && v3DesignOn) {
+    return null;
   }
 
   // Hydrate a minimal ParsedBill so templates can read patient + provider,
@@ -109,6 +119,8 @@ export async function rerenderDisputeLetter(
     planContext,
     evidence,
     gateUnverified,
+    v3DesignOn,
+    attestingName: params.attestingName,
   });
 
   return body;

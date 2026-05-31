@@ -116,6 +116,15 @@ export async function GET(
         ?.canonicalPlanIdForBillYear;
       return typeof v === "string" && v.length > 0 ? v : null;
     })();
+    // Block C2 — service-not-rendered attestations, threaded so the Case File's
+    // evidence + strength reflect the user's attestations.
+    const serviceAttestedLineIds = ((): string[] => {
+      const v = (dispute.metadata as Record<string, unknown> | null)
+        ?.serviceAttestedLineIds;
+      return Array.isArray(v)
+        ? v.filter((x): x is string => typeof x === "string")
+        : [];
+    })();
     try {
       planContext = await resolvePlanContext(supabase, {
         userId: authedUser.id,
@@ -131,6 +140,7 @@ export async function GET(
         disputeId: dispute.id,
         userConfirmedSamePlan,
         canonicalPlanIdForBillYear,
+        attestedLineItemIds: serviceAttestedLineIds,
       });
     } catch (err) {
       console.error(
@@ -179,6 +189,15 @@ export async function GET(
       "[disputes/case-file] patient-name compare failed (non-fatal):",
       err,
     );
+  }
+
+  // Block C2 — sticky patient-identity confirmation (POST confirm-patient-identity):
+  // suppress the mismatch so the readiness axis stays closed (mirrors the GET route).
+  if (
+    (dispute.metadata as Record<string, unknown> | null)
+      ?.patientIdentityResolved === true
+  ) {
+    patientNameMismatch = null;
   }
 
   // 6) Three-axis strength — the single source of truth. Pure + never throws;

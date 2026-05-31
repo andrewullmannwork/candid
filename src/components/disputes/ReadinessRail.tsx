@@ -69,8 +69,24 @@ const REQUIRED_LABELS: Array<{
 
 export function ReadinessRail({
   readiness,
+  onResolvePatientIdentity,
+  onEditLetter,
+  patientIdentityResolved = false,
 }: {
   readiness: ReadinessResult | null | undefined;
+  /**
+   * Block C2 — confirm (true) / undo (false) the patient-identity item inline.
+   * When provided, the open patientIdentity row shows a "Confirm" CTA; a row
+   * resolved by explicit confirmation shows "Undo". Omitted → status-only (legacy).
+   */
+  onResolvePatientIdentity?: (confirmed: boolean) => void;
+  /** Block C2 — open the letter editor (the dependent / family-member case). */
+  onEditLetter?: () => void;
+  /**
+   * Block C2 — true when patientIdentity was closed by explicit user confirmation
+   * (vs a natural name match). Drives whether the done row offers "Undo".
+   */
+  patientIdentityResolved?: boolean;
 }) {
   if (!readiness) return null;
 
@@ -111,10 +127,18 @@ export function ReadinessRail({
       <ul className="mt-4 space-y-2.5">
         {REQUIRED_LABELS.map((item) => {
           const done = readiness.required[item.key];
+          const isPatientIdentity = item.key === "patientIdentity";
+          const showConfirmCta =
+            isPatientIdentity && !done && !!onResolvePatientIdentity;
+          const showUndoCta =
+            isPatientIdentity &&
+            done &&
+            patientIdentityResolved &&
+            !!onResolvePatientIdentity;
           return (
             <li key={item.key} className="flex items-start gap-2.5">
               <StatusDot done={done} />
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <div
                   className={`text-sm font-medium ${done ? "text-slate-700" : "text-slate-900"}`}
                 >
@@ -122,6 +146,48 @@ export function ReadinessRail({
                 </div>
                 {!done ? (
                   <p className="mt-0.5 text-xs text-slate-500">{item.hint}</p>
+                ) : null}
+                {showConfirmCta ? (
+                  <div className="mt-2 flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => onResolvePatientIdentity!(true)}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-blue-700"
+                    >
+                      <svg
+                        width="11"
+                        height="11"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="3.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden
+                      >
+                        <path d="M5 13l4 4L19 7" />
+                      </svg>
+                      Confirm
+                    </button>
+                    {onEditLetter ? (
+                      <button
+                        type="button"
+                        onClick={onEditLetter}
+                        className="text-xs font-semibold text-blue-600 hover:text-blue-700 hover:underline"
+                      >
+                        Edit letter
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+                {showUndoCta ? (
+                  <button
+                    type="button"
+                    onClick={() => onResolvePatientIdentity!(false)}
+                    className="mt-1 text-xs font-medium text-slate-400 hover:text-blue-600 hover:underline"
+                  >
+                    Undo
+                  </button>
                 ) : null}
               </div>
             </li>
