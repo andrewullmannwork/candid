@@ -153,26 +153,28 @@ function VerifyStrip({
       })
     : "never";
 
-  if (state === "confirmed") {
-    return (
-      <p className="mt-3 text-xs italic text-emerald-700">
-        Thanks — we marked this address as confirmed.
-      </p>
-    );
-  }
+  const hasAddress = !!insurer.appealsAddress;
+  const btnPrimary =
+    "inline-flex items-center justify-center rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow disabled:cursor-wait disabled:opacity-70";
+  const btnSecondary =
+    "inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition-all hover:-translate-y-px hover:bg-slate-50 hover:shadow";
 
-  // Already-confirmed address (Block C2 edit affordance) — neutral row with a
-  // single "Edit address" link that opens the same correction flow. No amber
-  // "needs verification" affect, since nothing is wrong with the address.
-  if (!needsConfirmation) {
+  // Confirmed (just now via "Looks right") OR already-confirmed from the server
+  // → an editable "Verified · Edit address" row. Block C2.2 (note 1): the
+  // post-confirm state is NO LONGER a dead end — Edit is always available.
+  if (state === "confirmed" || !needsConfirmation) {
+    const when = state === "confirmed" ? "just now" : lastVerified;
     return (
-      <div className="mt-3 text-xs text-slate-500">
-        <span>Verified {lastVerified}.</span>{" "}
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+        <span className="inline-flex items-center gap-1.5 font-medium text-emerald-700">
+          <CheckGlyph />
+          Verified {when}.
+        </span>
         {onProposeCorrection ? (
           <button
             type="button"
             onClick={() => onProposeCorrection(insurer.id)}
-            className="font-medium text-blue-600 underline-offset-2 hover:text-blue-700 hover:underline"
+            className={btnSecondary}
           >
             Edit address
           </button>
@@ -181,30 +183,72 @@ function VerifyStrip({
     );
   }
 
-  return (
-    <div className="mt-3 rounded-lg border border-amber-100 bg-amber-50/60 px-3 py-2 text-xs text-amber-900">
-      <span className="font-medium">Last verified {lastVerified}.</span>{" "}
-      <button
-        type="button"
-        onClick={handleConfirm}
-        disabled={state === "confirming"}
-        className="underline underline-offset-2 hover:text-amber-950 disabled:opacity-50"
-      >
-        {state === "confirming" ? "Confirming…" : "Looks right"}
-      </button>
-      {onProposeCorrection ? (
-        <>
-          {" · "}
+  // No address on file yet → a single "Add address" button (nothing to confirm).
+  // Block C2.2 (note 4) — "Looks right" is meaningless with no address.
+  if (!hasAddress) {
+    return (
+      <div className="mt-3 rounded-lg border border-amber-100 bg-amber-50/60 px-3 py-2.5 text-xs text-amber-900">
+        <p className="mb-2 font-medium">
+          We don&apos;t have {insurer.name}&apos;s appeals address yet.
+        </p>
+        {onProposeCorrection ? (
           <button
             type="button"
             onClick={() => onProposeCorrection(insurer.id)}
-            className="underline underline-offset-2 hover:text-amber-950"
+            className={btnPrimary}
+          >
+            Add address
+          </button>
+        ) : null}
+      </div>
+    );
+  }
+
+  // Address present but unconfirmed → "Looks right" / "Not correct" as real
+  // buttons (Block C2.2 note 2 — were underlined text links).
+  return (
+    <div className="mt-3 rounded-lg border border-amber-100 bg-amber-50/60 px-3 py-2.5 text-xs text-amber-900">
+      <p className="mb-2 font-medium">
+        Last verified {lastVerified}. Is this the right appeals address?
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={handleConfirm}
+          disabled={state === "confirming"}
+          className={btnPrimary}
+        >
+          {state === "confirming" ? "Confirming…" : "Looks right"}
+        </button>
+        {onProposeCorrection ? (
+          <button
+            type="button"
+            onClick={() => onProposeCorrection(insurer.id)}
+            className={btnSecondary}
           >
             Not correct
           </button>
-        </>
-      ) : null}
+        ) : null}
+      </div>
     </div>
+  );
+}
+
+function CheckGlyph() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="3.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M5 13l4 4L19 7" />
+    </svg>
   );
 }
 

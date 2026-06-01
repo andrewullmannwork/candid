@@ -206,6 +206,14 @@ export interface LineItemEvidence {
     benchmarkSource: string | null;
   }> | null;
   /**
+   * Block C2.2 (S152) — true when an audit has actually RUN on this line (the
+   * engine wrote an `auditFindings` key — even an empty array = "checked,
+   * clean" — OR stamped `auditRerunAt`). Distinct from `auditFindings` being
+   * non-empty: lets the `audit_findings_missing` gap fire only when no audit
+   * has run, not when one ran and found nothing (a clean bill).
+   */
+  auditRan: boolean;
+  /**
    * S74.6 D5 — corroborated peer codes for this line's service_slug. Derived
    * from `billing_code_identity` rows in `promotion_state IN ('corroborated',
    * 'admin_verified')`, excluding the contested line's own (code, type) row.
@@ -736,7 +744,10 @@ function computeEvidenceGaps(
 
   const allLineItems = claims.flatMap((c) => c.lineItemEvidence);
   const anyPlanBenefit = allLineItems.some((li) => li.planBenefit);
-  const anyAudit = allLineItems.some((li) => li.auditFindings && li.auditFindings.length > 0);
+  // Block C2.2 (S152) — "an audit has run on at least one line" (clean or not),
+  // NOT "there are findings". Drives the audit_findings_missing gap so it fires
+  // only when no audit has run — not on a clean bill, and it clears after a re-run.
+  const anyAuditRan = allLineItems.some((li) => li.auditRan);
   const anyUnmapped = allLineItems.some((li) => !li.serviceSlug && li.billingCode);
 
   const planYearForUpload = planContext?.missingForYear ?? planContext?.plan?.planYear ?? null;
@@ -918,7 +929,7 @@ function computeEvidenceGaps(
     });
   }
 
-  if (!anyAudit) {
+  if (!anyAuditRan) {
     gaps.push({
       kind: "audit_findings_missing",
       title: "No audit findings attached",
@@ -1680,6 +1691,7 @@ function buildLineItemEvidence(
   const siblingCodes = lookupKey ? siblingsByCode.get(lookupKey) ?? null : null;
   const pricingBenchmark = lookupKey ? pricingByCode.get(lookupKey) ?? null : null;
   const auditFindings = extractAuditFindings(li.metadata);
+  const auditRan = extractAuditRan(li.metadata);
   // S74.6 D5 — peer codes for the slug (corroborated cross-user vote map).
   // Template renders the alternative-code section when this array has ≥ 2
   // entries (Q-S87-C7 letterEligible gate). Null when no slug OR no peers
@@ -1735,6 +1747,7 @@ function buildLineItemEvidence(
     siblingCodes,
     pricingBenchmark,
     auditFindings,
+    auditRan,
     peerCodes,
     disputeType,
     citeGradeTier,
@@ -1758,6 +1771,18 @@ function extractAuditFindings(metadata: Record<string, unknown> | undefined): Li
       benchmarkSource: f.benchmarkSource != null ? String(f.benchmarkSource) : null,
     }));
   return findings.length > 0 ? findings : null;
+}
+
+// Block C2.2 (S152) — has an audit actually RUN on this line? True when the
+// engine wrote an `auditFindings` key (even an empty array = "checked, clean")
+// OR stamped a rerun timestamp. Used to suppress the `audit_findings_missing`
+// gap once a bill has been audited clean, and to clear it after a re-run.
+function extractAuditRan(metadata: Record<string, unknown> | undefined): boolean {
+  if (!metadata) return false;
+  return (
+    Array.isArray((metadata as { auditFindings?: unknown }).auditFindings) ||
+    (metadata as { auditRerunAt?: unknown }).auditRerunAt != null
+  );
 }
 
 function computeExpectedPatientCost(

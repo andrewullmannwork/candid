@@ -762,6 +762,13 @@ function DisputesContent() {
         setPlanSearchModalMode("upload");
         setPlanSearchModalOpen(true);
       }}
+      // Block C2.2 (S152) — "Add address" on the insurer_address_missing gap
+      // opens the same insurer modal as the recipient card's edit affordance.
+      onAddInsurerAddress={
+        planContext?.insurer && disputeId
+          ? () => setInsurerCorrectionOpen(true)
+          : undefined
+      }
     />
   );
 
@@ -967,8 +974,8 @@ function DisputesContent() {
   );
 
   const caseFileNode = (
-    <section className="rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-50 to-indigo-50 p-6 shadow-sm md:p-7">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+    <section className="@container rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-50 to-indigo-50 p-6 shadow-sm md:p-7">
+      <div className="flex flex-col gap-4 @md:flex-row @md:items-center @md:justify-between">
         <div className="min-w-0">
           <h3 className="text-base font-semibold text-slate-900">Download your full Case File</h3>
           <p className="mt-1 text-sm text-slate-600">
@@ -1278,9 +1285,10 @@ function DisputesContent() {
       />
 
 
-      {planContext?.insurer ? (
+      {planContext?.insurer && disputeId ? (
         <InsurerAddressCorrectionModal
           open={insurerCorrectionOpen}
+          disputeId={disputeId}
           insurerName={planContext.insurer.name}
           insurerId={planContext.insurer.id}
           initialValues={{

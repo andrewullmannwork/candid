@@ -15,7 +15,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
-import { resolvePlanContext } from "@/lib/disputes/plan-context";
+import { resolvePlanContext, type InsurerAddressOverride } from "@/lib/disputes/plan-context";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
 import {
   computeDisputeStrength,
@@ -205,10 +205,18 @@ export async function GET(
         const v = (dispute.metadata as Record<string, unknown> | null)?.serviceAttestedLineIds;
         return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
       })();
+      // Block C2.2 (S152) — the user's per-dispute insurer appeals address
+      // override (set via POST /api/disputes/[disputeId]/insurer-address).
+      // Overlaid onto the resolved insurer so this letter uses the user's
+      // address; changes the planContext fingerprint → body re-renders with it.
+      const insurerAddressOverride =
+        ((dispute.metadata as Record<string, unknown> | null)
+          ?.insurerAddressOverride as InsurerAddressOverride | null) ?? null;
       planContext = await resolvePlanContext(supabase, {
         userId: user.id,
         claimId: dispute.claim_id,
         canonicalPlanIdForBillYear,
+        insurerAddressOverride,
       });
       evidence = await resolveEvidence(supabase, {
         userId: user.id,

@@ -26,6 +26,7 @@ interface CurrentValues {
 
 interface Props {
   open: boolean;
+  disputeId: string;
   insurerName: string;
   insurerId: string;
   initialValues: CurrentValues;
@@ -37,6 +38,7 @@ interface Props {
 
 export function InsurerAddressCorrectionModal({
   open,
+  disputeId,
   insurerName,
   insurerId,
   initialValues,
@@ -85,7 +87,10 @@ export function InsurerAddressCorrectionModal({
     try {
       const token = await getAuthToken();
       if (!token) throw new Error("Sign-in expired. Please reload and try again.");
-      const res = await fetch("/api/disputes/insurer-appeals/confirm", {
+      // Block C2.2 (S152) — dual-write: the new endpoint saves a user-scoped
+      // override (used on THIS letter immediately) AND queues a community
+      // proposed_correction for admin review. Replaces the catalog-only confirm.
+      const res = await fetch(`/api/disputes/${disputeId}/insurer-address`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -93,15 +98,13 @@ export function InsurerAddressCorrectionModal({
         },
         body: JSON.stringify({
           insurerId,
-          action: "proposed_correction",
-          proposedValues: {
-            addressLine1: values.addressLine1.trim(),
-            addressLine2: values.addressLine2.trim() || undefined,
-            city: values.city.trim() || undefined,
-            state: values.state.trim() || undefined,
-            postalCode: values.postalCode.trim() || undefined,
-            phone: values.phone.trim() || undefined,
-          },
+          insurerName,
+          addressLine1: values.addressLine1.trim(),
+          addressLine2: values.addressLine2.trim() || undefined,
+          city: values.city.trim() || undefined,
+          state: values.state.trim() || undefined,
+          postalCode: values.postalCode.trim() || undefined,
+          phone: values.phone.trim() || undefined,
         }),
       });
       if (!res.ok) {
@@ -131,12 +134,12 @@ export function InsurerAddressCorrectionModal({
         <div className="flex items-start justify-between gap-3">
           <div>
             <h2 id="insurer-correction-title" className="text-lg font-semibold text-slate-900">
-              Suggest a corrected appeals address
+              {insurerName} appeals address
             </h2>
             <p className="mt-1 text-sm text-slate-600">
-              Tell us the correct mailing address for {insurerName} appeals. We&apos;ll
-              review the change and update the address other members see if it
-              checks out.
+              We&apos;ll use this mailing address on your letter right away. We also
+              submit it for review so, if it checks out, it can help other{" "}
+              {insurerName} members — your letter isn&apos;t held up by that review.
             </p>
           </div>
           <button
@@ -229,7 +232,7 @@ export function InsurerAddressCorrectionModal({
               disabled={submitting}
               className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:opacity-60"
             >
-              {submitting ? "Submitting…" : "Submit correction"}
+              {submitting ? "Saving…" : "Save address"}
             </button>
           </div>
         </form>

@@ -63,7 +63,7 @@ export async function POST(
 
   const { data: claim } = await supabase
     .from("claims")
-    .select("id, source_document_id, date_of_service, total_billed, total_allowed, total_insurance_paid, total_patient_responsibility, metadata, user_id, patient_name, insurance_plan_id")
+    .select("id, source_document_id, date_of_service, total_billed, total_allowed, total_insurance_paid, total_patient_responsibility, metadata, user_id, insurance_plan_id")
     .eq("id", dispute.claim_id)
     .eq("user_id", user.id)
     .maybeSingle();
@@ -165,7 +165,7 @@ export async function POST(
     supabase,
     planId: planIdForAudit,
     userId: claim.user_id as string,
-    patientName: (claim.patient_name as string | null | undefined) ?? null,
+    patientName: patient.name ?? null,
     bill: parsedBill,
     existingCoverageBySlug: new Set(planCoverage?.keys() ?? []),
   });
