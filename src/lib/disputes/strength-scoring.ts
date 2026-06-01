@@ -101,6 +101,16 @@ export type EvidenceBand =
 
 export type ReadinessState = "attention" | "ready_to_send" | "airtight";
 
+/**
+ * Who the finished letter is addressed to — drives which mailing address(es) the
+ * readiness floor (MVDL #3) actually requires. An insurer appeal must not be
+ * blocked by a missing *provider* address it never prints, and vice-versa.
+ * `both`/undefined → require either is missing fails (the conservative legacy
+ * behavior). Derived from the letter type by `letterRecipientKind` in
+ * src/lib/disputes/index.ts (single source of truth, shared with the templates).
+ */
+export type RecipientKind = "insurer" | "provider" | "both";
+
 export interface StrengthWeights {
   probativeTier: Record<ProbativeTier, number>;
   citeGradeFactor: Record<CiteGradeTier, number>;
@@ -395,6 +405,9 @@ export interface ReadinessResult {
   };
   requiredMet: number;
   requiredTotal: number;
+  /** Who the letter is addressed to — drives the recipientAddress label + which
+   *  address(es) the floor requires (§1b #3). Defaults to `both` (legacy). */
+  recipientKind: RecipientKind;
   /** Open optional ("make it stronger") gap kinds present on the dispute. */
   optionalOpen: string[];
 }
@@ -430,6 +443,14 @@ export interface ComputeStrengthOptions {
    * on most Block A paths by design.
    */
   patientIdentityResolved?: boolean;
+  /**
+   * Who the letter is addressed to. Scopes the MVDL #3 recipient-address floor
+   * to the address(es) the letter actually prints: `insurer` requires only the
+   * insurer appeals address; `provider` only the provider billing address;
+   * `both`/undefined → either-missing fails (conservative legacy default). The
+   * routes derive this from the resolved letter type via `letterRecipientKind`.
+   */
+  recipientKind?: RecipientKind;
 }
 
 /**
@@ -469,9 +490,18 @@ export function computeDisputeStrength(
     lines.some((li) => !!li.planBenefit) ||
     lines.some((li) => li.insurancePaid != null) ||
     (evidence?.legalBasis?.length ?? 0) > 0;
-  const recipientAddress = !Array.from(ADDRESS_GAP_KINDS).some((k) =>
-    gapKinds.has(k),
-  );
+  // §1b #3 — require only the address(es) the letter actually prints. An
+  // insurer appeal isn't blocked by a missing provider address (and vice-versa);
+  // the non-recipient address stays an optional "strengthen" item, not a floor.
+  // `both`/undefined → either-missing fails (conservative legacy behavior).
+  const recipientKind: RecipientKind = opts?.recipientKind ?? "both";
+  const requiredAddressGaps =
+    recipientKind === "insurer"
+      ? ["insurer_address_missing"]
+      : recipientKind === "provider"
+        ? ["provider_address_missing"]
+        : Array.from(ADDRESS_GAP_KINDS);
+  const recipientAddress = !requiredAddressGaps.some((k) => gapKinds.has(k));
   const required = {
     dataTrustPass: dataTrust.gate !== "hard_stop",
     backedClaim: anyBackedClaim,
@@ -500,6 +530,7 @@ export function computeDisputeStrength(
       required,
       requiredMet,
       requiredTotal,
+      recipientKind,
       optionalOpen,
     },
   };

@@ -705,6 +705,13 @@ function DisputesContent() {
       referenceId={letter.id}
       onConfirmAddress={handleConfirmAddress}
       onProposeCorrection={planContext?.insurer ? handleProposeInsurerCorrection : undefined}
+      // Block C2 — surface the insurer address as confirm/edit-able even once
+      // confirmed, but only on v3 + insurer-recipient letters (provider addresses
+      // are edited via the EvidenceGaps form). recipientKind comes from the
+      // already-computed strength payload — no extra round-trip.
+      allowAddressEdit={
+        v3DesignOn && strength?.readiness?.recipientKind === "insurer"
+      }
     />
   );
 
