@@ -13,6 +13,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { validateUsAddress } from "@/lib/address/validate-us-address";
 
 interface CurrentValues {
   addressLine1: string;
@@ -64,8 +65,19 @@ export function InsurerAddressCorrectionModal({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!values.addressLine1.trim()) {
-      setError("Address line 1 is required.");
+    // Block C2 — validate through the shared helper so the insurer + provider
+    // address surfaces enforce the same rules (required line1/city/state/ZIP +
+    // state-set + ZIP format). Surfaces the first error in the existing banner.
+    const addrErrors = validateUsAddress({
+      addressLine1: values.addressLine1,
+      addressLine2: values.addressLine2,
+      city: values.city,
+      state: values.state,
+      postalCode: values.postalCode,
+    });
+    const firstError = Object.values(addrErrors)[0];
+    if (firstError) {
+      setError(firstError);
       return;
     }
     setSubmitting(true);

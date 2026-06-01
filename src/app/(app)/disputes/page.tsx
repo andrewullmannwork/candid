@@ -1221,7 +1221,13 @@ function DisputesContent() {
             {articleNode}
             {evidenceNode}
           </div>
-          <aside className="space-y-5 lg:sticky lg:top-4 lg:self-start">
+          {/* Block C2 — the rail is taller than the viewport on most letters;
+              cap its height to the viewport and let it scroll its OWN overflow so
+              hovering + wheeling over the rail reaches the lower cards (provider
+              address form, next steps, case file) instead of being scroll-trapped
+              until the left column catches up. */}
+          <aside className="space-y-5 lg:sticky lg:top-4 lg:self-start lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
+
             {readinessRailNode}
             {gapsNode}
             {nextStepsNode}

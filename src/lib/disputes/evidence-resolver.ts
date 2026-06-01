@@ -307,6 +307,10 @@ export interface EvidenceGap {
      *  it, an overcharge / balance billing / duplicate / itemized request letter
      *  has no recipient address. The UI surfaces a manual entry form. */
     | "provider_address_missing"
+    /** Block C2 — provider address IS present (parsed from the bill) but the user
+     *  hasn't confirmed it's correct. Optional "make it stronger" item: the UI
+     *  shows a Confirm / Edit affordance mirroring the insurer verified-state. */
+    | "provider_address_confirm"
     /** S74 Pillar 3 — at least one planBenefit-row is not cite-grade
      *  (sbcExcerptVerified=false). The user can click Re-draft to re-parse
      *  un-searched plan-document sections and attempt to upgrade those rows
@@ -838,11 +842,26 @@ function computeEvidenceGaps(
   if (providerAddressMissing && goesToProvider) {
     gaps.push({
       kind: "provider_address_missing",
-      title: "Add the provider's billing address",
+      title: "Where did you get care?",
       description:
-        "Without this, the printed letter has no mailing address. Find the billing department address on the bill or the provider's website, then enter it below — it'll save with this dispute and any future ones for the same claim.",
+        "We have your insurer's appeals address. Now add the provider's billing address — the clinic or hospital that sent the bill — so we can address them too. Find it on your bill or the provider's website; it'll save for this claim and any future disputes on it.",
       // Intentionally no ctaHref — the UI renders an inline form that POSTs to
       // /api/disputes/[disputeId]/provider-contact.
+    });
+  } else if (
+    goesToProvider &&
+    !!planContext?.providerContact?.address &&
+    !planContext.providerContact.confirmedAt
+  ) {
+    // Block C2 — address is present (parsed) but unconfirmed. Optional confirm
+    // step mirroring the insurer verified-state; the UI shows Confirm / Edit.
+    gaps.push({
+      kind: "provider_address_confirm",
+      title: "Confirm where you got care",
+      description:
+        "We pulled this provider's billing address from your bill. Confirm it's right — or edit it — so the letter reaches the correct office.",
+      // No ctaHref — the UI renders an inline Confirm / Edit affordance that
+      // POSTs to /api/disputes/[disputeId]/provider-contact.
     });
   }
 

@@ -24,6 +24,14 @@ interface ProviderContactSeed {
   address: string | null;
   phone: string | null;
   npi: string | null;
+  /** Block C2 — structured parts when the address was captured structured. */
+  addressFields?: {
+    addressLine1?: string | null;
+    addressLine2?: string | null;
+    city?: string | null;
+    state?: string | null;
+    postalCode?: string | null;
+  } | null;
 }
 
 interface Props {
@@ -70,6 +78,8 @@ export function EvidenceGaps({
   const [rerunStatus, setRerunStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const [redraftStatus, setRedraftStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const [providerFormOpen, setProviderFormOpen] = useState(false);
+  // Block C2 — confirm a parsed provider address ({confirm:true}); claim-scoped.
+  const [confirmStatus, setConfirmStatus] = useState<"idle" | "running" | "error">("idle");
 
   if (!gaps || gaps.length === 0) return null;
 
@@ -95,6 +105,29 @@ export function EvidenceGaps({
     }
   };
 
+  // Block C2 — confirm a parsed provider address ({confirm:true}); claim-scoped
+  // confirmedAt. Reuses the same endpoint + auth as the edit form.
+  const handleConfirmProvider = async () => {
+    if (!disputeId || !getAuthToken || confirmStatus === "running") return;
+    setConfirmStatus("running");
+    try {
+      const token = await getAuthToken();
+      if (!token) throw new Error("auth");
+      const res = await fetch(`/api/disputes/${disputeId}/provider-contact`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ confirm: true }),
+      });
+      if (!res.ok) throw new Error("confirm failed");
+      await onProviderContactSaved?.();
+    } catch {
+      setConfirmStatus("error");
+    }
+  };
+
   return (
     <section className="@container rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
       <div className="mb-3">
@@ -109,7 +142,8 @@ export function EvidenceGaps({
       <ul className="space-y-3">
         {gaps.map((gap, i) => {
           const expandedForm =
-            gap.kind === "provider_address_missing" &&
+            (gap.kind === "provider_address_missing" ||
+              gap.kind === "provider_address_confirm") &&
             providerFormOpen &&
             disputeId &&
             getAuthToken;
@@ -136,6 +170,8 @@ export function EvidenceGaps({
                   onOpenProviderForm: () => setProviderFormOpen(true),
                   providerFormOpen,
                   hasProviderContext: !!disputeId && !!getAuthToken,
+                  onConfirmProvider: handleConfirmProvider,
+                  confirmStatus,
                   onUploadInModal,
                 })}
               </div>
@@ -144,6 +180,7 @@ export function EvidenceGaps({
                   disputeId={disputeId}
                   initialName={providerSeed?.name ?? null}
                   initialAddress={providerSeed?.address ?? null}
+                  initialAddressFields={providerSeed?.addressFields ?? null}
                   initialPhone={providerSeed?.phone ?? null}
                   initialNpi={providerSeed?.npi ?? null}
                   getAuthToken={getAuthToken}
@@ -173,6 +210,8 @@ function renderCta(
     onOpenProviderForm: () => void;
     providerFormOpen: boolean;
     hasProviderContext: boolean;
+    onConfirmProvider: () => void;
+    confirmStatus: "idle" | "running" | "error";
     onUploadInModal?: () => void;
   },
 ) {
@@ -245,6 +284,38 @@ function renderCta(
       >
         {ctx.providerFormOpen ? "Form open below" : "Add provider address"}
       </button>
+    );
+  }
+
+  // Block C2 — provider address present but unconfirmed: Confirm / Edit pair.
+  if (gap.kind === "provider_address_confirm" && ctx.hasProviderContext) {
+    if (ctx.providerFormOpen) {
+      return (
+        <span className="shrink-0 text-sm text-slate-500 @md:ml-4">Editing below</span>
+      );
+    }
+    return (
+      <div className="flex shrink-0 items-center gap-2 @md:ml-4">
+        <button
+          type="button"
+          onClick={ctx.onConfirmProvider}
+          disabled={ctx.confirmStatus === "running"}
+          className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow disabled:cursor-wait disabled:opacity-70"
+        >
+          {ctx.confirmStatus === "running"
+            ? "Confirming…"
+            : ctx.confirmStatus === "error"
+            ? "Try again"
+            : "Confirm address"}
+        </button>
+        <button
+          type="button"
+          onClick={ctx.onOpenProviderForm}
+          className="text-sm font-medium text-blue-600 hover:text-blue-700 hover:underline"
+        >
+          Edit
+        </button>
+      </div>
     );
   }
 
