@@ -107,11 +107,20 @@ export function CategoryCorrectionModal({
   // for next time). The client substring filter (below) covers the in-flight
   // window + any failure.
   useEffect(() => {
-    const q = query.trim();
-    if (!open || q.length < 2) {
+    if (!open) {
       setServerResults(null);
       return;
     }
+    const typed = query.trim();
+    // Empty box → rank by the LINE's description (the most-likely categories
+    // for THIS line surface at top, instead of an alphabetical A–Z browse).
+    // Typed → rank by the query.
+    const seed = typed.length >= 2 ? typed : (description ?? "").trim();
+    if (seed.length < 2) {
+      setServerResults(null);
+      return;
+    }
+    const openSeed = typed.length < 2;
     let cancelled = false;
     const handle = setTimeout(async () => {
       try {
@@ -124,7 +133,7 @@ export function CategoryCorrectionModal({
               "Content-Type": "application/json",
               Authorization: `Bearer ${token}`,
             },
-            body: JSON.stringify({ query: q, semantic }),
+            body: JSON.stringify({ query: seed, semantic }),
           });
           if (!res.ok) return null;
           const json = (await res.json()) as {
@@ -132,8 +141,11 @@ export function CategoryCorrectionModal({
           };
           return json.items ?? [];
         };
-        let items = await run(false);
-        if (items && items.length === 0) items = await run(true);
+        // Open-seed allows the semantic pass so the default ranking matches the
+        // best-guess quality. Typed queries stay instant (trigram), with a
+        // semantic retry only if the instant pass returns nothing.
+        let items = await run(openSeed);
+        if (!openSeed && items && items.length === 0) items = await run(true);
         if (!cancelled && items) {
           setServerResults(
             items.map((i) => ({ slug: i.slug, name: i.name, category: i.category })),
@@ -142,12 +154,12 @@ export function CategoryCorrectionModal({
       } catch {
         // Network/parse failure → leave serverResults as-is; client filter covers it.
       }
-    }, 300);
+    }, openSeed ? 0 : 300);
     return () => {
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [query, open, getAuthToken]);
+  }, [query, open, description, getAuthToken]);
 
   // B4.2 — lock body scroll while modal open (design polish).
   useEffect(() => {
@@ -203,11 +215,13 @@ export function CategoryCorrectionModal({
   }, [catalog, planCoverageBySlug, hasPlanCoverage]);
 
   const filtered = useMemo(() => {
-    if (!query.trim()) return scopedCatalog.slice(0, 20);
-    // S153 — prefer server-ranked, synonym-aware results (full catalog, NOT
-    // restricted to the plan, so the correct slug is never hidden). Fall back to
-    // the client substring filter while the request is in flight / on failure.
+    // S153 — prefer server-ranked results (relevance-ordered: by the line
+    // description when the box is empty, by the query when typing; full catalog,
+    // NOT restricted to the plan so the correct slug is never hidden). Fall back
+    // to alphabetical browse / client substring only while a request is in
+    // flight or on failure.
     if (serverResults) return serverResults.slice(0, 20);
+    if (!query.trim()) return scopedCatalog.slice(0, 20);
     const q = query.toLowerCase();
     return scopedCatalog
       .filter(
