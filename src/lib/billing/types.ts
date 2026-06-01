@@ -121,9 +121,15 @@ export interface BillLineItem {
     | "cached_mapping"
     | "service_mapper"
     | "flywheel_identity"
+    | "resolver"
     | "persisted"
     | null;
   billingCodeIdentityId?: string | null;
+  // S153 — confidence from the unified resolver (service-resolver.ts). Threaded
+  // to persist.ts so the flywheel vote (recordDescriptionMatchVote) uses the
+  // resolver's confidence as the Haiku score. Only set when serviceSlugSource
+  // === "resolver".
+  serviceSlugConfidence?: number | null;
 }
 
 export interface ParsedBill {

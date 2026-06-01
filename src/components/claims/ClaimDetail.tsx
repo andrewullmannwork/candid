@@ -1314,12 +1314,17 @@ export function ClaimDetail({
               // to upload via either entry point.
               item.coverageStatus === "unknown" ||
               item.coverageStatus === "not_covered");
+          // S153 — derive the review tooltip from slug-PRESENCE, not the
+          // identity promotion_state. Pre-launch every identity row is
+          // 'proposed' (corroboration threshold is 5 distinct users), so keying
+          // off promotion_state showed "couldn't auto-categorize" even on lines
+          // that DID get a confident category. A populated service_slug means
+          // the line is categorized (the resolver only assigns a slug above its
+          // confidence floor); null means genuinely uncategorized.
           const pillState: "user_corrected" | "needs_review" | "auto" =
             item.user_corrected_at
               ? "user_corrected"
-              : item.codeIdentity?.promotionState === "proposed" ||
-                  (item.codeIdentity != null &&
-                    item.codeIdentity.identityId == null)
+              : !item.service_slug
                 ? "needs_review"
                 : "auto";
           // F-7 — pillClass + pillLabel removed; the click target is now the

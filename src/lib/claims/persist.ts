@@ -250,6 +250,11 @@ export async function persistAuditResults(
     const flywheelEnabled = await isFeatureEnabled(
       "s74_5_categorization_flywheel_v1",
     );
+    // S153 — when ON, the unified resolver (run in preflight) already set the
+    // user-scoped slug + warmed the learned cache; here we only cast the
+    // cross-user corroboration vote from the resolver result (the legacy
+    // D4-finding vote path is skipped).
+    const resolverEnabled = await isFeatureEnabled("service_resolver_v1");
 
     // DR-3B per-field provenance: only emit when parse_strategy_v2 flag is ON.
     // OFF preserves legacy behavior (no field_provenance writes; column default '{}'
@@ -283,6 +288,9 @@ export async function persistAuditResults(
       const resolvedSlug = item.serviceSlug ?? null;
       const resolvedSlugSource = item.serviceSlugSource ?? null;
       const resolvedIdentityId = item.billingCodeIdentityId ?? null;
+      // S153 — resolver confidence persisted for Ship Gate G7 observability
+      // (per-line source + confidence distribution; admin can detect drift).
+      const resolvedConfidence = item.serviceSlugConfidence ?? null;
 
       // PR4 (S142) B-1 — when a per-line field's sum doesn't match the header,
       // drop the per-line value to NULL so the frontend Path B helper
@@ -329,6 +337,7 @@ export async function persistAuditResults(
                   slug: resolvedSlug,
                   identityId: resolvedIdentityId,
                   source: resolvedSlugSource,
+                  confidence: resolvedConfidence,
                 },
               }
             : {}),
@@ -391,6 +400,42 @@ export async function persistAuditResults(
           for (let idx = 0; idx < parsedBill.lineItems.length; idx++) {
             const item = parsedBill.lineItems[idx];
             const lineId = lineItemIds[idx];
+            // S153 — resolver path: cast the corroboration vote from the
+            // resolver result (coded, confident lines) and skip the legacy
+            // D4-finding vote logic. Code-less lines rely on the signature
+            // learned cache (no billing_code_identity row to corroborate).
+            if (resolverEnabled) {
+              if (
+                item.serviceSlugSource === "resolver" &&
+                item.serviceSlug &&
+                item.procedureCode &&
+                (item.serviceSlugConfidence ?? 0) >= 0.85
+              ) {
+                const ct =
+                  reconcileHaikuCodeType(
+                    item.procedureCode,
+                    item.procedureCodeType,
+                  ) ?? undefined;
+                try {
+                  await recordDescriptionMatchVote({
+                    userId: dbUserId,
+                    billingCode: item.procedureCode,
+                    billingCodeType: ct,
+                    rawDescription: item.description || item.category || "",
+                    proposedSlug: item.serviceSlug,
+                    haikuScore: item.serviceSlugConfidence ?? 0.85,
+                    lineItemId: lineId,
+                  });
+                } catch (e) {
+                  console.warn(
+                    "[claims-persist] resolver vote failed for line",
+                    item.lineNumber,
+                    e,
+                  );
+                }
+              }
+              continue;
+            }
             const findings = findingsByLine.get(item.lineNumber) || [];
             const dmFinding = findings.find(
               (f) =>

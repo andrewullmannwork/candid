@@ -31,6 +31,7 @@ import { isFeatureEnabled } from "@/lib/config/product-flags";
 import {
   recordUserCorrection,
   type CorrectionReason,
+  type RecordCorrectionResult,
 } from "@/lib/parser/code-identity-promotion";
 import type { ProcedureCodeType } from "@/lib/billing/types";
 
@@ -72,6 +73,9 @@ export async function POST(
   if (!flywheelEnabled) {
     return NextResponse.json({ error: "Feature not enabled" }, { status: 404 });
   }
+  // S153 — when ON, code-less lines are correctable + the correction is written
+  // to the learned cache (served first next time).
+  const resolverEnabled = await isFeatureEnabled("service_resolver_v1");
 
   const { claimId, lineId } = await params;
 
@@ -177,24 +181,71 @@ export async function POST(
     (lineItem.billing_code_type as ProcedureCodeType | null) ?? undefined;
   const description = (lineItem.description as string | null) ?? "";
 
-  if (!billingCode || !description) {
+  // S153 — a description is always required (signature input + label). A billing
+  // code is required only on the legacy path (the flywheel is code-keyed); with
+  // the resolver ON, code-less lines are correctable via the signature cache.
+  if (!description) {
     return NextResponse.json(
-      { error: "Line item missing billing_code or description; cannot categorize" },
+      { error: "Line item missing description; cannot categorize" },
+      { status: 422 },
+    );
+  }
+  if (!billingCode && !resolverEnabled) {
+    return NextResponse.json(
+      { error: "Line item missing billing_code; cannot categorize" },
       { status: 422 },
     );
   }
 
-  // Fire the correction flow
-  const result = await recordUserCorrection({
-    lineItemId: lineId,
-    userId: user.id,
-    newSlug: slug,
-    billingCode,
-    billingCodeType,
-    description,
-    correctionReason,
-    correctionNote: noteRaw || undefined,
-  });
+  // Fire the correction flow. Coded lines go through the flywheel
+  // (recordUserCorrection updates the user row + casts the vote); code-less
+  // lines update the user-owned row directly (no billing_code_identity exists).
+  let result: RecordCorrectionResult;
+  if (billingCode) {
+    result = await recordUserCorrection({
+      lineItemId: lineId,
+      userId: user.id,
+      newSlug: slug,
+      billingCode,
+      billingCodeType,
+      description,
+      correctionReason,
+      correctionNote: noteRaw || undefined,
+    });
+  } else {
+    const { error: liErr } = await supabase
+      .from("claim_line_items")
+      .update({ service_slug: slug, user_corrected_at: new Date().toISOString() })
+      .eq("id", lineId);
+    result = liErr
+      ? { ok: false, contributedToFlywheel: false, reason: "user_row_update_failed" }
+      : { ok: true, contributedToFlywheel: false, reason: "code_less_user_correction" };
+  }
+
+  // S153 — write the correction to the learned cache so it is served first on
+  // the next identical line/description (backend-only write; Rule #4/#10 safe —
+  // billing_code_mappings is a cache, not a canonical/identity table).
+  if (resolverEnabled && result.ok) {
+    try {
+      const { cacheLearnedMapping } = await import("@/lib/claims/service-resolver");
+      const { normalizeDescriptionSignature } = await import(
+        "@/lib/parser/code-identity"
+      );
+      await cacheLearnedMapping(supabase, {
+        code: billingCode || null,
+        codeType: billingCode ? (billingCodeType ?? null) : null,
+        signature: billingCode
+          ? null
+          : normalizeDescriptionSignature(description, ""),
+        slug,
+        confidence: 0.95, // user correction is a strong signal
+        description,
+        source: "user_correction",
+      });
+    } catch (e) {
+      console.warn("[correct-category] learned-cache write failed (non-fatal)", e);
+    }
+  }
 
   // Mark claim audit_status stale so D7 re-runs on next fetch
   // (Stored in claims.metadata.audit_status for v1; column promotion to dedicated

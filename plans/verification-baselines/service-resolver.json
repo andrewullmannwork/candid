@@ -1,0 +1,40 @@
+{
+  "block": "Service-match vocabulary unification + learned synonyms (S153)",
+  "migration": "135_service_match_unification.sql",
+  "flag": "service_resolver_v1",
+  "captured": "S153 (2026-06-01)",
+  "problem": {
+    "live_canonical_service_catalog_slugs": 69,
+    "hardcoded_SERVICE_SLUGS_list": 72,
+    "hardcoded_dead_not_in_live_catalog": 24,
+    "live_slugs_missing_from_hardcoded": 21,
+    "billing_code_identity_rows": 80,
+    "billing_code_identity_with_null_slug": 80,
+    "billing_code_identity_promoted": 0,
+    "billing_code_mappings_usable_cache_hits": 5,
+    "note": "User-visible bill slug was set by the hardcoded-list service-mapper feeding Haiku BARE slugs; ~1/3 of services unmatchable + wellness mis-mapped to pcp_visit. Manual search was client substring."
+  },
+  "pass_criteria": {
+    "g2_positive_path": "On a labeled set of representative bill descriptions (incl. the reported wellness case + services absent from the old hardcoded list), >= 90% resolve to the correct live catalog slug at confidence >= 0.85, AND services that were UNMATCHABLE under the hardcoded list (hearing_aids, routine_foot_care, routine_eye_care_adult, etc.) now resolve.",
+    "g4_fixture": "scripts/calibration/fixtures/service-resolver.ts passes 17/17 (wellness->preventive_care via Haiku; dead-slug never emitted; trigram cannot bridge semantic gap).",
+    "no_regression": "Flag OFF = byte-identical legacy path (service-mapper + D4 description-match)."
+  },
+  "result_post_fix": {
+    "method": "scripts/findings/s153-resolver-smoke.ts (DELETED post-session) — real PROD service_catalog (69 entries) + real Haiku, 8 representative lines",
+    "correct": 8,
+    "total": 8,
+    "rate": 1.0,
+    "lines": [
+      { "desc": "WELLNESS VISIT (99395)", "slug": "preventive_care", "conf": 0.95, "note": "the reported bug — was pcp_visit/other" },
+      { "desc": "ANNUAL WELLNESS EXAM EST (99386)", "slug": "annual_physical", "conf": 0.95 },
+      { "desc": "OFFICE VISIT EST LEVEL 3 (99213)", "slug": "pcp_visit", "conf": 0.92, "note": "wellness vs PCP now correctly distinguished" },
+      { "desc": "MRI BRAIN W/O CONTRAST (70551)", "slug": "advanced_imaging", "conf": 0.98 },
+      { "desc": "VENIPUNCTURE ROUTINE (36415)", "slug": "lab_outpatient", "conf": 0.90 },
+      { "desc": "HEARING AID FITTING (V5011)", "slug": "hearing_aids", "conf": 0.93, "note": "UNMATCHABLE under hardcoded list" },
+      { "desc": "ROUTINE FOOT CARE NAIL TRIM (11721)", "slug": "routine_foot_care", "conf": 0.94, "note": "UNMATCHABLE under hardcoded list" },
+      { "desc": "ROUTINE EYE EXAM VISION (92014)", "slug": "routine_eye_care_adult", "conf": 0.92, "note": "UNMATCHABLE under hardcoded list" }
+    ]
+  },
+  "g3_corpus_note": "Pre-launch PROD bill corpus is thin (9 claim_line_items at capture). Calibration-tier evidence (real catalog + real Haiku on representative + adversarial-absent descriptions) is the primary gate per Block Ship Gate trigger-source discipline; Tier-2 PROD-traffic confirmation accrues post flag-flip via billing_code_mappings.source + claim_line_items.metadata.slugResolution distribution.",
+  "post_deploy_query": "SELECT (metadata->'slugResolution'->>'source') AS source, COUNT(*), AVG((metadata->'slugResolution'->>'confidence')::numeric) FROM claim_line_items WHERE metadata ? 'slugResolution' AND created_at > NOW() - INTERVAL '14 days' GROUP BY 1; -- + SELECT source, COUNT(*) FROM billing_code_mappings GROUP BY 1;"
+}
