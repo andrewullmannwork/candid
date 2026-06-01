@@ -23,6 +23,7 @@ import {
   type StrengthResult,
 } from "@/lib/disputes/strength-scoring";
 import { resolveAccountName } from "@/lib/disputes/rerender";
+import { letterRecipientKind } from "@/lib/disputes";
 import {
   captureCoverageSnapshot,
   diffCoverageSnapshots,
