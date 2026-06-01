@@ -1,4 +1,7 @@
-import type { ReadinessResult } from "@/lib/disputes/strength-scoring";
+import type {
+  ReadinessResult,
+  RecipientKind,
+} from "@/lib/disputes/strength-scoring";
 
 /**
  * ReadinessRail — readout #3 of the Block C three-axis strength model (§1a/§1b).
@@ -67,6 +70,31 @@ const REQUIRED_LABELS: Array<{
   },
 ];
 
+/**
+ * Recipient-aware copy for the address row (§1b #3). The required address —
+ * and therefore the label — depends on who the letter is addressed to: an
+ * insurer appeal needs the insurer's appeals address; a provider dispute needs
+ * the provider's billing address. `both` (legacy / unknown) keeps the generic
+ * wording. Overrides the static REQUIRED_LABELS entry at render time.
+ */
+const RECIPIENT_ADDRESS_COPY: Record<
+  RecipientKind,
+  { label: string; hint: string }
+> = {
+  insurer: {
+    label: "Insurer address on file",
+    hint: "The printed letter needs the insurer's appeals mailing address.",
+  },
+  provider: {
+    label: "Provider address on file",
+    hint: "The printed letter needs the provider's billing mailing address.",
+  },
+  both: {
+    label: "Recipient address on file",
+    hint: "The printed letter needs an insurer and/or provider mailing address.",
+  },
+};
+
 export function ReadinessRail({
   readiness,
   onResolvePatientIdentity,
@@ -128,6 +156,11 @@ export function ReadinessRail({
         {REQUIRED_LABELS.map((item) => {
           const done = readiness.required[item.key];
           const isPatientIdentity = item.key === "patientIdentity";
+          // §1b #3 — the address row's wording follows the actual recipient.
+          const copy =
+            item.key === "recipientAddress"
+              ? RECIPIENT_ADDRESS_COPY[readiness.recipientKind ?? "both"]
+              : { label: item.label, hint: item.hint };
           const showConfirmCta =
             isPatientIdentity && !done && !!onResolvePatientIdentity;
           const showUndoCta =
@@ -142,10 +175,10 @@ export function ReadinessRail({
                 <div
                   className={`text-sm font-medium ${done ? "text-slate-700" : "text-slate-900"}`}
                 >
-                  {item.label}
+                  {copy.label}
                 </div>
                 {!done ? (
-                  <p className="mt-0.5 text-xs text-slate-500">{item.hint}</p>
+                  <p className="mt-0.5 text-xs text-slate-500">{copy.hint}</p>
                 ) : null}
                 {showConfirmCta ? (
                   <div className="mt-2 flex items-center gap-3">

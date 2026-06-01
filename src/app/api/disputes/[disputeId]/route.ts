@@ -419,6 +419,7 @@ export async function GET(
     strength = computeDisputeStrength(evidence, {
       config: strengthConfig,
       patientIdentityResolved: !patientNameMismatch,
+      recipientKind: letterRecipientKind(dispute.dispute_type),
     });
   } catch (err) {
     console.error("[disputes/[disputeId]] strength computation failed (non-fatal):", err);

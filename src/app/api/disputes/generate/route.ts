@@ -3,7 +3,7 @@
 // Optionally enriches with plan benefit evidence when insurancePlanId is provided
 
 import { NextRequest, NextResponse } from "next/server";
-import { generateDisputeLetter, generateItemizedBillRequest } from "@/lib/disputes";
+import { generateDisputeLetter, generateItemizedBillRequest, letterRecipientKind } from "@/lib/disputes";
 import type { PlanBenefitEvidence } from "@/lib/disputes";
 import { resolvePlanContext } from "@/lib/disputes/plan-context";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
@@ -264,7 +264,10 @@ export async function POST(req: NextRequest) {
       try {
         v3DesignOn = await isFeatureEnabled("dispute_letter_v3_design");
         const strengthConfig = await loadStrengthConfig(supabase);
-        strength = computeDisputeStrength(evidence, { config: strengthConfig });
+        strength = computeDisputeStrength(evidence, {
+          config: strengthConfig,
+          recipientKind: letterRecipientKind(letterType),
+        });
       } catch (err) {
         console.error("[disputes] strength computation failed (non-fatal):", err);
       }

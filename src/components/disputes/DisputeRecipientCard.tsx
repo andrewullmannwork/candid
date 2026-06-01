@@ -36,8 +36,16 @@ interface Props {
   referenceId: string;
   /** Called when user clicks "Looks right" on the verify strip. */
   onConfirmAddress?: (insurerId: string) => Promise<void> | void;
-  /** Called when user clicks "Not correct". Opens a separate correction flow owned by the parent. */
+  /** Called when user clicks "Not correct" / "Edit address". Opens the correction flow owned by the parent. */
   onProposeCorrection?: (insurerId: string) => void;
+  /**
+   * Block C2 — when true, the insurer address strip is ALWAYS shown (even once
+   * the address is already confirmed) so the user can edit it; without it the
+   * strip only appears when the address needs confirmation. The parent passes
+   * this only for v3 + insurer-recipient letters; provider addresses are edited
+   * via the EvidenceGaps "Add provider address" form, not here.
+   */
+  allowAddressEdit?: boolean;
 }
 
 export function DisputeRecipientCard({
@@ -49,6 +57,7 @@ export function DisputeRecipientCard({
   referenceId,
   onConfirmAddress,
   onProposeCorrection,
+  allowAddressEdit = false,
 }: Props) {
   return (
     <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -58,6 +67,7 @@ export function DisputeRecipientCard({
           insurer={insurer}
           onConfirmAddress={onConfirmAddress}
           onProposeCorrection={onProposeCorrection}
+          allowAddressEdit={allowAddressEdit}
         />
         <RequestedActionBlock requestedAction={requestedAction} />
       </div>
@@ -75,11 +85,13 @@ function AddressedToBlock({
   insurer,
   onConfirmAddress,
   onProposeCorrection,
+  allowAddressEdit = false,
 }: {
   recipient: Props["recipient"];
   insurer: InsurerShape | null;
   onConfirmAddress?: Props["onConfirmAddress"];
   onProposeCorrection?: Props["onProposeCorrection"];
+  allowAddressEdit?: boolean;
 }) {
   return (
     <div>
@@ -98,9 +110,10 @@ function AddressedToBlock({
           <div className="mt-1 text-sm text-slate-600">📞 {recipient.phone}</div>
         ) : null}
       </div>
-      {insurer && insurer.needsConfirmation && onConfirmAddress ? (
+      {insurer && onConfirmAddress && (insurer.needsConfirmation || allowAddressEdit) ? (
         <VerifyStrip
           insurer={insurer}
+          needsConfirmation={insurer.needsConfirmation}
           onConfirmAddress={onConfirmAddress}
           onProposeCorrection={onProposeCorrection}
         />
@@ -111,10 +124,12 @@ function AddressedToBlock({
 
 function VerifyStrip({
   insurer,
+  needsConfirmation,
   onConfirmAddress,
   onProposeCorrection,
 }: {
   insurer: InsurerShape;
+  needsConfirmation: boolean;
   onConfirmAddress: NonNullable<Props["onConfirmAddress"]>;
   onProposeCorrection?: Props["onProposeCorrection"];
 }) {
@@ -143,6 +158,26 @@ function VerifyStrip({
       <p className="mt-3 text-xs italic text-emerald-700">
         Thanks — we marked this address as confirmed.
       </p>
+    );
+  }
+
+  // Already-confirmed address (Block C2 edit affordance) — neutral row with a
+  // single "Edit address" link that opens the same correction flow. No amber
+  // "needs verification" affect, since nothing is wrong with the address.
+  if (!needsConfirmation) {
+    return (
+      <div className="mt-3 text-xs text-slate-500">
+        <span>Verified {lastVerified}.</span>{" "}
+        {onProposeCorrection ? (
+          <button
+            type="button"
+            onClick={() => onProposeCorrection(insurer.id)}
+            className="font-medium text-blue-600 underline-offset-2 hover:text-blue-700 hover:underline"
+          >
+            Edit address
+          </button>
+        ) : null}
+      </div>
     );
   }
 

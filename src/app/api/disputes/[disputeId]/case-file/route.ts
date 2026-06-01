@@ -43,6 +43,7 @@ import {
   loadStrengthConfig,
   type StrengthResult,
 } from "@/lib/disputes/strength-scoring";
+import { letterRecipientKind } from "@/lib/disputes";
 import { resolveAccountName } from "@/lib/disputes/rerender";
 import { getUserDisputes } from "@/lib/disputes/persist";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
