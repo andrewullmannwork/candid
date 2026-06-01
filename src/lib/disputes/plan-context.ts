@@ -43,6 +43,24 @@ export interface InsurerContext {
   needsConfirmation: boolean;
 }
 
+/**
+ * Block C2.2 (S152) — a user-typed insurer appeals address, stored per-dispute
+ * on `dispute.metadata.insurerAddressOverride`. Used for THIS user's letter
+ * immediately (Pattern 1 #14 user-scoped write); the shared insurer_catalog
+ * address only changes via admin review of the queued community proposal.
+ */
+export interface InsurerAddressOverride {
+  insurerId: string | null;
+  insurerName: string | null;
+  addressLine1: string;
+  addressLine2: string | null;
+  city: string;
+  state: string;
+  postalCode: string;
+  phone: string | null;
+  confirmedAt: string;
+}
+
 export interface ResolvedPlan {
   id: string;
   planName: string | null;
@@ -186,6 +204,13 @@ export async function resolvePlanContext(
      * undefined → boundCanonicalPlan stays null.
      */
     canonicalPlanIdForBillYear?: string | null;
+    /**
+     * Block C2.2 (S152) — user-scoped insurer appeals address override, read by
+     * the caller from `dispute.metadata.insurerAddressOverride`. Overlaid onto
+     * the resolved insurer so the letter, recipient card, readiness, and gaps
+     * all use the user's address. Null/undefined → catalog address (status quo).
+     */
+    insurerAddressOverride?: InsurerAddressOverride | null;
   }
 ): Promise<PlanContext> {
   const { userId, claimId } = params;
@@ -300,6 +325,42 @@ export async function resolvePlanContext(
       });
       insurer = await resolveInsurer(supabase, carrierHint);
     }
+  }
+
+  // Block C2.2 (S152) — overlay the user's per-dispute insurer appeals address
+  // override (Pattern 1 #14 user-scoped write) so this letter mails to the
+  // address the user supplied. Cascades to the letter body
+  // (buildInsurerRecipientBlock), the recipient card, the readiness floor, and
+  // suppresses the insurer_address_missing gap. The shared catalog address is
+  // untouched — it only changes via admin review of the queued proposal.
+  const ov = params.insurerAddressOverride;
+  if (ov && ov.addressLine1 && ov.city && ov.state && ov.postalCode) {
+    const overrideAddress: AppealsAddress = {
+      line1: ov.addressLine1,
+      line2: ov.addressLine2 ?? null,
+      city: ov.city,
+      state: ov.state,
+      postalCode: ov.postalCode,
+    };
+    insurer = insurer
+      ? {
+          ...insurer,
+          appealsAddress: overrideAddress,
+          appealsPhone: ov.phone ?? insurer.appealsPhone,
+          appealsSource: "user_correction",
+          appealsLastConfirmedAt: ov.confirmedAt ?? insurer.appealsLastConfirmedAt,
+          needsConfirmation: false,
+        }
+      : {
+          id: ov.insurerId ?? "",
+          name: ov.insurerName ?? preferredInsurerName ?? "Your insurer",
+          appealsAddress: overrideAddress,
+          appealsPhone: ov.phone ?? null,
+          appealsSource: "user_correction",
+          appealsLastConfirmedAt: ov.confirmedAt ?? null,
+          appealsVerificationCount: 0,
+          needsConfirmation: false,
+        };
   }
 
   // S109 PR #2 — pull user's state for the dispute letter escalation paragraph.

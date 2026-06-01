@@ -63,6 +63,12 @@ interface Props {
    * existing ctaHref pattern doesn't fit — parent owns modal state).
    */
   onUploadInModal?: () => void;
+  /**
+   * Block C2.2 (S152) — called when the user clicks "Add address" on the
+   * `insurer_address_missing` gap. Opens the insurer appeals-address modal
+   * (parent owns modal state; same modal as the recipient card's edit).
+   */
+  onAddInsurerAddress?: () => void;
 }
 
 export function EvidenceGaps({
@@ -74,6 +80,7 @@ export function EvidenceGaps({
   getAuthToken,
   onProviderContactSaved,
   onUploadInModal,
+  onAddInsurerAddress,
 }: Props) {
   const [rerunStatus, setRerunStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const [redraftStatus, setRedraftStatus] = useState<"idle" | "running" | "done" | "error">("idle");
@@ -173,6 +180,7 @@ export function EvidenceGaps({
                   onConfirmProvider: handleConfirmProvider,
                   confirmStatus,
                   onUploadInModal,
+                  onAddInsurerAddress,
                 })}
               </div>
               {expandedForm ? (
@@ -213,6 +221,7 @@ function renderCta(
     onConfirmProvider: () => void;
     confirmStatus: "idle" | "running" | "error";
     onUploadInModal?: () => void;
+    onAddInsurerAddress?: () => void;
   },
 ) {
   if (gap.kind === "audit_findings_missing" && ctx.hasAuditCallback) {
@@ -315,6 +324,33 @@ function renderCta(
         >
           Edit
         </button>
+      </div>
+    );
+  }
+
+  // Block C2.2 (S152) — insurer appeals address missing: offer BOTH "Add
+  // address" (opens the insurer modal — used on the letter immediately +
+  // queued for community review) AND "Upload plan document" (extract it).
+  if (gap.kind === "insurer_address_missing") {
+    return (
+      <div className="flex shrink-0 flex-wrap items-center gap-2 @md:ml-4">
+        {ctx.onAddInsurerAddress ? (
+          <button
+            type="button"
+            onClick={ctx.onAddInsurerAddress}
+            className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow"
+          >
+            Add address
+          </button>
+        ) : null}
+        {gap.ctaHref ? (
+          <Link
+            href={gap.ctaHref}
+            className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-700 shadow-sm transition-all hover:-translate-y-px hover:bg-slate-50 hover:shadow"
+          >
+            {gap.ctaLabel ?? "Upload plan document"}
+          </Link>
+        ) : null}
       </div>
     );
   }
