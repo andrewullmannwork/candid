@@ -26,6 +26,36 @@ const FINDING_TO_LETTER: Partial<Record<FindingType, DisputeLetterType>> = {
   stale_claim: "overcharge",
 };
 
+/**
+ * Who the finished letter is addressed to — the single source of truth shared by
+ * the templates (which recipient block + request verbs to emit) and the
+ * readiness floor (which mailing address MVDL #3 requires). Only the
+ * insurance-appeal letter is addressed to the INSURER (templates.ts
+ * `insuranceAppealTemplate` is the sole `buildInsurerRecipientBlock` call site);
+ * every other letter type goes to the PROVIDER.
+ *
+ * Accepts either the resolved `DisputeLetterType` ("insurance_appeal") OR a raw
+ * `dispute_outcomes.dispute_type` ("internal_appeal", "cost_share_misapplication",
+ * "coverage_contradiction", "not_covered") so callers can pass whichever they
+ * have without a second resolve. Unknown / undefined → "provider" (the common
+ * case + the conservative default: requires the address the provider letter prints).
+ */
+const INSURER_RECIPIENT_TYPES = new Set<string>([
+  // DisputeLetterType
+  "insurance_appeal",
+  // dispute_outcomes.dispute_type values that resolve to insurance_appeal
+  "internal_appeal",
+  "cost_share_misapplication",
+  "coverage_contradiction",
+  "not_covered",
+]);
+
+export function letterRecipientKind(
+  type: string | null | undefined,
+): "insurer" | "provider" {
+  return type && INSURER_RECIPIENT_TYPES.has(type) ? "insurer" : "provider";
+}
+
 export interface GenerateDisputeLetterOptions {
   planEvidence?: PlanBenefitEvidence[];
   planContext?: PlanContext | null;

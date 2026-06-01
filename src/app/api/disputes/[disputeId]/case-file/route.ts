@@ -209,6 +209,7 @@ export async function GET(
     strength = computeDisputeStrength(evidence, {
       config: strengthConfig,
       patientIdentityResolved: !patientNameMismatch,
+      recipientKind: letterRecipientKind(dispute.dispute_type),
     });
   } catch (err) {
     console.error(
