@@ -99,6 +99,25 @@ export interface ProviderContact {
   phone: string | null;
   npi: string | null;
   source: "doc_extraction" | "user_correction" | "unknown";
+  /**
+   * Block C2 — structured address parts when the address was captured structured
+   * (via the provider-contact form). Null for legacy rows that only have the
+   * `address` display string; the UI pre-fills the structured form from these
+   * when present, else leaves the fields blank for the user to enter.
+   */
+  addressFields: {
+    addressLine1: string | null;
+    addressLine2: string | null;
+    city: string | null;
+    state: string | null;
+    postalCode: string | null;
+  } | null;
+  /**
+   * Block C2 — ISO timestamp when the user confirmed this provider address is
+   * correct (claim-scoped, reused across disputes for the same claim). Null when
+   * never confirmed. Drives the "Confirm where you got care" → confirmed-state UI.
+   */
+  confirmedAt: string | null;
 }
 
 export interface PlanContext {
@@ -552,11 +571,31 @@ function extractProviderContact(metadata: unknown): ProviderContact | null {
     phone?: unknown;
     npi?: unknown;
     source?: unknown;
+    addressFields?: unknown;
+    confirmedAt?: unknown;
   };
   const name = typeof p.name === "string" && p.name.trim() ? p.name.trim() : null;
   const address = typeof p.address === "string" && p.address.trim() ? p.address.trim() : null;
   const phone = typeof p.phone === "string" && p.phone.trim() ? p.phone.trim() : null;
   const npi = typeof p.npi === "string" && p.npi.trim() ? p.npi.trim() : null;
+
+  // Block C2 — structured address parts (null-safe; legacy rows have none).
+  const strField = (v: unknown): string | null =>
+    typeof v === "string" && v.trim() ? v.trim() : null;
+  const af =
+    p.addressFields && typeof p.addressFields === "object"
+      ? (p.addressFields as Record<string, unknown>)
+      : null;
+  const addressFields = af
+    ? {
+        addressLine1: strField(af.addressLine1),
+        addressLine2: strField(af.addressLine2),
+        city: strField(af.city),
+        state: strField(af.state),
+        postalCode: strField(af.postalCode),
+      }
+    : null;
+  const confirmedAt = strField(p.confirmedAt);
   // Source defaults to 'doc_extraction' for legacy rows (bill parser writes provider
   // metadata at parse time). Only set 'user_correction' when the provider-contact
   // endpoint stamps the source explicitly.
@@ -571,7 +610,7 @@ function extractProviderContact(metadata: unknown): ProviderContact | null {
       : "unknown";
 
   if (!name && !address && !phone && !npi) return null;
-  return { name, address, phone, npi, source };
+  return { name, address, phone, npi, source, addressFields, confirmedAt };
 }
 
 async function resolveInsurer(

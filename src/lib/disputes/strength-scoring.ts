@@ -386,6 +386,9 @@ const OPTIONAL_GAP_KINDS = new Set<string>([
   "bound_canonical_coverage_thin",
   "plan_document_incomplete",
   "plan_document_missing",
+  // Block C2 — confirming a parsed provider address is an optional strengthener,
+  // not a required floor (the address is already present, so MVDL #3 is met).
+  "provider_address_confirm",
 ]);
 
 /** Recipient-address gap kinds (a missing recipient fails MVDL #3). */

@@ -20,11 +20,28 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 
+interface ProviderAddressFieldsInput {
+  addressLine1?: string;
+  addressLine2?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+}
+
 interface ProviderContactInput {
   name?: string;
   address?: string;
+  /** Block C2 — structured address parts (persisted alongside the display string). */
+  addressFields?: ProviderAddressFieldsInput;
   phone?: string;
   npi?: string;
+  /**
+   * Block C2 — confirm-only action. When true, stamps `confirmedAt` on the
+   * provider metadata WITHOUT requiring new field values (the user is confirming
+   * the already-extracted address is correct). Claim-scoped: persists to
+   * claims.metadata.provider so it's reused across disputes for the same claim.
+   */
+  confirm?: boolean;
 }
 
 async function getAuthUser(req: NextRequest) {
@@ -70,6 +87,9 @@ export async function POST(
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
 
+  const isConfirmOnly = body.confirm === true;
+
+  const af = body.addressFields ?? {};
   const next = {
     name: sanitize(body.name, 200),
     address: sanitize(body.address, 500),
@@ -77,11 +97,29 @@ export async function POST(
     // NPI is 10 digits — accept up to 12 chars to tolerate punctuation, but
     // strip non-digits before persisting.
     npi: sanitize(body.npi, 12)?.replace(/\D/g, "") || undefined,
+    // Block C2 — structured address parts (persisted for scalable re-edit; the
+    // display `address` string above is still what the letter renders).
+    addressFields: {
+      addressLine1: sanitize(af.addressLine1, 200),
+      addressLine2: sanitize(af.addressLine2, 200),
+      city: sanitize(af.city, 120),
+      state: sanitize(af.state, 2)?.toUpperCase(),
+      postalCode: sanitize(af.postalCode, 12),
+    },
   };
 
-  // At least one field must be provided so the user can incrementally fill in
-  // whatever they have on the bill.
-  if (!next.name && !next.address && !next.phone && !next.npi) {
+  const anyAddressField = Object.values(next.addressFields).some(Boolean);
+
+  // Confirm-only carries no new values; every other call must provide at least
+  // one field so the user can incrementally fill in whatever's on the bill.
+  if (
+    !isConfirmOnly &&
+    !next.name &&
+    !next.address &&
+    !next.phone &&
+    !next.npi &&
+    !anyAddressField
+  ) {
     return NextResponse.json(
       { error: "Provide at least one provider field (name, address, phone, or npi)." },
       { status: 400 },
@@ -119,15 +157,53 @@ export async function POST(
   const existingProvider =
     (existingMetadata.provider as Record<string, unknown> | undefined) ?? {};
 
-  // Merge — keep any fields the user didn't touch this round.
+  const nowIso = new Date().toISOString();
+
+  // Merge — keep any fields the user didn't touch this round. Confirm-only calls
+  // carry no field values: they leave name/address/etc untouched and only stamp
+  // confirmedAt (the user is attesting the already-extracted address is right).
   const mergedProvider: Record<string, unknown> = {
     ...existingProvider,
     ...(next.name !== undefined ? { name: next.name } : {}),
     ...(next.address !== undefined ? { address: next.address } : {}),
     ...(next.phone !== undefined ? { phone: next.phone } : {}),
     ...(next.npi !== undefined ? { npi: next.npi } : {}),
-    source: "user_correction",
-    updated_at: new Date().toISOString(),
+    // Block C2 — persist structured address parts when provided (only on a real
+    // save; confirm-only doesn't carry them).
+    ...(anyAddressField
+      ? {
+          addressFields: {
+            ...(typeof existingProvider.addressFields === "object" &&
+            existingProvider.addressFields
+              ? (existingProvider.addressFields as Record<string, unknown>)
+              : {}),
+            ...(next.addressFields.addressLine1 !== undefined
+              ? { addressLine1: next.addressFields.addressLine1 }
+              : {}),
+            ...(next.addressFields.addressLine2 !== undefined
+              ? { addressLine2: next.addressFields.addressLine2 }
+              : {}),
+            ...(next.addressFields.city !== undefined
+              ? { city: next.addressFields.city }
+              : {}),
+            ...(next.addressFields.state !== undefined
+              ? { state: next.addressFields.state }
+              : {}),
+            ...(next.addressFields.postalCode !== undefined
+              ? { postalCode: next.addressFields.postalCode }
+              : {}),
+          },
+        }
+      : {}),
+    // A fresh save (new values) supersedes a prior confirm — clear confirmedAt
+    // unless this IS the confirm action.
+    confirmedAt: isConfirmOnly ? nowIso : null,
+    // Preserve doc_extraction source on confirm-only (the address wasn't
+    // user-typed); a real save marks it user_correction.
+    source: isConfirmOnly
+      ? (existingProvider.source ?? "doc_extraction")
+      : "user_correction",
+    updated_at: nowIso,
   };
 
   const nextMetadata = { ...existingMetadata, provider: mergedProvider };
@@ -148,9 +224,11 @@ export async function POST(
     providerContact: {
       name: mergedProvider.name ?? null,
       address: mergedProvider.address ?? null,
+      addressFields: mergedProvider.addressFields ?? null,
       phone: mergedProvider.phone ?? null,
       npi: mergedProvider.npi ?? null,
-      source: "user_correction",
+      confirmedAt: mergedProvider.confirmedAt ?? null,
+      source: mergedProvider.source ?? "user_correction",
     },
   });
 }
