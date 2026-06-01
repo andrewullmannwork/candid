@@ -39,7 +39,7 @@ import { reconcileHaikuCodeType } from "@/lib/billing/code-type-inference";
 export interface ResolvedLineSlug {
   lineNumber: number;
   slug: string | null;
-  source: "cached_mapping" | "service_mapper" | "flywheel_identity" | null;
+  source: "cached_mapping" | "service_mapper" | "flywheel_identity" | "resolver" | null;
   identityId: string | null;
   confidence: number;
   needsReview: boolean;
@@ -56,7 +56,7 @@ export type ResolvedSlugMap = Map<number, ResolvedLineSlug>;
  * doesn't drop the whole audit.
  */
 export async function resolveLineItemSlugs(
-  _supabase: SupabaseClient,
+  supabase: SupabaseClient,
   userId: string | null,
   parsedBill: ParsedBill,
 ): Promise<ResolvedSlugMap> {
@@ -69,6 +69,10 @@ export async function resolveLineItemSlugs(
   const serviceMappingEnabled = await isFeatureEnabled(
     "billing_code_service_mapping",
   );
+  // S153 — unified resolver. When ON, Phase 2 routes through service-resolver
+  // (live catalog + names/descriptions + learned cache + batched Haiku) instead
+  // of the legacy hardcoded-list service-mapper. OFF = byte-identical legacy path.
+  const resolverEnabled = await isFeatureEnabled("service_resolver_v1");
 
   // Phase 1 — flywheel categorize per line. Returns identityId + slug (when
   // identity row resolved) or proposes a new one. Pattern 1 #15 verification
@@ -123,16 +127,53 @@ export async function resolveLineItemSlugs(
     }
   }
 
-  // Phase 2 — legacy cached-mapping + Haiku service-mapper for lines without
-  // a flywheel-resolved slug. mapLineItemsToServices internally checks
-  // billing_code_mappings cache first then falls back to Haiku, so the result
-  // collapses both sources under 'service_mapper'. Phase 2 follow-up could
-  // distinguish if needed.
-  if (serviceMappingEnabled) {
-    const unresolved = parsedBill.lineItems.filter(
-      (li) => !out.get(li.lineNumber)?.slug,
-    );
-    if (unresolved.length > 0) {
+  // Phase 2 — slug resolution for lines without a flywheel-resolved slug.
+  const unresolved = parsedBill.lineItems.filter(
+    (li) => !out.get(li.lineNumber)?.slug,
+  );
+  if (unresolved.length > 0) {
+    if (resolverEnabled) {
+      // S153 — unified resolver: live catalog (names+descriptions) + learned
+      // cache (billing_code_mappings code→slug + signature→slug) + ONE batched
+      // Haiku call for leftovers. Sets the user-scoped slug; cross-user
+      // corroboration is cast in persist.ts post-insert (lineItemId needed).
+      try {
+        const { resolveServices } = await import("./service-resolver");
+        const resMap = await resolveServices(
+          unresolved.map((item) => ({
+            lineNumber: item.lineNumber,
+            description: item.description || item.category || "",
+            billingCode: item.procedureCode || null,
+            billingCodeType: item.procedureCode
+              ? inferBillingCodeType(item.procedureCode)
+              : null,
+          })),
+          { supabase, userId: userId ?? "" },
+        );
+        for (const item of unresolved) {
+          const r = resMap.get(item.lineNumber);
+          if (r?.slug) {
+            const prior = out.get(item.lineNumber);
+            out.set(item.lineNumber, {
+              lineNumber: item.lineNumber,
+              slug: r.slug,
+              source: "resolver",
+              identityId: prior?.identityId ?? null,
+              confidence: r.confidence,
+              needsReview: r.needsReview,
+            });
+          }
+        }
+      } catch (err) {
+        console.warn(
+          "[preflight-slug-resolver] resolver failed (non-blocking)",
+          err,
+        );
+      }
+    } else if (serviceMappingEnabled) {
+      // Legacy path — cached-mapping + Haiku service-mapper (hardcoded list).
+      // mapLineItemsToServices checks billing_code_mappings then falls back to
+      // Haiku; result collapses both sources under 'service_mapper'.
       const inputItems = unresolved.map((item) => ({
         lineNumber: item.lineNumber,
         description: item.description || item.category || "",
@@ -175,6 +216,7 @@ export async function resolveLineItemSlugs(
       item.serviceSlug = resolved.slug;
       item.serviceSlugSource = resolved.source;
       item.billingCodeIdentityId = resolved.identityId;
+      item.serviceSlugConfidence = resolved.confidence;
     }
   }
 

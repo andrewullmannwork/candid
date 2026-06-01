@@ -296,6 +296,19 @@ export async function runDescriptionMatchCheck(
   const flagOn = await isFeatureEnabled("s74_5_categorization_flywheel_v1");
   if (!flagOn) return [];
 
+  // S153 — when the unified resolver is ON it already ran in preflight (live
+  // catalog + names/descriptions + batched Haiku). Re-running a second bare-slug
+  // Haiku pass here would double-spend + emit redundant provisional findings.
+  // Any line still without a slug is genuinely unresolved → emit a soft
+  // uncategorized finding (no Haiku). Includes code-less lines.
+  const resolverEnabled = await isFeatureEnabled("service_resolver_v1");
+  if (resolverEnabled) {
+    const unresolved = bill.lineItems.filter(
+      (li) => !li.serviceSlug && li.description && li.description.trim().length >= 3,
+    );
+    return unresolved.map(buildUncategorizedFinding);
+  }
+
   // S74.6 §C.1 — service-mapper now runs upstream (preflight-slug-resolver),
   // so bill.lineItems carry `serviceSlug` when categorization already resolved.
   // Skip those lines entirely — D4 is for lines we couldn't categorize via

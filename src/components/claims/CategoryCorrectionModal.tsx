@@ -86,6 +86,9 @@ export function CategoryCorrectionModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  // S153 — server-ranked, synonym-aware search results (null = not searched /
+  // request in flight; the client substring filter is the in-flight fallback).
+  const [serverResults, setServerResults] = useState<CatalogSlug[] | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -93,9 +96,58 @@ export function CategoryCorrectionModal({
       setSelectedSlug(currentSlug);
       setError(null);
       setSubmitting(false);
+      setServerResults(null);
       setTimeout(() => searchInputRef.current?.focus(), 50);
     }
   }, [open, currentSlug]);
+
+  // S153 — debounced server search. Ranks the FULL catalog (synonym-aware; not
+  // restricted to the user's plan) and, on a no-result instant pass, retries
+  // with semantic=true (one budget-gated Haiku resolve that learns the synonym
+  // for next time). The client substring filter (below) covers the in-flight
+  // window + any failure.
+  useEffect(() => {
+    const q = query.trim();
+    if (!open || q.length < 2) {
+      setServerResults(null);
+      return;
+    }
+    let cancelled = false;
+    const handle = setTimeout(async () => {
+      try {
+        const token = await getAuthToken();
+        if (!token || cancelled) return;
+        const run = async (semantic: boolean) => {
+          const res = await fetch("/api/service-catalog/search", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ query: q, semantic }),
+          });
+          if (!res.ok) return null;
+          const json = (await res.json()) as {
+            items?: Array<{ slug: string; name: string; category: string }>;
+          };
+          return json.items ?? [];
+        };
+        let items = await run(false);
+        if (items && items.length === 0) items = await run(true);
+        if (!cancelled && items) {
+          setServerResults(
+            items.map((i) => ({ slug: i.slug, name: i.name, category: i.category })),
+          );
+        }
+      } catch {
+        // Network/parse failure → leave serverResults as-is; client filter covers it.
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [query, open, getAuthToken]);
 
   // B4.2 — lock body scroll while modal open (design polish).
   useEffect(() => {
@@ -152,6 +204,10 @@ export function CategoryCorrectionModal({
 
   const filtered = useMemo(() => {
     if (!query.trim()) return scopedCatalog.slice(0, 20);
+    // S153 — prefer server-ranked, synonym-aware results (full catalog, NOT
+    // restricted to the plan, so the correct slug is never hidden). Fall back to
+    // the client substring filter while the request is in flight / on failure.
+    if (serverResults) return serverResults.slice(0, 20);
     const q = query.toLowerCase();
     return scopedCatalog
       .filter(
@@ -161,7 +217,7 @@ export function CategoryCorrectionModal({
           c.category.toLowerCase().includes(q),
       )
       .slice(0, 20);
-  }, [query, scopedCatalog]);
+  }, [query, scopedCatalog, serverResults]);
 
   if (!open) return null;
 
