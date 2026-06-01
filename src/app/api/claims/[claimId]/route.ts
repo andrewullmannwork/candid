@@ -21,7 +21,12 @@ import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { maybeReauditClaim } from "@/lib/audit/reaudit";
 import { buildAcaCoverageFallback } from "@/lib/audit/aca-coverage-fallback";
-import { resolveLineCoverage } from "@/lib/audit/coverage-loader";
+import {
+  resolveLineCoverage,
+  resolveSecondaryCoverage,
+  type CoveredSlugMeta,
+  type BillSlugMeta,
+} from "@/lib/audit/coverage-loader";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -163,31 +168,64 @@ export async function GET(
 
   // Fetch coverage status for each line item's service_slug
   const coverageMap = new Map<string, { covered: boolean | null; copay: number | null; coinsurance: number | null; source: string | null }>();
+  // S153 — covered-slug metadata (incl. category) for the secondary (category)
+  // coverage match when a bill line's exact slug has no plan row.
+  const coveredMeta: CoveredSlugMeta[] = [];
 
   if (claim.insurance_plan_id) {
     const { data: coveredServices } = await supabase
       .from("plan_covered_services")
-      .select("covered, in_copay, in_coinsurance, source, service_catalog!inner(slug)")
+      .select("covered, in_copay, in_coinsurance, source, service_catalog!inner(slug, category)")
       .eq("insurance_plan_id", claim.insurance_plan_id);
 
     if (coveredServices) {
       for (const svc of coveredServices) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const slug = (svc.service_catalog as any)?.slug as string | undefined;
+        const sc = svc.service_catalog as any;
+        const slug = sc?.slug as string | undefined;
         if (slug) {
-          coverageMap.set(slug, {
-            covered: svc.covered,
-            copay: svc.in_copay,
+          const coverage = {
+            covered: svc.covered as boolean | null,
+            copay: svc.in_copay as number | null,
             // S132 iter-11 — plan_covered_services.in_coinsurance holds either
             // integer percent (30) OR already-decimal (0.3); both mean 30% in
             // plan-document language. normalizeCoinsuranceForStorage detects
             // both forms and returns decimal 0-1 uniformly.
             coinsurance: normalizeCoinsuranceForStorage(svc.in_coinsurance as number | null),
-            source: svc.source,
-          });
+          };
+          coverageMap.set(slug, { ...coverage, source: svc.source as string | null });
+          coveredMeta.push({ slug, category: (sc?.category as string | null) ?? null, coverage });
         }
       }
     }
+  }
+
+  // S153 — bill-line slug metadata (category + ACA-preventive eligibility) +
+  // the plan's ACA-compliance flag, for the secondary coverage match.
+  const billSlugMeta = new Map<string, BillSlugMeta>();
+  const distinctBillSlugs = Array.from(
+    new Set((lineItems ?? []).map((li) => li.service_slug as string | null).filter((s): s is string => Boolean(s))),
+  );
+  if (distinctBillSlugs.length > 0) {
+    const { data: scMeta } = await supabase
+      .from("service_catalog")
+      .select("slug, category, is_preventive_eligible")
+      .in("slug", distinctBillSlugs);
+    for (const r of scMeta ?? []) {
+      billSlugMeta.set(r.slug as string, {
+        category: (r.category as string | null) ?? null,
+        isPreventiveEligible: Boolean(r.is_preventive_eligible),
+      });
+    }
+  }
+  let planAcaCompliant: boolean | null = null;
+  if (claim.insurance_plan_id) {
+    const { data: planRow } = await supabase
+      .from("insurance_plans")
+      .select("is_aca_compliant")
+      .eq("id", claim.insurance_plan_id)
+      .maybeSingle();
+    planAcaCompliant = (planRow?.is_aca_compliant as boolean | null) ?? null;
   }
 
   // S74.6 D2 — Demographic-aware ACA-gated coverage fallback. For lines where
@@ -238,9 +276,31 @@ export async function GET(
     // on conflict (non-$0 plan vs $0 ACA mandate OR plan-excludes vs ACA-covers);
     // ACA-only when plan missing slug. Override info preserved for UI inline
     // render + dispute pipeline citation.
-    const rawPlanCoverage: PlanCoverageInput | null = item.service_slug
+    let rawPlanCoverage: PlanCoverageInput | null = item.service_slug
       ? coverageMap.get(item.service_slug) || null
       : null;
+    // S153 — secondary (category) coverage match when the exact slug has no
+    // plan row (e.g. annual_physical → covered preventive_care, or an ACA
+    // preventive $0 backstop). Marked so the UI shows it as an inferred match,
+    // never a direct plan hit.
+    let secondaryMatchedSlug: string | null = null;
+    let secondaryCoverageSource: "secondary_match" | "aca_preventive" | null = null;
+    if (!rawPlanCoverage && item.service_slug) {
+      const meta = billSlugMeta.get(item.service_slug as string);
+      if (meta) {
+        const sec = resolveSecondaryCoverage(
+          item.service_slug as string,
+          meta,
+          coveredMeta,
+          planAcaCompliant,
+        );
+        if (sec) {
+          rawPlanCoverage = sec.coverage;
+          secondaryMatchedSlug = sec.matchedSlug;
+          secondaryCoverageSource = sec.source;
+        }
+      }
+    }
     const acaCoverage: PlanCoverageInput | null =
       acaFallback.byLineNumber.get(Number(item.line_number ?? 0)) || null;
     const resolved = resolveLineCoverage(
@@ -251,13 +311,15 @@ export async function GET(
     const coverage = resolved.coverage;
     const acaOverride = resolved.acaOverride;
     // Coverage source attribution for tooltip + telemetry. ACA wins → 'aca_*';
-    // plan wins → plan_covered_services.source ('sbc_parser' etc).
+    // secondary match → 'secondary_match'/'aca_preventive'; plan → its source.
     const coverageFromAca = coverage === acaCoverage && coverage != null;
     const coverageSource = coverageFromAca
       ? "aca_zero_cost_share"
-      : coverage && item.service_slug
-        ? coverageMap.get(item.service_slug as string)?.source ?? null
-        : null;
+      : secondaryCoverageSource
+        ? secondaryCoverageSource
+        : coverage && item.service_slug
+          ? coverageMap.get(item.service_slug as string)?.source ?? null
+          : null;
 
     const billed = Number(item.billed_amount || 0);
     // F-1 / mig 092 — patient_paid_amount column drives refund/forgiveness split.
@@ -391,6 +453,10 @@ export async function GET(
       // S74.6 D2 — surface which path produced the coverage so the UI can render
       // "Covered (ACA)" vs "Covered (plan)" tooltip distinction.
       coverageSource,
+      // S153 — when coverage came from a secondary (category) match, the covered
+      // sibling slug we matched to (e.g. annual_physical → preventive_care), so
+      // the UI can show "Covered — via Preventive Care" rather than a direct hit.
+      coverageSecondaryMatchedSlug: secondaryMatchedSlug,
       // S135 — plan-vs-ACA override info (non-null in States 2 / 2b). UI green
       // plan-says box renders an inline "Plan says $X, federal law $0" line
       // when present. Dispute pipeline uses for federal-law citation.
