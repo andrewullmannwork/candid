@@ -215,7 +215,13 @@ export async function GET(
         claimIds: [dispute.claim_id],
         lineItemIds: allLineItemIds.length > 0 ? allLineItemIds : undefined,
         planContext,
-        letterType: dispute.dispute_type,
+        // Pass the RESOLVED letter type, not the raw dispute_outcomes.dispute_type
+        // vocab ("internal_appeal"). resolveEvidence gates the provider/insurer
+        // address gaps + resolveLegalBasis on `letterType === "insurance_appeal"`,
+        // so feeding raw dispute_type made the provider-address gap wrongly fire on
+        // appeals (and the insurer-address gap + appeal legal-basis wrongly absent).
+        // Matches the generate-route path, which already passes the resolved type.
+        letterType: resolvedLetterType,
         disputeId: dispute.id,
         userConfirmedSamePlan,
         canonicalPlanIdForBillYear,
