@@ -199,6 +199,104 @@ export function resolveLineCoverage(
   };
 }
 
+// ============================================================================
+// S153 — Secondary (category) coverage match
+// ============================================================================
+//
+// The bill matcher resolves a line to its most accurate slug (e.g.
+// `annual_physical`), but the plan's `plan_covered_services` may list the
+// coverage under a sibling concept (`preventive_care`) — so the exact-slug
+// lookup misses and the line shows "Unknown" even though the plan clearly
+// covers the service. `concept_ancestors` is not populated, so we use the
+// `category` field (annual_physical / immunizations / preventive_care all =
+// 'preventive'; pcp_visit / specialist_visit = 'office_visit') as the
+// secondary-match key. Result is marked `secondary_match` so it's never
+// presented as a direct plan hit (Pattern 1 #11 methodology honesty).
+
+export interface CoveredSlugMeta {
+  slug: string;
+  category: string | null;
+  coverage: PlanCoverageInput;
+}
+
+export interface BillSlugMeta {
+  category: string | null;
+  isPreventiveEligible: boolean;
+}
+
+export interface SecondaryCoverage {
+  coverage: PlanCoverageInput;
+  /** The covered sibling slug we matched to; null for the ACA-preventive backstop. */
+  matchedSlug: string | null;
+  source: "secondary_match" | "aca_preventive";
+}
+
+// Pediatric-specific services must not absorb an adult line (or vice-versa).
+const PEDIATRIC_RE = /child|baby|pediatric|well_child/i;
+
+function triGrams(s: string): Set<string> {
+  const n = `  ${s.toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim()} `;
+  const g = new Set<string>();
+  for (let i = 0; i < n.length - 2; i++) g.add(n.slice(i, i + 3));
+  return g;
+}
+function triSim(a: string, b: string): number {
+  const ga = triGrams(a);
+  const gb = triGrams(b);
+  if (!ga.size || !gb.size) return 0;
+  let inter = 0;
+  for (const x of ga) if (gb.has(x)) inter++;
+  return inter / (ga.size + gb.size - inter);
+}
+
+/**
+ * Resolve coverage for a bill slug that has NO direct `plan_covered_services`
+ * row, via (1) a same-category covered sibling, then (2) an ACA-preventive
+ * $0 backstop. Returns null when neither applies (→ caller shows "Unknown").
+ *
+ * Pure + deterministic (no Haiku / no DB) so it runs safely in the hot
+ * claim-GET path and is identical across audit + display + dispute paths.
+ */
+export function resolveSecondaryCoverage(
+  billSlug: string,
+  billMeta: BillSlugMeta,
+  covered: CoveredSlugMeta[],
+  planAcaCompliant: boolean | null,
+): SecondaryCoverage | null {
+  // 1 — same-category covered sibling (excl. pediatric unless the bill is pediatric).
+  if (billMeta.category) {
+    const billIsPediatric = PEDIATRIC_RE.test(billSlug);
+    const candidates = covered.filter(
+      (c) =>
+        c.category === billMeta.category &&
+        c.coverage.covered !== false &&
+        (billIsPediatric || !PEDIATRIC_RE.test(c.slug)),
+    );
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => {
+        const ta = triSim(billSlug.replace(/_/g, " "), a.slug.replace(/_/g, " "));
+        const tb = triSim(billSlug.replace(/_/g, " "), b.slug.replace(/_/g, " "));
+        if (tb !== ta) return tb - ta;
+        return (a.coverage.copay ?? 0) - (b.coverage.copay ?? 0); // most generous on tie
+      });
+      const best = candidates[0];
+      return { coverage: best.coverage, matchedSlug: best.slug, source: "secondary_match" };
+    }
+  }
+  // 2 — ACA-preventive $0 backstop (Fix 2). is_preventive_eligible services are
+  // ACA-mandated $0; surface that even without a covered sibling, unless the
+  // plan is explicitly NOT ACA-compliant (null/unknown treated as ACA-ish since
+  // marketplace metal-tier plans frequently have the flag unset).
+  if (billMeta.isPreventiveEligible && planAcaCompliant !== false) {
+    return {
+      coverage: { covered: true, copay: 0, coinsurance: 0 },
+      matchedSlug: null,
+      source: "aca_preventive",
+    };
+  }
+  return null;
+}
+
 export async function loadCoverageMapForPlan(
   supabase: SupabaseClient,
   insurancePlanId: string | null | undefined,
