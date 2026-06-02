@@ -24,6 +24,8 @@ import { buildAcaCoverageFallback } from "@/lib/audit/aca-coverage-fallback";
 import {
   resolveLineCoverage,
   resolveSecondaryCoverage,
+  loadSecondaryGate,
+  DEFAULT_SECONDARY_GATE,
   type CoveredSlugMeta,
   type BillSlugMeta,
 } from "@/lib/audit/coverage-loader";
@@ -94,6 +96,13 @@ export async function GET(
   const flywheelEnabled = await isFeatureEnabled(
     "s74_5_categorization_flywheel_v1",
   );
+  // S154 — gate the secondary (category) coverage match. OFF = pre-S153
+  // behavior (exact-slug + ACA fallback only) on BOTH detail + list, so the
+  // flag is a clean kill-switch with no detail/list split.
+  const secondaryV2 = await isFeatureEnabled("secondary_coverage_v2");
+  const secondaryGate = secondaryV2
+    ? await loadSecondaryGate(supabase)
+    : DEFAULT_SECONDARY_GATE;
 
   // Fetch line items (SELECT * picks up the new mig 092 columns automatically).
   let { data: lineItems } = await supabase
@@ -285,7 +294,8 @@ export async function GET(
     // never a direct plan hit.
     let secondaryMatchedSlug: string | null = null;
     let secondaryCoverageSource: "secondary_match" | "aca_preventive" | null = null;
-    if (!rawPlanCoverage && item.service_slug) {
+    let secondaryConfidence: "confident" | "estimate" | null = null;
+    if (secondaryV2 && !rawPlanCoverage && item.service_slug) {
       const meta = billSlugMeta.get(item.service_slug as string);
       if (meta) {
         const sec = resolveSecondaryCoverage(
@@ -293,11 +303,13 @@ export async function GET(
           meta,
           coveredMeta,
           planAcaCompliant,
+          secondaryGate,
         );
         if (sec) {
           rawPlanCoverage = sec.coverage;
           secondaryMatchedSlug = sec.matchedSlug;
           secondaryCoverageSource = sec.source;
+          secondaryConfidence = sec.confidence;
         }
       }
     }
@@ -457,6 +469,16 @@ export async function GET(
       // sibling slug we matched to (e.g. annual_physical → preventive_care), so
       // the UI can show "Covered — via Preventive Care" rather than a direct hit.
       coverageSecondaryMatchedSlug: secondaryMatchedSlug,
+      // S154 — secondary-match gate outcome. `estimate` = identified but the
+      // borrowed cost-share is ambiguous → the UI shows a "Verify coverage"
+      // affordance and the dispute pipeline demotes it below cite-grade until
+      // confirmed. `coverageNeedsConfirmation` folds in whether the user has
+      // already confirmed this line (one-time; cleared by the confirm endpoint).
+      coverageConfidence: secondaryConfidence,
+      coverageNeedsConfirmation:
+        secondaryConfidence === "estimate" &&
+        itemMetadata?.coverage_user_confirmed !== true &&
+        itemMetadata?.coverage_user_rejected !== true,
       // S135 — plan-vs-ACA override info (non-null in States 2 / 2b). UI green
       // plan-says box renders an inline "Plan says $X, federal law $0" line
       // when present. Dispute pipeline uses for federal-law citation.

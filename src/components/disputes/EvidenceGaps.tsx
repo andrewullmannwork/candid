@@ -18,6 +18,7 @@ import { useState } from "react";
 import Link from "next/link";
 import type { EvidenceGap } from "@/lib/disputes/evidence-resolver";
 import { ProviderAddressForm } from "./ProviderAddressForm";
+import { ServiceVerificationGateCard } from "./ServiceVerificationGateCard";
 
 interface ProviderContactSeed {
   name: string | null;
@@ -69,6 +70,17 @@ interface Props {
    * (parent owns modal state; same modal as the recipient card's edit).
    */
   onAddInsurerAddress?: () => void;
+  /**
+   * S154 — called when the user resolves a `service_coverage_verify` gate
+   * (ServiceVerificationGateCard) on a secondary (category) coverage match.
+   * Should POST the per-line confirm-coverage decision then refetch, so the
+   * gate clears and the letter re-renders with/without the secondary citation.
+   */
+  onCoverageVerify?: (
+    claimId: string,
+    lineItemId: string,
+    decision: "match" | "no_match",
+  ) => Promise<void>;
 }
 
 export function EvidenceGaps({
@@ -81,6 +93,7 @@ export function EvidenceGaps({
   onProviderContactSaved,
   onUploadInModal,
   onAddInsurerAddress,
+  onCoverageVerify,
 }: Props) {
   const [rerunStatus, setRerunStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const [redraftStatus, setRedraftStatus] = useState<"idle" | "running" | "done" | "error">("idle");
@@ -159,45 +172,58 @@ export function EvidenceGaps({
               key={`${gap.kind}-${i}`}
               className="rounded-xl border border-slate-100 bg-slate-50/50 px-4 py-3"
             >
-              <div className="flex flex-col gap-3 @md:flex-row @md:items-center @md:justify-between">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <GapIcon />
-                    <div className="font-semibold text-slate-900">{gap.title}</div>
-                  </div>
-                  <p className="mt-1 pl-6 text-sm text-slate-600">{gap.description}</p>
-                </div>
-                {renderCta(gap, {
-                  onAuditRerun: handleAuditRerun,
-                  onRedraft: handleRedraft,
-                  rerunStatus,
-                  redraftStatus,
-                  hasAuditCallback: !!onAuditRerun,
-                  hasRedraftCallback: !!onRedraft,
-                  onOpenProviderForm: () => setProviderFormOpen(true),
-                  providerFormOpen,
-                  hasProviderContext: !!disputeId && !!getAuthToken,
-                  onConfirmProvider: handleConfirmProvider,
-                  confirmStatus,
-                  onUploadInModal,
-                  onAddInsurerAddress,
-                })}
-              </div>
-              {expandedForm ? (
-                <ProviderAddressForm
-                  disputeId={disputeId}
-                  initialName={providerSeed?.name ?? null}
-                  initialAddress={providerSeed?.address ?? null}
-                  initialAddressFields={providerSeed?.addressFields ?? null}
-                  initialPhone={providerSeed?.phone ?? null}
-                  initialNpi={providerSeed?.npi ?? null}
-                  getAuthToken={getAuthToken}
-                  onSaved={async () => {
-                    await onProviderContactSaved?.();
-                    setProviderFormOpen(false);
-                  }}
+              {gap.kind === "service_coverage_verify" ? (
+                <ServiceVerificationGateCard
+                  gap={gap}
+                  onDecide={(decision) =>
+                    onCoverageVerify && gap.claimId && gap.lineItemId
+                      ? onCoverageVerify(gap.claimId, gap.lineItemId, decision)
+                      : Promise.resolve()
+                  }
                 />
-              ) : null}
+              ) : (
+                <>
+                  <div className="flex flex-col gap-3 @md:flex-row @md:items-center @md:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <GapIcon />
+                        <div className="font-semibold text-slate-900">{gap.title}</div>
+                      </div>
+                      <p className="mt-1 pl-6 text-sm text-slate-600">{gap.description}</p>
+                    </div>
+                    {renderCta(gap, {
+                      onAuditRerun: handleAuditRerun,
+                      onRedraft: handleRedraft,
+                      rerunStatus,
+                      redraftStatus,
+                      hasAuditCallback: !!onAuditRerun,
+                      hasRedraftCallback: !!onRedraft,
+                      onOpenProviderForm: () => setProviderFormOpen(true),
+                      providerFormOpen,
+                      hasProviderContext: !!disputeId && !!getAuthToken,
+                      onConfirmProvider: handleConfirmProvider,
+                      confirmStatus,
+                      onUploadInModal,
+                      onAddInsurerAddress,
+                    })}
+                  </div>
+                  {expandedForm ? (
+                    <ProviderAddressForm
+                      disputeId={disputeId}
+                      initialName={providerSeed?.name ?? null}
+                      initialAddress={providerSeed?.address ?? null}
+                      initialAddressFields={providerSeed?.addressFields ?? null}
+                      initialPhone={providerSeed?.phone ?? null}
+                      initialNpi={providerSeed?.npi ?? null}
+                      getAuthToken={getAuthToken}
+                      onSaved={async () => {
+                        await onProviderContactSaved?.();
+                        setProviderFormOpen(false);
+                      }}
+                    />
+                  ) : null}
+                </>
+              )}
             </li>
           );
         })}

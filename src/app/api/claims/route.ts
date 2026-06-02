@@ -12,9 +12,18 @@ import {
   resolveStillOutstanding,
   type PlanCoverageInput,
 } from "@/lib/claims/recovery-math";
-import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 import { buildAcaCoverageFallback } from "@/lib/audit/aca-coverage-fallback";
-import { resolveLineCoverage } from "@/lib/audit/coverage-loader";
+import {
+  resolveLineCoverage,
+  resolveSecondaryCoverage,
+  loadPlanCoverageMeta,
+  loadBillSlugMeta,
+  loadSecondaryGate,
+  DEFAULT_SECONDARY_GATE,
+  type PlanCoverageMeta,
+  type BillSlugMeta,
+} from "@/lib/audit/coverage-loader";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -142,29 +151,34 @@ export async function GET(req: NextRequest) {
         .filter((id): id is string => !!id),
     ),
   );
-  const coveragePerPlan = new Map<string, Map<string, PlanCoverageInput>>();
-  if (planIds.length > 0) {
-    const { data: coveredServices } = await supabase
-      .from("plan_covered_services")
-      .select("insurance_plan_id, covered, in_copay, in_coinsurance, service_catalog!inner(slug)")
-      .in("insurance_plan_id", planIds);
-    for (const svc of coveredServices || []) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const slug = (svc.service_catalog as any)?.slug as string | undefined;
-      const planId = svc.insurance_plan_id as string | undefined;
-      if (!slug || !planId) continue;
-      if (!coveragePerPlan.has(planId)) coveragePerPlan.set(planId, new Map());
-      coveragePerPlan.get(planId)!.set(slug, {
-        covered: svc.covered,
-        copay: svc.in_copay,
-        // S132 iter-11 — plan_covered_services.in_coinsurance holds EITHER
-        // integer percent (e.g., 30) OR already-decimal (e.g., 0.3); both
-        // mean 30% in plan-document language. normalizeCoinsuranceForStorage
-        // handles both forms and returns decimal 0-1 uniformly.
-        coinsurance: normalizeCoinsuranceForStorage(svc.in_coinsurance as number | null),
-      });
+  // S154 — shared secondary-match context (per-plan coverage incl. category +
+  // ACA flag), so the LIST resolves coverage identically to the DETAIL GET.
+  // Gated by secondary_coverage_v2 (OFF = pre-S153: exact-slug + ACA fallback
+  // only). billSlugMeta is loaded in ONE pre-pass across every line on the page
+  // so the per-claim loop below stays query-free for the match.
+  const secondaryV2 = await isFeatureEnabled("secondary_coverage_v2");
+  const planMetaByPlan: Map<string, PlanCoverageMeta> = await loadPlanCoverageMeta(
+    supabase,
+    planIds,
+  );
+  let billSlugMeta = new Map<string, BillSlugMeta>();
+  if (secondaryV2) {
+    const claimIdsForSlugs = (claims || []).map((c) => c.id as string);
+    if (claimIdsForSlugs.length > 0) {
+      const { data: slugRows } = await supabase
+        .from("claim_line_items")
+        .select("service_slug")
+        .in("claim_id", claimIdsForSlugs);
+      billSlugMeta = await loadBillSlugMeta(
+        supabase,
+        (slugRows ?? []).map((r) => r.service_slug as string | null),
+      );
     }
   }
+  // S154 — gate thresholds (Ship Gate G6, tunable via flag config JSONB).
+  const secondaryGate = secondaryV2
+    ? await loadSecondaryGate(supabase)
+    : DEFAULT_SECONDARY_GATE;
 
   // For each claim, get line item summary + top findings + potential savings + recovery
   const claimsWithSummary = await Promise.all(
@@ -175,9 +189,10 @@ export async function GET(req: NextRequest) {
         .eq("claim_id", claim.id);
 
       const items = lineItems || [];
-      const coverageMap = claim.insurance_plan_id
-        ? coveragePerPlan.get(claim.insurance_plan_id)
+      const planMeta = claim.insurance_plan_id
+        ? planMetaByPlan.get(claim.insurance_plan_id)
         : undefined;
+      const coverageMap = planMeta?.coverageMap;
       const claimTotalBilled = Number(claim.total_billed || 0);
       const claimStillOutstanding =
         claim.amount_still_outstanding != null
@@ -257,8 +272,27 @@ export async function GET(req: NextRequest) {
         // S135 — coverage resolved via the 4-state ACA matrix helper. ACA wins
         // on conflict for math + bill state; plan wins on match. ACA-only when
         // plan missing slug. Symmetric with detail endpoint.
-        const rawPlanCoverage: PlanCoverageInput | null =
+        let rawPlanCoverage: PlanCoverageInput | null =
           (item.service_slug && coverageMap?.get(item.service_slug)) || null;
+        // S154 — secondary (category) match when the exact slug has no plan row,
+        // mirroring the DETAIL GET so list/dashboard agree with the detail page.
+        // BOTH `confident` and `estimate` results count as covered here (per
+        // Andrew: never regress an identified service to "needs review"); the
+        // estimate's Verify affordance + dispute demotion live on the detail
+        // surface, keyed off coverageSource/confidence.
+        if (secondaryV2 && !rawPlanCoverage && item.service_slug) {
+          const meta = billSlugMeta.get(item.service_slug as string);
+          if (meta) {
+            const sec = resolveSecondaryCoverage(
+              item.service_slug as string,
+              meta,
+              planMeta?.coveredMeta ?? [],
+              planMeta?.acaCompliant ?? null,
+              secondaryGate,
+            );
+            if (sec) rawPlanCoverage = sec.coverage;
+          }
+        }
         const acaCoverage: PlanCoverageInput | null =
           acaFallback.byLineNumber.get(Number(item.line_number ?? 0)) || null;
         const { coverage } = resolveLineCoverage(
