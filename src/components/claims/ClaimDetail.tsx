@@ -64,6 +64,14 @@ interface LineItem {
   // S74.6 D2 — which path produced the line's coverage row. Drives the §A.2
   // ACA tooltip on the Coverage badge (only when 'aca_zero_cost_share').
   coverageSource?: string | null;
+  // S153 — covered sibling slug for a secondary (category) match (e.g.
+  // annual_physical → preventive_care), for the "via Preventive Care" note.
+  coverageSecondaryMatchedSlug?: string | null;
+  // S154 — secondary-match gate confidence + whether the user still needs to
+  // verify it. 'estimate' coverage stays clickable-to-correct AND shows a
+  // "Verify coverage" affordance; demoted in disputes until confirmed.
+  coverageConfidence?: "confident" | "estimate" | null;
+  coverageNeedsConfirmation?: boolean;
   // S135 — plan-vs-ACA override (see AcaOverride above). Drives inline override
   // message in the green plan-says box. Null when no override applies.
   acaOverride?: AcaOverride | null;
@@ -633,6 +641,40 @@ export function ClaimDetail({
     // chrome (state badge, recovery, unknown count) reflects the new coverage.
     if (onClaimUpdated) await onClaimUpdated();
   }, [data, refetchClaim, onClaimUpdated]);
+
+  // S154 — confirm an estimate-tier secondary coverage match. Marks the line
+  // user-confirmed (Pattern 1 #14 user-scoped) so the "Verify coverage"
+  // affordance clears and the dispute pipeline may cite it as confirmed.
+  const [confirmingCoverageId, setConfirmingCoverageId] = useState<string | null>(null);
+  const handleConfirmCoverage = useCallback(
+    async (lineId: string) => {
+      setConfirmingCoverageId(lineId);
+      try {
+        const token = await getAuthToken();
+        if (!token) return;
+        const res = await fetch(
+          `/api/claims/${claimId}/line-items/${lineId}/confirm-coverage`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ confirmed: true }),
+          },
+        );
+        if (res.ok) {
+          await refetchClaim();
+          if (onClaimUpdated) await onClaimUpdated();
+        }
+      } catch (err) {
+        console.error("[confirm-coverage] failed:", err);
+      } finally {
+        setConfirmingCoverageId(null);
+      }
+    },
+    [claimId, getAuthToken, refetchClaim, onClaimUpdated],
+  );
 
   const dismissLooksRight = useCallback(() => {
     if (typeof window !== "undefined") {
@@ -1239,6 +1281,12 @@ export function ClaimDetail({
           const dismissedCount = allFindings.length - findings.length;
           const isExpanded = !collapsedRows.has(item.id);
           const coverageBadge = item.coverageStatus ? COVERAGE_BADGE[item.coverageStatus] : null;
+          // S154 — estimate-tier secondary matches read "Likely Covered" (an
+          // inference pending the user's Verify) vs a confident "Covered".
+          const coverageLabel =
+            item.coverageNeedsConfirmation && coverageBadge
+              ? "Likely Covered"
+              : coverageBadge?.label;
           // S74.6 D1 §A.2 — surface ACA basis tooltip when the badge stems
           // from the registry fallback. Plan-covered rows (planCoverage row
           // from the user's plan_covered_services) don't get this tooltip
@@ -1447,7 +1495,7 @@ export function ClaimDetail({
                     <dt className="text-gray-500 uppercase tracking-wider">Coverage</dt>
                     <dd className="flex items-center gap-1.5">
                       {coverageBadge ? (
-                        flywheelEnabled && (item.coverageStatus === "unknown" || item.coverageStatus === "not_covered" || item.user_corrected_at != null) ? (
+                        flywheelEnabled && (item.coverageStatus === "unknown" || item.coverageStatus === "not_covered" || item.user_corrected_at != null || item.coverageSource === "secondary_match" || item.coverageSource === "aca_preventive") ? (
                           <button
                             type="button"
                             onClick={(e) => {
@@ -1466,14 +1514,14 @@ export function ClaimDetail({
                             <svg className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" aria-hidden>
                               <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                             </svg>
-                            {coverageBadge.label}
+                            {coverageLabel}
                           </button>
                         ) : (
                           <span
                             className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${coverageBadge.className}${acaTooltip ? " cursor-help underline decoration-dotted decoration-1 underline-offset-2" : ""}`}
                             title={acaTooltip}
                           >
-                            {coverageBadge.label}
+                            {coverageLabel}
                           </span>
                         )
                       ) : <span className="text-gray-300">—</span>}
@@ -1488,6 +1536,20 @@ export function ClaimDetail({
                           className="rounded-sm bg-blue-100 px-1 py-px text-[9px] font-semibold text-blue-700 cursor-pointer ring-1 ring-blue-200 hover:bg-blue-200 hover:ring-blue-300 transition-colors"
                         >
                           Your pick
+                        </button>
+                      )}
+                      {item.coverageNeedsConfirmation && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleConfirmCoverage(item.id);
+                          }}
+                          disabled={confirmingCoverageId === item.id}
+                          title="We inferred this from a related covered service. Click to confirm it's right."
+                          className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-px text-[9px] font-semibold text-amber-700 cursor-pointer ring-1 ring-amber-200 hover:bg-amber-100 hover:ring-amber-300 transition-colors disabled:opacity-50"
+                        >
+                          {confirmingCoverageId === item.id ? "Saving…" : "Verify coverage"}
                         </button>
                       )}
                     </dd>
@@ -1653,7 +1715,7 @@ export function ClaimDetail({
                     in-pill text wrap ("Your\npick"). */}
                 <div className="flex flex-wrap items-center justify-center gap-1.5">
                   {coverageBadge ? (
-                    flywheelEnabled && (item.coverageStatus === "unknown" || item.coverageStatus === "not_covered" || item.user_corrected_at != null) ? (
+                    flywheelEnabled && (item.coverageStatus === "unknown" || item.coverageStatus === "not_covered" || item.user_corrected_at != null || item.coverageSource === "secondary_match" || item.coverageSource === "aca_preventive") ? (
                       <button
                         type="button"
                         onClick={(e) => {
@@ -1672,14 +1734,14 @@ export function ClaimDetail({
                         <svg className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" aria-hidden>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                         </svg>
-                        {coverageBadge.label}
+                        {coverageLabel}
                       </button>
                     ) : (
                       <span
                         className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full whitespace-nowrap ${coverageBadge.className}${acaTooltip ? " cursor-help underline decoration-dotted decoration-1 underline-offset-2" : ""}`}
                         title={acaTooltip}
                       >
-                        {coverageBadge.label}
+                        {coverageLabel}
                       </span>
                     )
                   ) : null}
@@ -1694,6 +1756,20 @@ export function ClaimDetail({
                       className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700 whitespace-nowrap cursor-pointer ring-1 ring-blue-200 hover:bg-blue-100 hover:ring-blue-300 transition-colors"
                     >
                       Your pick
+                    </button>
+                  )}
+                  {item.coverageNeedsConfirmation && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleConfirmCoverage(item.id);
+                      }}
+                      disabled={confirmingCoverageId === item.id}
+                      title="We inferred this from a related covered service. Click to confirm it's right."
+                      className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700 whitespace-nowrap cursor-pointer ring-1 ring-amber-200 hover:bg-amber-100 hover:ring-amber-300 transition-colors disabled:opacity-50"
+                    >
+                      {confirmingCoverageId === item.id ? "Saving…" : "Verify coverage"}
                     </button>
                   )}
                 </div>

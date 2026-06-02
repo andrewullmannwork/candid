@@ -35,8 +35,49 @@ import {
   type DisputeTypeClass,
   type CiteGradeTier,
 } from "./strength-scoring";
+import {
+  resolveSecondaryCoverage,
+  loadPlanCoverageMeta,
+  loadBillSlugMeta,
+  loadSecondaryGate,
+  type SecondaryCoverage,
+} from "@/lib/audit/coverage-loader";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
 
 const K_ANON_PRICING = 5;
+
+// S154 — helpers for the secondary (category) coverage match in the letter.
+function humanizeSlug(slug: string): string {
+  return slug.replace(/_/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
+function secondaryCostShareLabel(cov: { copay: number | null; coinsurance: number | null }): string {
+  if (cov.copay != null) return cov.copay === 0 ? "$0" : `$${cov.copay} copay`;
+  if (cov.coinsurance != null) return `${normalizeCoinsurancePct(cov.coinsurance)}% coinsurance`;
+  return "covered";
+}
+/**
+ * S154 — build a PlanBenefitDetail from a verified secondary (category) match.
+ * sbcExcerptVerified=false + covered + cost-share present → the letter renders a
+ * Case-2 bullet (no verbatim blockquote), which is correct for an inferred-but-
+ * user-confirmed coverage. `secondaryMatchedSlug` records the borrowed sibling.
+ */
+function buildSecondaryPlanBenefit(sec: SecondaryCoverage, planYear: number | null): PlanBenefitDetail {
+  return {
+    covered: true,
+    copay: sec.coverage.copay,
+    coinsurance: sec.coverage.coinsurance,
+    source: sec.source,
+    confidence: 0.6,
+    citation: "",
+    sbcExcerpt: null,
+    sbcPage: null,
+    sbcExcerptVerified: false,
+    citationSource: null,
+    sourcedFrom: "user_exact",
+    sourcedFromYear: planYear,
+    secondaryMatchedSlug: sec.matchedSlug,
+  };
+}
 
 const K_ANON_THRESHOLD = 5;
 const MIN_PLAN_BENEFIT_CONFIDENCE = 0.5;
@@ -127,6 +168,13 @@ export interface PlanBenefitDetail {
    * source plan's year is unknown (parser-side extraction gap).
    */
   sourcedFromYear: number | null;
+  /**
+   * S154 — when non-null, this benefit was borrowed from a same-category covered
+   * sibling via the secondary match (e.g. annual_physical → preventive_care),
+   * after the user verified it. Renders as a Case-2 bullet (no verbatim). Null
+   * for direct exact-slug matches.
+   */
+  secondaryMatchedSlug?: string | null;
 }
 
 export interface LineItemEvidence {
@@ -245,6 +293,18 @@ export interface LineItemEvidence {
    * the caller as `attestedLineItemIds`. Absent/false on every non-attested line.
    */
   serviceNotRenderedAttested?: boolean;
+  /**
+   * S154 — set when this line resolved to coverage via the SECONDARY (category)
+   * match but the user hasn't verified it (not confirmed, not rejected).
+   * `planBenefit` stays null (not cited); computeEvidenceGaps emits a
+   * `service_coverage_verify` gap. Cleared once the user confirms (→ planBenefit
+   * populated from the borrowed coverage) or rejects (→ excluded).
+   */
+  secondaryCoverageVerify?: {
+    matchedSlug: string;
+    matchedServiceName: string;
+    costShareLabel: string;
+  } | null;
 }
 
 export interface ClaimEvidence {
@@ -338,7 +398,13 @@ export interface EvidenceGap {
      *  PlanSearchModal in upload mode so the user can graduate to user_exact
      *  via their own SBC; secondary action is dismiss-in-UI ("Continue without
      *  it"). Copy interpolates X/Y service counts + the missing service names. */
-    | "bound_canonical_coverage_thin";
+    | "bound_canonical_coverage_thin"
+    /** S154 — a bill line resolved to coverage via the SECONDARY (category)
+     *  match (no exact plan row) and the user hasn't verified the inferred match.
+     *  Required gate: ServiceVerificationGateCard asks "does this match?" —
+     *  Matches → cite it in the letter (confirm-coverage match); Doesn't → exclude
+     *  (no_match). Until resolved the line carries no planBenefit (not cited). */
+    | "service_coverage_verify";
   /** Short human-readable headline for the UI card. */
   title: string;
   /** One-line explanation of what adding this evidence unlocks. */
@@ -353,6 +419,13 @@ export interface EvidenceGap {
    */
   unverifiedCount?: number;
   totalCount?: number;
+  /** S154 service_coverage_verify — the claim + line_item to confirm/reject +
+   *  human service names for the ServiceVerificationGateCard copy. */
+  claimId?: string;
+  lineItemId?: string;
+  serviceName?: string;
+  matchedServiceName?: string;
+  costShareLabel?: string;
 }
 
 export interface DisputeEvidence {
@@ -681,6 +754,90 @@ export async function resolveEvidence(
 
   const claimsArr = Array.from(byClaim.values());
 
+  // S154 — secondary (category) coverage for lines the exact-slug lookup missed,
+  // so the letter agrees with the home/detail pages (same shared resolver). Gated
+  // by the user's per-line verification (claim_line_items.metadata; Pattern 1 #14):
+  //   confirmed → cite it (Case-2 bullet, no verbatim);
+  //   rejected  → exclude (no citation, no gate);
+  //   undecided → emit a `service_coverage_verify` gate (no citation yet).
+  if (await isFeatureEnabled("secondary_coverage_v2")) {
+    const liById = new Map(filteredLineItems.map((li) => [li.id, li]));
+    const planByClaim = new Map(
+      claimRows.map((c) => [c.id as string, (c.insurance_plan_id as string | null) ?? null]),
+    );
+    const planYearByClaim = new Map(
+      claimRows.map((c) => [c.id as string, (c.plan_year as number | null) ?? null]),
+    );
+    type Cand = {
+      ev: LineItemEvidence;
+      planId: string | null;
+      planYear: number | null;
+      meta: Record<string, unknown>;
+    };
+    const candidates: Cand[] = [];
+    for (const c of claimsArr) {
+      const planId = planByClaim.get(c.claimId) ?? null;
+      const planYear = planYearByClaim.get(c.claimId) ?? null;
+      for (const ev of c.lineItemEvidence) {
+        if (ev.planBenefit || !ev.serviceSlug) continue;
+        const meta =
+          (liById.get(ev.lineItemId)?.metadata as Record<string, unknown> | undefined) ?? {};
+        candidates.push({ ev, planId, planYear, meta });
+      }
+    }
+    if (candidates.length > 0) {
+      const planMetaByPlan = await loadPlanCoverageMeta(
+        supabase,
+        candidates.map((x) => x.planId),
+      );
+      const billSlugMeta = await loadBillSlugMeta(
+        supabase,
+        candidates.map((x) => x.ev.serviceSlug),
+      );
+      const gate = await loadSecondaryGate(supabase);
+      for (const { ev, planId, planYear, meta } of candidates) {
+        const slug = ev.serviceSlug as string;
+        const bm = billSlugMeta.get(slug);
+        if (!bm) continue;
+        const planMeta = planId ? planMetaByPlan.get(planId) : undefined;
+        // S154 fix — skip lines EXACTLY covered on the claim's own plan. The
+        // dispute letter's plan context can differ from the claim's plan, so
+        // ev.planBenefit (letter context) being null does NOT mean the service is
+        // uncovered — it may be an exact match on the patient's actual plan. Don't
+        // emit a secondary verify gate for an exactly-covered service.
+        if (planMeta?.coverageMap.has(slug)) continue;
+        const sec = resolveSecondaryCoverage(
+          slug,
+          bm,
+          planMeta?.coveredMeta ?? [],
+          planMeta?.acaCompliant ?? null,
+          gate,
+        );
+        if (!sec) continue;
+        if (meta.coverage_user_rejected === true) continue; // user said "doesn't match" → exclude
+        if (meta.coverage_user_confirmed === true) {
+          // "matches" → cite it (Case-2 bullet); recompute the cost-share delta.
+          const pb = buildSecondaryPlanBenefit(sec, planYear);
+          ev.planBenefit = pb;
+          const expected = computeExpectedPatientCost(pb, ev.billedAmount);
+          ev.expectedPatientCost = expected;
+          if (expected != null && ev.actualPatientCost != null) {
+            ev.discrepancyAmount = Math.max(0, ev.actualPatientCost - expected);
+          }
+        } else {
+          // undecided → required verification gate (no citation until confirmed).
+          ev.secondaryCoverageVerify = {
+            matchedSlug: sec.matchedSlug ?? "preventive_care",
+            matchedServiceName: sec.matchedSlug
+              ? humanizeSlug(sec.matchedSlug)
+              : "preventive care (ACA $0)",
+            costShareLabel: secondaryCostShareLabel(sec.coverage),
+          };
+        }
+      }
+    }
+  }
+
   // Claim-level community aggregate: useful for the letter's opening
   // paragraph when individual line-item counts are all zero.
   const claimLevelCommunity = aggregateCommunity(claimsArr);
@@ -735,6 +892,27 @@ function computeEvidenceGaps(
   canonicalPlanIdForBillYear: string | null,
 ): EvidenceGap[] {
   const gaps: EvidenceGap[] = [];
+
+  // S154 — required verification gate per line that resolved via the secondary
+  // (category) match but isn't user-confirmed yet. ServiceVerificationGateCard
+  // renders Matches / Doesn't match; the marker is set in resolveEvidence's
+  // post-pass and cleared once confirmed (→ cited) or rejected (→ excluded).
+  for (const c of claims) {
+    for (const ev of c.lineItemEvidence) {
+      const v = ev.secondaryCoverageVerify;
+      if (!v) continue;
+      gaps.push({
+        kind: "service_coverage_verify",
+        title: "Verify this matches the correct service",
+        description: `We matched "${ev.serviceName}" to your plan's ${v.matchedServiceName} coverage (${v.costShareLabel}) — related, but not an exact match. Confirm it's right and we'll cite it in your letter.`,
+        claimId: c.claimId,
+        lineItemId: ev.lineItemId,
+        serviceName: ev.serviceName,
+        matchedServiceName: v.matchedServiceName,
+        costShareLabel: v.costShareLabel,
+      });
+    }
+  }
   // Prefer the persisted dispute id for the returnTo URL so the user lands
   // back on the right /disputes?dispute=<id> view after uploading. Fall
   // back to the claim id only when no dispute is persisted yet (e.g.,

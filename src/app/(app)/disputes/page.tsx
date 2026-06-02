@@ -769,6 +769,30 @@ function DisputesContent() {
           ? () => setInsurerCorrectionOpen(true)
           : undefined
       }
+      // S154 — resolve a secondary (category) coverage match's verify gate:
+      // POST the per-line decision then refetch so the gate clears and the
+      // letter re-renders with (match) / without (no_match) the citation.
+      onCoverageVerify={
+        disputeId
+          ? async (claimId, lineItemId, decision) => {
+              if (!user) return;
+              const token = await user.firebaseUser.getIdToken();
+              const res = await fetch(
+                `/api/claims/${claimId}/line-items/${lineItemId}/confirm-coverage`,
+                {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${token}`,
+                  },
+                  body: JSON.stringify({ decision }),
+                },
+              );
+              if (!res.ok) throw new Error("confirm-coverage failed");
+              await refetchAfterChange();
+            }
+          : undefined
+      }
     />
   );
 

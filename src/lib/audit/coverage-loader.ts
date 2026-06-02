@@ -229,6 +229,61 @@ export interface SecondaryCoverage {
   /** The covered sibling slug we matched to; null for the ACA-preventive backstop. */
   matchedSlug: string | null;
   source: "secondary_match" | "aca_preventive";
+  /**
+   * S154 — gate outcome. `confident` = assert covered with no user action
+   * (statutory ACA rule, a cost-share-homogeneous category, or an unambiguous
+   * trigram identity). `estimate` = a plausible covered sibling exists but the
+   * borrowed cost-share is ambiguous (heterogeneous category + weak textual
+   * match) → callers show "Covered (estimate)" + a Verify-coverage affordance
+   * and demote it below cite-grade in disputes until the user confirms.
+   */
+  confidence: "confident" | "estimate";
+}
+
+/**
+ * S154 — secondary-match confidence gate thresholds. Tunable via the
+ * `secondary_coverage_v2` flag config JSONB (Ship Gate G6); these are the
+ * code-side fallbacks.
+ */
+export interface SecondaryMatchGate {
+  /** Min trigram similarity for an "unambiguous identity" confident match. */
+  trigramFloor: number;
+  /** Best candidate must beat the runner-up by at least this to be unambiguous. */
+  trigramMargin: number;
+  /** Max copay-$ / coinsurance-fraction spread for a category to count as homogeneous. */
+  homogeneityTolerance: number;
+}
+
+export const DEFAULT_SECONDARY_GATE: SecondaryMatchGate = {
+  trigramFloor: 0.5,
+  trigramMargin: 0.15,
+  homogeneityTolerance: 0.01,
+};
+
+/**
+ * S154 — load the gate thresholds from the `secondary_coverage_v2` flag config
+ * JSONB (Ship Gate G6 — tunable with no deploy), per-field fallback to
+ * DEFAULT_SECONDARY_GATE. Tune in PROD via:
+ *   UPDATE feature_flag_rules
+ *     SET config = jsonb_set(config, '{trigramFloor}', '0.6')
+ *     WHERE flag_key = 'secondary_coverage_v2';
+ */
+export async function loadSecondaryGate(
+  supabase: SupabaseClient,
+): Promise<SecondaryMatchGate> {
+  const { data } = await supabase
+    .from("feature_flag_rules")
+    .select("config")
+    .eq("flag_key", "secondary_coverage_v2")
+    .maybeSingle();
+  const cfg = (data?.config as Record<string, unknown> | null) ?? null;
+  const num = (k: keyof SecondaryMatchGate) =>
+    typeof cfg?.[k] === "number" ? (cfg[k] as number) : DEFAULT_SECONDARY_GATE[k];
+  return {
+    trigramFloor: num("trigramFloor"),
+    trigramMargin: num("trigramMargin"),
+    homogeneityTolerance: num("homogeneityTolerance"),
+  };
 }
 
 // Pediatric-specific services must not absorb an adult line (or vice-versa).
@@ -249,10 +304,34 @@ function triSim(a: string, b: string): number {
   return inter / (ga.size + gb.size - inter);
 }
 
+/** S154 — all covered candidates agree on cost-share, so which sibling we
+ * borrow is moot (e.g. an all-$0 preventive category). Copays compared in
+ * dollars, coinsurance as a 0-1 fraction; nulls treated as 0. */
+function candidatesHomogeneous(
+  candidates: CoveredSlugMeta[],
+  tol: number,
+): boolean {
+  if (candidates.length <= 1) return true;
+  const copays = candidates.map((c) => c.coverage.copay ?? 0);
+  const coins = candidates.map((c) => c.coverage.coinsurance ?? 0);
+  const spread = (xs: number[]) => Math.max(...xs) - Math.min(...xs);
+  return spread(copays) <= tol && spread(coins) <= tol;
+}
+
 /**
  * Resolve coverage for a bill slug that has NO direct `plan_covered_services`
  * row, via (1) a same-category covered sibling, then (2) an ACA-preventive
  * $0 backstop. Returns null when neither applies (→ caller shows "Unknown").
+ *
+ * S154 — every non-null result carries a `confidence`:
+ *   • `confident` — assert covered, no user action: the ACA statutory rule, a
+ *     cost-share-homogeneous category (borrow is unambiguous), or an
+ *     unambiguous trigram identity (clear which sibling).
+ *   • `estimate` — a plausible covered sibling exists but the borrowed
+ *     cost-share is ambiguous (heterogeneous category + weak textual match).
+ *     Caller still shows "Covered" (per Andrew S154: never regress an
+ *     identified service to Unknown) but attaches a Verify-coverage affordance
+ *     and demotes it below cite-grade in disputes until the user confirms.
  *
  * Pure + deterministic (no Haiku / no DB) so it runs safely in the hot
  * claim-GET path and is identical across audit + display + dispute paths.
@@ -262,36 +341,62 @@ export function resolveSecondaryCoverage(
   billMeta: BillSlugMeta,
   covered: CoveredSlugMeta[],
   planAcaCompliant: boolean | null,
+  gate: SecondaryMatchGate = DEFAULT_SECONDARY_GATE,
 ): SecondaryCoverage | null {
   // 1 — same-category covered sibling (excl. pediatric unless the bill is pediatric).
   if (billMeta.category) {
     const billIsPediatric = PEDIATRIC_RE.test(billSlug);
     const candidates = covered.filter(
       (c) =>
+        // S154 fix — a secondary match is a DIFFERENT covered sibling; never the
+        // bill slug itself (a same-slug hit is an exact match, handled upstream).
+        // Guards the dispute path where the exact-lookup source can differ from
+        // the sibling source, which let a slug self-match (trigram 1.0).
+        c.slug !== billSlug &&
         c.category === billMeta.category &&
         c.coverage.covered !== false &&
         (billIsPediatric || !PEDIATRIC_RE.test(c.slug)),
     );
     if (candidates.length > 0) {
-      candidates.sort((a, b) => {
-        const ta = triSim(billSlug.replace(/_/g, " "), a.slug.replace(/_/g, " "));
-        const tb = triSim(billSlug.replace(/_/g, " "), b.slug.replace(/_/g, " "));
-        if (tb !== ta) return tb - ta;
-        return (a.coverage.copay ?? 0) - (b.coverage.copay ?? 0); // most generous on tie
-      });
-      const best = candidates[0];
-      return { coverage: best.coverage, matchedSlug: best.slug, source: "secondary_match" };
+      // Deterministic order: trigram desc, then slug asc. S154 — the prior
+      // "most generous copay on tie" tiebreak was DROPPED; it biased toward the
+      // cheapest sibling, which understates should-owe and inflates apparent
+      // overcharges. Identity (trigram), not generosity, picks the sibling; the
+      // gate below decides confident-vs-estimate.
+      const scored = candidates
+        .map((c) => ({
+          c,
+          t: triSim(billSlug.replace(/_/g, " "), c.slug.replace(/_/g, " ")),
+        }))
+        .sort((a, b) => b.t - a.t || a.c.slug.localeCompare(b.c.slug));
+      const best = scored[0];
+      const runnerUp = scored[1];
+      // Confident when the borrow is unambiguous: either the whole category
+      // agrees on cost-share (homogeneous → which sibling is moot) OR the best
+      // candidate is a clear textual identity (≥ floor AND beats the runner-up
+      // by the margin). Otherwise it's a plausible-but-uncertain estimate.
+      const homogeneous = candidatesHomogeneous(candidates, gate.homogeneityTolerance);
+      const strongIdentity =
+        best.t >= gate.trigramFloor &&
+        (!runnerUp || best.t - runnerUp.t >= gate.trigramMargin);
+      return {
+        coverage: best.c.coverage,
+        matchedSlug: best.c.slug,
+        source: "secondary_match",
+        confidence: homogeneous || strongIdentity ? "confident" : "estimate",
+      };
     }
   }
-  // 2 — ACA-preventive $0 backstop (Fix 2). is_preventive_eligible services are
-  // ACA-mandated $0; surface that even without a covered sibling, unless the
-  // plan is explicitly NOT ACA-compliant (null/unknown treated as ACA-ish since
-  // marketplace metal-tier plans frequently have the flag unset).
-  if (billMeta.isPreventiveEligible && planAcaCompliant !== false) {
+  // 2 — ACA-preventive $0 backstop. S154 — CONFIRMED-ACA ONLY: fires only when
+  // is_aca_compliant === true. Unknown (null) or non-ACA (false) plans hard-
+  // exclude this statutory assumption (Andrew S154 direction) — they get
+  // coverage only from their own enumerated services via path 1 above.
+  if (billMeta.isPreventiveEligible && planAcaCompliant === true) {
     return {
       coverage: { covered: true, copay: 0, coinsurance: 0 },
       matchedSlug: null,
       source: "aca_preventive",
+      confidence: "confident",
     };
   }
   return null;
@@ -324,6 +429,111 @@ export async function loadCoverageMapForPlan(
       // formats uniformly. Prior to this, this loader read the raw value
       // expecting decimal — broke for rows the parser wrote as integer.
       coinsurance: normalizeCoinsuranceForStorage(row.in_coinsurance as number | null),
+    });
+  }
+  return map;
+}
+
+// ============================================================================
+// S154 — shared secondary-match context loaders
+// ============================================================================
+//
+// The bill DETAIL GET, the claims LIST, the discrepancy engine, and the audit
+// pipeline each independently resolved coverage; only DETAIL applied the S153
+// secondary match, so the home/dashboard read "Unknown" while DETAIL read
+// "Covered" for the same line. These loaders give every consumer ONE shape for
+// the secondary-match inputs (covered-sibling metadata + bill-slug metadata +
+// plan ACA flag) so the four surfaces resolve identically and can't drift.
+
+export interface PlanCoverageMeta {
+  /** slug → coverage with plan-row source attribution (exact-match lookup). */
+  coverageMap: Map<string, PlanCoverageInput & { source: string | null }>;
+  /** covered slugs with category, for the secondary (category) match scan. */
+  coveredMeta: CoveredSlugMeta[];
+  /** plan's ACA-compliance flag (null = unknown → ACA backstop hard-excluded). */
+  acaCompliant: boolean | null;
+}
+
+/**
+ * S154 — batched loader for secondary-match context across one or more plans.
+ * Consolidates the queries the DETAIL GET ran inline (plan_covered_services +
+ * category, is_aca_compliant) into one per-plan shape so LIST / discrepancy /
+ * audit / detail share it. Two round-trips total regardless of plan count.
+ */
+export async function loadPlanCoverageMeta(
+  supabase: SupabaseClient,
+  planIds: Array<string | null | undefined>,
+): Promise<Map<string, PlanCoverageMeta>> {
+  const out = new Map<string, PlanCoverageMeta>();
+  const ids = Array.from(new Set(planIds.filter((id): id is string => Boolean(id))));
+  if (ids.length === 0) return out;
+  for (const id of ids) {
+    out.set(id, { coverageMap: new Map(), coveredMeta: [], acaCompliant: null });
+  }
+
+  const { data: covered, error } = await supabase
+    .from("plan_covered_services")
+    .select(
+      "insurance_plan_id, covered, in_copay, in_coinsurance, source, service_catalog!inner(slug, category)",
+    )
+    .in("insurance_plan_id", ids);
+  if (error) {
+    console.warn("[coverage-loader] loadPlanCoverageMeta covered load failed", error);
+  } else {
+    for (const row of covered ?? []) {
+      const planId = row.insurance_plan_id as string;
+      const entry = out.get(planId);
+      if (!entry) continue;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sc = row.service_catalog as any;
+      const slug = sc?.slug as string | undefined;
+      if (!slug) continue;
+      const coverage: PlanCoverageInput = {
+        covered: row.covered as boolean | null,
+        copay: row.in_copay as number | null,
+        // S132 iter-11 — in_coinsurance may be integer-percent OR decimal; the
+        // normalizer returns decimal 0-1 uniformly.
+        coinsurance: normalizeCoinsuranceForStorage(row.in_coinsurance as number | null),
+      };
+      entry.coverageMap.set(slug, { ...coverage, source: (row.source as string | null) ?? null });
+      entry.coveredMeta.push({ slug, category: (sc?.category as string | null) ?? null, coverage });
+    }
+  }
+
+  const { data: plans } = await supabase
+    .from("insurance_plans")
+    .select("id, is_aca_compliant")
+    .in("id", ids);
+  for (const p of plans ?? []) {
+    const entry = out.get(p.id as string);
+    if (entry) entry.acaCompliant = (p.is_aca_compliant as boolean | null) ?? null;
+  }
+  return out;
+}
+
+/**
+ * S154 — batched bill-slug metadata (category + ACA-preventive eligibility)
+ * for the secondary match, keyed by slug. One query across all distinct slugs.
+ */
+export async function loadBillSlugMeta(
+  supabase: SupabaseClient,
+  billSlugs: Array<string | null | undefined>,
+): Promise<Map<string, BillSlugMeta>> {
+  const map = new Map<string, BillSlugMeta>();
+  const slugs = Array.from(new Set(billSlugs.filter((s): s is string => Boolean(s))));
+  if (slugs.length === 0) return map;
+  const { data, error } = await supabase
+    .from("service_catalog")
+    .select("slug, category, is_preventive_eligible")
+    .in("slug", slugs);
+  if (error) {
+    console.warn("[coverage-loader] loadBillSlugMeta load failed", error);
+    return map;
+  }
+  for (const r of data ?? []) {
+    map.set(r.slug as string, {
+      category: (r.category as string | null) ?? null,
+      isPreventiveEligible: Boolean(r.is_preventive_eligible),
     });
   }
   return map;
