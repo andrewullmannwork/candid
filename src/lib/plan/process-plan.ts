@@ -1553,7 +1553,7 @@ export async function processPlanDocumentData(
         // for correct per-doc-type promotion state (Ing-D.0a).
         const { data: docForHash } = await supabase
           .from("documents")
-          .select("file_hash, classified_type, created_at")
+          .select("file_hash, classified_type, created_at, classification_confidence, file_size, plan_year")
           .eq("id", documentId)
           .single();
 
@@ -1580,6 +1580,22 @@ export async function processPlanDocumentData(
           in_oop_max_family: (planInsert.in_oop_max_family as number | null | undefined) ?? null,
         };
 
+        // CF-40 v4 Layer 1 (Ing-D.0b) — self-check pass rate = fraction of
+        // plan-identity fields carrying a verified Pattern P-8 source excerpt
+        // (§2.1 "fraction of extracted fields verified against source text").
+        // null when this parse path produced no P-8 verification (regex / no
+        // Haiku) → the Layer 1 self-check gate is inapplicable.
+        const p8ProvEntries = planIdentityProvenance
+          ? Object.values(planIdentityProvenance).filter(
+              (e) => e.source_excerpt_verified !== undefined,
+            )
+          : [];
+        const selfCheckPassRate =
+          p8ProvEntries.length > 0
+            ? p8ProvEntries.filter((e) => e.source_excerpt_verified === "verified").length /
+              p8ProvEntries.length
+            : null;
+
         await recordExtractionResult(
           supabase,
           documentId,
@@ -1598,6 +1614,19 @@ export async function processPlanDocumentData(
                 uploaderEmailVerified: uploaderUser?.email_verified === true,
                 uploaderPhoneVerified: uploaderUser?.phone_verified === true,
                 uploaderEmail: (uploaderUser?.email as string | undefined) ?? undefined,
+                // CF-40 v4 Layer 1 contribution-gate inputs (Ing-D.0b).
+                selfCheckPassRate,
+                // OCR confidence is not plumbed to this layer (and is N/A for the
+                // native-text pdftotext path); gate inapplicable until wired from
+                // the OCR dispatcher (tracked follow-up).
+                ocrConfidence: null,
+                classificationConfidence:
+                  (docForHash.classification_confidence as number | null) ?? null,
+                fileSizeBytes: (docForHash.file_size as number | null) ?? 0,
+                documentPlanYear: (docForHash.plan_year as number | null) ?? null,
+                // No platform ban mechanism exists yet (no users.is_banned column);
+                // wire a real signal when bans are introduced (tracked follow-up).
+                uploaderIsBanned: false,
               }
             : undefined,
         );

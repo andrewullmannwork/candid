@@ -32,11 +32,13 @@ import {
   ADMIN_ATTESTATION_FLAG_KEY,
   CF40_V4_FLAG_KEY,
   effectiveWeight,
+  evaluateValidityGates,
   getTimeDecayBracket,
   resolveTrustTier,
   TRUST_WEIGHT,
   type PromotionEvalResult,
   type TrustTier,
+  type ValidityGateFailure,
 } from "./index";
 import { decideDoctypePromotion, gatherLayer3Inputs } from "./doctype-promotion-aggregator";
 import { isPlanDocumentType } from "@/lib/plan/extraction-dedup";
@@ -58,6 +60,17 @@ export interface ParseEventInput {
   uploaderEmail?: string;
   newServicesFound: number;
   haikuPlanIdentityMatchesBaseline: boolean;
+  // ── Layer 1 validity-gate inputs (Ing-D.0b) ───────────────────────────────
+  // Sourced at the parse caller (process-plan.ts). The doc-quality signals are
+  // nullable — null = the parse path didn't produce that measurement, so the
+  // gate is inapplicable (see ValidityGateInput). re_baseline_required is read
+  // canonical-side here in the recorder (per-doc-type promotion state).
+  selfCheckPassRate: number | null;
+  ocrConfidence: number | null;
+  classificationConfidence: number | null;
+  fileSizeBytes: number;
+  documentPlanYear: number | null;
+  uploaderIsBanned: boolean;
 }
 
 /**
@@ -76,7 +89,17 @@ export interface ParseEventTelemetry {
   timeDecayBracket: ReturnType<typeof getTimeDecayBracket>;
   trustWeight: number;
   notes: string[];
-  /** Layer 3 promotion-evaluation outcome (present only on the FLAG-ON path). */
+  /** Layer 1 validity-gate verdict (present only on the FLAG-ON path). When
+   * `pass` is false, the parse contributed NO Layer 2 weight + NO Layer 3
+   * coverage/corroboration (§2.2) and `documents.cf40_layer1_passed` was set
+   * FALSE. */
+  layer1?: {
+    evaluated: boolean;
+    pass: boolean;
+    failureReasons: ValidityGateFailure[];
+  };
+  /** Layer 3 promotion-evaluation outcome (present only on the FLAG-ON path AND
+   * only when Layer 1 passed — a failed parse never reaches Layer 3). */
   promotion?: {
     evaluated: boolean;
     promoted: boolean;
@@ -151,6 +174,78 @@ export async function recordParseEventV4(
     `[cf40-v4] FLAG ON — recording parse event. (canonical=${input.canonicalPlanId}, hash=${input.fileHash.slice(0, 12)}…, doc=${input.docType}, tier=${tier}, w=${eWeight}, age_days=${ageDays}, new_services=${input.newServicesFound}, baseline_match=${input.haikuPlanIdentityMatchesBaseline})`,
   );
 
+  // ── Layer 1 — validity-gate contribution gate (Ing-D.0b) ────────────────────
+  // Per Subplan §2.2: a parse contributes to Layer 2 stability AND Layer 3
+  // coverage/corroboration ONLY IF all validity gates pass. Evaluate Layer 1 now
+  // (the parse just ran; quality signals exist), record the verdict on the
+  // document so the Layer 3 aggregator can EXCLUDE failed parses, and — on
+  // failure — skip BOTH the weight increment AND the promotion evaluation below.
+  const planDocType = toPlanDocType(input.docType);
+  let layer1Pass = true;
+  let layer1Failures: ValidityGateFailure[] = [];
+  if (planDocType) {
+    try {
+      const canonicalReBaselineRequired = await readReBaselineRequired(
+        supabase,
+        input.canonicalPlanId,
+        planDocType,
+      );
+      const validity = evaluateValidityGates({
+        selfCheckPassRate: input.selfCheckPassRate,
+        ocrConfidence: input.ocrConfidence,
+        classificationConfidence: input.classificationConfidence,
+        uploadedAt: input.uploadedAt,
+        documentPlanYear: input.documentPlanYear,
+        fileSizeBytes: input.fileSizeBytes,
+        docType: planDocType,
+        uploaderTier: tier,
+        isAdmin: input.uploaderIsAdmin,
+        isBanned: input.uploaderIsBanned,
+        canonicalReBaselineRequired,
+      });
+      layer1Pass = validity.pass;
+      layer1Failures = validity.failureReasons;
+    } catch (err) {
+      // Conservative on error: do NOT contribute (treat as fail) so weight never
+      // accrues from an un-validated parse. v3 stability (caller) already persisted.
+      // failureReasons left empty — this is an evaluation error, not a specific
+      // gate verdict; the note carries the diagnostic.
+      layer1Pass = false;
+      layer1Failures = [];
+      console.warn("[cf40-v4] Layer 1 evaluation error (non-fatal) → not contributing:", err);
+      notes.push("Layer 1 evaluation error (non-fatal) → treated as not-contributing");
+    }
+  }
+
+  // Record the per-parse verdict on the document (non-fatal). TRUE + FALSE are
+  // both written; NULL is reserved for parses never Layer-1-evaluated (pre-flag /
+  // flag-off), which the aggregator also excludes.
+  try {
+    await supabase
+      .from("documents")
+      .update({ cf40_layer1_passed: layer1Pass })
+      .eq("id", input.documentId);
+  } catch (err) {
+    console.warn("[cf40-v4] cf40_layer1_passed write failed (non-fatal):", err);
+    notes.push("cf40_layer1_passed write skipped (non-fatal error)");
+  }
+
+  if (!layer1Pass) {
+    notes.push(
+      `Layer 1 FAILED (${layer1Failures.join(", ") || "evaluation_error"}) — NO Layer 2 weight, NO Layer 3 contribution`,
+    );
+    return {
+      v4Enabled: true,
+      decision: "recorded",
+      trustTier: tier,
+      effectiveWeight: eWeight,
+      timeDecayBracket: bracket,
+      trustWeight: TRUST_WEIGHT[tier],
+      notes,
+      layer1: { evaluated: true, pass: false, failureReasons: layer1Failures },
+    };
+  }
+
   // Optional: bump parse_weight_accumulated (additive, safe even if v4 path
   // is partially wired). Wrapped in try/catch so any schema-missing case fails
   // gracefully and v3 path continues.
@@ -168,10 +263,15 @@ export async function recordParseEventV4(
         .from("canonical_document_stability")
         .update({
           parse_weight_accumulated: current + eWeight,
+          // Layer 5 temporal-staleness counter: record this Layer-1-passing full
+          // parse as the last full parse of this (canonical, hash) so
+          // decideForcedReparse can fire on staleness. Set here (not on the fail
+          // path) so the clock resets only on a GOOD full parse.
+          last_full_parse_at: new Date().toISOString(),
         })
         .eq("canonical_plan_id", input.canonicalPlanId)
         .eq("file_hash", input.fileHash);
-      notes.push(`parse_weight_accumulated: ${current} → ${current + eWeight}`);
+      notes.push(`parse_weight_accumulated: ${current} → ${current + eWeight}; last_full_parse_at refreshed`);
     }
   } catch (err) {
     // Non-fatal — v3 behavior already executed at caller; v4 enrichment is best-effort.
@@ -192,7 +292,6 @@ export async function recordParseEventV4(
     coverageScore: 0,
     distinctUsers: 0,
   };
-  const planDocType = toPlanDocType(input.docType);
   if (planDocType) {
     try {
       const inputs = await gatherLayer3Inputs(
@@ -252,6 +351,7 @@ export async function recordParseEventV4(
     timeDecayBracket: bracket,
     trustWeight: TRUST_WEIGHT[tier],
     notes,
+    layer1: { evaluated: true, pass: true, failureReasons: [] },
     promotion,
   };
 }
@@ -316,4 +416,29 @@ async function upsertDoctypePromotionState(
 /** Round to NUMERIC(4,3) precision for coverage_score storage. */
 function round3(n: number): number {
   return Math.round(n * 1000) / 1000;
+}
+
+/**
+ * Read the per-doc-type re_baseline_required flag (Layer 4 → Layer 1 input).
+ * Layer 4 (Ing-D.0c) sets this TRUE on slow-drift / rapid-change invalidation;
+ * until then it is FALSE for every (canonical, doc_type). Missing row → FALSE
+ * (no promotion state yet ⇒ nothing to re-baseline). Defaults FALSE on any
+ * error so a transient read failure never blocks contribution.
+ */
+async function readReBaselineRequired(
+  supabase: SupabaseClient,
+  canonicalPlanId: string,
+  docType: PlanDocType,
+): Promise<boolean> {
+  try {
+    const { data } = await supabase
+      .from("canonical_doctype_promotion_state")
+      .select("re_baseline_required")
+      .eq("canonical_plan_id", canonicalPlanId)
+      .eq("document_type", docType)
+      .maybeSingle();
+    return data?.re_baseline_required === true;
+  } catch {
+    return false;
+  }
 }

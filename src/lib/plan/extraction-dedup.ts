@@ -28,6 +28,15 @@ import {
 import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import type { SBCPlanIdentity } from "@/lib/sbc/types";
 import type { ClassifiedDocType } from "@/lib/classifier";
+import {
+  evaluateSmartSkipEligibility,
+  getScaleTier,
+  resolveTrustTier,
+  STABILITY_THRESHOLD,
+  type ForcedReparseInput,
+  type ValidityGateInput,
+} from "@/lib/parser/cf40-v4";
+import { toPlanDocType, type PlanDocType } from "@/lib/parser/doctype-expected-counts";
 
 // ── CF-40 v4 (S73.5 D1) — Plan-document-only smart-skip whitelist ─────────────
 //
@@ -297,13 +306,40 @@ export async function shouldSkipExtraction(
 
       if (linkedPlan?.canonical_plan_id) {
         // CF-40 v2: per-(canonical, hash) stability, not per-canonical.
+        // CF-40 v4 (Ing-D.0b) additionally reads the Layer 2 weight + Layer 5
+        // counters (parse_weight_accumulated / smart_skip_count / last_full_parse_at).
         const { data: stability } = await supabase
           .from("canonical_document_stability")
-          .select("haiku_output_stable, identical_parse_count")
+          .select(
+            "haiku_output_stable, identical_parse_count, parse_weight_accumulated, smart_skip_count, last_full_parse_at",
+          )
           .eq("canonical_plan_id", linkedPlan.canonical_plan_id)
           .eq("file_hash", fileHash)
           .maybeSingle();
 
+        // CF-40 v4 (Ing-D.0b): flag-gated 5-layer smart-skip orchestrator. When
+        // `cf40_v4_algorithm` is ON the orchestrator decision is authoritative;
+        // when OFF (the only PROD state until Ing-D.1) or on error,
+        // evaluateV4SmartSkip returns null and we fall through to the v3
+        // haiku_output_stable check below (byte-identical legacy behavior).
+        const v4PlanDocType = toPlanDocType(resolvedDocType);
+        if (v4PlanDocType) {
+          const v4Decision = await evaluateV4SmartSkip(supabase, {
+            documentId,
+            fileHash,
+            userId: _userId,
+            canonicalPlanId: linkedPlan.canonical_plan_id,
+            docType: v4PlanDocType,
+            stability: {
+              parseWeightAccumulated: (stability?.parse_weight_accumulated as number | null) ?? 0,
+              smartSkipCount: (stability?.smart_skip_count as number | null) ?? 0,
+              lastFullParseAt: (stability?.last_full_parse_at as string | null) ?? null,
+            },
+          });
+          if (v4Decision !== null) return v4Decision;
+        }
+
+        // v3 path (flag OFF or v4 errored).
         if (stability?.haiku_output_stable) {
           console.log(`[extraction-dedup] (canonical=${linkedPlan.canonical_plan_id}, hash=${fileHash.slice(0, 12)}…) is stable (count=${stability.identical_parse_count}). SKIP.`);
           return { skip: true, canonicalPlanId: linkedPlan.canonical_plan_id, reason: "doc_stable_per_canonical_hash" };
@@ -320,6 +356,199 @@ export async function shouldSkipExtraction(
   // file hashes. That path was REMOVED — new docs may carry additional services or
   // value corrections, and we want the most robust data picture per upload.
   return NO_SKIP("first_time_hash_always_extracts");
+}
+
+/**
+ * CF-40 v4 (Ing-D.0b) — smart-skip orchestrator gather + decide.
+ *
+ * Called from shouldSkipExtraction's Step-1 seam ONLY when an incoming upload's
+ * file_hash already matches a processed doc linked to a canonical. Gathers the
+ * 5-layer orchestrator inputs and returns the eligibility decision as a
+ * DedupResult.
+ *
+ * Returns null when `cf40_v4_algorithm` is OFF (the only PROD state until
+ * Ing-D.1) OR on any gather error — the caller then falls back to the v3
+ * `haiku_output_stable` check. When the flag is ON the orchestrator decision is
+ * AUTHORITATIVE: eligible → skip; not-eligible → extract (never falls back to v3,
+ * which could let a v3-stable hash skip a parse v4 wants re-run).
+ *
+ * Layer 1 at skip time evaluates only the U-specific gates (validity window on
+ * the upload, file size, uploader auth/banned, canonical re-baseline). The
+ * doc-quality gates (self-check / OCR / classification) are inherited via Layer 2:
+ * a byte-identical hash match means the stable baseline — built from
+ * Layer-1-passing parses to ≥ STABILITY_THRESHOLD weight — already certifies them,
+ * so they are passed null (inapplicable) rather than re-evaluated on the re-upload.
+ */
+async function evaluateV4SmartSkip(
+  supabase: SupabaseClient,
+  args: {
+    documentId: string;
+    fileHash: string;
+    userId: string;
+    canonicalPlanId: string;
+    docType: PlanDocType;
+    stability: {
+      parseWeightAccumulated: number;
+      smartSkipCount: number;
+      lastFullParseAt: string | null;
+    };
+  },
+): Promise<DedupResult | null> {
+  const { documentId, fileHash, userId, canonicalPlanId, docType, stability } = args;
+  try {
+    // Uploader trust (doc.user_id is the firebase_uid — see process-chunk caller).
+    const { data: uploader } = await supabase
+      .from("users")
+      .select("is_admin, email_verified, phone_verified, email")
+      .eq("firebase_uid", userId)
+      .maybeSingle();
+
+    // Flag gate (per-user targeting for the Ing-D.1 staged rollout). OFF → null
+    // so the caller runs the v3 path.
+    const { isFeatureEnabled } = await import("@/lib/config/product-flags");
+    const v4On = await isFeatureEnabled(
+      "cf40_v4_algorithm",
+      (uploader?.email as string | undefined) ?? undefined,
+    );
+    if (!v4On) return null;
+
+    const isAdmin = uploader?.is_admin === true;
+    const tier = resolveTrustTier({
+      isAdmin,
+      phoneVerified: uploader?.phone_verified === true,
+      emailVerified: uploader?.email_verified === true,
+    });
+
+    // Incoming upload's own document row (validity window + file size). U is
+    // byte-identical to the baseline, but its upload time is its own.
+    const { data: uDoc } = await supabase
+      .from("documents")
+      .select("created_at, plan_year, file_size")
+      .eq("id", documentId)
+      .maybeSingle();
+
+    // Canonical scale tier + verification-mode flag.
+    const { data: canonical } = await supabase
+      .from("canonical_plans")
+      .select("extraction_count, divergence_pending_verification")
+      .eq("id", canonicalPlanId)
+      .maybeSingle();
+    const scaleTier = getScaleTier((canonical?.extraction_count as number | null) ?? 0);
+
+    // Per-doc-type promotion state (Layer 3 promoted + re-baseline + admin-attested).
+    const { data: promo } = await supabase
+      .from("canonical_doctype_promotion_state")
+      .select("doctype_promoted, promotion_event_type, promoted_at, re_baseline_required")
+      .eq("canonical_plan_id", canonicalPlanId)
+      .eq("document_type", docType)
+      .maybeSingle();
+    const doctypePromoted = promo?.doctype_promoted === true;
+
+    // Layer 5 admin-attestation validation: when promotion came from ADMIN
+    // attestation, force a full parse UNTIL an organic (verified, non-admin)
+    // upload has arrived since `promoted_at` — then organic data has validated
+    // the attestation and skips may resume. Precise, NOT "always force on
+    // admin-attested" (which would null out smart-skip for the cold-start
+    // backbone forever, since promotion_event_type is sticky).
+    let adminAttestedNeedsValidation = false;
+    if (promo?.promotion_event_type === "admin_attested" && promo?.promoted_at) {
+      adminAttestedNeedsValidation = !(await hasOrganicParseSince(
+        supabase,
+        canonicalPlanId,
+        promo.promoted_at as string,
+      ));
+    }
+
+    const validityInput: ValidityGateInput = {
+      // Doc-quality inherited via Layer 2 (byte-identical hash) → inapplicable.
+      selfCheckPassRate: null,
+      ocrConfidence: null,
+      classificationConfidence: null,
+      uploadedAt: (uDoc?.created_at as string | null) ?? new Date().toISOString(),
+      documentPlanYear: (uDoc?.plan_year as number | null) ?? null,
+      fileSizeBytes: (uDoc?.file_size as number | null) ?? 0,
+      docType,
+      uploaderTier: tier,
+      isAdmin,
+      isBanned: false, // no platform ban mechanism yet (see process-plan.ts note)
+      canonicalReBaselineRequired: promo?.re_baseline_required === true,
+    };
+
+    const forcedReparseInput: ForcedReparseInput = {
+      isAdmin,
+      scaleTier,
+      smartSkipCount: stability.smartSkipCount,
+      lastFullParseAt: stability.lastFullParseAt,
+      divergencePendingVerification: canonical?.divergence_pending_verification === true,
+      adminAttestedNeedsValidation,
+    };
+
+    const eligibility = evaluateSmartSkipEligibility({
+      validityInput,
+      layer2Stable: stability.parseWeightAccumulated >= STABILITY_THRESHOLD,
+      doctypePromoted,
+      forcedReparseInput,
+    });
+
+    if (eligibility.eligible) {
+      // Layer 5 every-5th-smart-skip counter: increment on each skip so the
+      // forced-reparse sampler fires every 5th. Non-fatal.
+      try {
+        await supabase
+          .from("canonical_document_stability")
+          .update({ smart_skip_count: stability.smartSkipCount + 1 })
+          .eq("canonical_plan_id", canonicalPlanId)
+          .eq("file_hash", fileHash);
+      } catch (incErr) {
+        console.warn("[extraction-dedup] CF-40v4 smart_skip_count increment failed (non-fatal):", incErr);
+      }
+      console.log(
+        `[extraction-dedup] CF-40v4 smart-skip ELIGIBLE (canonical=${canonicalPlanId}, doc=${docType}, weight=${stability.parseWeightAccumulated}). SKIP.`,
+      );
+      return { skip: true, canonicalPlanId, reason: "v4_skip:all_pass" };
+    }
+
+    console.log(
+      `[extraction-dedup] CF-40v4 smart-skip NOT eligible (${eligibility.decisionLayer}:${eligibility.failureReason}). EXTRACT.`,
+    );
+    return {
+      skip: false,
+      reason: `v4_extract:${eligibility.decisionLayer}:${eligibility.failureReason ?? "unknown"}`,
+    };
+  } catch (err) {
+    console.warn("[extraction-dedup] CF-40v4 smart-skip eval error (non-fatal) → v3 fallback:", err);
+    return null;
+  }
+}
+
+/**
+ * True iff an organic (email+phone-verified, non-admin) upload of this canonical
+ * exists with created_at strictly after `sinceIso`. Powers the Layer 5
+ * admin-attestation-validation trigger. Two-step (no FK embed): insurance_plans
+ * since-time → users verified/non-admin. insurance_plans.user_id is users.id
+ * (UUID), mirroring gatherLayer3Inputs.
+ */
+async function hasOrganicParseSince(
+  supabase: SupabaseClient,
+  canonicalPlanId: string,
+  sinceIso: string,
+): Promise<boolean> {
+  const { data: plans } = await supabase
+    .from("insurance_plans")
+    .select("user_id")
+    .eq("canonical_plan_id", canonicalPlanId)
+    .gt("created_at", sinceIso);
+  const userIds = [...new Set((plans ?? []).map((p) => p.user_id as string))];
+  if (userIds.length === 0) return false;
+  const { data: users } = await supabase
+    .from("users")
+    .select("id")
+    .in("id", userIds)
+    .eq("is_admin", false)
+    .eq("email_verified", true)
+    .eq("phone_verified", true)
+    .limit(1);
+  return (users?.length ?? 0) > 0;
 }
 
 // ── 5. Link Document to Canonical (Skip Path) ─────────────────────────────────
@@ -828,6 +1057,17 @@ export interface ParseEventContext {
   uploaderEmailVerified: boolean;
   uploaderPhoneVerified: boolean;
   uploaderEmail?: string;
+  // ── CF-40 v4 Layer 1 contribution-gate inputs (Ing-D.0b) ──────────────────
+  // Sourced at the parse caller (process-plan.ts). selfCheckPassRate +
+  // ocrConfidence are nullable — null = the parse path produced no such signal,
+  // so that gate is inapplicable (see ValidityGateInput). The recorder reads
+  // re_baseline_required canonical-side itself.
+  selfCheckPassRate: number | null;
+  ocrConfidence: number | null;
+  classificationConfidence: number | null;
+  fileSizeBytes: number;
+  documentPlanYear: number | null;
+  uploaderIsBanned: boolean;
 }
 
 export async function recordExtractionResult(
@@ -1111,6 +1351,13 @@ export async function recordExtractionResult(
           haikuPlanIdentityMatchesBaseline: v4Baseline
             ? planIdentityEqual(haikuPlanIdentityValues, v4Baseline)
             : true,
+          // CF-40 v4 Layer 1 contribution-gate inputs (Ing-D.0b).
+          selfCheckPassRate: parseEventContext.selfCheckPassRate,
+          ocrConfidence: parseEventContext.ocrConfidence,
+          classificationConfidence: parseEventContext.classificationConfidence,
+          fileSizeBytes: parseEventContext.fileSizeBytes,
+          documentPlanYear: parseEventContext.documentPlanYear,
+          uploaderIsBanned: parseEventContext.uploaderIsBanned,
         });
       } catch (v4Err) {
         console.error("[extraction-dedup] recordParseEventV4 error (non-fatal):", v4Err);

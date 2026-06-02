@@ -59,9 +59,18 @@ export type PromotionEventType = "pattern1_3_organic" | "admin_attested";
 // ── Layer 1 — Validity gate input ────────────────────────────────────────────
 
 export interface ValidityGateInput {
-  selfCheckPassRate: number; // 0..1
-  ocrConfidence: number; // 0..1
-  classificationConfidence: number; // 0..1
+  // Doc-quality signals are nullable: a parse path that does not PRODUCE the
+  // signal passes null, and the corresponding gate is treated as INAPPLICABLE
+  // (you cannot reject a parse on a measurement that was never taken). The
+  // always-on structural gates (validity window, file size, auth, banned,
+  // re-baseline) plus Layer 3 coverage/corroboration carry the quality floor.
+  //   selfCheckPassRate: null when no Pattern P-8 verifier ran (e.g. regex /
+  //     plan_document path emits no per-field source_excerpt_verified).
+  //   ocrConfidence: null when no OCR step ran (native-text/pdftotext path has
+  //     no OCR error mode).
+  selfCheckPassRate: number | null; // 0..1, or null = gate inapplicable
+  ocrConfidence: number | null; // 0..1, or null = gate inapplicable
+  classificationConfidence: number | null; // 0..1, or null = inapplicable (e.g. admin upload w/o classifier confidence)
   uploadedAt: Date | string;
   documentPlanYear: number | null;
   fileSizeBytes: number;

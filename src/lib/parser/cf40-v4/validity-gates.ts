@@ -42,13 +42,17 @@ function fileSizeMinFor(docType: ValidityGateInput["docType"]): number {
 export function evaluateValidityGates(input: ValidityGateInput): ValidityGateResult {
   const failures: ValidityGateFailure[] = [];
 
-  if (input.selfCheckPassRate < VALIDITY_THRESHOLDS.selfCheckPassRate) {
+  // Doc-quality gates are "enforce-when-present": a null signal means the parse
+  // path did not produce that measurement (no P-8 verifier / no OCR step), so the
+  // gate is inapplicable rather than failed. Reject only on a measured value that
+  // is below threshold. See ValidityGateInput doc-comment.
+  if (input.selfCheckPassRate !== null && input.selfCheckPassRate < VALIDITY_THRESHOLDS.selfCheckPassRate) {
     failures.push("self_check_pass_rate_below_threshold");
   }
-  if (input.ocrConfidence < VALIDITY_THRESHOLDS.ocrConfidence) {
+  if (input.ocrConfidence !== null && input.ocrConfidence < VALIDITY_THRESHOLDS.ocrConfidence) {
     failures.push("ocr_confidence_below_threshold");
   }
-  if (input.classificationConfidence < VALIDITY_THRESHOLDS.classificationConfidence) {
+  if (input.classificationConfidence !== null && input.classificationConfidence < VALIDITY_THRESHOLDS.classificationConfidence) {
     failures.push("classification_confidence_below_threshold");
   }
 

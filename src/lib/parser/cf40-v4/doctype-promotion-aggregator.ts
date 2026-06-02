@@ -19,6 +19,11 @@
  *     the in-memory classification arg — `unified_plan_doc_parser_v1` coerces that
  *     to 'plan_document' for SBC/EOC/plan_document alike (process-chunk:502). The
  *     caller resolves the true type from the DB document row and passes it here.
+ *   - Layer 1 contribution gate (Ing-D.0b): only documents with
+ *     `cf40_layer1_passed = TRUE` establish a plan's doc-type mapping, so ONLY
+ *     Layer-1-passing parses count toward corroboration/supermajority/coverage
+ *     (§2.2). NULL (parse predates the gate / recorded flag-off) + FALSE are
+ *     excluded — forward-only; promotion builds from gated corroboration only.
  *   - Corroboration counts ONLY email+phone-verified users (Pattern 1 #15; mirrors
  *     mig 076's gate on `evaluate_pattern1_corroboration`). Admin uploads feed the
  *     SEPARATE admin-attested path, never organic corroboration.
@@ -326,12 +331,18 @@ export async function gatherLayer3Inputs(
   //    not the coerced in-memory classification).
   const { data: docs } = await supabase
     .from("documents")
-    .select("linked_insurance_plan_id, classified_type")
+    .select("linked_insurance_plan_id, classified_type, cf40_layer1_passed")
     .in("linked_insurance_plan_id", planIds);
   const docTypeByPlanId = new Map<string, string>();
   for (const d of docs ?? []) {
     const pid = d.linked_insurance_plan_id as string | null;
-    if (pid && !docTypeByPlanId.has(pid)) {
+    // CF-40 v4 Layer 1 contribution gate (Ing-D.0b): ONLY parses that PASSED
+    // Layer 1 contribute to coverage/corroboration (Subplan §2.2 — "contributes
+    // to stability counter AND coverage scoring ONLY IF all gates pass").
+    // cf40_layer1_passed NULL (parse predates the gate / recorded flag-off) or
+    // FALSE → the plan is excluded from `filtered` below and counts toward
+    // nothing. Forward-only: promotion builds from gated corroboration only.
+    if (pid && d.cf40_layer1_passed === true && !docTypeByPlanId.has(pid)) {
       docTypeByPlanId.set(pid, d.classified_type as string);
     }
   }
