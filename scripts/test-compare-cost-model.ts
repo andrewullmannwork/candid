@@ -9,7 +9,11 @@
  */
 import type { CompareBenefit, ComparePlanPayload } from "@/lib/plan/compare";
 import { payFor, rankBadges, cellState, type CostRule } from "@/components/compare/cost-model";
-import { estimateYearlyV2, avgCoinsurance, type BasketItem } from "@/components/compare/yearly-model";
+import {
+  estimateYearlyV2, avgCoinsurance, estimateYearlyFromUnits,
+  householdPeople, householdCareFactor, defaultUnitCounts, billedFromUnits,
+  type BasketItem,
+} from "@/components/compare/yearly-model";
 import { premiumMonthlyFor, normalizePremiumToMonthly } from "@/components/compare/premium-model";
 
 let pass = 0;
@@ -111,6 +115,32 @@ eq("prem band not grounded", premiumMonthlyFor({ metalLevel: "silver" }).grounde
 eq("prem none", premiumMonthlyFor({}).source, "none");
 eq("normalize annual", normalizePremiumToMonthly(1200, "annual"), 100);
 eq("normalize per_paycheck", normalizePremiumToMonthly(200, "per_paycheck"), 200);
+
+// ── estimateYearlyFromUnits + household (design v2 adjusted care inputs) ──
+eq("householdPeople just me", householdPeople({ spouse: false, kids: 0 }), 1);
+eq("householdPeople spouse+2kids", householdPeople({ spouse: true, kids: 2 }), 4);
+check("careFactor spouse+1kid = 2.3", Math.abs(householdCareFactor({ spouse: true, kids: 1 }) - 2.3) < 1e-9);
+eq("defaultUnitCounts visits avg", defaultUnitCounts("average", { spouse: false, kids: 0 }).visits, 6);
+eq("defaultUnitCounts visits avg +spouse", defaultUnitCounts("average", { spouse: true, kids: 0 }).visits, 11); // round(6×1.8)
+eq("billedFromUnits visits+rx", billedFromUnits({ visits: 3, rx: 2 }), 3 * 180 + 2 * 45 * 12);
+
+const onlyVisits = { visits: 3, therapy: 0, rx: 0, imaging: 0, events: 0 };
+const hmoU = plan(0, 7900, "HMO", [bnf("pcp_visit", { inCopay: 20, inDed: false })]);
+const eU = estimateYearlyFromUnits(hmoU, { usage: "average", household: { spouse: false, kids: 0 }, unitOverrides: onlyVisits });
+eq("units HMO visits copay care", eU.care, 60); // 3 × min($20,$180)
+eq("units HMO dataCoverage = 1", eU.dataCoverage, 1); // only visits used; pcp_visit has data
+
+const rxP = plan(0, 8000, "HMO", [bnf("generic_rx_tier1", { inCopay: 10, inDed: false })]);
+eq("units rx monthly ×12", estimateYearlyFromUnits(rxP, { usage: "healthy", household: { spouse: false, kids: 0 }, unitOverrides: { visits: 0, therapy: 0, rx: 2, imaging: 0, events: 0 } }).care, 240);
+
+const bigPlan = plan(1500, 8000, "PPO", [bnf("inpatient_facility", { inCoins: 0.2, inDed: true })]);
+const onlyEvent = { visits: 0, therapy: 0, rx: 0, imaging: 0, events: 1 };
+const indEv = estimateYearlyFromUnits(bigPlan, { usage: "healthy", household: { spouse: false, kids: 0 }, unitOverrides: onlyEvent });
+eq("units event individual deductible", indEv.care, 3600); // 1500 + (12000−1500)×0.2
+const famEv = estimateYearlyFromUnits(bigPlan, { usage: "healthy", household: { spouse: true, kids: 0 }, unitOverrides: onlyEvent });
+eq("units event family deductible ×2", famEv.care, 4800); // 3000 + (12000−3000)×0.2
+check("family care > individual", famEv.care > indEv.care);
+eq("units real family override", estimateYearlyFromUnits(bigPlan, { usage: "healthy", household: { spouse: true, kids: 0 }, unitOverrides: onlyEvent, familyDeductible: 1000, familyOop: 8000 }).care, 3200); // 1000 + (12000−1000)×0.2
 
 // ── report ──────────────────────────────────────────────────────────
 console.log(`\nCompare v2 cost-model fixture: ${pass} passed, ${fails.length} failed`);
