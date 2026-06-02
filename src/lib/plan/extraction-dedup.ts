@@ -812,6 +812,24 @@ export interface HaikuPlanIdentityValues {
   in_oop_max_family: number | null;
 }
 
+/**
+ * CF-40 v4 (Ing-D.0a) — uploader + doc context for the Layer 2/3 promotion
+ * recorder. Passed from the parser surface (process-plan.ts) so
+ * recordExtractionResult can fire recordParseEventV4 after the v3 stability write.
+ *
+ * `docType` MUST be the TRUE type from `documents.classified_type`, NOT the
+ * in-memory classification arg — `unified_plan_doc_parser_v1` coerces that to
+ * 'plan_document' for SBC/EOC/plan_document alike (process-chunk:502).
+ */
+export interface ParseEventContext {
+  docType: ClassifiedDocType;
+  uploadedAt: Date;
+  uploaderIsAdmin: boolean;
+  uploaderEmailVerified: boolean;
+  uploaderPhoneVerified: boolean;
+  uploaderEmail?: string;
+}
+
 export async function recordExtractionResult(
   supabase: SupabaseClient,
   documentId: string,
@@ -820,6 +838,7 @@ export async function recordExtractionResult(
   fileHash: string | null,
   extractedServiceSlugs: string[],
   haikuPlanIdentityValues?: HaikuPlanIdentityValues,
+  parseEventContext?: ParseEventContext,
 ): Promise<void> {
   try {
     // Get existing canonical service slugs BEFORE this extraction merged
@@ -1062,6 +1081,41 @@ export async function recordExtractionResult(
         },
         { onConflict: "canonical_plan_id,file_hash" },
       );
+
+    // ── CF-40 v4 (Ing-D.0a) — Layer 2 weight + Layer 3 promotion recorder ──
+    // Flag-gated INSIDE recordParseEventV4 (no-op when cf40_v4_algorithm is OFF —
+    // the only PROD state until Ing-D.1). Dynamic import avoids a static cycle
+    // (record-parse-event imports isPlanDocumentType from this module). Non-fatal:
+    // never block the v3 stability write above. Requires parseEventContext (TRUE
+    // doc_type + uploader trust) from the parser surface.
+    if (parseEventContext) {
+      try {
+        const { recordParseEventV4 } = await import(
+          "@/lib/parser/cf40-v4/record-parse-event"
+        );
+        const v4Baseline =
+          (existingStability?.last_haiku_extracted_values as HaikuPlanIdentityValues | null) ??
+          null;
+        await recordParseEventV4(supabase, {
+          canonicalPlanId,
+          fileHash,
+          documentId,
+          userId,
+          docType: parseEventContext.docType,
+          uploadedAt: parseEventContext.uploadedAt,
+          uploaderIsAdmin: parseEventContext.uploaderIsAdmin,
+          uploaderEmailVerified: parseEventContext.uploaderEmailVerified,
+          uploaderPhoneVerified: parseEventContext.uploaderPhoneVerified,
+          uploaderEmail: parseEventContext.uploaderEmail,
+          newServicesFound,
+          haikuPlanIdentityMatchesBaseline: v4Baseline
+            ? planIdentityEqual(haikuPlanIdentityValues, v4Baseline)
+            : true,
+        });
+      } catch (v4Err) {
+        console.error("[extraction-dedup] recordParseEventV4 error (non-fatal):", v4Err);
+      }
+    }
   } catch (err) {
     // Non-fatal — don't break the main pipeline
     console.error("[extraction-dedup] recordExtractionResult error (non-fatal):", err);
