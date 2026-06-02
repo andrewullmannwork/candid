@@ -29,14 +29,18 @@
 
 import type { createServerClient } from "@/lib/supabase/server";
 import {
+  ADMIN_ATTESTATION_FLAG_KEY,
   CF40_V4_FLAG_KEY,
   effectiveWeight,
   getTimeDecayBracket,
   resolveTrustTier,
   TRUST_WEIGHT,
+  type PromotionEvalResult,
   type TrustTier,
 } from "./index";
+import { decideDoctypePromotion, gatherLayer3Inputs } from "./doctype-promotion-aggregator";
 import { isPlanDocumentType } from "@/lib/plan/extraction-dedup";
+import { toPlanDocType, type PlanDocType } from "@/lib/parser/doctype-expected-counts";
 import type { ClassifiedDocType } from "@/lib/classifier";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
@@ -72,6 +76,14 @@ export interface ParseEventTelemetry {
   timeDecayBracket: ReturnType<typeof getTimeDecayBracket>;
   trustWeight: number;
   notes: string[];
+  /** Layer 3 promotion-evaluation outcome (present only on the FLAG-ON path). */
+  promotion?: {
+    evaluated: boolean;
+    promoted: boolean;
+    eventType: "pattern1_3_organic" | "admin_attested" | null;
+    coverageScore: number;
+    distinctUsers: number;
+  };
 }
 
 export async function recordParseEventV4(
@@ -131,19 +143,12 @@ export async function recordParseEventV4(
   }
 
   // ── FLAG ON path ──────────────────────────────────────────────────────────
-  // When v4 is enabled in production, this branch performs the actual
-  // canonical_doctype_promotion_state + canonical_document_stability writes
-  // for Layer 2 weight accumulation + Layer 3 promotion evaluation.
-  //
-  // For Session 80 close: this is intentionally a logging-only seam.
-  // Mig 086 is not yet applied to PROD; full DB integration ships as
-  // Phase 2 follow-up after the schema lands + admin smoke confirms.
-  // See Subplan §8 closeout criterion #11.
+  // Ing-D.0a (mig 086 PROD-applied): Layer 2 weight accumulation +
+  // Layer 3 per-(canonical, doc_type) promotion evaluation + UPSERT into
+  // canonical_doctype_promotion_state. This branch only runs when
+  // cf40_v4_algorithm is ON — dormant in PROD until Ing-D.1 flips the flag.
   console.log(
-    `[cf40-v4] FLAG ON — would record parse event. (canonical=${input.canonicalPlanId}, hash=${input.fileHash.slice(0, 12)}…, doc=${input.docType}, tier=${tier}, w=${eWeight}, age_days=${ageDays}, new_services=${input.newServicesFound}, baseline_match=${input.haikuPlanIdentityMatchesBaseline})`,
-  );
-  notes.push(
-    "v4 flag ON: full integration deferred to Phase 2 follow-up (mig 086 + admin soak required first)",
+    `[cf40-v4] FLAG ON — recording parse event. (canonical=${input.canonicalPlanId}, hash=${input.fileHash.slice(0, 12)}…, doc=${input.docType}, tier=${tier}, w=${eWeight}, age_days=${ageDays}, new_services=${input.newServicesFound}, baseline_match=${input.haikuPlanIdentityMatchesBaseline})`,
   );
 
   // Optional: bump parse_weight_accumulated (additive, safe even if v4 path
@@ -174,6 +179,71 @@ export async function recordParseEventV4(
     notes.push(`weight accumulation skipped (non-fatal error)`);
   }
 
+  // ── Layer 3 — per-(canonical, doc_type) promotion evaluation (Ing-D.0a) ─────
+  // Gather corroboration + supermajority + coverage from the user-side flywheel
+  // tables, run the promotion evaluator, and UPSERT canonical_doctype_promotion_state.
+  // Organic Pattern 1 #3 first; admin-attested fallback when organic doesn't pass
+  // (gated on admin_attestation_enabled + ≥2 admin uploads). Non-fatal — any failure
+  // here must not break v3 stability persistence (already done above).
+  let promotion: ParseEventTelemetry["promotion"] = {
+    evaluated: false,
+    promoted: false,
+    eventType: null,
+    coverageScore: 0,
+    distinctUsers: 0,
+  };
+  const planDocType = toPlanDocType(input.docType);
+  if (planDocType) {
+    try {
+      const inputs = await gatherLayer3Inputs(
+        supabase,
+        input.canonicalPlanId,
+        planDocType,
+        new Date(),
+      );
+      if (inputs) {
+        // Admin-attested fallback is flag-gated — resolve the flag (IO) before the
+        // pure decision (decideDoctypePromotion). Default OFF on flag-read error.
+        let adminEnabled = false;
+        try {
+          const { isFeatureEnabled } = await import("@/lib/config/product-flags");
+          adminEnabled = await isFeatureEnabled(ADMIN_ATTESTATION_FLAG_KEY, input.uploaderEmail);
+        } catch {
+          // default OFF — no admin promotion
+        }
+
+        const { result, eventType } = decideDoctypePromotion(inputs, planDocType, adminEnabled);
+
+        await upsertDoctypePromotionState(
+          supabase,
+          input.canonicalPlanId,
+          planDocType,
+          result,
+          eventType,
+        );
+
+        promotion = {
+          evaluated: true,
+          promoted: result.promoted,
+          eventType: result.promoted ? eventType : null,
+          coverageScore: result.observed.coverageScore,
+          distinctUsers: result.observed.distinctUsers,
+        };
+        notes.push(
+          result.promoted
+            ? `Layer 3: PROMOTED (${eventType}) doc_type=${planDocType} coverage=${result.observed.coverageScore.toFixed(3)}`
+            : `Layer 3: not promoted (${result.failureReasons.join(", ") || "criteria unmet"})`,
+        );
+      } else {
+        notes.push(`Layer 3: no user-side uploads of doc_type=${planDocType} — skipped`);
+      }
+    } catch (err) {
+      // Non-fatal — v3 stability already persisted; v4 Layer 3 is best-effort.
+      console.warn("[cf40-v4] Layer 3 evaluation failed (non-fatal):", err);
+      notes.push("Layer 3 evaluation skipped (non-fatal error)");
+    }
+  }
+
   return {
     v4Enabled: true,
     decision: "recorded",
@@ -182,5 +252,68 @@ export async function recordParseEventV4(
     timeDecayBracket: bracket,
     trustWeight: TRUST_WEIGHT[tier],
     notes,
+    promotion,
   };
+}
+
+/**
+ * UPSERT the Layer 3 verdict into canonical_doctype_promotion_state.
+ *
+ * Sticky promotion (Ing-D.0a critical review): once `doctype_promoted=TRUE`, it
+ * stays TRUE — a later weaker parse never auto-demotes. Layer 4 (Ing-D.0c) owns
+ * demotion via `re_baseline_required`, which this UPSERT never writes (omitted →
+ * preserved on conflict; default FALSE on insert). `promotion_event_type` and
+ * `promoted_at` are set ONCE, on first promotion. coverage_score / counts /
+ * last_evaluated_at refresh on every evaluation.
+ */
+async function upsertDoctypePromotionState(
+  supabase: SupabaseClient,
+  canonicalPlanId: string,
+  docType: PlanDocType,
+  result: PromotionEvalResult,
+  eventType: "pattern1_3_organic" | "admin_attested",
+): Promise<void> {
+  const nowIso = new Date().toISOString();
+
+  const { data: existing } = await supabase
+    .from("canonical_doctype_promotion_state")
+    .select("doctype_promoted, promotion_event_type, promoted_at")
+    .eq("canonical_plan_id", canonicalPlanId)
+    .eq("document_type", docType)
+    .maybeSingle();
+
+  const wasPromoted = existing?.doctype_promoted === true;
+  const nowPromoted = wasPromoted || result.promoted; // sticky
+
+  const promotionEventType = wasPromoted
+    ? ((existing?.promotion_event_type as string | null) ?? null)
+    : result.promoted
+      ? eventType
+      : null;
+  const promotedAt = wasPromoted
+    ? ((existing?.promoted_at as string | null) ?? null)
+    : result.promoted
+      ? nowIso
+      : null;
+
+  await supabase.from("canonical_doctype_promotion_state").upsert(
+    {
+      canonical_plan_id: canonicalPlanId,
+      document_type: docType,
+      doctype_promoted: nowPromoted,
+      promotion_event_type: promotionEventType,
+      promoted_at: promotedAt,
+      coverage_score: round3(result.observed.coverageScore),
+      distinct_users_count: result.observed.distinctUsers,
+      total_qualifying_uploads: result.observed.totalUploads,
+      last_evaluated_at: nowIso,
+      // re_baseline_required intentionally omitted — Layer 4 (Ing-D.0c) owns it.
+    },
+    { onConflict: "canonical_plan_id,document_type" },
+  );
+}
+
+/** Round to NUMERIC(4,3) precision for coverage_score storage. */
+function round3(n: number): number {
+  return Math.round(n * 1000) / 1000;
 }

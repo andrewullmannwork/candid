@@ -15,6 +15,7 @@ import {
 } from "@/lib/parser/canonical-haiku-extractions";
 import type { SBCPlanIdentity } from "@/lib/sbc/types";
 import type { PlanDocPlanIdentity } from "@/lib/plan_doc/types";
+import type { ClassifiedDocType } from "@/lib/classifier";
 import { extractServicesWithClaude } from "@/lib/plan/claude-extractor";
 import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
 import { recordCostEvent } from "@/lib/cost/parse-cost-events";
@@ -1546,12 +1547,22 @@ export async function processPlanDocumentData(
     if (canonicalPlanId && !canonicalNeedsConfirmation) {
       try {
         const { recordExtractionResult } = await import("@/lib/plan/extraction-dedup");
-        // Get file hash from document record
+        // Get file hash + TRUE doc type + upload time from the document record.
+        // classified_type is the persisted classifier verdict (sbc/eoc/plan_document),
+        // NOT the unified-parser-coerced 'plan_document' classification arg — required
+        // for correct per-doc-type promotion state (Ing-D.0a).
         const { data: docForHash } = await supabase
           .from("documents")
-          .select("file_hash")
+          .select("file_hash, classified_type, created_at")
           .eq("id", documentId)
           .single();
+
+        // Uploader trust signals for the CF-40 v4 Layer 2/3 recorder (firebase_uid).
+        const { data: uploaderUser } = await supabase
+          .from("users")
+          .select("is_admin, email_verified, phone_verified, email")
+          .eq("firebase_uid", doc.user_id)
+          .maybeSingle();
 
         const extractedSlugs = parseResult.services
           .filter((s) => s.confidence >= 0.5)
@@ -1577,6 +1588,18 @@ export async function processPlanDocumentData(
           docForHash?.file_hash || null,
           extractedSlugs,
           haikuPlanIdentityValues,
+          docForHash?.classified_type
+            ? {
+                docType: docForHash.classified_type as ClassifiedDocType,
+                uploadedAt: docForHash.created_at
+                  ? new Date(docForHash.created_at as string)
+                  : new Date(),
+                uploaderIsAdmin: uploaderUser?.is_admin === true,
+                uploaderEmailVerified: uploaderUser?.email_verified === true,
+                uploaderPhoneVerified: uploaderUser?.phone_verified === true,
+                uploaderEmail: (uploaderUser?.email as string | undefined) ?? undefined,
+              }
+            : undefined,
         );
       } catch (trackErr) {
         console.error("[process-plan] Extraction tracking error (non-fatal):", trackErr);
