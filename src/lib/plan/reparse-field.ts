@@ -96,8 +96,8 @@ const PLAN_COVERED_SERVICES_REPARSE_COLUMNS = new Set([
 ]);
 
 /** Haiku 4.5 pricing — published Anthropic rates. Per-token. */
-const HAIKU_INPUT_PRICE_PER_TOKEN = 0.8 / 1_000_000;
-const HAIKU_OUTPUT_PRICE_PER_TOKEN = 4.0 / 1_000_000;
+const HAIKU_INPUT_PRICE_PER_TOKEN = 1.0 / 1_000_000; // S155 P0a: $0.8→$1 (Haiku 4.5 published input rate)
+const HAIKU_OUTPUT_PRICE_PER_TOKEN = 5.0 / 1_000_000; // S155 P0a: $4→$5 (Haiku 4.5 published output rate)
 const ESTIMATED_OUTPUT_TOKENS = 200;
 
 /** Default cost caps (admin-tunable via consumer_read_filter_v1.config). */
