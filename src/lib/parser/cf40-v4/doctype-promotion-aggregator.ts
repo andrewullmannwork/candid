@@ -124,6 +124,15 @@ export interface Layer3Inputs {
   baselineTuple: IdentityTuple | null;
   /** Ing-D.0d — non-baseline tuples (the dropped minorities) for divergence routing. */
   minorities: MinorityCandidate[];
+  /**
+   * Ing-D.0d — canonical_plans.divergence_pending_verification. The minority router
+   * is SKIPPED while this is TRUE: an open verification (Layer-4 §2.7c) owns the
+   * canonical's divergence adjudication, so a parallel divergence_review row would be a
+   * redundant cross-queue entry that the verification→re-baseline resolution could
+   * stale. Set by the IO wrapper (gatherLayer3Inputs); the pure aggregation defaults
+   * it false (it has no verification knowledge).
+   */
+  divergencePendingVerification: boolean;
 }
 
 export interface ComputeLayer3InputsArgs {
@@ -280,6 +289,8 @@ export function computeLayer3Inputs(args: ComputeLayer3InputsArgs): Layer3Inputs
     adminUploadCount: adminRows.length,
     baselineTuple,
     minorities,
+    // Pure default — the IO wrapper (gatherLayer3Inputs) sets the real canonical state.
+    divergencePendingVerification: false,
   };
 }
 
@@ -410,10 +421,11 @@ export async function gatherLayer3Inputs(
     });
   }
 
-  // 4. canonical scale.
+  // 4. canonical scale + verification state (one read; the verification flag gates
+  //    the Ing-D.0d minority router — see Layer3Inputs.divergencePendingVerification).
   const { data: canonical } = await supabase
     .from("canonical_plans")
-    .select("extraction_count")
+    .select("extraction_count, divergence_pending_verification")
     .eq("id", canonicalPlanId)
     .maybeSingle();
   const extractionCount = (canonical?.extraction_count as number | null) ?? filtered.length;
@@ -447,7 +459,7 @@ export async function gatherLayer3Inputs(
     },
   }));
 
-  return computeLayer3Inputs({
+  const inputs = computeLayer3Inputs({
     docType,
     planRows,
     userById,
@@ -456,6 +468,10 @@ export async function gatherLayer3Inputs(
     verifiedServiceCount: verifiedServiceIds.size,
     now,
   });
+  return {
+    ...inputs,
+    divergencePendingVerification: canonical?.divergence_pending_verification === true,
+  };
 }
 
 // ── Ing-D.0d — Layer 3(b) minority-candidate router ──────────────────────────
