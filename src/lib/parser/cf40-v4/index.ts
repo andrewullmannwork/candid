@@ -49,6 +49,7 @@ export function evaluateSmartSkipEligibility(
       eligible: false,
       decisionLayer: "layer1",
       failureReason: validity.failureReasons[0] ?? "layer1_unknown",
+      forcedReparseReason: null,
     };
   }
 
@@ -58,6 +59,7 @@ export function evaluateSmartSkipEligibility(
       eligible: false,
       decisionLayer: "layer2",
       failureReason: "canonical_hash_not_stable",
+      forcedReparseReason: null,
     };
   }
 
@@ -67,6 +69,7 @@ export function evaluateSmartSkipEligibility(
       eligible: false,
       decisionLayer: "layer3",
       failureReason: "doctype_not_promoted",
+      forcedReparseReason: null,
     };
   }
 
@@ -82,10 +85,19 @@ export function evaluateSmartSkipEligibility(
       eligible: false,
       decisionLayer: "layer5",
       failureReason: `forced_reparse:${forced.reason}`,
+      // The structured reason — Ing-D.0c-ii reads this to distinguish a
+      // verification-mode forced re-parse (→ resolve) from a sampling/staleness/
+      // admin forced re-parse (→ candidate verification-mode open).
+      forcedReparseReason: forced.reason,
     };
   }
 
-  return { eligible: true, decisionLayer: "all_pass", failureReason: null };
+  return {
+    eligible: true,
+    decisionLayer: "all_pass",
+    failureReason: null,
+    forcedReparseReason: null,
+  };
 }
 
 // ── Public re-exports for callers + admin UI + tests ─────────────────────────

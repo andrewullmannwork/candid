@@ -16,6 +16,7 @@ import {
 import type { SBCPlanIdentity } from "@/lib/sbc/types";
 import type { PlanDocPlanIdentity } from "@/lib/plan_doc/types";
 import type { ClassifiedDocType } from "@/lib/classifier";
+import type { ForcedReparseReason } from "@/lib/parser/cf40-v4";
 import { extractServicesWithClaude } from "@/lib/plan/claude-extractor";
 import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
 import { recordCostEvent } from "@/lib/cost/parse-cost-events";
@@ -1553,7 +1554,7 @@ export async function processPlanDocumentData(
         // for correct per-doc-type promotion state (Ing-D.0a).
         const { data: docForHash } = await supabase
           .from("documents")
-          .select("file_hash, classified_type, created_at, classification_confidence, file_size, plan_year")
+          .select("file_hash, classified_type, created_at, classification_confidence, file_size, plan_year, cf40_forced_reparse_reason")
           .eq("id", documentId)
           .single();
 
@@ -1627,6 +1628,11 @@ export async function processPlanDocumentData(
                 // No platform ban mechanism exists yet (no users.is_banned column);
                 // wire a real signal when bans are introduced (tracked follow-up).
                 uploaderIsBanned: false,
+                // CF-40 v4 Layer 4 (Ing-D.0c-ii) — the forced-reparse reason
+                // persisted at smart-skip decide-time (mig 141). Drives
+                // verification-mode open/resolve. null = not a forced re-parse.
+                forcedReparseReason:
+                  (docForHash.cf40_forced_reparse_reason as ForcedReparseReason | null) ?? null,
               }
             : undefined,
         );
