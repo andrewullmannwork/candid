@@ -11,7 +11,7 @@
  */
 import { unwrapValue } from "@/components/display-state";
 import { normalizeCoinsuranceDecimal } from "@/lib/billing/coinsurance";
-import type { CompareBenefit } from "@/lib/plan/compare";
+import type { CompareBenefit, ComparePlanPayload } from "@/lib/plan/compare";
 import { asNumber } from "./compare-aggregates";
 
 export type NetworkTier = "inNetwork" | "outOfNetwork";
@@ -161,4 +161,81 @@ export function rankBadges(vals: number[]): Badge[] {
   if (vs.filter((v) => v === min).length === 1) res[live.find((o) => o.v === min)!.i] = "best";
   if (vs.filter((v) => v === max).length === 1) res[live.find((o) => o.v === max)!.i] = "worst";
   return res;
+}
+
+// ── Bill-mode aggregation + ranking (compare_v2 §5, PR3) ─────────────────────
+
+/**
+ * Reference bill ($) for copay-mode structural ranking. payFor runs at this
+ * amount with the deductible IGNORED so the comparison isolates cost-share
+ * structure — a "$40 copay" ranks better than "30% coinsurance" honestly,
+ * independent of who has the lower deductible (that's its own NUMBERS row).
+ * Tunable later via the compare_v2_redesign flag config (Ship Gate G6).
+ */
+export const COPAY_RANK_REFERENCE_BILL = 1000;
+
+export interface RankContext {
+  mode: "copay" | "bill";
+  bill: number;
+  dedMet: boolean;
+}
+
+/**
+ * Comparable ranking value for one cell (lower = better; Infinity = excluded).
+ * Bill mode → the live member share at the entered bill + deductible-met toggle.
+ * Copay mode → the structural share at COPAY_RANK_REFERENCE_BILL (deductible
+ * ignored). Not-covered ranks as the full bill (worst, correctly); unknown /
+ * no-structure rules return Infinity so they drop out of the comparison.
+ */
+export function rankValue(rule: CostRule, basis: PlanCostBasis, ctx: RankContext): number {
+  const { pay } =
+    ctx.mode === "bill"
+      ? payFor(rule, basis, ctx.bill, ctx.dedMet)
+      : payFor(rule, basis, COPAY_RANK_REFERENCE_BILL, true);
+  return pay == null ? Infinity : pay;
+}
+
+/** Per-plan in-network cost basis (deductible + OOP ceiling) for payFor / rankValue. */
+export function costBasisOf(plan: ComparePlanPayload): PlanCostBasis {
+  return {
+    deductible: asNumber(plan.planSummary.inDeductible) ?? 0,
+    oop: asNumber(plan.planSummary.inOopMax),
+  };
+}
+
+export interface AverageShare {
+  /** Mean per-service member share (whole $), or null when no service is computable. */
+  avg: number | null;
+  /** True when at least one contributing service hit the OOP ceiling. */
+  capped: boolean;
+}
+
+/**
+ * Average member share across a benefit set under one plan (bill mode). This is
+ * deliberately an AVERAGE, never a sum: each row is "what you'd pay if THIS
+ * service's bill were $X", and a single bill's share can't exceed the bill — so
+ * neither can the average (the design's locked bill-math fix). Each per-service
+ * pay is already OOP-capped in payFor; services with no computable share (na /
+ * unk) are excluded from the denominator. Not-covered services contribute the
+ * full bill (you pay in full), matching the per-cell semantics.
+ */
+export function averageMemberShare(
+  benefits: Array<CompareBenefit | null>,
+  basis: PlanCostBasis,
+  bill: number,
+  dedMet: boolean,
+): AverageShare {
+  let sum = 0;
+  let count = 0;
+  let capped = false;
+  for (const b of benefits) {
+    if (!b) continue;
+    const { pay, note } = payFor(toRule(b, "inNetwork"), basis, bill, dedMet);
+    if (pay != null) {
+      sum += pay;
+      count += 1;
+      if (note === "out-of-pocket max reached") capped = true;
+    }
+  }
+  return { avg: count > 0 ? Math.round(sum / count) : null, capped };
 }

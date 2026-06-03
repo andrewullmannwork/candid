@@ -4,24 +4,20 @@ import { cn } from "@/lib/utils/cn";
 import { ComparisonSection } from "@/components/comparison-section";
 import { unwrapValue } from "@/components/display-state";
 import type { ComparePlanPayload } from "@/lib/plan/compare";
-import {
-  bestNumericIndices,
-  categoryCoveragePerPlan,
-  distinctCategoriesAcrossCohort,
-} from "../compare-aggregates";
+import { categoryCoveragePerPlan, distinctCategoriesAcrossCohort } from "../compare-aggregates";
+import { rankBadges } from "../cost-model";
 import { compareGridClass } from "../compare-grid";
 import { getCorroborationCopy } from "../compare-colors";
-import { BestBadge } from "../BestBadge";
+import { CompareRankBadge } from "./CompareRankBadge";
 import { MobilePlanLabel } from "../MobilePlanLabel";
 
 /**
- * Compare v2 (S157, PR2) — "SERVICE BREADTH" section, copay mode.
+ * Compare v2 (S157 PR2 + S158 PR3) — "SERVICE BREADTH" section.
  *
- * Evolves the B3.3 BreadthTable for the reskin. Same 4 rows + derivation:
- * covered-services count (big number) / category coverage (X of Y) / network
- * type / data source (bucketed corroboration — same vocabulary as the summary
- * card source pill for consistency). Categorical rows (network, source) carry no
- * Best badge.
+ * 4 rows: covered-services count (big number) / category coverage (X of Y) /
+ * network type / data source. PR3 gives the two count rows tie-aware Most/Fewest
+ * badges (rankBadges on the negated count, so higher = better → "Most"); the
+ * categorical rows (network, source) carry no badge.
  */
 
 interface BreadthTableV2Props {
@@ -33,8 +29,9 @@ export function BreadthTableV2({ plans }: BreadthTableV2Props) {
   const totalCategoriesInCohort = distinctCategoriesAcrossCohort(plans);
   const coveragePerPlan = categoryCoveragePerPlan(plans);
 
-  const bestCoveredIdx = new Set(bestNumericIndices(plans, (p) => p.coveredServiceCount, false));
-  const bestCoverageIdx = new Set(bestNumericIndices(coveragePerPlan, (n) => n, false));
+  // Higher = better → negate so rankBadges (lower = better) flags the highest as Best/"Most".
+  const coveredBadges = rankBadges(plans.map((p) => -p.coveredServiceCount));
+  const coverageBadges = rankBadges(coveragePerPlan.map((n) => -n));
 
   return (
     <ComparisonSection eyebrow="Service breadth" title="How many services each plan covers">
@@ -50,16 +47,12 @@ export function BreadthTableV2({ plans }: BreadthTableV2Props) {
               <span className="text-2xl font-bold text-slate-900 tabular-nums">
                 {plan.coveredServiceCount}
               </span>
-              {bestCoveredIdx.has(idx) && <BestBadge label="Most breadth" />}
+              <CompareRankBadge kind={coveredBadges[idx]} bestLabel="Most" worstLabel="Fewest" />
             </BreadthCellV2>
           ))}
         </BreadthRowV2>
 
-        <BreadthRowV2
-          label="Category coverage"
-          sublabel="Distinct categories covered"
-          gridClass={gridClass}
-        >
+        <BreadthRowV2 label="Category coverage" sublabel="Distinct categories covered" gridClass={gridClass}>
           {plans.map((plan, idx) => (
             <BreadthCellV2 key={`${plan.ref.id}-${idx}`} plan={plan} index={idx}>
               <span className="text-base font-semibold text-slate-900 tabular-nums">
@@ -69,7 +62,7 @@ export function BreadthTableV2({ plans }: BreadthTableV2Props) {
                   / {totalCategoriesInCohort || coveragePerPlan[idx]}
                 </span>
               </span>
-              {bestCoverageIdx.has(idx) && <BestBadge />}
+              <CompareRankBadge kind={coverageBadges[idx]} bestLabel="Most" worstLabel="Fewest" />
             </BreadthCellV2>
           ))}
         </BreadthRowV2>

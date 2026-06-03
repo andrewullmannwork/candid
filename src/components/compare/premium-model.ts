@@ -88,8 +88,18 @@ export interface PremiumInputs {
   metalLevel?: string | null;
 }
 
-/** Resolve the premium suggestion for one plan column (§4.1 priority). */
-export function premiumMonthlyFor(inputs: PremiumInputs): PremiumSuggestion {
+/**
+ * Resolve the premium suggestion for one plan column (§4.1 priority).
+ *
+ * `minSample` is the k-anon floor for showing a community average (Rule #5). It
+ * defaults to COMMUNITY_MIN_SAMPLE; the server passes the admin-adjustable
+ * COMPARE_FLYWHEEL_MIN_MEMBERS (/admin/settings) once the flywheel aggregation
+ * read-back lands. Until then no `community` input flows, so the default holds.
+ */
+export function premiumMonthlyFor(
+  inputs: PremiumInputs,
+  minSample: number = COMMUNITY_MIN_SAMPLE,
+): PremiumSuggestion {
   // 1. explicit user input — authoritative.
   if (
     inputs.userOverride != null &&
@@ -141,7 +151,7 @@ export function premiumMonthlyFor(inputs: PremiumInputs): PremiumSuggestion {
     c &&
     c.avgMonthly != null &&
     Number.isFinite(c.avgMonthly) &&
-    c.sampleSize >= COMMUNITY_MIN_SAMPLE
+    c.sampleSize >= minSample
   ) {
     return { value: Math.round(c.avgMonthly), source: "community", confidence: "medium", grounded: true };
   }
@@ -155,4 +165,26 @@ export function premiumMonthlyFor(inputs: PremiumInputs): PremiumSuggestion {
 
   // 5. nothing groundable.
   return { value: null, source: "none", confidence: "none", grounded: false };
+}
+
+/** Per-plan premium cell state (the design's `premiums` map value). */
+export interface PremiumEntry {
+  value: number | null;
+  confirmed: boolean;
+  source: PremiumSource;
+  inclEmployer: boolean;
+}
+
+/**
+ * Derive the default cell entry from a resolved suggestion. `your_plan` and
+ * `user_input` read as CONFIRMED (calm, prefilled); `community` and `estimate`
+ * read as an unconfirmed GHOST (tinted "Suggested" card that needs accept/enter).
+ */
+export function suggestionToEntry(s: PremiumSuggestion): PremiumEntry {
+  return {
+    value: s.value,
+    confirmed: s.source === "your_plan" || s.source === "user_input",
+    source: s.source,
+    inclEmployer: s.caveat === "incl. employer",
+  };
 }

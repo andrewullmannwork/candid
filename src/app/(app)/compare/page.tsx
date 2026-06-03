@@ -58,6 +58,14 @@ import { NumbersTable } from "@/components/compare/NumbersTable";
 import { BreadthTable } from "@/components/compare/BreadthTable";
 import { ServiceCategoryAccordions } from "@/components/compare/ServiceCategoryAccordions";
 import { ResultsViewV2 } from "@/components/compare/v2/ResultsViewV2";
+import { BuildViewV2 } from "@/components/compare/v2/BuildViewV2";
+import {
+  loadSessions,
+  saveSession,
+  loadRecents,
+  pushRecent,
+  type CompareSession,
+} from "@/components/compare/compare-sessions";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useMinHoldLoading } from "@/lib/loading/use-min-hold";
 
@@ -243,6 +251,18 @@ function CompareInterface() {
       cancelled = true;
     };
   }, []);
+
+  // Compare v2 (PR5) — localStorage sessions ("Pick up where you left off") +
+  // single-plan recents. Loaded post-mount (SSR-safe; never reads storage on the
+  // server so hydration can't mismatch).
+  const [sessions, setSessions] = useState<CompareSession[]>([]);
+  const [recents, setRecents] = useState<ReturnType<typeof loadRecents>>([]);
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    setSessions(loadSessions());
+    setRecents(loadRecents());
+  }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Parsing-screen state for upload slots.
   const [parseDocs, setParseDocs] = useState<ParseDoc[]>([]);
@@ -648,8 +668,23 @@ function CompareInterface() {
         return;
       }
       const data = (await res.json()) as { plans: ComparePlanPayload[] };
-      setResults(data.plans.filter((p) => "planSummary" in p) as ComparePlanPayload[]);
+      const resolved = data.plans.filter((p) => "planSummary" in p) as ComparePlanPayload[];
+      setResults(resolved);
       setMode("results");
+      // PR5 — persist the comparison + canonical recents for "pick up where you
+      // left off". Only canonical refs become recents (clean re-resolution; an
+      // own/uploaded plan has no re-pickable search identity).
+      if (resolved.length >= 2) {
+        setSessions(
+          saveSession(resolved.map((p) => ({ ref: p.ref, name: p.planName, sub: planLabelSub(p) }))),
+        );
+        resolved.forEach((p) => {
+          if (p.ref.kind === "canonical") {
+            pushRecent({ ref: p.ref, name: p.planName, sub: planLabelSub(p) });
+          }
+        });
+        setRecents(loadRecents());
+      }
     } catch {
       setResultsError("Couldn't load the comparison. Try again in a moment.");
       setMode("results");
@@ -664,6 +699,46 @@ function CompareInterface() {
     setParseDocs([]);
     setParseError(null);
   }
+
+  // ── PR5 sessions + results-editor (ref-space) ──────────────────────────
+  // Restore a saved comparison: re-resolve the stored refs straight to results.
+  const resumeSession = (session: CompareSession) => {
+    void callCompareApi(session.plans.map((p) => p.ref));
+  };
+
+  // Resolve a picked SlotState to a PlanRef. Search/current resolve immediately;
+  // upload-swap is NOT offered in the results editor (PR5 — ComparePickerV2 hides
+  // it there; deferred with the Turnstile-in-editor wiring), so this returns null
+  // for an upload slot (defensive — won't happen from the editor).
+  const slotToRef = (slot: SlotState): PlanRef | null => {
+    if (slot.kind === "current") return { kind: "user_plan", id: slot.plan.insurancePlanId };
+    if (slot.kind === "search" && slot.selected) {
+      const id = slot.selected.canonicalPlanId ?? slot.selected.id;
+      return id ? { kind: "canonical", id } : null;
+    }
+    return null;
+  };
+  const currentRefs = (): PlanRef[] => (results ?? []).map((p) => p.ref);
+  const onReplaceColumn = (columnIndex: number, slot: SlotState) => {
+    const ref = slotToRef(slot);
+    if (!ref) return;
+    const refs = currentRefs();
+    if (columnIndex < 0 || columnIndex >= refs.length) return;
+    refs[columnIndex] = ref;
+    void callCompareApi(refs);
+  };
+  const onAddColumn = (slot: SlotState) => {
+    const ref = slotToRef(slot);
+    if (!ref) return;
+    const refs = currentRefs();
+    if (refs.length >= 3) return;
+    void callCompareApi([...refs, ref]);
+  };
+  const onRemoveColumn = (columnIndex: number) => {
+    const refs = currentRefs().filter((_, i) => i !== columnIndex);
+    if (refs.length < 2) return;
+    void callCompareApi(refs);
+  };
 
   // ── Render ────────────────────────────────────────────────────────────
   // Single return wraps body + persistent Turnstile mount. Keeping the widget
@@ -680,6 +755,11 @@ function CompareInterface() {
           v2On={v2On}
           onStartOver={startOver}
           onBackToPicker={() => setMode("build")}
+          currentPlan={currentPlan}
+          recents={recents}
+          onReplaceColumn={onReplaceColumn}
+          onAddColumn={onAddColumn}
+          onRemoveColumn={onRemoveColumn}
           userActiveInsurancePlanId={currentPlan?.insurancePlanId ?? null}
           onFieldSaved={(planId, field, value) => {
             // Optimistic update: drop the new value into the matching user_plan
@@ -739,22 +819,38 @@ function CompareInterface() {
       ) : (
         // Build mode
         <div>
-          <BuildHeader />
+          {/* Compare v2 (PR5): reskinned picker + sessions when the flag is ON;
+              the consent gate / submit CTA / Turnstile mount below stay shared.
+              Flag OFF → the v1 hero + slots render byte-identical. */}
+          {v2On ? (
+            <BuildViewV2
+              slots={slots}
+              setSlot={setSlot}
+              currentPlan={currentPlan}
+              recents={recents}
+              sessions={sessions}
+              onResume={resumeSession}
+            />
+          ) : (
+            <>
+              <BuildHeader />
 
-          {/* Side-by-side on lg+; stacked on mobile/tablet. */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-5">
-            {slots.map((slot, idx) => (
-              <PlanSlot
-                key={idx}
-                index={idx}
-                optional={idx === 2}
-                currentPlan={currentPlan}
-                state={slot}
-                onChange={(next) => setSlot(idx, next)}
-                disabled={consentSubmitting}
-              />
-            ))}
-          </div>
+              {/* Side-by-side on lg+; stacked on mobile/tablet. */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-5">
+                {slots.map((slot, idx) => (
+                  <PlanSlot
+                    key={idx}
+                    index={idx}
+                    optional={idx === 2}
+                    currentPlan={currentPlan}
+                    state={slot}
+                    onChange={(next) => setSlot(idx, next)}
+                    disabled={consentSubmitting}
+                  />
+                ))}
+              </div>
+            </>
+          )}
 
           {showConsent && (
             <div className="max-w-3xl mx-auto mt-6 bg-white rounded-2xl ring-1 ring-amber-200 p-6 shadow-sm">
@@ -837,6 +933,12 @@ function CompareInterface() {
   );
 }
 
+function planLabelSub(p: ComparePlanPayload): string {
+  return [p.insurerName, p.planSummary.metalLevel, p.planSummary.year]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 function isResolved(s: SlotState): boolean {
   if (s.kind === "current") return true;
   if (s.kind === "search" && s.selected) return true;
@@ -882,6 +984,11 @@ function ResultsView({
   v2On,
   onStartOver,
   onBackToPicker,
+  currentPlan,
+  recents,
+  onReplaceColumn,
+  onAddColumn,
+  onRemoveColumn,
   userActiveInsurancePlanId,
   onFieldSaved,
 }: {
@@ -890,6 +997,11 @@ function ResultsView({
   v2On: boolean;
   onStartOver: () => void;
   onBackToPicker: () => void;
+  currentPlan: CurrentPlanSummary | null;
+  recents: ReturnType<typeof loadRecents>;
+  onReplaceColumn: (columnIndex: number, slot: SlotState) => void;
+  onAddColumn: (slot: SlotState) => void;
+  onRemoveColumn: (columnIndex: number) => void;
   userActiveInsurancePlanId: string | null;
   onFieldSaved?: (planId: string, field: EditableField, value: number) => void;
 }) {
@@ -936,6 +1048,11 @@ function ResultsView({
         plans={plans}
         onStartOver={onStartOver}
         onBackToPicker={onBackToPicker}
+        currentPlan={currentPlan}
+        recents={recents}
+        onReplaceColumn={onReplaceColumn}
+        onAddColumn={onAddColumn}
+        onRemoveColumn={onRemoveColumn}
         userActiveInsurancePlanId={userActiveInsurancePlanId}
         onFieldSaved={onFieldSaved}
       />

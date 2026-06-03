@@ -68,6 +68,15 @@ export interface ComparePlanSummary {
   metalLevel: string | null;
   state: string | null;
   year: number | null;
+  // PR4 (Compare v2) — paycheck-share + family ceilings for the premium model +
+  // Yearly Lens. Raw math inputs (undecorated); premium-model / yearly-model read
+  // them as OPTIONAL, so pre-PR4 callers stay correct. Canonical plans have no
+  // paycheck split → employee/subsidy/frequency are null there.
+  premiumEmployee: number | null;
+  premiumSubsidy: number | null;
+  premiumFrequency: string | null;
+  inDeductibleFamily: number | null;
+  inOopMaxFamily: number | null;
 }
 
 export interface ComparePlanPayload {
@@ -195,7 +204,7 @@ export async function resolveCanonicalPlan(opts: {
   const { data: plan, error } = await supabase
     .from("canonical_plans")
     .select(
-      "id, insurer_id, plan_name, plan_type, state, plan_year, metal_level, deductible_individual, oop_max_individual, premium_monthly, field_provenance, verification_count",
+      "id, insurer_id, plan_name, plan_type, state, plan_year, metal_level, deductible_individual, oop_max_individual, deductible_family, oop_max_family, premium_monthly, field_provenance, verification_count",
     )
     .eq("id", canonicalPlanId)
     .single();
@@ -373,6 +382,13 @@ export async function resolveCanonicalPlan(opts: {
       metalLevel: plan.metal_level,
       state: plan.state,
       year: plan.plan_year,
+      // Canonical = community aggregate; no paycheck split. Family ceilings come
+      // from the canonical row when present (PR4 Yearly Lens household math).
+      premiumEmployee: null,
+      premiumSubsidy: null,
+      premiumFrequency: null,
+      inDeductibleFamily: (plan.deductible_family as number | null) ?? null,
+      inOopMaxFamily: (plan.oop_max_family as number | null) ?? null,
     },
     benefits,
     coveredServiceCount: benefits.filter((b) => b.covered !== false).length,
@@ -566,6 +582,14 @@ export async function resolveUserPlan(opts: {
       metalLevel: (plan.metal_level as string | null) ?? null,
       state: (plan.state as string | null) ?? null,
       year: (plan.plan_year as number | null) ?? null,
+      // PR4 — real paycheck-share + family ceilings from the user's insurance_plans
+      // row (premium-model prefers employee net subsidy; yearly-model uses family
+      // ceilings for households >1).
+      premiumEmployee: (plan.premium_employee as number | null) ?? null,
+      premiumSubsidy: (plan.premium_subsidy as number | null) ?? null,
+      premiumFrequency: (plan.premium_frequency as string | null) ?? null,
+      inDeductibleFamily: (plan.in_deductible_family as number | null) ?? null,
+      inOopMaxFamily: (plan.in_oop_max_family as number | null) ?? null,
     },
     benefits,
     coveredServiceCount: benefits.filter((b) => b.covered !== false).length,

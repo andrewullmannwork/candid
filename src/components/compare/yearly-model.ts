@@ -234,6 +234,10 @@ export interface YearlyEstimate {
   total: number | null;
   /** Fraction of basket items backed by real plan data [0,1]. */
   dataCoverage: number;
+  /** Basket items backed by real plan data (the "N" in "N of M services"). */
+  servicesWithData: number;
+  /** Total basket items entering the estimate (the "M"). */
+  servicesTotal: number;
   /** The plan's avg coinsurance used for fallback (no-data) items. */
   coinsuranceUsed: number;
 }
@@ -273,6 +277,8 @@ export function estimateYearlyV2(
     premiumAnnual,
     total: premiumAnnual != null ? Math.round(care) + premiumAnnual : null,
     dataCoverage: total > 0 ? withData / total : 0,
+    servicesWithData: withData,
+    servicesTotal: total,
     coinsuranceUsed: fallbackCoins,
   };
 }
@@ -404,6 +410,8 @@ export function estimateYearlyFromUnits(
     premiumAnnual,
     total: premiumAnnual != null ? Math.round(care) + premiumAnnual : null,
     dataCoverage: total > 0 ? withData / total : 1, // no care expected → no uncertainty
+    servicesWithData: withData,
+    servicesTotal: total,
     coinsuranceUsed: fallbackCoins,
   };
 }

@@ -32,6 +32,9 @@ interface PlanSummaryCardsV2Props {
   /** User's ACTIVE plan id (from /api/plan/current) — distinguishes "Your plan"
    *  from "Uploaded by you" (comparison-only uploads). Null when no active plan. */
   userActiveInsurancePlanId: string | null;
+  /** PR5 swap/add editor — open the editor for a column / remove a column. */
+  onChangePlan?: (index: number) => void;
+  onRemovePlan?: (index: number) => void;
 }
 
 function planTypeText(planType: unknown): string | null {
@@ -44,7 +47,12 @@ function joinSubparts(parts: Array<string | null | undefined>): string {
   return parts.filter((p): p is string => Boolean(p && p.trim().length > 0)).join(" · ");
 }
 
-export function PlanSummaryCardsV2({ plans, userActiveInsurancePlanId }: PlanSummaryCardsV2Props) {
+export function PlanSummaryCardsV2({
+  plans,
+  userActiveInsurancePlanId,
+  onChangePlan,
+  onRemovePlan,
+}: PlanSummaryCardsV2Props) {
   if (plans.length === 0) return null;
   const gridClass = cn("grid grid-cols-1 gap-4", cardsGridLgClass(plans.length));
 
@@ -65,6 +73,8 @@ export function PlanSummaryCardsV2({ plans, userActiveInsurancePlanId }: PlanSum
             userActiveInsurancePlanId !== null &&
             plan.ref.id === userActiveInsurancePlanId
           }
+          onChange={onChangePlan ? () => onChangePlan(idx) : undefined}
+          onRemove={onRemovePlan && plans.length > 2 ? () => onRemovePlan(idx) : undefined}
         />
       ))}
     </div>
@@ -75,10 +85,14 @@ function PlanSummaryCardV2({
   plan,
   index,
   isUserActive,
+  onChange,
+  onRemove,
 }: {
   plan: ComparePlanPayload;
   index: number;
   isUserActive: boolean;
+  onChange?: () => void;
+  onRemove?: () => void;
 }) {
   const color = planColorFor(index);
   const letter = letterFor(index);
@@ -123,22 +137,50 @@ function PlanSummaryCardV2({
         {sub && <p className="mt-0.5 text-[11px] text-slate-500">{sub}</p>}
       </div>
 
-      {tags.length > 0 && (
-        <div className="mt-auto flex flex-wrap gap-1.5 pt-2">
-          {tags.map((tag) => (
-            <span
-              key={tag.key}
-              title={tag.why}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 ring-1 ring-amber-200 text-[11px] font-semibold"
+      <div className="mt-auto flex flex-col gap-2 pt-2">
+        {tags.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {tags.map((tag) => (
+              <span
+                key={tag.key}
+                title={tag.why}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 ring-1 ring-amber-200 text-[11px] font-semibold"
+              >
+                <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 2l2.39 7.36H22l-6.18 4.49 2.36 7.36L12 16.71l-6.18 4.5 2.36-7.36L2 9.36h7.61z" />
+                </svg>
+                {tag.label}
+              </span>
+            ))}
+          </div>
+        )}
+        {onChange && (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onChange}
+              className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700"
             >
-              <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 2l2.39 7.36H22l-6.18 4.49 2.36 7.36L12 16.71l-6.18 4.5 2.36-7.36L2 9.36h7.61z" />
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
-              {tag.label}
-            </span>
-          ))}
-        </div>
-      )}
+              Change
+            </button>
+            {onRemove && (
+              <button
+                type="button"
+                onClick={onRemove}
+                aria-label="Remove plan"
+                className="ml-auto text-slate-400 hover:text-rose-600 transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </button>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

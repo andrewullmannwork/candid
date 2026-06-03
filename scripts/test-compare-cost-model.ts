@@ -8,13 +8,18 @@
  * per Ship Gate G4). Spec: plans/compare_v2_redesign.md §5.
  */
 import type { CompareBenefit, ComparePlanPayload } from "@/lib/plan/compare";
-import { payFor, rankBadges, cellState, type CostRule } from "@/components/compare/cost-model";
+import {
+  payFor, rankBadges, cellState, rankValue, averageMemberShare, costBasisOf,
+  type CostRule,
+} from "@/components/compare/cost-model";
 import {
   estimateYearlyV2, avgCoinsurance, estimateYearlyFromUnits,
   householdPeople, householdCareFactor, defaultUnitCounts, billedFromUnits,
   type BasketItem,
 } from "@/components/compare/yearly-model";
-import { premiumMonthlyFor, normalizePremiumToMonthly } from "@/components/compare/premium-model";
+import {
+  premiumMonthlyFor, normalizePremiumToMonthly, suggestionToEntry,
+} from "@/components/compare/premium-model";
 
 let pass = 0;
 const fails: string[] = [];
@@ -46,10 +51,22 @@ function bnf(
     covered: o.covered ?? true,
   };
 }
-function plan(inDeductible: number, inOopMax: number | null, planType: string, benefits: CompareBenefit[]): ComparePlanPayload {
+function plan(
+  inDeductible: number,
+  inOopMax: number | null,
+  planType: string,
+  benefits: CompareBenefit[],
+  extra?: Partial<ComparePlanPayload["planSummary"]>,
+): ComparePlanPayload {
   return {
     ref: { kind: "canonical", id: "x" }, canonicalPlanId: "x", planName: "P", insurerName: "I",
-    planSummary: { premiumMonthly: null, inDeductible, outDeductible: null, inOopMax, outOopMax: null, planType, metalLevel: null, state: null, year: null },
+    planSummary: {
+      premiumMonthly: null, inDeductible, outDeductible: null, inOopMax, outOopMax: null,
+      planType, metalLevel: null, state: null, year: null,
+      premiumEmployee: null, premiumSubsidy: null, premiumFrequency: null,
+      inDeductibleFamily: null, inOopMaxFamily: null,
+      ...extra,
+    },
     benefits, coveredServiceCount: benefits.length, sourceLabel: "canonical", isOwnedByUser: false, corroborationCount: 0,
   };
 }
@@ -72,6 +89,31 @@ eq("rank 3 distinct", rankBadges([10, 20, 30]), ["best", null, "worst"]);
 eq("rank 2 tie best", rankBadges([10, 10, 20]), [null, null, "worst"]);
 eq("rank 2 tie worst", rankBadges([10, 20, 20]), ["best", null, null]);
 eq("rank all equal", rankBadges([10, 10, 10]), [null, null, null]);
+
+// ── PR3: rankValue + averageMemberShare + costBasisOf ───────────────
+// copay-mode rankValue = structural payFor at the $1k reference, deductible ignored:
+// a $40 copay must rank below a 30% coinsurance ($300) — honest structural compare.
+eq("rankValue copay copay<coins", rankValue(R({ copay: 40 }), { deductible: 5000, oop: 8000 }, { mode: "copay", bill: 2500, dedMet: false }), 40);
+eq("rankValue copay coins", rankValue(R({ coinsurance: 0.3 }), { deductible: 5000, oop: 8000 }, { mode: "copay", bill: 2500, dedMet: false }), 300);
+eq("rankValue bill live", rankValue(R({ coinsurance: 0.2 }), { deductible: 0, oop: 8000 }, { mode: "bill", bill: 2500, dedMet: false }), 500);
+eq("rankValue unknown→Infinity", rankValue(R({}), { deductible: 0, oop: 8000 }, { mode: "copay", bill: 2500, dedMet: false }), Infinity);
+// averageMemberShare: AVERAGE not sum; no-structure (unk) services excluded.
+const avgPlan = plan(0, 8000, "PPO", [bnf("a", { inCopay: 40 }), bnf("b", { inCoins: 0.2 }), bnf("c", {})]);
+eq("avgShare averages (40+500)/2", averageMemberShare(avgPlan.benefits, { deductible: 0, oop: 8000 }, 2500, false).avg, 270);
+eq("costBasisOf reads summary", costBasisOf(plan(1500, 7000, "PPO", [])), { deductible: 1500, oop: 7000 });
+
+// ── PR4: premiumMonthlyFor priority + suggestionToEntry + family ceilings ──
+eq("premium employee net subsidy → 250", premiumMonthlyFor({ ownPlan: { premiumEmployee: 300, premiumSubsidy: 50, frequency: "monthly" }, metalLevel: "silver" }).value, 250);
+eq("premium total → incl-employer caveat", premiumMonthlyFor({ ownPlan: { premiumTotal: 600, frequency: "monthly" }, metalLevel: "silver" }).caveat, "incl. employer");
+eq("premium estimate band not grounded", premiumMonthlyFor({ metalLevel: "gold" }).grounded, false);
+eq("premium community < minSample → estimate", premiumMonthlyFor({ community: { avgMonthly: 400, sampleSize: 3 }, metalLevel: "silver" }).source, "estimate");
+eq("premium community ≥ minSample → community", premiumMonthlyFor({ community: { avgMonthly: 400, sampleSize: 6 }, metalLevel: "silver" }).source, "community");
+eq("premium minSample override raises floor", premiumMonthlyFor({ community: { avgMonthly: 400, sampleSize: 6 }, metalLevel: "silver" }, 10).source, "estimate");
+eq("premium none groundable", premiumMonthlyFor({}).source, "none");
+check("suggestionToEntry your_plan = confirmed", suggestionToEntry(premiumMonthlyFor({ ownPlan: { premiumEmployee: 250, frequency: "monthly" }, metalLevel: "silver" })).confirmed === true);
+check("suggestionToEntry estimate = ghost", suggestionToEntry(premiumMonthlyFor({ metalLevel: "gold" })).confirmed === false);
+const fam = estimateYearlyFromUnits(plan(1000, 5000, "PPO", [bnf("pcp_visit", { inCopay: 30 })]), { usage: "average", household: { spouse: true, kids: 0 }, premiumMonthly: 400, familyDeductible: 2000, familyOop: 9000 });
+check("yearly premiumAnnual = 12×monthly", fam.premiumAnnual === 4800);
 eq("rank excludes non-finite", rankBadges([Infinity, 20, 30]), [null, "best", "worst"]);
 
 // ── cellState (precision rule) ──────────────────────────────────────
