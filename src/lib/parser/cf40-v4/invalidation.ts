@@ -41,13 +41,13 @@
 import type { createServerClient } from "@/lib/supabase/server";
 import {
   SLOW_DRIFT,
-  RAPID_CHANGE_THRESHOLDS,
   IDENTITY_PLAUSIBILITY,
   type RapidChangeThresholds,
 } from "./scale-thresholds";
 import { getScaleTier, type ValidityGateFailure, type ForcedReparseReason } from "./types";
 import type { PlanDocType } from "@/lib/parser/doctype-expected-counts";
 import { upsertDivergenceReview } from "./divergence-review";
+import { DEFAULT_CF40V4_CONFIG, type CF40V4Config } from "./config";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
@@ -128,7 +128,10 @@ export interface SlowDriftResult {
  * distinct user, count users whose value diverges from the served baseline, and
  * let the highest divergent-user RATE field drive the signal. Pure.
  */
-export function computeSlowDrift(args: SlowDriftComputeArgs): SlowDriftResult {
+export function computeSlowDrift(
+  args: SlowDriftComputeArgs,
+  slowDrift: { divergenceRate30dThreshold: number; divergentUserCount30dThreshold: number } = SLOW_DRIFT,
+): SlowDriftResult {
   const { rows, baseline } = args;
 
   // Latest value per (field, user).
@@ -178,8 +181,8 @@ export function computeSlowDrift(args: SlowDriftComputeArgs): SlowDriftResult {
         divergentUserCount: divergentCount,
         totalUserCount: total,
         triggered:
-          rate > SLOW_DRIFT.divergenceRate30dThreshold &&
-          divergentCount >= SLOW_DRIFT.divergentUserCount30dThreshold,
+          rate > slowDrift.divergenceRate30dThreshold &&
+          divergentCount >= slowDrift.divergentUserCount30dThreshold,
         worstField: extractionField,
         baselineValue: base,
         divergentValue: pluralityValue(divergentVals),
@@ -254,6 +257,7 @@ export async function detectSlowDrift(
   canonicalPlanId: string,
   docType: PlanDocType,
   now: Date,
+  cfg: CF40V4Config = DEFAULT_CF40V4_CONFIG,
 ): Promise<DetectSlowDriftResult> {
   const notes: string[] = [];
   const noop = (note: string): DetectSlowDriftResult => ({
@@ -320,7 +324,7 @@ export async function detectSlowDrift(
     }));
   if (rows.length === 0) return noop("no verified-user extractions in 30d window");
 
-  const result = computeSlowDrift({ rows, baseline });
+  const result = computeSlowDrift({ rows, baseline }, cfg.slowDrift);
 
   // 4. ALWAYS write the telemetry row (G7 fire + non-fire).
   try {
@@ -617,6 +621,7 @@ export async function detectRapidChange(
   canonicalPlanId: string,
   docType: PlanDocType,
   now: Date,
+  cfg: CF40V4Config = DEFAULT_CF40V4_CONFIG,
 ): Promise<DetectRapidChangeResult> {
   const notes: string[] = [];
   const noop = (note: string): DetectRapidChangeResult => ({
@@ -640,8 +645,8 @@ export async function detectRapidChange(
     .select("extraction_count")
     .eq("id", canonicalPlanId)
     .maybeSingle();
-  const scaleTier = getScaleTier((canon?.extraction_count as number | null) ?? 0);
-  const thresholds = RAPID_CHANGE_THRESHOLDS[scaleTier];
+  const scaleTier = getScaleTier((canon?.extraction_count as number | null) ?? 0, cfg.scale);
+  const thresholds = cfg.rapidChange[scaleTier];
 
   const windowStart = new Date(
     now.getTime() - thresholds.timeWindowDays * 24 * 60 * 60 * 1000,
@@ -805,13 +810,14 @@ export function tupleDivergesFromBaseline(
 export function divergingFieldsPlausible(
   parse: IdentityTuple,
   baseline: Record<string, number | null>,
+  plausibility: { min: number; max: number } = IDENTITY_PLAUSIBILITY,
 ): boolean {
   for (const { extractionField } of SLOW_DRIFT_IDENTITY_FIELDS) {
     const base = baseline[extractionField];
     const val = (parse as unknown as Record<string, number | null>)[extractionField];
     if (base === null || base === undefined || val === null || val === undefined) continue;
     if (valuesEqual(val, base)) continue; // not diverging on this field
-    if (!withinPlausibility(val, base, IDENTITY_PLAUSIBILITY.min, IDENTITY_PLAUSIBILITY.max)) {
+    if (!withinPlausibility(val, base, plausibility.min, plausibility.max)) {
       return false;
     }
   }
@@ -856,6 +862,7 @@ export async function detectVerificationMode(
   parse: IdentityTuple,
   forcedReparseReason: ForcedReparseReason | null,
   inReBaselineMode: boolean,
+  cfg: CF40V4Config = DEFAULT_CF40V4_CONFIG,
 ): Promise<DetectVerificationResult> {
   const notes: string[] = [];
   const parserKind = docTypeToParserKind(docType);
@@ -930,7 +937,7 @@ export async function detectVerificationMode(
     if (!tupleDivergesFromBaseline(parse, baseline)) {
       return { mode: "open", outcome: "no_divergence", notes };
     }
-    if (!divergingFieldsPlausible(parse, baseline)) {
+    if (!divergingFieldsPlausible(parse, baseline, cfg.plausibility)) {
       notes.push("forced re-parse diverged IMPLAUSIBLY (treated as noise — verification NOT opened)");
       return { mode: "open", outcome: "implausible", notes };
     }

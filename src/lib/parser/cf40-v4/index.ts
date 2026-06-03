@@ -29,6 +29,7 @@ import {
   type ValidityGateInput,
   type ForcedReparseInput,
 } from "./types";
+import { DEFAULT_CF40V4_CONFIG, type CF40V4Config } from "./config";
 
 export interface EligibilityInput {
   validityInput: ValidityGateInput;
@@ -41,9 +42,10 @@ export interface EligibilityInput {
 
 export function evaluateSmartSkipEligibility(
   input: EligibilityInput,
+  cfg: CF40V4Config = DEFAULT_CF40V4_CONFIG,
 ): SmartSkipEligibility {
   // Layer 1.
-  const validity = evaluateValidityGates(input.validityInput);
+  const validity = evaluateValidityGates(input.validityInput, cfg.validity);
   if (!validity.pass) {
     return {
       eligible: false,
@@ -79,7 +81,7 @@ export function evaluateSmartSkipEligibility(
   // + canonical-wide divergence_pending_verification.)
 
   // Layer 5 — final force-full-parse decision.
-  const forced = decideForcedReparse(input.forcedReparseInput);
+  const forced = decideForcedReparse(input.forcedReparseInput, cfg);
   if (forced.forceFullParse) {
     return {
       eligible: false,
@@ -110,6 +112,7 @@ export * from "./forced-reparse";
 export * from "./invalidation";
 export * from "./promotion-evaluator";
 export * from "./divergence-review";
+export * from "./config";
 export * from "./badge";
 export * from "./dispute-treatment";
 

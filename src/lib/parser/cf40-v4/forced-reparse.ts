@@ -10,20 +10,26 @@
  *     OR (canonical_C is admin-attested for doc_type=T AND zero organic full
  *         parses since attestation)
  *     OR canonical_C.divergence_pending_verification == TRUE
- *     OR (smart_skip_count_for_hash modulo 5 == 0)
+ *     OR (smart_skip_count_for_hash modulo N == 0)
  *   )
  *
  * Sample rates are statistically justified for 95% confidence of catching
  * drift within the scale-dependent detection horizon. See Subplan §2.8 table.
+ *
+ * Ship Gate G6: the sample rates, staleness thresholds, and the every-Nth gate are
+ * flag-config-backed via `cfg` (defaults to the pre-G6 constants).
  */
 
-import { REPARSE_SAMPLING } from "./scale-thresholds";
+import { DEFAULT_CF40V4_CONFIG, type CF40V4Config } from "./config";
 import type {
   ForcedReparseDecision,
   ForcedReparseInput,
 } from "./types";
 
-export function decideForcedReparse(input: ForcedReparseInput): ForcedReparseDecision {
+export function decideForcedReparse(
+  input: ForcedReparseInput,
+  cfg: CF40V4Config = DEFAULT_CF40V4_CONFIG,
+): ForcedReparseDecision {
   const rng = input.randomFn ?? Math.random;
   const now = input.now ?? new Date();
 
@@ -42,8 +48,10 @@ export function decideForcedReparse(input: ForcedReparseInput): ForcedReparseDec
     return { forceFullParse: true, reason: "admin_attestation_validation" };
   }
 
-  // Trigger #6: every-5th-smart-skip on stable hash.
-  if (input.smartSkipCount > 0 && input.smartSkipCount % 5 === 0) {
+  // Trigger #6: every-Nth-smart-skip on stable hash (reason enum kept as
+  // "every_5th_smart_skip" for back-compat; N is config-tunable).
+  const everyNth = cfg.forcedReparse.everyNthSmartSkip;
+  if (input.smartSkipCount > 0 && everyNth > 0 && input.smartSkipCount % everyNth === 0) {
     return { forceFullParse: true, reason: "every_5th_smart_skip" };
   }
 
@@ -53,7 +61,7 @@ export function decideForcedReparse(input: ForcedReparseInput): ForcedReparseDec
       ? input.lastFullParseAt
       : new Date(input.lastFullParseAt);
     if (!Number.isNaN(last.getTime())) {
-      const staleDays = REPARSE_SAMPLING[input.scaleTier].temporalStalenessDays;
+      const staleDays = cfg.reparseSampling[input.scaleTier].temporalStalenessDays;
       const ageMs = now.getTime() - last.getTime();
       const ageDays = ageMs / (1000 * 60 * 60 * 24);
       if (ageDays > staleDays) {
@@ -63,7 +71,7 @@ export function decideForcedReparse(input: ForcedReparseInput): ForcedReparseDec
   }
 
   // Trigger #2: statistical drift sample (last because cheapest signal).
-  const sampleRate = REPARSE_SAMPLING[input.scaleTier].sampleRate;
+  const sampleRate = cfg.reparseSampling[input.scaleTier].sampleRate;
   if (rng() < sampleRate) {
     return { forceFullParse: true, reason: "statistical_drift_sample" };
   }

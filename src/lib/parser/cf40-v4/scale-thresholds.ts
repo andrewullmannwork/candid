@@ -86,12 +86,35 @@ export const CORROBORATION_THRESHOLDS: Readonly<Record<ScaleTier, CorroborationT
  * within cold_start as 1.0, else 0.80 for cold_start range 11-100. The scale
  * tier is `cold_start` for both, so use uploadCount to disambiguate.
  */
-export function supermajorityThreshold(uploadCount: number, tier: ScaleTier): number {
-  if (uploadCount <= 10) return 1.0; // strictest at the very-cold-start
-  if (tier === "cold_start") return 0.80; // 11-100
-  if (tier === "small") return 0.66; // 101-10K
-  // medium + large: 0.66 (cross-IP diversity from §2.4(a) adds defense)
-  return 0.66;
+/**
+ * Supermajority share thresholds. G6-tunable via `cf40_v4_config.supermajority`;
+ * the literal defaults are the pre-G6 1.00 / 0.80 / 0.66.
+ */
+export const SUPERMAJORITY_SHARES = {
+  /** uploadCount ≤ this stays at the strictest (very-cold-start) share. */
+  veryColdStartMaxUploads: 10,
+  veryColdStart: 1.0,
+  coldStart: 0.80,
+  small: 0.66,
+  mediumLarge: 0.66,
+} as const;
+
+export function supermajorityThreshold(
+  uploadCount: number,
+  tier: ScaleTier,
+  shares: {
+    veryColdStartMaxUploads: number;
+    veryColdStart: number;
+    coldStart: number;
+    small: number;
+    mediumLarge: number;
+  } = SUPERMAJORITY_SHARES,
+): number {
+  if (uploadCount <= shares.veryColdStartMaxUploads) return shares.veryColdStart; // very-cold-start
+  if (tier === "cold_start") return shares.coldStart; // 11-100
+  if (tier === "small") return shares.small; // 101-10K
+  // medium + large (cross-IP diversity from §2.4(a) adds defense)
+  return shares.mediumLarge;
 }
 
 // ── Layer 4(b) rapid-change thresholds ───────────────────────────────────────

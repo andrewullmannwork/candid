@@ -29,6 +29,7 @@ import {
   type AggUserTrust,
 } from "@/lib/parser/cf40-v4/doctype-promotion-aggregator";
 import type { IdentityTuple } from "@/lib/parser/cf40-v4";
+import { DEFAULT_CF40V4_CONFIG } from "@/lib/parser/cf40-v4";
 
 // ── tiny harness ──────────────────────────────────────────────────────────────
 let pass = 0;
@@ -194,7 +195,10 @@ console.log("\nC. buildMinorityReviewRows — gates + plausibility + key + JSONB
 {
   // Tunable weight floor suppresses below-floor minorities (G6).
   const inp = inputsFrom([row("p1", "u1", A), row("p2", "u2", A), row("p3", "u3", B)], ["u1", "u2", "u3"]);
-  const rows = buildMinorityReviewRows("c", "sbc", inp, { minVerifiedUsers: 2, minMinorityWeight: 5 });
+  const rows = buildMinorityReviewRows("c", "sbc", inp, {
+    ...DEFAULT_CF40V4_CONFIG,
+    minorityRouter: { minVerifiedUsers: 2, minMinorityWeight: 5 },
+  });
   check("weight floor 5 suppresses the w=1 minority", rows.length === 0);
 }
 

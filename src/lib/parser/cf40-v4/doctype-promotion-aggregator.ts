@@ -56,8 +56,8 @@ import {
   type PlanDocType,
 } from "@/lib/parser/doctype-expected-counts";
 import { type IdentityTuple, withinPlausibility } from "./invalidation";
-import { IDENTITY_PLAUSIBILITY, MINORITY_ROUTER } from "./scale-thresholds";
 import { upsertDivergenceReview, type DivergenceReviewRow } from "./divergence-review";
+import { DEFAULT_CF40V4_CONFIG, type CF40V4Config } from "./config";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
@@ -159,7 +159,10 @@ export interface ComputeLayer3InputsArgs {
  * `effectiveWeight` (trust-weight.ts) so there is one source of truth for the
  * weight constants.
  */
-export function computeLayer3Inputs(args: ComputeLayer3InputsArgs): Layer3Inputs {
+export function computeLayer3Inputs(
+  args: ComputeLayer3InputsArgs,
+  cfg: CF40V4Config = DEFAULT_CF40V4_CONFIG,
+): Layer3Inputs {
   const {
     docType,
     planRows,
@@ -171,7 +174,7 @@ export function computeLayer3Inputs(args: ComputeLayer3InputsArgs): Layer3Inputs
   } = args;
 
   const uploadCount = extractionCount;
-  const scaleTier = getScaleTier(uploadCount);
+  const scaleTier = getScaleTier(uploadCount, cfg.scale);
 
   const trustOf = (userId: string): AggUserTrust | undefined => userById.get(userId);
   // Pattern 1 #15 (mig 076): organic corroboration counts ONLY email+phone-verified.
@@ -228,7 +231,7 @@ export function computeLayer3Inputs(args: ComputeLayer3InputsArgs): Layer3Inputs
       phoneVerified: t.phoneVerified,
       emailVerified: t.emailVerified,
     });
-    const w = effectiveWeight(tier, parseAgeDays(r.createdAt, now));
+    const w = effectiveWeight(tier, parseAgeDays(r.createdAt, now), cfg.weights);
     const key = identityKey(r.identityValues);
     weightByValue.set(key, (weightByValue.get(key) ?? 0) + w);
     if (!tupleByKey.has(key)) tupleByKey.set(key, r.identityValues);
@@ -330,6 +333,7 @@ export function decideDoctypePromotion(
   inputs: Layer3Inputs,
   docType: PlanDocType,
   adminAttestationEnabled: boolean,
+  cfg: CF40V4Config = DEFAULT_CF40V4_CONFIG,
 ): { result: PromotionEvalResult; eventType: "pattern1_3_organic" | "admin_attested" } {
   let result = evaluateOrganicPromotion({
     corroboration: inputs.corroboration,
@@ -338,15 +342,15 @@ export function decideDoctypePromotion(
     uploadCount: inputs.uploadCount,
     scaleTier: inputs.scaleTier,
     docType,
-  });
+  }, cfg);
   let eventType: "pattern1_3_organic" | "admin_attested" = "pattern1_3_organic";
 
-  if (!result.promoted && adminAttestationEnabled && inputs.adminUploadCount >= 2) {
+  if (!result.promoted && adminAttestationEnabled && inputs.adminUploadCount >= cfg.adminAttestation.minUploadsPerDocType) {
     const adminResult = evaluateAdminAttestation({
       coverage: inputs.coverage,
       adminUploadCountPerDocType: inputs.adminUploadCount,
       docType,
-    });
+    }, cfg);
     if (adminResult.promoted) {
       result = adminResult;
       eventType = "admin_attested";
@@ -371,6 +375,7 @@ export async function gatherLayer3Inputs(
   canonicalPlanId: string,
   docType: PlanDocType,
   now: Date,
+  cfg: CF40V4Config = DEFAULT_CF40V4_CONFIG,
 ): Promise<Layer3Inputs | null> {
   // 1. All insurance_plans rows for the canonical.
   const { data: planRowsRaw } = await supabase
@@ -467,7 +472,7 @@ export async function gatherLayer3Inputs(
     serviceCountByPlanId,
     verifiedServiceCount: verifiedServiceIds.size,
     now,
-  });
+  }, cfg);
   return {
     ...inputs,
     divergencePendingVerification: canonical?.divergence_pending_verification === true,
@@ -519,22 +524,22 @@ export function buildMinorityReviewRows(
   canonicalPlanId: string,
   docType: PlanDocType,
   inputs: Layer3Inputs,
-  cfg: { minVerifiedUsers: number; minMinorityWeight: number } = MINORITY_ROUTER,
+  cfg: CF40V4Config = DEFAULT_CF40V4_CONFIG,
 ): DivergenceReviewRow[] {
   if (!inputs.baselineTuple || inputs.minorities.length === 0) return [];
-  if (inputs.corroboration.distinctPhoneEmailUsers < cfg.minVerifiedUsers) return [];
+  if (inputs.corroboration.distinctPhoneEmailUsers < cfg.minorityRouter.minVerifiedUsers) return [];
 
   const rows: DivergenceReviewRow[] = [];
   for (const m of inputs.minorities) {
-    if (m.weight <= cfg.minMinorityWeight) continue;
+    if (m.weight <= cfg.minorityRouter.minMinorityWeight) continue;
     for (const d of diffMinorityFields(inputs.baselineTuple, m.tuple)) {
       const plausible =
         d.baselineValue != null && d.minorityValue != null
           ? withinPlausibility(
               d.minorityValue,
               d.baselineValue,
-              IDENTITY_PLAUSIBILITY.min,
-              IDENTITY_PLAUSIBILITY.max,
+              cfg.plausibility.min,
+              cfg.plausibility.max,
             )
           : false; // null↔value transition: not ratio-checkable → admin reviews
       rows.push({
@@ -572,8 +577,9 @@ export async function routeMinorityCandidates(
   canonicalPlanId: string,
   docType: PlanDocType,
   inputs: Layer3Inputs,
+  cfg: CF40V4Config = DEFAULT_CF40V4_CONFIG,
 ): Promise<{ routed: number; notes: string[] }> {
-  const rows = buildMinorityReviewRows(canonicalPlanId, docType, inputs);
+  const rows = buildMinorityReviewRows(canonicalPlanId, docType, inputs, cfg);
   if (rows.length === 0) return { routed: 0, notes: [] };
   let routed = 0;
   for (const row of rows) {

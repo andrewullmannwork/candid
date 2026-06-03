@@ -170,6 +170,45 @@ export const DOC_TYPE_COVERAGE_CONFIG: Readonly<Record<PlanDocType, DocTypeCover
 };
 
 /**
+ * Layer 3(c) coverage tunables not owned by the per-doc-type record above.
+ * G6-tunable via `cf40_v4_config.coverage`; literal defaults are the pre-G6
+ * 0.85 median factor + 0.5/0.5 identity/service split.
+ */
+export const COVERAGE_TUNABLES = {
+  medianAdaptiveFactor: 0.85,
+  planIdentityWeight: 0.5,
+  serviceWeight: 0.5,
+} as const;
+
+/**
+ * The Layer 3(c) coverage thresholds the evaluators read. Per-doc-type
+ * `coverageThreshold` is lifted out of DOC_TYPE_COVERAGE_CONFIG so the whole
+ * coverage gate is config-backed in one object (the expected-scalar / service
+ * LISTS stay structural vocabulary, not threshold tuning).
+ */
+export interface CoverageConfig {
+  /** coverage_score gate threshold per doc-type. */
+  thresholds: Record<PlanDocType, number>;
+  /** median(observed) × this is the adaptive expected-service floor. */
+  medianAdaptiveFactor: number;
+  /** coverage_score = planIdentityWeight·idCov + serviceWeight·svcCov. */
+  planIdentityWeight: number;
+  serviceWeight: number;
+}
+
+export const DEFAULT_COVERAGE_CONFIG: CoverageConfig = {
+  thresholds: {
+    sbc: DOC_TYPE_COVERAGE_CONFIG.sbc.coverageThreshold,
+    eoc: DOC_TYPE_COVERAGE_CONFIG.eoc.coverageThreshold,
+    plan_document: DOC_TYPE_COVERAGE_CONFIG.plan_document.coverageThreshold,
+    education_doc: DOC_TYPE_COVERAGE_CONFIG.education_doc.coverageThreshold,
+  },
+  medianAdaptiveFactor: COVERAGE_TUNABLES.medianAdaptiveFactor,
+  planIdentityWeight: COVERAGE_TUNABLES.planIdentityWeight,
+  serviceWeight: COVERAGE_TUNABLES.serviceWeight,
+};
+
+/**
  * Map ClassifiedDocType → PlanDocType when known; null otherwise. Used when
  * the algorithm needs to consult coverage config from a raw classification.
  */
@@ -184,13 +223,14 @@ export function toPlanDocType(t: ClassifiedDocType | string | null | undefined):
  * Median-adaptive expected service count (Subplan §2.4(c) Q-S73.5-20 LOCK).
  *
  * - With < 2 prior parses: return hardcoded baseline (cold-start floor).
- * - With ≥ 2 prior parses: max(baseline, median(observed) * 0.85).
- *   The 0.85 factor allows ~15% variance below median without penalty;
- *   baseline floor prevents under-shooting on single-rich-parse outliers.
+ * - With ≥ 2 prior parses: max(baseline, median(observed) * medianAdaptiveFactor).
+ *   The factor allows variance below median without penalty; baseline floor
+ *   prevents under-shooting on single-rich-parse outliers.
  */
 export function expectedServiceCount(
   docType: PlanDocType,
   observedServiceCounts: readonly number[],
+  cov: CoverageConfig = DEFAULT_COVERAGE_CONFIG,
 ): number {
   const baseline = DOC_TYPE_COVERAGE_CONFIG[docType].expectedCoreServices.length;
   if (observedServiceCounts.length < 2) return baseline;
@@ -200,7 +240,7 @@ export function expectedServiceCount(
   const median =
     sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 
-  const adaptive = Math.floor(median * 0.85);
+  const adaptive = Math.floor(median * cov.medianAdaptiveFactor);
   return Math.max(baseline, adaptive);
 }
 
@@ -214,23 +254,25 @@ export function expectedServiceCount(
  *                               provenance from this doc_type for this canonical
  * @param observedServiceCounts — per-parse observed service counts (drives
  *                                median-adaptive expected count)
+ * @param cov — coverage tunables (defaults to the pre-G6 constants)
  */
 export function computeCoverageScore(
   docType: PlanDocType,
   verifiedScalarCount: number,
   verifiedServiceCount: number,
   observedServiceCounts: readonly number[],
+  cov: CoverageConfig = DEFAULT_COVERAGE_CONFIG,
 ): number {
   const cfg = DOC_TYPE_COVERAGE_CONFIG[docType];
   const expectedScalars = cfg.expectedPlanIdentityScalars.length;
-  const expectedServices = expectedServiceCount(docType, observedServiceCounts);
+  const expectedServices = expectedServiceCount(docType, observedServiceCounts, cov);
 
   const planIdentityCoverage =
     expectedScalars === 0 ? 0 : Math.min(1, verifiedScalarCount / expectedScalars);
   const serviceCoverage =
     expectedServices === 0 ? 0 : Math.min(1, verifiedServiceCount / expectedServices);
 
-  return 0.5 * planIdentityCoverage + 0.5 * serviceCoverage;
+  return cov.planIdentityWeight * planIdentityCoverage + cov.serviceWeight * serviceCoverage;
 }
 
 /**
@@ -242,14 +284,16 @@ export function passesCoverageGate(
   verifiedScalarCount: number,
   verifiedServiceCount: number,
   observedServiceCounts: readonly number[],
+  cov: CoverageConfig = DEFAULT_COVERAGE_CONFIG,
 ): boolean {
   const score = computeCoverageScore(
     docType,
     verifiedScalarCount,
     verifiedServiceCount,
     observedServiceCounts,
+    cov,
   );
-  return score >= DOC_TYPE_COVERAGE_CONFIG[docType].coverageThreshold;
+  return score >= cov.thresholds[docType];
 }
 
 /**

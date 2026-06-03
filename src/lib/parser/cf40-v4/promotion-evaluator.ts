@@ -8,16 +8,22 @@
  *   (c) Per-doc-type coverage completeness (computed in doctype-expected-counts.ts)
  *
  * Admin attestation path bypasses (a) + (b); (c) STILL required.
+ *
+ * Ship Gate G6: the thresholds all three criteria gate on are flag-config-backed.
+ * `evaluateOrganicPromotion` / `evaluateAdminAttestation` take a `cfg` that defaults
+ * to `DEFAULT_CF40V4_CONFIG` (the pre-G6 constants) — so existing callers + fixtures
+ * are byte-identical, and the FLAG-ON orchestrator passes the loaded config.
  */
 
 import {
   computeCoverageScore,
   passesCoverageGate,
+  type CoverageConfig,
   type PlanDocType,
 } from "@/lib/parser/doctype-expected-counts";
 import {
-  CORROBORATION_THRESHOLDS,
   supermajorityThreshold,
+  type CorroborationThresholds,
 } from "./scale-thresholds";
 import {
   type CorroborationCriterion,
@@ -26,12 +32,14 @@ import {
   type ScaleTier,
   type SupermajorityCriterion,
 } from "./types";
+import { DEFAULT_CF40V4_CONFIG, type CF40V4Config } from "./config";
 
 function evaluateCorroboration(
   c: CorroborationCriterion,
   tier: ScaleTier,
+  thresholds: Record<ScaleTier, CorroborationThresholds>,
 ): { pass: boolean; failureReasons: PromotionEvalResult["failureReasons"] } {
-  const th = CORROBORATION_THRESHOLDS[tier];
+  const th = thresholds[tier];
   const failures: PromotionEvalResult["failureReasons"] = [];
 
   // Path 1: standard 3-D criterion.
@@ -68,43 +76,50 @@ function evaluateSupermajority(
   s: SupermajorityCriterion,
   uploadCount: number,
   tier: ScaleTier,
+  shares: CF40V4Config["supermajority"],
 ): { pass: boolean; share: number; threshold: number } {
   if (s.totalWeight <= 0) return { pass: false, share: 0, threshold: 1 };
   const share = s.baselineWeight / s.totalWeight;
-  const threshold = supermajorityThreshold(uploadCount, tier);
+  const threshold = supermajorityThreshold(uploadCount, tier, shares);
   return { pass: share >= threshold, share, threshold };
 }
 
 function evaluateCoverage(
   cov: CoverageCriterion,
   docType: PlanDocType,
+  coverageCfg: CoverageConfig,
 ): { pass: boolean; score: number } {
   const pass = passesCoverageGate(
     docType,
     cov.verifiedScalarCount,
     cov.verifiedServiceCount,
     cov.observedServiceCounts,
+    coverageCfg,
   );
   const score = computeCoverageScore(
     docType,
     cov.verifiedScalarCount,
     cov.verifiedServiceCount,
     cov.observedServiceCounts,
+    coverageCfg,
   );
   return { pass, score };
 }
 
-export function evaluateOrganicPromotion(input: {
-  corroboration: CorroborationCriterion;
-  supermajority: SupermajorityCriterion;
-  coverage: CoverageCriterion;
-  uploadCount: number;
-  scaleTier: ScaleTier;
-  docType: PlanDocType;
-}): PromotionEvalResult {
-  const corro = evaluateCorroboration(input.corroboration, input.scaleTier);
-  const sup = evaluateSupermajority(input.supermajority, input.uploadCount, input.scaleTier);
-  const cov = evaluateCoverage(input.coverage, input.docType);
+export function evaluateOrganicPromotion(
+  input: {
+    corroboration: CorroborationCriterion;
+    supermajority: SupermajorityCriterion;
+    coverage: CoverageCriterion;
+    uploadCount: number;
+    scaleTier: ScaleTier;
+    docType: PlanDocType;
+  },
+  cfg: CF40V4Config = DEFAULT_CF40V4_CONFIG,
+): PromotionEvalResult {
+  const corro = evaluateCorroboration(input.corroboration, input.scaleTier, cfg.corroboration);
+  const sup = evaluateSupermajority(input.supermajority, input.uploadCount, input.scaleTier, cfg.supermajority);
+  const cov = evaluateCoverage(input.coverage, input.docType, cfg.coverage);
 
   const failureReasons: PromotionEvalResult["failureReasons"] = [...corro.failureReasons];
   if (!sup.pass) failureReasons.push("supermajority_share_below_threshold");
@@ -125,20 +140,24 @@ export function evaluateOrganicPromotion(input: {
 /**
  * Admin-attested promotion path (Subplan §2.14).
  * Bypasses corroboration (a) + supermajority (b); coverage (c) STILL required.
- * `adminUploadCountPerDocType` must be ≥ 2 per Q-S73.5-21 LOCK.
+ * `adminUploadCountPerDocType` must be ≥ `cfg.adminAttestation.minUploadsPerDocType`
+ * (Q-S73.5-21 LOCK; default 2).
  */
-export function evaluateAdminAttestation(input: {
-  coverage: CoverageCriterion;
-  adminUploadCountPerDocType: number;
-  docType: PlanDocType;
-}): PromotionEvalResult {
+export function evaluateAdminAttestation(
+  input: {
+    coverage: CoverageCriterion;
+    adminUploadCountPerDocType: number;
+    docType: PlanDocType;
+  },
+  cfg: CF40V4Config = DEFAULT_CF40V4_CONFIG,
+): PromotionEvalResult {
   const failureReasons: PromotionEvalResult["failureReasons"] = [];
 
-  if (input.adminUploadCountPerDocType < 2) {
+  if (input.adminUploadCountPerDocType < cfg.adminAttestation.minUploadsPerDocType) {
     failureReasons.push("corroboration_total_uploads_below_threshold");
   }
 
-  const cov = evaluateCoverage(input.coverage, input.docType);
+  const cov = evaluateCoverage(input.coverage, input.docType, cfg.coverage);
   if (!cov.pass) failureReasons.push("coverage_score_below_threshold");
 
   return {

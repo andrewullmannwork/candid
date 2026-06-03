@@ -39,16 +39,30 @@ export const TIME_DECAY_MULTIPLIER: Readonly<Record<TimeDecayBracket, number>> =
 export type ScaleTier = "cold_start" | "small" | "medium" | "large";
 
 /**
+ * Inclusive upper upload-count bounds of the cold_start / small / medium tiers.
+ * G6-tunable via `cf40_v4_config.scale`; the literal defaults are the pre-G6
+ * hardcoded boundaries.
+ */
+export const SCALE_BOUNDARIES = {
+  coldStartMax: 100,
+  smallMax: 10_000,
+  mediumMax: 1_000_000,
+} as const;
+
+/**
  * Scale tier from canonical's lifetime upload_count.
  *   0-100     → cold_start
  *   101-10K   → small
  *   10K-1M    → medium
  *   1M+       → large
  */
-export function getScaleTier(uploadCount: number): ScaleTier {
-  if (uploadCount <= 100) return "cold_start";
-  if (uploadCount <= 10_000) return "small";
-  if (uploadCount <= 1_000_000) return "medium";
+export function getScaleTier(
+  uploadCount: number,
+  b: { coldStartMax: number; smallMax: number; mediumMax: number } = SCALE_BOUNDARIES,
+): ScaleTier {
+  if (uploadCount <= b.coldStartMax) return "cold_start";
+  if (uploadCount <= b.smallMax) return "small";
+  if (uploadCount <= b.mediumMax) return "medium";
   return "large";
 }
 
