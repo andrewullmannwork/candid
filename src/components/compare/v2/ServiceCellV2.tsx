@@ -161,6 +161,7 @@ function ValueLine({
       <div className="min-w-0 flex flex-col gap-0.5">
         <div className="flex items-start gap-1.5 flex-wrap">
           <span className={valueClass}>{pay == null ? "—" : usd(pay)}</span>
+          {isPrimary && benefit.inferred && <InferredChip inferred={benefit.inferred} />}
           {isPrimary && <CompareRankBadge kind={badge} className="shrink-0" />}
         </div>
         {note && <span className="text-[11px] text-slate-400 leading-snug">{note}</span>}
@@ -175,7 +176,39 @@ function ValueLine({
   return (
     <div className="min-w-0 flex items-start gap-1.5 flex-wrap">
       <span className={valueClass}>{copayDescription}</span>
+      {isPrimary && benefit.inferred && <InferredChip inferred={benefit.inferred} />}
       {isPrimary && <CompareRankBadge kind={badge} className="shrink-0" />}
     </div>
+  );
+}
+
+function humanizeSlug(slug: string): string {
+  return slug.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/**
+ * S161 (#1/#3) — marks a cell whose coverage was INFERRED (a same-category
+ * covered sibling, or the ACA $0 preventive floor), not enumerated by the plan.
+ * Estimate, never "verified"; pairs with the backend `benefit.inferred` flag so
+ * the cell stops reading "Not listed yet" without overclaiming.
+ */
+function InferredChip({
+  inferred,
+}: {
+  inferred: NonNullable<CompareBenefit["inferred"]>;
+}) {
+  const tip =
+    inferred.source === "aca_preventive"
+      ? "Estimate — preventive care is covered at $0 under the ACA; this plan doesn't list it separately."
+      : inferred.matchedSlug
+        ? `Estimate — inferred from this plan's "${humanizeSlug(inferred.matchedSlug)}" coverage (same category).`
+        : "Estimate — inferred from a related covered service on this plan.";
+  return (
+    <span
+      className="inline-flex items-center rounded-full bg-amber-50 px-1.5 py-px text-[10px] font-medium text-amber-700 ring-1 ring-amber-200 shrink-0"
+      title={tip}
+    >
+      est.
+    </span>
   );
 }

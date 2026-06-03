@@ -21,6 +21,7 @@ import { loadDecorationContext } from "@/lib/plan/analyze-decoration";
 import {
   resolveCanonicalPlan,
   resolveUserPlan,
+  applyCompareSecondaryBackstop,
   type ComparePlanPayload,
   type PlanRef,
 } from "@/lib/plan/compare";
@@ -144,6 +145,13 @@ export async function POST(req: NextRequest) {
   // dimensions are relative, e.g., "lowest monthly cost" depends on peers).
   const successfullyResolved = resolved.filter((p): p is ComparePlanPayload => p !== null);
   attachBestForTags(successfullyResolved);
+
+  // S161 (#1/#3) — preventive secondary backstop: fill "Not listed yet" cells
+  // where a plan covers the service under a sibling slug (or via the ACA $0
+  // floor). Gated by secondary_coverage_v2 (OFF → no-op). Runs AFTER best-for so
+  // those tags stay grounded in enumerated coverage; it mutates the same payload
+  // objects `resolved` holds (synthesized cells are inferred/estimate only).
+  await applyCompareSecondaryBackstop(supabase, successfullyResolved);
 
   // Surface failed refs as nulls so UI can render "couldn't load" placeholder.
   return NextResponse.json({

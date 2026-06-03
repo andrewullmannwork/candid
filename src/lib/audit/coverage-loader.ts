@@ -512,6 +512,80 @@ export async function loadPlanCoverageMeta(
 }
 
 /**
+ * S161 (#1/#3) — canonical analog of `loadPlanCoverageMeta` for the /compare
+ * preventive backstop. `canonical_plan_services` has no FK to `service_catalog`
+ * (unlike `plan_covered_services`), so category comes from a second lookup.
+ *
+ * `canonical_plans` carries no `is_aca_compliant` column (that lives only on
+ * `insurance_plans`, mig 093) — so ACA-compliance is inferred from `metal_level`:
+ * a metal tier is an ACA-marketplace construct, so preventive care is federally
+ * mandated at $0. Absent metal ⇒ null (unknown ⇒ the ACA $0 floor stays excluded,
+ * matching `resolveSecondaryCoverage`'s confirmed-ACA-only rule).
+ */
+export async function loadCanonicalCoverageMeta(
+  supabase: SupabaseClient,
+  canonicalPlanIds: Array<string | null | undefined>,
+): Promise<Map<string, PlanCoverageMeta>> {
+  const out = new Map<string, PlanCoverageMeta>();
+  const ids = Array.from(new Set(canonicalPlanIds.filter((id): id is string => Boolean(id))));
+  if (ids.length === 0) return out;
+  for (const id of ids) {
+    out.set(id, { coverageMap: new Map(), coveredMeta: [], acaCompliant: null });
+  }
+
+  const { data: services, error } = await supabase
+    .from("canonical_plan_services")
+    .select("canonical_plan_id, service_slug, copay, coinsurance, is_covered")
+    .in("canonical_plan_id", ids);
+  if (error) {
+    console.warn("[coverage-loader] loadCanonicalCoverageMeta services load failed", error);
+  }
+  const rows = services ?? [];
+  const slugList = Array.from(
+    new Set(rows.map((r) => r.service_slug as string | null).filter(Boolean) as string[]),
+  );
+  const categoryBySlug = new Map<string, string | null>();
+  if (slugList.length > 0) {
+    const { data: catalog } = await supabase
+      .from("service_catalog")
+      .select("slug, category")
+      .in("slug", slugList);
+    for (const c of catalog ?? []) {
+      categoryBySlug.set(c.slug as string, (c.category as string | null) ?? null);
+    }
+  }
+  for (const r of rows) {
+    const entry = out.get(r.canonical_plan_id as string);
+    if (!entry) continue;
+    const slug = r.service_slug as string | null;
+    if (!slug) continue;
+    entry.coveredMeta.push({
+      slug,
+      category: categoryBySlug.get(slug) ?? null,
+      coverage: {
+        covered: r.is_covered as boolean | null,
+        copay: r.copay as number | null,
+        // canonical_plan_services.coinsurance may be integer-percent OR decimal;
+        // normalize to decimal 0-1 (parity with loadPlanCoverageMeta).
+        coinsurance: normalizeCoinsuranceForStorage(r.coinsurance as number | null),
+      },
+    });
+  }
+
+  const { data: plans } = await supabase
+    .from("canonical_plans")
+    .select("id, metal_level")
+    .in("id", ids);
+  for (const p of plans ?? []) {
+    const entry = out.get(p.id as string);
+    // D1 (S161) — metal tier present ⇒ ACA-marketplace plan ⇒ preventive $0
+    // mandated. Absent ⇒ null (unknown; the ACA floor stays excluded).
+    if (entry) entry.acaCompliant = (p.metal_level as string | null) ? true : null;
+  }
+  return out;
+}
+
+/**
  * S154 — batched bill-slug metadata (category + ACA-preventive eligibility)
  * for the secondary match, keyed by slug. One query across all distinct slugs.
  */

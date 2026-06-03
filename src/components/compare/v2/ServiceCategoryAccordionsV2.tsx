@@ -178,7 +178,12 @@ function CategoryAccordionV2({
           // cost-share structure (rankValue at the $1k reference); bill mode ranks
           // the live member share at the entered bill.
           const ranks = row.perPlan.map((b, i) =>
-            b ? rankValue(toRule(b, "inNetwork"), bases[i], { mode, bill, dedMet }) : Infinity,
+            // S161 (#1/#3) — an inferred (estimate) cell never competes for
+            // Best/Priciest; an estimate must not crown a row winner (the
+            // compare_v2 §4.1 verdict-guardrail principle, applied per-row).
+            b && !b.inferred
+              ? rankValue(toRule(b, "inNetwork"), bases[i], { mode, bill, dedMet })
+              : Infinity,
           );
           const badges = rankBadges(ranks);
           return (
