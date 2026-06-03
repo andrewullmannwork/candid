@@ -50,6 +50,23 @@ function stubSupabase(): never {
   return { from: () => builder } as never;
 }
 
+// Recording stub — counts persistence ops (insert/update) so we can PROVE
+// skipWriteback suppresses the learned-mapping writeback (calibration safety).
+function recordingSupabase(): { supabase: never; writes: { count: number } } {
+  const writes = { count: 0 };
+  const builder: Record<string, unknown> = {};
+  const self = () => builder;
+  Object.assign(builder, {
+    select: self, eq: self, in: self, is: self, gte: self, ilike: self, order: self, limit: self,
+    insert: () => { writes.count++; return Promise.resolve({ data: null, error: null }); },
+    update: () => { writes.count++; return builder; },
+    maybeSingle: () => Promise.resolve({ data: null, error: null }),
+    single: () => Promise.resolve({ data: null, error: null }),
+    then: (res: (v: { data: never[]; error: null }) => void) => res({ data: [], error: null }),
+  });
+  return { supabase: { from: () => builder } as never, writes };
+}
+
 let pass = 0;
 let fail = 0;
 function check(name: string, cond: boolean) {
@@ -121,6 +138,26 @@ async function main() {
   const cfg = parseResolverConfig({ haiku_confidence_floor: 0.75, writeback_confidence_floor: 9 /* invalid */ });
   check("config: valid field applied", cfg.haikuConfidenceFloor === 0.75);
   check("config: invalid field → default", cfg.writebackConfidenceFloor === DEFAULT_RESOLVER_CONFIG.writebackConfidenceFloor);
+
+  // 9. skipWriteback (calibration safety): a high-confidence (≥0.8) Haiku match
+  //    must NOT persist a learned mapping. Proves no test-set leakage / no PROD mutation.
+  const recSkip = recordingSupabase();
+  await resolveServices(
+    [{ lineNumber: 1, description: "WELLNESS VISIT", billingCode: "99385", billingCodeType: "CPT" }],
+    { supabase: recSkip.supabase, userId: "u1", catalog: CATALOG, config: DEFAULT_RESOLVER_CONFIG, skipWriteback: true,
+      haikuCall: async () => ({ matches: [{ lineNumber: 1, slug: "preventive_care", confidence: 0.95 }] }) },
+  );
+  check("skipWriteback:true → ZERO learned-mapping writes (no leakage/mutation)", recSkip.writes.count === 0);
+
+  // 10. Default (skipWriteback omitted): the SAME ≥0.8 match DOES persist — proves
+  //     the suppressed path is real, not dead.
+  const recDefault = recordingSupabase();
+  await resolveServices(
+    [{ lineNumber: 1, description: "WELLNESS VISIT", billingCode: "99385", billingCodeType: "CPT" }],
+    { supabase: recDefault.supabase, userId: "u1", catalog: CATALOG, config: DEFAULT_RESOLVER_CONFIG,
+      haikuCall: async () => ({ matches: [{ lineNumber: 1, slug: "preventive_care", confidence: 0.95 }] }) },
+  );
+  check("default → writeback DOES fire (suppressed path is real)", recDefault.writes.count >= 1);
 
   console.log(`\n${fail === 0 ? "✅" : "❌"} ${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);

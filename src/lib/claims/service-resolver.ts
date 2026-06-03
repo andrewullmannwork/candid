@@ -391,6 +391,14 @@ export interface ResolveOpts {
   catalog?: CatalogEntry[];
   /** Disable the Haiku batch tier (cache + trigram only) — used in tests. */
   skipHaiku?: boolean;
+  /**
+   * Suppress ALL learned-mapping persistence (the confidence-gated writeback to
+   * billing_code_mappings). Set true for calibration/measurement runs so the
+   * resolver never teaches itself from the test set (leakage) and never mutates
+   * the PROD learned cache (reproducibility). Any future learn-write added to
+   * this resolver MUST also gate on this flag. Default false = current behavior.
+   */
+  skipWriteback?: boolean;
   /** Test override for the Haiku batch call. */
   haikuCall?: (systemPrompt: string, userContent: string) => Promise<ResolverHaikuResponse | null>;
 }
@@ -492,7 +500,7 @@ export async function resolveServices(
       const hit = parsed.get(l.lineNumber);
       if (hit && hit.confidence >= config.haikuConfidenceFloor) {
         results.set(l.lineNumber, mkResolution(l.lineNumber, hit.slug, hit.confidence, "haiku", conceptBySlug, config));
-        if (hit.confidence >= config.writebackConfidenceFloor) {
+        if (!opts.skipWriteback && hit.confidence >= config.writebackConfidenceFloor) {
           const coded = Boolean(l.billingCode && l.billingCodeType);
           writebacks.push(
             cacheLearnedMapping(opts.supabase, {
