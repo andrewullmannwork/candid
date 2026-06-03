@@ -20,6 +20,7 @@ const FIXTURES = [
   "scripts/cf40-v4-slow-drift-and-reset-fixture.ts", // L4 slow-drift + re-baseline reset (D.0c-i)
   "scripts/cf40-v4-rapid-change-and-verification-fixture.ts", // L4 rapid-change + verification (D.0c-ii)
   "scripts/cf40-v4-minority-router-fixture.ts", // L3(b) minority router (D.0d)
+  "scripts/cf40-v4-config-fixture.ts", // G6 flag-config-backed thresholds (S162)
 ];
 
 let failed = 0;

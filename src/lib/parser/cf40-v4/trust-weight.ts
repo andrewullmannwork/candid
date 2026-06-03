@@ -23,6 +23,34 @@ import {
 export const STABILITY_THRESHOLD = 3.0;
 
 /**
+ * Inclusive upper day-bounds of the first three time-decay brackets (the 4th is
+ * "everything older"). G6-tunable via `cf40_v4_config.weights.timeDecayBracketDays`;
+ * literal defaults are the pre-G6 90 / 180 / 365.
+ */
+export const TIME_DECAY_BRACKET_DAYS = {
+  recentMaxDays: 90,
+  midMaxDays: 180,
+  agedMaxDays: 365,
+} as const;
+
+/**
+ * The Layer-2 weighting inputs `effectiveWeight` reads — a structural subset of
+ * `CF40V4Config.weights`, so an orchestrator can pass `cfg.weights` directly while
+ * unit tests / non-v4 callers omit it and get the constant defaults.
+ */
+export interface WeightInputs {
+  trust: Record<TrustTier, number>;
+  timeDecay: Record<TimeDecayBracket, number>;
+  timeDecayBracketDays: { recentMaxDays: number; midMaxDays: number; agedMaxDays: number };
+}
+
+const DEFAULT_WEIGHT_INPUTS: WeightInputs = {
+  trust: TRUST_WEIGHT,
+  timeDecay: TIME_DECAY_MULTIPLIER,
+  timeDecayBracketDays: TIME_DECAY_BRACKET_DAYS,
+};
+
+/**
  * Resolve trust tier from per-user signals. Admin overrides everything.
  */
 export function resolveTrustTier(input: {
@@ -44,22 +72,32 @@ export function resolveTrustTier(input: {
  *   181 - 365 days: 0.2
  *   366+ days:      0.0
  */
-export function getTimeDecayBracket(parseAgeDays: number): TimeDecayBracket {
-  if (parseAgeDays <= 90) return "0_90d";
-  if (parseAgeDays <= 180) return "91_180d";
-  if (parseAgeDays <= 365) return "181_365d";
+export function getTimeDecayBracket(
+  parseAgeDays: number,
+  bracketDays: { recentMaxDays: number; midMaxDays: number; agedMaxDays: number } = TIME_DECAY_BRACKET_DAYS,
+): TimeDecayBracket {
+  if (parseAgeDays <= bracketDays.recentMaxDays) return "0_90d";
+  if (parseAgeDays <= bracketDays.midMaxDays) return "91_180d";
+  if (parseAgeDays <= bracketDays.agedMaxDays) return "181_365d";
   return "366d_plus";
 }
 
-export function getTimeDecayMultiplier(parseAgeDays: number): number {
-  return TIME_DECAY_MULTIPLIER[getTimeDecayBracket(parseAgeDays)];
+export function getTimeDecayMultiplier(
+  parseAgeDays: number,
+  weights: WeightInputs = DEFAULT_WEIGHT_INPUTS,
+): number {
+  return weights.timeDecay[getTimeDecayBracket(parseAgeDays, weights.timeDecayBracketDays)];
 }
 
 /**
  * Effective weight for a single parse event = trust × time-decay.
  */
-export function effectiveWeight(tier: TrustTier, parseAgeDays: number): number {
-  return TRUST_WEIGHT[tier] * getTimeDecayMultiplier(parseAgeDays);
+export function effectiveWeight(
+  tier: TrustTier,
+  parseAgeDays: number,
+  weights: WeightInputs = DEFAULT_WEIGHT_INPUTS,
+): number {
+  return weights.trust[tier] * getTimeDecayMultiplier(parseAgeDays, weights);
 }
 
 /**

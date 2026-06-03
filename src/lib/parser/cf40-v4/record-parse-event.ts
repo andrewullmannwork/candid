@@ -56,6 +56,7 @@ import {
 import { isPlanDocumentType } from "@/lib/plan/extraction-dedup";
 import { toPlanDocType, type PlanDocType } from "@/lib/parser/doctype-expected-counts";
 import type { ClassifiedDocType } from "@/lib/classifier";
+import { loadCF40V4Config } from "./config";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
@@ -191,8 +192,11 @@ export async function recordParseEventV4(
   });
   const ageMs = Date.now() - input.uploadedAt.getTime();
   const ageDays = Math.max(0, Math.floor(ageMs / (1000 * 60 * 60 * 24)));
-  const bracket = getTimeDecayBracket(ageDays);
-  const eWeight = effectiveWeight(tier, ageDays);
+  // Telemetry weighting under the pre-G6 constants — the OFF early-return below
+  // uses these (byte-identical). The FLAG-ON path recomputes both under the loaded
+  // config before any use, so they are `let`.
+  let bracket = getTimeDecayBracket(ageDays);
+  let eWeight = effectiveWeight(tier, ageDays);
 
   if (!v4Enabled) {
     console.log(
@@ -214,6 +218,13 @@ export async function recordParseEventV4(
   // Layer 3 per-(canonical, doc_type) promotion evaluation + UPSERT into
   // canonical_doctype_promotion_state. This branch only runs when
   // cf40_v4_algorithm is ON — dormant in PROD until Ing-D.1 flips the flag.
+  //
+  // Ship Gate G6: load the flag-config-backed thresholds ONCE for this parse event
+  // (cfg defaults to the pre-G6 constants → byte-identical when cf40_v4_config is
+  // unset) and recompute Layer-2 weighting under them; threaded to every evaluator.
+  const cfg = await loadCF40V4Config(supabase);
+  eWeight = effectiveWeight(tier, ageDays, cfg.weights);
+  bracket = getTimeDecayBracket(ageDays, cfg.weights.timeDecayBracketDays);
   console.log(
     `[cf40-v4] FLAG ON — recording parse event. (canonical=${input.canonicalPlanId}, hash=${input.fileHash.slice(0, 12)}…, doc=${input.docType}, tier=${tier}, w=${eWeight}, age_days=${ageDays}, new_services=${input.newServicesFound}, baseline_match=${input.haikuPlanIdentityMatchesBaseline})`,
   );
@@ -248,7 +259,7 @@ export async function recordParseEventV4(
         isAdmin: input.uploaderIsAdmin,
         isBanned: input.uploaderIsBanned,
         canonicalReBaselineRequired,
-      });
+      }, cfg.validity);
       layer1Failures = validity.failureReasons;
       // Ing-D.0c — split re_baseline_required's TWO jobs. It is a SMART-SKIP gate
       // (forces re-extraction; enforced in the orchestrator, index.ts) — NOT a
@@ -360,6 +371,7 @@ export async function recordParseEventV4(
         input.canonicalPlanId,
         planDocType,
         new Date(),
+        cfg,
       );
       if (inputs) {
         // Admin-attested fallback is flag-gated — resolve the flag (IO) before the
@@ -372,7 +384,7 @@ export async function recordParseEventV4(
           // default OFF — no admin promotion
         }
 
-        const { result, eventType } = decideDoctypePromotion(inputs, planDocType, adminEnabled);
+        const { result, eventType } = decideDoctypePromotion(inputs, planDocType, adminEnabled, cfg);
 
         // Ing-D.0c reset loop: if we were re-baselining AND the rebuild re-met
         // Layer 3 promotion, CLEAR re_baseline_required (recovery) in the same
@@ -425,6 +437,7 @@ export async function recordParseEventV4(
               input.canonicalPlanId,
               planDocType,
               inputs,
+              cfg,
             );
             for (const n of mr.notes) notes.push(n);
           } catch (err) {
@@ -478,6 +491,7 @@ export async function recordParseEventV4(
         parseTuple,
         input.forcedReparseReason,
         inReBaselineMode,
+        cfg,
       );
       verification = { mode: ver.mode, outcome: ver.outcome };
       for (const n of ver.notes) notes.push(n);
@@ -489,7 +503,7 @@ export async function recordParseEventV4(
     const justResolved = verification?.mode === "resolve";
     if (!inReBaselineMode && !justResolved) {
       try {
-        const drift = await detectSlowDrift(supabase, input.canonicalPlanId, planDocType, new Date());
+        const drift = await detectSlowDrift(supabase, input.canonicalPlanId, planDocType, new Date(), cfg);
         layer4 = {
           evaluated: drift.evaluated,
           driftTriggered: drift.triggered,
@@ -503,7 +517,7 @@ export async function recordParseEventV4(
         notes.push("Layer 4 slow-drift skipped (non-fatal error)");
       }
       try {
-        const rc = await detectRapidChange(supabase, input.canonicalPlanId, planDocType, new Date());
+        const rc = await detectRapidChange(supabase, input.canonicalPlanId, planDocType, new Date(), cfg);
         rapidChange = {
           evaluated: rc.evaluated,
           disposition: rc.disposition,

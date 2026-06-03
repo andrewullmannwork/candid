@@ -31,6 +31,7 @@ import {
   buildMinorityReviewRows,
 } from "@/lib/parser/cf40-v4/doctype-promotion-aggregator";
 import type { PlanDocType } from "@/lib/parser/doctype-expected-counts";
+import { parseCF40V4Config, type CF40V4Config } from "@/lib/parser/cf40-v4/config";
 
 config({ path: resolve(process.cwd(), ".env.local") });
 const supabase = createClient(
@@ -49,7 +50,7 @@ interface Violation {
   detail: string;
 }
 
-async function l3Pass(): Promise<{
+async function l3Pass(cfg: CF40V4Config): Promise<{
   evaluated: number;
   wouldPromote: number;
   wouldRegress: number;
@@ -78,11 +79,11 @@ async function l3Pass(): Promise<{
 
   for (const canonicalId of candidates) {
     for (const docType of DOC_TYPES) {
-      const inputs = await gatherLayer3Inputs(supabase, canonicalId, docType, NOW);
+      const inputs = await gatherLayer3Inputs(supabase, canonicalId, docType, NOW, cfg);
       if (!inputs) continue;
       evaluated += 1;
 
-      const { result } = decideDoctypePromotion(inputs, docType, ADMIN_ATTESTATION_ENABLED);
+      const { result } = decideDoctypePromotion(inputs, docType, ADMIN_ATTESTATION_ENABLED, cfg);
       if (result.promoted) wouldPromote += 1;
 
       // No-regression check: is this pair CURRENTLY promoted but v4 would NOT promote?
@@ -101,7 +102,7 @@ async function l3Pass(): Promise<{
       }
 
       // Layer-3(b) minority rows + the router-gate invariant.
-      const rows = buildMinorityReviewRows(canonicalId, docType, inputs);
+      const rows = buildMinorityReviewRows(canonicalId, docType, inputs, cfg);
       minorityRows += rows.length;
       if (rows.length > 0) {
         if (!inputs.baselineTuple) {
@@ -127,8 +128,19 @@ function runDryrun(script: string): { ok: boolean; summary: string } {
 async function main() {
   console.log("\n══ Ing-D.0f CF-40 v4 INTEGRATION dry-run — READ-ONLY flip-readiness gate ══\n");
 
+  // Ship Gate G6 — load the live threshold config so this flip-readiness gate
+  // reflects whatever an operator tuned during the Ing-D.1 soak (absent row → code
+  // defaults). Fetched + parsed directly (dry-run uses the supabase-js client).
+  const { data: cfgRow } = await supabase
+    .from("feature_flag_rules")
+    .select("config")
+    .eq("flag_key", "cf40_v4_config")
+    .maybeSingle();
+  const cfg = parseCF40V4Config(cfgRow?.config ?? null);
+  console.log(`config: cf40_v4_config ${cfgRow ? "row present (overrides overlaid on defaults)" : "absent → code defaults"}\n`);
+
   // ── Layer 3 + Layer 3(b) consolidated pass ──
-  const l3 = await l3Pass();
+  const l3 = await l3Pass(cfg);
   console.log("── Layer 3 promotion + Layer 3(b) minority ──");
   console.log(`(canonical, doc_type) pairs L3-evaluable (Layer-1-passed docs): ${l3.evaluated}`);
   console.log(`v4 would promote: ${l3.wouldPromote}`);

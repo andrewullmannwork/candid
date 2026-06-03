@@ -31,8 +31,8 @@ import type { ClassifiedDocType } from "@/lib/classifier";
 import {
   evaluateSmartSkipEligibility,
   getScaleTier,
+  loadCF40V4Config,
   resolveTrustTier,
-  STABILITY_THRESHOLD,
   type ForcedReparseInput,
   type ForcedReparseReason,
   type ValidityGateInput,
@@ -421,6 +421,10 @@ async function evaluateV4SmartSkip(
     );
     if (!v4On) return null;
 
+    // Ship Gate G6: the thresholds this skip decision reads come from
+    // cf40_v4_config (defaults to the pre-G6 constants → byte-identical when unset).
+    const cfg = await loadCF40V4Config(supabase);
+
     const isAdmin = uploader?.is_admin === true;
     const tier = resolveTrustTier({
       isAdmin,
@@ -442,7 +446,7 @@ async function evaluateV4SmartSkip(
       .select("extraction_count, divergence_pending_verification")
       .eq("id", canonicalPlanId)
       .maybeSingle();
-    const scaleTier = getScaleTier((canonical?.extraction_count as number | null) ?? 0);
+    const scaleTier = getScaleTier((canonical?.extraction_count as number | null) ?? 0, cfg.scale);
 
     // Per-doc-type promotion state (Layer 3 promoted + re-baseline + admin-attested).
     const { data: promo } = await supabase
@@ -494,10 +498,10 @@ async function evaluateV4SmartSkip(
 
     const eligibility = evaluateSmartSkipEligibility({
       validityInput,
-      layer2Stable: stability.parseWeightAccumulated >= STABILITY_THRESHOLD,
+      layer2Stable: stability.parseWeightAccumulated >= cfg.weights.stabilityThreshold,
       doctypePromoted,
       forcedReparseInput,
-    });
+    }, cfg);
 
     if (eligibility.eligible) {
       // Layer 5 every-5th-smart-skip counter: increment on each skip so the

@@ -25,11 +25,24 @@ export const VALIDITY_THRESHOLDS = {
   fileSizeMinEducation: 20_000,
 } as const;
 
-function fileSizeMinFor(docType: ValidityGateInput["docType"]): number {
-  if (docType === "sbc") return VALIDITY_THRESHOLDS.fileSizeMinSbc;
-  if (docType === "education_doc") return VALIDITY_THRESHOLDS.fileSizeMinEducation;
-  if (docType === "eoc") return VALIDITY_THRESHOLDS.fileSizeMinEoc;
-  return VALIDITY_THRESHOLDS.fileSizeMinPlanDoc; // plan_document
+/** The Layer-1 threshold values `evaluateValidityGates` reads — a structural
+ *  match for `CF40V4Config.validity` so the orchestrator can pass `cfg.validity`
+ *  while tests / non-v4 callers omit it and get the `VALIDITY_THRESHOLDS` defaults. */
+export type ValidityThresholdSet = {
+  selfCheckPassRate: number;
+  ocrConfidence: number;
+  classificationConfidence: number;
+  fileSizeMinPlanDoc: number;
+  fileSizeMinSbc: number;
+  fileSizeMinEoc: number;
+  fileSizeMinEducation: number;
+};
+
+function fileSizeMinFor(docType: ValidityGateInput["docType"], vt: ValidityThresholdSet): number {
+  if (docType === "sbc") return vt.fileSizeMinSbc;
+  if (docType === "education_doc") return vt.fileSizeMinEducation;
+  if (docType === "eoc") return vt.fileSizeMinEoc;
+  return vt.fileSizeMinPlanDoc; // plan_document
 }
 
 /**
@@ -38,21 +51,27 @@ function fileSizeMinFor(docType: ValidityGateInput["docType"]): number {
  * `fellBackToAbsoluteAge` is true when plan_year couldn't be extracted and the
  * caller used the absolute 12-month doc-age check instead of plan-year-aware
  * routing (Subplan §2.10).
+ *
+ * `vt` (Ship Gate G6) is the flag-config-backed threshold set; it defaults to the
+ * pre-G6 `VALIDITY_THRESHOLDS` constants so existing callers are byte-identical.
  */
-export function evaluateValidityGates(input: ValidityGateInput): ValidityGateResult {
+export function evaluateValidityGates(
+  input: ValidityGateInput,
+  vt: ValidityThresholdSet = VALIDITY_THRESHOLDS,
+): ValidityGateResult {
   const failures: ValidityGateFailure[] = [];
 
   // Doc-quality gates are "enforce-when-present": a null signal means the parse
   // path did not produce that measurement (no P-8 verifier / no OCR step), so the
   // gate is inapplicable rather than failed. Reject only on a measured value that
   // is below threshold. See ValidityGateInput doc-comment.
-  if (input.selfCheckPassRate !== null && input.selfCheckPassRate < VALIDITY_THRESHOLDS.selfCheckPassRate) {
+  if (input.selfCheckPassRate !== null && input.selfCheckPassRate < vt.selfCheckPassRate) {
     failures.push("self_check_pass_rate_below_threshold");
   }
-  if (input.ocrConfidence !== null && input.ocrConfidence < VALIDITY_THRESHOLDS.ocrConfidence) {
+  if (input.ocrConfidence !== null && input.ocrConfidence < vt.ocrConfidence) {
     failures.push("ocr_confidence_below_threshold");
   }
-  if (input.classificationConfidence !== null && input.classificationConfidence < VALIDITY_THRESHOLDS.classificationConfidence) {
+  if (input.classificationConfidence !== null && input.classificationConfidence < vt.classificationConfidence) {
     failures.push("classification_confidence_below_threshold");
   }
 
@@ -69,7 +88,7 @@ export function evaluateValidityGates(input: ValidityGateInput): ValidityGateRes
     }
   }
 
-  if (input.fileSizeBytes < fileSizeMinFor(input.docType)) {
+  if (input.fileSizeBytes < fileSizeMinFor(input.docType, vt)) {
     failures.push("file_size_below_minimum");
   }
 
