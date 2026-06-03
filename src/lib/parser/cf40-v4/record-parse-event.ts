@@ -41,7 +41,11 @@ import {
   type ValidityGateFailure,
   type ForcedReparseReason,
 } from "./index";
-import { decideDoctypePromotion, gatherLayer3Inputs } from "./doctype-promotion-aggregator";
+import {
+  decideDoctypePromotion,
+  gatherLayer3Inputs,
+  routeMinorityCandidates,
+} from "./doctype-promotion-aggregator";
 import {
   contributesUnderLayer1,
   detectSlowDrift,
@@ -404,6 +408,32 @@ export async function recordParseEventV4(
             ? `Layer 3: PROMOTED (${eventType}) doc_type=${planDocType} coverage=${result.observed.coverageScore.toFixed(3)}`
             : `Layer 3: not promoted (${result.failureReasons.join(", ") || "criteria unmet"})`,
         );
+
+        // Ing-D.0d — surface Layer-3(b) minority candidates (the dissenting identity
+        // tuples the supermajority dropped) to canonical_divergence_review. SKIPPED
+        // while the canonical is under active Layer-4 adjudication — either re-baselining
+        // (vote distribution mid-rebuild) OR an open verification
+        // (divergence_pending_verification): those state machines OWN the canonical's
+        // divergence handling, so a parallel divergence_review row would be a redundant
+        // cross-queue entry that the verification→re-baseline resolution could stale.
+        // One adjudication at a time — the same discipline the Layer-4 window detectors
+        // follow. Non-fatal — never breaks v3 stability persistence or Layer-3 promotion.
+        if (!inReBaselineMode && !inputs.divergencePendingVerification) {
+          try {
+            const mr = await routeMinorityCandidates(
+              supabase,
+              input.canonicalPlanId,
+              planDocType,
+              inputs,
+            );
+            for (const n of mr.notes) notes.push(n);
+          } catch (err) {
+            console.warn("[cf40-v4] Layer 3(b) minority routing failed (non-fatal):", err);
+            notes.push("Layer 3(b) minority routing skipped (non-fatal error)");
+          }
+        } else if (inputs.divergencePendingVerification) {
+          notes.push("Layer 3(b) minority routing skipped — verification pending (Layer-4 owns adjudication)");
+        }
       } else {
         notes.push(`Layer 3: no user-side uploads of doc_type=${planDocType} — skipped`);
       }

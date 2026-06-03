@@ -186,3 +186,21 @@ export const SLOW_DRIFT = {
  * this is the scale-independent default the verification-mode path uses).
  */
 export const IDENTITY_PLAUSIBILITY = { min: 0.2, max: 5.0 } as const;
+
+/**
+ * Ing-D.0d — Layer-3(b) minority-candidate router gates. Tunable (Ship Gate G6;
+ * promote to feature-flag config when the MVP knobs need runtime adjustment).
+ *   - minVerifiedUsers: a vote split only matters once ≥N distinct phone+email-
+ *     verified users have uploaded (no routing on a single-uploader canonical or
+ *     the natural single-user state). Pattern 1 #15 — the same verified denominator
+ *     the supermajority + slow-drift use.
+ *   - minMinorityWeight: surface a dissenting tuple once its summed effective weight
+ *     exceeds this floor. Default 0 = surface EVERY minority (recall over precision —
+ *     the admin queue is the precision gate, per feedback_candid_recall_over_precision;
+ *     implausible values are STAMPED, not dropped). Raise if cold-start admin load is
+ *     too high.
+ */
+export const MINORITY_ROUTER = {
+  minVerifiedUsers: 2,
+  minMinorityWeight: 0,
+} as const;

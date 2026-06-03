@@ -55,6 +55,9 @@ import {
   DOC_TYPE_COVERAGE_CONFIG,
   type PlanDocType,
 } from "@/lib/parser/doctype-expected-counts";
+import { type IdentityTuple, withinPlausibility } from "./invalidation";
+import { IDENTITY_PLAUSIBILITY, MINORITY_ROUTER } from "./scale-thresholds";
+import { upsertDivergenceReview, type DivergenceReviewRow } from "./divergence-review";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
@@ -71,7 +74,7 @@ const SUPERMAJORITY_IDENTITY_FIELDS = [
   "in_oop_max_family",
 ] as const;
 
-type IdentityField = (typeof SUPERMAJORITY_IDENTITY_FIELDS)[number];
+export type IdentityField = (typeof SUPERMAJORITY_IDENTITY_FIELDS)[number];
 
 /** Per-field provenance entry subset we care about (verified signal only). */
 type ProvenanceMap = Record<string, { source_excerpt_verified?: string } | undefined> | null;
@@ -95,6 +98,19 @@ export interface AggPlanRow {
   identityValues: Record<IdentityField, number | null>;
 }
 
+/**
+ * Ing-D.0d — a non-baseline identity tuple from the Layer-3(b) supermajority vote.
+ * The supermajority collapses the weight distribution to baseline + total; these are
+ * the dissenting tuples v3 dropped and v4 routes to canonical_divergence_review.
+ */
+export interface MinorityCandidate {
+  tuple: IdentityTuple;
+  /** summed per-user effective weight for this tuple. */
+  weight: number;
+  /** the verified users whose latest upload voted this tuple. */
+  userIds: string[];
+}
+
 export interface Layer3Inputs {
   corroboration: CorroborationCriterion;
   supermajority: SupermajorityCriterion;
@@ -104,6 +120,19 @@ export interface Layer3Inputs {
   scaleTier: ScaleTier;
   /** admin uploads of this doc_type for the canonical (admin-attested path gate) */
   adminUploadCount: number;
+  /** Ing-D.0d — the supermajority "winner" tuple (max-weight); null if no verified votes. */
+  baselineTuple: IdentityTuple | null;
+  /** Ing-D.0d — non-baseline tuples (the dropped minorities) for divergence routing. */
+  minorities: MinorityCandidate[];
+  /**
+   * Ing-D.0d — canonical_plans.divergence_pending_verification. The minority router
+   * is SKIPPED while this is TRUE: an open verification (Layer-4 §2.7c) owns the
+   * canonical's divergence adjudication, so a parallel divergence_review row would be a
+   * redundant cross-queue entry that the verification→re-baseline resolution could
+   * stale. Set by the IO wrapper (gatherLayer3Inputs); the pure aggregation defaults
+   * it false (it has no verification knowledge).
+   */
+  divergencePendingVerification: boolean;
 }
 
 export interface ComputeLayer3InputsArgs {
@@ -188,6 +217,8 @@ export function computeLayer3Inputs(args: ComputeLayer3InputsArgs): Layer3Inputs
     }
   }
   const weightByValue = new Map<string, number>();
+  const tupleByKey = new Map<string, IdentityTuple>();
+  const usersByKey = new Map<string, string[]>();
   let totalWeight = 0;
   for (const [userId, r] of latestByUser) {
     const t = trustOf(userId);
@@ -200,10 +231,31 @@ export function computeLayer3Inputs(args: ComputeLayer3InputsArgs): Layer3Inputs
     const w = effectiveWeight(tier, parseAgeDays(r.createdAt, now));
     const key = identityKey(r.identityValues);
     weightByValue.set(key, (weightByValue.get(key) ?? 0) + w);
+    if (!tupleByKey.has(key)) tupleByKey.set(key, r.identityValues);
+    usersByKey.set(key, [...(usersByKey.get(key) ?? []), userId]);
     totalWeight += w;
   }
+  // Baseline = the max-weight tuple (the supermajority "winner"). Ties resolve to the
+  // first-seen winner — and the OTHER half surfaces as a minority, which is exactly the
+  // 50/50 divergence we want admin to see (Ing-D.0d). NO outlier-elimination (the v3 sin).
+  let baselineKey: string | null = null;
   let baselineWeight = 0;
-  for (const w of weightByValue.values()) baselineWeight = Math.max(baselineWeight, w);
+  for (const [key, w] of weightByValue) {
+    if (w > baselineWeight) {
+      baselineWeight = w;
+      baselineKey = key;
+    }
+  }
+  const baselineTuple = baselineKey ? tupleByKey.get(baselineKey) ?? null : null;
+  // Minorities (Ing-D.0d): every non-baseline tuple with weight > 0 — dropped by v3,
+  // routed to canonical_divergence_review by v4 (routeMinorityCandidates).
+  const minorities: MinorityCandidate[] = [];
+  for (const [key, w] of weightByValue) {
+    if (key === baselineKey) continue;
+    const tuple = tupleByKey.get(key);
+    if (!tuple) continue;
+    minorities.push({ tuple, weight: w, userIds: usersByKey.get(key) ?? [] });
+  }
 
   const supermajority: SupermajorityCriterion = { baselineWeight, totalWeight };
 
@@ -235,6 +287,10 @@ export function computeLayer3Inputs(args: ComputeLayer3InputsArgs): Layer3Inputs
     uploadCount,
     scaleTier,
     adminUploadCount: adminRows.length,
+    baselineTuple,
+    minorities,
+    // Pure default — the IO wrapper (gatherLayer3Inputs) sets the real canonical state.
+    divergencePendingVerification: false,
   };
 }
 
@@ -365,10 +421,11 @@ export async function gatherLayer3Inputs(
     });
   }
 
-  // 4. canonical scale.
+  // 4. canonical scale + verification state (one read; the verification flag gates
+  //    the Ing-D.0d minority router — see Layer3Inputs.divergencePendingVerification).
   const { data: canonical } = await supabase
     .from("canonical_plans")
-    .select("extraction_count")
+    .select("extraction_count, divergence_pending_verification")
     .eq("id", canonicalPlanId)
     .maybeSingle();
   const extractionCount = (canonical?.extraction_count as number | null) ?? filtered.length;
@@ -402,7 +459,7 @@ export async function gatherLayer3Inputs(
     },
   }));
 
-  return computeLayer3Inputs({
+  const inputs = computeLayer3Inputs({
     docType,
     planRows,
     userById,
@@ -411,4 +468,123 @@ export async function gatherLayer3Inputs(
     verifiedServiceCount: verifiedServiceIds.size,
     now,
   });
+  return {
+    ...inputs,
+    divergencePendingVerification: canonical?.divergence_pending_verification === true,
+  };
+}
+
+// ── Ing-D.0d — Layer 3(b) minority-candidate router ──────────────────────────
+
+/** Per-field divergence of a minority tuple vs the baseline tuple. */
+export interface MinorityFieldDiff {
+  field: IdentityField;
+  baselineValue: number | null;
+  minorityValue: number | null;
+}
+
+/**
+ * Decompose a minority tuple against the baseline into the fields that actually
+ * differ. Pure. The supermajority votes per-TUPLE, but the admin queue + the
+ * rapid-change writer are per-FIELD — so each differing field becomes its own row,
+ * with the full co-occurring tuple preserved in the JSONB (the plan-variant-vs-noise
+ * signal). Null is distinguished from 0 (a value→null transition IS a divergence).
+ */
+export function diffMinorityFields(
+  baseline: IdentityTuple,
+  minority: IdentityTuple,
+): MinorityFieldDiff[] {
+  const diffs: MinorityFieldDiff[] = [];
+  for (const f of SUPERMAJORITY_IDENTITY_FIELDS) {
+    if ((baseline[f] ?? null) !== (minority[f] ?? null)) {
+      diffs.push({ field: f, baselineValue: baseline[f] ?? null, minorityValue: minority[f] ?? null });
+    }
+  }
+  return diffs;
+}
+
+/**
+ * PURE — the divergence-review rows the minority router would write for a
+ * (canonical, doc_type) from its gathered Layer-3 inputs. Returns [] when there is no
+ * split worth surfacing. Fixture-locked (Ship Gate G4); `routeMinorityCandidates` is
+ * the thin IO wrapper that upserts these.
+ *
+ * Gates: a baseline + ≥1 minority tuple exists; ≥ cfg.minVerifiedUsers distinct
+ * phone+email-verified users (no routing on a single-uploader canonical); per minority
+ * weight > cfg.minMinorityWeight. Plausibility ([0.2×,5×] vs the baseline field value)
+ * is STAMPED in the JSONB, NOT filtered — recall over precision; the admin queue is the
+ * precision gate. A null↔value transition is not ratio-checkable → stamped implausible.
+ */
+export function buildMinorityReviewRows(
+  canonicalPlanId: string,
+  docType: PlanDocType,
+  inputs: Layer3Inputs,
+  cfg: { minVerifiedUsers: number; minMinorityWeight: number } = MINORITY_ROUTER,
+): DivergenceReviewRow[] {
+  if (!inputs.baselineTuple || inputs.minorities.length === 0) return [];
+  if (inputs.corroboration.distinctPhoneEmailUsers < cfg.minVerifiedUsers) return [];
+
+  const rows: DivergenceReviewRow[] = [];
+  for (const m of inputs.minorities) {
+    if (m.weight <= cfg.minMinorityWeight) continue;
+    for (const d of diffMinorityFields(inputs.baselineTuple, m.tuple)) {
+      const plausible =
+        d.baselineValue != null && d.minorityValue != null
+          ? withinPlausibility(
+              d.minorityValue,
+              d.baselineValue,
+              IDENTITY_PLAUSIBILITY.min,
+              IDENTITY_PLAUSIBILITY.max,
+            )
+          : false; // null↔value transition: not ratio-checkable → admin reviews
+      rows.push({
+        canonicalPlanId,
+        documentType: docType,
+        fieldName: d.field,
+        minorityValueKey: d.minorityValue === null ? "∅" : String(d.minorityValue),
+        minorityValueJsonb: {
+          value: d.minorityValue,
+          baseline_value: d.baselineValue,
+          plausible,
+          co_occurring_tuple: m.tuple,
+          baseline_tuple: inputs.baselineTuple,
+          source: "layer3b_minority",
+        },
+        minorityWeight: Number(m.weight.toFixed(3)),
+        totalWeight: Number(inputs.supermajority.totalWeight.toFixed(3)),
+        contributingUserIds: m.userIds,
+        divergenceType: "unclassified",
+      });
+    }
+  }
+  return rows;
+}
+
+/**
+ * Ing-D.0d — route Layer-3(b) minority candidates to canonical_divergence_review.
+ * Thin IO wrapper over buildMinorityReviewRows + the shared idempotent upsert. The
+ * caller (recordParseEventV4) gates this on FLAG-ON + planDocType + !inReBaselineMode
+ * (the vote distribution is mid-rebuild while re-baselining → premature to route;
+ * re-evaluated once the canonical re-promotes). Non-fatal.
+ */
+export async function routeMinorityCandidates(
+  supabase: SupabaseClient,
+  canonicalPlanId: string,
+  docType: PlanDocType,
+  inputs: Layer3Inputs,
+): Promise<{ routed: number; notes: string[] }> {
+  const rows = buildMinorityReviewRows(canonicalPlanId, docType, inputs);
+  if (rows.length === 0) return { routed: 0, notes: [] };
+  let routed = 0;
+  for (const row of rows) {
+    const outcome = await upsertDivergenceReview(supabase, row);
+    if (outcome !== "skipped") routed += 1;
+  }
+  return {
+    routed,
+    notes:
+      routed > 0
+        ? [`Layer 3(b): ${routed} minority field-divergence(s) → canonical_divergence_review`]
+        : ["Layer 3(b): minority rows present but all upserts skipped (non-fatal)"],
+  };
 }
