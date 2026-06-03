@@ -41,7 +41,11 @@ import {
   type ValidityGateFailure,
   type ForcedReparseReason,
 } from "./index";
-import { decideDoctypePromotion, gatherLayer3Inputs } from "./doctype-promotion-aggregator";
+import {
+  decideDoctypePromotion,
+  gatherLayer3Inputs,
+  routeMinorityCandidates,
+} from "./doctype-promotion-aggregator";
 import {
   contributesUnderLayer1,
   detectSlowDrift,
@@ -404,6 +408,26 @@ export async function recordParseEventV4(
             ? `Layer 3: PROMOTED (${eventType}) doc_type=${planDocType} coverage=${result.observed.coverageScore.toFixed(3)}`
             : `Layer 3: not promoted (${result.failureReasons.join(", ") || "criteria unmet"})`,
         );
+
+        // Ing-D.0d — surface Layer-3(b) minority candidates (the dissenting identity
+        // tuples the supermajority dropped) to canonical_divergence_review. Skipped
+        // while re-baselining: the vote distribution is mid-rebuild, so routing now is
+        // premature (re-evaluated once the canonical re-promotes). Non-fatal — never
+        // breaks v3 stability persistence (done above) or Layer-3 promotion.
+        if (!inReBaselineMode) {
+          try {
+            const mr = await routeMinorityCandidates(
+              supabase,
+              input.canonicalPlanId,
+              planDocType,
+              inputs,
+            );
+            for (const n of mr.notes) notes.push(n);
+          } catch (err) {
+            console.warn("[cf40-v4] Layer 3(b) minority routing failed (non-fatal):", err);
+            notes.push("Layer 3(b) minority routing skipped (non-fatal error)");
+          }
+        }
       } else {
         notes.push(`Layer 3: no user-side uploads of doc_type=${planDocType} — skipped`);
       }

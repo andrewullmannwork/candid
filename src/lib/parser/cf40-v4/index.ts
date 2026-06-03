@@ -109,6 +109,7 @@ export * from "./validity-gates";
 export * from "./forced-reparse";
 export * from "./invalidation";
 export * from "./promotion-evaluator";
+export * from "./divergence-review";
 export * from "./badge";
 export * from "./dispute-treatment";
 

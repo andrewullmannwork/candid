@@ -47,6 +47,7 @@ import {
 } from "./scale-thresholds";
 import { getScaleTier, type ValidityGateFailure, type ForcedReparseReason } from "./types";
 import type { PlanDocType } from "@/lib/parser/doctype-expected-counts";
+import { upsertDivergenceReview } from "./divergence-review";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
@@ -739,16 +740,19 @@ export async function detectRapidChange(
         admin_disposition: "pending",
       });
       if (result.worstField) {
-        await supabase.from("canonical_divergence_review").insert({
-          canonical_plan_id: canonicalPlanId,
-          document_type: docType,
-          field_name: result.worstField,
-          minority_value_jsonb: { value: result.challengerValue },
-          minority_weight: result.convergingUserCount,
-          total_weight: result.totalUserCount,
-          contributing_user_ids: result.convergingUserIds,
-          divergence_type: "unclassified", // MVP — admin classifies; no auto-heuristic (audit OQ2)
-          status: "pending",
+        // Ing-D.0d — shared idempotent writer (was a raw insert). Same partial-unique
+        // dedup the Layer-3(b) minority router relies on, so QStash retries +
+        // concurrent workers cannot duplicate this canonical's pending rapid-change row.
+        await upsertDivergenceReview(supabase, {
+          canonicalPlanId,
+          documentType: docType,
+          fieldName: result.worstField,
+          minorityValueKey: result.challengerValue === null ? "∅" : String(result.challengerValue),
+          minorityValueJsonb: { value: result.challengerValue, source: "layer4_rapid_change" },
+          minorityWeight: result.convergingUserCount,
+          totalWeight: result.totalUserCount,
+          contributingUserIds: result.convergingUserIds,
+          divergenceType: "unclassified", // MVP — admin classifies; no auto-heuristic (audit OQ2)
         });
       }
       notes.push(
