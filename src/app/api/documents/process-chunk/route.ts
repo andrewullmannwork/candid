@@ -657,6 +657,24 @@ async function runSmartSkipCheck(args: {
     );
 
     if (!dedupResult.skip || !dedupResult.canonicalPlanId) {
+      // Ing-D.0c-ii — persist the Layer-5 forced-reparse reason (if any) so the
+      // later record-step (recordParseEventV4, a separate QStash invocation) can
+      // drive verification-mode open/resolve. Written ONLY when set (cf40_v4
+      // flag ON + a forced re-parse), so the flag-OFF path stays byte-identical.
+      // Non-fatal.
+      if (dedupResult.forcedReparseReason) {
+        try {
+          await supabase
+            .from("documents")
+            .update({ cf40_forced_reparse_reason: dedupResult.forcedReparseReason })
+            .eq("id", doc.id);
+        } catch (persistErr) {
+          console.warn(
+            "[process-chunk] cf40_forced_reparse_reason persist failed (non-fatal):",
+            persistErr,
+          );
+        }
+      }
       return { skipped: false, reason: dedupResult.reason };
     }
 

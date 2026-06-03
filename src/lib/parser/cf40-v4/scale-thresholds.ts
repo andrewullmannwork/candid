@@ -176,3 +176,13 @@ export const SLOW_DRIFT = {
   divergenceRate30dThreshold: 0.3,
   divergentUserCount30dThreshold: 3,
 } as const;
+
+/**
+ * Ing-D.0c-ii — plausibility band for an identity-scalar challenger relative to
+ * the served baseline. A divergent value must land within [min×, max×] of the
+ * baseline to be treated as a real candidate (vs OCR/Haiku garbage like $0.01 or
+ * $100k on a $2k deductible). Shared by verification-mode OPEN (§2.7c) and
+ * rapid-change (§2.7b — RAPID_CHANGE_THRESHOLDS carries the same band per-tier;
+ * this is the scale-independent default the verification-mode path uses).
+ */
+export const IDENTITY_PLAUSIBILITY = { min: 0.2, max: 5.0 } as const;

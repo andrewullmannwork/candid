@@ -197,4 +197,14 @@ export interface SmartSkipEligibility {
   // Where the decision was made — useful for telemetry & admin UI.
   decisionLayer: "layer1" | "layer2" | "layer3" | "layer4" | "layer5" | "all_pass";
   failureReason: string | null;
+  /**
+   * Ing-D.0c-ii — the structured Layer-5 forced-reparse reason when the
+   * extraction proceeded BECAUSE Layer 5 forced a full parse of an
+   * otherwise-skip-eligible (stable + promoted + valid) canonical. NULL on every
+   * other outcome (eligible skip, or an extract blocked at Layer 1/2/3 — i.e. the
+   * canonical was never settled, so the parse is not a "re-parse"). Plumbed
+   * through DedupResult → documents.cf40_forced_reparse_reason → recordParseEventV4
+   * to drive verification-mode open/resolve.
+   */
+  forcedReparseReason: ForcedReparseReason | null;
 }

@@ -30,15 +30,22 @@
  * Wired from `recordParseEventV4` (record-parse-event.ts) post-Layer-3, FLAG-ON
  * only. Non-fatal: every write is wrapped; this never throws into the recorder.
  *
- * NOT in Ing-D.0c-i (deferred to D.0c-ii): rapid-change (§2.7b) + verification
- * mode (§2.7c). Both key off the "was this a forced re-parse?" signal (not in the
- * recorder's context — lives upstream in shouldSkipExtraction) and the §2.7c
- * 'drift' resolution feeds rapid-change.
+ * Ing-D.0c-ii ADDS (below detectSlowDrift): rapid-change (§2.7b — scale-aware
+ * convergence) + verification-mode (§2.7c — divergent forced re-parse opens a
+ * canonical-wide double-check; consecutive agreement on the challenger confirms
+ * drift, a single divergence is noise). Both key off the forced-reparse reason,
+ * now plumbed `shouldSkipExtraction → documents.cf40_forced_reparse_reason →
+ * recordParseEventV4` (mig 141).
  */
 
 import type { createServerClient } from "@/lib/supabase/server";
-import { SLOW_DRIFT } from "./scale-thresholds";
-import type { ValidityGateFailure } from "./types";
+import {
+  SLOW_DRIFT,
+  RAPID_CHANGE_THRESHOLDS,
+  IDENTITY_PLAUSIBILITY,
+  type RapidChangeThresholds,
+} from "./scale-thresholds";
+import { getScaleTier, type ValidityGateFailure, type ForcedReparseReason } from "./types";
 import type { PlanDocType } from "@/lib/parser/doctype-expected-counts";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
@@ -358,4 +365,591 @@ export async function detectSlowDrift(
     worstField: result.worstField,
     notes,
   };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Ing-D.0c-ii — shared identity-tuple helpers (rapid-change + verification-mode)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** The 4 plan-identity scalars, in_-prefixed (mirrors extraction-dedup HaikuPlanIdentityValues). */
+export interface IdentityTuple {
+  in_deductible_individual: number | null;
+  in_deductible_family: number | null;
+  in_oop_max_individual: number | null;
+  in_oop_max_family: number | null;
+}
+
+/** Null-safe equality over the 4 identity scalars (mirrors extraction-dedup planIdentityEqual). */
+export function identityTupleEqual(a: IdentityTuple | null, b: IdentityTuple | null): boolean {
+  if (!a || !b) return false;
+  return (
+    (a.in_deductible_individual ?? null) === (b.in_deductible_individual ?? null) &&
+    (a.in_deductible_family ?? null) === (b.in_deductible_family ?? null) &&
+    (a.in_oop_max_individual ?? null) === (b.in_oop_max_individual ?? null) &&
+    (a.in_oop_max_family ?? null) === (b.in_oop_max_family ?? null)
+  );
+}
+
+/** value within [base×min, base×max]; a $0/negative baseline defers to count/diversity gates. */
+export function withinPlausibility(value: number, base: number, min: number, max: number): boolean {
+  if (base <= 0) return true;
+  return value >= base * min && value <= base * max;
+}
+
+/**
+ * Load the canonical's SERVED identity baseline (canonical_plans typed cols),
+ * keyed by the in_-prefixed extractionField (per SLOW_DRIFT_IDENTITY_FIELDS).
+ * Returns null when the canonical row is missing.
+ */
+export async function loadServedBaseline(
+  supabase: SupabaseClient,
+  canonicalPlanId: string,
+): Promise<Record<string, number | null> | null> {
+  const { data: canon } = await supabase
+    .from("canonical_plans")
+    .select("deductible_individual, deductible_family, oop_max_individual, oop_max_family")
+    .eq("id", canonicalPlanId)
+    .maybeSingle();
+  if (!canon) return null;
+  const baseline: Record<string, number | null> = {};
+  for (const f of SLOW_DRIFT_IDENTITY_FIELDS) {
+    baseline[f.extractionField] =
+      (canon[f.canonicalColumn as keyof typeof canon] as number | null) ?? null;
+  }
+  return baseline;
+}
+
+/** A served baseline (in_-keyed record) as an IdentityTuple for tuple compares. */
+function baselineToTuple(baseline: Record<string, number | null>): IdentityTuple {
+  return {
+    in_deductible_individual: baseline.in_deductible_individual ?? null,
+    in_deductible_family: baseline.in_deductible_family ?? null,
+    in_oop_max_individual: baseline.in_oop_max_individual ?? null,
+    in_oop_max_family: baseline.in_oop_max_family ?? null,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Ing-D.0c-ii — §2.7(b) rapid-change detection
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Measured diversity among the converging users; a null field = unmeasurable. */
+export interface DiversityMeasure {
+  ipBlocks: number | null;
+  asns: number | null;
+  emailDomains: number | null;
+}
+
+export interface RapidChangeComputeArgs {
+  /** in-window, verified-user extractions (the caller gates both). */
+  rows: DriftExtractionRow[];
+  /** served baseline keyed by in_-prefixed extractionField. */
+  baseline: Record<string, number | null>;
+  thresholds: RapidChangeThresholds;
+  diversity: DiversityMeasure;
+}
+
+export interface RapidChangeResult {
+  /** at least one field had a baseline + a non-baseline challenger to assess. */
+  evaluated: boolean;
+  /** 'auto_fire' re-baselines; 'admin_review' queues; 'none' = no actionable signal. */
+  disposition: "none" | "auto_fire" | "admin_review";
+  convergenceRate: number;
+  convergingUserCount: number;
+  totalUserCount: number;
+  worstField: string | null;
+  baselineValue: number | null;
+  challengerValue: number | null;
+  /** distinct user_ids converging on the challenger (audit + admin queue). */
+  convergingUserIds: string[];
+  plausible: boolean;
+  diversityMet: boolean;
+  diversityMeasurable: boolean;
+}
+
+/**
+ * §2.7(b) rapid-change: within the scale-aware window, distinct verified users
+ * CONVERGING on a single plausible non-baseline challenger. Unlike slow-drift
+ * (divergence RATE over 30d), this is convergence COUNT over a short window —
+ * the signature of a coordinated shift (a real open-enrollment change OR an
+ * attack). Plausibility + diversity + cold-start admin-review separate the two:
+ *
+ *   countMet ∧ plausible ∧ cold_start                    → admin_review
+ *   countMet ∧ plausible ∧ (diversity unmeasurable|unmet) → admin_review (conservative)
+ *   countMet ∧ plausible ∧ diversity met                  → auto_fire
+ *   else                                                  → none
+ *
+ * Conservative-by-design: NEVER auto-un-promotes a Verified canonical without a
+ * diverse, plausible, scale-sufficient convergence. Pure.
+ */
+export function computeRapidChange(args: RapidChangeComputeArgs): RapidChangeResult {
+  const { rows, baseline, thresholds, diversity } = args;
+
+  // Latest value per (field, user).
+  const latest = new Map<string, DriftExtractionRow>();
+  for (const r of rows) {
+    if (r.value === null) continue;
+    const key = `${r.extractionField}|${r.userId}`;
+    const prev = latest.get(key);
+    if (!prev || new Date(r.createdAt).getTime() > new Date(prev.createdAt).getTime()) {
+      latest.set(key, r);
+    }
+  }
+
+  let best: RapidChangeResult = {
+    evaluated: false,
+    disposition: "none",
+    convergenceRate: 0,
+    convergingUserCount: 0,
+    totalUserCount: 0,
+    worstField: null,
+    baselineValue: null,
+    challengerValue: null,
+    convergingUserIds: [],
+    plausible: false,
+    diversityMet: false,
+    diversityMeasurable: false,
+  };
+
+  for (const { extractionField } of SLOW_DRIFT_IDENTITY_FIELDS) {
+    const base = baseline[extractionField];
+    if (base === null || base === undefined) continue;
+
+    const prefix = `${extractionField}|`;
+    const perUser: Array<{ userId: string; value: number }> = [];
+    for (const [key, r] of latest) {
+      if (key.startsWith(prefix) && r.value !== null) perUser.push({ userId: r.userId, value: r.value });
+    }
+    const total = perUser.length;
+    if (total === 0) continue;
+
+    // Challenger = plurality NON-baseline value; converging users agree on it.
+    const nonBaseline = perUser.filter((u) => !valuesEqual(u.value, base));
+    if (nonBaseline.length === 0) continue; // everyone agrees with baseline — no change
+    const challenger = pluralityValue(nonBaseline.map((u) => u.value));
+    if (challenger === null) continue;
+    const converging = nonBaseline.filter((u) => valuesEqual(u.value, challenger));
+    const convergingCount = converging.length;
+    const rate = convergingCount / total;
+
+    // Field with the MOST converging users drives the signal (tie → higher rate).
+    const better =
+      convergingCount > best.convergingUserCount ||
+      (convergingCount === best.convergingUserCount && rate > best.convergenceRate);
+    if (better) {
+      best = {
+        ...best,
+        evaluated: true,
+        convergenceRate: round3(rate),
+        convergingUserCount: convergingCount,
+        totalUserCount: total,
+        worstField: extractionField,
+        baselineValue: base,
+        challengerValue: challenger,
+        convergingUserIds: converging.map((u) => u.userId),
+      };
+    }
+  }
+
+  if (!best.evaluated) return best;
+
+  const countMet = best.convergingUserCount >= thresholds.distinctUsersInWindow;
+  const plausible =
+    best.challengerValue !== null &&
+    best.baselineValue !== null &&
+    withinPlausibility(
+      best.challengerValue,
+      best.baselineValue,
+      thresholds.plausibilityRangeMin,
+      thresholds.plausibilityRangeMax,
+    );
+
+  const diversityRequired =
+    thresholds.ipBlocks !== null || thresholds.asns !== null || thresholds.emailDomains !== null;
+  const diversityMeasurable =
+    !diversityRequired ||
+    ((thresholds.ipBlocks === null || diversity.ipBlocks !== null) &&
+      (thresholds.asns === null || diversity.asns !== null) &&
+      (thresholds.emailDomains === null || diversity.emailDomains !== null));
+  const diversityMet =
+    !diversityRequired ||
+    ((thresholds.ipBlocks === null || (diversity.ipBlocks ?? 0) >= thresholds.ipBlocks) &&
+      (thresholds.asns === null || (diversity.asns ?? 0) >= thresholds.asns) &&
+      (thresholds.emailDomains === null || (diversity.emailDomains ?? 0) >= thresholds.emailDomains));
+
+  let disposition: RapidChangeResult["disposition"] = "none";
+  if (countMet && plausible) {
+    if (thresholds.requiresAdminReview) disposition = "admin_review"; // cold_start (0-100)
+    else if (!diversityMeasurable || !diversityMet) disposition = "admin_review"; // conservative
+    else disposition = "auto_fire";
+  }
+
+  return { ...best, plausible, diversityMet, diversityMeasurable, disposition };
+}
+
+export interface DetectRapidChangeResult {
+  evaluated: boolean;
+  disposition: "none" | "auto_fire" | "admin_review";
+  convergenceRate: number;
+  convergingUserCount: number;
+  worstField: string | null;
+  notes: string[];
+}
+
+/**
+ * Detect rapid-change for a (canonical, doc_type) over the scale-aware window.
+ *
+ * ALWAYS writes a canonical_drift_events row (detection_type='rapid_change';
+ * triggered_re_baseline distinguishes fire vs non-fire — Ship Gate G7). On
+ * auto_fire: re_baseline + un-promote + rapid_change_invalidation. On
+ * admin_review: rapid_change_pending_admin_review + a canonical_divergence_review
+ * row (divergence_type='unclassified' — admin classifies; no MVP heuristic).
+ *
+ * Diversity (IP/ASN/email-domain) is NOT collected today → passed null → any
+ * small+ convergence conservatively routes to admin_review (cannot confirm
+ * diverse-vs-coordinated). Mirrors Layer 3 diversity (fail-closed). Declared
+ * abstention: auto_fire is unreachable via this IO path until diversity is
+ * plumbed; the pure decision is fixture-locked for all branches. Non-fatal.
+ */
+export async function detectRapidChange(
+  supabase: SupabaseClient,
+  canonicalPlanId: string,
+  docType: PlanDocType,
+  now: Date,
+): Promise<DetectRapidChangeResult> {
+  const notes: string[] = [];
+  const noop = (note: string): DetectRapidChangeResult => ({
+    evaluated: false,
+    disposition: "none",
+    convergenceRate: 0,
+    convergingUserCount: 0,
+    worstField: null,
+    notes: [note],
+  });
+
+  const parserKind = docTypeToParserKind(docType);
+  if (!parserKind) return noop("education_doc — no rapid-change");
+
+  const baseline = await loadServedBaseline(supabase, canonicalPlanId);
+  if (!baseline) return noop("no canonical row");
+
+  // Scale tier from canonical's lifetime extraction count → window + thresholds.
+  const { data: canon } = await supabase
+    .from("canonical_plans")
+    .select("extraction_count")
+    .eq("id", canonicalPlanId)
+    .maybeSingle();
+  const scaleTier = getScaleTier((canon?.extraction_count as number | null) ?? 0);
+  const thresholds = RAPID_CHANGE_THRESHOLDS[scaleTier];
+
+  const windowStart = new Date(
+    now.getTime() - thresholds.timeWindowDays * 24 * 60 * 60 * 1000,
+  ).toISOString();
+  const fieldNames = SLOW_DRIFT_IDENTITY_FIELDS.map((f) => f.extractionField);
+  const { data: extractions } = await supabase
+    .from("canonical_haiku_extractions")
+    .select("field_name, user_id, extracted_value, created_at")
+    .eq("canonical_plan_id", canonicalPlanId)
+    .eq("parser_kind", parserKind)
+    .is("service_slug", null)
+    .in("field_name", fieldNames)
+    .gte("created_at", windowStart);
+  if (!extractions || extractions.length === 0) return noop("no in-window extractions");
+
+  // Verified-user gate (Pattern 1 #15) — unverified-spam can't force a re-baseline.
+  const userIds = [...new Set(extractions.map((e) => e.user_id as string))];
+  const { data: users } = await supabase
+    .from("users")
+    .select("id, email_verified, phone_verified")
+    .in("id", userIds);
+  const verified = new Set(
+    (users ?? [])
+      .filter((u) => u.email_verified === true && u.phone_verified === true)
+      .map((u) => u.id as string),
+  );
+  const rows: DriftExtractionRow[] = extractions
+    .filter((e) => verified.has(e.user_id as string))
+    .map((e) => ({
+      extractionField: e.field_name as string,
+      userId: e.user_id as string,
+      value: coerceScalar(e.extracted_value),
+      createdAt: e.created_at as string,
+    }));
+  if (rows.length === 0) return noop("no verified-user extractions in window");
+
+  const result = computeRapidChange({
+    rows,
+    baseline,
+    thresholds,
+    diversity: { ipBlocks: null, asns: null, emailDomains: null }, // not collected — see docstring
+  });
+
+  // ALWAYS write telemetry (G7) into the unified Layer-4 sink.
+  try {
+    await supabase.from("canonical_drift_events").insert({
+      canonical_plan_id: canonicalPlanId,
+      document_type: docType,
+      detection_type: "rapid_change",
+      window_days: thresholds.timeWindowDays,
+      divergence_rate_30d: result.convergenceRate,
+      divergent_user_count_30d: result.convergingUserCount,
+      triggered_re_baseline: result.disposition === "auto_fire",
+    });
+  } catch {
+    notes.push("canonical_drift_events (rapid_change) insert skipped (non-fatal)");
+  }
+
+  const challengerJsonb = result.worstField
+    ? { field: result.worstField, value: result.challengerValue }
+    : null;
+  const baselineJsonb = result.worstField
+    ? { field: result.worstField, value: result.baselineValue }
+    : null;
+
+  if (result.disposition === "auto_fire") {
+    try {
+      await supabase
+        .from("canonical_doctype_promotion_state")
+        .update({ re_baseline_required: true, doctype_promoted: false })
+        .eq("canonical_plan_id", canonicalPlanId)
+        .eq("document_type", docType);
+      await supabase.from("canonical_invalidation_events").insert({
+        canonical_plan_id: canonicalPlanId,
+        document_type: docType,
+        event_type: "rapid_change_invalidation",
+        triggering_user_ids: result.convergingUserIds,
+        baseline_value_jsonb: baselineJsonb,
+        divergent_value_jsonb: challengerJsonb,
+      });
+      notes.push(
+        `RAPID-CHANGE AUTO-FIRE on ${result.worstField} (converging=${result.convergingUserCount}/${result.totalUserCount}) → re_baseline_required=TRUE`,
+      );
+    } catch {
+      notes.push("rapid-change auto-fire write skipped (non-fatal)");
+    }
+  } else if (result.disposition === "admin_review") {
+    try {
+      await supabase.from("canonical_invalidation_events").insert({
+        canonical_plan_id: canonicalPlanId,
+        document_type: docType,
+        event_type: "rapid_change_pending_admin_review",
+        triggering_user_ids: result.convergingUserIds,
+        baseline_value_jsonb: baselineJsonb,
+        divergent_value_jsonb: challengerJsonb,
+        admin_disposition: "pending",
+      });
+      if (result.worstField) {
+        await supabase.from("canonical_divergence_review").insert({
+          canonical_plan_id: canonicalPlanId,
+          document_type: docType,
+          field_name: result.worstField,
+          minority_value_jsonb: { value: result.challengerValue },
+          minority_weight: result.convergingUserCount,
+          total_weight: result.totalUserCount,
+          contributing_user_ids: result.convergingUserIds,
+          divergence_type: "unclassified", // MVP — admin classifies; no auto-heuristic (audit OQ2)
+          status: "pending",
+        });
+      }
+      notes.push(
+        `RAPID-CHANGE → ADMIN REVIEW on ${result.worstField} (converging=${result.convergingUserCount}; ${thresholds.requiresAdminReview ? "cold-start" : "diversity-unconfirmed"})`,
+      );
+    } catch {
+      notes.push("rapid-change admin-review write skipped (non-fatal)");
+    }
+  }
+
+  return {
+    evaluated: result.evaluated,
+    disposition: result.disposition,
+    convergenceRate: result.convergenceRate,
+    convergingUserCount: result.convergingUserCount,
+    worstField: result.worstField,
+    notes,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Ing-D.0c-ii — §2.7(c) verification-mode
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * The robustness core (Andrew S159 critical review): a verification re-parse
+ * confirms drift ONLY on consecutive AGREEMENT with the stored challenger. A
+ * SECOND, DIFFERENT divergent value is the signature of NOISE, not a real change
+ * — "any divergence from baseline" would false-re-baseline on it (the
+ * catastrophic direction). Matching the served baseline, or a third distinct
+ * value, both resolve as noise. Pure.
+ */
+export function resolveVerificationDecision(
+  parse: IdentityTuple,
+  challenger: IdentityTuple | null,
+): "drift" | "noise" {
+  if (challenger && identityTupleEqual(parse, challenger)) return "drift";
+  return "noise";
+}
+
+/** True iff `parse` diverges from the served baseline on at least one identity field. */
+export function tupleDivergesFromBaseline(
+  parse: IdentityTuple,
+  baseline: Record<string, number | null>,
+): boolean {
+  return !identityTupleEqual(parse, baselineToTuple(baseline));
+}
+
+/** True iff every field where `parse` diverges from baseline is within the plausibility band. */
+export function divergingFieldsPlausible(
+  parse: IdentityTuple,
+  baseline: Record<string, number | null>,
+): boolean {
+  for (const { extractionField } of SLOW_DRIFT_IDENTITY_FIELDS) {
+    const base = baseline[extractionField];
+    const val = (parse as unknown as Record<string, number | null>)[extractionField];
+    if (base === null || base === undefined || val === null || val === undefined) continue;
+    if (valuesEqual(val, base)) continue; // not diverging on this field
+    if (!withinPlausibility(val, base, IDENTITY_PLAUSIBILITY.min, IDENTITY_PLAUSIBILITY.max)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Layer-5 forced reasons OTHER than verification-mode itself — these can OPEN verification. */
+const NON_VERIFICATION_FORCED: ReadonlySet<string> = new Set<ForcedReparseReason & string>([
+  "admin_upload",
+  "statistical_drift_sample",
+  "temporal_staleness",
+  "admin_attestation_validation",
+  "every_5th_smart_skip",
+]);
+
+export interface DetectVerificationResult {
+  mode: "none" | "open" | "resolve";
+  /** resolve → 'drift'|'noise'; open → 'opened'|'no_divergence'|'implausible'; none → reason. */
+  outcome: string;
+  notes: string[];
+}
+
+/**
+ * §2.7(c) verification-mode. Canonical-WIDE (mig 086 divergence_pending_verification).
+ *
+ *   RESOLVE (this parse was forced BY verification mode — Layer 5 trigger #4):
+ *     read the open challenger; consecutive AGREEMENT → resolved_drift (re-baseline);
+ *     else → resolved_noise (baseline intact). Always clears the flag. Runs even
+ *     while re-baselining (it is closing an open round).
+ *   OPEN (a NON-verification forced re-parse that diverged PLAUSIBLY from the
+ *     SERVED baseline): set divergence_pending_verification=TRUE → the next upload
+ *     of ANY doc-type is forced to verify. Suppressed while re-baselining.
+ *
+ * A `forcedReparseReason` is set ONLY when the orchestrator passed Layers 1-3
+ * (stable + promoted + valid) and Layer 5 forced a parse — so "forced + divergent"
+ * already means "a canonical we served as settled disagreed with itself." Non-fatal.
+ */
+export async function detectVerificationMode(
+  supabase: SupabaseClient,
+  canonicalPlanId: string,
+  docType: PlanDocType,
+  parse: IdentityTuple,
+  forcedReparseReason: ForcedReparseReason | null,
+  inReBaselineMode: boolean,
+): Promise<DetectVerificationResult> {
+  const notes: string[] = [];
+  const parserKind = docTypeToParserKind(docType);
+  if (!parserKind) return { mode: "none", outcome: "education_doc", notes };
+
+  const baseline = await loadServedBaseline(supabase, canonicalPlanId);
+  if (!baseline) return { mode: "none", outcome: "no_canonical", notes };
+
+  // ── RESOLVE ────────────────────────────────────────────────────────────────
+  if (forcedReparseReason === "verification_mode") {
+    const { data: open } = await supabase
+      .from("canonical_invalidation_events")
+      .select("divergent_value_jsonb")
+      .eq("canonical_plan_id", canonicalPlanId)
+      .eq("event_type", "verification_mode_triggered")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const challenger = (open?.divergent_value_jsonb as IdentityTuple | null) ?? null;
+    const decision = resolveVerificationDecision(parse, challenger);
+
+    // Always clear the canonical-wide flag — this verification round is over.
+    try {
+      await supabase
+        .from("canonical_plans")
+        .update({ divergence_pending_verification: false })
+        .eq("id", canonicalPlanId);
+    } catch {
+      notes.push("clear divergence_pending_verification skipped (non-fatal)");
+    }
+
+    if (decision === "drift") {
+      try {
+        await supabase
+          .from("canonical_doctype_promotion_state")
+          .update({ re_baseline_required: true, doctype_promoted: false })
+          .eq("canonical_plan_id", canonicalPlanId)
+          .eq("document_type", docType);
+        await supabase.from("canonical_invalidation_events").insert({
+          canonical_plan_id: canonicalPlanId,
+          document_type: docType,
+          event_type: "verification_mode_resolved_drift",
+          baseline_value_jsonb: baselineToTuple(baseline),
+          divergent_value_jsonb: parse,
+        });
+        notes.push(
+          "VERIFICATION RESOLVED → DRIFT (challenger confirmed twice) → re_baseline_required=TRUE",
+        );
+      } catch {
+        notes.push("verification resolved_drift write skipped (non-fatal)");
+      }
+    } else {
+      try {
+        await supabase.from("canonical_invalidation_events").insert({
+          canonical_plan_id: canonicalPlanId,
+          document_type: docType,
+          event_type: "verification_mode_resolved_noise",
+          baseline_value_jsonb: baselineToTuple(baseline),
+          divergent_value_jsonb: parse,
+        });
+        notes.push("VERIFICATION RESOLVED → NOISE (challenger not reconfirmed) → baseline intact");
+      } catch {
+        notes.push("verification resolved_noise write skipped (non-fatal)");
+      }
+    }
+    return { mode: "resolve", outcome: decision, notes };
+  }
+
+  // ── OPEN candidate ───────────────────────────────────────────────────────────
+  // Suppressed while re-baselining (the canonical is already rebuilding).
+  if (!inReBaselineMode && forcedReparseReason && NON_VERIFICATION_FORCED.has(forcedReparseReason)) {
+    if (!tupleDivergesFromBaseline(parse, baseline)) {
+      return { mode: "open", outcome: "no_divergence", notes };
+    }
+    if (!divergingFieldsPlausible(parse, baseline)) {
+      notes.push("forced re-parse diverged IMPLAUSIBLY (treated as noise — verification NOT opened)");
+      return { mode: "open", outcome: "implausible", notes };
+    }
+    try {
+      await supabase
+        .from("canonical_plans")
+        .update({ divergence_pending_verification: true })
+        .eq("id", canonicalPlanId);
+      await supabase.from("canonical_invalidation_events").insert({
+        canonical_plan_id: canonicalPlanId,
+        document_type: docType,
+        event_type: "verification_mode_triggered",
+        baseline_value_jsonb: baselineToTuple(baseline),
+        divergent_value_jsonb: parse, // the challenger — read back on resolve
+      });
+      notes.push(
+        `VERIFICATION OPENED — forced ${forcedReparseReason} diverged plausibly; next upload (any doc-type) forced to verify`,
+      );
+    } catch {
+      notes.push("verification open write skipped (non-fatal)");
+    }
+    return { mode: "open", outcome: "opened", notes };
+  }
+
+  return { mode: "none", outcome: forcedReparseReason ? "forced_no_action" : "not_forced", notes };
 }

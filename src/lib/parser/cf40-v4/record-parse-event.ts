@@ -39,9 +39,16 @@ import {
   type PromotionEvalResult,
   type TrustTier,
   type ValidityGateFailure,
+  type ForcedReparseReason,
 } from "./index";
 import { decideDoctypePromotion, gatherLayer3Inputs } from "./doctype-promotion-aggregator";
-import { contributesUnderLayer1, detectSlowDrift } from "./invalidation";
+import {
+  contributesUnderLayer1,
+  detectSlowDrift,
+  detectRapidChange,
+  detectVerificationMode,
+  type IdentityTuple,
+} from "./invalidation";
 import { isPlanDocumentType } from "@/lib/plan/extraction-dedup";
 import { toPlanDocType, type PlanDocType } from "@/lib/parser/doctype-expected-counts";
 import type { ClassifiedDocType } from "@/lib/classifier";
@@ -72,6 +79,14 @@ export interface ParseEventInput {
   fileSizeBytes: number;
   documentPlanYear: number | null;
   uploaderIsBanned: boolean;
+  // ── Layer 4 forced-reparse signal (Ing-D.0c-ii) ───────────────────────────
+  // The Layer-5 forced-reparse reason for THIS parse, plumbed from
+  // shouldSkipExtraction via documents.cf40_forced_reparse_reason (mig 141). null
+  // = not a forced re-parse. Drives verification-mode open (a non-verification
+  // forced parse that diverged) vs resolve (a verification_mode forced parse).
+  forcedReparseReason: ForcedReparseReason | null;
+  /** This parse's plan-identity scalars — served-baseline divergence + rapid-change. */
+  haikuPlanIdentityValues: IdentityTuple;
 }
 
 /**
@@ -119,6 +134,19 @@ export interface ParseEventTelemetry {
   /** TRUE when this parse-event re-met Layer 3 promotion while re_baseline_required
    * was set — the re-baseline RECOVERED and the flag was cleared (Ing-D.0c). */
   reBaselineResolved?: boolean;
+  /** Layer 4 verification-mode transition (Ing-D.0c-ii), when evaluated. */
+  verification?: {
+    mode: "none" | "open" | "resolve";
+    outcome: string;
+  };
+  /** Layer 4 rapid-change evaluation (Ing-D.0c-ii), when evaluated. */
+  rapidChange?: {
+    evaluated: boolean;
+    disposition: "none" | "auto_fire" | "admin_review";
+    convergenceRate: number;
+    convergingUserCount: number;
+    worstField: string | null;
+  };
 }
 
 export async function recordParseEventV4(
@@ -386,42 +414,83 @@ export async function recordParseEventV4(
     }
   }
 
-  // ── Layer 4 — slow-drift invalidation (Ing-D.0c) ────────────────────────────
-  // Detect drift only on canonicals NOT currently re-baselining for this doc-type
-  // (Subplan §2.7a — a canonical_drift_events row is written on every evaluation;
-  // triggered_re_baseline distinguishes fire vs non-fire, Ship Gate G7). On fire:
-  // re_baseline_required=TRUE + un-promote; re-extraction is then forced by the
-  // skip gate and the rebuild RECOVERS via the reset loop above.
+  // ── Layer 4 — invalidation: verification-mode + slow-drift + rapid-change (Ing-D.0c) ──
+  // Order matters. VERIFICATION-MODE first (§2.7c): a verification-forced re-parse
+  // RESOLVES an open round (consecutive agreement on the stored challenger → drift →
+  // re-baseline; else → noise); a NON-verification forced re-parse that diverged
+  // plausibly from the served baseline OPENS one. Then the WINDOW detectors
+  // (slow-drift §2.7a + rapid-change §2.7b) — both write canonical_drift_events on
+  // every evaluation (triggered_re_baseline distinguishes fire vs non-fire, G7).
   //
-  // GUARD `!inReBaselineMode`: while a doc-type is already re-baselining, re-running
-  // slow-drift is redundant (we're rebuilding) AND oscillation-prone — drift compares
-  // against the canonical_plans SERVED value (updated by the promotion/sync path, not
-  // this recorder), so on a resolving event it could clear then immediately re-fire.
-  // Skipping during re-baseline breaks that loop; the next stable parse re-evaluates
-  // fresh. (Served-value sync under v4 flag-ON is verified at Ing-D.1.) Non-fatal.
+  // GUARDS: the window detectors are skipped while `inReBaselineMode` (rebuild in
+  // progress → re-running is redundant + oscillation-prone, since drift compares the
+  // canonical_plans SERVED value which the promotion/sync path moves, not this
+  // recorder) AND right after a verification RESOLVE (canonical state just moved;
+  // re-evaluate fresh on the next parse). verification-mode's OPEN path is itself
+  // suppressed while re-baselining (handled inside detectVerificationMode). Non-fatal.
+  const parseTuple: IdentityTuple = {
+    in_deductible_individual: input.haikuPlanIdentityValues.in_deductible_individual ?? null,
+    in_deductible_family: input.haikuPlanIdentityValues.in_deductible_family ?? null,
+    in_oop_max_individual: input.haikuPlanIdentityValues.in_oop_max_individual ?? null,
+    in_oop_max_family: input.haikuPlanIdentityValues.in_oop_max_family ?? null,
+  };
+
+  let verification: ParseEventTelemetry["verification"];
   let layer4: ParseEventTelemetry["layer4"];
-  if (planDocType && !inReBaselineMode) {
+  let rapidChange: ParseEventTelemetry["rapidChange"];
+
+  if (planDocType) {
     try {
-      const drift = await detectSlowDrift(
+      const ver = await detectVerificationMode(
         supabase,
         input.canonicalPlanId,
         planDocType,
-        new Date(),
+        parseTuple,
+        input.forcedReparseReason,
+        inReBaselineMode,
       );
-      layer4 = {
-        evaluated: drift.evaluated,
-        driftTriggered: drift.triggered,
-        divergenceRate: drift.divergenceRate,
-        divergentUserCount: drift.divergentUserCount,
-        worstField: drift.worstField,
-      };
-      for (const n of drift.notes) notes.push(n);
+      verification = { mode: ver.mode, outcome: ver.outcome };
+      for (const n of ver.notes) notes.push(n);
     } catch (err) {
-      console.warn("[cf40-v4] Layer 4 slow-drift failed (non-fatal):", err);
-      notes.push("Layer 4 slow-drift skipped (non-fatal error)");
+      console.warn("[cf40-v4] Layer 4 verification-mode failed (non-fatal):", err);
+      notes.push("Layer 4 verification-mode skipped (non-fatal error)");
     }
-  } else if (planDocType && inReBaselineMode) {
-    notes.push("Layer 4 slow-drift skipped — doc-type already re-baselining (rebuild in progress)");
+
+    const justResolved = verification?.mode === "resolve";
+    if (!inReBaselineMode && !justResolved) {
+      try {
+        const drift = await detectSlowDrift(supabase, input.canonicalPlanId, planDocType, new Date());
+        layer4 = {
+          evaluated: drift.evaluated,
+          driftTriggered: drift.triggered,
+          divergenceRate: drift.divergenceRate,
+          divergentUserCount: drift.divergentUserCount,
+          worstField: drift.worstField,
+        };
+        for (const n of drift.notes) notes.push(n);
+      } catch (err) {
+        console.warn("[cf40-v4] Layer 4 slow-drift failed (non-fatal):", err);
+        notes.push("Layer 4 slow-drift skipped (non-fatal error)");
+      }
+      try {
+        const rc = await detectRapidChange(supabase, input.canonicalPlanId, planDocType, new Date());
+        rapidChange = {
+          evaluated: rc.evaluated,
+          disposition: rc.disposition,
+          convergenceRate: rc.convergenceRate,
+          convergingUserCount: rc.convergingUserCount,
+          worstField: rc.worstField,
+        };
+        for (const n of rc.notes) notes.push(n);
+      } catch (err) {
+        console.warn("[cf40-v4] Layer 4 rapid-change failed (non-fatal):", err);
+        notes.push("Layer 4 rapid-change skipped (non-fatal error)");
+      }
+    } else if (inReBaselineMode) {
+      notes.push("Layer 4 window detectors skipped — doc-type already re-baselining (rebuild in progress)");
+    } else if (justResolved) {
+      notes.push("Layer 4 window detectors skipped — verification just resolved (re-evaluate next parse)");
+    }
   }
 
   return {
@@ -436,6 +505,8 @@ export async function recordParseEventV4(
     promotion,
     layer4,
     reBaselineResolved,
+    verification,
+    rapidChange,
   };
 }
 

@@ -34,6 +34,7 @@ import {
   resolveTrustTier,
   STABILITY_THRESHOLD,
   type ForcedReparseInput,
+  type ForcedReparseReason,
   type ValidityGateInput,
 } from "@/lib/parser/cf40-v4";
 import { toPlanDocType, type PlanDocType } from "@/lib/parser/doctype-expected-counts";
@@ -80,6 +81,14 @@ export interface DedupResult {
   skip: boolean;
   canonicalPlanId?: string;
   reason: string;
+  /**
+   * Ing-D.0c-ii — the structured Layer-5 forced-reparse reason when extraction
+   * proceeds BECAUSE a stable+promoted canonical was force-re-parsed. NULL on a
+   * skip, or an extract blocked before Layer 5. The caller (runSmartSkipCheck)
+   * persists it to documents.cf40_forced_reparse_reason so the later
+   * record-step (recordParseEventV4) can drive verification-mode open/resolve.
+   */
+  forcedReparseReason?: ForcedReparseReason | null;
 }
 
 // ── 1. File Hash ───────────────────────────────────────────────────────────────
@@ -514,6 +523,9 @@ async function evaluateV4SmartSkip(
     return {
       skip: false,
       reason: `v4_extract:${eligibility.decisionLayer}:${eligibility.failureReason ?? "unknown"}`,
+      // Ing-D.0c-ii — non-null ONLY when Layer 5 forced a re-parse of an
+      // otherwise-skip-eligible canonical (the verification/rapid-change signal).
+      forcedReparseReason: eligibility.forcedReparseReason,
     };
   } catch (err) {
     console.warn("[extraction-dedup] CF-40v4 smart-skip eval error (non-fatal) → v3 fallback:", err);
@@ -1068,6 +1080,10 @@ export interface ParseEventContext {
   fileSizeBytes: number;
   documentPlanYear: number | null;
   uploaderIsBanned: boolean;
+  // ── Layer 4 forced-reparse signal (Ing-D.0c-ii) ───────────────────────────
+  // Read from documents.cf40_forced_reparse_reason (persisted at smart-skip time;
+  // mig 141). null = not a forced re-parse. Drives verification-mode open/resolve.
+  forcedReparseReason: ForcedReparseReason | null;
 }
 
 export async function recordExtractionResult(
@@ -1358,6 +1374,10 @@ export async function recordExtractionResult(
           fileSizeBytes: parseEventContext.fileSizeBytes,
           documentPlanYear: parseEventContext.documentPlanYear,
           uploaderIsBanned: parseEventContext.uploaderIsBanned,
+          // CF-40 v4 Layer 4 inputs (Ing-D.0c-ii) — the forced-reparse signal +
+          // the raw identity tuple (served-baseline divergence + rapid-change).
+          forcedReparseReason: parseEventContext.forcedReparseReason,
+          haikuPlanIdentityValues,
         });
       } catch (v4Err) {
         console.error("[extraction-dedup] recordParseEventV4 error (non-fatal):", v4Err);
