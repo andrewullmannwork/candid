@@ -41,6 +41,7 @@ import {
   type ValidityGateFailure,
 } from "./index";
 import { decideDoctypePromotion, gatherLayer3Inputs } from "./doctype-promotion-aggregator";
+import { contributesUnderLayer1, detectSlowDrift } from "./invalidation";
 import { isPlanDocumentType } from "@/lib/plan/extraction-dedup";
 import { toPlanDocType, type PlanDocType } from "@/lib/parser/doctype-expected-counts";
 import type { ClassifiedDocType } from "@/lib/classifier";
@@ -107,6 +108,17 @@ export interface ParseEventTelemetry {
     coverageScore: number;
     distinctUsers: number;
   };
+  /** Layer 4 slow-drift evaluation (FLAG-ON + Layer-1-contributing path; Ing-D.0c). */
+  layer4?: {
+    evaluated: boolean;
+    driftTriggered: boolean;
+    divergenceRate: number;
+    divergentUserCount: number;
+    worstField: string | null;
+  };
+  /** TRUE when this parse-event re-met Layer 3 promotion while re_baseline_required
+   * was set — the re-baseline RECOVERED and the flag was cleared (Ing-D.0c). */
+  reBaselineResolved?: boolean;
 }
 
 export async function recordParseEventV4(
@@ -181,7 +193,8 @@ export async function recordParseEventV4(
   // document so the Layer 3 aggregator can EXCLUDE failed parses, and — on
   // failure — skip BOTH the weight increment AND the promotion evaluation below.
   const planDocType = toPlanDocType(input.docType);
-  let layer1Pass = true;
+  let contributes = true; // QUALITY-gate verdict — drives cf40_layer1_passed + early return
+  let inReBaselineMode = false; // re_baseline_required set: SKIP-gate, NOT a contribution-gate
   let layer1Failures: ValidityGateFailure[] = [];
   if (planDocType) {
     try {
@@ -190,6 +203,7 @@ export async function recordParseEventV4(
         input.canonicalPlanId,
         planDocType,
       );
+      inReBaselineMode = canonicalReBaselineRequired;
       const validity = evaluateValidityGates({
         selfCheckPassRate: input.selfCheckPassRate,
         ocrConfidence: input.ocrConfidence,
@@ -203,36 +217,44 @@ export async function recordParseEventV4(
         isBanned: input.uploaderIsBanned,
         canonicalReBaselineRequired,
       });
-      layer1Pass = validity.pass;
       layer1Failures = validity.failureReasons;
+      // Ing-D.0c — split re_baseline_required's TWO jobs. It is a SMART-SKIP gate
+      // (forces re-extraction; enforced in the orchestrator, index.ts) — NOT a
+      // contribution gate. contributesUnderLayer1 lets a re-baselining canonical
+      // REBUILD; otherwise the gate that forces re-extraction would also block the
+      // contribution needed to clear it (a permanent deadlock — the canonical could
+      // never recover). Genuine QUALITY gates (self-check / OCR / file-size / auth /
+      // banned / validity-window) still block contribution as before.
+      contributes = contributesUnderLayer1(validity.failureReasons);
     } catch (err) {
-      // Conservative on error: do NOT contribute (treat as fail) so weight never
-      // accrues from an un-validated parse. v3 stability (caller) already persisted.
-      // failureReasons left empty — this is an evaluation error, not a specific
-      // gate verdict; the note carries the diagnostic.
-      layer1Pass = false;
+      // Conservative on error: do NOT contribute (treat as quality-fail) so weight
+      // never accrues from an un-validated parse. v3 stability (caller) persisted.
+      contributes = false;
       layer1Failures = [];
       console.warn("[cf40-v4] Layer 1 evaluation error (non-fatal) → not contributing:", err);
       notes.push("Layer 1 evaluation error (non-fatal) → treated as not-contributing");
     }
   }
 
-  // Record the per-parse verdict on the document (non-fatal). TRUE + FALSE are
-  // both written; NULL is reserved for parses never Layer-1-evaluated (pre-flag /
+  // Record the per-parse CONTRIBUTION verdict on the document (non-fatal). This is
+  // the QUALITY gate only (re_baseline excluded) — so a re-baselining canonical's
+  // rebuild parses carry cf40_layer1_passed=TRUE and the Layer 3 aggregator counts
+  // them. TRUE + FALSE both written; NULL = never Layer-1-evaluated (pre-flag /
   // flag-off), which the aggregator also excludes.
   try {
     await supabase
       .from("documents")
-      .update({ cf40_layer1_passed: layer1Pass })
+      .update({ cf40_layer1_passed: contributes })
       .eq("id", input.documentId);
   } catch (err) {
     console.warn("[cf40-v4] cf40_layer1_passed write failed (non-fatal):", err);
     notes.push("cf40_layer1_passed write skipped (non-fatal error)");
   }
 
-  if (!layer1Pass) {
+  if (!contributes) {
+    const qualityReasons = layer1Failures.filter((r) => r !== "canonical_re_baseline_required");
     notes.push(
-      `Layer 1 FAILED (${layer1Failures.join(", ") || "evaluation_error"}) — NO Layer 2 weight, NO Layer 3 contribution`,
+      `Layer 1 QUALITY gate FAILED (${qualityReasons.join(", ") || "evaluation_error"}) — NO Layer 2 weight, NO Layer 3 contribution`,
     );
     return {
       v4Enabled: true,
@@ -244,6 +266,12 @@ export async function recordParseEventV4(
       notes,
       layer1: { evaluated: true, pass: false, failureReasons: layer1Failures },
     };
+  }
+
+  if (inReBaselineMode) {
+    notes.push(
+      "re_baseline mode: contributing to REBUILD (re_baseline_required is a skip-gate, not a contribution-gate) — clears on re-promotion",
+    );
   }
 
   // Optional: bump parse_weight_accumulated (additive, safe even if v4 path
@@ -292,6 +320,7 @@ export async function recordParseEventV4(
     coverageScore: 0,
     distinctUsers: 0,
   };
+  let reBaselineResolved = false;
   if (planDocType) {
     try {
       const inputs = await gatherLayer3Inputs(
@@ -313,13 +342,27 @@ export async function recordParseEventV4(
 
         const { result, eventType } = decideDoctypePromotion(inputs, planDocType, adminEnabled);
 
+        // Ing-D.0c reset loop: if we were re-baselining AND the rebuild re-met
+        // Layer 3 promotion, CLEAR re_baseline_required (recovery) in the same
+        // upsert, then log the Pattern 1 #14 CLOSE event (re_baseline_resolved).
+        const clearReBaseline = inReBaselineMode && result.promoted;
+
         await upsertDoctypePromotionState(
           supabase,
           input.canonicalPlanId,
           planDocType,
           result,
           eventType,
+          clearReBaseline,
         );
+
+        if (clearReBaseline) {
+          reBaselineResolved = true;
+          await writeReBaselineResolvedEvent(supabase, input.canonicalPlanId, planDocType);
+          notes.push(
+            "re_baseline RESOLVED — rebuild re-met Layer 3 promotion; re_baseline_required cleared + doc-type re-promoted",
+          );
+        }
 
         promotion = {
           evaluated: true,
@@ -343,6 +386,44 @@ export async function recordParseEventV4(
     }
   }
 
+  // ── Layer 4 — slow-drift invalidation (Ing-D.0c) ────────────────────────────
+  // Detect drift only on canonicals NOT currently re-baselining for this doc-type
+  // (Subplan §2.7a — a canonical_drift_events row is written on every evaluation;
+  // triggered_re_baseline distinguishes fire vs non-fire, Ship Gate G7). On fire:
+  // re_baseline_required=TRUE + un-promote; re-extraction is then forced by the
+  // skip gate and the rebuild RECOVERS via the reset loop above.
+  //
+  // GUARD `!inReBaselineMode`: while a doc-type is already re-baselining, re-running
+  // slow-drift is redundant (we're rebuilding) AND oscillation-prone — drift compares
+  // against the canonical_plans SERVED value (updated by the promotion/sync path, not
+  // this recorder), so on a resolving event it could clear then immediately re-fire.
+  // Skipping during re-baseline breaks that loop; the next stable parse re-evaluates
+  // fresh. (Served-value sync under v4 flag-ON is verified at Ing-D.1.) Non-fatal.
+  let layer4: ParseEventTelemetry["layer4"];
+  if (planDocType && !inReBaselineMode) {
+    try {
+      const drift = await detectSlowDrift(
+        supabase,
+        input.canonicalPlanId,
+        planDocType,
+        new Date(),
+      );
+      layer4 = {
+        evaluated: drift.evaluated,
+        driftTriggered: drift.triggered,
+        divergenceRate: drift.divergenceRate,
+        divergentUserCount: drift.divergentUserCount,
+        worstField: drift.worstField,
+      };
+      for (const n of drift.notes) notes.push(n);
+    } catch (err) {
+      console.warn("[cf40-v4] Layer 4 slow-drift failed (non-fatal):", err);
+      notes.push("Layer 4 slow-drift skipped (non-fatal error)");
+    }
+  } else if (planDocType && inReBaselineMode) {
+    notes.push("Layer 4 slow-drift skipped — doc-type already re-baselining (rebuild in progress)");
+  }
+
   return {
     v4Enabled: true,
     decision: "recorded",
@@ -353,6 +434,8 @@ export async function recordParseEventV4(
     notes,
     layer1: { evaluated: true, pass: true, failureReasons: [] },
     promotion,
+    layer4,
+    reBaselineResolved,
   };
 }
 
@@ -372,6 +455,7 @@ async function upsertDoctypePromotionState(
   docType: PlanDocType,
   result: PromotionEvalResult,
   eventType: "pattern1_3_organic" | "admin_attested",
+  clearReBaseline: boolean,
 ): Promise<void> {
   const nowIso = new Date().toISOString();
 
@@ -396,21 +480,57 @@ async function upsertDoctypePromotionState(
       ? nowIso
       : null;
 
-  await supabase.from("canonical_doctype_promotion_state").upsert(
-    {
+  const upsertRow: Record<string, unknown> = {
+    canonical_plan_id: canonicalPlanId,
+    document_type: docType,
+    doctype_promoted: nowPromoted,
+    promotion_event_type: promotionEventType,
+    promoted_at: promotedAt,
+    coverage_score: round3(result.observed.coverageScore),
+    distinct_users_count: result.observed.distinctUsers,
+    total_qualifying_uploads: result.observed.totalUploads,
+    last_evaluated_at: nowIso,
+  };
+  // Ing-D.0c reset loop owns the CLEAR: set re_baseline_required=FALSE only when a
+  // re-baselining canonical re-met Layer 3 promotion (recovery). Otherwise OMIT it
+  // (preserved on conflict) — Layer 4 (detectSlowDrift) owns the SET. Never write
+  // TRUE here.
+  if (clearReBaseline) {
+    upsertRow.re_baseline_required = false;
+  }
+  await supabase
+    .from("canonical_doctype_promotion_state")
+    .upsert(upsertRow, { onConflict: "canonical_plan_id,document_type" });
+}
+
+/**
+ * Ing-D.0c — write the Pattern 1 #14 CLOSE event when re_baseline_required clears
+ * after a successful rebuild. Snapshots the rebuilt served identity tuple into
+ * divergent_value_jsonb so reaffirmed (false-alarm) vs rebased (real change) is
+ * queryable against the matching open event's baseline_value_jsonb. Non-fatal.
+ */
+async function writeReBaselineResolvedEvent(
+  supabase: SupabaseClient,
+  canonicalPlanId: string,
+  docType: PlanDocType,
+): Promise<void> {
+  try {
+    const { data: canon } = await supabase
+      .from("canonical_plans")
+      .select(
+        "deductible_individual, deductible_family, oop_max_individual, oop_max_family",
+      )
+      .eq("id", canonicalPlanId)
+      .maybeSingle();
+    await supabase.from("canonical_invalidation_events").insert({
       canonical_plan_id: canonicalPlanId,
       document_type: docType,
-      doctype_promoted: nowPromoted,
-      promotion_event_type: promotionEventType,
-      promoted_at: promotedAt,
-      coverage_score: round3(result.observed.coverageScore),
-      distinct_users_count: result.observed.distinctUsers,
-      total_qualifying_uploads: result.observed.totalUploads,
-      last_evaluated_at: nowIso,
-      // re_baseline_required intentionally omitted — Layer 4 (Ing-D.0c) owns it.
-    },
-    { onConflict: "canonical_plan_id,document_type" },
-  );
+      event_type: "re_baseline_resolved",
+      divergent_value_jsonb: canon ?? null,
+    });
+  } catch (err) {
+    console.warn("[cf40-v4] re_baseline_resolved event write failed (non-fatal):", err);
+  }
 }
 
 /** Round to NUMERIC(4,3) precision for coverage_score storage. */
