@@ -85,10 +85,17 @@ export async function POST(req: NextRequest) {
   const trimmed = query.trim();
   const supabase = createServerClient();
 
-  // Escape SQL ILIKE wildcards so user input doesn't widen the pattern beyond
-  // the typed text. (e.g. "100%" should match the literal characters, not
-  // every plan name.)
-  const escaped = trimmed.replace(/[\\%_]/g, (m) => `\\${m}`);
+  // Tokenize on whitespace and AND each token as its own ILIKE (below) so a
+  // multi-word query matches names where the words are non-contiguous or out of
+  // order — e.g. "kaiser go" → "Kaiser Permanente - Gold 80 HMO". A single
+  // ILIKE on the whole string only matches a contiguous substring, so it
+  // silently returned zero results the moment a user typed past the first word.
+  // Each token escapes SQL ILIKE wildcards so user input ("100%") can't widen
+  // the pattern.
+  const tokens = trimmed
+    .split(/\s+/)
+    .filter((t) => t.length > 0)
+    .map((t) => t.replace(/[\\%_]/g, (m) => `\\${m}`));
 
   // S110 Chunk D — when insurerHint provided, pre-resolve matching insurer ids
   // from insurer_catalog so canonical_plans.insurer_id can be filtered. Empty
@@ -126,8 +133,13 @@ export async function POST(req: NextRequest) {
        is_verified,
        field_provenance`,
     )
-    .ilike("plan_name", `%${escaped}%`)
     .limit(50);
+
+  // AND every token: each .ilike() chains as a separate AND condition, so all
+  // words must appear somewhere in plan_name (order-independent).
+  for (const tok of tokens) {
+    queryBuilder = queryBuilder.ilike("plan_name", `%${tok}%`);
+  }
 
   if (state && typeof state === "string") queryBuilder = queryBuilder.eq("state", state);
   if (planType && typeof planType === "string") queryBuilder = queryBuilder.eq("plan_type", planType);

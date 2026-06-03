@@ -57,6 +57,7 @@ import { PlanSummaryCards } from "@/components/compare/PlanSummaryCards";
 import { NumbersTable } from "@/components/compare/NumbersTable";
 import { BreadthTable } from "@/components/compare/BreadthTable";
 import { ServiceCategoryAccordions } from "@/components/compare/ServiceCategoryAccordions";
+import { ResultsViewV2 } from "@/components/compare/v2/ResultsViewV2";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useMinHoldLoading } from "@/lib/loading/use-min-hold";
 
@@ -220,6 +221,28 @@ function CompareInterface() {
   const [currentPlan, setCurrentPlan] = useState<CurrentPlanSummary | null>(null);
   const [results, setResults] = useState<ComparePlanPayload[] | null>(null);
   const [resultsError, setResultsError] = useState<string | null>(null);
+
+  // Compare v2 redesign rollout gate (S157). Read the flag from the server
+  // endpoint (NOT a browser-Supabase query): Candid authenticates via Firebase,
+  // which is invisible to Supabase RLS, so a client-side `feature_flag_rules`
+  // read always runs as anon and RLS returns []  — i.e. it can never see an
+  // enabled flag. /api/feature-flags/[flagKey] resolves it server-side via
+  // isFeatureEnabled. Mirrors the profile-dashboard flag-read pattern. Falls
+  // back to OFF on any non-200 / error → existing results view renders
+  // byte-identical (graceful degradation, compare_v2_redesign.md §4.4).
+  const [v2On, setV2On] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/feature-flags/compare_v2_redesign")
+      .then((r) => (r.ok ? r.json() : { enabled: false }))
+      .then((d) => {
+        if (!cancelled) setV2On(d?.enabled === true);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Parsing-screen state for upload slots.
   const [parseDocs, setParseDocs] = useState<ParseDoc[]>([]);
@@ -654,7 +677,9 @@ function CompareInterface() {
         <ResultsView
           plans={results}
           error={resultsError}
+          v2On={v2On}
           onStartOver={startOver}
+          onBackToPicker={() => setMode("build")}
           userActiveInsurancePlanId={currentPlan?.insurancePlanId ?? null}
           onFieldSaved={(planId, field, value) => {
             // Optimistic update: drop the new value into the matching user_plan
@@ -854,13 +879,17 @@ function BuildHeader() {
 function ResultsView({
   plans,
   error,
+  v2On,
   onStartOver,
+  onBackToPicker,
   userActiveInsurancePlanId,
   onFieldSaved,
 }: {
   plans: ComparePlanPayload[] | null;
   error: string | null;
+  v2On: boolean;
   onStartOver: () => void;
+  onBackToPicker: () => void;
   userActiveInsurancePlanId: string | null;
   onFieldSaved?: (planId: string, field: EditableField, value: number) => void;
 }) {
@@ -894,6 +923,22 @@ function ResultsView({
           Start over
         </button>
       </div>
+    );
+  }
+
+  // compare_v2_redesign ON → the reskinned results view (same /api/plan/compare
+  // payload, new presentation + distinct na/nc/unk empty states). plans is
+  // guaranteed non-null + non-empty here (error + empty states handled above,
+  // shared across v1/v2). Flag OFF → the v1 body below renders byte-identical.
+  if (v2On) {
+    return (
+      <ResultsViewV2
+        plans={plans}
+        onStartOver={onStartOver}
+        onBackToPicker={onBackToPicker}
+        userActiveInsurancePlanId={userActiveInsurancePlanId}
+        onFieldSaved={onFieldSaved}
+      />
     );
   }
 
