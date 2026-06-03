@@ -1554,7 +1554,7 @@ export async function processPlanDocumentData(
         // for correct per-doc-type promotion state (Ing-D.0a).
         const { data: docForHash } = await supabase
           .from("documents")
-          .select("file_hash, classified_type, created_at, classification_confidence, file_size, plan_year, cf40_forced_reparse_reason")
+          .select("file_hash, classified_type, created_at, classification_confidence, file_size, cf40_forced_reparse_reason")
           .eq("id", documentId)
           .single();
 
@@ -1633,7 +1633,12 @@ export async function processPlanDocumentData(
                 classificationConfidence:
                   (docForHash.classification_confidence as number | null) ?? null,
                 fileSizeBytes: (docForHash.file_size as number | null) ?? 0,
-                documentPlanYear: (docForHash.plan_year as number | null) ?? null,
+                // plan_year lives on insurance_plans (planInsert), NOT documents. The
+                // prior docForHash.plan_year selected a non-existent column → the whole
+                // docForHash query failed → docForHash null → parseEventContext undefined
+                // → recordParseEventV4 was never called (S163 root cause of
+                // cf40_layer1_passed always null; the recorder had never fired in PROD).
+                documentPlanYear: (planInsert.plan_year as number | null) ?? null,
                 // No platform ban mechanism exists yet (no users.is_banned column);
                 // wire a real signal when bans are introduced (tracked follow-up).
                 uploaderIsBanned: false,
