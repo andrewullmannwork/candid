@@ -1558,12 +1558,21 @@ export async function processPlanDocumentData(
           .eq("id", documentId)
           .single();
 
-        // Uploader trust signals for the CF-40 v4 Layer 2/3 recorder (firebase_uid).
+        // Uploader trust signals for the CF-40 v4 Layer 2/3 recorder. doc.user_id =
+        // documents.user_id = the users PK (NOT firebase_uid; the upload route writes
+        // user.id). Resolve by id. (S163 fix — the prior .eq("firebase_uid", …) never
+        // matched a UUID → uploaderUser null → email undefined → the v4 flag read OFF +
+        // trust defaulted to unverified, silently disabling the recorder.)
         const { data: uploaderUser } = await supabase
           .from("users")
           .select("is_admin, email_verified, phone_verified, email")
-          .eq("firebase_uid", doc.user_id)
+          .eq("id", doc.user_id)
           .maybeSingle();
+        if (!uploaderUser) {
+          console.warn(
+            `[cf40-v4] recorder: uploader lookup failed for users.id=${doc.user_id} — trust defaults to unverified + v4 flag may read OFF (S163)`,
+          );
+        }
 
         const extractedSlugs = parseResult.services
           .filter((s) => s.confidence >= 0.5)
