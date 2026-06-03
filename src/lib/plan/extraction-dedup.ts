@@ -405,12 +405,22 @@ async function evaluateV4SmartSkip(
 ): Promise<DedupResult | null> {
   const { documentId, fileHash, userId, canonicalPlanId, docType, stability } = args;
   try {
-    // Uploader trust (doc.user_id is the firebase_uid — see process-chunk caller).
+    // Uploader trust. userId = documents.user_id = the users PK (NOT firebase_uid;
+    // the upload route writes user.id). Resolve by id. (S163 fix — the prior
+    // .eq("firebase_uid", userId) never matched a UUID → uploader null → the v4 flag
+    // read OFF + trust defaulted to unverified, silently disabling v4.)
     const { data: uploader } = await supabase
       .from("users")
       .select("is_admin, email_verified, phone_verified, email")
-      .eq("firebase_uid", userId)
+      .eq("id", userId)
       .maybeSingle();
+    if (!uploader) {
+      // Should always resolve for a real upload; a null means v4 can't gate/weight
+      // this parse. Warn so this class can't silently regress again (S163).
+      console.warn(
+        `[cf40-v4] smart-skip: uploader lookup failed for users.id=${userId} — v4 disabled for this parse`,
+      );
+    }
 
     // Flag gate (per-user targeting for the Ing-D.1 staged rollout). OFF → null
     // so the caller runs the v3 path.
