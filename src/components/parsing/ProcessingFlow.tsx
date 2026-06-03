@@ -148,10 +148,11 @@ export interface ProcessingFlowProps {
   /**
    * B2-UP.1 — loader visual variant passed through to UnifiedParseScreen +
    * gates the DropDone happy-path completion visual at priorities 8-9.
-   * Default "default" preserves legacy doc-card visual; "stackV3" enables
-   * the design's StackLoaderV3 + DropDone chrome for the new /upload layout.
+   * "deprecated" (default) is the legacy doc-card visual (S160 rename; no
+   * caller routes to it — /upload passes "stackV3"); "stackV3" enables the
+   * design's StackLoaderV3 + DropDone chrome.
    */
-  loaderVariant?: "default" | "stackV3";
+  loaderVariant?: "deprecated" | "stackV3";
 
   /**
    * B2-UP.1 — destination for the DropDone "See the findings" / "View your
@@ -202,7 +203,7 @@ export function useProcessingFlowSlots(props: ProcessingFlowProps): ProcessingFl
     premiumSaved,
     retrying,
     classificationResult,
-    loaderVariant = "default",
+    loaderVariant = "deprecated",
     onViewResults,
   } = props;
 

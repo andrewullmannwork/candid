@@ -30,6 +30,8 @@ interface NumbersTableV2Props {
   plans: ComparePlanPayload[];
   mode: CompareMode;
   dedMet: boolean;
+  /** The user's active (profile) insurance_plans id — gates "Your"-framed premium copy. */
+  userActiveInsurancePlanId: string | null;
   premiumEntryFor: (plan: ComparePlanPayload) => PremiumEntry;
   premiumMembersFor: (plan: ComparePlanPayload) => number | null;
   onPremiumConfirm: (plan: ComparePlanPayload) => void;
@@ -77,6 +79,7 @@ function NumericRowV2({
   dedMet,
   gridClass,
   isFirst,
+  userActiveInsurancePlanId,
   premiumEntryFor,
   premiumMembersFor,
   onPremiumConfirm,
@@ -121,6 +124,7 @@ function NumericRowV2({
               <PremiumCellV2
                 entry={premiumEntryFor(plan)}
                 membersCount={premiumMembersFor(plan)}
+                isActivePlan={plan.ref.kind === "user_plan" && plan.ref.id === userActiveInsurancePlanId}
                 onConfirm={() => onPremiumConfirm(plan)}
                 onSave={(v, incl) => onPremiumSave(plan, v, incl)}
               />

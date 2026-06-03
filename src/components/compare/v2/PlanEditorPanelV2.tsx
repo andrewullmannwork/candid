@@ -70,7 +70,6 @@ export function PlanEditorPanelV2({
         excludeIds={excludeIds}
         recents={recents}
         onPick={onPick}
-        allowUpload={false}
       />
     </div>
   );

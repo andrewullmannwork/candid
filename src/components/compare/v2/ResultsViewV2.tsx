@@ -256,6 +256,7 @@ export function ResultsViewV2({
           plans={plans}
           mode={mode}
           dedMet={dedMet}
+          userActiveInsurancePlanId={userActiveInsurancePlanId}
           premiumEntryFor={entryFor}
           premiumMembersFor={(p) => p.corroborationCount}
           onPremiumConfirm={onPremiumConfirm}

@@ -19,6 +19,9 @@ import type { PremiumEntry, PremiumSource } from "../premium-model";
 interface PremiumCellV2Props {
   entry: PremiumEntry;
   membersCount?: number | null;
+  /** True only for the user's active (profile) plan — gates "Your"-framed copy.
+   *  Non-profile columns use neutral "Premium" / "You entered" wording (S160). */
+  isActivePlan?: boolean;
   /** Accept the ghost suggestion as-is (→ confirmed). */
   onConfirm: () => void;
   /** Save an entered value (+ employer caveat). */
@@ -29,7 +32,7 @@ function fmtMembers(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k` : String(n);
 }
 
-export function PremiumCellV2({ entry, membersCount, onConfirm, onSave }: PremiumCellV2Props) {
+export function PremiumCellV2({ entry, membersCount, isActivePlan = false, onConfirm, onSave }: PremiumCellV2Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(entry.value != null ? String(entry.value) : "");
   const [inclEmp, setInclEmp] = useState(entry.inclEmployer);
@@ -62,7 +65,7 @@ export function PremiumCellV2({ entry, membersCount, onConfirm, onSave }: Premiu
   if (editing) {
     return (
       <div className="w-full max-w-[210px] rounded-xl ring-1 ring-blue-200 bg-blue-50/40 p-2.5">
-        <div className="text-[10px] font-bold uppercase tracking-wide text-blue-600 mb-1">Your premium</div>
+        <div className="text-[10px] font-bold uppercase tracking-wide text-blue-600 mb-1">{isActivePlan ? "Your premium" : "Premium"}</div>
         <div className="flex items-center gap-1">
           <span className="text-slate-400 text-sm">$</span>
           <input
@@ -72,7 +75,7 @@ export function PremiumCellV2({ entry, membersCount, onConfirm, onSave }: Premiu
             step={1}
             value={draft}
             placeholder="0"
-            aria-label="Your monthly premium"
+            aria-label={isActivePlan ? "Your monthly premium" : "Monthly premium"}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") save();
@@ -82,13 +85,28 @@ export function PremiumCellV2({ entry, membersCount, onConfirm, onSave }: Premiu
           />
           <span className="text-[11px] text-slate-400">/mo</span>
         </div>
-        <label className="flex items-center gap-1.5 mt-2 text-[11px] text-slate-600 cursor-pointer">
+        <label className="group flex items-center gap-2 mt-2 text-[11px] text-slate-600 cursor-pointer select-none">
           <input
             type="checkbox"
             checked={inclEmp}
             onChange={(e) => setInclEmp(e.target.checked)}
-            className="rounded border-slate-300 text-blue-600 focus:ring-blue-400"
+            aria-label="Includes employer share"
+            className="peer sr-only"
           />
+          <span
+            aria-hidden="true"
+            className={cn(
+              "grid place-items-center w-4 h-4 rounded-[5px] ring-1 transition-all duration-150",
+              "peer-focus-visible:ring-2 peer-focus-visible:ring-blue-400 peer-focus-visible:ring-offset-1",
+              inclEmp
+                ? "bg-blue-600 ring-blue-600 text-white shadow-sm"
+                : "bg-white ring-slate-300 text-transparent group-hover:ring-slate-400",
+            )}
+          >
+            <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3.5} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M5 13l4 4L19 7" />
+            </svg>
+          </span>
           Includes employer share
         </label>
         <div className="flex items-center gap-2 mt-2">
@@ -110,7 +128,7 @@ export function PremiumCellV2({ entry, membersCount, onConfirm, onSave }: Premiu
   if (entry.value == null) {
     return (
       <div className="w-full max-w-[210px] rounded-xl ring-1 ring-blue-200 bg-blue-50/40 p-2.5">
-        <div className="text-[10px] font-bold uppercase tracking-wide text-blue-600 mb-1">Add yours</div>
+        <div className="text-[10px] font-bold uppercase tracking-wide text-blue-600 mb-1">{isActivePlan ? "Add yours" : "Premium"}</div>
         <button
           type="button"
           onClick={beginEdit}
@@ -149,7 +167,7 @@ export function PremiumCellV2({ entry, membersCount, onConfirm, onSave }: Premiu
           )}
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
-          <PremiumSourceTag source={entry.source} membersCount={membersCount} />
+          <PremiumSourceTag source={entry.source} membersCount={membersCount} isActivePlan={isActivePlan} />
           {entry.inclEmployer && <span className="text-[10px] text-slate-400">incl. employer</span>}
         </div>
       </div>
@@ -188,19 +206,31 @@ export function PremiumCellV2({ entry, membersCount, onConfirm, onSave }: Premiu
           <CheckIcon /> Use this
         </button>
         <button type="button" onClick={beginEdit} className="text-xs text-slate-500 hover:text-slate-700">
-          Enter yours
+          {isActivePlan ? "Enter yours" : "Enter premium"}
         </button>
       </div>
     </div>
   );
 }
 
-function PremiumSourceTag({ source, membersCount }: { source: PremiumSource; membersCount?: number | null }) {
+function PremiumSourceTag({
+  source,
+  membersCount,
+  isActivePlan,
+}: {
+  source: PremiumSource;
+  membersCount?: number | null;
+  isActivePlan?: boolean;
+}) {
   if (source === "your_plan" || source === "user_input") {
-    return (
+    // Only the user's actual profile plan reads as "Your plan"; a premium typed
+    // for any other column is just an entered value (S160 — Andrew).
+    return isActivePlan ? (
       <span className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-emerald-700">
         <CheckIcon /> Your plan
       </span>
+    ) : (
+      <span className="text-[11px] font-semibold text-slate-500">You entered</span>
     );
   }
   if (source === "community") {

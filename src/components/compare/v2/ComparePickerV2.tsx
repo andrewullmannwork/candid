@@ -31,8 +31,8 @@ interface ComparePickerV2Props {
   excludeIds: string[];
   recents: RecentPlan[];
   onPick: (slot: SlotState) => void;
-  /** Offer the upload option (build picker). The results editor sets false — upload-swap
-   *  + its Turnstile-in-editor wiring is deferred (PR5); search/current/recents only. */
+  /** Offer the upload option. Both the build picker and (S160) the results editor set
+   *  this true — the editor's upload-swap routes through the same parse pipeline. */
   allowUpload?: boolean;
 }
 
