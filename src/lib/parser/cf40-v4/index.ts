@@ -95,6 +95,7 @@ export * from "./scale-thresholds";
 export * from "./trust-weight";
 export * from "./validity-gates";
 export * from "./forced-reparse";
+export * from "./invalidation";
 export * from "./promotion-evaluator";
 export * from "./badge";
 export * from "./dispute-treatment";
