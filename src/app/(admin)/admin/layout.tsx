@@ -24,6 +24,7 @@ const adminNav = [
   { href: "/admin/parse-audit-runs", label: "Parse Audit Runs" },
   { href: "/admin/auto-reparse-stats", label: "  ↳ Auto-Reparse Stats" },
   { href: "/admin/canonical-match-decisions", label: "  ↳ Canonical Match Decisions" },
+  { href: "/admin/canonical-quality", label: "  ↳ Canonical Quality (CF-40 v4)" },
   { href: "/admin/cost-per-canonical", label: "  ↳ Cost Per Canonical" },
   { href: "/admin/review-queue", label: "Review Queue" },
   { href: "/admin/sbc-tickets", label: "SBC Tickets" },
