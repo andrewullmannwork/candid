@@ -383,14 +383,13 @@ export async function persistAuditResults(
     // just doesn't accumulate this user's vote on that line).
     if (flywheelEnabled && lineItemIds.length === lineItemInserts.length) {
       try {
-        // Resolve the auth users.id (UUID) once — vote-writes expect the DB
-        // user_id, not the firebase_uid.
-        const { data: userRow } = await supabase
-          .from("users")
-          .select("id")
-          .eq("firebase_uid", userId)
-          .maybeSingle();
-        const dbUserId = userRow?.id as string | null;
+        // `userId` here IS the users PK — every caller threads `doc.user_id`,
+        // which is users.id, NOT a firebase_uid. Use it directly as the vote
+        // user_id; the code-identity vote FK validates existence. S164: removes a
+        // wrong `.eq("firebase_uid", userId)` lookup that silently nulled dbUserId
+        // and dropped every bill's flywheel votes — the S163 audit mis-tagged this
+        // site "already correct". Convention: src/lib/users/resolve-user-by-pk.ts.
+        const dbUserId: string | null = userId || null;
         if (dbUserId) {
           const {
             recordDescriptionMatchVote,

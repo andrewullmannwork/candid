@@ -19,6 +19,7 @@ import { splitPDF, estimatePageCount } from "@/lib/ocr/document-ai";
 import { processPlanDocumentData, type ProcessPlanResult } from "@/lib/plan/process-plan";
 import { processEOCDocumentData } from "@/lib/plan/process-eoc";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { getUserContextByPk } from "@/lib/users/resolve-user-by-pk";
 import { parseBillFromOCR } from "@/lib/billing/parser";
 import { parseBillWithHaiku } from "@/lib/billing/haiku-bill-parser";
 import { runAudit } from "@/lib/audit";
@@ -129,7 +130,7 @@ async function processBillDocument(
   // contractual-writeoff numbers instead of user-recovery numbers until D7
   // re-fires on next view.
   const { isFeatureEnabled } = await import("@/lib/config/product-flags");
-  const { data: userForFlag } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
+  const userForFlag = await getUserContextByPk(supabase, doc.user_id, "process-chunk:processBillDocument:claims_persistence");
   const userEmail = userForFlag?.email || undefined;
 
   const { data: profile } = await supabase
@@ -438,11 +439,7 @@ async function dispatchPlanOrEOC(args: {
     classification.classifiedType === "eoc" ||
     classification.classifiedType === "plan_document";
   if (planDocFamily) {
-    const { data: userForUnified } = await supabase
-      .from("users")
-      .select("email")
-      .eq("firebase_uid", doc.user_id)
-      .maybeSingle();
+    const userForUnified = await getUserContextByPk(supabase, doc.user_id, "process-chunk:unified_plan_doc_parser_v1");
     const unifiedEnabled = await isFeatureEnabled(
       "unified_plan_doc_parser_v1",
       userForUnified?.email || undefined,
@@ -522,11 +519,7 @@ async function dispatchPlanOrEOC(args: {
     }
 
     // 2. Feature-flag gate per Q-P3.1A-10 LOCK.
-    const { data: userForFlag } = await supabase
-      .from("users")
-      .select("email")
-      .eq("firebase_uid", doc.user_id)
-      .maybeSingle();
+    const userForFlag = await getUserContextByPk(supabase, doc.user_id, "process-chunk:eoc_parser_v1");
     const eocEnabled = await isFeatureEnabled("eoc_parser_v1", userForFlag?.email || undefined);
 
     if (eocEnabled) {
@@ -623,11 +616,7 @@ async function runSmartSkipCheck(args: {
     if (!isPlanDoc) return { skipped: false, reason: "not_plan_doc" };
     if (!doc.file_hash) return { skipped: false, reason: "missing_file_hash" };
 
-    const { data: userForFlag } = await supabase
-      .from("users")
-      .select("email")
-      .eq("firebase_uid", doc.user_id)
-      .maybeSingle();
+    const userForFlag = await getUserContextByPk(supabase, doc.user_id, "process-chunk:runSmartSkipCheck:document_dedup");
     const dedupEnabled = await isFeatureEnabled(
       "document_dedup",
       userForFlag?.email || undefined,
@@ -1058,14 +1047,14 @@ export async function POST(req: NextRequest) {
           status: "pending_review",
           processing_error: "Low classification confidence. Queued for admin review.",
         }).eq("id", documentId);
-        const { data: userForNotify } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
+        const userForNotify = await getUserContextByPk(supabase, doc.user_id, "process-chunk:notifyAdminForReview");
         notifyAdminForReview(documentId, haikuType, classification.confidence, doc.file_name, userForNotify?.email || "unknown").catch(() => {});
         return NextResponse.json({ step: "pending_review", continue: false, error: "Low confidence — queued for admin review" });
       }
 
       // Medium confidence — notify admin if there's a type mismatch (canonical held)
       if (skipCanonical && typeMismatch) {
-        const { data: userForNotify } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
+        const userForNotify = await getUserContextByPk(supabase, doc.user_id, "process-chunk:notifyAdminForReview");
         notifyAdminForReview(documentId, haikuType, classification.confidence, doc.file_name, userForNotify?.email || "unknown").catch(() => {});
       }
 
@@ -1207,14 +1196,14 @@ export async function POST(req: NextRequest) {
           status: "pending_review",
           processing_error: "Low classification confidence. Queued for admin review.",
         }).eq("id", documentId);
-        const { data: userForNotify } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
+        const userForNotify = await getUserContextByPk(supabase, doc.user_id, "process-chunk:notifyAdminForReview");
         notifyAdminForReview(documentId, fallbackHaikuType, classification.confidence, doc.file_name, userForNotify?.email || "unknown").catch(() => {});
         return NextResponse.json({ step: "pending_review", continue: false, error: "Low confidence — queued for admin review" });
       }
 
       // Medium confidence mismatch — notify admin
       if (fbSkipCanonical && fallbackMismatch) {
-        const { data: userForNotify } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
+        const userForNotify = await getUserContextByPk(supabase, doc.user_id, "process-chunk:notifyAdminForReview");
         notifyAdminForReview(documentId, fallbackHaikuType, classification.confidence, doc.file_name, userForNotify?.email || "unknown").catch(() => {});
       }
 

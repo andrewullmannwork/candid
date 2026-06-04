@@ -7,6 +7,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
+import { getUserContextByPk } from "@/lib/users/resolve-user-by-pk";
 import { extractTextFromDocument } from "@/lib/ocr";
 import { parseBillFromOCR } from "@/lib/billing/parser";
 import { parseBillWithHaiku } from "@/lib/billing/haiku-bill-parser";
@@ -234,7 +235,7 @@ export async function POST(req: NextRequest) {
     let claimId: string | null = null;
     try {
       const { isFeatureEnabled } = await import("@/lib/config/product-flags");
-      const { data: userForFlag } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
+      const userForFlag = await getUserContextByPk(supabase, doc.user_id, "process:claims_persistence");
       const claimsEnabled = await isFeatureEnabled("claims_persistence", userForFlag?.email || undefined);
       if (!claimsEnabled) throw new Error("feature_disabled");
 
