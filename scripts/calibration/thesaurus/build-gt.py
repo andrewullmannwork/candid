@@ -9,7 +9,7 @@ Independence gate: does NOT call process-plan.ts or any production parser.
 All slug proposals are validated against catalog.json.
 """
 
-import json, re, random, sys
+import json, re, random, sys, glob
 from pathlib import Path
 from collections import defaultdict
 
@@ -30,22 +30,17 @@ ECM_CANONICAL = {
     "ecm-10": {"canonicalPlanId": "dcbfe17d-2f62-46ad-a9f6-b114f06ae941", "insurer": "Anthem Blue Cross"},
 }
 
-CLARITY_META = {
-    "clarity-gold-2000": {
-        "canonicalPlanId": "02f66f19-8d90-451b-9f35-c402ea6572e0",
-        "insurer": "WellSense Health Plan",
-        "pdfPath": "/Users/andrewullmann/Desktop/SBC_downloads/13219NH0010001_2026_SBC_Clarity_NH_Gold_2000_01.pdf",
-        "ocrPath": "/tmp/clarity-gold-ocr.txt",
-        "planName": "WellSense Clarity NH Gold 2000",
-    },
-    "clarity-bronze-7500-hsa": {
-        "canonicalPlanId": "d3b7e4b7-7a7f-4949-b1e8-9642b360e94d",
-        "insurer": "WellSense Health Plan",
-        "pdfPath": "/Users/andrewullmann/Desktop/SBC_downloads/13219NH0010005_2026_SBC_Clarity_NH_Bronze_7500_HSA_01.pdf",
-        "ocrPath": "/tmp/clarity-bronze-ocr.txt",
-        "planName": "WellSense Clarity NH Bronze 7500 HSA",
-    },
+# SBC sample metadata: loaded from the frozen selection manifest (docId → meta). The 2
+# re-extracted Clarity SBCs (in DONE_HIOS, excluded from the manifest) carry their known
+# canonical IDs so they still score B1-stored.
+SBC_MANIFEST = json.loads((FREEZE_DIR / "sbc-sample-manifest.json").read_text())
+DOC_META = {m["docId"]: m for m in SBC_MANIFEST}
+CLARITY_CANON = {
+    "13219nh0010001": {"docId": "13219nh0010001", "canonicalPlanId": "02f66f19-8d90-451b-9f35-c402ea6572e0", "insurer": "WellSense Health Plan", "state": "NH", "metal": "gold", "planYear": 2026},
+    "13219nh0010005": {"docId": "13219nh0010005", "canonicalPlanId": "d3b7e4b7-7a7f-4949-b1e8-9642b360e94d", "insurer": "WellSense Health Plan", "state": "NH", "metal": "bronze", "planYear": 2026},
 }
+for _did, _meta in CLARITY_CANON.items():
+    DOC_META.setdefault(_did, _meta)
 
 # ── Slug mapping rules (validated against VALID_SLUGS) ────────────────────────
 # Rules applied in order; first match wins (case-insensitive substring).
@@ -174,7 +169,13 @@ SLUG_RULES = [
 
 
 def propose_slug(service_name):
-    """Returns (slug_or_none, is_tricky, tricky_reason)."""
+    """Returns (slug_or_none, is_tricky, reason_token, alternatives).
+
+    reason_token is the LITERAL cluster key build-worksheet.ts expects:
+      "no_concept" (slug is None) | "multi_slug" (ambiguous) | "" (clean).
+    alternatives is the list of plausible slugs weighed (worksheet `alternatives` cell).
+    The slug-matching itself is unchanged — only the labeling of the result.
+    """
     name_lower = service_name.lower()
 
     matched_slug = None
@@ -184,7 +185,7 @@ def propose_slug(service_name):
             break
 
     if matched_slug is None:
-        return None, True, "NO_CONCEPT: no matching catalog slug"
+        return None, True, "no_concept", []
 
     assert matched_slug in VALID_SLUGS, f"INVALID SLUG in rules: {matched_slug}"
 
@@ -195,29 +196,23 @@ def propose_slug(service_name):
             all_matched_slugs.append(slug)
 
     distinct = list(dict.fromkeys(all_matched_slugs))
-    tricky = False
-    tricky_reason = ""
 
     if len(distinct) >= 2:
-        tricky = True
-        tricky_reason = f">=2 plausible slugs: {', '.join(distinct[:3])}"
-    elif matched_slug in ("hospice_outpatient", "hospice_inpatient") and "hospice" in name_lower and not re.search(r"inpatient|outpatient", name_lower):
-        tricky = True
-        tricky_reason = "hospice without in/out qualifier"
-    elif matched_slug == "telehealth_pcp" and "telehealth" in name_lower and not re.search(r"primary|pcp|specialist|general|mental", name_lower):
-        tricky = True
-        tricky_reason = "generic telehealth - pcp vs specialist unclear"
-    elif matched_slug == "pt_rehab" and "rehabilitation" in name_lower and not re.search(r"physical|occupational|speech|cardiac|cardiac", name_lower):
-        tricky = True
-        tricky_reason = "generic rehabilitation - pt vs ot vs speech unclear"
-    elif matched_slug in ("outpatient_surgery_facility", "outpatient_surgery_physician") and re.search(r"hospital.*outpatient|outpatient.*hospital|outpatient department", name_lower):
-        tricky = True
-        tricky_reason = "hospital outpatient visit vs outpatient surgery facility ambiguity"
-    elif matched_slug in ("pcp_visit",) and re.search(r"other practitioner|nurse practitioner|physician assistant", name_lower):
-        tricky = True
-        tricky_reason = "other practitioner - could be pcp_visit or specialist_visit"
+        return matched_slug, True, "multi_slug", distinct
+    # Single-regex-match ambiguities the rules can't disambiguate → still multi_slug,
+    # carrying the candidate set so Andrew sees what was weighed.
+    if matched_slug in ("hospice_outpatient", "hospice_inpatient") and "hospice" in name_lower and not re.search(r"inpatient|outpatient", name_lower):
+        return matched_slug, True, "multi_slug", ["hospice_outpatient", "hospice_inpatient"]
+    if matched_slug == "telehealth_pcp" and "telehealth" in name_lower and not re.search(r"primary|pcp|specialist|general|mental", name_lower):
+        return matched_slug, True, "multi_slug", ["telehealth_pcp", "telehealth_specialist"]
+    if matched_slug == "pt_rehab" and "rehabilitation" in name_lower and not re.search(r"physical|occupational|speech|cardiac|cardiac", name_lower):
+        return matched_slug, True, "multi_slug", ["pt_rehab", "ot_rehab", "speech_therapy"]
+    if matched_slug in ("outpatient_surgery_facility", "outpatient_surgery_physician") and re.search(r"hospital.*outpatient|outpatient.*hospital|outpatient department", name_lower):
+        return matched_slug, True, "multi_slug", ["outpatient_surgery_facility", "outpatient_surgery_physician"]
+    if matched_slug in ("pcp_visit",) and re.search(r"other practitioner|nurse practitioner|physician assistant", name_lower):
+        return matched_slug, True, "multi_slug", ["pcp_visit", "specialist_visit"]
 
-    return matched_slug, tricky, tricky_reason
+    return matched_slug, False, "", []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -250,7 +245,7 @@ for doc_id, filename in ecm_files:
         not_found = bool(svc.get("not_found"))
 
         svc_id = f"{doc_id}#{idx}"
-        proposed_slug, tricky, tricky_reason = propose_slug(svc_name)
+        proposed_slug, tricky, reason_token, alts = propose_slug(svc_name)
 
         entry = {
             "id": svc_id,
@@ -264,7 +259,8 @@ for doc_id, filename in ecm_files:
             "correctSlug": proposed_slug,
             "adjudicationStatus": "auto",
             "tricky": tricky,
-            "trickyReason": tricky_reason if tricky else None,
+            "trickyReason": reason_token or None,
+            "proposedAlternatives": alts or None,
         }
         if not_found:
             entry["notFound"] = True
@@ -279,158 +275,77 @@ for k, v in ecm_counts.items():
     print(f"  {k}: {v}")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 3: Independently extracted services from 2 Clarity SBCs (from OCR)
+# Step 3: SBC services from the per-doc Sonnet extraction (gt-parts/*.json)
 # ─────────────────────────────────────────────────────────────────────────────
-
-CLARITY_GOLD_SERVICES = [
-    # Common Medical Event table (pages 2-5)
-    {"name": "Primary care visit to treat an injury or illness", "excerpt": "Primary care visit to treat an injury or illness $30 Deductible does not apply Not covered"},
-    {"name": "Specialist visit", "excerpt": "Specialist visit $60 Deductible does not apply Not covered"},
-    {"name": "Preventive care / screening / Immunization", "excerpt": "Preventive care / screening / Immunization No charge Deductible does not apply Not covered"},
-    {"name": "Diagnostic test (x-ray, blood work, ultrasound)", "excerpt": "Diagnostic test (x-ray, blood work, ultrasound) 25% coinsurance Not covered"},
-    {"name": "Imaging (CT/PET scans, MRIs)", "excerpt": "Imaging (CT/PET scans, MRIs) 25% coinsurance Not covered"},
-    {"name": "Generic drugs", "excerpt": "Generic drugs $15 retail and $37.50 mail order/prescription Deductible does not apply Not covered"},
-    {"name": "Preferred brand drugs", "excerpt": "Preferred brand drugs $30 retail and $75 mail order/prescription Deductible does not apply Not covered"},
-    {"name": "Non-preferred brand drugs", "excerpt": "Non-preferred brand drugs $60 retail and $150 mail order/prescription Deductible does not"},
-    {"name": "Specialty drugs", "excerpt": "Specialty drugs $250 retail/prescription mail order prescription not covered Deductible does not apply Not covered"},
-    {"name": "Facility fee (ambulatory surgery center) — outpatient surgery", "excerpt": "Facility fee (e.g., ambulatory surgery center) 25% coinsurance Not covered Includes diagnostic colonoscopies"},
-    {"name": "Physician/surgeon fees — outpatient surgery", "excerpt": "Physician/surgeon fees 25% coinsurance Not covered"},
-    {"name": "Emergency room care", "excerpt": "Emergency room care 25% coinsurance 25% coinsurance"},
-    {"name": "Emergency medical transportation", "excerpt": "Emergency medical transportation 25% coinsurance 25% coinsurance None"},
-    {"name": "Urgent care", "excerpt": "Urgent care $45 Deductible does not apply $45 Deductible does not apply"},
-    {"name": "Facility fee (hospital room) — inpatient hospital stay", "excerpt": "Facility fee (e.g., hospital room) 25% coinsurance Not covered Pre-authorization is required"},
-    {"name": "Physician/surgeon fees — inpatient hospital stay", "excerpt": "Physician/surgeon fees 25% coinsurance Not covered"},
-    {"name": "Mental health / behavioral health outpatient services", "excerpt": "Outpatient services $30 Deductible does not apply Not covered Pre-authorization may be required"},
-    {"name": "Mental health / behavioral health inpatient services", "excerpt": "Inpatient services 25% coinsurance Not covered"},
-    {"name": "Prenatal and postnatal office visits", "excerpt": "Office visits 25% coinsurance Not covered Cost-sharing does not apply to routine prenatal and postpartum services"},
-    {"name": "Childbirth/delivery professional services", "excerpt": "Childbirth/delivery professional services 25% coinsurance Not covered"},
-    {"name": "Childbirth/delivery facility services", "excerpt": "Childbirth/delivery facility services 25% coinsurance Not covered"},
-    {"name": "Home health care", "excerpt": "Home health care 25% coinsurance Not covered Pre-authorization is required"},
-    {"name": "Rehabilitation services", "excerpt": "Rehabilitation services $30 for outpatient services Deductible does not apply 25% coinsurance for inpatient services Not covered"},
-    {"name": "Habilitation services", "excerpt": "Habilitation services $30 Deductible does not apply Not covered"},
-    {"name": "Skilled nursing care", "excerpt": "Skilled nursing care 25% coinsurance Not covered Limited to 100 calendar days per calendar year"},
-    {"name": "Durable medical equipment", "excerpt": "Durable medical equipment 25% coinsurance Not covered"},
-    {"name": "Hospice services", "excerpt": "Hospice services 25% coinsurance Not covered Pre-authorization is required"},
-    {"name": "Children's eye exam", "excerpt": "Children's eye exam No charge for preventive exams; $60 for non-routine and routine exams. Not covered"},
-    {"name": "Children's glasses", "excerpt": "Children's glasses 25% coinsurance Not covered"},
-    {"name": "Children's dental check-up", "excerpt": "Children's dental check-up Not covered Not covered"},
-    # Other Covered Services section
-    {"name": "Bariatric surgery", "excerpt": "Bariatric surgery"},
-    {"name": "Chiropractic care", "excerpt": "Chiropractic care (up to 12 visits per calendar year)"},
-    {"name": "Hearing aids", "excerpt": "Hearing aids (1 hearing aid per ear each time a hearing aid prescription changes)"},
-    {"name": "Infertility treatment (diagnostic tests only)", "excerpt": "Infertility treatment (limited to diagnostic tests to find the cause of infertility"},
-    {"name": "Routine foot care", "excerpt": "Routine foot care (only for members with diabetes or systemic circulatory disease"},
-]
-
-CLARITY_BRONZE_SERVICES = [
-    # Common Medical Event table (pages 2-5)
-    {"name": "Primary care visit to treat an injury or illness", "excerpt": "Primary care visit to treat an injury or illness $50 Deductible does not apply Not covered"},
-    {"name": "Specialist visit", "excerpt": "Specialist visit $100 Deductible does not apply Not covered"},
-    {"name": "Preventive care / screening / Immunization", "excerpt": "Preventive care / screening / Immunization No charge Not covered"},
-    {"name": "Diagnostic test (x-ray, blood work, ultrasounds)", "excerpt": "Diagnostic test (x-ray, blood work, ultrasounds) 50% coinsurance Not covered"},
-    {"name": "Imaging (CT/PET scans, MRIs)", "excerpt": "Imaging (CT/PET scans, MRIs) 50% coinsurance Not covered"},
-    {"name": "Generic drugs", "excerpt": "Generic drugs $25 retail and $62.50 mail order/prescription Deductible does not apply Not covered"},
-    {"name": "Preferred brand drugs", "excerpt": "Preferred brand drugs $50 retail and $125 mail order/prescription Not covered"},
-    {"name": "Non-preferred brand drugs", "excerpt": "Non-preferred brand drugs $100 retail and $250 mail order/prescription Not covered"},
-    {"name": "Specialty drugs", "excerpt": "Specialty drugs $500 retail/prescription mail order prescription not covered Not covered"},
-    {"name": "Facility fee (ambulatory surgery center) — outpatient surgery", "excerpt": "Facility fee (e.g., ambulatory surgery center) 50% coinsurance Not covered Includes diagnostic colonoscopies"},
-    {"name": "Physician/surgeon fees — outpatient surgery", "excerpt": "Physician/surgeon fees 50% coinsurance Not covered"},
-    {"name": "Emergency room care", "excerpt": "Emergency room care 50% coinsurance 50% coinsurance"},
-    {"name": "Emergency medical transportation", "excerpt": "Emergency medical transportation 50% coinsurance 50% coinsurance None"},
-    {"name": "Urgent care", "excerpt": "Urgent care $75 Deductible does not apply $75 Deductible does not apply"},
-    {"name": "Facility fee (hospital room) — inpatient hospital stay", "excerpt": "Facility fee (e.g., hospital room) 50% coinsurance Not covered Pre-authorization is required"},
-    {"name": "Physician/surgeon fees — inpatient hospital stay", "excerpt": "Physician/surgeon fees 50% coinsurance Not covered"},
-    {"name": "Mental health / behavioral health / substance use disorder outpatient services", "excerpt": "Outpatient services $50 Deductible does not apply Not covered Pre-authorization may be required"},
-    {"name": "Mental health / behavioral health / substance use disorder inpatient services", "excerpt": "Inpatient services 50% coinsurance Not covered"},
-    {"name": "Prenatal and postnatal office visits", "excerpt": "Office visits 50% coinsurance Not covered Cost-sharing does not apply to routine prenatal and postpartum services"},
-    {"name": "Childbirth/delivery professional services", "excerpt": "Childbirth/delivery professional services 50% coinsurance Not covered"},
-    {"name": "Childbirth/delivery facility services", "excerpt": "Childbirth/delivery facility services 50% coinsurance Not covered"},
-    {"name": "Home health care", "excerpt": "Home health care 50% coinsurance Not covered Pre-authorization is required"},
-    {"name": "Rehabilitation services", "excerpt": "Rehabilitation services $50 Deductible does not apply 50% coinsurance for inpatient services Not covered"},
-    {"name": "Habilitation services", "excerpt": "Habilitation services $50 Deductible does not apply Not covered"},
-    {"name": "Skilled nursing care", "excerpt": "Skilled nursing care 50% coinsurance Not covered Limited to 100 calendar days per calendar year"},
-    {"name": "Durable medical equipment", "excerpt": "Durable medical equipment 50% coinsurance Not covered"},
-    {"name": "Hospice services", "excerpt": "Hospice services 50% coinsurance Not covered Pre-authorization is required"},
-    {"name": "Children's eye exam", "excerpt": "Children's eye exam No charge for preventive exams; $100 for non-routine and routine exams. Deductible does not apply. Not covered"},
-    {"name": "Children's glasses", "excerpt": "Children's glasses 50% coinsurance Not covered"},
-    {"name": "Children's dental check-up", "excerpt": "Children's dental check-up Not covered Not covered"},
-    # Other Covered Services section
-    {"name": "Bariatric surgery", "excerpt": "Bariatric surgery"},
-    {"name": "Chiropractic care", "excerpt": "Chiropractic care (up to 12 visits per calendar year)"},
-    {"name": "Hearing aids", "excerpt": "Hearing aids (1 hearing aid per ear each time a hearing aid prescription changes)"},
-    {"name": "Infertility treatment (diagnostic tests only)", "excerpt": "Infertility treatment (limited to diagnostic tests to find the cause of infertility"},
-    {"name": "Routine foot care", "excerpt": "Routine foot care (only for members with diabetes or systemic circulatory disease"},
-]
 
 
 def normalize_text(t):
     return re.sub(r'\s+', ' ', t).lower().strip()
 
 
-sbc_datasets = [
-    ("clarity-gold-2000", CLARITY_GOLD_SERVICES, CLARITY_META["clarity-gold-2000"]),
-    ("clarity-bronze-7500-hsa", CLARITY_BRONZE_SERVICES, CLARITY_META["clarity-bronze-7500-hsa"]),
-]
-
+# Read every per-doc Sonnet extraction (gt-parts/*.json) → GtService records. The slug
+# proposal stays DETERMINISTIC (propose_slug); only Andrew's worksheet rulings count for B2.
+GT_PARTS_DIR = FREEZE_DIR / "gt-parts"
 sbc_counts = {}
-for doc_id, services_raw, meta in sbc_datasets:
-    ocr_text = Path(meta["ocrPath"]).read_text()
-    ocr_norm = normalize_text(ocr_text)
+for pf in sorted(glob.glob(str(GT_PARTS_DIR / "*.json"))):
+    part = json.loads(Path(pf).read_text())
+    doc_id = part["docId"]
+    meta = DOC_META.get(doc_id)
+    if meta is None:
+        print(f"  WARNING: gt-part {doc_id} has no manifest metadata — skipped")
+        continue
+    ocr_file = FREEZE_DIR / "ocr-cache" / f"{doc_id}.txt"
+    ocr_norm = normalize_text(ocr_file.read_text()) if ocr_file.exists() else ""
 
     doc_services = []
-    qa_failures = []
-    for idx, svc in enumerate(services_raw):
+    qa_failures = 0
+    for idx, svc in enumerate(part.get("services", [])):
         svc_id = f"{doc_id}#{idx}"
-        name = svc["name"]
-        excerpt = svc.get("excerpt", "")
+        name = svc.get("serviceName", "")
+        excerpt = svc.get("bindingExcerpt") or ""
+        not_found = bool(svc.get("notFound"))
 
-        # QA: verify excerpt locatable in OCR
-        not_found = False
-        if excerpt and len(excerpt) > 10:
+        # QA (defense-in-depth on the extractor): excerpt must be locatable in the OCR text.
+        if not not_found and excerpt and ocr_norm:
             key_words = [w for w in normalize_text(excerpt[:80]).split() if len(w) > 4][:5]
             found_count = sum(1 for w in key_words if w in ocr_norm)
             if key_words and found_count < len(key_words) // 2:
                 not_found = True
-                qa_failures.append(f"  QA FAIL [{svc_id}]: '{name}' excerpt not in OCR")
+                qa_failures += 1
 
-        proposed_slug, tricky, tricky_reason = propose_slug(name)
+        proposed_slug, tricky, reason_token, alts = propose_slug(name)
 
         entry = {
             "id": svc_id,
             "docId": doc_id,
-            "insurer": meta["insurer"],
+            "insurer": meta.get("insurer") or "unknown",
             "docType": "sbc",
-            "planYear": 2026,
-            "canonicalPlanId": meta["canonicalPlanId"],
+            "planYear": meta.get("planYear") or 2026,
+            "canonicalPlanId": meta.get("canonicalPlanId"),
             "serviceName": name,
             "bindingExcerpt": excerpt or None,
+            "inCostShare": svc.get("inCostShare"),
+            "outCostShare": svc.get("outCostShare"),
             "correctSlug": proposed_slug,
             "adjudicationStatus": "auto",
             "tricky": tricky,
-            "trickyReason": tricky_reason if tricky else None,
+            "trickyReason": reason_token or None,
+            "proposedAlternatives": alts or None,
         }
         if not_found:
             entry["notFound"] = True
 
         doc_services.append(entry)
 
-    if qa_failures:
-        print(f"[QA] {doc_id} — {len(qa_failures)} excerpt failures:")
-        for f in qa_failures:
-            print(f)
-    else:
-        print(f"[QA] {doc_id}: all {len(doc_services)} excerpts OK")
-
     count = len(doc_services)
     sbc_counts[doc_id] = count
-    if count < 25 or count > 65:
-        print(f"  WARNING: {doc_id} has {count} services — outside 25-65 band")
-    else:
-        print(f"  {doc_id}: {count} services (within 25-65 band OK)")
+    band = "OK" if 20 <= count <= 70 else "OUTSIDE 20-70 BAND"
+    qa = f" ({qa_failures} excerpt-QA->notFound)" if qa_failures else ""
+    print(f"  {doc_id}: {count} services [{band}]{qa}")
 
     gt_services.extend(doc_services)
 
-print(f"\nStep 3 SBC: {sum(sbc_counts.values())} services")
+print(f"\nStep 3 SBC: {sum(sbc_counts.values())} services across {len(sbc_counts)} docs")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Negative pair detection (same doc + same slug, distinct excerpts)
@@ -498,25 +413,18 @@ print(f"Written: {tsv_path} ({len(worksheet_rows)} rows: {len(tricky_svcs)} tric
 # ─────────────────────────────────────────────────────────────────────────────
 manifest = {
     "frozenAt": "2026-06-03",
+    "gtVersion": "v2-2026-06-03-full",
     "sbcDocs": [
         {
-            "docId": "clarity-gold-2000",
-            "pdfPath": CLARITY_META["clarity-gold-2000"]["pdfPath"],
-            "canonicalPlanId": CLARITY_META["clarity-gold-2000"]["canonicalPlanId"],
-            "planName": CLARITY_META["clarity-gold-2000"]["planName"],
-            "insurer": CLARITY_META["clarity-gold-2000"]["insurer"],
-            "planYear": 2026,
-            "serviceCount": sbc_counts.get("clarity-gold-2000", 0),
-        },
-        {
-            "docId": "clarity-bronze-7500-hsa",
-            "pdfPath": CLARITY_META["clarity-bronze-7500-hsa"]["pdfPath"],
-            "canonicalPlanId": CLARITY_META["clarity-bronze-7500-hsa"]["canonicalPlanId"],
-            "planName": CLARITY_META["clarity-bronze-7500-hsa"]["planName"],
-            "insurer": CLARITY_META["clarity-bronze-7500-hsa"]["insurer"],
-            "planYear": 2026,
-            "serviceCount": sbc_counts.get("clarity-bronze-7500-hsa", 0),
-        },
+            "docId": did,
+            "canonicalPlanId": DOC_META.get(did, {}).get("canonicalPlanId"),
+            "insurer": DOC_META.get(did, {}).get("insurer") or "unknown",
+            "state": DOC_META.get(did, {}).get("state"),
+            "metal": DOC_META.get(did, {}).get("metal"),
+            "planYear": DOC_META.get(did, {}).get("planYear") or 2026,
+            "serviceCount": sbc_counts.get(did, 0),
+        }
+        for did in sorted(sbc_counts.keys())
     ],
     "ecmDocs": [
         {"docId": k, "canonicalPlanId": v["canonicalPlanId"], "insurer": v["insurer"], "serviceCount": ecm_counts.get(k, 0)}
@@ -542,8 +450,8 @@ for s in gt_services:
 print(f"""
 === GT SUMMARY ===
 Total GtService records: {total}
-  ecm docs (6):    {sum(ecm_counts.values())} services
-  SBC docs (2):    {sum(sbc_counts.values())} services
+  ecm docs ({len(ecm_counts)}):    {sum(ecm_counts.values())} services
+  SBC docs ({len(sbc_counts)}):   {sum(sbc_counts.values())} services
   NO_CONCEPT:      {no_concept}
   notFound:        {not_found}
   isNegativePair:  {neg_pairs}

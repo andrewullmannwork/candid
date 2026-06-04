@@ -17,15 +17,20 @@ import type { GtService } from "./types";
 
 type Stats = { ok: number; corrected: number; noConcept: number; dropped: number; blank: number; invalidSlug: number; unknownId: number };
 
+// Andrew's natural vocabulary → canonical rulings (case-insensitive). "correct"=confirm, "new"=untracked.
+const OK_WORDS = new Set(["OK", "CORRECT", "YES", "Y", "GOOD", "RIGHT", "CONFIRM", "✓"]);
+const NC_WORDS = new Set(["NO_CONCEPT", "NO CONCEPT", "NO-CONCEPT", "NEW", "NEW_CONCEPT", "NEW CONCEPT", "NC", "NONE"]);
+const DROP_WORDS = new Set(["DROP", "X", "JUNK", "BAD", "DELETE", "REMOVE"]);
+
 function applyRuling(g: GtService, ruling: string, validSlugs: Set<string> | null, stats: Stats): void {
-  const r = ruling.toUpperCase();
-  if (r === "OK") { g.adjudicationStatus = "andrew"; stats.ok++; }
-  else if (r === "NO_CONCEPT") { g.adjudicationStatus = "andrew"; g.correctSlug = null; stats.noConcept++; }
-  else if (r === "DROP") { g.notFound = true; g.adjudicationStatus = "andrew"; stats.dropped++; }
-  else {
-    if (validSlugs && !validSlugs.has(ruling)) { stats.invalidSlug++; console.warn(`${g.id}: ruling "${ruling}" not in catalog — skipped`); return; }
-    g.adjudicationStatus = "andrew"; g.correctSlug = ruling; stats.corrected++;
-  }
+  const r = ruling.trim().toUpperCase();
+  if (OK_WORDS.has(r)) { g.adjudicationStatus = "andrew"; stats.ok++; return; }
+  if (NC_WORDS.has(r)) { g.adjudicationStatus = "andrew"; g.correctSlug = null; stats.noConcept++; return; }
+  if (DROP_WORDS.has(r)) { g.notFound = true; g.adjudicationStatus = "andrew"; stats.dropped++; return; }
+  // Otherwise treat as a slug correction — case-insensitive, validated against the catalog.
+  const slug = ruling.trim().toLowerCase();
+  if (validSlugs && !validSlugs.has(slug)) { stats.invalidSlug++; console.warn(`${g.id}: ruling "${ruling}" is not OK/NEW/DROP and not a catalog slug — skipped`); return; }
+  g.adjudicationStatus = "andrew"; g.correctSlug = slug; stats.corrected++;
 }
 
 function main() {

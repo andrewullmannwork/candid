@@ -32,32 +32,43 @@ function main() {
   if (!gtPath || !outDir) throw new Error("usage: build-worksheet.ts <gt.json> <out-dir> [randomN]");
   const randomN = Number(randomNArg ?? 200);
   const gt: GtService[] = JSON.parse(readFileSync(gtPath, "utf8"));
-  const scored = gt.filter((g) => !g.notFound);
+  // Exclude entries already adjudicated by Andrew — so a re-generated sheet only shows REMAINING work.
+  const scored = gt.filter((g) => !g.notFound && g.adjudicationStatus !== "andrew");
 
-  // ── TRICKY clusters: multi_slug OR no_concept, grouped by (reason × slug-or-NO_CONCEPT) ──
+  // ── TRICKY clusters ──
+  //   multi_slug → grouped by the proposed best slug (one ruling per ambiguous pattern).
+  //   no_concept → grouped by NORMALIZED SERVICE NAME (the same unmapped service across docs
+  //                rules together: "add a concept", map to an existing slug, or DROP).
+  const normName = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   const tricky = scored.filter((g) => g.trickyReason === "multi_slug" || g.trickyReason === "no_concept" || g.correctSlug === null);
   const clusters = new Map<string, GtService[]>();
   for (const g of tricky) {
-    const reason = g.correctSlug === null ? "no_concept" : (g.trickyReason ?? "multi_slug");
-    const key = reason + SEP + (g.correctSlug ?? "NO_CONCEPT");
+    const isNoConcept = g.correctSlug === null;
+    const reason = isNoConcept ? "no_concept" : (g.trickyReason ?? "multi_slug");
+    const key = isNoConcept ? reason + SEP + normName(g.serviceName) : reason + SEP + (g.correctSlug ?? "NO_CONCEPT");
     const arr = clusters.get(key) ?? [];
     arr.push(g);
     clusters.set(key, arr);
   }
-  const clusterRows = [...clusters.entries()]
-    .map(([key, members]) => {
-      const [reason, slug] = key.split(SEP);
-      const alts = [...new Set(members.flatMap((m) => m.proposedAlternatives ?? []))].join("|");
-      return {
-        ids: members.map((m) => m.id).join(";"),
-        kind: "cluster",
-        reason,
-        proposed_slug: slug,
-        alternatives: alts,
-        member_count: members.length,
-        example: clean(members[0].serviceName),
-      };
-    })
+  const allClusters = [...clusters.entries()].map(([key, members]) => {
+    const reason = key.split(SEP)[0];
+    return { reason, isNC: reason === "no_concept", members,
+      alts: [...new Set(members.flatMap((m) => m.proposedAlternatives ?? []))].join("|") };
+  });
+  // no_concept SINGLETONS → deferred to the §8 Phase-4 new-concept candidate file (inert until
+  // ruled; not Phase-0 adjudication). Recurring no_concept (>=2) + ALL multi_slug stay on the sheet.
+  const ncSingletons = allClusters.filter((c) => c.isNC && c.members.length === 1);
+  const clusterRows = allClusters
+    .filter((c) => !(c.isNC && c.members.length === 1))
+    .map((c) => ({
+      ids: c.members.map((m) => m.id).join(";"),
+      kind: "cluster",
+      reason: c.reason,
+      proposed_slug: c.isNC ? "NO_CONCEPT" : (c.members[0].correctSlug as string),
+      alternatives: c.alts,
+      member_count: c.members.length,
+      example: clean(c.members[0].serviceName),
+    }))
     .sort((a, b) => b.member_count - a.member_count);
 
   // ── RANDOM ~N: unbiased B2 basis — individual scored+mapped entries, deterministic order ──
@@ -70,9 +81,11 @@ function main() {
       alternatives: (g.proposedAlternatives ?? []).join("|"), member_count: 1, example: clean(g.serviceName),
     }));
 
-  const header = "ids\tkind\treason\tproposed_slug\talternatives\tmember_count\texample\tRULING";
+  // RULING + readable columns first; the long semicolon-joined `ids` cell goes LAST (out of the way;
+  // apply-adjudications.ts finds columns by header name, so order is irrelevant to the merge).
+  const header = "kind\treason\tproposed_slug\talternatives\tmember_count\texample\tRULING\tids";
   const body = [...clusterRows, ...randomRows].map(
-    (r) => `${r.ids}\t${r.kind}\t${r.reason}\t${r.proposed_slug}\t${r.alternatives}\t${r.member_count}\t${r.example}\t`,
+    (r) => `${r.kind}\t${r.reason}\t${r.proposed_slug}\t${r.alternatives}\t${r.member_count}\t${r.example}\t\t${r.ids}`,
   );
   writeFileSync(join(outDir, "adjudication-worksheet.tsv"), [header, ...body].join("\n") + "\n");
 
@@ -93,8 +106,18 @@ function main() {
     null, 2,
   ));
 
-  console.log(`worksheet: ${clusterRows.length} tricky clusters (covering ${tricky.length} entries) + ${randomRows.length} random rows`);
-  console.log(`  → ${clusterRows.length + randomRows.length} RULING decisions for Andrew (vs ${tricky.length + randomRows.length} un-clustered)`);
+  // ── no_concept singletons → Phase-4 new-concept candidates (NOT Phase-0 adjudication) ──
+  writeFileSync(join(outDir, "new-concept-candidates.json"), JSON.stringify(
+    {
+      note: "no_concept SINGLETONS (one occurrence in the corpus) — §8 Phase-4 new-concept candidates, NOT Phase-0 adjudication-required. Inert until ruled (correctSlug stays null → excluded from B1/B2). Review when expanding the catalog past 69 concepts.",
+      candidates: ncSingletons.map((c) => ({ id: c.members[0].id, serviceName: c.members[0].serviceName, docId: c.members[0].docId })),
+    },
+    null, 2,
+  ));
+
+  const onSheet = clusterRows.reduce((n, r) => n + r.member_count, 0);
+  console.log(`worksheet: ${clusterRows.length} clusters (covering ${onSheet} entries) + ${randomRows.length} random = ${clusterRows.length + randomRows.length} RULINGS for Andrew`);
+  console.log(`  new-concept-candidates.json: ${ncSingletons.length} no_concept singletons DEFERRED to Phase 4 (not adjudication-required)`);
   console.log(`  neg-pair-clusters.json: ${negClusters.size} informational clusters (${negPairs.length} entries) — NOT adjudication-required`);
 }
 main();
