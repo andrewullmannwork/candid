@@ -10,6 +10,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { isPiiRedactionEnabled, redactExcerpt } from "@/lib/parser/pii-redaction-gate";
 
 interface CodeLineItem {
   billing_code: string | null;
@@ -31,6 +32,11 @@ export async function updateCodeMappings(
 ): Promise<{ updated: number }> {
   let updated = 0;
 
+  // Ing-E: redact PII before it lands in the cross-user
+  // billing_code_mappings.provider_descriptions (flag OFF → unchanged →
+  // byte-identical; the description_signature matching key is untouched).
+  const piiOn = await isPiiRedactionEnabled(supabase);
+
   const eligible = lineItems.filter(
     (li) => li.billing_code && li.billing_code_type && li.service_slug
   );
@@ -45,6 +51,10 @@ export async function updateCodeMappings(
         .eq("service_slug", li.service_slug!)
         .maybeSingle();
 
+      const desc = li.description
+        ? redactExcerpt(li.description, piiOn, "billing_code_mappings.provider_descriptions")
+        : null;
+
       if (existing) {
         const newCount = existing.observation_count + 1;
         // Confidence scales with observations: 0.5 base, +0.05 per observation, max 0.95
@@ -52,12 +62,8 @@ export async function updateCodeMappings(
 
         // Append description if unique (cap at 10 descriptions)
         const descriptions: string[] = existing.provider_descriptions || [];
-        if (
-          li.description &&
-          descriptions.length < 10 &&
-          !descriptions.includes(li.description)
-        ) {
-          descriptions.push(li.description);
+        if (desc && descriptions.length < 10 && !descriptions.includes(desc)) {
+          descriptions.push(desc);
         }
 
         await supabase
@@ -76,7 +82,7 @@ export async function updateCodeMappings(
           service_slug: li.service_slug!,
           confidence: 0.5,
           observation_count: 1,
-          provider_descriptions: li.description ? [li.description] : [],
+          provider_descriptions: desc ? [desc] : [],
         });
       }
 

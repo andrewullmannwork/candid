@@ -67,7 +67,7 @@ check("idempotent on member id", redact(midOut.redacted) === midOut.redacted);
 check("guarded $-amount not redacted", redact("balance $1234567893 due") === "balance $1234567893 due");
 
 // ─── gate: enabled=false is byte-identical even WITH PII (the flag-OFF guarantee) ───
-const withPii = "Member ID: W123456789 — $30 copay";
+const withPii: string = "Member ID: W123456789 — $30 copay";
 check("gate OFF → byte-identical even with PII present", redactExcerpt(withPii, false, "t") === withPii);
 check("gate ON → redacts PII, preserves coverage", (() => {
   const r = redactExcerpt(withPii, true, "t");

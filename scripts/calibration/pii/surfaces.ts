@@ -23,6 +23,7 @@ export type SurfaceKind =
   | "jsonb_provenance_sources_excerpt" // field_provenance.<field>.sources[].excerpt (+document_ref)
   | "jsonb_array_field" // a JSONB array column; each element has a free-text key
   | "text_column" // a plain TEXT column
+  | "text_array" // a Postgres TEXT[] column; scan each element as a unit
   | "jsonb_blob"; // arbitrary JSONB — stringify the blob and scan
 
 export interface CanonicalSurface {
@@ -43,11 +44,11 @@ export const CANONICAL_SURFACES: readonly CanonicalSurface[] = [
   { id: "canonical_plans.field_provenance", table: "canonical_plans", column: "field_provenance", kind: "jsonb_provenance_sources_excerpt", tier: 1, visibility: "canonical_cross_user", sweep: true, notes: "Plan-identity sources[].excerpt (service_slug IS NULL path). NOT named by tracker." },
   { id: "canonical_plan_services.field_provenance", table: "canonical_plan_services", column: "field_provenance", kind: "jsonb_provenance_sources_excerpt", tier: 1, visibility: "canonical_cross_user", sweep: true, notes: "Service cost-share sources[].excerpt. The one surface the tracker named." },
   { id: "billing_code_identity.corroborator_sources", table: "billing_code_identity", column: "corroborator_sources", kind: "jsonb_array_field", arrayField: "raw_description", tier: 1, visibility: "canonical_cross_user", sweep: true, notes: "BILL PII surface: line-item descriptions from bills." },
-  { id: "billing_code_identity.description_examples", table: "billing_code_identity", column: "description_examples", kind: "text_column", tier: 1, visibility: "canonical_cross_user", sweep: true, notes: "Example bill descriptions (2nd desc store on the identity table). [inventory find]" },
+  { id: "billing_code_identity.description_examples", table: "billing_code_identity", column: "description_examples", kind: "text_array", tier: 1, visibility: "canonical_cross_user", sweep: true, notes: "Example bill descriptions (2nd desc store on the identity table). TEXT[] — scan each element. [inventory find]" },
   { id: "canonical_haiku_extractions.source_excerpt", table: "canonical_haiku_extractions", column: "source_excerpt", kind: "text_column", tier: 1, visibility: "canonical_cross_user", sweep: true, notes: "Verbatim ≤200ch; read by dispute evidence-resolver. NOT named by tracker." },
   { id: "canonical_haiku_extractions.extracted_value", table: "canonical_haiku_extractions", column: "extracted_value", kind: "jsonb_blob", tier: 1, visibility: "canonical_cross_user", sweep: true, notes: "Extracted field value blob. [inventory find]" },
   { id: "billing_code_mappings.description_signature", table: "billing_code_mappings", column: "description_signature", kind: "text_column", tier: 1, visibility: "canonical_cross_user", sweep: true, notes: "Normalized (lowercased) bill description — normalization is NOT de-PII. Thesaurus-adjacent." },
-  { id: "billing_code_mappings.provider_descriptions", table: "billing_code_mappings", column: "provider_descriptions", kind: "text_column", tier: 1, visibility: "canonical_cross_user", sweep: true, notes: "Raw provider/bill descriptions. [inventory find — HIGH]" },
+  { id: "billing_code_mappings.provider_descriptions", table: "billing_code_mappings", column: "provider_descriptions", kind: "text_array", tier: 1, visibility: "canonical_cross_user", sweep: true, notes: "Raw provider/bill descriptions. TEXT[] — scan each element. [inventory find — HIGH]" },
   { id: "billing_code_identity.description_signature", table: "billing_code_identity", column: "description_signature", kind: "text_column", tier: 1, visibility: "canonical_cross_user", sweep: true, notes: "Normalized bill desc on the identity table. [inventory find]" },
   { id: "canonical_plans.raw_coverage_data", table: "canonical_plans", column: "raw_coverage_data", kind: "jsonb_blob", tier: 1, visibility: "canonical_cross_user", sweep: true, notes: "Raw parsed coverage blob. [inventory find — HIGH]" },
   { id: "canonical_plans.last_haiku_extracted_values", table: "canonical_plans", column: "last_haiku_extracted_values", kind: "jsonb_blob", tier: 1, visibility: "canonical_cross_user", sweep: true, notes: "Raw last-Haiku extracted values. [inventory find]" },

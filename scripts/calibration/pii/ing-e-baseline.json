@@ -4,7 +4,7 @@
   "target": "0 auto-match PII units in canonical Tier-1 post-backfill",
   "totals": {
     "surfaces_swept": 30,
-    "units_scanned": 21439,
+    "units_scanned": 22895,
     "units_with_auto_match": 0,
     "bleed_units": 0,
     "standalone_units": 237,
@@ -49,14 +49,17 @@
       "bleedUnits": 0,
       "standaloneUnits": 19,
       "docRefsChecked": 2020,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "canonical_plan_services.field_provenance",
       "tier": 1,
       "visibility": "canonical_cross_user",
       "rowsScanned": 48546,
-      "unitsScanned": 12535,
+      "unitsScanned": 13877,
       "unitsWithAnyMatch": 0,
       "unitsWithAutoMatch": 0,
       "autoMatchTotal": 0,
@@ -65,8 +68,11 @@
       "perPattern": {},
       "bleedUnits": 0,
       "standaloneUnits": 0,
-      "docRefsChecked": 12535,
-      "nonUuidDocRefs": 0
+      "docRefsChecked": 13877,
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "billing_code_identity.corroborator_sources",
@@ -83,14 +89,17 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "billing_code_identity.description_examples",
       "tier": 1,
       "visibility": "canonical_cross_user",
       "rowsScanned": 80,
-      "unitsScanned": 0,
+      "unitsScanned": 83,
       "unitsWithAnyMatch": 0,
       "unitsWithAutoMatch": 0,
       "autoMatchTotal": 0,
@@ -100,7 +109,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "canonical_haiku_extractions.source_excerpt",
@@ -123,7 +135,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 83,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "canonical_haiku_extractions.extracted_value",
@@ -146,7 +161,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 85,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "billing_code_mappings.description_signature",
@@ -163,14 +181,17 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "billing_code_mappings.provider_descriptions",
       "tier": 1,
       "visibility": "canonical_cross_user",
       "rowsScanned": 29,
-      "unitsScanned": 0,
+      "unitsScanned": 31,
       "unitsWithAnyMatch": 0,
       "unitsWithAutoMatch": 0,
       "autoMatchTotal": 0,
@@ -180,7 +201,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "billing_code_identity.description_signature",
@@ -197,7 +221,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "canonical_plans.raw_coverage_data",
@@ -214,7 +241,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "canonical_plans.last_haiku_extracted_values",
@@ -231,7 +261,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "canonical_plan_services.coverage_rules",
@@ -248,7 +281,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "canonical_document_stability.last_haiku_extracted_values",
@@ -265,7 +301,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "canonical_document_stability.candidate_values",
@@ -282,7 +321,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "canonical_document_stability.candidate_slots",
@@ -299,7 +341,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "canonical_field_corroboration.extracted_value_jsonb",
@@ -322,7 +367,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 36,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "canonical_divergence_review.minority_value_jsonb",
@@ -339,7 +387,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "canonical_correction_challenges.proposed_value",
@@ -356,7 +407,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "concepts.metadata",
@@ -373,7 +427,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "concept_admin_review_queue.source_excerpt",
@@ -390,7 +447,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "concept_admin_review_queue.context_extract",
@@ -407,7 +467,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "service_catalog_admin_review_queue.source_excerpt",
@@ -424,7 +487,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "service_catalog_admin_review_queue.context_extract",
@@ -441,7 +507,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "service_catalog_admin_review_queue.candidate_suggestions",
@@ -464,7 +533,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 10,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "insurer_appeals_proposed_changes.source_excerpt",
@@ -481,7 +553,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "insurer_appeals_proposed_changes.current_values",
@@ -504,7 +579,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 2,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "insurer_appeals_proposed_changes.proposed_values",
@@ -521,7 +599,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "insurer_appeals_confirmations.metadata",
@@ -544,7 +625,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 2,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "bill_parser_decisions.metadata",
@@ -561,7 +645,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     },
     {
       "id": "billing_code_plan_outcomes.common_denial_reasons",
@@ -578,7 +665,10 @@
       "bleedUnits": 0,
       "standaloneUnits": 0,
       "docRefsChecked": 0,
-      "nonUuidDocRefs": 0
+      "nonUuidDocRefs": 0,
+      "dryrunRedacted": 0,
+      "dryrunCoverageLoss": 0,
+      "dryrunNonIdempotent": 0
     }
   ]
 }

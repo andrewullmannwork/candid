@@ -20,6 +20,7 @@ import { writeFileSync } from "fs";
 import { homedir } from "os";
 import { createClient } from "@supabase/supabase-js";
 import { findPiiMatches, hasCoverageTokens } from "@/lib/parser/pii-patterns";
+import { redactText } from "@/lib/parser/pii-redactor";
 import { SWEPT_SURFACES, type CanonicalSurface } from "./surfaces";
 
 config({ path: resolve(process.cwd(), ".env.local") });
@@ -33,6 +34,7 @@ const N_MATCHED_SAMPLE = 20;
 const N_UNMATCHED_SAMPLE = 12;
 const POOL_CAP = 3000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const DRYRUN = !!process.env.REDACT_DRYRUN; // forced-ON redactText over real units (coverage/idempotency asserts)
 
 const asString = (v: unknown): string | null => (typeof v === "string" ? v : null);
 const asArray = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
@@ -54,6 +56,14 @@ function extractUnits(surface: CanonicalSurface, row: Record<string, unknown>, r
     case "text_column": {
       const t = asString(col);
       if (t && t.length) units.push({ rowId, text: t });
+      break;
+    }
+    case "text_array": {
+      // Postgres TEXT[] → supabase-js returns a JS array of strings; scan each.
+      for (const el of asArray(col)) {
+        const t = asString(el);
+        if (t && t.length) units.push({ rowId, text: t });
+      }
       break;
     }
     case "jsonb_blob": {
@@ -109,6 +119,9 @@ interface SurfaceResult {
   standaloneUnits: number;
   docRefsChecked: number;
   nonUuidDocRefs: number;
+  dryrunRedacted: number;
+  dryrunCoverageLoss: number;
+  dryrunNonIdempotent: number;
   error?: string;
 }
 
@@ -155,6 +168,7 @@ async function auditSurface(
     rowsScanned: 0, unitsScanned: 0, unitsWithAnyMatch: 0, unitsWithAutoMatch: 0,
     autoMatchTotal: 0, reviewMatchTotal: 0, suppressedTotal: 0,
     perPattern: {}, bleedUnits: 0, standaloneUnits: 0, docRefsChecked: 0, nonUuidDocRefs: 0,
+    dryrunRedacted: 0, dryrunCoverageLoss: 0, dryrunNonIdempotent: 0,
   };
   let rows: Record<string, unknown>[] = [];
   let hasId = true;
@@ -209,6 +223,14 @@ async function auditSurface(
         if (autoM.length) res.unitsWithAutoMatch++;
         if (hasCoverageTokens(unit.text)) res.bleedUnits++;
         else res.standaloneUnits++;
+      }
+      if (DRYRUN) {
+        // Forced-ON: run the ACTUAL write-path transform over the real unit and
+        // assert it never drops a coverage token + is idempotent.
+        const red = redactText(unit.text);
+        if (red.changed) res.dryrunRedacted++;
+        if (hasCoverageTokens(unit.text) && !hasCoverageTokens(red.redacted)) res.dryrunCoverageLoss++;
+        if (redactText(red.redacted).redacted !== red.redacted) res.dryrunNonIdempotent++;
       }
       const sample: SampleRow = {
         surfaceId: surface.id, rowId: unit.rowId, field: unit.field ?? "",
@@ -281,6 +303,12 @@ async function main(): Promise<void> {
   console.log(`   units with AUTO match (would-redact): ${totAutoUnits}`);
   console.log(`   bleed vs standalone (matched units): ${totBleed} / ${totStandalone}`);
   console.log(`   non-UUID document_refs: ${totNonUuid}`);
+  if (DRYRUN) {
+    let dRed = 0, dLoss = 0, dNonIdem = 0;
+    for (const r of results) { if (r.error) continue; dRed += r.dryrunRedacted; dLoss += r.dryrunCoverageLoss; dNonIdem += r.dryrunNonIdempotent; }
+    console.log("\n── forced-ON redactText dry-run (real units) ──");
+    console.log(`   units redacted: ${dRed}   coverage-token losses: ${dLoss}   non-idempotent: ${dNonIdem}`);
+  }
 
   // ─── baseline JSON (aggregate; NO raw text) → worktree (committable) ───
   const baseline = {
@@ -296,6 +324,10 @@ async function main(): Promise<void> {
   console.log(`\nWrote baseline (aggregate, no PII): ${baselinePath}`);
 
   // ─── adjudication sample (RAW text) → LOCAL ONLY (~/Downloads) ───
+  if (process.env.AUDIT_NO_SAMPLE) {
+    console.log("\n(AUDIT_NO_SAMPLE set — re-audit aggregate only; raw sample NOT regenerated)");
+    return;
+  }
   const sample = [...matchedPool, ...unmatchedPool];
   const header = "surface_id,row_id,field,has_auto_match,auto_patterns,review_patterns,text,is_pii_y_n,pii_types,coverage_corruption_risk_y_n";
   const lines = sample.map((s) =>

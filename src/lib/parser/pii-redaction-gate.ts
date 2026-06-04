@@ -47,11 +47,18 @@ export async function isPiiRedactionEnabled(supabase: SupabaseClient): Promise<b
  */
 export function redactExcerpt<T extends string | null>(text: T, enabled: boolean, ctx: string): T {
   if (!enabled || !text) return text;
-  const r = redactText(text);
-  if (r.changed) {
-    console.warn(
-      `[pii-redactor] redacted ${r.redactions.length} span(s) @ ${ctx}: ${[...new Set(r.redactions.map((x) => x.patternName))].join(",")}`,
-    );
+  try {
+    const r = redactText(text);
+    if (r.changed) {
+      console.warn(
+        `[pii-redactor] redacted ${r.redactions.length} span(s) @ ${ctx}: ${[...new Set(r.redactions.map((x) => x.patternName))].join(",")}`,
+      );
+    }
+    return r.redacted as T;
+  } catch (err) {
+    // Fail-safe: a redactor bug must NEVER break a canonical write. Pass the
+    // original text through (flip the flag OFF to stop redacting) + warn loudly.
+    console.warn(`[pii-redactor] redactExcerpt threw @ ${ctx} — passing through unredacted`, err);
+    return text;
   }
-  return r.redacted as T;
 }
