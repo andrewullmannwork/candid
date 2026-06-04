@@ -22,6 +22,7 @@
  */
 
 import { createServerClient } from "@/lib/supabase/server";
+import { getUserContextByPk } from "@/lib/users/resolve-user-by-pk";
 import { parseEOC } from "@/lib/eoc/parser";
 import { resolveOrEnqueueConcept } from "@/lib/eoc/concept-resolver";
 import type { EOCParseResult } from "@/lib/eoc/types";
@@ -446,12 +447,11 @@ async function persistEOCSections(
 ): Promise<string[]> {
   const warnings: string[] = [];
 
-  // Resolve users.id for the firebase_uid (concept_admin_review_queue.proposed_by_user_id is UUID).
-  const { data: userRow } = await supabase
-    .from("users")
-    .select("id")
-    .eq("firebase_uid", doc.user_id)
-    .maybeSingle();
+  // Resolve the proposer's users.id from doc.user_id (which IS the users PK, NOT a
+  // firebase_uid; proposed_by_user_id is a UUID). S164: was .eq("firebase_uid", …),
+  // which never matched → proposedByUserId null → concept/slug enqueue attribution
+  // silently dropped. Convention: src/lib/users/resolve-user-by-pk.ts.
+  const userRow = await getUserContextByPk(supabase, doc.user_id, "process-eoc:concept-enqueue");
   const proposedByUserId = userRow?.id ?? null;
   if (!proposedByUserId) {
     warnings.push(`eoc_persist_user_lookup_failed:${doc.user_id}`);

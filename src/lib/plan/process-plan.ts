@@ -6,6 +6,7 @@
 
 import { createServerClient } from "@/lib/supabase/server";
 import { parsePlanDocumentWithMeta } from "@/lib/plan/plan-doc-parser";
+import { getUserContextByPk } from "@/lib/users/resolve-user-by-pk";
 import type { PlanDocHaikuParseResult } from "@/lib/plan_doc/types";
 import {
   writeCanonicalHaikuExtractions,
@@ -233,11 +234,7 @@ export async function processPlanDocumentData(
     // throws explicit error (no silent fallback). plan_document classification still
     // uses regex parsePlanDocument + claude-extractor (F.14 fast-follow tracks Phase 3.4
     // migration to Haiku-first plan-doc parser).
-    const { data: userForFlagCheck } = await supabase
-      .from("users")
-      .select("email, id")
-      .eq("firebase_uid", doc.user_id)
-      .single();
+    const userForFlagCheck = await getUserContextByPk(supabase, doc.user_id, "process-plan:flags+slug-enqueue");
     const sbcParserV1Enabled = !isFullPlanDoc
       ? await isFeatureEnabled("sbc_parser_v1", userForFlagCheck?.email ?? undefined)
       : false;
@@ -835,7 +832,7 @@ export async function processPlanDocumentData(
     let canonicalIsNew = false;
 
     // Check feature flag — get user email for targeting
-    const { data: userForFlag } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
+    const userForFlag = await getUserContextByPk(supabase, doc.user_id, "process-plan:canonical_plans");
     const canonicalEnabled = await isFeatureEnabled("canonical_plans", userForFlag?.email || undefined);
 
     if (!canonicalEnabled) {
@@ -1552,11 +1549,38 @@ export async function processPlanDocumentData(
         // classified_type is the persisted classifier verdict (sbc/eoc/plan_document),
         // NOT the unified-parser-coerced 'plan_document' classification arg — required
         // for correct per-doc-type promotion state (Ing-D.0a).
-        const { data: docForHash } = await supabase
+        const { data: docForHash, error: docForHashError } = await supabase
           .from("documents")
           .select("file_hash, classified_type, created_at, classification_confidence, file_size, cf40_forced_reparse_reason")
           .eq("id", documentId)
           .single();
+        if (!docForHash) {
+          // G7 (S164): a failed docForHash silently nulls parseEventContext (it is
+          // gated on docForHash?.classified_type) → the CF-40 v4 recorder never
+          // fires — the EXACT S163 #160 defect that hid for the whole pre-S163
+          // history. Make it loud AND queryable (a bare console.warn is precisely
+          // how it stayed silent). Non-fatal; read-spread-write so we never clobber
+          // existing metadata.
+          console.warn(
+            `[cf40-v4] recorder: docForHash query returned null for documentId=${documentId}` +
+              (docForHashError ? ` (error: ${docForHashError.message})` : "") +
+              ` — parseEventContext will be undefined; recorder will NOT fire.`,
+          );
+          const { data: curMetaRow } = await supabase
+            .from("documents")
+            .select("metadata")
+            .eq("id", documentId)
+            .maybeSingle();
+          await supabase
+            .from("documents")
+            .update({
+              metadata: {
+                ...((curMetaRow?.metadata as Record<string, unknown> | null) ?? {}),
+                cf40_dochash_resolve_failed: true,
+              },
+            })
+            .eq("id", documentId);
+        }
 
         // Uploader trust signals for the CF-40 v4 Layer 2/3 recorder. doc.user_id =
         // documents.user_id = the users PK (NOT firebase_uid; the upload route writes

@@ -10,6 +10,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { getUserContextByPk } from "@/lib/users/resolve-user-by-pk";
 
 export async function POST(req: NextRequest) {
   // Admin auth check
@@ -106,7 +107,7 @@ export async function POST(req: NextRequest) {
           // F-2 — resolve plan + load coverage BEFORE runAudit so first-pass
           // findings reflect should_owe per plan instead of contractual writeoff.
           const { isFeatureEnabled } = await import("@/lib/config/product-flags");
-          const { data: userForFlag } = await supabase.from("users").select("email").eq("firebase_uid", doc.user_id).single();
+          const userForFlag = await getUserContextByPk(supabase, doc.user_id, "admin-resolve-type:claims_persistence");
           const { resolveClaimPlanContext } = await import("@/lib/claims/plan-year-resolver");
           const { loadAcaFallbackForAudit, loadCoverageMapForPlan } = await import("@/lib/audit/coverage-loader");
           const { data: profile } = await supabase.from("profiles").select("active_insurance_plan_id").eq("user_id", doc.user_id).single();
