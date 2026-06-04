@@ -23,6 +23,7 @@
 
 import type { createServerClient } from "@/lib/supabase/server";
 import type { CorroboratorExcerpt } from "./corroboration-evaluator";
+import { isPiiRedactionEnabled, redactExcerpt } from "./pii-redaction-gate";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
@@ -77,12 +78,24 @@ export async function applyPromotionEvent(
   actorUserId: string | null = null,
   forceEventType: ForceEventType | null = null,
 ): Promise<ApplyPromotionEventResult> {
+  // Ing-E: redact PII from cross-user excerpts before they land in canonical
+  // field_provenance.sources[].excerpt. This is the single chokepoint for BOTH
+  // canonical_plans (service_slug NULL) and canonical_plan_services + every caller
+  // (admin_override / first_promotion / corroboration_added). Flag OFF (default) →
+  // same `sources` reference → byte-identical.
+  const piiOn = await isPiiRedactionEnabled(supabase);
+  const redactedSources = piiOn
+    ? sources.map((s) => ({
+        ...s,
+        excerpt: redactExcerpt(s.excerpt, true, "field_provenance.sources[].excerpt"),
+      }))
+    : sources;
   const { data, error } = await supabase.rpc("apply_promotion_event", {
     p_canonical_plan_id: canonicalPlanId,
     p_service_slug: serviceSlug,
     p_field_name: fieldName,
     p_corroborated_value: corroboratedValue,
-    p_sources: sources,
+    p_sources: redactedSources,
     p_fire_source: fireSource,
     p_actor_user_id: actorUserId,
     p_force_event_type: forceEventType,

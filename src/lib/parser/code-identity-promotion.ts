@@ -27,6 +27,7 @@
 //   - isUserFullyVerified() — Pattern 1 #15 gate helper
 
 import { createServerClient } from "../supabase/server";
+import { isPiiRedactionEnabled, redactExcerpt } from "./pii-redaction-gate";
 import {
   lookupExactSignature,
   proposeNewSignature,
@@ -135,12 +136,18 @@ async function applyCorrectorUpsert(opts: {
   const supabase = createServerClient();
   const userHash = hashUserForIdentity(opts.userId, opts.identityId);
 
+  // Ing-E: redact PII from the bill line-item description before it's stored in
+  // billing_code_identity.corroborator_sources[].raw_description (cross-user).
+  // Flag OFF (default) → unchanged → byte-identical. (description_signature, a
+  // matching key, is intentionally NOT redacted here — audit shows 0 PII there.)
+  const piiOn = await isPiiRedactionEnabled(supabase);
+
   const { data, error } = await supabase.rpc("apply_corrector_upsert", {
     p_identity_id: opts.identityId,
     p_user_id_hash: userHash,
     p_proposed_slug: opts.proposedSlug,
     p_source: opts.source,
-    p_raw_description: opts.rawDescription,
+    p_raw_description: redactExcerpt(opts.rawDescription, piiOn, "billing_code_identity.corroborator_sources.raw_description"),
     p_claim_line_item_id: opts.lineItemId,
     p_haiku_score: opts.haikuScore ?? null,
   });
