@@ -62,9 +62,10 @@ async function joinInsurancePlans(docIds: string[]): Promise<Map<string, { insur
       .from("insurance_plans")
       .select("source_document_id, insurer_name, plan_type, plan_year, state")
       .in("source_document_id", batch);
-    for (const r of data ?? []) {
-      const k = (r as any).source_document_id as string;
-      if (k && !m.has(k)) m.set(k, { insurer: (r as any).insurer_name, plan_type: (r as any).plan_type, plan_year: (r as any).plan_year, state: (r as any).state });
+    const rows = (data ?? []) as Array<{ source_document_id: string | null; insurer_name: string | null; plan_type: string | null; plan_year: number | null; state: string | null }>;
+    for (const r of rows) {
+      const k = r.source_document_id;
+      if (k && !m.has(k)) m.set(k, { insurer: r.insurer_name, plan_type: r.plan_type, plan_year: r.plan_year, state: r.state });
     }
   }
   return m;
