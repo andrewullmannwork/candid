@@ -30,6 +30,13 @@ export interface GtService {
   bindingExcerpt?: string;
   /** Adjudicated correct slug; null === genuinely untracked (NO_CONCEPT → resolver should NOT map it). */
   correctSlug: string | null;
+  /**
+   * S169: human-adjudicated ADDITIONAL-correct slugs for a genuinely ambiguous service (e.g. an
+   * eye-specialist visit is correct as either `specialist_visit` or `medical_eye_care`). The resolver
+   * scores correct on correctSlug OR any acceptableSlug (rename-aware). Andrew-adjudicated ONLY —
+   * distinct from `proposedAlternatives` (resolver-proposed = circular; never feeds scoring).
+   */
+  acceptableSlugs?: string[];
   /** Independence gate: only "andrew" entries count toward B2 precision. */
   adjudicationStatus: "auto" | "andrew";
   /** Distinctness probe — the partner service(s) this must NOT collapse into (co-occurrence veto, §5). */

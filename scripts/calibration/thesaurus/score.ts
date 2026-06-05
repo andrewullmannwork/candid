@@ -60,6 +60,12 @@ export function buildScoreCard(args: {
   for (const s of oldSlugs) { const t = renameMap[s]; if (t) renameTargetsOfOld.add(t); }
   const isNewVocab = (s: string | null): boolean => s != null && !oldSlugs.has(s) && !renameTargetsOfOld.has(s);
 
+  // ── S169 acceptable-alternatives: a genuinely ambiguous service scores correct on correctSlug OR any
+  // human-adjudicated acceptableSlug (rename-aware). Single-answer exact-match can't grade legit ambiguity
+  // (e.g. an eye-specialist visit is correct as specialist_visit OR medical_eye_care).
+  const okSlug = (canonR: string | null, g: GtService): boolean =>
+    canonR === canon(g.correctSlug) || (g.acceptableSlugs ?? []).some((a) => canonR === canon(a));
+
   // ── corpus ──
   const corpus: ScoreCard["corpus"] = {
     totalGt: gt.length,
@@ -117,7 +123,7 @@ export function buildScoreCard(args: {
     }
     if (r === null) continue; // unmapped → not a precision sample (it's a recall miss)
     mappedAndrew += 1;
-    const ok = canon(r) === canon(g.correctSlug); // rename-aware: old oracle slug vs new resolved slug
+    const ok = okSlug(canon(r), g); // rename-aware + S169 acceptable-alternatives
     if (ok) correct += 1;
     pbump(p2Doc, g.docType, ok);
     pbump(p2Ins, g.insurer, ok);
@@ -217,7 +223,7 @@ export function buildScoreCard(args: {
     if (g.adjudicationStatus !== "andrew" || g.notFound) continue;
     const r = fwd.get(g.id)?.resolvedSlug ?? null;
     if (isScored(g)) {
-      if (canon(r) !== canon(g.correctSlug)) {
+      if (!okSlug(canon(r), g)) {
         stillWrong.push({ gtId: g.id, serviceName: g.serviceName, docId: g.docId, insurer: g.insurer, baselineSlug: null, currentSlug: canon(r), correctSlug: canon(g.correctSlug) });
       }
     } else if (isNoConcept(g) && isNewVocab(r)) {

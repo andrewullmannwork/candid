@@ -82,12 +82,14 @@ eq("ledger empty (no baseline)", c1.ledger.counts.regressions, 0);
 
 // ── RUN 2: a phase run — g3 regresses (advanced_imaging→null), g10 improves (null→preventive_care) ──
 const curFwd: ForwardMapEntry[] = baseFwd.map((f) => ({ ...f }));
-curFwd.find((f) => f.gtId === "A#3")!.resolvedSlug = null; // regression
-curFwd.find((f) => f.gtId === "B#10")!.resolvedSlug = "preventive_care"; // improvement
+// S169: regress an ANDREW entry — the ledger is andrew-only since S168, so an `auto` entry's
+// regression is correctly NOT counted. The old pick (A#3, auto) left this fixture red on main.
+curFwd.find((f) => f.gtId === "A#2")!.resolvedSlug = null; // regression (andrew: lab_outpatient → null)
+curFwd.find((f) => f.gtId === "B#10")!.resolvedSlug = "preventive_care"; // improvement (andrew)
 const c2 = buildScoreCard({ phaseLabel: "fixture-phase", gtVersion: "fix-v1", gt, forward: curFwd, baselineForward: baseFwd, stored, cohorts, baselineB5, currentB5 });
 console.log("RUN 2 — ledger + over-collapse");
 eq("ledger.regressions", c2.ledger.counts.regressions, 1);
-eq("ledger.regression is A#3", c2.ledger.regressions[0]?.gtId, "A#3");
+eq("ledger.regression is A#2", c2.ledger.regressions[0]?.gtId, "A#2");
 eq("ledger.improvements", c2.ledger.counts.improvements, 1);
 eq("ledger.improvement is B#10", c2.ledger.improvements[0]?.gtId, "B#10");
 eq("ledger.newlyMapped", c2.ledger.counts.newlyMapped, 0);
@@ -95,6 +97,26 @@ eq("ledger.lost", c2.ledger.counts.lost, 0);
 eq("overCollapse count", c2.overCollapse.length, 2);
 eq("overCollapse[0] slug (highest current)", c2.overCollapse[0]?.slug, "lab_outpatient");
 eq("overCollapse includes new_slug", c2.overCollapse.some((o) => o.slug === "new_slug") ? 1 : 0, 1);
+
+// ── RUN 3 (S169): acceptable-alternatives — resolver lands on an acceptable alt, NOT the primary slug ──
+// E#1 is genuinely ambiguous (eye-specialist visit: specialist_visit OR medical_eye_care) → resolver's
+// medical_eye_care must score CORRECT. E#2 is a plain specialist visit (NO acceptable alt) → the same
+// medical_eye_care must score WRONG (the acceptable set must not leak across entries).
+const gtAlt: GtService[] = [
+  { id: "E#1", docId: "E", insurer: "Kaiser", docType: "eoc", planYear: 2026, canonicalPlanId: "canE", serviceName: "Eye specialist visit", correctSlug: "specialist_visit", acceptableSlugs: ["medical_eye_care"], adjudicationStatus: "andrew" },
+  { id: "E#2", docId: "E", insurer: "Kaiser", docType: "eoc", planYear: 2026, canonicalPlanId: "canE", serviceName: "Cardiology specialist visit", correctSlug: "specialist_visit", adjudicationStatus: "andrew" },
+];
+const fwdAlt: ForwardMapEntry[] = [
+  { gtId: "E#1", resolvedSlug: "medical_eye_care", conceptId: null, confidence: 0.9, source: "haiku", needsReview: false }, // acceptable alt → CORRECT
+  { gtId: "E#2", resolvedSlug: "medical_eye_care", conceptId: null, confidence: 0.9, source: "haiku", needsReview: false }, // not acceptable for E#2 → WRONG
+];
+const c3 = buildScoreCard({ phaseLabel: "fixture-altslug", gtVersion: "fix-v1", gt: gtAlt, forward: fwdAlt, stored: [], cohorts: [], baselineB5: {}, currentB5: {} });
+console.log("RUN 3 — acceptable-alternatives (S169)");
+eq("alt: mappedAndrew", c3.b2Precision.mappedAndrew, 2);
+eq("alt: correct (E#1 via acceptable; E#2 wrong)", c3.b2Precision.correct, 1);
+eq("alt: precision 1/2", c3.b2Precision.precision, 0.5);
+eq("alt: stillWrong count", c3.threeWay.stillWrong.count, 1);
+eq("alt: stillWrong is E#2", c3.threeWay.stillWrong.sample[0]?.gtId, "E#2");
 
 console.log(`\n${fail === 0 ? "✓ ALL PASS" : "✗ FAILURES"} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

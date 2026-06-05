@@ -232,7 +232,12 @@ export async function loadCatalogRich(supabase: SupabaseClient): Promise<Catalog
   const { data, error } = await supabase
     .from("service_catalog")
     .select("slug, name, description, category, concept_id")
-    .is("merged_into_id", null);
+    .is("merged_into_id", null)
+    // S169: honor deprecation — a RETIRED slug (deprecated_at set) drops out of the resolver
+    // candidate set even when it wasn't merged into another concept. Today every deprecated slug is
+    // also merged (already excluded above), so this is a no-op until mig 152 retires hospital_outpatient
+    // (never the correct answer; 0 stored rows; only ever mis-captured outpatient-surgery facility fees).
+    .is("deprecated_at", null);
   if (error || !data) {
     console.warn("[service-resolver] catalog load failed", error?.message);
     return [];
