@@ -1,0 +1,274 @@
+{
+  "counts": {
+    "real": 69,
+    "synthetic": 40,
+    "modified_real": 10
+  },
+  "total": 119,
+  "sbc_header_confirmed": {
+    "real": 63,
+    "synthetic": 37,
+    "modified_real": 10
+  },
+  "producers_real": [
+    [
+      "PyPDF2",
+      14
+    ],
+    [
+      "(none)",
+      10
+    ],
+    [
+      "Aspose.Words for Java 22.10.0",
+      9
+    ],
+    [
+      "Microsoft\u00ae Word for Microsoft 365",
+      8
+    ],
+    [
+      "xPression 21.3 Patch 29 /  / JPDF",
+      4
+    ],
+    [
+      "Simplify Healthcare Inc using ABCpdf",
+      4
+    ],
+    [
+      "Adobe Acrobat (32-bit) 25.1.20577",
+      2
+    ],
+    [
+      "Aspose.Words for .NET 16.2.0.0",
+      2
+    ],
+    [
+      "GPL Ghostscript 9.23",
+      2
+    ],
+    [
+      "PDFlib+PDI 7.0.4p6 (PHP5/Linux)",
+      2
+    ],
+    [
+      "Adobe PDF Library 23.3.20",
+      1
+    ],
+    [
+      "iTextSharp\u2122 5.5.8 \u00a92000-2015 iText Group NV (AGPL-version); modified using iTextSharp\u2122 5.5.8 \u00a92000-2015 iText Group NV (AGPL-version)",
+      1
+    ],
+    [
+      "Adobe PDF Library 25.1.41",
+      1
+    ],
+    [
+      "Adobe PDF Library 25.1.150",
+      1
+    ],
+    [
+      "Adobe Acrobat (64-bit) 25.1.20577",
+      1
+    ],
+    [
+      "pdf-lib (https://github.com/Hopding/pdf-lib)",
+      1
+    ],
+    [
+      "Adobe Acrobat Pro DC (32-bit) 21.7.20099",
+      1
+    ],
+    [
+      "Adobe PDF Library 25.1.163",
+      1
+    ],
+    [
+      "Aspose.PDF for .NET 25.11.0",
+      1
+    ],
+    [
+      "Skia/PDF m148 Google Docs Renderer",
+      1
+    ],
+    [
+      "Adobe PDF Library 25.1.51",
+      1
+    ],
+    [
+      "FJA - Document Generation Engine",
+      1
+    ]
+  ],
+  "producers_synthetic": [
+    [
+      "pdf-lib (https://github.com/Hopding/pdf-lib)",
+      20
+    ],
+    [
+      "Skia/PDF m148",
+      10
+    ],
+    [
+      "macOS Version 26.4.1 (Build 25E253) Quartz PDFContext",
+      10
+    ]
+  ],
+  "producers_modified_real": [
+    [
+      "pypdf",
+      5
+    ],
+    [
+      "PyPDF2",
+      3
+    ],
+    [
+      "Adobe PDF Library 25.1.41",
+      1
+    ],
+    [
+      "Aspose.Words for Java 22.10.0",
+      1
+    ]
+  ],
+  "PRODUCER_OVERLAP_real_vs_synthetic_exact": [
+    "pdf-lib (https://github.com/Hopding/pdf-lib)"
+  ],
+  "producer_families_real": [
+    [
+      "pypdf",
+      14
+    ],
+    [
+      "aspose",
+      12
+    ],
+    [
+      "(none)",
+      10
+    ],
+    [
+      "microsoft word",
+      8
+    ],
+    [
+      "adobe pdf library",
+      5
+    ],
+    [
+      "xpression",
+      4
+    ],
+    [
+      "adobe acrobat",
+      4
+    ],
+    [
+      "abcpdf",
+      4
+    ],
+    [
+      "ghostscript",
+      2
+    ],
+    [
+      "pdflib",
+      2
+    ],
+    [
+      "itext",
+      1
+    ],
+    [
+      "pdf-lib",
+      1
+    ],
+    [
+      "skia",
+      1
+    ],
+    [
+      "fja",
+      1
+    ]
+  ],
+  "producer_families_synthetic": [
+    [
+      "pdf-lib",
+      20
+    ],
+    [
+      "skia",
+      10
+    ],
+    [
+      "macos version",
+      10
+    ]
+  ],
+  "producer_families_modified_real": [
+    [
+      "pypdf",
+      8
+    ],
+    [
+      "adobe pdf library",
+      1
+    ],
+    [
+      "aspose",
+      1
+    ]
+  ],
+  "PRODUCER_FAMILY_OVERLAP": [
+    "adobe pdf library",
+    "aspose",
+    "pdf-lib",
+    "pypdf",
+    "skia"
+  ],
+  "real_docs_sharing_synth_or_modr_producer_family": 33,
+  "finding_producer_not_separable": true,
+  "scanned_image_only_real": 6,
+  "real_provenance": [
+    [
+      "born_digital",
+      63
+    ],
+    [
+      "rasterized-scan-sim",
+      6
+    ]
+  ],
+  "real_years": [
+    [
+      "2026",
+      66
+    ],
+    [
+      "2024",
+      2
+    ],
+    [
+      "2025",
+      1
+    ]
+  ],
+  "synthetic_renderers": [
+    [
+      "pdf-lib",
+      20
+    ],
+    [
+      "chrome-headless",
+      10
+    ],
+    [
+      "macos-quartz",
+      10
+    ]
+  ],
+  "omb_correct_synthetic": 11,
+  "structural_complete_real": 63
+}

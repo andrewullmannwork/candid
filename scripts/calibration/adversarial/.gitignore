@@ -1,0 +1,9 @@
+# Ing-G.2a adversarial corpus — LOCAL-ONLY artifacts (never committed).
+# Real SBC PDFs are PROD-sourced (PII / calibration discipline); all PDFs are large binaries.
+# COMMITTED instead: synthetic HTML inputs (fictional, reproducible), manifest.json,
+# rubric.md, and extracted non-PII feature vectors (*-features.json).
+_real_pdfs/
+_modified_real/
+_synthetic_pdfs/
+*.pdf
+*.selection.json
