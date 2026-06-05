@@ -19,7 +19,7 @@ import {
   CANONICAL_SURFACES,
   CROSS_USER_TABLE_PATTERNS,
   KNOWN_STRUCTURED_EXCLUSIONS,
-} from "./surfaces";
+} from "@/lib/parser/pii-surfaces";
 
 const TYPE_RE = /(TEXT|JSONB|CITEXT|CHARACTER VARYING|VARCHAR|CHAR)\b/i;
 const FREE_TEXT_HINT = /(excerpt|description|raw|notes?|source|snippet|comment|metadata|sources|suggestion|quote|verbatim|body|message|reason|text)/i;

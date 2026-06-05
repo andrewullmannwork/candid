@@ -11,8 +11,8 @@
  */
 import { redactText } from "@/lib/parser/pii-redactor";
 import { hasCoverageTokens } from "@/lib/parser/pii-patterns";
-import { redactColumnValue, type RedactFn, type UnitRedaction } from "./surface-iter";
-import { type CanonicalSurface } from "./surfaces";
+import { redactColumnValue, type RedactFn, type UnitRedaction } from "@/lib/parser/pii-surface-iter";
+import { type CanonicalSurface } from "@/lib/parser/pii-surfaces";
 
 let pass = 0;
 const fails: string[] = [];

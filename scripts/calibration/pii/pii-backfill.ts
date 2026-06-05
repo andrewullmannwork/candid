@@ -41,8 +41,8 @@ import {
   BACKFILL_APPLY_SURFACES,
   BACKFILL_VERIFY_SURFACES,
   type CanonicalSurface,
-} from "./surfaces";
-import { extractUnits, fetchAllKeyset, redactColumnValue, type RedactFn, type UnitRedaction } from "./surface-iter";
+} from "@/lib/parser/pii-surfaces";
+import { extractUnits, fetchAllKeyset, redactColumnValue, type RedactFn, type UnitRedaction } from "@/lib/parser/pii-surface-iter";
 
 config({ path: resolve(process.cwd(), ".env.local") });
 const supabase = createClient(

@@ -21,8 +21,8 @@ import { homedir } from "os";
 import { createClient } from "@supabase/supabase-js";
 import { findPiiMatches, hasCoverageTokens } from "@/lib/parser/pii-patterns";
 import { redactText } from "@/lib/parser/pii-redactor";
-import { SWEPT_SURFACES, type CanonicalSurface } from "./surfaces";
-import { extractUnits, fetchAllKeyset } from "./surface-iter";
+import { SWEPT_SURFACES, type CanonicalSurface } from "@/lib/parser/pii-surfaces";
+import { extractUnits, fetchSurfaceRows } from "@/lib/parser/pii-surface-iter";
 
 config({ path: resolve(process.cwd(), ".env.local") });
 const supabase = createClient(
@@ -30,7 +30,6 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY as string,
 );
 
-const PAGE = 1000;
 const N_MATCHED_SAMPLE = 20;
 const N_UNMATCHED_SAMPLE = 12;
 const POOL_CAP = 3000;
@@ -87,22 +86,6 @@ function evenSample<T>(arr: T[], n: number): T[] {
   return out;
 }
 
-// Offset fallback — ONLY for the rare swept table without an `id` PK (keyset needs id).
-// id-bearing tables go through fetchAllKeyset (exhaustive); see surface-iter.ts.
-async function fetchAllOffset(table: string, columns: string): Promise<Record<string, unknown>[]> {
-  const rows: Record<string, unknown>[] = [];
-  let from = 0;
-  for (;;) {
-    const { data, error } = await supabase.from(table).select(columns).range(from, from + PAGE - 1);
-    if (error) throw new Error(error.message);
-    if (!data || data.length === 0) break;
-    rows.push(...(data as unknown as Record<string, unknown>[]));
-    if (data.length < PAGE) break;
-    from += PAGE;
-  }
-  return rows;
-}
-
 async function auditSurface(
   surface: CanonicalSurface,
   matchedPool: SampleRow[],
@@ -115,25 +98,13 @@ async function auditSurface(
     perPattern: {}, bleedUnits: 0, standaloneUnits: 0, docRefsChecked: 0, nonUuidDocRefs: 0,
     dryrunRedacted: 0, dryrunCoverageLoss: 0, dryrunNonIdempotent: 0,
   };
-  let rows: Record<string, unknown>[] = [];
-  let hasId = true;
+  let rows: Record<string, unknown>[];
+  let hasId: boolean;
   try {
-    rows = await fetchAllKeyset(supabase, surface.table, `id, ${surface.column}`);
+    ({ rows, hasId } = await fetchSurfaceRows(supabase, surface.table, surface.column));
   } catch (e) {
-    const msg = (e as Error).message;
-    if (/does not exist/.test(msg)) {
-      // table has a non-`id` PK — refetch the column alone, use a synthetic rowId
-      try {
-        rows = await fetchAllOffset(surface.table, surface.column);
-        hasId = false;
-      } catch (e2) {
-        res.error = (e2 as Error).message;
-        return res;
-      }
-    } else {
-      res.error = msg;
-      return res;
-    }
+    res.error = (e as Error).message;
+    return res;
   }
   res.rowsScanned = rows.length;
   const localMatched: SampleRow[] = [];

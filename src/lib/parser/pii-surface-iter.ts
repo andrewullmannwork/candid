@@ -10,7 +10,7 @@
  * module has no dependency on the redactor itself.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { CanonicalSurface } from "./surfaces";
+import type { CanonicalSurface } from "./pii-surfaces";
 
 export const asString = (v: unknown): string | null => (typeof v === "string" ? v : null);
 export const asArray = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
@@ -45,6 +45,50 @@ export async function fetchAllKeyset(
     cursor = lastId as string | number;
   }
   return rows;
+}
+
+/**
+ * Offset-paginated fetch — fallback ONLY for the rare swept table without an `id` PK
+ * (keyset needs id). Non-deterministic page partition; acceptable only where keyset can't
+ * apply. id-bearing tables must use fetchAllKeyset.
+ */
+export async function fetchAllOffset(
+  supabase: SupabaseClient,
+  table: string,
+  columns: string,
+  pageSize = 1000,
+): Promise<Record<string, unknown>[]> {
+  const rows: Record<string, unknown>[] = [];
+  let from = 0;
+  for (;;) {
+    const { data, error } = await supabase.from(table).select(columns).range(from, from + pageSize - 1);
+    if (error) throw new Error(error.message);
+    if (!data || data.length === 0) break;
+    rows.push(...(data as unknown as Record<string, unknown>[]));
+    if (data.length < pageSize) break;
+    from += pageSize;
+  }
+  return rows;
+}
+
+/**
+ * Single source for "read all of a surface's rows": exhaustive keyset by `id`, with a
+ * transparent offset fallback for a table that has no `id` PK. Used by both the
+ * calibration audit and the cron sweep so they fetch identically.
+ */
+export async function fetchSurfaceRows(
+  supabase: SupabaseClient,
+  table: string,
+  column: string,
+): Promise<{ rows: Record<string, unknown>[]; hasId: boolean }> {
+  try {
+    return { rows: await fetchAllKeyset(supabase, table, `id, ${column}`), hasId: true };
+  } catch (e) {
+    if (/does not exist/.test((e as Error).message)) {
+      return { rows: await fetchAllOffset(supabase, table, column), hasId: false };
+    }
+    throw e;
+  }
 }
 
 export interface Unit {

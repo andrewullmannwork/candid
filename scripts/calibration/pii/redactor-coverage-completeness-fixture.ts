@@ -12,7 +12,7 @@
  */
 import { readFileSync } from "fs";
 import { resolve } from "path";
-import { WIRED_SURFACES } from "./surfaces";
+import { WIRED_SURFACES } from "@/lib/parser/pii-surfaces";
 
 // The write-path files that call redactExcerpt (the redactor chokepoints).
 const CALL_SITE_FILES = [
