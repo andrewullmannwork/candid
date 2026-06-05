@@ -406,6 +406,14 @@ export interface ResolveOpts {
   skipWriteback?: boolean;
   /** Test override for the Haiku batch call. */
   haikuCall?: (systemPrompt: string, userContent: string) => Promise<ResolverHaikuResponse | null>;
+  /**
+   * Calibration honesty (S170): when true, a failure of the Haiku batch tier — a thrown error
+   * (missing client / API error) OR a spend-cap PAUSE — RE-THROWS instead of degrading to all-null.
+   * The PROD bill path leaves this false (a user upload must not crash on a transient Haiku error →
+   * it degrades to needs-review). Calibration/measurement runs set true so a degraded resolution can
+   * never masquerade as a result. Default false = current behavior.
+   */
+  strict?: boolean;
 }
 
 /**
@@ -492,11 +500,16 @@ export async function resolveServices(
             sectionLabel: "service-resolver/batch",
           }),
         );
-        if (!guarded.paused && guarded.data) {
+        if (guarded.paused) {
+          // S170 strict (calibration): a spend-cap pause silently drops these lines → degraded result.
+          if (opts.strict) throw new Error("[service-resolver] Haiku batch PAUSED by spend-cap under strict mode — result would be degraded.");
+        } else if (guarded.data) {
           parsed = parseResolverResponse(guarded.data, validSlugs);
         }
       }
     } catch (err) {
+      // S170 strict (calibration): a Haiku-tier failure must ABORT, not silently degrade to all-null.
+      if (opts.strict) throw err instanceof Error ? err : new Error(String(err));
       console.warn("[service-resolver] Haiku batch failed (non-fatal)", err);
     }
 
