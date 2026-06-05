@@ -3,7 +3,7 @@
  * GT + snapshots with hand-computed expected values. Zero DB, zero Haiku.
  * Run: npx tsx scripts/calibration/thesaurus/fixture.ts
  */
-import { buildScoreCard } from "./score";
+import { buildScoreCard, validateSnapshot, scoredResolvedFraction } from "./score";
 import type { GtService, ForwardMapEntry, StoredCanonical, CohortSnapshot, B5Counts } from "./types";
 
 let pass = 0, fail = 0;
@@ -117,6 +117,18 @@ eq("alt: correct (E#1 via acceptable; E#2 wrong)", c3.b2Precision.correct, 1);
 eq("alt: precision 1/2", c3.b2Precision.precision, 0.5);
 eq("alt: stillWrong count", c3.threeWay.stillWrong.count, 1);
 eq("alt: stillWrong is E#2", c3.threeWay.stillWrong.sample[0]?.gtId, "E#2");
+
+// ── RUN 4 (S170 hardening B): output-validity gate — the degenerate-run guard that caught the S170
+// false-pass (empty ANTHROPIC_API_KEY → all-null forward → fake B2 98.5% on a collapsed denominator).
+// validateSnapshot must flag an all-null snapshot INVALID while a healthy one validates. Committed as a
+// regression test (a throwaway manual fault-inject would not protect it). ──
+const degenerateFwd: ForwardMapEntry[] = baseFwd.map((f) => ({ ...f, resolvedSlug: null, source: "none", confidence: 0, needsReview: true }));
+const cDegen = buildScoreCard({ phaseLabel: "fixture-degenerate", gtVersion: "fix-v1", gt, forward: degenerateFwd, stored, cohorts, baselineB5, currentB5: baselineB5 });
+console.log("RUN 4 — output-validity gate (S170 hardening B)");
+eq("degenerate snapshot → INVALID", validateSnapshot(cDegen, gt).valid ? 1 : 0, 0);
+eq("healthy snapshot (c1) → valid", validateSnapshot(c1, gt).valid ? 1 : 0, 1);
+eq("degenerate scored-resolved fraction = 0", scoredResolvedFraction(gt, degenerateFwd).fraction, 0);
+eq("healthy scored-resolved fraction = 7/8", scoredResolvedFraction(gt, baseFwd).fraction, 7 / 8);
 
 console.log(`\n${fail === 0 ? "✓ ALL PASS" : "✗ FAILURES"} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

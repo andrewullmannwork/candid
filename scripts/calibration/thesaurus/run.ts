@@ -13,7 +13,7 @@
  */
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve, join } from "path";
-import { buildScoreCard } from "./score";
+import { buildScoreCard, validateSnapshot } from "./score";
 import { loadGt } from "./gt-loader";
 import type { ForwardMapEntry, StoredCanonical, CohortSnapshot, B5Counts, ScoreCard, ConvergenceReport } from "./types";
 
@@ -24,7 +24,7 @@ function scorecardMd(s: ScoreCard): string {
   const recallRows = (m: Record<string, { recall: number; hits: number; denom: number }>) =>
     Object.entries(m).map(([k, v]) => `| ${k} | ${pct(v.recall)} | ${v.hits}/${v.denom} |`).join("\n");
   return `# Thesaurus scorecard — ${s.phaseLabel}
-
+${s.invalid ? `\n> ⛔ **SCORECARD INVALID** — ${s.invalid.reason}\n> Metrics below are from a DEGENERATE run — do NOT trust them.\n` : ""}
 GT version: \`${s.gtVersion}\` · corpus: ${s.corpus.totalGt} GT (${s.corpus.scored} scored · ${s.corpus.noConcept} no-concept · ${s.corpus.negativePairs} neg-pairs · ${s.corpus.notFound} not-found · ${s.corpus.andrewAdjudicated} andrew-adjudicated)
 
 ## Headline
@@ -114,6 +114,12 @@ async function main() {
     gt, forward, baselineForward, stored, cohorts, baselineB5, currentB5, renameMap, oldSlugs,
   });
 
+  // S170 hardening B: stamp the scorecard INVALID on a degenerate run (collapsed denominator). The card is
+  // still written (for the record + the loud banner), but we exit nonzero below BEFORE any gate enforcement
+  // can read a fake precision number off the easy hits.
+  const validity = validateSnapshot(card, gt);
+  if (!validity.valid) card.invalid = { reason: validity.reason as string };
+
   // S170: convergence summary (written by the N-run producer) — the gate's stability statement.
   const convergence = existsSync(join(dir, "convergence.json")) ? readJson<ConvergenceReport>(join(dir, "convergence.json")) : null;
   const md = scorecardMd(card) + (convergence ? convergenceMd(convergence) : "");
@@ -121,6 +127,14 @@ async function main() {
   writeFileSync(join(dir, "scorecard.md"), md);
   console.log(md);
   console.log(`\nwrote ${join(dir, "scorecard.json")} + scorecard.md`);
+
+  // S170 hardening B: a degenerate run never reaches the ledger/gate — exit nonzero (distinct code 2 vs the
+  // gate's 3) so a collapsed-denominator run can never be mistaken for a pass.
+  if (card.invalid) {
+    console.error(`\n⛔ SCORECARD INVALID — ${card.invalid.reason}`);
+    console.error("Refusing to report ledger/gate from a degenerate run. Exit 2.");
+    process.exit(2);
+  }
 
   // S168 REFRAME (§7.6): the before/after ledger compares two stochastic Haiku runs (noise-confounded)
   // → DIAGNOSTIC only, NOT the hard gate. Report regressions; never exit-fail on them.
@@ -135,7 +149,16 @@ async function main() {
     const b2 = card.b2Precision.precision, b1 = card.b1Forward.recall;
     const b2ok = gateB2 === null || b2 >= gateB2;
     const b1ok = gateB1 === null || b1 >= gateB1;
-    console.log(`\nGATE: B2 ${(b2 * 100).toFixed(1)}%${gateB2 !== null ? ` vs ≥${(gateB2 * 100).toFixed(1)}% ${b2ok ? "✓" : "✗"}` : ""} · B1 ${(b1 * 100).toFixed(1)}%${gateB1 !== null ? ` vs ≥${(gateB1 * 100).toFixed(1)}% ${b1ok ? "✓" : "✗"}` : ""}`);
+    // S170 hardening B — gate-DISPLAY honesty: print the raw integer counts the decision is made on, not a
+    // rounded %. 2203/2272 = 96.96% renders as "97.0%" at 1-decimal and masks a miss; the decision uses the
+    // exact float (b1 >= gateB1) — show the integers + the integer threshold so the % can never mislead again.
+    const { correct, mappedAndrew } = card.b2Precision;
+    const { hits, denom } = card.b1Forward;
+    const b2Need = gateB2 !== null ? Math.ceil(gateB2 * mappedAndrew) : null;
+    const b1Need = gateB1 !== null ? Math.ceil(gateB1 * denom) : null;
+    console.log("\nGATE (decision is on exact counts, not the rounded %):");
+    console.log(`  B2 precision: ${correct}/${mappedAndrew} = ${(b2 * 100).toFixed(2)}%${gateB2 !== null ? ` · need ≥${(gateB2 * 100).toFixed(1)}% → ≥${b2Need}/${mappedAndrew} · ${b2ok ? "✓" : "✗"}` : ""}`);
+    console.log(`  B1 recall:    ${hits}/${denom} = ${(b1 * 100).toFixed(2)}%${gateB1 !== null ? ` · need ≥${(gateB1 * 100).toFixed(1)}% → ≥${b1Need}/${denom} · ${b1ok ? "✓" : "✗"}` : ""}`);
     if (!b2ok || !b1ok) { console.error("✗ GATE NOT MET"); process.exit(3); }
     console.log("✓ GATE MET");
   }

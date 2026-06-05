@@ -22,20 +22,24 @@
  *   unset HAIKU_SNAPSHOT_REPLAY HAIKU_SNAPSHOT_RECORD   # else the N runs collapse to one cached response
  *   N_RUNS=9 npx tsx scripts/calibration/thesaurus/resolve-snapshot.ts <gt.json> <cohorts.json> <out-dir>
  */
-import { config } from "dotenv";
-import { resolve, join } from "path";
+import { join } from "path";
 import { writeFileSync } from "fs";
 import { createClient } from "@supabase/supabase-js";
 import { resolveServices, loadCatalogRich, loadResolverConfig, type ResolveLineInput, type ServiceResolution } from "@/lib/claims/service-resolver";
 import { resolveCanonicalPlan } from "@/lib/plan/compare";
+import { loadCalibEnv } from "../../lib/calib-env";
 import { loadGt } from "./gt-loader";
 import { loadCohortDefs } from "./cohorts";
+import { scoredResolvedFraction, RESOLVED_FRACTION_FLOOR } from "./score";
 import type { ForwardMapEntry, StoredCanonical, CohortSnapshot, B5Counts, ConvergenceReport } from "./types";
 
-config({ path: resolve(process.cwd(), ".env.local") });
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL as string, process.env.SUPABASE_SERVICE_ROLE_KEY as string, { auth: { persistSession: false } });
+// S170 hardening B: loadCalibEnv walks up for .env.local + override:true (a stale/EMPTY shell var — Claude
+// Code pre-sets ANTHROPIC_API_KEY="" — cannot win) + validates every required cred is present AND non-empty,
+// throwing loudly otherwise. Replaces the ad-hoc no-override config({cwd}) that silently degraded the run.
+const env = loadCalibEnv(["CALIB_USER_ID"]);
+const supabase = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 // Calibration runs attribute Haiku spend to a system user (spend-cap bookkeeping).
-const CALIB_USER_ID = process.env.CALIB_USER_ID as string;
+const CALIB_USER_ID = env.CALIB_USER_ID;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Supabase PostgrestFilterBuilder generic is impractical to thread through a tiny calibration helper
 async function fetchAll<T = Record<string, unknown>>(table: string, columns: string, mod?: (q: any) => any): Promise<T[]> {
@@ -108,7 +112,9 @@ async function main() {
   async function runForwardOnce(runIdx: number): Promise<ForwardMapEntry[]> {
     const resMap = new Map<number, ServiceResolution>();
     for (let i = 0; i < lines.length; i += CHUNK) {
-      const m = await resolveServices(lines.slice(i, i + CHUNK), { supabase, userId: CALIB_USER_ID, config: cfg, catalog, skipWriteback: true });
+      // strict:true (S170 hardening C, wired in B): a Haiku-tier failure (error / spend-cap pause) RE-THROWS
+      // instead of degrading the calibration to all-null. A degraded resolution must never masquerade as a result.
+      const m = await resolveServices(lines.slice(i, i + CHUNK), { supabase, userId: CALIB_USER_ID, config: cfg, catalog, skipWriteback: true, strict: true });
       for (const [k, v] of m) resMap.set(k, v);
       console.log(`  run ${runIdx + 1}/${N}: resolved ${Math.min(i + CHUNK, lines.length)}/${lines.length}`);
     }
@@ -152,6 +158,18 @@ async function main() {
       agreement: win.count / N,
     };
   });
+  // ── output-validity gate (S170 hardening B): refuse to FREEZE a degenerate snapshot. `strict` already
+  // re-throws a THROWING Haiku failure (empty key, API error, spend-pause); this is the independent OUTPUT
+  // invariant — it catches the residual non-erroring all-null Haiku response too (a forward.json that would
+  // score a fake precision on a collapsed denominator). ──
+  const { fraction, scoredN, scoredResolved } = scoredResolvedFraction(gt, forward);
+  if (scoredN > 0 && fraction < RESOLVED_FRACTION_FLOOR)
+    throw new Error(
+      `output-validity: only ${scoredResolved}/${scoredN} (${(fraction * 100).toFixed(1)}%) of scored GT resolved — below the ` +
+        `${(RESOLVED_FRACTION_FLOOR * 100).toFixed(0)}% floor. Degenerate run (Haiku tier failed/empty); refusing to freeze a ` +
+        `snapshot that would score a fake precision on a collapsed denominator.`,
+    );
+
   writeFileSync(join(outDir, "forward.json"), JSON.stringify(forward, null, 2));
   console.log(`forward.json: ${forward.length} entries (${forward.filter((f) => f.resolvedSlug).length} resolved) · majority of ${N}`);
 

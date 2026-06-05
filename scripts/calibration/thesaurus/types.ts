@@ -186,6 +186,9 @@ export interface ScoreCard {
     stillWrong: { count: number; sample: LedgerEntry[] };
     newsRecover: { count: number; bySlug: Record<string, { count: number; sampleNames: string[] }> };
   };
+  /** S170 hardening B: set by run.ts when validateSnapshot fails (degenerate-run guard). A stamped
+   * scorecard is still written for the record, but run.ts exits nonzero and never reaches gate enforcement. */
+  invalid?: { reason: string } | null;
 }
 
 export interface LedgerEntry {
