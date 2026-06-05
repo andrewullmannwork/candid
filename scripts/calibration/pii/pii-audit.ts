@@ -22,6 +22,7 @@ import { createClient } from "@supabase/supabase-js";
 import { findPiiMatches, hasCoverageTokens } from "@/lib/parser/pii-patterns";
 import { redactText } from "@/lib/parser/pii-redactor";
 import { SWEPT_SURFACES, type CanonicalSurface } from "./surfaces";
+import { extractUnits, fetchAllKeyset } from "./surface-iter";
 
 config({ path: resolve(process.cwd(), ".env.local") });
 const supabase = createClient(
@@ -36,67 +37,9 @@ const POOL_CAP = 3000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DRYRUN = !!process.env.REDACT_DRYRUN; // forced-ON redactText over real units (coverage/idempotency asserts)
 
-const asString = (v: unknown): string | null => (typeof v === "string" ? v : null);
-const asArray = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
-const asObj = (v: unknown): Record<string, unknown> | null =>
-  v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
-
-interface Unit {
-  rowId: string;
-  field?: string;
-  text: string;
-  docRef?: string | null;
-}
-
-function extractUnits(surface: CanonicalSurface, row: Record<string, unknown>, rowId: string): Unit[] {
-  const col = row[surface.column];
-  const units: Unit[] = [];
-  if (col == null) return units;
-  switch (surface.kind) {
-    case "text_column": {
-      const t = asString(col);
-      if (t && t.length) units.push({ rowId, text: t });
-      break;
-    }
-    case "text_array": {
-      // Postgres TEXT[] → supabase-js returns a JS array of strings; scan each.
-      for (const el of asArray(col)) {
-        const t = asString(el);
-        if (t && t.length) units.push({ rowId, text: t });
-      }
-      break;
-    }
-    case "jsonb_blob": {
-      const t = typeof col === "string" ? col : JSON.stringify(col);
-      if (t && t.length > 2) units.push({ rowId, text: t });
-      break;
-    }
-    case "jsonb_array_field": {
-      for (const el of asArray(col)) {
-        const o = asObj(el);
-        const t = o ? asString(o[surface.arrayField ?? ""]) : null;
-        if (t && t.length) units.push({ rowId, text: t });
-      }
-      break;
-    }
-    case "jsonb_provenance_sources_excerpt": {
-      const fp = asObj(col);
-      if (fp) {
-        for (const [field, entry] of Object.entries(fp)) {
-          const e = asObj(entry);
-          if (!e) continue;
-          for (const s of asArray(e.sources)) {
-            const so = asObj(s);
-            const t = so ? asString(so.excerpt) : null;
-            if (t && t.length) units.push({ rowId, field, text: t, docRef: so ? asString(so.document_ref) : null });
-          }
-        }
-      }
-      break;
-    }
-  }
-  return units;
-}
+// extractUnits + asString/asArray/asObj + the Unit interface now live in ./surface-iter
+// (single source shared with pii-backfill.ts — the audit READS units, the backfill
+// REWRITES them in place; neither can drift from the other's per-kind structure).
 
 interface PatternAgg {
   auto: number;
@@ -144,7 +87,9 @@ function evenSample<T>(arr: T[], n: number): T[] {
   return out;
 }
 
-async function fetchAll(table: string, columns: string): Promise<Record<string, unknown>[]> {
+// Offset fallback — ONLY for the rare swept table without an `id` PK (keyset needs id).
+// id-bearing tables go through fetchAllKeyset (exhaustive); see surface-iter.ts.
+async function fetchAllOffset(table: string, columns: string): Promise<Record<string, unknown>[]> {
   const rows: Record<string, unknown>[] = [];
   let from = 0;
   for (;;) {
@@ -173,13 +118,13 @@ async function auditSurface(
   let rows: Record<string, unknown>[] = [];
   let hasId = true;
   try {
-    rows = await fetchAll(surface.table, `id, ${surface.column}`);
+    rows = await fetchAllKeyset(supabase, surface.table, `id, ${surface.column}`);
   } catch (e) {
     const msg = (e as Error).message;
     if (/does not exist/.test(msg)) {
       // table has a non-`id` PK — refetch the column alone, use a synthetic rowId
       try {
-        rows = await fetchAll(surface.table, surface.column);
+        rows = await fetchAllOffset(surface.table, surface.column);
         hasId = false;
       } catch (e2) {
         res.error = (e2 as Error).message;
