@@ -9,6 +9,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
 import { getUserContextByPk } from "@/lib/users/resolve-user-by-pk";
 import { extractTextFromDocument } from "@/lib/ocr";
+import { assessAdversarialPdf } from "@/lib/parser/adversarial-pdf-ingest";
 import { parseBillFromOCR } from "@/lib/billing/parser";
 import { parseBillWithHaiku } from "@/lib/billing/haiku-bill-parser";
 import { runAudit } from "@/lib/audit";
@@ -140,6 +141,12 @@ export async function POST(req: NextRequest) {
           error: `This document is ${estimatedPages} pages, which exceeds the 90-page limit. Please upload a shorter document or just the relevant sections.`,
         }, { status: 400 });
       }
+    }
+
+    // ── Ing-G.2/3 — adversarial-PDF assessment (flag-gated; non-fatal; PDF only).
+    //    Co-located with the legacy parse path so coverage matches process-chunk. ──
+    if (doc.file_name?.toLowerCase().endsWith(".pdf")) {
+      await assessAdversarialPdf(supabase, documentId, buffer);
     }
 
     // ── Run OCR ──────────────────────────────────────────────────────────────

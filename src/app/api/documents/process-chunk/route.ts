@@ -16,6 +16,7 @@ import { createServerClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { extractTextFromDocument } from "@/lib/ocr";
 import { splitPDF, estimatePageCount } from "@/lib/ocr/document-ai";
+import { assessAdversarialPdf } from "@/lib/parser/adversarial-pdf-ingest";
 import { processPlanDocumentData, type ProcessPlanResult } from "@/lib/plan/process-plan";
 import { processEOCDocumentData } from "@/lib/plan/process-eoc";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
@@ -876,6 +877,11 @@ export async function POST(req: NextRequest) {
       const prevCompleted = doc.processing_completed_pages || 0;
       const newPages = Math.max(0, Math.min(CHUNK_SIZE, totalPages) - prevCompleted);
       if (newPages > 0) await recordProcessingUsage(newPages);
+
+      // Ing-G.2/3 — adversarial-PDF assessment (flag-gated; non-fatal; idempotent).
+      // Runs on the full original PDF before smart-skip + Haiku, so every doc is
+      // scored even when extraction is later skipped. Writes documents.metadata.
+      await assessAdversarialPdf(supabase, documentId, buffer);
 
       // S101 — smart-skip check (moved from upload route). OCR chunk 0 gives
       // us 15 pages of pdfjs-extracted text — plenty for identifier regex.
