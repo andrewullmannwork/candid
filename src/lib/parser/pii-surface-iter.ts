@@ -23,6 +23,10 @@ export const asObj = (v: unknown): Record<string, unknown> | null =>
  * DOUBLE-COUNT rows across page boundaries — fatal for an exhaustive PII sweep/backfill
  * (a dropped row is missed PII). Keyset visits every row exactly once, reproducibly, and
  * is concurrent-insert-safe. `columns` MUST include `id` (the cursor key).
+ *
+ * `pageSize` is a pure-performance internal (round-trips vs peak memory): the exhaustive
+ * sweep visits the IDENTICAL complete row set at any value, so it cannot change the audit
+ * result and is intentionally NOT operator-tunable (Ing-E Ship Gate G6 — bucket B / N/A).
  */
 export async function fetchAllKeyset(
   supabase: SupabaseClient,

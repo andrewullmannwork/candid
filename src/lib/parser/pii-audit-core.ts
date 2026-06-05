@@ -17,7 +17,11 @@ import { SWEPT_SURFACES, type CanonicalSurface } from "./pii-surfaces";
 import { extractUnits, fetchSurfaceRows } from "./pii-surface-iter";
 
 const RUN_TABLE = "pii_audit_runs";
-const GAP_ALERT_HOURS = 25; // a daily cron silent for >25h ⇒ it was offline — alert on resume
+// Liveness threshold: a daily cron silent for >this ⇒ it was offline ⇒ alert on resume.
+// Env-tunable (no code change) so ops can widen it during a known maintenance window — keep
+// it in step with the vercel.json cron cadence (daily = 24h; default 25 = 24h + 1h grace).
+// Safe ~24–48; <24 risks false liveness alarms on normal cron jitter. (Ing-E Ship Gate G6.)
+const GAP_ALERT_HOURS = Number(process.env.PII_AUDIT_GAP_ALERT_HOURS) || 25;
 
 export interface UnitClassification {
   /** The redactor would remove auto-tier PII from this unit (the primary alarm). */
