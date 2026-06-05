@@ -36,6 +36,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { normalizeDescriptionSignature } from "@/lib/parser/code-identity";
 import { callHaikuWithCache } from "@/lib/haiku-client/base";
 import { guardedHaikuCall } from "@/lib/haiku-client/spend-guard";
+import { isPiiRedactionEnabled, redactExcerpt } from "@/lib/parser/pii-redaction-gate";
 
 // ============================================================================
 // Types
@@ -326,6 +327,14 @@ export async function cacheLearnedMapping(
   },
 ): Promise<void> {
   try {
+    // Ing-E: redact PII before it lands in the cross-user
+    // billing_code_mappings.provider_descriptions (flag OFF → unchanged →
+    // byte-identical; the description_signature matching key is untouched).
+    const piiOn = await isPiiRedactionEnabled(supabase);
+    const desc = m.description
+      ? redactExcerpt(m.description, piiOn, "billing_code_mappings.provider_descriptions")
+      : null;
+
     const coded = Boolean(m.code && m.codeType);
     if (!coded && !m.signature) return; // need at least a signature to key on
 
@@ -341,8 +350,8 @@ export async function cacheLearnedMapping(
       const newCount = (existing.observation_count ?? 1) + 1;
       const newConfidence = Math.max(Number(existing.confidence ?? 0), m.confidence);
       const descs: string[] = (existing.provider_descriptions as string[] | null) ?? [];
-      if (m.description && descs.length < 10 && !descs.includes(m.description)) {
-        descs.push(m.description);
+      if (desc && descs.length < 10 && !descs.includes(desc)) {
+        descs.push(desc);
       }
       await supabase
         .from("billing_code_mappings")
@@ -362,7 +371,7 @@ export async function cacheLearnedMapping(
         service_slug: m.slug,
         confidence: Math.round(m.confidence * 100) / 100,
         observation_count: 1,
-        provider_descriptions: m.description ? [m.description] : [],
+        provider_descriptions: desc ? [desc] : [],
         source: m.source,
       });
     }

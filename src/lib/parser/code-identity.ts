@@ -16,6 +16,7 @@ import { createServerClient } from "../supabase/server";
 import { callHaikuWithCache } from "../haiku-client/base";
 import { inferProcedureCodeType } from "../billing/code-type-inference";
 import type { ProcedureCodeType } from "../billing/types";
+import { isPiiRedactionEnabled, redactExcerpt } from "./pii-redaction-gate";
 
 // ============================================================================
 // Pure normalization
@@ -154,9 +155,16 @@ export async function addDescriptionExample(
     .maybeSingle();
   if (readErr || !row) return;
 
+  // Ing-E: redact PII before it lands in the cross-user description_examples[].
+  // Flag OFF (default) → unchanged → byte-identical. The description_signature
+  // matching key is computed by the caller from the unredacted text and is not
+  // touched here, so dedup/matching is unaffected.
+  const piiOn = await isPiiRedactionEnabled(supabase);
+  const desc = redactExcerpt(rawDescription, piiOn, "billing_code_identity.description_examples");
+
   const existing = (row.description_examples as string[]) ?? [];
-  if (existing.includes(rawDescription)) return;
-  const updated = [rawDescription, ...existing].slice(0, 5);
+  if (existing.includes(desc)) return;
+  const updated = [desc, ...existing].slice(0, 5);
 
   await supabase
     .from("billing_code_identity")
@@ -177,6 +185,9 @@ export async function proposeNewSignature(opts: {
   proposedByUserId: string | null;
 }): Promise<LookupResult | null> {
   const supabase = createServerClient();
+  // Ing-E: redact PII before it lands in the cross-user description_examples[]
+  // (flag OFF → unchanged → byte-identical; the signature key is unaffected).
+  const piiOn = await isPiiRedactionEnabled(supabase);
   // distinct_user_count starts at 0 — endorsement counter advances only when an
   // explicit contributor is recorded in corroborator_sources via
   // upsertCorrectorOnIdentity(). Starting at 1 here would double-count the
@@ -189,7 +200,7 @@ export async function proposeNewSignature(opts: {
       billing_code: opts.code,
       billing_code_type: opts.codeType,
       description_signature: opts.signature,
-      description_examples: [opts.rawDescription],
+      description_examples: [redactExcerpt(opts.rawDescription, piiOn, "billing_code_identity.description_examples")],
       service_slug: opts.proposedSlug,
       promotion_state: "proposed",
       confidence: 0.5,

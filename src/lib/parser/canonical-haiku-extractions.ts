@@ -30,6 +30,7 @@ import type { SourceExcerptVerified } from "./types";
 import type { SBCHaikuParseResult } from "../sbc/types";
 import type { EOCParseResult } from "../eoc/types";
 import type { PlanDocHaikuParseResult } from "../plan_doc/types";
+import { isPiiRedactionEnabled, redactExcerpt } from "./pii-redaction-gate";
 
 export type ParserKind = "sbc" | "eoc" | "plan_doc";
 
@@ -79,6 +80,10 @@ export async function writeCanonicalHaikuExtractions(
     };
   }
 
+  // Ing-E: redact PII from the cross-user verbatim excerpt before storage.
+  // Flag OFF (default) → redactExcerpt returns the input unchanged → byte-identical.
+  const piiOn = await isPiiRedactionEnabled(supabase);
+
   const insertRows = citeGradeRows.map((r) => ({
     canonical_plan_id: input.canonicalPlanId,
     service_slug: r.serviceSlug,
@@ -89,7 +94,7 @@ export async function writeCanonicalHaikuExtractions(
     haiku_run_id: input.haikuRunId,
     parser_kind: input.parserKind,
     extracted_value: r.extractedValue,
-    source_excerpt: r.sourceExcerpt,
+    source_excerpt: redactExcerpt(r.sourceExcerpt, piiOn, "canonical_haiku_extractions.source_excerpt"),
     source_excerpt_verified: r.sourceExcerptVerified,
     source_section_hint: r.sourceSectionHint,
     source_section_verified: r.sourceSectionVerified,
