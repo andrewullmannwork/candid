@@ -6,7 +6,7 @@
  * Run: npx tsx scripts/calibration/thesaurus/run.ts <snapshot-dir> [baseline-forward.json]
  *   <snapshot-dir> contains: gt.json, forward.json, stored.json, cohorts-snapshot.json, b5-baseline.json, b5-current.json
  */
-import { readFileSync, writeFileSync } from "fs";
+import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve, join } from "path";
 import { buildScoreCard } from "./score";
 import { loadGt } from "./gt-loader";
@@ -38,6 +38,19 @@ GT version: \`${s.gtVersion}\` · corpus: ${s.corpus.totalGt} GT (${s.corpus.sco
 - improvements: ${s.ledger.counts.improvements} · newly-mapped: ${s.ledger.counts.newlyMapped} · lost: ${s.ledger.counts.lost}
 ${s.ledger.regressions.slice(0, 20).map((r) => `  - ⚠ ${r.insurer}/${r.docId} "${r.serviceName}": ${r.baselineSlug} → ${r.currentSlug} (correct: ${r.correctSlug})`).join("\n")}
 
+## After-score 3-way split (andrew-only, rename-aware)
+- **(a) recovered by the structure**: ${s.threeWay.recovered.count}
+- **(b) still-wrong (Phase-2 synonym backlog)**: ${s.threeWay.stillWrong.count}
+- **(c) News recover** (no-concept → new-vocab slug; reported APART — semi-circular coverage, not validated precision): ${s.threeWay.newsRecover.count}
+${Object.entries(s.threeWay.newsRecover.bySlug).sort((a, b) => b[1].count - a[1].count).map(([slug, v]) => `  - ${slug}: ${v.count}  (e.g. ${v.sampleNames.slice(0, 3).join("; ")})`).join("\n")}
+
+### B2 false-positive split (no-concept andrew mappings)
+- genuine over-mapping (→ existing/rename slug): ${s.b2Precision.falsePositives}/${s.b2Precision.noConceptAndrew}
+- News recovery (→ new-vocab slug; intended, NOT counted as a false positive): ${s.b2Precision.falsePositivesNewVocab}
+
+### still-wrong sample (Phase-2 synonym backlog)
+${s.threeWay.stillWrong.sample.slice(0, 15).map((r) => `  - ${r.insurer}/${r.docId} "${r.serviceName}": got ${r.currentSlug ?? "∅"} (correct: ${r.correctSlug})`).join("\n")}
+
 ## B1-forward by doc type
 | doc type | recall | hits/denom |
 |---|---|---|
@@ -64,11 +77,19 @@ async function main() {
   const baselineB5 = readJson<B5Counts>(join(dir, "b5-baseline.json"));
   const currentB5 = readJson<B5Counts>(join(dir, "b5-current.json"));
   const baselineForward = baselineForwardPath ? readJson<ForwardMapEntry[]>(baselineForwardPath) : undefined;
+  // S168: rename map (emitted by resolve-snapshot from merged_into_id) + the frozen OLD catalog slug
+  // set (catalog.json, pre-148) — drives canon() + the New-vocab/News bucket.
+  const renameMap = existsSync(join(dir, "rename-map.json")) ? readJson<Record<string, string>>(join(dir, "rename-map.json")) : {};
+  const oldSlugs = existsSync(join(dir, "catalog.json"))
+    ? new Set(readJson<{ slug: string }[]>(join(dir, "catalog.json")).map((c) => c.slug))
+    : new Set<string>();
+  if (!Object.keys(renameMap).length) console.warn("⚠ rename-map.json missing/empty — renames may read as regressions.");
+  if (!oldSlugs.size) console.warn("⚠ catalog.json (old slug set) missing — News bucket cannot be computed.");
 
   const card = buildScoreCard({
     phaseLabel: process.env.PHASE_LABEL ?? "baseline",
     gtVersion: process.env.GT_VERSION ?? "v1",
-    gt, forward, baselineForward, stored, cohorts, baselineB5, currentB5,
+    gt, forward, baselineForward, stored, cohorts, baselineB5, currentB5, renameMap, oldSlugs,
   });
 
   writeFileSync(join(dir, "scorecard.json"), JSON.stringify(card, null, 2));

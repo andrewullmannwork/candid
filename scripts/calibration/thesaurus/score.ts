@@ -37,10 +37,28 @@ export function buildScoreCard(args: {
   currentB5: B5Counts;
   overCollapseDeltaPct?: number; // default 0.5
   overCollapseMinAbs?: number; // default 25
+  /** S168: deprecated-slug -> live-target map (from merged_into_id), so renames don't read as regressions. */
+  renameMap?: Record<string, string>;
+  /** S168: pre-148 catalog slug set (frozen catalog.json) — identifies NEW-VOCAB slugs for the News bucket. */
+  oldSlugs?: Set<string>;
 }): ScoreCard {
   const { phaseLabel, gtVersion, gt, forward, stored, cohorts, baselineB5, currentB5 } = args;
   const fwd = new Map(forward.map((f) => [f.gtId, f]));
   const storedBy = new Map(stored.map((s) => [s.canonicalPlanId, new Set(s.slugs)]));
+
+  // ── S168 rename-awareness: canonicalize OLD oracle slugs to the NEW vocabulary before comparing.
+  // The merge pattern (merged_into_id) is the authoritative identity link: generic_rx_tier1 and
+  // generic_rx ARE the same service identity, so scoring them equal reflects ground truth (NOT a hack).
+  const renameMap = args.renameMap ?? {};
+  const oldSlugs = args.oldSlugs ?? new Set<string>();
+  const canon = (s: string | null): string | null => (s == null ? null : (renameMap[s] ?? s));
+  // NEW-VOCAB = a post-148 slug that is NOT the rename target of any OLD slug. Rename targets
+  // (generic_rx <- generic_rx_tier1) are renames of EXISTING concepts, not new vocabulary; genuinely
+  // new slugs (dialysis, abortion, covid_test) have no OLD slug that canon()s to them. This is what
+  // separates "News mapped to a brand-new slug" (the semi-circular bucket) from a plain rename.
+  const renameTargetsOfOld = new Set<string>();
+  for (const s of oldSlugs) { const t = renameMap[s]; if (t) renameTargetsOfOld.add(t); }
+  const isNewVocab = (s: string | null): boolean => s != null && !oldSlugs.has(s) && !renameTargetsOfOld.has(s);
 
   // ── corpus ──
   const corpus: ScoreCard["corpus"] = {
@@ -81,7 +99,7 @@ export function buildScoreCard(args: {
   const b1Stored = rb(s1h, s1d);
 
   // ── B2 precision (FLOOR; INDEPENDENT — andrew-adjudicated only) ──
-  let correct = 0, mappedAndrew = 0, fp = 0, noConceptAndrew = 0;
+  let correct = 0, mappedAndrew = 0, fp = 0, fpNewVocab = 0, noConceptAndrew = 0;
   const p2Doc: Record<string, { precision: number; correct: number; mapped: number }> = {};
   const p2Ins: Record<string, { precision: number; correct: number; mapped: number }> = {};
   const pbump = (m: typeof p2Doc, k: string, ok: boolean) => {
@@ -91,10 +109,15 @@ export function buildScoreCard(args: {
   for (const g of gt) {
     if (g.adjudicationStatus !== "andrew" || g.notFound) continue;
     const r = fwd.get(g.id)?.resolvedSlug ?? null;
-    if (isNoConcept(g)) { noConceptAndrew += 1; if (r !== null) fp += 1; continue; }
+    if (isNoConcept(g)) {
+      noConceptAndrew += 1;
+      // no-concept that now maps: NEW-VOCAB slug = intended News recovery (apart); else genuine over-mapping.
+      if (r !== null) { if (isNewVocab(r)) fpNewVocab += 1; else fp += 1; }
+      continue;
+    }
     if (r === null) continue; // unmapped → not a precision sample (it's a recall miss)
     mappedAndrew += 1;
-    const ok = r === g.correctSlug;
+    const ok = canon(r) === canon(g.correctSlug); // rename-aware: old oracle slug vs new resolved slug
     if (ok) correct += 1;
     pbump(p2Doc, g.docType, ok);
     pbump(p2Ins, g.insurer, ok);
@@ -111,7 +134,7 @@ export function buildScoreCard(args: {
     precision: mappedAndrew ? correct / mappedAndrew : 0,
     correct, mappedAndrew,
     falsePositiveRate: noConceptAndrew ? fp / noConceptAndrew : 0,
-    falsePositives: fp, noConceptAndrew,
+    falsePositives: fp, falsePositivesNewVocab: fpNewVocab, noConceptAndrew,
     negativePairViolations: negViol,
     byDocType: p2Doc, byInsurer: p2Ins,
   };
@@ -149,10 +172,13 @@ export function buildScoreCard(args: {
   if (args.baselineForward) {
     const base = new Map(args.baselineForward.map((f) => [f.gtId, f]));
     for (const g of gt) {
-      if (!isScored(g)) continue;
-      const b = base.get(g.id)?.resolvedSlug ?? null;
-      const c = fwd.get(g.id)?.resolvedSlug ?? null;
-      const correctSlug = g.correctSlug;
+      // S168: the GATE is the ANDREW ledger (independent, human-adjudicated). auto entries have
+      // resolver-proposed correctSlugs (circular) → excluded. All three sides canon'd so a rename
+      // (old oracle slug vs new resolved slug) collapses to identity instead of a false regression.
+      if (!isScored(g) || g.adjudicationStatus !== "andrew") continue;
+      const b = canon(base.get(g.id)?.resolvedSlug ?? null);
+      const c = canon(fwd.get(g.id)?.resolvedSlug ?? null);
+      const correctSlug = canon(g.correctSlug);
       const e: LedgerEntry = { gtId: g.id, serviceName: g.serviceName, docId: g.docId, insurer: g.insurer, baselineSlug: b, currentSlug: c, correctSlug };
       if (b === correctSlug && c !== correctSlug) ledger.regressions.push(e);
       else if (b !== correctSlug && c === correctSlug) ledger.improvements.push(e);
@@ -178,5 +204,36 @@ export function buildScoreCard(args: {
   }
   overCollapse.sort((a, b) => b.current - a.current);
 
-  return { phaseLabel, gtVersion, corpus, b1Forward, b1Stored, b2Precision, b3, ledger, overCollapse };
+  // ── S168 after-score 3-way split (andrew-only, rename-aware) ──
+  // (a) recovered  = the improvements ledger (before-wrong -> after-right; the structure fixed it).
+  // (b) stillWrong = andrew-scored where the after-resolver is still wrong (Phase-2 synonym backlog).
+  // (c) newsRecover = no-concept andrew entries the after-resolver now maps to a NEW-VOCAB slug.
+  //     Reported APART: we minted those slugs from the same classification, so this is COVERAGE, not
+  //     validated precision — the workbench's human spot-check is the non-circular precision oracle.
+  const stillWrong: LedgerEntry[] = [];
+  const newsBySlug: Record<string, { count: number; sampleNames: string[] }> = {};
+  let newsCount = 0;
+  for (const g of gt) {
+    if (g.adjudicationStatus !== "andrew" || g.notFound) continue;
+    const r = fwd.get(g.id)?.resolvedSlug ?? null;
+    if (isScored(g)) {
+      if (canon(r) !== canon(g.correctSlug)) {
+        stillWrong.push({ gtId: g.id, serviceName: g.serviceName, docId: g.docId, insurer: g.insurer, baselineSlug: null, currentSlug: canon(r), correctSlug: canon(g.correctSlug) });
+      }
+    } else if (isNoConcept(g) && isNewVocab(r)) {
+      newsCount += 1;
+      const slug = r as string;
+      const e = newsBySlug[slug] ?? { count: 0, sampleNames: [] };
+      e.count += 1;
+      if (e.sampleNames.length < 5) e.sampleNames.push(g.serviceName);
+      newsBySlug[slug] = e;
+    }
+  }
+  const threeWay = {
+    recovered: { count: ledger.improvements.length, sample: ledger.improvements.slice(0, 25) },
+    stillWrong: { count: stillWrong.length, sample: stillWrong.slice(0, 25) },
+    newsRecover: { count: newsCount, bySlug: newsBySlug },
+  };
+
+  return { phaseLabel, gtVersion, corpus, b1Forward, b1Stored, b2Precision, b3, ledger, overCollapse, threeWay };
 }

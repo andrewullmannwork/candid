@@ -58,7 +58,18 @@ export type ServiceCategory =
   | "maternity"
   | "dme"
   | "preventive"
-  | "other";
+  | "other"
+  // S167 Thesaurus (Pattern S; migs 147/148): mirror the live service_categories (20 total).
+  // All additive (Rule #7); existing values retained — deprecate-not-drop (frontend reads them, §R.4).
+  // 'general'/'other'/'hospital' are now empty vestigial catch-alls; the 6 domains below are this build.
+  | "long_term_care"
+  | "general"
+  | "dental"
+  | "vision"
+  | "surgery"
+  | "hospitalization"
+  | "dialysis"
+  | "family_planning";
 
 export type CoveredServiceSource = "sbc_parsed" | "plan_doc_parsed" | "cms_data" | "manual" | "canonical_inherited";
 

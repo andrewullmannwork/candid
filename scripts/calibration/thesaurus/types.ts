@@ -112,7 +112,9 @@ export interface ScoreCard {
     mappedAndrew: number; // andrew entries with a real correctSlug that the resolver mapped
     /** of NO_CONCEPT andrew entries, fraction the resolver wrongly mapped (over-mapping). */
     falsePositiveRate: number;
-    falsePositives: number;
+    falsePositives: number; // GENUINE over-mapping: no-concept -> existing/rename slug
+    /** S168: no-concept -> NEW-VOCAB slug = intended News recovery, NOT a false positive (reported in threeWay). */
+    falsePositivesNewVocab: number;
     noConceptAndrew: number;
     negativePairViolations: number;
     byDocType: Record<string, { precision: number; correct: number; mapped: number }>;
@@ -136,6 +138,18 @@ export interface ScoreCard {
   };
   /** G-junk-4 over-collapse: slugs whose inbound count spiked vs baseline B5. */
   overCollapse: { slug: string; baseline: number; current: number; deltaPct: number }[];
+  /**
+   * S168 after-score 3-way split (andrew-only; rename-aware via the derived rename map).
+   *  (a) recovered  — before-wrong -> after-right (the structural fix recovered it)
+   *  (b) stillWrong — after != correct (the Phase-2 synonym backlog)
+   *  (c) newsRecover — no-concept -> NEW-VOCAB slug (reported APART; semi-circular — we minted those
+   *                    slugs from the same classification, so this is coverage, NOT validated precision)
+   */
+  threeWay: {
+    recovered: { count: number; sample: LedgerEntry[] };
+    stillWrong: { count: number; sample: LedgerEntry[] };
+    newsRecover: { count: number; bySlug: Record<string, { count: number; sampleNames: string[] }> };
+  };
 }
 
 export interface LedgerEntry {

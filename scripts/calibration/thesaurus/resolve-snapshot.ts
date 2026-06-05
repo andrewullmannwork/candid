@@ -52,6 +52,24 @@ async function main() {
   const { gt, warnings } = loadGt(gtPath, new Set(catalog.map((c) => c.slug)));
   if (warnings.length) console.warn(`GT warnings:\n  ${warnings.join("\n  ")}`);
 
+  // ── rename-map.json: deprecated slug -> final live target (follow merged_into_id chains).
+  // DERIVED from the live catalog (data-driven, NOT hardcoded) so the deterministic scorer can
+  // canonicalize the oracle's OLD slugs (e.g. generic_rx_tier1) to the NEW vocabulary (generic_rx)
+  // before comparing — without this, every renamed slug reads as a false regression. Self-maintaining
+  // as deprecations grow (Pattern S merge pattern = merged_into_id is the authoritative identity link).
+  const allCat = await fetchAll<{ id: string; slug: string; merged_into_id: string | null }>("service_catalog", "id, slug, merged_into_id");
+  const catById = new Map(allCat.map((c) => [c.id, c]));
+  const renameMap: Record<string, string> = {};
+  for (const c of allCat) {
+    if (!c.merged_into_id) continue;
+    let cur = catById.get(c.merged_into_id);
+    const seen = new Set<string>([c.id]);
+    while (cur?.merged_into_id && !seen.has(cur.id)) { seen.add(cur.id); cur = catById.get(cur.merged_into_id); }
+    if (cur) renameMap[c.slug] = cur.slug;
+  }
+  writeFileSync(join(outDir, "rename-map.json"), JSON.stringify(renameMap, null, 2));
+  console.log(`rename-map.json: ${Object.keys(renameMap).length} deprecated->target entries`);
+
   // ── forward: resolver over every GT service (description = source prose; no code on plan-docs) ──
   // CHUNK: resolveServices builds ONE Haiku prompt over all unresolved lines — sending the full
   // GT (~thousands of lines) in one call would truncate. Resolve in batches; skipWriteback so the

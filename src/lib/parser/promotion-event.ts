@@ -66,6 +66,8 @@ export interface ApplyPromotionEventResult {
  * @param fireSource Which code path triggered the firing (for telemetry)
  * @param actorUserId User whose event triggered the promotion (null for admin/system events)
  * @param forceEventType If non-null, overrides the computed event_type. Used by the admin bypass path (S102) to emit 'admin_override' regardless of canonical confidence.
+ * @param placeOfService S167 Thesaurus modifier for the 4-col canonical_plan_services key (mig 148). Default 'any'; Phase 1 supplies real values once the parser produces pos/component. Ignored when serviceSlug is null (canonical_plans branch).
+ * @param component S167 Thesaurus component modifier ('facility'|'professional'|'global'). Default 'global'. Ignored when serviceSlug is null.
  */
 export async function applyPromotionEvent(
   supabase: SupabaseClient,
@@ -77,6 +79,11 @@ export async function applyPromotionEvent(
   fireSource: FireSource,
   actorUserId: string | null = null,
   forceEventType: ForceEventType | null = null,
+  // S167 Thesaurus (mig 148): pos/component target the 4-col canonical_plan_services key. Trailing
+  // defaults ('any'/'global') keep all existing callers valid + byte-identical; Phase 1 passes real
+  // values once the parser produces pos/component.
+  placeOfService: string = "any",
+  component: string = "global",
 ): Promise<ApplyPromotionEventResult> {
   // Ing-E: redact PII from cross-user excerpts before they land in canonical
   // field_provenance.sources[].excerpt. This is the single chokepoint for BOTH
@@ -99,6 +106,8 @@ export async function applyPromotionEvent(
     p_fire_source: fireSource,
     p_actor_user_id: actorUserId,
     p_force_event_type: forceEventType,
+    p_place_of_service: placeOfService,
+    p_component: component,
   });
 
   if (error) {
