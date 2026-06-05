@@ -269,7 +269,7 @@ function ModePicker({
             </div>
             <p className="text-sm font-semibold text-emerald-900 truncate">Use my current plan</p>
           </div>
-          <p className="text-sm text-slate-800 truncate" title={currentPlan.planName}>{currentPlan.planName}</p>
+          <p className="text-sm text-slate-800 break-words" title={currentPlan.planName}>{currentPlan.planName}</p>
           <p className="text-xs text-slate-500 mt-0.5 truncate">
             {[currentPlan.insurerName, currentPlan.planType, currentPlan.metalLevel].filter(Boolean).join(" · ")}
           </p>
@@ -627,10 +627,10 @@ function CommittedSlot({
             </span>
             {badge}
           </div>
-          <p className="text-base font-semibold text-slate-900 truncate" title={title}>
+          <p className="text-base font-semibold text-slate-900 break-words" title={title}>
             {title}
           </p>
-          <p className="text-xs text-slate-500 mt-0.5 truncate">{subtitle}</p>
+          <p className="text-xs text-slate-500 mt-0.5 break-words">{subtitle}</p>
         </div>
         <button
           type="button"

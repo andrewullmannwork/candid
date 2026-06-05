@@ -83,6 +83,10 @@ export async function getFlags() {
     UPLOAD_MAX_PER_USER: await getFlagInt("UPLOAD_MAX_PER_USER", 10),
     ON_DEMAND_EXTRACTION_ENABLED: await getFlagBool("ON_DEMAND_EXTRACTION_ENABLED", true),
     MAX_EXTRACTED_SERVICES: await getFlagInt("MAX_EXTRACTED_SERVICES", 125),
+    // Compare premium flywheel: min distinct member observations on a plan before
+    // a community average premium is shown (k-anon floor, Rule #5). Adjustable in
+    // /admin/settings. Consumed by the flywheel aggregation read-back (follow-up).
+    COMPARE_FLYWHEEL_MIN_MEMBERS: await getFlagInt("COMPARE_FLYWHEEL_MIN_MEMBERS", 5),
   };
 }
 
@@ -101,6 +105,7 @@ export const FLAGS = {
   UPLOAD_MAX_PER_USER: envInt("UPLOAD_MAX_PER_USER", 10),
   ON_DEMAND_EXTRACTION_ENABLED: envBool("ON_DEMAND_EXTRACTION_ENABLED", true),
   MAX_EXTRACTED_SERVICES: envInt("MAX_EXTRACTED_SERVICES", 125),
+  COMPARE_FLYWHEEL_MIN_MEMBERS: envInt("COMPARE_FLYWHEEL_MIN_MEMBERS", 5),
 } as const;
 
 function envBool(key: string, defaultValue: boolean): boolean {

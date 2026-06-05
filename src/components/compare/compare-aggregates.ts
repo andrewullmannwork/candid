@@ -21,6 +21,11 @@ export function asNumber(value: unknown): number | null {
   return typeof v === "number" && !Number.isNaN(v) ? v : null;
 }
 
+/** Whole-dollar currency formatter ($5,800 — never cents). Shared across v2 cells. */
+export function usd(n: number): string {
+  return `$${Math.round(n).toLocaleString()}`;
+}
+
 // ── Best-in-row derivation ────────────────────────────────────────────────
 
 /**

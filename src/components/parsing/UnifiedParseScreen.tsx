@@ -82,16 +82,18 @@ interface UnifiedParseScreenProps {
    */
   onProgressionComplete?: () => void;
   /**
-   * Loader visual variant (B2-UP.1).
-   *   - "default" (or omitted): existing doc-card visual; serves /compare
-   *     multi-doc stacked-card layout + /upload prior to redesign.
-   *   - "stackV3": render the design's StackLoaderV3 visual (5-doc
-   *     decorative card stack + page counter + rotating message + hairline
-   *     progress). Single-doc only. Sub-phase state machine + S98 tick +
-   *     S102 fast-path + onProgressionComplete preserved verbatim — only
-   *     the chrome changes.
+   * Loader visual variant (B2-UP.1; S160 default→deprecated rename).
+   *   - "deprecated" (or omitted): the legacy doc-card visual (multi-doc
+   *     stacked cards). No surface routes to it anymore — /upload + /compare
+   *     both pass "stackV3" (S160). Kept only as the structural fallback for a
+   *     docs.length > 1 render and for type completeness; removable once no
+   *     caller can produce a multi-card render.
+   *   - "stackV3": the design's StackLoaderV3 visual (5-doc decorative card
+   *     stack + page counter + rotating message + hairline progress). Single
+   *     synthetic doc only. Sub-phase state machine + S98 tick + S102 fast-path
+   *     + onProgressionComplete preserved verbatim — only the chrome changes.
    */
-  loaderVariant?: "default" | "stackV3";
+  loaderVariant?: "deprecated" | "stackV3";
 }
 
 // B-LOAD.1 (S131): single source of truth for rotating microcopy. The
@@ -628,7 +630,7 @@ export function UnifiedParseScreen({
   footer,
   onCancel,
   onProgressionComplete,
-  loaderVariant = "default",
+  loaderVariant = "deprecated",
 }: UnifiedParseScreenProps) {
   // NOTE: ALL hooks called unconditionally before the loaderVariant branch
   // below per Rules of Hooks. When loaderVariant === "stackV3", the
@@ -665,12 +667,13 @@ export function UnifiedParseScreen({
     return () => clearInterval(interval);
   }, [docs]);
 
-  // ── stackV3 variant (B2-UP.1 /upload visual refresh) ──────────────────
+  // ── stackV3 variant (B2-UP.1 /upload; S160 universal) ─────────────────
   // Renders the design's StackLoaderV3 chrome while preserving the existing
   // sub-phase state machine + S98 random-paced tick + S102 fast-path +
-  // onProgressionComplete gate. Restricted to single-doc — /compare callers
-  // must keep loaderVariant="default" or unset. Branch placed AFTER all
-  // hooks to satisfy Rules of Hooks.
+  // onProgressionComplete gate. Single-doc only — /compare now passes ONE
+  // aggregate synthetic doc (summed page count, S160) so it qualifies; a
+  // docs.length > 1 render falls through to the deprecated doc-card path.
+  // Branch placed AFTER all hooks to satisfy Rules of Hooks.
   if (loaderVariant === "stackV3" && docs.length === 1) {
     return (
       <StackLoaderV3Variant

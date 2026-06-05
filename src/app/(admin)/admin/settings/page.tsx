@@ -28,6 +28,7 @@ const FLAG_LABELS: Record<string, string> = {
   UPLOAD_MAX_PER_USER: "Max Docs per User",
   ON_DEMAND_EXTRACTION_ENABLED: "On-Demand Plan Extraction",
   MAX_EXTRACTED_SERVICES: "Max Services per Document",
+  COMPARE_FLYWHEEL_MIN_MEMBERS: "Min members for community premium",
 };
 
 const FLAG_GROUPS: Record<string, string[]> = {
@@ -47,6 +48,7 @@ const FLAG_GROUPS: Record<string, string[]> = {
     "UPLOAD_MAX_PAGES",
     "UPLOAD_MAX_PER_USER",
   ],
+  Compare: ["COMPARE_FLYWHEEL_MIN_MEMBERS"],
 };
 
 export default function AdminSettingsPage() {

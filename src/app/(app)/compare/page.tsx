@@ -57,6 +57,15 @@ import { PlanSummaryCards } from "@/components/compare/PlanSummaryCards";
 import { NumbersTable } from "@/components/compare/NumbersTable";
 import { BreadthTable } from "@/components/compare/BreadthTable";
 import { ServiceCategoryAccordions } from "@/components/compare/ServiceCategoryAccordions";
+import { ResultsViewV2 } from "@/components/compare/v2/ResultsViewV2";
+import { BuildViewV2 } from "@/components/compare/v2/BuildViewV2";
+import {
+  loadSessions,
+  saveSession,
+  loadRecents,
+  pushRecent,
+  type CompareSession,
+} from "@/components/compare/compare-sessions";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useMinHoldLoading } from "@/lib/loading/use-min-hold";
 
@@ -221,6 +230,38 @@ function CompareInterface() {
   const [results, setResults] = useState<ComparePlanPayload[] | null>(null);
   const [resultsError, setResultsError] = useState<string | null>(null);
 
+  // Compare v2 redesign rollout gate (S157). Read the flag from the server
+  // endpoint (NOT a browser-Supabase query): Candid authenticates via Firebase,
+  // which is invisible to Supabase RLS, so a client-side `feature_flag_rules`
+  // read always runs as anon and RLS returns []  — i.e. it can never see an
+  // enabled flag. /api/feature-flags/[flagKey] resolves it server-side via
+  // isFeatureEnabled. Mirrors the profile-dashboard flag-read pattern. Falls
+  // back to OFF on any non-200 / error → existing results view renders
+  // byte-identical (graceful degradation, compare_v2_redesign.md §4.4).
+  const [v2On, setV2On] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/feature-flags/compare_v2_redesign")
+      .then((r) => (r.ok ? r.json() : { enabled: false }))
+      .then((d) => {
+        if (!cancelled) setV2On(d?.enabled === true);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Compare v2 (PR5) — localStorage sessions ("Pick up where you left off") +
+  // single-plan recents. Loaded post-mount (SSR-safe; never reads storage on the
+  // server so hydration can't mismatch).
+  const [sessions, setSessions] = useState<CompareSession[]>([]);
+  const [recents, setRecents] = useState<ReturnType<typeof loadRecents>>([]);
+  useEffect(() => {
+    setSessions(loadSessions());
+    setRecents(loadRecents());
+  }, []);
+
   // Parsing-screen state for upload slots.
   const [parseDocs, setParseDocs] = useState<ParseDoc[]>([]);
   const [parseError, setParseError] = useState<string | null>(null);
@@ -234,6 +275,19 @@ function CompareInterface() {
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const turnstileTokenRef = useRef<string | null>(null);
   const turnstileRef = useRef<TurnstileWidgetHandle>(null);
+
+  // Compare v2 (PR6) — results-editor upload-swap state. An editor upload reuses
+  // the SAME parse pipeline as the build path (uploadOne + pollOne + the stackV3
+  // UnifiedParseScreen). These track (a) an in-flight results-mode upload so the
+  // persistent Turnstile widget mounts outside build mode, and (b) the consent
+  // gate for a user who reached results without ever uploading (never consented).
+  const [editorUploadActive, setEditorUploadActive] = useState(false);
+  const [pendingEditorUpload, setPendingEditorUpload] = useState<{
+    action: "replace" | "add";
+    columnIndex: number | null;
+    file: File;
+  } | null>(null);
+  const [editorConsentChecked, setEditorConsentChecked] = useState(false);
 
   useEffect(() => {
     turnstileTokenRef.current = turnstileToken;
@@ -336,67 +390,14 @@ function CompareInterface() {
     });
 
     if (uploadIndexes.length > 0) {
-      // Switch to parsing UI; build initial parseDocs entries.
-      setMode("parsing");
-      const initial: ParseDoc[] = uploadIndexes.map((i, n) => {
-        const slot = slots[i];
-        const file = slot.kind === "upload" && slot.file ? slot.file : null;
-        return {
-          id: `slot-${i}`,
-          label: `Plan ${String.fromCharCode(65 + i)}`,
-          fileName: file?.name ?? "Unknown",
-          phase: n === 0 ? "uploading" : "queued",
-          uploadProgress: n === 0 ? 5 : 0,
-          totalPages: null,
-          step: null,
-          realCompletedPages: null,
-        };
-      });
-      setParseDocs(initial);
-
-      // Process uploads sequentially. Track per-slot insurance_plan_id locally
-      // (avoids fragile post-hoc filename re-query against the documents table).
-      const uploadResults = new Map<number, string>();
-      for (let n = 0; n < uploadIndexes.length; n++) {
-        const idx = uploadIndexes[n];
-        const slot = slots[idx];
-        if (slot.kind !== "upload" || !slot.file) continue;
-        const insurancePlanId = await processOneUpload({
-          file: slot.file,
-          docId: `slot-${idx}`,
-          isFirst: n === 0,
-        });
-        if (insurancePlanId) {
-          uploadResults.set(idx, insurancePlanId);
-          // Mark next queued doc as uploading.
-          setParseDocs((prev) => {
-            const arr = [...prev];
-            const myEntry = arr.findIndex((d) => d.id === `slot-${idx}`);
-            if (myEntry >= 0) arr[myEntry] = { ...arr[myEntry], phase: "complete", uploadProgress: 100 };
-            const nextQueued = arr.findIndex((d) => d.phase === "queued");
-            if (nextQueued >= 0) {
-              arr[nextQueued] = { ...arr[nextQueued], phase: "uploading", uploadProgress: 5 };
-            }
-            return arr;
-          });
-        } else {
-          setParseDocs((prev) => {
-            const arr = [...prev];
-            const myEntry = arr.findIndex((d) => d.id === `slot-${idx}`);
-            if (myEntry >= 0) {
-              arr[myEntry] = {
-                ...arr[myEntry],
-                phase: "error",
-                errorMessage: "Couldn't process this document.",
-              };
-            }
-            return arr;
-          });
-          setParseError("One or more documents couldn't be processed. Switch them to search instead.");
-          setMode("build");
-          return;
-        }
-      }
+      // Compare v2 (S160): flag ON shows ONE aggregate stackV3 doc (summed page
+      // count); flag OFF keeps the byte-identical legacy per-doc loader. Each
+      // returns a slot→insurance_plan_id map, or null after surfacing an error
+      // (UI already reset to the build view).
+      const uploadResults = v2On
+        ? await runBuildUploadsV2(uploadIndexes)
+        : await runBuildUploadsLegacy(uploadIndexes);
+      if (!uploadResults) return;
 
       // Build refs in slot order, mixing canonical + user_plan kinds.
       // S107: search results' `canonicalPlanId` mirrors `id` (search source is
@@ -453,19 +454,28 @@ function CompareInterface() {
     }
   }
 
-  async function processOneUpload(opts: {
+  // Compare v2 (S160) — the upload pipeline split into two reusable passes so the
+  // build path can collect all page counts up front (a stable aggregate total)
+  // and the results-editor swap can reuse the exact same upload + poll logic.
+  //
+  // uploadOne: POST the file (mig 078 purpose="comparison", never overwrites the
+  // primary plan) and return its documentId + the classifier's original page
+  // count. Turnstile: reset + wait for a fresh token between uploads; for a first
+  // upload, wait if no token is present yet (the results-editor mounts the widget
+  // on demand, so a token may not have been issued at call time).
+  async function uploadOne(opts: {
     file: File;
-    docId: string;
     isFirst: boolean;
-  }): Promise<string | null> {
+  }): Promise<{ documentId: string; pageCount: number | null } | null> {
     if (!user) return null;
-    const { file, docId, isFirst } = opts;
+    const { file, isFirst } = opts;
 
-    // Fresh Turnstile token between uploads.
     if (!isFirst) {
       turnstileRef.current?.reset();
       setTurnstileToken(null);
       turnstileTokenRef.current = null;
+    }
+    if (!turnstileTokenRef.current) {
       const start = Date.now();
       while (Date.now() - start < 10000) {
         if (turnstileTokenRef.current) break;
@@ -497,92 +507,45 @@ function CompareInterface() {
         classification?: { pageCount?: number };
       };
       if (!uploadBody.documentId) return null;
+      return {
+        documentId: uploadBody.documentId,
+        pageCount: uploadBody.classification?.pageCount ?? null,
+      };
+    } catch {
+      return null;
+    }
+  }
 
-      // S100 v3 / S101 two-flow — seed totalPages from the classifier response
-      // so the parsing screen renders "Page 0 of N" immediately, same as
-      // /upload's single-doc flow. If the seed is absent (no pageCount on the
-      // upload response), the doc card stays on "Uploading" pill + "Reading…"
-      // status until the polling loop surfaces totalPages from the backend.
-      // No more rendering a page-counted screen with an unknown N.
-      const pageCountHint = uploadBody.classification?.pageCount ?? null;
-
-      setParseDocs((prev) => {
-        const arr = [...prev];
-        const myEntry = arr.findIndex((d) => d.id === docId);
-        if (myEntry >= 0) {
-          const seededTotalPages =
-            pageCountHint && pageCountHint > 0 ? pageCountHint : arr[myEntry].totalPages;
-          arr[myEntry] = {
-            ...arr[myEntry],
-            phase: seededTotalPages && seededTotalPages > 0 ? "parsing" : "uploading",
-            uploadProgress: 100,
-            totalPages: seededTotalPages,
-          };
-        }
-        return arr;
-      });
-
+  // pollOne: poll /api/documents/status until the doc is processed (server-side,
+  // bypasses RLS — replaces a browser Supabase query that 406'd on the user's own
+  // fresh documents row). Fires needsTrigger when the backend asks, surfaces each
+  // poll to onPoll (the caller maps it onto the aggregate ParseDoc), and returns
+  // the linked insurance_plan_id on success or null on error/stuck.
+  async function pollOne(
+    documentId: string,
+    onPoll: (statusBody: {
+      status?: string;
+      isStuck?: boolean;
+      totalPages?: number;
+      step?: string | null;
+      completedPages?: number;
+    }) => void,
+  ): Promise<string | null> {
+    try {
       while (true) {
         await new Promise((r) => setTimeout(r, 4000));
-        const statusRes = await fetch(`/api/documents/status?id=${uploadBody.documentId}`);
+        const statusRes = await fetch(`/api/documents/status?id=${documentId}`);
         if (!statusRes.ok) continue;
         const statusBody = await statusRes.json();
         if (statusBody.needsTrigger) {
           await fetch("/api/documents/status", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ documentId: uploadBody.documentId }),
+            body: JSON.stringify({ documentId }),
           });
         }
-
-        // S101 two-flow: terminal states drive their own phase; otherwise stay
-        // "uploading" (pill + "Reading…") until pageCount is known, then flip
-        // to "parsing" so the page-tick screen takes over. Mirrors derivePhase
-        // in UnifiedParseScreen — /compare can't reuse derivePhase directly
-        // because per-doc phase is owned by ParseDoc here (multi-doc array),
-        // not derived from a single (uploadStatus, processingProgress) tuple.
-        const terminalPhase: ParseDoc["phase"] | null =
-          statusBody.status === "processed"
-            ? "complete"
-            : statusBody.status === "error" || statusBody.isStuck
-              ? "error"
-              : null;
-
-        // UnifiedParseScreen owns the synthetic page-tick + sub-phase state
-        // machine internally. Caller passes raw backend data (totalPages +
-        // step + realCompletedPages); the component computes "Page X of Y" +
-        // bar fill from there.
-        //
-        // S101 seed-preserve: when backend returns 0/null totalPages on early
-        // polls (chunk runner hasn't written documents.processing_total_pages
-        // yet), keep the seed from the upload-XHR seed branch above.
-        setParseDocs((prev) => {
-          const arr = [...prev];
-          const myEntry = arr.findIndex((d) => d.id === docId);
-          if (myEntry >= 0) {
-            const backendPages =
-              typeof statusBody.totalPages === "number" && statusBody.totalPages > 0
-                ? statusBody.totalPages
-                : null;
-            const nextTotalPages = backendPages ?? arr[myEntry].totalPages;
-            const nextPhase: ParseDoc["phase"] =
-              terminalPhase ?? (nextTotalPages && nextTotalPages > 0 ? "parsing" : "uploading");
-            arr[myEntry] = {
-              ...arr[myEntry],
-              phase: nextPhase,
-              totalPages: nextTotalPages,
-              step: statusBody.step ?? null,
-              realCompletedPages: typeof statusBody.completedPages === "number" ? statusBody.completedPages : null,
-            };
-          }
-          return arr;
-        });
-
+        onPoll(statusBody);
         if (statusBody.status === "processed") {
-          // Read linked_insurance_plan_id from the status endpoint response
-          // (server-side, bypasses RLS). Replaces a browser-client Supabase
-          // query that 406'd because RLS blocked the user from reading
-          // their own newly-created documents row.
           return (statusBody.linkedInsurancePlanId as string | null) ?? null;
         }
         if (statusBody.status === "error" || statusBody.isStuck) return null;
@@ -590,6 +553,240 @@ function CompareInterface() {
     } catch {
       return null;
     }
+  }
+
+  // Compare v2 (S160) — flag-ON build-path loader: present every uploaded file as
+  // ONE aggregate stackV3 "document" (page count = SUM of each file's original
+  // classify-time count). The loader is pure frontend chrome — nothing binds it
+  // 1:1 to a backend document. PASS 1 uploads + classifies all (so the combined
+  // total is stable BEFORE the synthetic counter starts — a growing total would
+  // reset it to 0); PASS 2 polls each to completion. The backend parses each
+  // upload as its own document (unchanged). Returns slot→insurance_plan_id, or
+  // null after surfacing an error (UI reset to build).
+  async function runBuildUploadsV2(uploadIndexes: number[]): Promise<Map<number, string> | null> {
+    setMode("parsing");
+    const aggId = "compare-upload";
+    const firstSlot = slots[uploadIndexes[0]];
+    const firstName =
+      firstSlot.kind === "upload" && firstSlot.file ? firstSlot.file.name : "Document";
+    setParseDocs([
+      {
+        id: aggId,
+        label:
+          uploadIndexes.length === 1
+            ? "Your plan document"
+            : `Your ${uploadIndexes.length} plan documents`,
+        fileName: uploadIndexes.length === 1 ? firstName : `${uploadIndexes.length} documents`,
+        phase: "uploading",
+        uploadProgress: 5,
+        totalPages: null,
+        step: null,
+        realCompletedPages: null,
+      },
+    ]);
+
+    const failAggregate = () => {
+      setParseDocs((prev) =>
+        prev.map((d) =>
+          d.id === aggId
+            ? { ...d, phase: "error", errorMessage: "Couldn't process this document." }
+            : d,
+        ),
+      );
+      setParseError("One or more documents couldn't be processed. Switch them to search instead.");
+      setMode("build");
+    };
+
+    // PASS 1 — upload + classify all (fresh Turnstile token reset between each).
+    const uploaded: { idx: number; documentId: string; pageCount: number | null }[] = [];
+    for (let n = 0; n < uploadIndexes.length; n++) {
+      const idx = uploadIndexes[n];
+      const slot = slots[idx];
+      if (slot.kind !== "upload" || !slot.file) continue;
+      const res = await uploadOne({ file: slot.file, isFirst: n === 0 });
+      if (!res) {
+        failAggregate();
+        return null;
+      }
+      uploaded.push({ idx, documentId: res.documentId, pageCount: res.pageCount });
+      setParseDocs((prev) =>
+        prev.map((d) =>
+          d.id === aggId
+            ? { ...d, uploadProgress: Math.round(((n + 1) / uploadIndexes.length) * 100) }
+            : d,
+        ),
+      );
+    }
+
+    // Stable combined total = sum of each file's original page count.
+    const summedPages = uploaded.reduce((s, u) => s + (u.pageCount ?? 0), 0);
+    const aggTotal = summedPages > 0 ? summedPages : null;
+    setParseDocs((prev) =>
+      prev.map((d) =>
+        d.id === aggId ? { ...d, phase: "parsing", uploadProgress: 100, totalPages: aggTotal } : d,
+      ),
+    );
+
+    // PASS 2 — poll each to completion; drive the aggregate's progress
+    // cumulatively (completedBase carries the pages of already-finished docs).
+    const isSingleUpload = uploaded.length === 1;
+    const uploadResults = new Map<number, string>();
+    let completedBase = 0;
+    for (const u of uploaded) {
+      const planId = await pollOne(u.documentId, (statusBody) => {
+        setParseDocs((prev) =>
+          prev.map((d) => {
+            if (d.id !== aggId) return d;
+            // Single-doc: refine totalPages from the backend if it arrives
+            // (legacy seed-preserve). Multi-doc: keep the summed total stable —
+            // changing it would reset the synthetic page counter to 0.
+            const backendPages =
+              typeof statusBody.totalPages === "number" && statusBody.totalPages > 0
+                ? statusBody.totalPages
+                : null;
+            const nextTotal = isSingleUpload ? backendPages ?? d.totalPages : d.totalPages;
+            const docCompleted =
+              typeof statusBody.completedPages === "number" ? statusBody.completedPages : 0;
+            return {
+              ...d,
+              phase: "parsing",
+              totalPages: nextTotal,
+              step: statusBody.step ?? null,
+              realCompletedPages: completedBase + docCompleted,
+            };
+          }),
+        );
+      });
+      if (!planId) {
+        failAggregate();
+        return null;
+      }
+      uploadResults.set(u.idx, planId);
+      completedBase += u.pageCount ?? 0;
+    }
+
+    // Snap the synthetic counter to done before the comparison loads.
+    setParseDocs((prev) => prev.map((d) => (d.id === aggId ? { ...d, phase: "complete" } : d)));
+    return uploadResults;
+  }
+
+  // Compare v2 (S160) — flag-OFF build-path loader: the byte-identical pre-S160
+  // multi-doc-card behavior on the deprecated loader variant. One ParseDoc per
+  // upload slot, processed sequentially (queued → uploading → complete). Returns
+  // slot→insurance_plan_id, or null after surfacing an error (UI reset to build).
+  async function runBuildUploadsLegacy(
+    uploadIndexes: number[],
+  ): Promise<Map<number, string> | null> {
+    setMode("parsing");
+    const initial: ParseDoc[] = uploadIndexes.map((i, n) => {
+      const slot = slots[i];
+      const file = slot.kind === "upload" && slot.file ? slot.file : null;
+      return {
+        id: `slot-${i}`,
+        label: `Plan ${String.fromCharCode(65 + i)}`,
+        fileName: file?.name ?? "Unknown",
+        phase: n === 0 ? "uploading" : "queued",
+        uploadProgress: n === 0 ? 5 : 0,
+        totalPages: null,
+        step: null,
+        realCompletedPages: null,
+      };
+    });
+    setParseDocs(initial);
+
+    const uploadResults = new Map<number, string>();
+    for (let n = 0; n < uploadIndexes.length; n++) {
+      const idx = uploadIndexes[n];
+      const slot = slots[idx];
+      if (slot.kind !== "upload" || !slot.file) continue;
+      const insurancePlanId = await processOneUpload({
+        file: slot.file,
+        docId: `slot-${idx}`,
+        isFirst: n === 0,
+      });
+      if (insurancePlanId) {
+        uploadResults.set(idx, insurancePlanId);
+        setParseDocs((prev) => {
+          const arr = [...prev];
+          const myEntry = arr.findIndex((d) => d.id === `slot-${idx}`);
+          if (myEntry >= 0) arr[myEntry] = { ...arr[myEntry], phase: "complete", uploadProgress: 100 };
+          const nextQueued = arr.findIndex((d) => d.phase === "queued");
+          if (nextQueued >= 0) {
+            arr[nextQueued] = { ...arr[nextQueued], phase: "uploading", uploadProgress: 5 };
+          }
+          return arr;
+        });
+      } else {
+        setParseDocs((prev) => {
+          const arr = [...prev];
+          const myEntry = arr.findIndex((d) => d.id === `slot-${idx}`);
+          if (myEntry >= 0) {
+            arr[myEntry] = {
+              ...arr[myEntry],
+              phase: "error",
+              errorMessage: "Couldn't process this document.",
+            };
+          }
+          return arr;
+        });
+        setParseError("One or more documents couldn't be processed. Switch them to search instead.");
+        setMode("build");
+        return null;
+      }
+    }
+    return uploadResults;
+  }
+
+  // Legacy per-doc upload (flag-OFF path). Wraps uploadOne + pollOne to reproduce
+  // the pre-S160 per-card behavior: seed this doc's totalPages from the classifier,
+  // then update its card on each poll.
+  async function processOneUpload(opts: {
+    file: File;
+    docId: string;
+    isFirst: boolean;
+  }): Promise<string | null> {
+    const up = await uploadOne({ file: opts.file, isFirst: opts.isFirst });
+    if (!up) return null;
+    setParseDocs((prev) =>
+      prev.map((d) => {
+        if (d.id !== opts.docId) return d;
+        const seeded = up.pageCount && up.pageCount > 0 ? up.pageCount : d.totalPages;
+        return {
+          ...d,
+          phase: seeded && seeded > 0 ? "parsing" : "uploading",
+          uploadProgress: 100,
+          totalPages: seeded,
+        };
+      }),
+    );
+    return pollOne(up.documentId, (statusBody) => {
+      setParseDocs((prev) =>
+        prev.map((d) => {
+          if (d.id !== opts.docId) return d;
+          const backendPages =
+            typeof statusBody.totalPages === "number" && statusBody.totalPages > 0
+              ? statusBody.totalPages
+              : null;
+          const nextTotalPages = backendPages ?? d.totalPages;
+          const terminal: ParseDoc["phase"] | null =
+            statusBody.status === "processed"
+              ? "complete"
+              : statusBody.status === "error" || statusBody.isStuck
+                ? "error"
+                : null;
+          const nextPhase: ParseDoc["phase"] =
+            terminal ?? (nextTotalPages && nextTotalPages > 0 ? "parsing" : "uploading");
+          return {
+            ...d,
+            phase: nextPhase,
+            totalPages: nextTotalPages,
+            step: statusBody.step ?? null,
+            realCompletedPages:
+              typeof statusBody.completedPages === "number" ? statusBody.completedPages : null,
+          };
+        }),
+      );
+    });
   }
 
   async function callCompareApi(planRefs: PlanRef[]) {
@@ -625,8 +822,23 @@ function CompareInterface() {
         return;
       }
       const data = (await res.json()) as { plans: ComparePlanPayload[] };
-      setResults(data.plans.filter((p) => "planSummary" in p) as ComparePlanPayload[]);
+      const resolved = data.plans.filter((p) => "planSummary" in p) as ComparePlanPayload[];
+      setResults(resolved);
       setMode("results");
+      // PR5 — persist the comparison + canonical recents for "pick up where you
+      // left off". Only canonical refs become recents (clean re-resolution; an
+      // own/uploaded plan has no re-pickable search identity).
+      if (resolved.length >= 2) {
+        setSessions(
+          saveSession(resolved.map((p) => ({ ref: p.ref, name: p.planName, sub: planLabelSub(p) }))),
+        );
+        resolved.forEach((p) => {
+          if (p.ref.kind === "canonical") {
+            pushRecent({ ref: p.ref, name: p.planName, sub: planLabelSub(p) });
+          }
+        });
+        setRecents(loadRecents());
+      }
     } catch {
       setResultsError("Couldn't load the comparison. Try again in a moment.");
       setMode("results");
@@ -642,6 +854,181 @@ function CompareInterface() {
     setParseError(null);
   }
 
+  // ── PR5 sessions + results-editor (ref-space) ──────────────────────────
+  // Restore a saved comparison: re-resolve the stored refs straight to results.
+  const resumeSession = (session: CompareSession) => {
+    void callCompareApi(session.plans.map((p) => p.ref));
+  };
+
+  // Resolve a non-upload picked SlotState to a PlanRef. Search/current resolve
+  // immediately; an upload slot is intercepted earlier (requestEditorUpload) and
+  // never reaches here, so this returns null for it (defensive).
+  const slotToRef = (slot: SlotState): PlanRef | null => {
+    if (slot.kind === "current") return { kind: "user_plan", id: slot.plan.insurancePlanId };
+    if (slot.kind === "search" && slot.selected) {
+      const id = slot.selected.canonicalPlanId ?? slot.selected.id;
+      return id ? { kind: "canonical", id } : null;
+    }
+    return null;
+  };
+  const currentRefs = (): PlanRef[] => (results ?? []).map((p) => p.ref);
+
+  // Compare v2 (S160) — results-editor upload-swap. Reuses the SAME parse pipeline
+  // as the build path (uploadOne + pollOne + the stackV3 UnifiedParseScreen): the
+  // editor upload switches to the parsing screen, parses the one file, then
+  // replaces/adds that results column and re-runs the comparison. Backend
+  // unchanged. doEditorUpload assumes consent is granted; requestEditorUpload gates.
+  async function doEditorUpload(action: "replace" | "add", columnIndex: number | null, file: File) {
+    if (!user) return;
+    const baseRefs = currentRefs();
+    if (
+      action === "replace" &&
+      (columnIndex == null || columnIndex < 0 || columnIndex >= baseRefs.length)
+    )
+      return;
+    if (action === "add" && baseRefs.length >= 3) return;
+
+    setResultsError(null);
+    setParseError(null);
+    setEditorUploadActive(true); // mounts the persistent Turnstile widget in results mode
+    // Force a fresh token from the freshly-mounted widget (avoid reusing a stale one).
+    turnstileRef.current?.reset();
+    setTurnstileToken(null);
+    turnstileTokenRef.current = null;
+    setMode("parsing");
+    const aggId = "editor-upload";
+    setParseDocs([
+      {
+        id: aggId,
+        label: action === "add" ? "Adding a plan" : "Swapping a plan",
+        fileName: file.name,
+        phase: "uploading",
+        uploadProgress: 5,
+        totalPages: null,
+        step: null,
+        realCompletedPages: null,
+      },
+    ]);
+
+    const up = await uploadOne({ file, isFirst: true });
+    if (!up) {
+      setEditorUploadActive(false);
+      setResultsError("Couldn't read that document. Try another file or search instead.");
+      setMode("results");
+      return;
+    }
+    setParseDocs((prev) =>
+      prev.map((d) =>
+        d.id === aggId
+          ? {
+              ...d,
+              phase: "parsing",
+              uploadProgress: 100,
+              totalPages: up.pageCount && up.pageCount > 0 ? up.pageCount : null,
+            }
+          : d,
+      ),
+    );
+
+    const planId = await pollOne(up.documentId, (statusBody) => {
+      setParseDocs((prev) =>
+        prev.map((d) => {
+          if (d.id !== aggId) return d;
+          const backendPages =
+            typeof statusBody.totalPages === "number" && statusBody.totalPages > 0
+              ? statusBody.totalPages
+              : null;
+          return {
+            ...d,
+            phase: "parsing",
+            totalPages: backendPages ?? d.totalPages,
+            step: statusBody.step ?? null,
+            realCompletedPages:
+              typeof statusBody.completedPages === "number" ? statusBody.completedPages : null,
+          };
+        }),
+      );
+    });
+
+    setEditorUploadActive(false);
+    if (!planId) {
+      setResultsError("Couldn't process that document. Try another file or search instead.");
+      setMode("results");
+      return;
+    }
+    setParseDocs((prev) => prev.map((d) => (d.id === aggId ? { ...d, phase: "complete" } : d)));
+
+    const newRef: PlanRef = { kind: "user_plan", id: planId };
+    const refs = [...baseRefs];
+    if (action === "replace" && columnIndex != null) refs[columnIndex] = newRef;
+    else refs.push(newRef);
+    await callCompareApi(refs);
+  }
+  // Gate the editor upload on the health_data_upload consent. If never granted
+  // (reached results without uploading), stash the request + open the consent
+  // overlay; its Continue grants consent then runs the upload.
+  const requestEditorUpload = (
+    action: "replace" | "add",
+    columnIndex: number | null,
+    file: File,
+  ) => {
+    if (!user) return;
+    if (!hasConsented) {
+      setEditorConsentChecked(false);
+      setPendingEditorUpload({ action, columnIndex, file });
+      return;
+    }
+    void doEditorUpload(action, columnIndex, file);
+  };
+  async function confirmEditorConsent() {
+    if (!pendingEditorUpload || !editorConsentChecked) return;
+    const req = pendingEditorUpload;
+    setConsentSubmitting(true);
+    try {
+      await grantConsent();
+    } catch {
+      setResultsError("Couldn't record your consent. Try again.");
+      setConsentSubmitting(false);
+      return;
+    }
+    setConsentSubmitting(false);
+    setPendingEditorUpload(null);
+    void doEditorUpload(req.action, req.columnIndex, req.file);
+  }
+  const cancelEditorConsent = () => {
+    setPendingEditorUpload(null);
+    setEditorConsentChecked(false);
+  };
+
+  const onReplaceColumn = (columnIndex: number, slot: SlotState) => {
+    if (slot.kind === "upload" && slot.file) {
+      requestEditorUpload("replace", columnIndex, slot.file);
+      return;
+    }
+    const ref = slotToRef(slot);
+    if (!ref) return;
+    const refs = currentRefs();
+    if (columnIndex < 0 || columnIndex >= refs.length) return;
+    refs[columnIndex] = ref;
+    void callCompareApi(refs);
+  };
+  const onAddColumn = (slot: SlotState) => {
+    if (slot.kind === "upload" && slot.file) {
+      requestEditorUpload("add", null, slot.file);
+      return;
+    }
+    const ref = slotToRef(slot);
+    if (!ref) return;
+    const refs = currentRefs();
+    if (refs.length >= 3) return;
+    void callCompareApi([...refs, ref]);
+  };
+  const onRemoveColumn = (columnIndex: number) => {
+    const refs = currentRefs().filter((_, i) => i !== columnIndex);
+    if (refs.length < 2) return;
+    void callCompareApi(refs);
+  };
+
   // ── Render ────────────────────────────────────────────────────────────
   // Single return wraps body + persistent Turnstile mount. Keeping the widget
   // in a stable JSX position across mode transitions lets Cloudflare maintain
@@ -654,7 +1041,14 @@ function CompareInterface() {
         <ResultsView
           plans={results}
           error={resultsError}
+          v2On={v2On}
           onStartOver={startOver}
+          onBackToPicker={() => setMode("build")}
+          currentPlan={currentPlan}
+          recents={recents}
+          onReplaceColumn={onReplaceColumn}
+          onAddColumn={onAddColumn}
+          onRemoveColumn={onRemoveColumn}
           userActiveInsurancePlanId={currentPlan?.insurancePlanId ?? null}
           onFieldSaved={(planId, field, value) => {
             // Optimistic update: drop the new value into the matching user_plan
@@ -687,15 +1081,21 @@ function CompareInterface() {
       ) : mode === "parsing" ? (
         <UnifiedParseScreen
           docs={parseDocs}
+          loaderVariant={v2On ? "stackV3" : "deprecated"}
           title="Reading your plan documents"
           subtitle="We meticulously go over every detail in your plans not once but twice. That takes a while, but we know it's worth it."
           onCancel={() => {
-            // S100 v3 — return to build mode. In-flight polling loops finish
-            // independently; their results are ignored since we re-render to
-            // the build view.
+            // S100 v3 — leave the parsing screen. In-flight polling loops finish
+            // independently; their results are ignored since we re-render away.
+            // S160 — an editor upload-swap returns to results (not the build picker).
             setParseError(null);
             setParseDocs([]);
-            setMode("build");
+            if (editorUploadActive) {
+              setEditorUploadActive(false);
+              setMode("results");
+            } else {
+              setMode("build");
+            }
           }}
           footer={
             parseError ? (
@@ -714,22 +1114,38 @@ function CompareInterface() {
       ) : (
         // Build mode
         <div>
-          <BuildHeader />
+          {/* Compare v2 (PR5): reskinned picker + sessions when the flag is ON;
+              the consent gate / submit CTA / Turnstile mount below stay shared.
+              Flag OFF → the v1 hero + slots render byte-identical. */}
+          {v2On ? (
+            <BuildViewV2
+              slots={slots}
+              setSlot={setSlot}
+              currentPlan={currentPlan}
+              recents={recents}
+              sessions={sessions}
+              onResume={resumeSession}
+            />
+          ) : (
+            <>
+              <BuildHeader />
 
-          {/* Side-by-side on lg+; stacked on mobile/tablet. */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-5">
-            {slots.map((slot, idx) => (
-              <PlanSlot
-                key={idx}
-                index={idx}
-                optional={idx === 2}
-                currentPlan={currentPlan}
-                state={slot}
-                onChange={(next) => setSlot(idx, next)}
-                disabled={consentSubmitting}
-              />
-            ))}
-          </div>
+              {/* Side-by-side on lg+; stacked on mobile/tablet. */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-5">
+                {slots.map((slot, idx) => (
+                  <PlanSlot
+                    key={idx}
+                    index={idx}
+                    optional={idx === 2}
+                    currentPlan={currentPlan}
+                    state={slot}
+                    onChange={(next) => setSlot(idx, next)}
+                    disabled={consentSubmitting}
+                  />
+                ))}
+              </div>
+            </>
+          )}
 
           {showConsent && (
             <div className="max-w-3xl mx-auto mt-6 bg-white rounded-2xl ring-1 ring-amber-200 p-6 shadow-sm">
@@ -797,7 +1213,7 @@ function CompareInterface() {
           when Cloudflare silently issues a token (no visible Success badge);
           the interactive challenge UI only renders when Cloudflare actually
           wants to challenge — and is positioned discretely. */}
-      {hasUploadSlot && (
+      {(hasUploadSlot || editorUploadActive) && (
         <div
           className={
             mode === "build"
@@ -808,8 +1224,65 @@ function CompareInterface() {
           <TurnstileWidget ref={turnstileRef} action="upload" onToken={setTurnstileToken} appearance="execute" />
         </div>
       )}
+
+      {/* Compare v2 (S160) — consent gate for a results-editor upload-swap when
+          the user reached results without ever uploading (so never granted the
+          health_data_upload consent). Reuses the same consent document as the
+          build-path gate; Continue grants consent then runs the upload. */}
+      {pendingEditorUpload && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl ring-1 ring-amber-200 p-6 max-w-md w-full shadow-xl">
+            <div className="flex items-start gap-3">
+              <div className="shrink-0 w-9 h-9 rounded-xl bg-amber-100 flex items-center justify-center">
+                <svg className="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-slate-900">Quick consent before we read your plan document</p>
+                <p className="text-sm text-slate-600 mt-1.5 leading-relaxed">{consentDoc?.summary}</p>
+                <label className="flex items-start gap-3 mt-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editorConsentChecked}
+                    onChange={(e) => setEditorConsentChecked(e.target.checked)}
+                    className="mt-1 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-slate-700">
+                    I&rsquo;ve read and agree to the {consentDoc?.title ?? "consent terms"} above.
+                  </span>
+                </label>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-5">
+              <button
+                type="button"
+                onClick={cancelEditorConsent}
+                disabled={consentSubmitting}
+                className="px-4 py-2 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmEditorConsent}
+                disabled={!editorConsentChecked || consentSubmitting}
+                className="px-4 py-2 rounded-xl text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50"
+              >
+                {consentSubmitting ? "Saving…" : "Continue"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
+}
+
+function planLabelSub(p: ComparePlanPayload): string {
+  return [p.insurerName, p.planSummary.metalLevel, p.planSummary.year]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 function isResolved(s: SlotState): boolean {
@@ -854,13 +1327,27 @@ function BuildHeader() {
 function ResultsView({
   plans,
   error,
+  v2On,
   onStartOver,
+  onBackToPicker,
+  currentPlan,
+  recents,
+  onReplaceColumn,
+  onAddColumn,
+  onRemoveColumn,
   userActiveInsurancePlanId,
   onFieldSaved,
 }: {
   plans: ComparePlanPayload[] | null;
   error: string | null;
+  v2On: boolean;
   onStartOver: () => void;
+  onBackToPicker: () => void;
+  currentPlan: CurrentPlanSummary | null;
+  recents: ReturnType<typeof loadRecents>;
+  onReplaceColumn: (columnIndex: number, slot: SlotState) => void;
+  onAddColumn: (slot: SlotState) => void;
+  onRemoveColumn: (columnIndex: number) => void;
   userActiveInsurancePlanId: string | null;
   onFieldSaved?: (planId: string, field: EditableField, value: number) => void;
 }) {
@@ -894,6 +1381,27 @@ function ResultsView({
           Start over
         </button>
       </div>
+    );
+  }
+
+  // compare_v2_redesign ON → the reskinned results view (same /api/plan/compare
+  // payload, new presentation + distinct na/nc/unk empty states). plans is
+  // guaranteed non-null + non-empty here (error + empty states handled above,
+  // shared across v1/v2). Flag OFF → the v1 body below renders byte-identical.
+  if (v2On) {
+    return (
+      <ResultsViewV2
+        plans={plans}
+        onStartOver={onStartOver}
+        onBackToPicker={onBackToPicker}
+        currentPlan={currentPlan}
+        recents={recents}
+        onReplaceColumn={onReplaceColumn}
+        onAddColumn={onAddColumn}
+        onRemoveColumn={onRemoveColumn}
+        userActiveInsurancePlanId={userActiveInsurancePlanId}
+        onFieldSaved={onFieldSaved}
+      />
     );
   }
 

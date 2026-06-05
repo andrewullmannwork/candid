@@ -18,6 +18,7 @@ const EXPOSED_FLAGS = new Set([
   "dispute_feedback_loop",
   "plan_year_rollover",
   "benefit_corrections",
+  "compare_v2_redesign", // S157 Compare v2 results reskin (frontend UI gate)
 ]);
 
 export async function GET(

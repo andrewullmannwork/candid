@@ -26,6 +26,19 @@ const ALLOWED_FIELDS = [
 ] as const;
 type AllowedField = (typeof ALLOWED_FIELDS)[number];
 
+// Map the API field name → the real insurance_plans column. The user-plan
+// premium lives in `premium_total` (canonical_plans is the one that uses
+// `premium_monthly`); writing `premium_monthly` here returned PGRST204
+// ("column not found") and the save silently 500'd. The other four field names
+// already match their insurance_plans columns 1:1.
+const COLUMN_FOR_FIELD: Record<AllowedField, string> = {
+  premium_monthly: "premium_total",
+  in_deductible_individual: "in_deductible_individual",
+  out_deductible_individual: "out_deductible_individual",
+  in_oop_max_individual: "in_oop_max_individual",
+  out_oop_max_individual: "out_oop_max_individual",
+};
+
 function isAllowedField(value: unknown): value is AllowedField {
   return typeof value === "string" && (ALLOWED_FIELDS as readonly string[]).includes(value);
 }
@@ -110,11 +123,12 @@ export async function POST(req: NextRequest) {
   // the consumer-read filter can render a "User Verified" badge for fields
   // the caller explicitly typed via inline-edit. Merge into existing provenance
   // (preserve other fields' entries; overwrite this field's entry).
+  const column = COLUMN_FOR_FIELD[field];
   const existingProv =
     (plan.field_provenance as Record<string, Record<string, unknown>> | null) ?? {};
   const mergedProv: Record<string, Record<string, unknown>> = {
     ...existingProv,
-    [field]: {
+    [column]: {
       source: "user_correction",
       confidence: 1.0, // user-typed → highest confidence
       last_corroborated_at: new Date().toISOString(),
@@ -124,7 +138,7 @@ export async function POST(req: NextRequest) {
   // ── Update ──────────────────────────────────────────────────────────────
   const { error: updateErr } = await supabase
     .from("insurance_plans")
-    .update({ [field]: value, field_provenance: mergedProv })
+    .update({ [column]: value, field_provenance: mergedProv })
     .eq("id", planId);
   if (updateErr) {
     return NextResponse.json(

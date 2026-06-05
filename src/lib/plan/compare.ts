@@ -16,6 +16,18 @@ import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import type { DecorationContext } from "@/lib/plan/analyze-decoration";
 import type { BestForTag } from "@/lib/plan/best-for";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
+import {
+  resolveSecondaryCoverage,
+  loadBillSlugMeta,
+  loadPlanCoverageMeta,
+  loadCanonicalCoverageMeta,
+  loadSecondaryGate,
+  type BillSlugMeta,
+  type CoveredSlugMeta,
+  type SecondaryCoverage,
+  type SecondaryMatchGate,
+} from "@/lib/audit/coverage-loader";
 
 export type PlanRef =
   | { kind: "canonical"; id: string }
@@ -50,6 +62,22 @@ export interface CompareBenefit {
     priorAuthRequired: any;
   };
   covered: boolean | null;
+  /**
+   * S161 (#1/#3) — present ONLY on a synthesized gap-fill benefit: this plan has
+   * no enumerated row for the service, but coverage was inferred from a
+   * same-category covered sibling (`preventive_care` → `annual_physical`) or the
+   * ACA-preventive $0 statutory floor. Display surfaces badge it as an estimate
+   * (Display State v5 `estimate`; never "verified") and exclude it from
+   * competitive verdicts. Read-time inference only — never persisted.
+   */
+  inferred?: CompareCoverageInference | null;
+}
+
+/** S161 (#1/#3) — how a synthesized compare benefit's coverage was inferred. */
+export interface CompareCoverageInference {
+  source: "secondary_match" | "aca_preventive";
+  /** Covered sibling slug coverage was borrowed from; null for the ACA $0 floor. */
+  matchedSlug: string | null;
 }
 
 export interface ComparePlanSummary {
@@ -68,6 +96,15 @@ export interface ComparePlanSummary {
   metalLevel: string | null;
   state: string | null;
   year: number | null;
+  // PR4 (Compare v2) — paycheck-share + family ceilings for the premium model +
+  // Yearly Lens. Raw math inputs (undecorated); premium-model / yearly-model read
+  // them as OPTIONAL, so pre-PR4 callers stay correct. Canonical plans have no
+  // paycheck split → employee/subsidy/frequency are null there.
+  premiumEmployee: number | null;
+  premiumSubsidy: number | null;
+  premiumFrequency: string | null;
+  inDeductibleFamily: number | null;
+  inOopMaxFamily: number | null;
 }
 
 export interface ComparePlanPayload {
@@ -195,7 +232,7 @@ export async function resolveCanonicalPlan(opts: {
   const { data: plan, error } = await supabase
     .from("canonical_plans")
     .select(
-      "id, insurer_id, plan_name, plan_type, state, plan_year, metal_level, deductible_individual, oop_max_individual, premium_monthly, field_provenance, verification_count",
+      "id, insurer_id, plan_name, plan_type, state, plan_year, metal_level, deductible_individual, oop_max_individual, deductible_family, oop_max_family, premium_monthly, field_provenance, verification_count",
     )
     .eq("id", canonicalPlanId)
     .single();
@@ -373,6 +410,13 @@ export async function resolveCanonicalPlan(opts: {
       metalLevel: plan.metal_level,
       state: plan.state,
       year: plan.plan_year,
+      // Canonical = community aggregate; no paycheck split. Family ceilings come
+      // from the canonical row when present (PR4 Yearly Lens household math).
+      premiumEmployee: null,
+      premiumSubsidy: null,
+      premiumFrequency: null,
+      inDeductibleFamily: (plan.deductible_family as number | null) ?? null,
+      inOopMaxFamily: (plan.oop_max_family as number | null) ?? null,
     },
     benefits,
     coveredServiceCount: benefits.filter((b) => b.covered !== false).length,
@@ -566,6 +610,14 @@ export async function resolveUserPlan(opts: {
       metalLevel: (plan.metal_level as string | null) ?? null,
       state: (plan.state as string | null) ?? null,
       year: (plan.plan_year as number | null) ?? null,
+      // PR4 — real paycheck-share + family ceilings from the user's insurance_plans
+      // row (premium-model prefers employee net subsidy; yearly-model uses family
+      // ceilings for households >1).
+      premiumEmployee: (plan.premium_employee as number | null) ?? null,
+      premiumSubsidy: (plan.premium_subsidy as number | null) ?? null,
+      premiumFrequency: (plan.premium_frequency as string | null) ?? null,
+      inDeductibleFamily: (plan.in_deductible_family as number | null) ?? null,
+      inOopMaxFamily: (plan.in_oop_max_family as number | null) ?? null,
     },
     benefits,
     coveredServiceCount: benefits.filter((b) => b.covered !== false).length,
@@ -573,4 +625,145 @@ export async function resolveUserPlan(opts: {
     isOwnedByUser: true,
     corroborationCount,
   };
+}
+
+// ============================================================================
+// S161 (#1/#3) — /compare preventive secondary backstop
+// ============================================================================
+//
+// The compare grid builds each service ROW from the UNION of slugs across the
+// cohort; a plan that lacks a slug renders "Not listed yet" (unk) — even when it
+// covers that preventive service under a sibling name (it lists `preventive_care`
+// but not `annual_physical`) or is ACA-mandated to cover it at $0. This ports the
+// claims-path `resolveSecondaryCoverage` (same-category sibling → ACA $0 floor)
+// to the compare surface so those cells read "covered" instead of falsely
+// "not listed", extending the S154 "one shared resolver, can't drift" unification
+// to a 4th surface.
+//
+// Scope is deliberately tight (Andrew, S161): ONLY preventive-eligible target
+// slugs (the reported problem; preventive is reliably $0 / homogeneous) and ONLY
+// the resolver's `confident` verdict — never a heterogeneous/uncertain borrow,
+// which on a comparison grid would be a misleading cost (e.g. lending a PCP copay
+// to a specialist cell). The claims path stays the place where estimate-confidence
+// borrows + a Verify affordance live (there the user has a bill for the exact
+// service). Read-time inference only — no writes; every synthesized cell is
+// flagged `inferred` so the UI badges it as an estimate and drops it from
+// competitive verdicts.
+
+function buildInferredBenefit(
+  slug: string,
+  category: string | null,
+  sec: SecondaryCoverage,
+): CompareBenefit {
+  const cov = sec.coverage;
+  return {
+    serviceSlug: slug,
+    category: category ?? "other",
+    title: titleCase(slug),
+    costInNetworkDescription: describeCost({
+      copay: cov.copay ?? null,
+      coinsurance: cov.coinsurance ?? null,
+      // Preventive sibling / ACA coverage is not deductible-gated, and the
+      // borrowed coverage carries no deductible signal either way.
+      deductibleApplies: false,
+      description: null,
+      covered: cov.covered ?? true,
+    }),
+    // OON is never inferred — it stays unk/na honestly (compare_v2 §6 item 2).
+    costOutOfNetworkDescription: "—",
+    costSharing: {
+      inNetwork: {
+        copay: cov.copay ?? null,
+        coinsurance: cov.coinsurance ?? null,
+        deductibleApplies: false,
+      },
+      outOfNetwork: { copay: null, coinsurance: null, deductibleApplies: null },
+      annualLimit: null,
+      priorAuthRequired: null,
+    },
+    covered: true,
+    inferred: { source: sec.source, matchedSlug: sec.matchedSlug },
+  };
+}
+
+/**
+ * Pure core of the compare backstop (no DB / no flag) so it is unit-testable.
+ * Mutates each payload's `benefits` in place, appending one synthesized inferred
+ * benefit for every PREVENTIVE-eligible cohort-row slug the plan is missing that
+ * resolves to a CONFIDENT secondary coverage.
+ */
+export function computeCompareBackstop(
+  payloads: ComparePlanPayload[],
+  ctx: {
+    billMetaBySlug: Map<string, BillSlugMeta>;
+    coverageByRefId: Map<
+      string,
+      { coveredMeta: CoveredSlugMeta[]; acaCompliant: boolean | null }
+    >;
+    gate: SecondaryMatchGate;
+  },
+): void {
+  const unionSlugs = Array.from(
+    new Set(payloads.flatMap((p) => p.benefits.map((b) => b.serviceSlug).filter(Boolean))),
+  );
+  if (unionSlugs.length === 0) return;
+  for (const p of payloads) {
+    const cov = ctx.coverageByRefId.get(p.ref.id);
+    if (!cov) continue;
+    const present = new Set(p.benefits.map((b) => b.serviceSlug));
+    for (const slug of unionSlugs) {
+      if (present.has(slug)) continue;
+      const bm = ctx.billMetaBySlug.get(slug);
+      // Preventive-only scope: the reported #1/#3 case, and the one category where
+      // a same-category borrow is reliably correct ($0).
+      if (!bm || !bm.isPreventiveEligible) continue;
+      const sec = resolveSecondaryCoverage(slug, bm, cov.coveredMeta, cov.acaCompliant, ctx.gate);
+      if (!sec || sec.confidence !== "confident") continue;
+      p.benefits.push(buildInferredBenefit(slug, bm.category, sec));
+      present.add(slug);
+    }
+  }
+}
+
+/**
+ * S161 (#1/#3) — DB-backed wrapper: gated on `secondary_coverage_v2` (OFF →
+ * no-op → byte-identical payload), loads the cohort's bill-slug metadata + each
+ * plan's covered-sibling context (canonical via the metal→ACA proxy; user plans
+ * via their own `is_aca_compliant`), then runs the pure backstop. Call AFTER the
+ * best-for tags so they stay grounded in enumerated (non-inferred) coverage.
+ */
+export async function applyCompareSecondaryBackstop(
+  supabase: SupabaseClient,
+  payloads: ComparePlanPayload[],
+): Promise<void> {
+  if (payloads.length === 0) return;
+  if (!(await isFeatureEnabled("secondary_coverage_v2"))) return;
+
+  const unionSlugs = Array.from(
+    new Set(payloads.flatMap((p) => p.benefits.map((b) => b.serviceSlug).filter(Boolean))),
+  );
+  if (unionSlugs.length === 0) return;
+
+  const canonicalIds = payloads.filter((p) => p.ref.kind === "canonical").map((p) => p.ref.id);
+  const userPlanIds = payloads.filter((p) => p.ref.kind === "user_plan").map((p) => p.ref.id);
+
+  const [billMetaBySlug, gate, canonMeta, userMeta] = await Promise.all([
+    loadBillSlugMeta(supabase, unionSlugs),
+    loadSecondaryGate(supabase),
+    loadCanonicalCoverageMeta(supabase, canonicalIds),
+    loadPlanCoverageMeta(supabase, userPlanIds),
+  ]);
+
+  const coverageByRefId = new Map<
+    string,
+    { coveredMeta: CoveredSlugMeta[]; acaCompliant: boolean | null }
+  >();
+  for (const [id, m] of canonMeta) {
+    coverageByRefId.set(id, { coveredMeta: m.coveredMeta, acaCompliant: m.acaCompliant });
+  }
+  for (const [id, m] of userMeta) {
+    coverageByRefId.set(id, { coveredMeta: m.coveredMeta, acaCompliant: m.acaCompliant });
+  }
+
+  computeCompareBackstop(payloads, { billMetaBySlug, coverageByRefId, gate });
 }
