@@ -5,6 +5,17 @@ import { useAuth } from "@/lib/auth/auth-context";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
+interface AdversarialAssessmentMeta {
+  score: number;
+  flagged: boolean;
+  assessable: boolean;
+  reasons: { code: string; weight: number; detail: string }[];
+  mode: "shadow" | "enforce";
+  threshold: number;
+  review_state: "unreviewed" | "confirmed" | "cleared";
+  ruleset_version?: string;
+}
+
 interface DocRecord {
   id: string;
   file_name: string;
@@ -25,6 +36,7 @@ interface DocRecord {
   user_id: string;
   user_email?: string;
   file_hash: string | null;
+  metadata?: { adversarial_pdf_assessment?: AdversarialAssessmentMeta } | null;
 }
 
 interface PlanDetail {
@@ -38,7 +50,7 @@ interface PlanDetail {
   servicesCount: number;
 }
 
-type StatusFilter = "all" | "pending_review" | "processed" | "error" | "rejected" | "queued";
+type StatusFilter = "all" | "pending_review" | "processed" | "error" | "rejected" | "queued" | "adversarial";
 
 const STATUS_COLORS: Record<string, string> = {
   processed: "bg-green-100 text-green-700",
@@ -58,6 +70,7 @@ const STATUS_LABELS: Record<string, string> = {
   queued: "Queued",
   processing: "Processing",
   uploaded: "Uploaded",
+  adversarial: "⚠ Adversarial",
 };
 
 // ─── Component ──────────────────────────────────────────────────────────────
@@ -110,7 +123,7 @@ export default function DocumentReviewPage() {
     try {
       const data = await adminQuery({
         table: "documents",
-        select: "id, file_name, file_size, doc_type, classified_type, classification_confidence, type_mismatch, status, processing_step, processing_total_pages, processing_completed_pages, processing_error, processing_started_at, linked_insurance_plan_id, insurer_mismatch, created_at, user_id, file_hash",
+        select: "id, file_name, file_size, doc_type, classified_type, classification_confidence, type_mismatch, status, processing_step, processing_total_pages, processing_completed_pages, processing_error, processing_started_at, linked_insurance_plan_id, insurer_mismatch, created_at, user_id, file_hash, metadata",
         order: { column: "created_at", ascending: false },
         limit: 200,
       });
@@ -198,6 +211,19 @@ export default function DocumentReviewPage() {
     setProcessing(docId);
     await adminPatch("documents", docId, { status: "rejected" });
     setDocuments((prev) => prev.map((d) => d.id === docId ? { ...d, status: "rejected" } : d));
+    setProcessing(null);
+  }
+
+  // Ing-G.2/3 — confirm/clear an adversarial flag. Read-modify-write the nested
+  // metadata via the generic admin PATCH; never touches the doc's status (admin
+  // triage only — the scorer never auto-rejects).
+  async function setAdversarialReview(doc: DocRecord, state: "confirmed" | "cleared") {
+    const a = doc.metadata?.adversarial_pdf_assessment;
+    if (!a) return;
+    setProcessing(doc.id);
+    const newMetadata = { ...(doc.metadata ?? {}), adversarial_pdf_assessment: { ...a, review_state: state } };
+    await adminPatch("documents", doc.id, { metadata: newMetadata });
+    setDocuments((prev) => prev.map((d) => (d.id === doc.id ? { ...d, metadata: newMetadata } : d)));
     setProcessing(null);
   }
 
@@ -311,7 +337,18 @@ export default function DocumentReviewPage() {
     }
   }
 
-  const filtered = filter === "all" ? documents : documents.filter((d) => d.status === filter);
+  // Ing-G.2/3 — the adversarial work-list: flagged ∧ not-yet-reviewed (any mode;
+  // shadow rows are shown for FP measurement + carry a "shadow" chip).
+  const adversarialDocs = documents.filter((d) => {
+    const a = d.metadata?.adversarial_pdf_assessment;
+    return a?.flagged === true && a.review_state === "unreviewed";
+  });
+  const adversarialCount = adversarialDocs.length;
+  const filtered = filter === "all"
+    ? documents
+    : filter === "adversarial"
+      ? adversarialDocs
+      : documents.filter((d) => d.status === filter);
   const pendingCount = documents.filter((d) => d.status === "pending_review").length;
 
   // Precompute stuck document IDs (processing >10min with no progress)
@@ -377,8 +414,8 @@ export default function DocumentReviewPage() {
 
       {/* Status filter tabs */}
       <div className="flex gap-1 mb-4 overflow-x-auto">
-        {(["pending_review", "all", "processed", "error", "queued", "rejected"] as StatusFilter[]).map((tab) => {
-          const count = tab === "all" ? documents.length : (statusCounts[tab] || 0);
+        {(["pending_review", "adversarial", "all", "processed", "error", "queued", "rejected"] as StatusFilter[]).map((tab) => {
+          const count = tab === "all" ? documents.length : tab === "adversarial" ? adversarialCount : (statusCounts[tab] || 0);
           if (tab !== "all" && tab !== "pending_review" && count === 0) return null;
           return (
             <button
@@ -507,6 +544,7 @@ export default function DocumentReviewPage() {
             const isPending = doc.status === "pending_review";
             const isError = doc.status === "error";
             const isStuck = stuckDocIds.has(doc.id);
+            const adv = doc.metadata?.adversarial_pdf_assessment;
 
             return (
               <div key={doc.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
@@ -522,6 +560,14 @@ export default function DocumentReviewPage() {
                         <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0 ${STATUS_COLORS[doc.status] || "bg-gray-100 text-gray-600"}`}>
                           {STATUS_LABELS[doc.status] || doc.status}
                         </span>
+                        {adv?.flagged && (
+                          <span
+                            title={adv.reasons.map((r) => `${r.code}: ${r.detail}`).join(" · ")}
+                            className="text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0 bg-purple-100 text-purple-700"
+                          >
+                            ⚠ {adv.score.toFixed(2)}{adv.mode === "shadow" ? " shadow" : ""}
+                          </span>
+                        )}
                       </div>
                       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-gray-500">
                         <span>Selected: {doc.doc_type}</span>
@@ -583,6 +629,26 @@ export default function DocumentReviewPage() {
                         >
                           Block hash
                         </button>
+                      )}
+                      {filter === "adversarial" && adv && (
+                        <>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setAdversarialReview(doc, "cleared"); }}
+                            disabled={processing === doc.id}
+                            className="px-3 py-1.5 text-xs font-semibold text-green-600 border border-green-200 rounded-lg hover:bg-green-50 disabled:opacity-50"
+                            title="Not adversarial — clear the flag (real document)"
+                          >
+                            {processing === doc.id ? "..." : "Clear (real)"}
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setAdversarialReview(doc, "confirmed"); }}
+                            disabled={processing === doc.id}
+                            className="px-3 py-1.5 text-xs font-semibold text-white bg-purple-600 rounded-lg hover:bg-purple-700 disabled:opacity-50"
+                            title="Confirm this document is adversarial"
+                          >
+                            Confirm
+                          </button>
+                        </>
                       )}
                       <svg
                         className={`w-4 h-4 text-gray-400 transition-transform ${isExpanded ? "rotate-180" : ""}`}

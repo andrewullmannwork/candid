@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Summary of Benefits and Coverage (SBC) - AuraHealth Assurance</title>
+    <style>
+        body {
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            color: #333333;
+            line-height: 1.4;
+            margin: 30px;
+            background-color: #ffffff;
+        }
+        .sbc-container {
+            max-width: 950px;
+            margin: 0 auto;
+            border: 1px solid #cbd5e1;
+            padding: 20px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        .sbc-header {
+            border-bottom: 3px solid #0f4c81;
+            padding-bottom: 15px;
+            margin-bottom: 20px;
+        }
+        .header-top {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .header-top td {
+            vertical-align: bottom;
+            padding: 0;
+        }
+        .title-area h1 {
+            color: #0f4c81;
+            margin: 0 0 4px 0;
+            font-size: 26px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: -0.5px;
+        }
+        .title-area h2 {
+            color: #475569;
+            margin: 0;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        .meta-area {
+            text-align: right;
+            font-size: 13px;
+            color: #334155;
+        }
+        .meta-area div {
+            margin-bottom: 3px;
+        }
+        .meta-label {
+            font-weight: bold;
+            color: #0f4c81;
+        }
+        .disclosure-box {
+            background-color: #f8fafc;
+            border: 1px solid #e2e8f0;
+            padding: 12px;
+            font-size: 12px;
+            color: #475569;
+            margin-bottom: 25px;
+            border-left: 4px solid #0f4c81;
+        }
+        .section-title {
+            background-color: #0f4c81;
+            color: #ffffff;
+            padding: 8px 12px;
+            font-size: 15px;
+            font-weight: bold;
+            margin-top: 30px;
+            margin-bottom: 0;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        table.sbc-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+        table.sbc-table th {
+            background-color: #f1f5f9;
+            color: #1e293b;
+            font-size: 13px;
+            font-weight: 700;
+            text-align: left;
+            padding: 10px;
+            border: 1px solid #cbd5e1;
+        }
+        table.sbc-table td {
+            padding: 10px;
+            border: 1px solid #cbd5e1;
+            font-size: 13px;
+            vertical-align: top;
+        }
+        .question-col {
+            width: 25%;
+            font-weight: bold;
+            color: #0f4c81;
+            background-color: #f8fafc;
+        }
+        .answer-col {
+            width: 30%;
+            font-weight: 600;
+        }
+        .explanation-col {
+            width: 45%;
+            color: #334155;
+        }
+        .event-row td {
+            background-color: #e2e8f0;
+            font-weight: bold;
+            color: #0f4c81;
+            font-size: 14px;
+            border-top: 2px solid #0f4c81;
+        }
+        .service-col {
+            width: 25%;
+            padding-left: 20px !important;
+            font-weight: 600;
+        }
+        .network-col {
+            width: 25%;
+        }
+        .out-network-col {
+            width: 25%;
+        }
+        .limit-col {
+            width: 25%;
+            color: #475569;
+            font-size: 12px;
+        }
+        .bullet-list {
+            margin: 0;
+            padding-left: 18px;
+        }
+        .bullet-list li {
+            margin-bottom: 4px;
+        }
+        .text-accent {
+            color: #b91c1c;
+            font-weight: bold;
+        }
+        .examples-container {
+            margin-top: 25px;
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .examples-container td {
+            width: 50%;
+            padding: 0;
+            vertical-align: top;
+        }
+        .examples-container td:first-child {
+            padding-right: 15px;
+        }
+        .examples-container td:last-child {
+            padding-left: 15px;
+        }
+        .example-box {
+            border: 1px solid #cbd5e1;
+            border-top: 4px solid #10b981;
+        }
+        .example-box.diabetes {
+            border-top: 4px solid #f59e0b;
+        }
+        .example-header {
+            padding: 12px;
+            background-color: #f8fafc;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        .example-title {
+            font-size: 15px;
+            font-weight: bold;
+            color: #1e293b;
+        }
+        .example-subtitle {
+            font-size: 12px;
+            color: #64748b;
+            margin-top: 2px;
+        }
+        .example-body {
+            padding: 12px;
+            font-size: 13px;
+        }
+        .example-cost-list {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+            margin-bottom: 10px;
+        }
+        .example-cost-list td {
+            padding: 4px 0;
+            border: none;
+            width: auto;
+        }
+        .example-cost-list td:last-child {
+            text-align: right;
+            font-weight: bold;
+        }
+        .example-total-box {
+            background-color: #f1f5f9;
+            padding: 8px 12px;
+            margin-top: 12px;
+            border-radius: 4px;
+        }
+        .example-total-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .example-total-table td {
+            padding: 2px 0;
+            border: none;
+        }
+        .example-total-table tr.grand-total td {
+            font-size: 14px;
+            font-weight: bold;
+            color: #0f4c81;
+            padding-top: 6px;
+            border-top: 1px solid #cbd5e1;
+        }
+    </style>
+</head>
+<body>
+
+<div class="sbc-container">
+    
+    <div class="sbc-header">
+        <table class="header-top">
+            <tr>
+                <td class="title-area">
+                    <h1>Summary of Benefits and Coverage</h1>
+                    <h2>What this Plan Covers & What You Pay For Benefits</h2>
+                </td>
+                <td class="meta-area">
+                    <div><span class="meta-label">Insurer:</span> AuraHealth Assurance</div>
+                    <div><span class="meta-label">Plan:</span> AuraPeak Premier Gold 1500</div>
+                    <div><span class="meta-label">Coverage Period:</span> 01/01/2027 – 12/31/2027</div>
+                    <div><span class="meta-label">Coverage Type:</span> Individual/Family | Plan Type: EPO</div>
+                </td>
+            </tr>
+        </table>
+    </div>
+
+    <div class="disclosure-box">
+        <strong>This is only a summary.</strong> Of the coverage highlights under this plan, it does not bindingly include all definitions, exclusions, or limitations. For complete operational terms, structural parameters, and comprehensive plan details, please review the full <em>Evidence of Coverage (EOC)</em> documentation accessible via online customer portals or by calling 1-800-555-AURA.
+    </div>
+
+    <div class="section-title">Important Questions</div>
+    <table class="sbc-table">
+        <thead>
+            <tr>
+                <th style="width: 25%;">Important Questions</th>
+                <th style="width: 30%;">Answers</th>
+                <th style="width: 45%;">Why This Matters:</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td class="question-col">What is the overall deductible?</td>
+                <td class="answer-col">$1,500 <span style="font-weight:normal; font-size:12px; color:#475569;">Individual</span> /<br>$3,000 <span style="font-weight:normal; font-size:12px; color:#475569;">Family</span></td>
+                <td class="explanation-col">Generally, you must pay all of the costs from providers up to the deductible amount before this plan begins to pay. Your deductible resets on January 1st of each calendar year.</td>
+            </tr>
+            <tr>
+                <td class="question-col">Are there services covered before you meet your deductible?</td>
+                <td class="answer-col"><span style="color: #10b981;">Yes.</span> Preventive care and office visits are covered before you meet your deductible.</td>
+                <td class="explanation-col">This plan covers certain items and services even if you haven't yet met the deductible amount. But a copayment or coinsurance may apply. For example, this plan covers preventive care at no cost.</td>
+            </tr>
+            <tr>
+                <td class="question-col">Are there other deductibles for specific services?</td>
+                <td class="answer-col">No.</td>
+                <td class="explanation-col">You don't have to meet deductibles for specific services under this plan layout.</td>
+            </tr>
+            <tr>
+                <td class="question-col">What is the out-of-pocket limit for this plan?</td>
+                <td class="answer-col">$6,500 <span style="font-weight:normal; font-size:12px; color:#475569;">Individual</span> /<br>$13,000 <span style="font-weight:normal; font-size:12px; color:#475569;">Family</span></td>
+                <td class="explanation-col">The out-of-pocket limit is the most you could pay in a year for covered services. If you have other family members in this plan, they have to meet their own out-of-pocket limits until the overall family limit is met.</td>
+            </tr>
+            <tr>
+                <td class="question-col">What is not included in the out-of-pocket limit?</td>
+                <td class="answer-col">Premiums, balance-billing charges, and health care this plan doesn't cover.</td>
+                <td class="explanation-col">Even though you pay these expenses, they don't count toward the out-of-pocket limit.</td>
+            </tr>
+            <tr>
+                <td class="question-col">Will you pay less if you use a network provider?</td>
+                <td class="answer-col"><span style="color: #10b981;">Yes.</span> See AuraHealth.com or call 1-800-555-AURA for a list of network providers.</td>
+                <td class="explanation-col">This plan uses a provider network. You will pay less if you use a provider in the plan's network. You will pay the most if you use an out-of-network provider, and you might receive a bill from a provider for the difference between the provider's charge and what your plan pays (balance billing).</td>
+            </tr>
+            <tr>
+                <td class="question-col">Do you need a referral to see a specialist?</td>
+                <td class="answer-col">No.</td>
+                <td class="explanation-col">You can see the specialist you choose without permission or an advance referral from a primary care provider.</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="section-title">Common Medical Events &amp; Covered Services</div>
+    <table class="sbc-table">
+        <thead>
+            <tr>
+                <th style="width: 25%;">Common Medical Event</th>
+                <th style="width: 25%;">Services You May Need</th>
+                <th style="width: 25%;">Network Provider<br><span style="font-size:11px; font-weight:normal; color:#475569;">(You will pay the least)</span></th>
+                <th style="width: 25%;">Out-of-Network Provider<br><span style="font-size:11px; font-weight:normal; color:#b91c1c;">(You will pay the most)</span></th>
+                <th style="width: 25%;">Limitations, Exceptions, &amp; Other Important Info</th>
+            </tr>
+        </thead>
+        <tbody>
+            
+            <tr class="event-row">
+                <td colspan="5">If you visit a health care provider’s office or clinic</td>
+            </tr>
+            <tr>
+                <td class="service-col">&nbsp;</td>
+                <td>Primary care visit to treat an injury or illness</td>
+                <td>$25 copay / visit<br><span style="font-size:11px; color:#64748b;">Deductible does not apply</span></td>
+                <td class="text-accent">Not Covered</td>
+                <td class="limit-col">None.</td>
+            </tr>
+            <tr>
+                <td class="service-col">&nbsp;</td>
+                <td>Specialist visit</td>
+                <td>$50 copay / visit<br><span style="font-size:11px; color:#64748b;">Deductible does not apply</span></td>
+                <td class="text-accent">Not Covered</td>
+                <td class="limit-col">None.</td>
+            </tr>
+            <tr>
+                <td class="service-col">&nbsp;</td>
+                <td>Preventive care / screening / immunization</td>
+                <td>No Charge</td>
+                <td class="text-accent">Not Covered</td>
+                <td class="limit-col">Frequency limitations may apply depending on age and clinical guidelines.</td>
+            </tr>
+
+            <tr class="event-row">
+                <td colspan="5">If you have a test</td>
+            </tr>
+            <tr>
+                <td class="service-col">&nbsp;</td>
+                <td>Diagnostic test (x-ray, blood work)</td>
+                <td>$40 copay / test<br><span style="font-size:11px; color:#64748b;">Deductible does not apply</span></td>
+                <td class="text-accent">Not Covered</td>
+                <td class="limit-col">Prior authorization may be required for advanced diagnostic testing profiles.</td>
+            </tr>
+            <tr>
+                <td class="service-col">&nbsp;</td>
+                <td>Imaging (CT/PET scans, MRIs)</td>
+                <td>20% coinsurance<br><span style="font-size:11px; color:#64748b;">After deductible</span></td>
+                <td class="text-accent">Not Covered</td>
+                <td class="limit-col">Prior authorization is required. Failure to obtain authorization may result in denial.</td>
+            </tr>
+
+            <tr class="event-row">
+                <td colspan="5">If you need drugs to treat your illness or condition</td>
+            </tr>
+            <tr>
+                <td class="service-col">&nbsp;</td>
+                <td>Tier 1 (Generic Preferred)</td>
+                <td>$10 copay / prescription<br><span style="font-size:11px; color:#64748b;">Deductible does not apply</span></td>
+                <td class="text-accent">Not Covered</td>
+                <td class="limit-col" rowspan="3">Covers up to a 30-day supply (retail) or 90-day supply (mail-order). Mail order cost sharing matches double the retail rate. Pre-authorization needed for specific classes.</td>
+            </tr>
+            <tr>
+                <td class="service-col">&nbsp;</td>
+                <td>Tier 2 (Preferred Brand)</td>
+                <td>$40 copay / prescription<br><span style="font-size:11px; color:#64748b;">Deductible does not apply</span></td>
+                <td class="text-accent">Not Covered</td>
+            </tr>
+            <tr>
+                <td class="service-col">&nbsp;</td>
+                <td>Tier 3 (Non-Preferred Brand)</td>
+                <td>$80 copay / prescription<br><span style="font-size:11px; color:#64748b;">Deductible does not apply</span></td>
+                <td class="text-accent">Not Covered</td>
+            </tr>
+
+            <tr class="event-row">
+                <td colspan="5">If you have outpatient surgery</td>
+            </tr>
+            <tr>
+                <td class="service-col">&nbsp;</td>
+                <td>Facility fee (e.g., ambulatory surgery center)</td>
+                <td>20% coinsurance<br><span style="font-size:11px; color:#64748b;">After deductible</span></td>
+                <td class="text-accent">Not Covered</td>
+                <td class="limit-col">Prior authorization is required.</td>
+            </tr>
+            <tr>
+                <td class="service-col">&nbsp;</td>
+                <td>Physician/surgeon fees</td>
+                <td>20% coinsurance<br><span style="font-size:11px; color:#64748b;">After deductible</span></td>
+                <td class="text-accent">Not Covered</td>
+                <td class="limit-col">None.</td>
+            </tr>
+
+            <tr class="event-row">
+                <td colspan="5">If you need immediate medical attention</td>
+            </tr>
+            <tr>
+                <td class="service-col">&nbsp;</td>
+                <td>Emergency room care</td>
+                <td>$250 copay / visit<br><span style="font-size:11px; color:#64748b;">After deductible</span></td>
+                <td>$250 copay / visit<br><span style="font-size:11px; color:#64748b;">After deductible</span></td>
+                <td class="limit-col">Out-of-network emergency services are covered at the network cost-sharing tier level. Copay waived if admitted.</td>
+            </tr>
+            <tr>
+                <td class="service-col">&nbsp;</td>
+                <td>Emergency medical transportation</td>
+                <td>20% coinsurance<br><span style="font-size:11px; color:#64748b;">After deductible</span></td>
+                <td>20% coinsurance<br><span style="font-size:11px; color:#64748b;">After deductible</span></td>
+                <td class="limit-col">None.</td>
+            </tr>
+            <tr>
+                <td class="service-col">&nbsp;</td>
+                <td>Urgent care</td>
+                <td>$50 copay / visit<br><span style="font-size:11px; color:#64748b;">Deductible does not apply</span></td>
+                <td class="text-accent">Not Covered</td>
+                <td class="limit-col">None.</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="section-title">About these Coverage Examples</div>
+    <div style="font-size: 13px; color:#475569; margin-top:10px; margin-bottom:15px;">
+        This is not a cost estimator. Treatments shown are examples of how this plan might cover medical care. Your actual costs will be different depending on the actual care you receive, the prices your providers charge, and many other factors. Focus on the cost-sharing amounts (deductibles, copayments and coinsurance) and exclusions under the plan.
+    </div>
+
+    <table class="examples-container">
+        <tr>
+            <td>
+                <div class="example-box">
+                    <div class="example-header">
+                        <div class="example-title">Peggy's Routine Office Maternity Care</div>
+                        <div class="example-subtitle">Expected Routine OB/GYN Visits &amp; Standard Lab Diagnostics</div>
+                    </div>
+                    <div class="example-body">
+                        <div style="font-weight: 600; color:#1e293b;">Total Example Cost: $3,200</div>
+                        <div style="margin-top: 10px; font-size:12px; color:#475569;">In this example, Peggy would pay:</div>
+                        
+                        <table class="example-cost-list">
+                            <tr>
+                                <td>Deductibles</td>
+                                <td>$0</td>
+                            </tr>
+                            <tr>
+                                <td>Copayments</td>
+                                <td>$320</td>
+                            </tr>
+                            <tr>
+                                <td>Coinsurance</td>
+                                <td>$0</td>
+                            </tr>
+                        </table>
+
+                        <div class="example-total-box">
+                            <table class="example-total-table">
+                                <tr>
+                                    <td>What isn't covered (Exclusions)</td>
+                                    <td>$20</td>
+                                </tr>
+                                <tr class="grand-total">
+                                    <td>The total Peggy will pay is:</td>
+                                    <td>$340</td>
+                                </tr>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </td>
+
+            <td>
+                <div class="example-box diabetes">
+                    <div class="example-header">
+                        <div class="example-title">Joe's Managing Type 2 Diabetes</div>
+                        <div class="example-subtitle">Routine Maintenance, Primary Care, &amp; Generic Prescription Supplies</div>
+                    </div>
+                    <div class="example-body">
+                        <div style="font-weight: 600; color:#1e293b;">Total Example Cost: $2,100</div>
+                        <div style="margin-top: 10px; font-size:12px; color:#475569;">In this example, Joe would pay:</div>
+                        
+                        <table class="example-cost-list">
+                            <tr>
+                                <td>Deductibles</td>
+                                <td>$0</td>
+                            </tr>
+                            <tr>
+                                <td>Copayments</td>
+                                <td>$480</td>
+                            </tr>
+                            <tr>
+                                <td>Coinsurance</td>
+                                <td>$0</td>
+                            </tr>
+                        </table>
+
+                        <div class="example-total-box">
+                            <table class="example-total-table">
+                                <tr>
+                                    <td>What isn't covered (Exclusions)</td>
+                                    <td>$40</td>
+                                </tr>
+                                <tr class="grand-total">
+                                    <td>The total Joe will pay is:</td>
+                                    <td>$520</td>
+                                </tr>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </td>
+        </tr>
+    </table>
+
+</div>
+
+</body>
+</html>
