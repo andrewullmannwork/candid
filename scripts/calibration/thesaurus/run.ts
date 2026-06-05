@@ -5,12 +5,17 @@
  *
  * Run: npx tsx scripts/calibration/thesaurus/run.ts <snapshot-dir> [baseline-forward.json]
  *   <snapshot-dir> contains: gt.json, forward.json, stored.json, cohorts-snapshot.json, b5-baseline.json, b5-current.json
+ *   (+ convergence.json from the N-run producer; optional)
+ *
+ * Gate (§7.6, S168 reframe): the hard gate is B2-vs-oracle ≥ GATE_B2 + B1 ≥ GATE_B1 on the N-run
+ * majority. Pass GATE_B2 / GATE_B1 env to ENFORCE (exit 3 on miss); omit for report-only (Step 4).
+ * The before/after ledger is DIAGNOSTIC (two stochastic runs, noise-confounded) — reported, never fatal.
  */
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve, join } from "path";
 import { buildScoreCard } from "./score";
 import { loadGt } from "./gt-loader";
-import type { ForwardMapEntry, StoredCanonical, CohortSnapshot, B5Counts, ScoreCard } from "./types";
+import type { ForwardMapEntry, StoredCanonical, CohortSnapshot, B5Counts, ScoreCard, ConvergenceReport } from "./types";
 
 const readJson = <T>(p: string): T => JSON.parse(readFileSync(p, "utf8")) as T;
 
@@ -66,6 +71,23 @@ ${s.overCollapse.length === 0 ? "_none flagged_" : s.overCollapse.map((o) => `  
 `;
 }
 
+function convergenceMd(c: ConvergenceReport): string {
+  const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
+  const hist = (h: Record<number, number>) =>
+    Object.keys(h).map(Number).sort((a, b) => b - a).map((k) => `${k}/${c.nRuns}:${h[k]}`).join(" · ");
+  return `
+
+## N-run majority convergence (N=${c.nRuns}) — gate stability
+| scope | mean agreement | unstable (<unanimous) | fragile (margin≤1) |
+|---|---|---|---|
+| all scored | ${pct(c.meanAgreementAll)} | ${c.unstableAll} | ${c.fragileAll} |
+| **andrew (B2 subset)** | **${pct(c.meanAgreementAndrew)}** | ${c.unstableAndrew} | **${c.fragileAndrew}** |
+
+tie-broken (count-tie → confidence/lex): ${c.tieBroken} · agreement histogram (andrew): ${hist(c.histogramAndrew)}
+${c.fragileAndrew > 0 ? `\n### fragile andrew entries (one flipped vote changes the answer)\n${c.fragileAndrewSample.map((s) => `  - "${s.serviceName}" → ${s.winner ?? "∅"}  votes: ${JSON.stringify(s.votes)}`).join("\n")}` : "_no fragile andrew entries — the B2 gate is stable_"}
+`;
+}
+
 async function main() {
   const dir = resolve(process.argv[2] ?? "./calibration-out");
   const baselineForwardPath = process.argv[3];
@@ -92,13 +114,30 @@ async function main() {
     gt, forward, baselineForward, stored, cohorts, baselineB5, currentB5, renameMap, oldSlugs,
   });
 
+  // S170: convergence summary (written by the N-run producer) — the gate's stability statement.
+  const convergence = existsSync(join(dir, "convergence.json")) ? readJson<ConvergenceReport>(join(dir, "convergence.json")) : null;
+  const md = scorecardMd(card) + (convergence ? convergenceMd(convergence) : "");
   writeFileSync(join(dir, "scorecard.json"), JSON.stringify(card, null, 2));
-  writeFileSync(join(dir, "scorecard.md"), scorecardMd(card));
-  console.log(scorecardMd(card));
+  writeFileSync(join(dir, "scorecard.md"), md);
+  console.log(md);
   console.log(`\nwrote ${join(dir, "scorecard.json")} + scorecard.md`);
-  if (card.ledger.counts.regressions > 0) {
-    console.error(`\n✗ ${card.ledger.counts.regressions} REGRESSION(S) — phase does not ship (§7 S3 zero-regression).`);
-    process.exit(2);
+
+  // S168 REFRAME (§7.6): the before/after ledger compares two stochastic Haiku runs (noise-confounded)
+  // → DIAGNOSTIC only, NOT the hard gate. Report regressions; never exit-fail on them.
+  if (card.ledger.counts.regressions > 0)
+    console.warn(`\n⚠ ${card.ledger.counts.regressions} ledger regression(s) — DIAGNOSTIC only (§7.6 reframe; the gate is B2-vs-oracle + N-run majority, not the two-run ledger).`);
+
+  // The hard gate (§7.6) — enforced only when thresholds are passed in. Step 6 sets GATE_B2/GATE_B1;
+  // Step 4 runs report-only (no GATE env).
+  const gateB2 = process.env.GATE_B2 ? Number(process.env.GATE_B2) : null;
+  const gateB1 = process.env.GATE_B1 ? Number(process.env.GATE_B1) : null;
+  if (gateB2 !== null || gateB1 !== null) {
+    const b2 = card.b2Precision.precision, b1 = card.b1Forward.recall;
+    const b2ok = gateB2 === null || b2 >= gateB2;
+    const b1ok = gateB1 === null || b1 >= gateB1;
+    console.log(`\nGATE: B2 ${(b2 * 100).toFixed(1)}%${gateB2 !== null ? ` vs ≥${(gateB2 * 100).toFixed(1)}% ${b2ok ? "✓" : "✗"}` : ""} · B1 ${(b1 * 100).toFixed(1)}%${gateB1 !== null ? ` vs ≥${(gateB1 * 100).toFixed(1)}% ${b1ok ? "✓" : "✗"}` : ""}`);
+    if (!b2ok || !b1ok) { console.error("✗ GATE NOT MET"); process.exit(3); }
+    console.log("✓ GATE MET");
   }
 }
 main().catch((e) => { console.error("FATAL:", e.message); process.exit(1); });

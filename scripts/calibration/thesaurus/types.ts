@@ -62,6 +62,35 @@ export interface ForwardMapEntry {
   confidence: number;
   source: ResolutionSource;
   needsReview: boolean;
+  /**
+   * S170 N-run majority: fraction of the N forward runs that agreed with the winning (canon'd) slug
+   * for this gtId. 1.0 = unanimous; undefined on a legacy single-run snapshot. The de-noising signal.
+   */
+  agreement?: number;
+}
+
+/**
+ * S170 N-run majority convergence summary — written by resolve-snapshot.ts, printed by run.ts.
+ * The gate's stability statement: proves the majority is stable (or surfaces the flippy entries).
+ * Computed over ALL scored entries and the andrew-B2 subset separately.
+ */
+export interface ConvergenceReport {
+  nRuns: number;
+  /** votes-for-winner (1..N) -> count of gtIds. */
+  histogramAll: Record<number, number>;
+  histogramAndrew: Record<number, number>;
+  /** entries with ANY disagreement (agreement < 1). */
+  unstableAll: number;
+  unstableAndrew: number;
+  /** entries decided by a single vote (winner − runner-up ≤ 1) — the fragile gate cases. */
+  fragileAll: number;
+  fragileAndrew: number;
+  /** entries whose winner was a count-tie resolved by confidence/lex. */
+  tieBroken: number;
+  meanAgreementAll: number;
+  meanAgreementAndrew: number;
+  /** sample of fragile andrew entries for eyeballing (winner + full vote tally). */
+  fragileAndrewSample: { gtId: string; serviceName: string; winner: string | null; votes: Record<string, number> }[];
 }
 
 /** Stored canonical coverage (service_slug rows) for one canonical plan. */
