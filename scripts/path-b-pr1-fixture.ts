@@ -12,6 +12,10 @@
  *   4. Preserves existing typed-col values for fields OTHER than the one
  *      being promoted (per-field UPDATE semantics).
  *   5. Idempotent across re-runs.
+ *   6. Per-component isolation (S167 Thesaurus): the 4-col unique key
+ *      (migs 147/148) keeps facility/professional and place_of_service
+ *      variants as DISTINCT rows — promoting one component never clobbers
+ *      another.
  *
  * Strategy: insert a synthetic canonical_plans row + canonical_plan_services
  * row with known-drifted typed cols. Call apply_promotion_event with
@@ -114,12 +118,14 @@ async function readCanonical(id: string) {
   return data;
 }
 
-async function readCps(canonicalId: string, serviceSlug: string) {
+async function readCps(canonicalId: string, serviceSlug: string, placeOfService = "any", component = "global") {
   const { data } = await sb
     .from("canonical_plan_services")
-    .select("copay, coinsurance, deductible_applies, is_covered, requires_prior_auth, field_provenance")
+    .select("copay, coinsurance, deductible_applies, is_covered, requires_prior_auth, place_of_service, component, field_provenance")
     .eq("canonical_plan_id", canonicalId)
     .eq("service_slug", serviceSlug)
+    .eq("place_of_service", placeOfService)
+    .eq("component", component)
     .single();
   return data;
 }
@@ -130,6 +136,8 @@ async function applyPromotion(
   serviceSlug: string | null,
   fieldName: string,
   value: unknown,
+  placeOfService = "any",
+  component = "global",
 ): Promise<string | null> {
   const { data, error } = await sb.rpc("apply_promotion_event", {
     p_canonical_plan_id: canonicalId,
@@ -140,6 +148,8 @@ async function applyPromotion(
     p_fire_source: "fixture",
     p_actor_user_id: null,
     p_force_event_type: "admin_override",
+    p_place_of_service: placeOfService,
+    p_component: component,
   });
   if (error) {
     console.error(`  rpc error: ${error.message}`);
@@ -338,6 +348,39 @@ async function testIdempotency(cleanup: Cleanup, insurerId: string) {
   assert(c1?.deductible_individual === c2?.deductible_individual, "no drift across idempotent re-promotion");
 }
 
+async function testPerComponentIsolation(cleanup: Cleanup, insurerId: string) {
+  header("Test 6: per-component isolation (S167 4-col key — facility ≠ professional ≠ pos)");
+
+  const canId = await insertSyntheticCanonical(cleanup, insurerId, {});
+  const slug = "fixture_surgery";
+
+  // Promote copay=100 at component=facility, then copay=250 at component=professional
+  // (SAME canonical + slug + place_of_service, DIFFERENT component).
+  await applyPromotion(cleanup, canId, slug, "copay", 100, "outpatient_facility", "facility");
+  await applyPromotion(cleanup, canId, slug, "copay", 250, "outpatient_facility", "professional");
+
+  const facility = await readCps(canId, slug, "outpatient_facility", "facility");
+  const professional = await readCps(canId, slug, "outpatient_facility", "professional");
+  assert(facility !== null && professional !== null, "both component rows exist (4-col key kept them distinct)");
+  assert(Number(facility?.copay) === 100, "facility row copay=100 (NOT clobbered by the professional promote)", `actual: ${facility?.copay}`);
+  assert(Number(professional?.copay) === 250, "professional row copay=250 (separate row)", `actual: ${professional?.copay}`);
+
+  // Exactly 2 rows for (canonical, slug) so far — the component split is preserved, not collapsed.
+  const { data: rows2 } = await sb
+    .from("canonical_plan_services")
+    .select("place_of_service, component")
+    .eq("canonical_plan_id", canId)
+    .eq("service_slug", slug);
+  assert((rows2?.length ?? 0) === 2, "exactly 2 rows for (canonical, slug) — component split preserved", `actual: ${rows2?.length}`);
+
+  // place_of_service ALSO distinguishes: same component, different pos → a 3rd distinct row.
+  await applyPromotion(cleanup, canId, slug, "copay", 75, "virtual", "professional");
+  const virtualProf = await readCps(canId, slug, "virtual", "professional");
+  assert(Number(virtualProf?.copay) === 75, "virtual/professional is a 3rd distinct row (pos distinguishes too)", `actual: ${virtualProf?.copay}`);
+  const ofProfAfter = await readCps(canId, slug, "outpatient_facility", "professional");
+  assert(Number(ofProfAfter?.copay) === 250, "outpatient_facility/professional unchanged by the virtual promote (no cross-pos clobber)", `actual: ${ofProfAfter?.copay}`);
+}
+
 async function main() {
   console.log("Path B PR #1 fixture — apply_promotion_event typed-col sync\n");
 
@@ -351,6 +394,7 @@ async function main() {
     await testCoinsuranceNormalization(cleanup, insurerId);
     await testTypeMismatchSilentSkip(cleanup, insurerId);
     await testIdempotency(cleanup, insurerId);
+    await testPerComponentIsolation(cleanup, insurerId);
   } finally {
     await teardown(cleanup);
   }

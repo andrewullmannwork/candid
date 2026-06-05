@@ -643,7 +643,11 @@ async function mergeServicesIntoCanonical(
   if (canonicalInserts.length > 0) {
     const { error } = await supabase
       .from("canonical_plan_services")
-      .upsert(canonicalInserts, { onConflict: "canonical_plan_id,service_slug" });
+      // S167 Thesaurus (mig 147): the unique key is now 4-col
+      // (canonical_plan_id, service_slug, place_of_service, component). These inserts omit
+      // place_of_service/component → they take the column DEFAULTs ('any'/'global'); user-side
+      // pos/component threading lands in Phase 1 (plan_covered_services has no component column yet).
+      .upsert(canonicalInserts, { onConflict: "canonical_plan_id,service_slug,place_of_service,component" });
 
     if (error) {
       console.error("[canonical-plan] Failed to merge services:", error);

@@ -1,0 +1,63 @@
+family	occ	service	nearest_concepts	insurers	proposed_verdict	proposed_slug	slug_status	proposed_category	cat_status	modifiers	is_a	note	RULING
+abortion	25	Abortion		PacificSource Health Plans, Blue Cross NC, unknown, Community Health Choice +6 more	N2	abortion	NEW	family_planning	NEW-cat	pos: surgical->outpatient_facility, drug->rx		state-varied; sensitive; surgical vs medication	
+rx-role	14	Non-preferred brand drugs	preferred_brand_rx_tier2, non_preferred_rx_tier3	Community Health Choice, WellSense Health Plan, unknown, BlueCross BlueShield of South Carolina +2 more	synonym	non_preferred_brand_rx	NEW	rx	exists			tier# -> plan_tier_label modifier (D1)	
+medical-foods	7	Non-Prescription Enteral Formulas and Low Protein Food		WellSense Health Plan, unknown	N1	medical_foods	NEW	therapy	exists			enteral/metabolic formulas	
+office-visit	3	Other Practitioner Office Visit	pcp_visit, specialist_visit, telehealth_pcp	Anthem Blue Cross, Priority Health	synonym	specialist_visit	EXISTS	office_visit	exists			NP/PA -> office visit (or new other_practitioner_visit)	
+office-visit	2	Other practitioner office visit (nurse practitioners, physician assistants, therapists, podiatrists)	pcp_visit, specialist_visit, telehealth_pcp	Blue Shield of California	synonym	specialist_visit	EXISTS	office_visit	exists			NP/PA -> office visit (or new other_practitioner_visit)	
+rx-indication	2	Drugs on Tier 1 prescribed for sexual dysfunction disorders		Kaiser Permanente	is_a+indication	(rx role per tier)		rx	exists	indication=sexual_dysfunction	rx role slug	ED drugs: role slug + indication	
+rx-indication	2	Drugs on Tier 2 and Tier 4 prescribed for sexual dysfunction disorders		Kaiser Permanente	is_a+indication	(rx role per tier)		rx	exists	indication=sexual_dysfunction	rx role slug	ED drugs: role slug + indication	
+family-planning	2	Family planning counseling		Kaiser Permanente	N2	family_planning_counseling	NEW	family_planning	NEW-cat			counseling/education leg	
+family-planning	2	All other sterilization procedures for Members assigned female at birth		Kaiser Permanente	N1	sterilization	NEW	family_planning	NEW-cat	place_of_service, component		female/male; outpatient/ASC/OR	
+family-planning	2	All other sterilization procedures for Members assigned male at birth		Kaiser Permanente	N1	sterilization	NEW	family_planning	NEW-cat	place_of_service, component		female/male; outpatient/ASC/OR	
+abortion	2	Surgical abortion		Kaiser Permanente	N2	abortion	NEW	family_planning	NEW-cat	pos: surgical->outpatient_facility, drug->rx		state-varied; sensitive; surgical vs medication	
+abortion	2	Other abortion-related Services		Kaiser Permanente	N2	abortion	NEW	family_planning	NEW-cat	pos: surgical->outpatient_facility, drug->rx		state-varied; sensitive; surgical vs medication	
+peer	2	Plan Doula services - Support during labor and delivery		Kaiser Permanente	N1	doula_services	NEW	preventive	exists			labor/delivery support	
+office-visit	2	Physician home visit		Blue Shield of California	synonym	pcp_visit	EXISTS	office_visit	exists	place_of_service=home		home visit = visit + pos=home	
+family-planning	2	Family planning — Counseling, consulting, and education		Blue Shield of California	N2	family_planning_counseling	NEW	family_planning	NEW-cat			counseling/education leg	
+family-planning	2	Family planning — Injectable contraceptive, diaphragm fitting, IUD, implantable contraceptive, and related procedure		Blue Shield of California	N1	contraceptives	NEW	family_planning	NEW-cat			drugs/devices/IUD	
+family-planning	2	Family planning — Tubal ligation		Blue Shield of California	N1	sterilization	NEW	family_planning	NEW-cat	place_of_service, component		female/male; outpatient/ASC/OR	
+family-planning	2	Family planning — Vasectomy		Blue Shield of California	N1	vasectomy	NEW	family_planning	NEW-cat		is_a sterilization?		
+abortion	2	Abortion and abortion-related services		Blue Shield of California	N2	abortion	NEW	family_planning	NEW-cat	pos: surgical->outpatient_facility, drug->rx		state-varied; sensitive; surgical vs medication	
+transplant	2	Transplant services — Special transplant facility inpatient services		Blue Shield of California	N1	transplant	NEW	surgery	NEW-cat	component facility/professional		facility-inpatient vs physician-inpatient	
+transplant	2	Transplant services — Physician inpatient services		Blue Shield of California	N1	transplant	NEW	surgery	NEW-cat	component facility/professional		facility-inpatient vs physician-inpatient	
+dialysis	2	Dialysis services		Blue Shield of California	N2	dialysis	NEW	dialysis	NEW-cat	pos: home/independent_facility		home vs in-center + supplies	
+medical-foods	2	PKU product formulas and special food products		Blue Shield of California	N1	medical_foods	NEW	therapy	exists			enteral/metabolic formulas	
+peer	2	Allergy serum billed separately from an office visit		Blue Shield of California	N1	allergy_injection	NEW	therapy	exists			serum billed separately from visit	
+peer	2	COVID-19 — Coverage for tests and therapeutics		Anthem Blue Cross	N1	covid_services	NEW	preventive	exists			tests + therapeutics	
+review	2	Other Eligible Providers		Anthem Blue Cross	REVIEW							vague — your call	
+peer	2	Diabetes Outpatient self-management education services		Anthem Blue Cross	N1	diabetes_education	NEW	therapy	exists			DSME	
+abortion	2	Abortion / Outpatient abortion services		Anthem Blue Cross	N2	abortion	NEW	family_planning	NEW-cat	pos: surgical->outpatient_facility, drug->rx		state-varied; sensitive; surgical vs medication	
+family-planning	2	Generic FDA-approved contraceptive drugs, devices and products (Family Planning)		Anthem Blue Cross	N1	contraceptives	NEW	family_planning	NEW-cat			drugs/devices/IUD	
+family-planning	2	Vasectomies and related services		Anthem Blue Cross	N1	vasectomy	NEW	family_planning	NEW-cat		is_a sterilization?		
+rx-role	2	Tier 3 drugs		Blue Cross NC, unknown	synonym	non_preferred_brand_rx	NEW	rx	exists	plan_tier_label=3		tier3 = non-preferred	
+vision	1	Child Vision Care — Contact Lenses, Elective (conventional and disposable)	childrens_glasses, vision_hardware	Anthem Blue Cross	is_a	vision_hardware	EXISTS	vision	NEW-cat		is_a vision_hardware	pediatric lenses/contacts	
+vision	1	Child Vision Care — Contact Lenses, Non-elective	childrens_glasses, vision_hardware	Anthem Blue Cross	is_a	vision_hardware	EXISTS	vision	NEW-cat		is_a vision_hardware	pediatric lenses/contacts	
+vision	1	Child Vision — Contact Lenses, Elective (conventional and disposable)	childrens_glasses, vision_hardware	Anthem Blue Cross	is_a	vision_hardware	EXISTS	vision	NEW-cat		is_a vision_hardware	pediatric lenses/contacts	
+vision	1	Child Vision — Contact Lenses, Non-elective	childrens_glasses, vision_hardware	Anthem Blue Cross	is_a	vision_hardware	EXISTS	vision	NEW-cat		is_a vision_hardware	pediatric lenses/contacts	
+dental	1	PEDIATRIC DENTAL (DeltaCare USA) - Maxillofacial Prosthetics (CDT D5900-D5999)	durable_medical_equipment, childrens_dental_checkup	Kaiser Permanente	is_a	childrens_dental	EXISTS	dental	NEW-cat		is_a childrens_dental	pediatric dental major (non-checkup)	
+hospital	1	Hospital stay — Physician/surgeon fees / Inpatient Doctor/Surgeon Fee	inpatient_physician, mental_health_inpatient, mental_health_outpatient, outpatient_surgery_physician, substance_abuse_inpatient	Anthem Blue Cross	synonym	hospital_admission	NEW	hospitalization	NEW-cat	component=professional			
+family-planning	1	Sterilization procedures for Members assigned female at birth (outpatient/ambulatory surgery center or hospital OR)	outpatient_surgery_facility, outpatient_surgery_physician	Kaiser Permanente	N1	sterilization	NEW	family_planning	NEW-cat	place_of_service, component		female/male; outpatient/ASC/OR	
+family-planning	1	Sterilization procedures for Members assigned male at birth (outpatient/ambulatory surgery center or hospital OR)	outpatient_surgery_facility, outpatient_surgery_physician	Kaiser Permanente	N1	sterilization	NEW	family_planning	NEW-cat	place_of_service, component		female/male; outpatient/ASC/OR	
+hospital	1	Hospital Services — Outpatient Visit	outpatient_surgery_facility, outpatient_surgery_physician	Anthem Blue Cross	N4	hospital_outpatient	NEW	hospitalization	NEW-cat	pos=outpatient_facility		catch-all outpatient hospital	
+hospital	1	Outpatient Visit (Hospital Services)	outpatient_surgery_facility, outpatient_surgery_physician	Anthem Blue Cross	N4	hospital_outpatient	NEW	hospitalization	NEW-cat	pos=outpatient_facility		catch-all outpatient hospital	
+office-visit	1	Other practitioner office visit: Nurse Practitioner	pcp_visit, specialist_visit, telehealth_pcp	unknown	synonym	specialist_visit	EXISTS	office_visit	exists			NP/PA -> office visit (or new other_practitioner_visit)	
+rx-role	1	Non-preferred brand drugs (Tier 2)	preferred_brand_rx_tier2, non_preferred_rx_tier3	Kaiser Permanente	synonym	non_preferred_brand_rx	NEW	rx	exists			tier# -> plan_tier_label modifier (D1)	
+rx-role	1	Non-Preferred brand drugs (Tier 4)	preferred_brand_rx_tier2, non_preferred_rx_tier3	unknown	synonym	non_preferred_brand_rx	NEW	rx	exists			tier# -> plan_tier_label modifier (D1)	
+vision	1	Vision (Adult) - Non-Physician Specialist Visits to diagnose/treat injuries or diseases of the eye	specialist_visit, telehealth_pcp, telehealth_specialist, routine_eye_care_adult	Kaiser Permanente	N1	medical_eye_care	NEW	vision	NEW-cat			non-routine = medical eye care, not routine exam	
+peer	1	Non-emergency care when traveling outside the U.S.		BlueCross BlueShield of South Carolina	N1	foreign_travel_care	NEW	other	exists			non-emergency care abroad	
+family-planning	1	Sterilization procedures for Members assigned female at birth (outpatient/ambulatory surgery center or hospital OR)	outpatient_surgery_facility, outpatient_surgery_physician	Kaiser Permanente	N1	sterilization	NEW	family_planning	NEW-cat	place_of_service, component		female/male; outpatient/ASC/OR	
+surgery	1	Any other outpatient surgery not requiring vital-sign monitoring		Kaiser Permanente	N4	surgery	NEW	surgery	NEW-cat	pos=outpatient_facility, component		catch-all outpatient surgery	
+surgery	1	Outpatient surgery/procedures requiring licensed staff vital-sign monitoring		Kaiser Permanente	N4	surgery	NEW	surgery	NEW-cat	pos=outpatient_facility, component		catch-all outpatient surgery	
+dental	1	Pediatric dental — Orthodontics (Medically Necessary)	childrens_dental_checkup, dental_orthodontic	Blue Shield of California	synonym	dental_orthodontic	EXISTS	dental	NEW-cat	indication=medically_necessary			
+peer	1	Non-emergency care when traveling outside the U.S.		Regence	N1	foreign_travel_care	NEW	other	exists			non-emergency care abroad	
+vision	1	Pediatric vision — contact lens fitting and evaluation (standard lenses)		Blue Shield of California	is_a	vision_hardware	EXISTS	vision	NEW-cat		is_a vision_hardware	pediatric lenses/contacts	
+rx-role	1	Preferred brand drugs		WellSense Health Plan	synonym	preferred_brand_rx	NEW	rx	exists				
+vision	1	Pediatric vision — contact lens fitting and evaluation (non-standard lenses)		Blue Shield of California	is_a	vision_hardware	EXISTS	vision	NEW-cat		is_a vision_hardware	pediatric lenses/contacts	
+rx-role	1	Non-preferred brand drugs	preferred_brand_rx_tier2, non_preferred_rx_tier3	WellSense Health Plan	synonym	non_preferred_brand_rx	NEW	rx	exists			tier# -> plan_tier_label modifier (D1)	
+peer	1	Early intervention services for children age 3 and older		WellSense Health Plan	N1	early_intervention	NEW	therapy	exists			children age 3+	
+peer	1	Non-emergency care when traveling outside the U.S.		BlueCross BlueShield of South Carolina	N1	foreign_travel_care	NEW	other	exists			non-emergency care abroad	
+peer	1	Non-emergency care when traveling outside the U.S.		WellSense Health Plan	N1	foreign_travel_care	NEW	other	exists			non-emergency care abroad	
+office-visit	1	Other practitioner office visit (nurse practitioners, physician assistants, therapists, podiatrists)	pcp_visit, specialist_visit	Blue Shield of California	synonym	specialist_visit	EXISTS	office_visit	exists			NP/PA -> office visit (or new other_practitioner_visit)	
+vision	1	Non-routine vision		WellSense Health Plan	N1	medical_eye_care	NEW	vision	NEW-cat			non-routine = medical eye care, not routine exam	
+hospital	1	Facility fee (e.g., hospital room)		Blue Cross NC	synonym	hospital_outpatient	NEW	hospitalization	NEW-cat	component=facility		orphan facility line (D2)	
+peer	1	Non-emergency care when traveling outside the U.S.		Chorus Community Health Plans	N1	foreign_travel_care	NEW	other	exists			non-emergency care abroad	

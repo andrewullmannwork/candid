@@ -408,7 +408,9 @@ async function main() {
       const { error: svcErr } = await supabase
         .from("canonical_plan_services")
         .upsert(finalInserts, {
-          onConflict: "canonical_plan_id,service_slug",
+          // S167 Thesaurus (mig 147): 4-col unique key. Inserts omit place_of_service/component →
+          // column DEFAULTs ('any'/'global'). CMS cold-start wiring is pre-Phase-1 (no modifier signal).
+          onConflict: "canonical_plan_id,service_slug,place_of_service,component",
           ignoreDuplicates: false,
         });
 
