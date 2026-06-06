@@ -22,9 +22,11 @@ import type { GtService, ForwardMapEntry, ConvergenceReport } from "./types";
 // vocabulary, NOT GT strings. `note` documents the SBC provenance for each.
 const SEED: { label: string; slug: string; note: string }[] = [
   { label: "Rehabilitation services", slug: "pt_rehab", note: "SBC 'Rehabilitation services' row (bundled PT/OT/ST) → macro-tier representative" },
-  { label: "Rehabilitative and habilitative services", slug: "pt_rehab", note: "SBC combined rehab/habilitation row → representative" },
   { label: "Hospice services", slug: "hospice_outpatient", note: "SBC 'Hospice services' row" },
   { label: "Physician/surgeon fees (inpatient)", slug: "hospital_admission", note: "SBC hospital-stay 'Physician/surgeon fees' row, inpatient → rolls up to admission" },
+  // S171 fast-follow — the MH/SA combined-label flippy class the re-gate ledger surfaced (mental_health_outpatient ↔ substance_abuse_outpatient).
+  { label: "Outpatient services (mental/behavioral health, substance abuse)", slug: "mental_health_outpatient", note: "SBC MH/SA outpatient combined row → representative" },
+  { label: "Outpatient services (mental health, behavioral health, substance abuse)", slug: "mental_health_outpatient", note: "SBC MH/SA outpatient combined row (variant phrasing)" },
 ];
 
 const sig = (s: string) => normalizeDescriptionSignature(s, "");

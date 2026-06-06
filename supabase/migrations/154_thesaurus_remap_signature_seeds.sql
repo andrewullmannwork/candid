@@ -21,13 +21,17 @@
 -- Haiku-resolved + quarantined — never promoted as truth, never written to canonical.
 --
 -- WHAT
---   Three code-less rows in billing_code_mappings (the unified learned cache, mig 135). description_
+--   Five code-less rows in billing_code_mappings (the unified learned cache, mig 135). description_
 --   signature is the NORMALIZED form (normalizeDescriptionSignature) the resolver keys Tier-1b on —
 --   COMPUTED by seed-remap.ts, never hand-written:
 --     "Rehabilitation services"            → pt_rehab            (sig: rehabilitation services)        +18 B1
 --     "Hospice services"                   → hospice_outpatient  (sig: hospice services)            +1 B1 / +5 B2
 --     "Physician/surgeon fees (inpatient)" → hospital_admission  (sig: fees inpt physician surgeon)  +4 B1 / +2 B2
 --       (oracle correctSlug inpatient_physician is MERGED into hospital_admission → the live target)
+--     "Outpatient services (mental/behavioral health, substance abuse)"         → mental_health_outpatient  +5 B2
+--     "Outpatient services (mental health, behavioral health, substance abuse)" → mental_health_outpatient  (variant)
+--       (S171 FAST-FOLLOW: the MH/SA combined-row flippy class the after-mig154 re-gate ledger surfaced —
+--        mental_health_outpatient ↔ substance_abuse_outpatient; same SBC-representative-collapse pattern; 0 collisions)
 --
 --   confidence 0.95 — ≥ cacheMinConfidence (0.8 → served) and ≥ reviewConfidenceFloor (0.6 → not
 --   needsReview), but < 1.0 so even our own seeds stay CORRECTABLE by the contradiction/decay machinery
@@ -61,6 +65,17 @@ INSERT INTO billing_code_mappings
 INSERT INTO billing_code_mappings
   (billing_code, billing_code_type, description_signature, service_slug, confidence, observation_count, provider_descriptions, source)
   VALUES (NULL, NULL, 'fees inpt physician surgeon', 'hospital_admission', 0.95, 1, '{}', 'thesaurus_remap')
+  ON CONFLICT DO NOTHING;
+
+-- S171 fast-follow — MH/SA combined-row representative collapse (two observed phrasings → one slug).
+INSERT INTO billing_code_mappings
+  (billing_code, billing_code_type, description_signature, service_slug, confidence, observation_count, provider_descriptions, source)
+  VALUES (NULL, NULL, 'abuse behavioral health mental outpt services substance', 'mental_health_outpatient', 0.95, 1, '{}', 'thesaurus_remap')
+  ON CONFLICT DO NOTHING;
+
+INSERT INTO billing_code_mappings
+  (billing_code, billing_code_type, description_signature, service_slug, confidence, observation_count, provider_descriptions, source)
+  VALUES (NULL, NULL, 'abuse behavioral health health mental outpt services substance', 'mental_health_outpatient', 0.95, 1, '{}', 'thesaurus_remap')
   ON CONFLICT DO NOTHING;
 
 COMMIT;
