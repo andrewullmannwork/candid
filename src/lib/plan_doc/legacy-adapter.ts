@@ -73,6 +73,10 @@ export function toLegacyPlanDocResult(haiku: PlanDocHaikuParseResult): SBCParseR
     confidence: svc.confidence,
     sourceExcerpt: svc.sourceExcerpt ?? svc.patternP8.source_excerpt ?? null,
     sourcePage: svc.sourcePage ?? null,
+    // Thesaurus Phase 1a: carry the service-identity fields through to persistence
+    // (undefined when the flag is OFF → no change to the legacy shape).
+    rawLabel: svc.rawLabel ?? null,
+    component: svc.component ?? null,
   }));
 
   // Average confidence across services — matches SBC adapter pattern.
