@@ -27,9 +27,6 @@ const DIR = join(process.cwd(), "scripts/calibration/adversarial");
 type Row = AdversarialPdfFeatures & Record<string, unknown>;
 const manifest: Row[] = JSON.parse(readFileSync(join(DIR, "manifest-ts.json"), "utf8"));
 
-// All corpus docs are SBC-pipeline uploads → realistic classified context.
-const CLASSIFIED = "plan_document";
-
 const fidelityTier = (f: unknown): string => {
   const s = String(f ?? "unspecified");
   if (s.startsWith("naive")) return "naive";
@@ -44,7 +41,7 @@ const realScan = manifest.filter((e) => e.stratum === "real" && e.image_only);
 const synthetic = manifest.filter((e) => e.stratum === "synthetic");
 const modifiedReal = manifest.filter((e) => e.stratum === "modified_real");
 
-const scoreOf = (e: Row, cfg: AdversarialPdfConfig) => scoreAdversarialPdf(e, CLASSIFIED, cfg);
+const scoreOf = (e: Row, cfg: AdversarialPdfConfig) => scoreAdversarialPdf(e, cfg);
 const cfgAt = (threshold: number) => resolveAdversarialConfig({ threshold });
 const detRate = (rows: Row[], t: number) => rows.filter((e) => scoreOf(e, cfgAt(t)).flagged).length / (rows.length || 1);
 
@@ -89,7 +86,7 @@ function main() {
 
   // ── 6. Producer-only dispositiveness guard (no real flagged on producer alone) ──
   const producerOnlyCfg = resolveAdversarialConfig({ threshold: recT, weights: { structural: 0, fonts: 0, thin: 0, producer: 0.12 } });
-  const realFlaggedByProducerAlone = realBorn.filter((e) => scoreAdversarialPdf(e, CLASSIFIED, producerOnlyCfg).flagged).length;
+  const realFlaggedByProducerAlone = realBorn.filter((e) => scoreAdversarialPdf(e, producerOnlyCfg).flagged).length;
   console.log(`Producer-only guard: ${realFlaggedByProducerAlone} real_born flagged by producer alone (must be 0)`);
 
   // ── 7. k-fold-on-τ (selection-bias-corrected detection@FP) ──

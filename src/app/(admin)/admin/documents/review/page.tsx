@@ -73,11 +73,20 @@ const STATUS_LABELS: Record<string, string> = {
   adversarial: "⚠ Adversarial",
 };
 
+// Ing-G.2/3 — cap for the server-side adversarial work-list query. The list is a
+// review queue (small in normal operation); the cap is a safety bound that is
+// SURFACED (not silent) when hit — S171 Finding F / Ship-Gate G7 "no silent caps".
+const ADVERSARIAL_WORKLIST_CAP = 500;
+
 // ─── Component ──────────────────────────────────────────────────────────────
 
 export default function DocumentReviewPage() {
   const { user } = useAuth();
   const [documents, setDocuments] = useState<DocRecord[]>([]);
+  // Ing-G.2/3 — adversarial work-list: a dedicated server-side query (flagged ∧
+  // unreviewed), decoupled from the recent-N page load so nothing falls off at scale.
+  const [adversarialDocs, setAdversarialDocs] = useState<DocRecord[]>([]);
+  const [adversarialHasMore, setAdversarialHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<StatusFilter>("pending_review");
   const [expandedDoc, setExpandedDoc] = useState<string | null>(null);
@@ -147,9 +156,47 @@ export default function DocumentReviewPage() {
     setLoading(false);
   }
 
+  // Ing-G.2/3 — load the adversarial work-list server-side (flagged ∧ unreviewed),
+  // independent of the recent-N `documents` load so flagged docs never silently
+  // fall off the queue at scale (S171 Finding F). JSONB-path filters resolve via
+  // the generic admin query endpoint; limit+1 detects "more exist" without a count.
+  async function loadAdversarialDocs() {
+    try {
+      const data = await adminQuery({
+        table: "documents",
+        select: "id, file_name, file_size, doc_type, classified_type, classification_confidence, type_mismatch, status, processing_step, processing_total_pages, processing_completed_pages, processing_error, processing_started_at, linked_insurance_plan_id, insurer_mismatch, created_at, user_id, file_hash, metadata",
+        filters: [
+          { op: "eq", column: "metadata->adversarial_pdf_assessment->>flagged", value: "true" },
+          { op: "eq", column: "metadata->adversarial_pdf_assessment->>review_state", value: "unreviewed" },
+        ],
+        order: { column: "created_at", ascending: false },
+        limit: ADVERSARIAL_WORKLIST_CAP + 1,
+      });
+      if (data && data.length > 0) {
+        const hasMore = data.length > ADVERSARIAL_WORKLIST_CAP;
+        const rows = (hasMore ? data.slice(0, ADVERSARIAL_WORKLIST_CAP) : data) as DocRecord[];
+        const userIds = [...new Set(rows.map((d) => d.user_id))];
+        const users = await adminQuery({
+          table: "users",
+          select: "id, email",
+          filters: [{ op: "in", column: "id", value: userIds }],
+        });
+        const emailMap = new Map<string, string>(users?.map((u: { id: string; email: string }) => [u.id, u.email]) || []);
+        setAdversarialDocs(rows.map((d) => ({ ...d, user_email: emailMap.get(d.user_id) })));
+        setAdversarialHasMore(hasMore);
+      } else {
+        setAdversarialDocs([]);
+        setAdversarialHasMore(false);
+      }
+    } catch (err) {
+      console.error("[admin/review] Failed to load adversarial work-list:", err);
+    }
+  }
+
   useEffect(() => {
     if (!user) return;
     loadDocuments();
+    loadAdversarialDocs();
   }, [user]);
 
   async function loadPlanDetail(doc: DocRecord) {
@@ -224,6 +271,8 @@ export default function DocumentReviewPage() {
     const newMetadata = { ...(doc.metadata ?? {}), adversarial_pdf_assessment: { ...a, review_state: state } };
     await adminPatch("documents", doc.id, { metadata: newMetadata });
     setDocuments((prev) => prev.map((d) => (d.id === doc.id ? { ...d, metadata: newMetadata } : d)));
+    // The work-list is flagged ∧ unreviewed — a reviewed doc drops off it.
+    setAdversarialDocs((prev) => prev.filter((d) => d.id !== doc.id));
     setProcessing(null);
   }
 
@@ -337,12 +386,9 @@ export default function DocumentReviewPage() {
     }
   }
 
-  // Ing-G.2/3 — the adversarial work-list: flagged ∧ not-yet-reviewed (any mode;
-  // shadow rows are shown for FP measurement + carry a "shadow" chip).
-  const adversarialDocs = documents.filter((d) => {
-    const a = d.metadata?.adversarial_pdf_assessment;
-    return a?.flagged === true && a.review_state === "unreviewed";
-  });
+  // Ing-G.2/3 — adversarialDocs is the dedicated server-side work-list (state,
+  // loaded by loadAdversarialDocs) — NOT derived from the recent-N `documents`,
+  // so flagged docs never silently fall off the queue at scale (S171 Finding F).
   const adversarialCount = adversarialDocs.length;
   const filtered = filter === "all"
     ? documents
@@ -405,7 +451,7 @@ export default function DocumentReviewPage() {
           </p>
         </div>
         <button
-          onClick={() => { setLoading(true); loadDocuments(); }}
+          onClick={() => { setLoading(true); loadDocuments(); loadAdversarialDocs(); }}
           className="px-3 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50"
         >
           Refresh
@@ -432,6 +478,13 @@ export default function DocumentReviewPage() {
           );
         })}
       </div>
+
+      {/* Adversarial work-list cap notice — surfaced, not silent (S171 Finding F) */}
+      {filter === "adversarial" && adversarialHasMore && (
+        <div className="mb-4 p-3 bg-amber-50 border border-amber-100 rounded-xl text-sm text-amber-800">
+          Showing the {ADVERSARIAL_WORKLIST_CAP} most recent flagged documents — more exist. Work through these; the list refreshes as you Confirm/Clear.
+        </div>
+      )}
 
       {/* Bulk actions (when viewing pending_review and there are items) */}
       {pendingCount > 0 && filter === "pending_review" && (
