@@ -629,8 +629,13 @@ export async function recordParseEventV4(
  * preserved on conflict; default FALSE on insert). `promotion_event_type` and
  * `promoted_at` are set ONCE, on first promotion. coverage_score / counts /
  * last_evaluated_at refresh on every evaluation.
+ *
+ * Exported (S175 PR3b) so the admin "confirm/clear a HELD promotion" path
+ * (apply-confirmed-promotion.ts) routes a released promotion through this EXACT
+ * mechanism — never a parallel canonical write (Rule #4/#10). The live recorder flow
+ * is otherwise untouched (drift firewall).
  */
-async function upsertDoctypePromotionState(
+export async function upsertDoctypePromotionState(
   supabase: SupabaseClient,
   canonicalPlanId: string,
   docType: PlanDocType,

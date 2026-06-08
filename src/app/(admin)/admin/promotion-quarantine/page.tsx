@@ -5,6 +5,11 @@ import { useAuth } from "@/lib/auth/auth-context";
 
 // ── response shapes (mirror src/lib/parser/id-block/inventory.ts) ─────────────
 type TrustTier = "unverified" | "email_only" | "phone_only" | "phone_email";
+type AdminAction = "confirm" | "clear" | "hold";
+interface ActionResult {
+  ok: boolean;
+  message: string;
+}
 
 interface ThisUploadSensor {
   score: number;
@@ -220,8 +225,36 @@ function UserCard({ u, threshold }: { u: PerUser; threshold: number }) {
   );
 }
 
-function ClusterCard({ c, anchor }: { c: Cluster; anchor: boolean }) {
+function ClusterCard({
+  c,
+  anchor,
+  onAction,
+}: {
+  c: Cluster;
+  anchor: boolean;
+  onAction: (id: string, action: AdminAction) => Promise<ActionResult>;
+}) {
   const [open, setOpen] = useState(false);
+  const [acting, setActing] = useState<AdminAction | null>(null);
+  const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const live = c.state === "shadow" || c.state === "held";
+
+  const doAction = async (action: AdminAction) => {
+    if (action === "confirm" || action === "clear") {
+      const verb = action === "confirm" ? "Confirm" : "Clear";
+      const prompt =
+        c.state === "held"
+          ? `${verb} will RE-APPLY the withheld promotion to canonical ${short(c.canonicalPlanId)} (${c.documentType}) via the CF-40 mechanism. Proceed?`
+          : `${verb} this already-promoted cluster? (disposition only — nothing is re-applied)`;
+      if (!window.confirm(prompt)) return;
+    }
+    setActing(action);
+    setActionMsg(null);
+    const r = await onAction(c.quarantineId, action);
+    setActionMsg(r.message);
+    setActing(null);
+  };
+
   return (
     <div
       id={anchor ? `canonical-${c.canonicalPlanId}` : undefined}
@@ -306,6 +339,43 @@ function ClusterCard({ c, anchor }: { c: Cluster; anchor: boolean }) {
         </Field>
       </div>
 
+      {/* §4.3 per-cluster actions (PR3b) — only on LIVE (shadow|held) rows. */}
+      {live && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3">
+          <span className="text-[11px] uppercase tracking-wide text-gray-400">actions</span>
+          <button
+            disabled={acting !== null}
+            onClick={() => void doAction("confirm")}
+            className="rounded bg-green-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-green-700 disabled:opacity-50"
+            title="Cluster is legitimate → promote (re-applies a held promotion)"
+          >
+            {acting === "confirm" ? "…" : "Confirm (real → promote)"}
+          </button>
+          <button
+            disabled={acting !== null}
+            onClick={() => void doAction("clear")}
+            className="rounded bg-gray-200 px-2.5 py-1 text-xs font-semibold text-gray-700 hover:bg-gray-300 disabled:opacity-50"
+            title="Flag was benign → clear (re-applies a held promotion)"
+          >
+            {acting === "clear" ? "…" : "Clear flag"}
+          </button>
+          <button
+            disabled={acting !== null}
+            onClick={() => void doAction("hold")}
+            className="rounded bg-amber-500 px-2.5 py-1 text-xs font-semibold text-white hover:bg-amber-600 disabled:opacity-50"
+            title="Not yet — keep withheld + re-evaluate later"
+          >
+            {acting === "hold" ? "…" : "Hold"}
+          </button>
+          {c.state === "held" && (
+            <span className="text-[11px] text-amber-700">
+              held → Confirm/Clear re-applies the withheld promotion
+            </span>
+          )}
+          {actionMsg && <span className="text-xs text-gray-600">{actionMsg}</span>}
+        </div>
+      )}
+
       <button
         onClick={() => setOpen((v) => !v)}
         className="mt-3 text-sm font-medium text-indigo-600 hover:underline"
@@ -352,6 +422,37 @@ export default function PromotionQuarantinePage() {
     }
   }, [scope, token]);
 
+  const act = useCallback(
+    async (id: string, action: AdminAction): Promise<ActionResult> => {
+      try {
+        const t = await token();
+        const res = await fetch(`/api/admin/promotion-quarantine`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ id, action }),
+        });
+        const json = (await res.json().catch(() => ({}))) as {
+          ok?: boolean;
+          deferred?: boolean;
+          error?: string;
+          message?: string;
+          reapply?: { applied: boolean; reason: string } | null;
+        };
+        if (!res.ok) return { ok: false, message: json.error ?? `HTTP ${res.status}` };
+        if (json.deferred) return { ok: false, message: json.message ?? "deferred (Layer-4 adjudication)" };
+        await load(); // reflect the new state (disposed rows drop from the live scope)
+        const ra = json.reapply;
+        const msg = ra
+          ? `${action} ✓ — ${ra.applied ? "promotion applied" : `not applied: ${ra.reason}`}`
+          : `${action} ✓`;
+        return { ok: true, message: msg };
+      } catch (e) {
+        return { ok: false, message: e instanceof Error ? e.message : String(e) };
+      }
+    },
+    [token, load],
+  );
+
   useEffect(() => {
     if (user) void load();
   }, [user, load]);
@@ -378,8 +479,9 @@ export default function PromotionQuarantinePage() {
         </button>
       </div>
       <p className="mb-4 text-sm text-gray-500">
-        Corroboration source-independence work-list (anti-Sybil/replay). Read-only — per-cluster
-        Confirm/Clear/Hold + config editing land in PR3b; the daily re-eval cron in PR3c.
+        Corroboration source-independence work-list (anti-Sybil/replay). Per-cluster
+        Confirm/Clear/Hold below (§4.3); inline config editing lands in PR3b-2; the daily re-eval
+        cron in PR3c.
       </p>
 
       {data && (
@@ -423,7 +525,12 @@ export default function PromotionQuarantinePage() {
 
       <div className="space-y-3">
         {(data?.clusters ?? []).map((c) => (
-          <ClusterCard key={c.quarantineId} c={c} anchor={anchoredIds.has(c.quarantineId)} />
+          <ClusterCard
+            key={c.quarantineId}
+            c={c}
+            anchor={anchoredIds.has(c.quarantineId)}
+            onAction={act}
+          />
         ))}
       </div>
     </div>

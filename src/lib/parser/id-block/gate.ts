@@ -53,7 +53,7 @@ function tupleKey(t: Record<string, unknown>): string {
 // ── pure decision (fixture-locked) ───────────────────────────────────────────
 
 export interface QuarantineAction {
-  /** active mode AND the gate flagged → withhold the promotion. */
+  /** active mode AND the gate flagged AND the promotion is not already applied → withhold. */
   hold: boolean;
   /** the quarantine row state. */
   state: "shadow" | "held";
@@ -64,9 +64,16 @@ export interface QuarantineAction {
 export function decideQuarantineAction(
   result: ClusterLegitimacyResult,
   mode: QuarantineMode,
+  alreadyPromoted = false,
 ): QuarantineAction {
   const slackWorthy = result.wouldFlag;
-  const hold = mode === "active" && result.wouldFlag;
+  // A hold only BITES the FIRST promotion of a (canonical, doc_type). Doc-type
+  // promotion is sticky (upsertDoctypePromotionState: nowPromoted = wasPromoted ||
+  // result.promoted) — once promoted it stays promoted and Layer 4 owns demotion. So
+  // if it is ALREADY promoted, withholding this re-promotion changes nothing; record
+  // it honestly as 'shadow' (still logged + Slacked as a would-flag) rather than
+  // claim a 'held' that withheld nothing. (S175 Decision 5.)
+  const hold = mode === "active" && result.wouldFlag && !alreadyPromoted;
   return { hold, state: hold ? "held" : "shadow", slackWorthy };
 }
 
@@ -82,6 +89,8 @@ export interface IdBlockGateOutcome {
   valueTupleKey: string;
   scaleTier: string;
   isNovelCanonical: boolean;
+  /** (canonical, doc_type) already promoted at gate time — a hold would withhold nothing (S175 D5). */
+  alreadyPromoted: boolean;
 }
 
 interface ClusterRow {
@@ -157,7 +166,8 @@ export async function gatherAndScoreCluster(
   }));
 
   const result = scoreClusterLegitimacy(members, { isNovelCanonical }, cfg);
-  const action = decideQuarantineAction(result, cfg.gate.mode);
+  const alreadyPromoted = await readDoctypeAlreadyPromoted(supabase, canonicalPlanId, docType);
+  const action = decideQuarantineAction(result, cfg.gate.mode, alreadyPromoted);
 
   return {
     result,
@@ -169,7 +179,33 @@ export async function gatherAndScoreCluster(
     valueTupleKey: tupleKey(baselineTuple),
     scaleTier,
     isNovelCanonical,
+    alreadyPromoted,
   };
+}
+
+/**
+ * Whether (canonical, doc_type) is ALREADY promoted (S175 Decision 5). A hold can
+ * only meaningfully withhold the FIRST promotion — doc-type promotion is sticky — so
+ * an already-promoted cluster is recorded as 'shadow', not a 'held' that withheld
+ * nothing. Read failure → false (conservative: treat as not-yet-promoted so the gate
+ * still protects the first promotion).
+ */
+async function readDoctypeAlreadyPromoted(
+  supabase: SupabaseClient,
+  canonicalPlanId: string,
+  docType: string,
+): Promise<boolean> {
+  try {
+    const { data } = await supabase
+      .from("canonical_doctype_promotion_state")
+      .select("doctype_promoted")
+      .eq("canonical_plan_id", canonicalPlanId)
+      .eq("document_type", docType)
+      .maybeSingle();
+    return (data as { doctype_promoted?: boolean } | null)?.doctype_promoted === true;
+  } catch {
+    return false;
+  }
 }
 
 // ── self-gather: the exact promoted cluster ──────────────────────────────────
