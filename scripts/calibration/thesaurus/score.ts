@@ -60,6 +60,12 @@ export function buildScoreCard(args: {
   for (const s of oldSlugs) { const t = renameMap[s]; if (t) renameTargetsOfOld.add(t); }
   const isNewVocab = (s: string | null): boolean => s != null && !oldSlugs.has(s) && !renameTargetsOfOld.has(s);
 
+  // ── S169 acceptable-alternatives: a genuinely ambiguous service scores correct on correctSlug OR any
+  // human-adjudicated acceptableSlug (rename-aware). Single-answer exact-match can't grade legit ambiguity
+  // (e.g. an eye-specialist visit is correct as specialist_visit OR medical_eye_care).
+  const okSlug = (canonR: string | null, g: GtService): boolean =>
+    canonR === canon(g.correctSlug) || (g.acceptableSlugs ?? []).some((a) => canonR === canon(a));
+
   // ── corpus ──
   const corpus: ScoreCard["corpus"] = {
     totalGt: gt.length,
@@ -117,7 +123,7 @@ export function buildScoreCard(args: {
     }
     if (r === null) continue; // unmapped → not a precision sample (it's a recall miss)
     mappedAndrew += 1;
-    const ok = canon(r) === canon(g.correctSlug); // rename-aware: old oracle slug vs new resolved slug
+    const ok = okSlug(canon(r), g); // rename-aware + S169 acceptable-alternatives
     if (ok) correct += 1;
     pbump(p2Doc, g.docType, ok);
     pbump(p2Ins, g.insurer, ok);
@@ -217,7 +223,7 @@ export function buildScoreCard(args: {
     if (g.adjudicationStatus !== "andrew" || g.notFound) continue;
     const r = fwd.get(g.id)?.resolvedSlug ?? null;
     if (isScored(g)) {
-      if (canon(r) !== canon(g.correctSlug)) {
+      if (!okSlug(canon(r), g)) {
         stillWrong.push({ gtId: g.id, serviceName: g.serviceName, docId: g.docId, insurer: g.insurer, baselineSlug: null, currentSlug: canon(r), correctSlug: canon(g.correctSlug) });
       }
     } else if (isNoConcept(g) && isNewVocab(r)) {
@@ -236,4 +242,65 @@ export function buildScoreCard(args: {
   };
 
   return { phaseLabel, gtVersion, corpus, b1Forward, b1Stored, b2Precision, b3, ledger, overCollapse, threeWay };
+}
+
+// ── Output-validity gate (S170 hardening B) ──────────────────────────────────
+// Guards against a DEGENERATE run silently producing a scorecard that scores a FAKE precision on a
+// collapsed denominator. Root cause of the S170 false-pass: Claude Code's shell pre-sets
+// ANTHROPIC_API_KEY="" → dotenv's no-override kept it empty → every Haiku-tier line resolved to null →
+// the andrew precision denominator collapsed (617 → 206) and B2 read a fake 98.5% (only the easy
+// cache/trigram hits remained, all correct). `strict` (resolver re-throw) catches a THROWING Haiku
+// failure; this gate is the independent OUTPUT invariant — it catches a denominator collapse from ANY
+// cause (non-erroring empty Haiku response, GT-load bug, chunking drop), so the two are complementary,
+// not redundant.
+//
+// The floors are calibration-internal invariants (NOT prod thresholds): a healthy run resolves ~0.96 of
+// scored GT and maps ~1.0 of andrew-scored; a degenerate all-null run collapses to ~0.2-0.3. 0.80
+// separates them with wide margin in both directions.
+export const RESOLVED_FRACTION_FLOOR = 0.8;
+export const ANDREW_MAP_FRACTION_FLOOR = 0.8;
+
+/** Fraction of SCORED GT (real correctSlug, not notFound) that the forward pass resolved to a non-null
+ * slug. The recall denominator is a fixed property of the GT; a collapse shows up entirely in the
+ * numerator. Used by resolve-snapshot.ts to refuse FREEZING a degenerate snapshot. */
+export function scoredResolvedFraction(
+  gt: GtService[],
+  forward: ForwardMapEntry[],
+): { fraction: number; scoredN: number; scoredResolved: number } {
+  const fwd = new Map(forward.map((f) => [f.gtId, f]));
+  let scoredN = 0, scoredResolved = 0;
+  for (const g of gt) {
+    if (!isScored(g)) continue;
+    scoredN += 1;
+    if ((fwd.get(g.id)?.resolvedSlug ?? null) !== null) scoredResolved += 1;
+  }
+  return { fraction: scoredN ? scoredResolved / scoredN : 0, scoredN, scoredResolved };
+}
+
+/** Validate a scored snapshot isn't a degenerate collapse. The andrew-mapped fraction is the precise
+ * tripwire for the S170 false-pass (it is the B2 precision denominator). Floors derived from the GT's
+ * own andrew-scored / scored counts — not hardcoded to a corpus size. Used by run.ts to stamp the
+ * scorecard INVALID + exit nonzero before any gate enforcement can read a fake number. */
+export function validateSnapshot(card: ScoreCard, gt: GtService[]): { valid: boolean; reason?: string } {
+  const andrewScored = gt.filter(
+    (g) => g.adjudicationStatus === "andrew" && !g.notFound && g.correctSlug !== null,
+  ).length;
+  const andrewMapFrac = andrewScored ? card.b2Precision.mappedAndrew / andrewScored : 1;
+  if (andrewScored > 0 && andrewMapFrac < ANDREW_MAP_FRACTION_FLOOR)
+    return {
+      valid: false,
+      reason:
+        `andrew-mapped fraction ${(andrewMapFrac * 100).toFixed(1)}% < floor ${(ANDREW_MAP_FRACTION_FLOOR * 100).toFixed(0)}% ` +
+        `(mappedAndrew ${card.b2Precision.mappedAndrew}/${andrewScored}) — DEGENERATE run: the precision denominator collapsed, ` +
+        `so B2 is a fake number off the easy hits only. Likely an empty/failed Haiku tier (see calib-env / strict).`,
+    };
+  const fwdFrac = card.b1Forward.denom ? card.b1Forward.hits / card.b1Forward.denom : 1;
+  if (card.b1Forward.denom > 0 && fwdFrac < RESOLVED_FRACTION_FLOOR)
+    return {
+      valid: false,
+      reason:
+        `B1-forward recall ${(fwdFrac * 100).toFixed(1)}% < floor ${(RESOLVED_FRACTION_FLOOR * 100).toFixed(0)}% ` +
+        `(${card.b1Forward.hits}/${card.b1Forward.denom}) — DEGENERATE run: most scored lines unresolved.`,
+    };
+  return { valid: true };
 }

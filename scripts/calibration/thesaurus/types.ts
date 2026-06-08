@@ -30,6 +30,13 @@ export interface GtService {
   bindingExcerpt?: string;
   /** Adjudicated correct slug; null === genuinely untracked (NO_CONCEPT → resolver should NOT map it). */
   correctSlug: string | null;
+  /**
+   * S169: human-adjudicated ADDITIONAL-correct slugs for a genuinely ambiguous service (e.g. an
+   * eye-specialist visit is correct as either `specialist_visit` or `medical_eye_care`). The resolver
+   * scores correct on correctSlug OR any acceptableSlug (rename-aware). Andrew-adjudicated ONLY —
+   * distinct from `proposedAlternatives` (resolver-proposed = circular; never feeds scoring).
+   */
+  acceptableSlugs?: string[];
   /** Independence gate: only "andrew" entries count toward B2 precision. */
   adjudicationStatus: "auto" | "andrew";
   /** Distinctness probe — the partner service(s) this must NOT collapse into (co-occurrence veto, §5). */
@@ -55,6 +62,35 @@ export interface ForwardMapEntry {
   confidence: number;
   source: ResolutionSource;
   needsReview: boolean;
+  /**
+   * S170 N-run majority: fraction of the N forward runs that agreed with the winning (canon'd) slug
+   * for this gtId. 1.0 = unanimous; undefined on a legacy single-run snapshot. The de-noising signal.
+   */
+  agreement?: number;
+}
+
+/**
+ * S170 N-run majority convergence summary — written by resolve-snapshot.ts, printed by run.ts.
+ * The gate's stability statement: proves the majority is stable (or surfaces the flippy entries).
+ * Computed over ALL scored entries and the andrew-B2 subset separately.
+ */
+export interface ConvergenceReport {
+  nRuns: number;
+  /** votes-for-winner (1..N) -> count of gtIds. */
+  histogramAll: Record<number, number>;
+  histogramAndrew: Record<number, number>;
+  /** entries with ANY disagreement (agreement < 1). */
+  unstableAll: number;
+  unstableAndrew: number;
+  /** entries decided by a single vote (winner − runner-up ≤ 1) — the fragile gate cases. */
+  fragileAll: number;
+  fragileAndrew: number;
+  /** entries whose winner was a count-tie resolved by confidence/lex. */
+  tieBroken: number;
+  meanAgreementAll: number;
+  meanAgreementAndrew: number;
+  /** sample of fragile andrew entries for eyeballing (winner + full vote tally). */
+  fragileAndrewSample: { gtId: string; serviceName: string; winner: string | null; votes: Record<string, number> }[];
 }
 
 /** Stored canonical coverage (service_slug rows) for one canonical plan. */
@@ -150,6 +186,9 @@ export interface ScoreCard {
     stillWrong: { count: number; sample: LedgerEntry[] };
     newsRecover: { count: number; bySlug: Record<string, { count: number; sampleNames: string[] }> };
   };
+  /** S170 hardening B: set by run.ts when validateSnapshot fails (degenerate-run guard). A stamped
+   * scorecard is still written for the record, but run.ts exits nonzero and never reaches gate enforcement. */
+  invalid?: { reason: string } | null;
 }
 
 export interface LedgerEntry {
