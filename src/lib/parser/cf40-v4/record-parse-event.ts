@@ -57,6 +57,9 @@ import { isPlanDocumentType } from "@/lib/plan/extraction-dedup";
 import { toPlanDocType, type PlanDocType } from "@/lib/parser/doctype-expected-counts";
 import type { ClassifiedDocType } from "@/lib/classifier";
 import { loadCF40V4Config } from "./config";
+import { evaluateIdBlockGate } from "@/lib/parser/id-block/gate";
+import { upsertPromotionQuarantine } from "@/lib/parser/id-block/quarantine";
+import { notifyIdBlockCluster } from "@/lib/parser/id-block/slack";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
@@ -386,16 +389,79 @@ export async function recordParseEventV4(
 
         const { result, eventType } = decideDoctypePromotion(inputs, planDocType, adminEnabled, cfg);
 
+        // ── ID-Block (S173): corroboration source-independence gate ──────────────
+        // Runs ONLY when this parse would PROMOTE the doc-type. The gate self-reads
+        // its flag (OFF/absent → null → byte-identical) and scopes itself to
+        // cold_start/small. shadow → record + Slack, HOLD NOTHING. active → withhold
+        // the promotion on a flagged cluster (quarantine the flywheel contribution;
+        // the user's own data is untouched — Pattern 1 #13). Non-fatal: any failure
+        // leaves `effectiveResult === result` (today's behavior). See
+        // plans/id-block-corroboration-source-independence.md §3-§5 + §9.3.
+        let effectiveResult = result;
+        if (result.promoted) {
+          try {
+            const idb = await evaluateIdBlockGate(supabase, {
+              canonicalPlanId: input.canonicalPlanId,
+              docType: planDocType,
+              // IdentityTuple (4 cost scalars) → the gate's structural tuple type.
+              baselineTuple: inputs.baselineTuple as Record<string, number | null> | null,
+              scaleTier: inputs.scaleTier,
+            });
+            if (idb && idb.result.wouldFlag) {
+              const q = await upsertPromotionQuarantine(supabase, {
+                canonicalPlanId: input.canonicalPlanId,
+                documentType: planDocType,
+                valueTupleKey: idb.valueTupleKey,
+                valueTupleJsonb: idb.valueTupleJsonb,
+                clusterUserIds: idb.clusterUserIds,
+                contentFingerprints: idb.contentFingerprints,
+                clusterScore: idb.result.clusterScore,
+                sameContent: idb.result.sameContent,
+                novelCanonical: idb.isNovelCanonical,
+                shapeJsonb: { ...idb.result.shape },
+                triggerReasons: idb.result.reasons,
+                scaleTier: idb.scaleTier,
+                state: idb.action.state,
+                nextEvalAt: null,
+              });
+              if (idb.action.slackWorthy) {
+                void notifyIdBlockCluster({
+                  quarantineId: q.id,
+                  canonicalPlanId: input.canonicalPlanId,
+                  documentType: planDocType,
+                  mode: idb.mode,
+                  state: idb.action.state,
+                  clusterScore: idb.result.clusterScore,
+                  clusterSize: idb.clusterUserIds.length,
+                  sameContent: idb.result.sameContent,
+                  novelCanonical: idb.isNovelCanonical,
+                  scaleTier: idb.scaleTier,
+                  reasons: idb.result.reasons,
+                });
+              }
+              if (idb.action.hold) {
+                effectiveResult = { ...result, promoted: false };
+                notes.push(`ID-Block: promotion HELD — ${idb.result.reasons.join("; ")}`);
+              } else {
+                notes.push(`ID-Block: would-flag (shadow, not held) — ${idb.result.reasons.join("; ")}`);
+              }
+            }
+          } catch (err) {
+            console.warn("[id-block] gate failed (non-fatal):", err);
+            notes.push("ID-Block gate skipped (non-fatal error)");
+          }
+        }
+
         // Ing-D.0c reset loop: if we were re-baselining AND the rebuild re-met
         // Layer 3 promotion, CLEAR re_baseline_required (recovery) in the same
         // upsert, then log the Pattern 1 #14 CLOSE event (re_baseline_resolved).
-        const clearReBaseline = inReBaselineMode && result.promoted;
+        const clearReBaseline = inReBaselineMode && effectiveResult.promoted;
 
         await upsertDoctypePromotionState(
           supabase,
           input.canonicalPlanId,
           planDocType,
-          result,
+          effectiveResult,
           eventType,
           clearReBaseline,
         );
@@ -410,15 +476,15 @@ export async function recordParseEventV4(
 
         promotion = {
           evaluated: true,
-          promoted: result.promoted,
-          eventType: result.promoted ? eventType : null,
-          coverageScore: result.observed.coverageScore,
-          distinctUsers: result.observed.distinctUsers,
+          promoted: effectiveResult.promoted,
+          eventType: effectiveResult.promoted ? eventType : null,
+          coverageScore: effectiveResult.observed.coverageScore,
+          distinctUsers: effectiveResult.observed.distinctUsers,
         };
         notes.push(
-          result.promoted
-            ? `Layer 3: PROMOTED (${eventType}) doc_type=${planDocType} coverage=${result.observed.coverageScore.toFixed(3)}`
-            : `Layer 3: not promoted (${result.failureReasons.join(", ") || "criteria unmet"})`,
+          effectiveResult.promoted
+            ? `Layer 3: PROMOTED (${eventType}) doc_type=${planDocType} coverage=${effectiveResult.observed.coverageScore.toFixed(3)}`
+            : `Layer 3: not promoted (${effectiveResult.failureReasons.join(", ") || "criteria unmet"})`,
         );
 
         // Ing-D.0d — surface Layer-3(b) minority candidates (the dissenting identity
