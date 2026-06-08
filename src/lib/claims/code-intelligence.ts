@@ -83,6 +83,12 @@ export async function updateCodeMappings(
           confidence: 0.5,
           observation_count: 1,
           provider_descriptions: desc ? [desc] : [],
+          // Explicit provenance (thesaurus Phase 1a): code-anchored observation.
+          // Coded rows are trusted by obs/confidence, not source (see
+          // service-resolver readCodeCacheBatch); this replaces the prior implicit
+          // NULL source. The update branch intentionally does NOT set source, so a
+          // later observation never downgrades a user_correction-sourced coded row.
+          source: "code_observation",
         });
       }
 
@@ -200,7 +206,16 @@ export async function updateCodeOutcomes(
 /**
  * Look up a cached code→slug mapping from billing_code_mappings.
  * Returns the mapping if confidence >= threshold and observation_count >= minObservations.
- * Used by service-mapper to skip Haiku for known codes.
+ *
+ * @deprecated (thesaurus Phase 1a) Legacy reader, reached only via the legacy
+ * `service-mapper` path, which is bypassed while `service_resolver_v1` is ON (the
+ * unified resolver's readCodeCacheBatch supersedes it). The distinct-user-
+ * corroborated code→slug AUTHORITY is `billing_code_identity` (Pattern 1 #3); this
+ * cache is the pre-corroboration fallback. Retained only as the
+ * `service_resolver_v1`-OFF kill-switch — do not add new callers. Slated for
+ * removal when the code-cache collapses into `billing_code_identity` (tracked
+ * fast-follow). The historical `minObservations=5` bar is preserved for
+ * kill-switch behavior parity.
  */
 export async function getCachedCodeMapping(
   supabase: SupabaseClient,

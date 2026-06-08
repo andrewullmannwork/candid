@@ -93,72 +93,15 @@ export async function backflowBillCosts(
     }
   }
 
-  // Also enrich canonical plan if linked
-  try {
-    const { data: plan } = await supabase
-      .from("insurance_plans")
-      .select("matched_catalog_plan_id")
-      .eq("id", insurancePlanId)
-      .single();
-
-    if (plan?.matched_catalog_plan_id) {
-      await backflowToCanonical(supabase, plan.matched_catalog_plan_id, eligible);
-    }
-  } catch {
-    // Non-blocking — canonical enrichment is best-effort
-  }
+  // F2 (thesaurus Phase 1a): the bill-observed → canonical_plan_services direct
+  // write (backflowToCanonical) was REMOVED. Bills lack the verified excerpts the
+  // corroboration evaluator requires, so they must not promote to canonical
+  // (Rule #10/#14) — canonical stays plan-document-grounded + corroborated. The
+  // user-scoped enrichment above stays. (claims_backflow OFF → was inert anyway.)
 
   if (updated > 0) {
     console.log(`[backflow] Updated ${updated} plan_covered_services from bill data`);
   }
 
   return { updated, errors };
-}
-
-/**
- * Enrich canonical_plan_services with bill-observed costs.
- * Lower confidence (0.3) than user-specific backflow (0.4).
- */
-async function backflowToCanonical(
-  supabase: SupabaseClient,
-  canonicalPlanId: string,
-  lineItems: BackflowLineItem[]
-): Promise<void> {
-  for (const li of lineItems) {
-    if (!li.service_slug || li.patient_owes == null) continue;
-
-    try {
-      const { data: existing } = await supabase
-        .from("canonical_plan_services")
-        .select("id, copay, confidence")
-        .eq("canonical_plan_id", canonicalPlanId)
-        .eq("service_slug", li.service_slug)
-        .maybeSingle();
-
-      // Only update canonical if no SBC data exists (confidence < 0.4)
-      // or if the row doesn't exist at all
-      if (!existing) {
-        await supabase.from("canonical_plan_services").insert({
-          canonical_plan_id: canonicalPlanId,
-          service_slug: li.service_slug,
-          copay: li.patient_owes,
-          is_covered: true,
-          confidence: 0.3,
-          source: "bill_observed",
-        });
-      } else if (existing.confidence != null && existing.confidence < 0.4) {
-        // Only overwrite very low confidence data
-        await supabase
-          .from("canonical_plan_services")
-          .update({
-            copay: li.patient_owes,
-            confidence: 0.3,
-            source: "bill_observed",
-          })
-          .eq("id", existing.id);
-      }
-    } catch {
-      // Best-effort per item
-    }
-  }
 }

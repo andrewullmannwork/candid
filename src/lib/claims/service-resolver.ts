@@ -112,6 +112,140 @@ export function parseResolverConfig(raw: unknown): ResolverConfig {
   return out;
 }
 
+// ============================================================================
+// Trust-tiering — billing_code_mappings provenance model (thesaurus Phase 1a)
+// ============================================================================
+//
+// The shared learned cache holds two sub-caches with two DIFFERENT trust signals:
+//
+//   • CODE-LESS signature rows (synonyms) — trusted by `source` PROVENANCE.
+//     A single uncorroborated Haiku synonym guess (`source='haiku_resolver'`)
+//     must never be served cross-user as authority (F3). Trust = an ALLOWLIST
+//     (default-deny): only the sources below serve; everything else (incl.
+//     haiku_resolver + any future/unknown source) is quarantined.
+//
+//   • CODED rows (code→slug) — NOT source-filtered. The corroborated authority
+//     is `billing_code_identity` (Pattern 1 #3, distinct verified users); this
+//     cache is the honest pre-corroboration FALLBACK, trusted by observation /
+//     confidence, never by source (an obs-corroborated code mapping that Haiku
+//     merely touched must keep serving — so source is the wrong signal here).
+//
+// Flag-gated by `thesaurus_phase1a_v1` (OFF → byte-identical: every row serves
+// + the writeback fires, exactly as before). The trusted set is config-tunable
+// (Ship Gate G6) — `config.trusted_sources` is UNIONed in — but `haiku_resolver`
+// is HARD-quarantined regardless of config (no footgun re-opening F3).
+//
+// SAFEGUARD (Decision 1 — don't silently drop a legitimate source): every
+// `source` a writer emits MUST appear in ALL_KNOWN_CACHE_SOURCES + be classified.
+// A new writer with an unregistered source is quarantined by default (allowlist)
+// AND surfaces via countUnrecognizedCacheSources() (G7 monitoring). See the
+// fixture at scripts/calibration/fixtures/thesaurus-phase1a/trust-tiering.ts.
+
+/** Code-less signature sources trusted as cross-user authority (default-deny allowlist). */
+export const TRUSTED_SIGNATURE_SOURCES_DEFAULT = [
+  "thesaurus_remap", // S171 seeds (mig 154) — curated standard-label synonyms
+  "user_correction", // correct-category route — user-confirmed @0.95
+  "multi_source_corroboration", // Pattern 1 #3 promotion (reserved; canonical-side today)
+  "admin_verified", // admin attestation (reserved)
+] as const;
+
+/** Sources HARD-quarantined regardless of config (single-source, uncorroborated). */
+export const QUARANTINED_CACHE_SOURCES = new Set<string>(["haiku_resolver"]);
+
+/** Registry of every source any writer emits, for the classification safeguard. */
+export const ALL_KNOWN_CACHE_SOURCES: Record<
+  string,
+  "trusted_signature" | "quarantined" | "code_cache"
+> = {
+  thesaurus_remap: "trusted_signature",
+  user_correction: "trusted_signature",
+  multi_source_corroboration: "trusted_signature",
+  admin_verified: "trusted_signature",
+  haiku_resolver: "quarantined",
+  code_observation: "code_cache", // coded rows — NOT subject to the signature allowlist
+};
+
+/** Effective trusted-signature set: code default ∪ config, minus hard-quarantined. */
+export function buildTrustedSourceSet(configTrustedSources?: unknown): Set<string> {
+  const set = new Set<string>(TRUSTED_SIGNATURE_SOURCES_DEFAULT);
+  if (Array.isArray(configTrustedSources)) {
+    for (const s of configTrustedSources) if (typeof s === "string") set.add(s);
+  }
+  for (const q of QUARANTINED_CACHE_SOURCES) set.delete(q); // never trust a hard-quarantined source
+  return set;
+}
+
+/** Is a code-less signature row's source trusted as cross-user authority? Default-deny. */
+export function isTrustedSignatureSource(source: string | null, trusted: Set<string>): boolean {
+  if (source == null) return false; // allowlist: no legitimate code-less row is source-NULL
+  return trusted.has(source);
+}
+
+/**
+ * Apply the signature-cache trust filter BEFORE the per-signature dedup, so a
+ * quarantined high-confidence row can never shadow a trusted lower-confidence
+ * row for the same signature. Rows must be pre-ordered by confidence DESC.
+ * trustEnabled=false → byte-identical (serve all).
+ */
+export function selectTrustedSignatureHits(
+  rows: Array<{
+    description_signature: string;
+    service_slug: string;
+    confidence: number | string;
+    source?: string | null;
+  }>,
+  opts: { trustEnabled: boolean; trustedSources: Set<string> },
+): Map<string, { slug: string; confidence: number }> {
+  const out = new Map<string, { slug: string; confidence: number }>();
+  for (const row of rows) {
+    if (opts.trustEnabled && !isTrustedSignatureSource(row.source ?? null, opts.trustedSources)) {
+      continue;
+    }
+    const sig = row.description_signature;
+    if (!out.has(sig)) out.set(sig, { slug: row.service_slug, confidence: Number(row.confidence) });
+  }
+  return out;
+}
+
+interface TrustTiering {
+  enabled: boolean;
+  trustedSources: Set<string>;
+}
+
+/** Read thesaurus_phase1a_v1 {enabled, config.trusted_sources} in one query. Fail-safe OFF. */
+async function loadTrustTiering(supabase: SupabaseClient): Promise<TrustTiering> {
+  try {
+    const { data } = await supabase
+      .from("feature_flag_rules")
+      .select("enabled, config")
+      .eq("flag_key", "thesaurus_phase1a_v1")
+      .maybeSingle();
+    const config = (data?.config ?? null) as Record<string, unknown> | null;
+    return {
+      enabled: data?.enabled === true,
+      trustedSources: buildTrustedSourceSet(config?.trusted_sources),
+    };
+  } catch {
+    return { enabled: false, trustedSources: buildTrustedSourceSet() };
+  }
+}
+
+/**
+ * G7 monitoring (Decision 1 safeguard): count cache rows whose source is neither
+ * registered-trusted, registered-quarantined, nor a known code-cache source — i.e.
+ * a source we forgot to classify. A nonzero/rising count means a legitimate writer
+ * may be silently quarantined. Cron-wire as a follow-up; callable now for admin checks.
+ */
+export async function countUnrecognizedCacheSources(supabase: SupabaseClient): Promise<number> {
+  const known = Object.keys(ALL_KNOWN_CACHE_SOURCES);
+  const { count } = await supabase
+    .from("billing_code_mappings")
+    .select("id", { count: "exact", head: true })
+    .not("source", "is", null)
+    .not("source", "in", `(${known.map((s) => `"${s}"`).join(",")})`);
+  return count ?? 0;
+}
+
 function normalizeForTrigram(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -264,7 +398,17 @@ export async function loadResolverConfig(supabase: SupabaseClient): Promise<Reso
   }
 }
 
-/** Batched read of the (code,type)→slug learned cache for a set of codes. */
+/**
+ * Batched read of the (code,type)→slug learned cache for a set of codes.
+ *
+ * NOT source-filtered (thesaurus Phase 1a, Decision 2). The coded cache's trust
+ * signal is observation/confidence, NOT provenance: an obs-corroborated code
+ * mapping that Haiku merely touched must keep serving, so a source allowlist
+ * would wrongly quarantine it. The distinct-user-corroborated code→slug AUTHORITY
+ * is `billing_code_identity` (Pattern 1 #3), consulted first on the bills path;
+ * this cache is the honest pre-corroboration FALLBACK. (Collapsing the two into
+ * one corroboration-aware table is a tracked fast-follow.)
+ */
 async function readCodeCacheBatch(
   supabase: SupabaseClient,
   codes: Array<{ code: string; type: string }>,
@@ -288,29 +432,37 @@ async function readCodeCacheBatch(
   return out;
 }
 
-/** Batched read of the signature→slug learned cache (code-less rows). */
+/**
+ * Batched read of the signature→slug learned cache (code-less rows). Trust-tiered
+ * (thesaurus Phase 1a): when `trust.enabled`, only ALLOWLISTED sources are served
+ * as authority (single-Haiku `haiku_resolver` synonyms are quarantined). The
+ * filter runs BEFORE the per-signature dedup so a quarantined hi-conf row cannot
+ * shadow a trusted lo-conf row. trust.enabled=false → byte-identical (serve all).
+ */
 async function readSignatureCacheBatch(
   supabase: SupabaseClient,
   signatures: string[],
   minConfidence: number,
+  trust: TrustTiering,
 ): Promise<Map<string, { slug: string; confidence: number }>> {
-  const out = new Map<string, { slug: string; confidence: number }>();
   const distinct = Array.from(new Set(signatures.filter(Boolean)));
-  if (distinct.length === 0) return out;
+  if (distinct.length === 0) return new Map();
   const { data } = await supabase
     .from("billing_code_mappings")
-    .select("description_signature, service_slug, confidence")
+    .select("description_signature, service_slug, confidence, source")
     .is("billing_code", null)
     .in("description_signature", distinct)
     .gte("confidence", minConfidence)
     .order("confidence", { ascending: false });
-  for (const row of data ?? []) {
-    const sig = row.description_signature as string;
-    if (!out.has(sig)) {
-      out.set(sig, { slug: row.service_slug as string, confidence: Number(row.confidence) });
-    }
-  }
-  return out;
+  return selectTrustedSignatureHits(
+    (data ?? []) as Array<{
+      description_signature: string;
+      service_slug: string;
+      confidence: number | string;
+      source: string | null;
+    }>,
+    { trustEnabled: trust.enabled, trustedSources: trust.trustedSources },
+  );
 }
 
 /**
@@ -345,7 +497,7 @@ export async function cacheLearnedMapping(
 
     const sel = supabase
       .from("billing_code_mappings")
-      .select("id, confidence, observation_count, provider_descriptions")
+      .select("id, confidence, observation_count, provider_descriptions, source")
       .eq("service_slug", m.slug);
     const { data: existing } = coded
       ? await sel.eq("billing_code", m.code!).eq("billing_code_type", m.codeType!).maybeSingle()
@@ -358,13 +510,25 @@ export async function cacheLearnedMapping(
       if (desc && descs.length < 10 && !descs.includes(desc)) {
         descs.push(desc);
       }
+      // Monotonic-trust guard (thesaurus Phase 1a): never DOWNGRADE a trusted
+      // provenance (seed / user-confirm / corroborated) to an untrusted one — e.g.
+      // a single haiku_resolver write landing on a seed's signature would otherwise
+      // flip source→haiku_resolver and self-quarantine it under the read filter.
+      // Slug + confidence are unaffected; only the source label is protected.
+      // Always on (its job is to protect seeds during the flag-OFF window).
+      const trusted = buildTrustedSourceSet();
+      const existingSource = (existing.source as string | null) ?? null;
+      const guardedSource =
+        existingSource && trusted.has(existingSource) && !trusted.has(m.source)
+          ? existingSource
+          : m.source;
       await supabase
         .from("billing_code_mappings")
         .update({
           confidence: Math.round(newConfidence * 100) / 100,
           observation_count: newCount,
           provider_descriptions: descs,
-          source: m.source,
+          source: guardedSource,
           last_seen_at: new Date().toISOString(),
         })
         .eq("id", existing.id);
@@ -414,6 +578,15 @@ export interface ResolveOpts {
    * never masquerade as a result. Default false = current behavior.
    */
   strict?: boolean;
+  /**
+   * Trust-tiering override (thesaurus Phase 1a). When set, bypasses the
+   * `thesaurus_phase1a_v1` flag read and forces the signature-cache trust filter
+   * + writeback suppression on/off. Tests + the N=9 calibration re-gate pass
+   * `false` explicitly so they measure the UNCHANGED resolver. When omitted
+   * (PROD), the flag is read live via loadTrustTiering(). Default (omitted) =
+   * flag-driven.
+   */
+  trustTieredCache?: boolean;
 }
 
 /**
@@ -429,6 +602,13 @@ export async function resolveServices(
 
   const config = opts.config ?? (await loadResolverConfig(opts.supabase));
   const catalog = opts.catalog ?? (await loadCatalogRich(opts.supabase));
+  // Trust-tiering (thesaurus Phase 1a). Explicit opt wins (tests + the N=9 re-gate
+  // pass false → measure the UNCHANGED resolver); otherwise read the flag live.
+  // OFF → byte-identical (serve all cache rows + writeback fires).
+  const trust: TrustTiering =
+    opts.trustTieredCache !== undefined
+      ? { enabled: opts.trustTieredCache, trustedSources: buildTrustedSourceSet() }
+      : await loadTrustTiering(opts.supabase);
   if (catalog.length === 0) {
     for (const l of lines) {
       results.set(l.lineNumber, {
@@ -456,6 +636,7 @@ export async function resolveServices(
     opts.supabase,
     Array.from(sigByLine.values()),
     config.cacheMinConfidence,
+    trust,
   );
 
   const unresolved: ResolveLineInput[] = [];
@@ -518,7 +699,12 @@ export async function resolveServices(
       const hit = parsed.get(l.lineNumber);
       if (hit && hit.confidence >= config.haikuConfidenceFloor) {
         results.set(l.lineNumber, mkResolution(l.lineNumber, hit.slug, hit.confidence, "haiku", conceptBySlug, config));
-        if (!opts.skipWriteback && hit.confidence >= config.writebackConfidenceFloor) {
+        // Cross-user writeback (F3). SUPPRESSED entirely under trust-tiering: a
+        // single uncorroborated Haiku resolution stays usable for THIS parse (set
+        // above) but is never written cross-user — coded mappings are owned by
+        // code-intelligence (observation-corroborated), code-less synonyms come
+        // only from seeds/corrections. trust.enabled=false → fires (byte-identical).
+        if (!trust.enabled && !opts.skipWriteback && hit.confidence >= config.writebackConfidenceFloor) {
           const coded = Boolean(l.billingCode && l.billingCodeType);
           writebacks.push(
             cacheLearnedMapping(opts.supabase, {
@@ -603,6 +789,11 @@ export async function searchServices(
   const catalog = opts.catalog ?? (await loadCatalogRich(opts.supabase));
   if (!q || catalog.length === 0) return [];
   const config = opts.config ?? (await loadResolverConfig(opts.supabase));
+  // Trust-tiering (thesaurus Phase 1a) — gates the learned-synonym boost read below.
+  const trust: TrustTiering =
+    opts.trustTieredCache !== undefined
+      ? { enabled: opts.trustTieredCache, trustedSources: buildTrustedSourceSet() }
+      : await loadTrustTiering(opts.supabase);
 
   const qNorm = normalizeForTrigram(q);
   const scored: SearchResult[] = catalog.map((e) => {
@@ -621,12 +812,20 @@ export async function searchServices(
     if (sig) {
       const { data } = await opts.supabase
         .from("billing_code_mappings")
-        .select("service_slug, confidence")
+        .select("service_slug, confidence, source")
         .is("billing_code", null)
         .ilike("description_signature", `%${sig}%`)
         .gte("confidence", config.cacheMinConfidence)
         .limit(10);
       for (const row of data ?? []) {
+        // Trust filter (thesaurus Phase 1a): a quarantined single-Haiku synonym
+        // never boosts search ranking as authority. trust.enabled=false → unchanged.
+        if (
+          trust.enabled &&
+          !isTrustedSignatureSource((row as { source: string | null }).source ?? null, trust.trustedSources)
+        ) {
+          continue;
+        }
         const target = scored.find((s) => s.slug === row.service_slug);
         if (target) {
           target.score = Math.max(target.score, 0.9);
