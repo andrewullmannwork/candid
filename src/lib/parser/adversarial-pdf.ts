@@ -37,9 +37,11 @@ export interface AdversarialReason {
 }
 
 export interface AdversarialPdfConfig {
-  /** behavior WHEN the flag is enabled. shadow = score+telemetry, not surfaced ·
-   *  enforce = also routed to the admin work-list. (The OFF state is the flag's
-   *  `enabled=false` — byte-identical — not a config mode.) */
+  /** behavior WHEN the flag is enabled. Today ADVISORY ONLY — nothing branches on
+   *  this; the admin work-list surfaces flagged docs in any mode (shadow rows are
+   *  shown for FP measurement). `enforce` will mean "quarantine the flagged doc's
+   *  flywheel contribution" once ID-Block ships (S171 Finding A). (The OFF state is
+   *  the flag's `enabled=false` — byte-identical — not a config mode.) */
   mode: "shadow" | "enforce";
   /** flag if score ≥ threshold (and assessable) */
   threshold: number;
@@ -100,12 +102,13 @@ export interface AdversarialAssessment {
 }
 
 /**
- * Score a feature vector. Pure + deterministic. The caller decides what to do
- * with `flagged` based on `config.mode` (shadow vs enforce).
+ * Score a feature vector. Pure + deterministic + purely feature-driven (no
+ * doc-type input — scope lives at the ingest layer). Returns `flagged`; what
+ * happens to a flagged doc (admin work-list today; flywheel quarantine once
+ * ID-Block ships) is the caller's concern.
  */
 export function scoreAdversarialPdf(
   f: AdversarialPdfFeatures,
-  classifiedType: string | null | undefined,
   config: AdversarialPdfConfig = DEFAULT_ADVERSARIAL_CONFIG,
 ): AdversarialAssessment {
   // ── Branch: scanned / image-only → unassessable (protects real scans from FP;
@@ -128,15 +131,25 @@ export function scoreAdversarialPdf(
   const reasons: AdversarialReason[] = [];
   let score = 0;
 
-  // ── Structural group (PRIMARY) — federal SBC markers. Gated on SBC context
-  //    AND readable text, so a doc we simply couldn't read text for is NOT
-  //    penalized for "missing" markers (the key FP guard; fusion with fonts). ──
+  // ── Structural group (PRIMARY) — federal SBC template completeness. Gated on
+  //    POSITIVE SBC evidence (S171 Finding C): the header phrase PLUS ≥1 other
+  //    federal marker (Important Questions / Why This Matters / OMB number).
+  //    Trusting classified_type='plan_document' (2471 of 2573 PROD docs — the
+  //    dominant plan-class bucket, ~9% of them non-SBC) — OR the header phrase
+  //    alone, which matches a mere mention anywhere in the text — false-flagged
+  //    real non-SBC docs at ~0.45 (measured: 4/45 sampled spared, 0 regressions).
+  //    Requiring
+  //    a corroborating marker means only docs that actually present as SBCs are
+  //    judged for template completeness. Also gated on readable text so an
+  //    unreadable doc isn't penalized for "missing" markers (the key FP guard). ──
   const sbcContext =
-    classifiedType === "sbc" || classifiedType === "plan_document" || f.sbc_header;
+    f.sbc_header && (f.has_important_questions || f.has_why_this_matters || f.omb_present);
   const textReadable = f.text_ok && f.text_len >= config.minTextForStructural;
   if (sbcContext && textReadable) {
+    // header is the gate (guaranteed present here); score the remaining template
+    // sections. /3 retained so the structural scale matches the S170 corpus
+    // calibration that fixes the τ=0.20 operating point.
     const missing: string[] = [];
-    if (!f.sbc_header) missing.push("header");
     if (!f.has_important_questions) missing.push("important_questions");
     if (!f.has_why_this_matters) missing.push("why_this_matters");
     if (missing.length > 0) {
