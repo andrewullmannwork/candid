@@ -393,6 +393,147 @@ function ClusterCard({
   );
 }
 
+// ── §5 inline config editor (PR3b-2) ─────────────────────────────────────────
+interface IdBlockCfgShape {
+  weights: { high: number; medium: number; low: number };
+  normCaps: { accountAgeDaysCap: number; signupLatencyDaysCap: number; activityBreadthCap: number };
+  shape: { thinScore: number; burstWindowHours: number; signupCorrelationWindowHours: number };
+  gate: { clusterLegitimacyThreshold: number; hammingNearDupThreshold: number; sameContentMajority: number; mode: "shadow" | "active" };
+  slack: { enabled: boolean };
+}
+
+function CfgNum({ label, value, onChange, step }: { label: string; value: number; onChange: (n: number) => void; step?: string }) {
+  return (
+    <label className="flex flex-col gap-0.5">
+      <span className="text-[11px] uppercase tracking-wide text-gray-400">{label}</span>
+      <input
+        type="number"
+        step={step ?? "any"}
+        value={Number.isFinite(value) ? value : ""}
+        onChange={(e) => onChange(e.target.value === "" ? NaN : Number(e.target.value))}
+        className="rounded border border-gray-300 px-2 py-1 text-sm"
+      />
+    </label>
+  );
+}
+
+function ConfigEditor({ token }: { token: () => Promise<string> }) {
+  const [open, setOpen] = useState(false);
+  const [cfg, setCfg] = useState<IdBlockCfgShape | null>(null);
+  const [flagEnabled, setFlagEnabled] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; lines: string[] } | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setMsg(null);
+    try {
+      const t = await token();
+      const res = await fetch("/api/admin/promotion-quarantine/config", { headers: { Authorization: `Bearer ${t}` } });
+      const j = await res.json();
+      if (!res.ok) { setMsg({ kind: "err", lines: [j.error ?? `HTTP ${res.status}`] }); return; }
+      setCfg(j.config as IdBlockCfgShape);
+      setFlagEnabled(j.flagEnabled === true);
+    } catch (e) {
+      setMsg({ kind: "err", lines: [e instanceof Error ? e.message : String(e)] });
+    } finally {
+      setLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => { if (open && !cfg) void load(); }, [open, cfg, load]);
+
+  const upd = (grp: keyof IdBlockCfgShape, key: string, val: number | boolean | string) =>
+    setCfg((c) => (c ? ({ ...c, [grp]: { ...(c[grp] as object), [key]: val } } as IdBlockCfgShape) : c));
+
+  const save = async () => {
+    if (!cfg) return;
+    setSaving(true);
+    setMsg(null);
+    try {
+      const t = await token();
+      const res = await fetch("/api/admin/promotion-quarantine/config", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ config: cfg }),
+      });
+      const j = await res.json();
+      if (!res.ok) { setMsg({ kind: "err", lines: (j.errors as string[]) ?? [j.error ?? `HTTP ${res.status}`] }); return; }
+      setCfg(j.config as IdBlockCfgShape); // effective parsed config (catches silent coercion)
+      setMsg({ kind: "ok", lines: ["Saved.", ...(((j.warnings as string[]) ?? []).map((w) => `⚠ ${w}`))] });
+    } catch (e) {
+      setMsg({ kind: "err", lines: [e instanceof Error ? e.message : String(e)] });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mb-4 rounded-lg border border-gray-200 bg-white">
+      <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center justify-between px-3 py-2 text-sm font-semibold text-gray-700">
+        <span>Gate config (§5) — weights · caps · shape · thresholds · mode</span>
+        <span className="text-indigo-600">{open ? "Hide" : "Edit"}</span>
+      </button>
+      {open && (
+        <div className="border-t border-gray-200 p-3">
+          {loading && <div className="text-sm text-gray-500">Loading…</div>}
+          {cfg && (
+            <>
+              <div className="grid gap-x-4 gap-y-3 sm:grid-cols-3">
+                <CfgNum label="weight high" value={cfg.weights.high} onChange={(n) => upd("weights", "high", n)} />
+                <CfgNum label="weight medium" value={cfg.weights.medium} onChange={(n) => upd("weights", "medium", n)} />
+                <CfgNum label="weight low" value={cfg.weights.low} onChange={(n) => upd("weights", "low", n)} />
+                <CfgNum label="cap: account age (d)" value={cfg.normCaps.accountAgeDaysCap} onChange={(n) => upd("normCaps", "accountAgeDaysCap", n)} />
+                <CfgNum label="cap: signup→upload (d)" value={cfg.normCaps.signupLatencyDaysCap} onChange={(n) => upd("normCaps", "signupLatencyDaysCap", n)} />
+                <CfgNum label="cap: activity breadth" value={cfg.normCaps.activityBreadthCap} onChange={(n) => upd("normCaps", "activityBreadthCap", n)} />
+                <CfgNum label="shape: thin score [0–1]" value={cfg.shape.thinScore} onChange={(n) => upd("shape", "thinScore", n)} />
+                <CfgNum label="shape: burst window (h)" value={cfg.shape.burstWindowHours} onChange={(n) => upd("shape", "burstWindowHours", n)} />
+                <CfgNum label="shape: signup-corr window (h)" value={cfg.shape.signupCorrelationWindowHours} onChange={(n) => upd("shape", "signupCorrelationWindowHours", n)} />
+                <CfgNum label="gate: legitimacy threshold [0–1]" value={cfg.gate.clusterLegitimacyThreshold} onChange={(n) => upd("gate", "clusterLegitimacyThreshold", n)} />
+                <CfgNum label="gate: Hamming near-dup (≤, 0–64)" value={cfg.gate.hammingNearDupThreshold} onChange={(n) => upd("gate", "hammingNearDupThreshold", n)} step="1" />
+                <CfgNum label="gate: same-content majority (0–1]" value={cfg.gate.sameContentMajority} onChange={(n) => upd("gate", "sameContentMajority", n)} />
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-[11px] uppercase tracking-wide text-gray-400">gate: mode</span>
+                  <select value={cfg.gate.mode} onChange={(e) => upd("gate", "mode", e.target.value)} className="rounded border border-gray-300 px-2 py-1 text-sm">
+                    <option value="shadow">shadow (log/Slack, hold nothing)</option>
+                    <option value="active">active (withhold flagged promotions)</option>
+                  </select>
+                </label>
+                <label className="flex items-center gap-2 self-end">
+                  <input type="checkbox" checked={cfg.slack.enabled} onChange={(e) => upd("slack", "enabled", e.target.checked)} />
+                  <span className="text-sm text-gray-700">Slack alerts</span>
+                </label>
+              </div>
+              {cfg.gate.mode === "active" && (
+                <div className="mt-2 rounded bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+                  ⚠ active mode WITHHOLDS flagged promotions. Only switch once the shadow flag-rate is calibrated.
+                </div>
+              )}
+              <div className="mt-3 flex items-center gap-2">
+                <button onClick={() => void save()} disabled={saving} className="rounded bg-indigo-600 px-3 py-1 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">
+                  {saving ? "Saving…" : "Save config"}
+                </button>
+                <button onClick={() => void load()} disabled={loading || saving} className="text-sm text-gray-600 hover:underline">
+                  Reload
+                </button>
+                {!flagEnabled && <span className="text-[11px] text-gray-400">(flag OFF — gate inert; config still saved)</span>}
+              </div>
+              {msg && (
+                <ul className={`mt-2 rounded p-2 text-xs ${msg.kind === "ok" ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>
+                  {msg.lines.map((l, i) => (
+                    <li key={i}>{l}</li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function PromotionQuarantinePage() {
   const { user } = useAuth();
   const [scope, setScope] = useState<"live" | "all">("live");
@@ -480,9 +621,11 @@ export default function PromotionQuarantinePage() {
       </div>
       <p className="mb-4 text-sm text-gray-500">
         Corroboration source-independence work-list (anti-Sybil/replay). Per-cluster
-        Confirm/Clear/Hold below (§4.3); inline config editing lands in PR3b-2; the daily re-eval
-        cron in PR3c.
+        Confirm/Clear/Hold below (§4.3); gate config editor below (§5); the daily re-eval
+        cron lands in PR3c.
       </p>
+
+      <ConfigEditor token={token} />
 
       {data && (
         <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white p-3 text-sm">
