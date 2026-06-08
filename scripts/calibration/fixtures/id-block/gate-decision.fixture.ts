@@ -55,12 +55,28 @@ const cases: Case[] = [
     detail: () => JSON.stringify(decideQuarantineAction(result(true), "shadow")),
   },
   {
-    name: "flagged + active mode → held state, hold=true, Slack fires",
+    name: "flagged + active mode + NOT already promoted → held state, hold=true, Slack fires",
     run: () => {
-      const a = decideQuarantineAction(result(true), "active");
+      const a = decideQuarantineAction(result(true), "active", false);
       return a.hold && a.state === "held" && a.slackWorthy;
     },
-    detail: () => JSON.stringify(decideQuarantineAction(result(true), "active")),
+    detail: () => JSON.stringify(decideQuarantineAction(result(true), "active", false)),
+  },
+  {
+    name: "S175 D5: flagged + active mode + ALREADY promoted → shadow, NO hold, Slack still fires",
+    run: () => {
+      const a = decideQuarantineAction(result(true), "active", true);
+      // sticky promotion means a hold would withhold nothing → record shadow, not held.
+      return !a.hold && a.state === "shadow" && a.slackWorthy;
+    },
+    detail: () => JSON.stringify(decideQuarantineAction(result(true), "active", true)),
+  },
+  {
+    name: "S175 D5: default alreadyPromoted=false preserves prior behavior (active+flagged → held)",
+    run: () => {
+      const a = decideQuarantineAction(result(true), "active");
+      return a.hold && a.state === "held";
+    },
   },
   {
     name: "Slack text: held state → HELD framing",
