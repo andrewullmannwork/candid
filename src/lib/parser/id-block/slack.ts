@@ -44,8 +44,8 @@ export interface IdBlockNotifyPayload {
 }
 
 export function buildAdminDeepLink(canonicalPlanId: string): string {
-  // PR3 lands the dedicated work-list; until then this deep-links the canonical.
-  return `${resolveAdminUrlBase()}/admin/canonical-quality#canonical-${canonicalPlanId}`;
+  // PR3a landed the dedicated work-list; deep-link the canonical's cluster card there.
+  return `${resolveAdminUrlBase()}/admin/promotion-quarantine#canonical-${canonicalPlanId}`;
 }
 
 export function buildSlackMessageText(payload: IdBlockNotifyPayload): string {

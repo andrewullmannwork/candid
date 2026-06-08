@@ -264,7 +264,14 @@ function thinSignals(userId: string): UserLegitimacySignals {
   };
 }
 
-async function gatherEngagement(
+/**
+ * Exported (PR3a) so the read-only admin work-list scores each cluster user with the
+ * EXACT signals the live gate uses — the §4.1 legitimacy sub-score the admin sees is
+ * never a parallel re-implementation. The raw §4.1 display breakdown (broken-out
+ * counts, profile-field presence, this-upload doc + sensor) is NOT produced here — the
+ * gate does not consume it — it is gathered separately in inventory.ts.
+ */
+export async function gatherEngagement(
   supabase: SupabaseClient,
   userIds: string[],
 ): Promise<Map<string, UserLegitimacySignals>> {
