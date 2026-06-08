@@ -158,6 +158,8 @@ export interface DocumentRow {
   file_hash: string | null;
   // Reprocessing (migration 028)
   retry_count: number;
+  // ID-Block content fingerprint (migration 155) — re-save-invariant 16-char simhash hex; NULL until computed (pre-existing rows / non-plan-doc types)
+  content_fingerprint: string | null;
   created_at: string;
 }
 

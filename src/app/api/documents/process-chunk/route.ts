@@ -17,6 +17,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { extractTextFromDocument } from "@/lib/ocr";
 import { splitPDF, estimatePageCount } from "@/lib/ocr/document-ai";
 import { assessAdversarialPdf } from "@/lib/parser/adversarial-pdf-ingest";
+import { computeContentFingerprint } from "@/lib/parser/id-block/content-fingerprint";
 import { processPlanDocumentData, type ProcessPlanResult } from "@/lib/plan/process-plan";
 import { processEOCDocumentData } from "@/lib/plan/process-eoc";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
@@ -1188,12 +1189,27 @@ export async function POST(req: NextRequest) {
 
       console.log(`[process-chunk] Type resolution: user="${fallbackUserType}" haiku="${fallbackHaikuType}" confidence=${classification.confidence.toFixed(2)} → effective="${fbEffectiveType}" skipCanonical=${fbSkipCanonical} halt=${fbHalt} fellBackToRegex=${fbFallbackResult.fellBackToRegex}`);
 
+      // ID-Block (S173): re-save-invariant content fingerprint for corroboration
+      // source-independence (a TRIGGER, never a reject). Scoped to the plan-doc
+      // family — the only types that feed canonical promotion; bills/EOB/cards are
+      // never fingerprinted. Inert until the id_block_corroboration gate reads it, so
+      // this is byte-identical user-facing behavior. See
+      // plans/id-block-corroboration-source-independence.md §3.1/§9.2.
+      const fbIsPlanDocFamily =
+        fbEffectiveType === "sbc" ||
+        fbEffectiveType === "plan_document" ||
+        fbEffectiveType === "eoc";
+      const fbContentFingerprint = fbIsPlanDocFamily
+        ? computeContentFingerprint(ocrText)
+        : null;
+
       await supabase.from("documents").update({
         processing_step: "working_extracting",
         processing_started_at: new Date().toISOString(),
         classified_type: fbEffectiveType,
         classification_confidence: classification.confidence,
         type_mismatch: fallbackMismatch || false,
+        content_fingerprint: fbContentFingerprint,
       }).eq("id", documentId);
 
       // Low confidence — halt

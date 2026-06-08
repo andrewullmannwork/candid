@@ -1,0 +1,53 @@
+-- =============================================================================
+-- MIGRATION 155 — ID-Block: documents.content_fingerprint (S173)
+-- =============================================================================
+--
+-- WHY (ID-Block corroboration source-independence — pre-launch H-risk, Session 173):
+--   The CF-40 v4 promotion path counts DISTINCT phone+email-verified users on a
+--   plan-identity value-tuple as independent corroboration. It never inspects the
+--   DOCUMENT those users uploaded — `file_hash` (migs 027/090) is consulted only for
+--   per-(canonical, file_hash) STABILITY, not cross-user sameness. So N verified
+--   accounts uploading the SAME document (a high-fidelity fake replayed) read as N
+--   independent votes → low-N canonical poisoning (Pillar P2). See
+--   plans/id-block-corroboration-source-independence.md §2.
+--
+--   `file_hash` (SHA-256 of bytes) catches BYTE-identical replays, but a trivial
+--   re-save / re-export defeats it. ID-Block adds a RE-SAVE-INVARIANT content
+--   fingerprint (64-bit simhash over normalized OCR text) so the corroboration gate
+--   can recognize "these N corroborators are the same document" and route that
+--   cluster to the cluster-legitimacy gate (§3). The fingerprint is a TRIGGER, never
+--   a reject — provider-distributed SBCs are byte-identical across real members (§3.1).
+--
+-- WHAT THIS MIGRATION ADDS (additive; no data change; Rule #7):
+--   documents.content_fingerprint TEXT NULL — lowercase 16-char hex of the 64-bit
+--   simhash (src/lib/parser/id-block/content-fingerprint.ts, ALGO_VERSION 1).
+--
+--   Stored as TEXT (not BIGINT) ON PURPOSE: PostgREST / supabase-js serialize int8
+--   as a JS number → precision loss above 2^53 → corrupt Hamming distances. TEXT-hex
+--   round-trips exactly, is human-readable in the admin work-list (§4), and compares
+--   via BigInt('0x'+hex). NULL = not (yet) computed: pre-existing rows + non-plan-doc
+--   types (bills/EOB/cards never corroborate canonical, so they are never
+--   fingerprinted — forward compute is scoped to sbc/plan_document/eoc).
+--
+--   NO INDEX: the fingerprint is only ever compared WITHIN a value-tuple promotion
+--   cluster (an already-bounded, already-fetched row set), never globally — so a
+--   btree/LSH index would be dead weight. A global near-dup scan, if ever needed, is
+--   a separate follow-up.
+--
+-- BACKFILL: documents.processing_ocr_text is retained post-process (Phase 4.0.5), so
+--   historical fingerprints are recomputable WITHOUT re-OCR via
+--   scripts/id-block/fingerprint-backfill.ts (dry-run validate → --apply). The run is
+--   operator-gated; this migration only adds the (nullable) column.
+--
+-- FLAG: the ID-Block gate itself is gated by `id_block_corroboration` (default OFF,
+--   seeded in a later PR alongside the canonical_promotion_quarantine table). This
+--   column is inert until that gate reads it — adding + populating it is
+--   byte-identical to user-facing behavior.
+--
+-- ROLLBACK: ALTER TABLE documents DROP COLUMN content_fingerprint;
+-- =============================================================================
+
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_fingerprint text;
+
+COMMENT ON COLUMN documents.content_fingerprint IS
+  'ID-Block (S173): lowercase 16-char hex of the 64-bit simhash over normalized OCR text (re-save-invariant content fingerprint; src/lib/parser/id-block/content-fingerprint.ts ALGO_VERSION 1). TRIGGER for corroboration source-independence — NULL = not computed (pre-existing rows / non-plan-doc types). Compared only within a value-tuple promotion cluster.';
