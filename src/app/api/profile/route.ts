@@ -5,6 +5,7 @@ import { userScoped, selectOwnedChildren, upsertOwnedChildren } from "@/lib/secu
 import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
 import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { PLAN_COVERED_ONCONFLICT, type PlanCoverageRow } from "@/lib/plan/coverage-targeting";
 
 /** Extract and verify the Firebase ID token from the Authorization header */
 async function getAuthUser(req: NextRequest) {
@@ -655,7 +656,14 @@ async function syncCopayServices(
   // (B1 child-write primitive) — the raw .from("plan_covered_services") the lint
   // bans lives only inside the security layer. The fk (insurance_plan_id) is
   // stamped by the primitive, so it is omitted from each row here.
-  const rows: Record<string, unknown>[] = [];
+  // S190 (thesaurus T4 × B9 #183 seam): each row carries the 4-col cell identity — the
+  // Pick<PlanCoverageRow, …> typing makes a missing place_of_service/component a compile
+  // error (mig 157 re-keys the table 4-col), and the conflict key is the shared
+  // PLAN_COVERED_ONCONFLICT constant. Route-level coverage writes use the B9 ownership
+  // primitive; applyPlanCoverageCell stays the sanctioned writer in lib/parser code.
+  const rows: Array<
+    Pick<PlanCoverageRow, "service_id" | "place_of_service" | "component"> & Record<string, unknown>
+  > = [];
   for (const [slug, copay] of Object.entries(copayMap)) {
     if (copay === undefined) continue;
 
@@ -671,6 +679,7 @@ async function syncCopayServices(
     rows.push({
       service_id: service.id,
       place_of_service: "any",
+      component: "global",
       in_copay: copay,
       source: "manual",
       confidence: 1,
@@ -679,7 +688,7 @@ async function syncCopayServices(
 
   if (rows.length > 0) {
     await upsertOwnedChildren(supabase, userId, "plan_covered_services", insurancePlanId, rows, {
-      onConflict: "insurance_plan_id,service_id,place_of_service",
+      onConflict: PLAN_COVERED_ONCONFLICT,
     });
   }
 }

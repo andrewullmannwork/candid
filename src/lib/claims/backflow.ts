@@ -10,6 +10,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { applyPlanCoverageCell } from "@/lib/plan/coverage-targeting";
 
 interface BackflowLineItem {
   service_slug: string | null;
@@ -50,11 +51,16 @@ export async function backflowBillCosts(
       if (!svc) continue;
 
       // Upsert into plan_covered_services with bill-observed cost
+      // Bills carry no reliable place_of_service in our vocab → target the honest base cell
+      // (any, global). Pinning all 4 axes also keeps .maybeSingle() single-row after the mig-157
+      // split (a service can now have several cells).
       const { data: existing } = await supabase
         .from("plan_covered_services")
         .select("id, bill_observed_cost, bill_observed_count")
         .eq("insurance_plan_id", insurancePlanId)
         .eq("service_id", svc.id)
+        .eq("place_of_service", "any")
+        .eq("component", "global")
         .maybeSingle();
 
       if (existing) {
@@ -75,9 +81,11 @@ export async function backflowBillCosts(
           .eq("id", existing.id);
       } else {
         // Create new record with bill-observed data only
-        await supabase.from("plan_covered_services").insert({
+        await applyPlanCoverageCell(supabase, {
           insurance_plan_id: insurancePlanId,
           service_id: svc.id,
+          place_of_service: "any",
+          component: "global",
           bill_observed_cost: li.patient_owes,
           bill_observed_count: 1,
           bill_observed_source: "bill_observed",

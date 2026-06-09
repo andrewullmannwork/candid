@@ -16,6 +16,7 @@
 import { createHash } from "crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { parseHaikuJSON } from "@/lib/parser/safe-json";
+import { applyPlanCoverageCell } from "@/lib/plan/coverage-targeting";
 // matchInsurerCatalog import removed (CF-40 v2 — Path B semantic-match smart-skip eliminated).
 import type { ProcessPlanResult } from "@/lib/plan/process-plan";
 import { extractImportantQuestions } from "@/lib/sbc/haiku-prompts/important-questions";
@@ -969,6 +970,7 @@ export async function linkDocumentToCanonical(
             service_id: slugToId.get(s.service_slug!)!,
             concept_id: s.concept_id || null,
             place_of_service: "any",
+            component: "global" as const,
             in_copay: s.copay,
             in_coinsurance: normalizeCoinsuranceForStorage(s.coinsurance),
             in_deductible_applies: s.deductible_applies,
@@ -987,9 +989,7 @@ export async function linkDocumentToCanonical(
         });
 
       if (serviceInserts.length > 0) {
-        const { error: svcError } = await supabase
-          .from("plan_covered_services")
-          .upsert(serviceInserts, { onConflict: "insurance_plan_id,service_id,place_of_service" });
+        const { error: svcError } = await applyPlanCoverageCell(supabase, serviceInserts);
         if (svcError) console.error("[extraction-dedup] Service copy failed:", svcError);
       }
 

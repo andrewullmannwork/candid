@@ -24,6 +24,7 @@ import { recordCostEvent } from "@/lib/cost/parse-cost-events";
 import { matchInsurerWithPlanFallback } from "@/lib/plan/insurer-match";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { routePlanDocServices } from "@/lib/plan_doc/thesaurus-routing";
+import { applyPlanCoverageCell, mergeServiceCoverageRules, coerceComponent } from "@/lib/plan/coverage-targeting";
 import { votedParseSBC } from "@/lib/sbc/voted-parser";
 import type { VotedParseSBCResult } from "@/lib/sbc/voted-parser";
 import { translateHaikuToLegacy } from "@/lib/sbc/legacy-adapter";
@@ -1278,6 +1279,7 @@ export async function processPlanDocumentData(
           service_id: slugToId.get(s.serviceSlug)!,
           concept_id: conceptIdMap.get(s.serviceSlug) || null,
           place_of_service: pos,
+          component: coerceComponent(s.component),
           in_copay: s.inCopay, in_coinsurance: normalizeCoinsuranceForStorage(s.inCoinsurance),
           in_deductible_applies: s.inDeductibleApplies, in_copay_waiver_condition: s.inCopayWaiverCondition,
           in_cost_description: s.inCostDescription,
@@ -1322,9 +1324,7 @@ export async function processPlanDocumentData(
       });
 
       if (serviceInserts.length > 0) {
-        const { error: svcError } = await supabase
-          .from("plan_covered_services")
-          .upsert(serviceInserts, { onConflict: "insurance_plan_id,service_id,place_of_service" });
+        const { error: svcError } = await applyPlanCoverageCell(supabase, serviceInserts);
         if (svcError) console.error("Failed to insert services:", svcError);
         else servicesCreated = serviceInserts.length;
       }
@@ -1344,18 +1344,12 @@ export async function processPlanDocumentData(
             if (!svc.howToAccess) continue;
             const serviceId = slugToId.get(svc.serviceSlug);
             if (!serviceId) continue;
-            const { data: existing } = await supabase
-              .from("plan_covered_services")
-              .select("coverage_rules")
-              .eq("insurance_plan_id", targetPlanId)
-              .eq("service_id", serviceId)
-              .maybeSingle();
-            const existingRules = (existing?.coverage_rules as Record<string, unknown> | null) ?? {};
-            await supabase
-              .from("plan_covered_services")
-              .update({ coverage_rules: { ...existingRules, how_to_access: svc.howToAccess } })
-              .eq("insurance_plan_id", targetPlanId)
-              .eq("service_id", serviceId);
+            // how_to_access is a service-level instruction stored in coverage_rules on the cell
+            // rows; the reader (/api/plan/analyze) reads it off whichever cell it renders. Stamp
+            // every cell uniformly — this also fixes the post-mig-157 multi-row .maybeSingle() throw.
+            await mergeServiceCoverageRules(supabase, targetPlanId, serviceId, {
+              how_to_access: svc.howToAccess,
+            });
           }
         } catch (err) {
           console.error("[plan-doc-access-instructions] non-fatal write error:", err);
@@ -1538,10 +1532,11 @@ export async function processPlanDocumentData(
                 .single();
 
               if (svc) {
-                const { error: inhErr } = await supabase.from("plan_covered_services").upsert({
+                const { error: inhErr } = await applyPlanCoverageCell(supabase, {
                   insurance_plan_id: targetPlanId,
                   service_id: svc.id,
                   place_of_service: "any",
+                  component: "global",
                   in_copay: cs.copay,
                   in_coinsurance: normalizeCoinsuranceForStorage(cs.coinsurance),
                   in_deductible_applies: cs.deductible_applies,
@@ -1555,7 +1550,7 @@ export async function processPlanDocumentData(
                   // for this user's plan. Defaults to {} when canonical row predates
                   // Phase 3.2.1 (legacy seed without field_provenance).
                   field_provenance: cs.field_provenance ?? {},
-                }, { onConflict: "insurance_plan_id,service_id,place_of_service" });
+                });
                 if (!inhErr) inherited++;
               }
             }
