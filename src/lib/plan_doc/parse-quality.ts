@@ -43,6 +43,7 @@ const PLAN_IDENTITY_KEYS = [
 
 export type ParseQualityFailureMode =
   | "services_zero" // no services extracted at all
+  | "cost_sharing_gap" // S177 (RC-5 sentinel) — in-network individual deductible OR oop-max came back null; always-evaluated (fires even when score >= 0.80)
   | "truncation_retry" // haiku hit max_tokens; cite-grade dropped on retry
   | "plan_identity_low" // <8 of 15 plan-identity fields populated
   | "cite_grade_below_threshold" // services cite-grade < 80% but no specific signature
@@ -53,8 +54,8 @@ export type ParseQualityFailureMode =
 export interface ParseQualityScore {
   score: number; // 0..1
   layout: string; // PlanDocLayout label
-  failureMode: ParseQualityFailureMode | null; // null when score >= 0.80
-  signature: string | null; // "{layout}::{failureMode}" — null when score >= 0.80
+  failureMode: ParseQualityFailureMode | null; // null when score >= 0.80 — EXCEPT cost_sharing_gap, which is always-evaluated (can be set at score >= 0.80)
+  signature: string | null; // "{layout}::{failureMode}" — null when failureMode is null
 }
 
 /**
@@ -92,6 +93,22 @@ export function computeParseQuality(
 
   const score = servicesCiteRate * 0.7 + planIdentityRate * 0.3;
 
+  // Cost-sharing recall tripwire (S177, RC-5 sentinel). The in-network individual
+  // deductible + OOP max are the two highest-leverage plan-identity scalars and are
+  // user-visible (no canonical inheritance: /plan reads the user plan, falling back
+  // only to the user profile; /compare reads `?? null`). A null on either is a recall
+  // loss worth surfacing REGARDLESS of the composite score — services-cite-grade is
+  // 70% of `score`, so a great-services parse that drops the deductible would
+  // otherwise score >= 0.80 and never flag. $0 cost-sharing is stored as 0 (not null),
+  // so this fires only on genuine extraction gaps, never on real $0 plans. Insurer-
+  // and doc-type-agnostic. Periodic check (G7): query documents WHERE
+  // parse_quality_failure_mode='cost_sharing_gap' grouped by carrier/layout.
+  const costSharingGap =
+    result.planIdentity.deductibleIndividual?.value === null ||
+    result.planIdentity.deductibleIndividual?.value === undefined ||
+    result.planIdentity.oopMaxIndividual?.value === null ||
+    result.planIdentity.oopMaxIndividual?.value === undefined;
+
   // Failure mode derivation. Order matters — first-match wins. Most specific
   // patterns come first so we don't bucket everything into the generic
   // "cite_grade_below_threshold". The S93 admin UI uses these as cluster
@@ -112,6 +129,11 @@ export function computeParseQuality(
     } else if (servicesTotal === 0) {
       // Plan-identity recovered but 0 services — Stage 2 partial_success path
       failureMode = "services_zero";
+    } else if (costSharingGap) {
+      // S177 — services extracted but a critical cost-sharing scalar is missing.
+      // Ranks above the softer/narrower modes below; total-extraction failures
+      // (extraction_failed / services_zero) still win above.
+      failureMode = "cost_sharing_gap";
     } else if (insurerLooksLikePEO) {
       // S91 sponsor-vs-carrier confusion
       failureMode = "peo_sponsor_confusion";
@@ -122,6 +144,11 @@ export function computeParseQuality(
     } else {
       failureMode = "cite_grade_below_threshold";
     }
+  } else if (costSharingGap) {
+    // S177 — high-quality parse (score >= 0.80) that still dropped the deductible or
+    // OOP max. Always flagged so a future per-carrier cost-sharing regression is
+    // caught even when services parse cleanly (the blind spot a score-gated check has).
+    failureMode = "cost_sharing_gap";
   }
 
   const signature = failureMode ? `${layout}::${failureMode}` : null;
