@@ -25,9 +25,13 @@ import { createServerClient } from "@/lib/supabase/server";
 import { getUserContextByPk } from "@/lib/users/resolve-user-by-pk";
 import { parseEOC } from "@/lib/eoc/parser";
 import { resolveOrEnqueueConcept } from "@/lib/eoc/concept-resolver";
-import type { EOCParseResult } from "@/lib/eoc/types";
+import type { EOCParseResult, PriorAuthCode } from "@/lib/eoc/types";
 import type { ProcessPlanResult } from "@/lib/plan/process-plan";
 import { buildEOCPlanIdentityProvenance } from "@/lib/parser/provenance-builders";
+import { buildProvenanceEntry } from "@/lib/parser/field-categories";
+import { canonicalizeSlug, loadServiceRenameMap, acceptCodeAnchoredSlug } from "@/lib/plan_doc/thesaurus-routing";
+import { upsertServiceCoverage, resolveServiceIdBySlug } from "@/lib/plan/coverage-targeting";
+import { resolveServices, type ResolveLineInput } from "@/lib/claims/service-resolver";
 import { loadValidServiceSlugs, enqueueUnknownServiceSlug } from "@/lib/parser/service-catalog-slugs";
 import {
   commitUploadAndEvaluateCorroboration,
@@ -459,6 +463,22 @@ async function persistEOCSections(
 
   // ── Section A: prior_auth_codes ──────────────────────────────────────────────
   if (parsed.sections.prior_auth_codes && proposedByUserId) {
+    const renameMap = await loadServiceRenameMap(supabase);
+    const thesaurusOn = await isFeatureEnabled("thesaurus_phase1a_v1");
+    // Accumulate by canonicalized SLUG (not service_id): EOC prior-auth tables run 5–50 pages of
+    // codes, many collapsing to one service — so the slug→id lookup + the typed column + provenance
+    // happen ONCE per service, not per code.
+    const bySlug = new Map<string, { code: PriorAuthCode; criteria: string[] }>();
+    const accumulate = (slug: string, code: PriorAuthCode): void => {
+      const acc = bySlug.get(slug) ?? { code, criteria: [] };
+      if (code.pa_criteria) acc.criteria.push(code.pa_criteria);
+      bySlug.set(slug, acc);
+    };
+    // Codes the concept registry gave no usable slug for → candidates for the bills-fed code-cache
+    // rescue (D1-A). The line index lets the single batched resolver map results back.
+    const rescue: Array<{ line: number; code: PriorAuthCode }> = [];
+
+    // Pass 1 — concept registry (curated authority) + Pattern 1 #1 admin gate.
     for (const code of parsed.sections.prior_auth_codes.data.codes) {
       try {
         const result = await resolveOrEnqueueConcept(supabase, {
@@ -475,20 +495,93 @@ async function persistEOCSections(
           sourceSectionVerified: code.source_section_verified,
           contextExtract: extractContext(parsed, code.source_excerpt),
         });
-
-        if (result.matched && result.serviceSlug) {
-          // Write coverage_rules JSONB on plan_covered_services for this service_slug.
-          await mergeCoverageRules(supabase, planId, result.serviceSlug, {
-            requires_prior_auth: true,
-            prior_auth_criteria: code.pa_criteria,
-            prior_auth_source_excerpt: code.source_excerpt,
-            prior_auth_source_excerpt_verified: code.source_excerpt_verified,
-          });
-        } else if (!result.matched) {
+        if (!result.matched) {
+          // Unknown code: enqueued for admin (Pattern 1 #1, preserved). The coverage write is
+          // still rescuable from the corroborated code-cache below.
           warnings.push(`eoc_unknown_pa_code_enqueued:${code.billing_code}:${code.billing_code_type}`);
+          rescue.push({ line: rescue.length, code });
+        } else if (result.serviceSlug) {
+          // Matched concept's slug WINS (curated authority); canonicalize dead→live.
+          accumulate(canonicalizeSlug(result.serviceSlug, renameMap), code);
+        } else {
+          // Concept matched but carries no service_slug mapping — also rescuable.
+          rescue.push({ line: rescue.length, code });
         }
       } catch (err) {
         warnings.push(`eoc_pa_code_persist_failed:${code.billing_code}:${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // Pass 2 (D1-A, flag-gated) — bills-fed CODE-cache rescue for codes the registry couldn't slug.
+    // ONE batched resolveServices (cache-first; no Haiku, no writeback). ACCEPT ONLY a code_cache
+    // hit (`acceptCodeAnchoredSlug`): the "description" here is criteria prose, so a signature/trigram
+    // match would manufacture a wrong slug. OFF → today's behavior (coverage dropped).
+    if (thesaurusOn && rescue.length > 0) {
+      const lines: ResolveLineInput[] = rescue.map((r) => ({
+        lineNumber: r.line,
+        description: r.code.pa_criteria ?? "",
+        billingCode: r.code.billing_code,
+        billingCodeType: r.code.billing_code_type,
+      }));
+      try {
+        const resolved = await resolveServices(lines, {
+          supabase,
+          userId: proposedByUserId,
+          skipHaiku: true,
+          skipWriteback: true,
+        });
+        for (const r of rescue) {
+          const slug = acceptCodeAnchoredSlug(resolved.get(r.line));
+          if (slug) accumulate(canonicalizeSlug(slug, renameMap), r.code);
+        }
+      } catch (err) {
+        warnings.push(`eoc_pa_rescue_failed:${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // Write once per service: set the EOC-authoritative typed `prior_auth_required` column (what
+    // /plan + /compare actually read) + its field_provenance (cite-grade, the SAME key + builder the
+    // SBC/plan-doc parsers use) + the criteria detail in coverage_rules JSONB. A PA-required service
+    // is a real covered service → create a base cell if it has none.
+    for (const [slug, acc] of bySlug) {
+      const serviceId = await resolveServiceIdBySlug(supabase, slug);
+      if (!serviceId) {
+        warnings.push(`eoc_pa_slug_no_service_id:${slug}`);
+        continue;
+      }
+      const provEntry = buildProvenanceEntry(
+        "plan_covered_services",
+        "prior_auth_required",
+        "doc_extraction_eoc",
+        acc.code.haiku_confidence,
+        {
+          sourceExcerpt: acc.code.source_excerpt,
+          sourceExcerptVerified: acc.code.source_excerpt_verified,
+          sourceExcerptExtractionMethod: acc.code.source_excerpt_extraction_method,
+          sourceSectionHint: acc.code.source_section_hint,
+          sourceSectionVerified: acc.code.source_section_verified,
+        },
+      );
+      try {
+        await upsertServiceCoverage(
+          supabase,
+          planId,
+          serviceId,
+          {
+            typed: { prior_auth_required: true },
+            provenance: provEntry ? { prior_auth_required: provEntry } : undefined,
+            coverageRules: {
+              requires_prior_auth: true,
+              prior_auth_criteria: acc.criteria[0] ?? acc.code.pa_criteria ?? null,
+              prior_auth_all_criteria: acc.criteria,
+              prior_auth_source_excerpt: acc.code.source_excerpt,
+              prior_auth_source_excerpt_verified: acc.code.source_excerpt_verified,
+            },
+          },
+          { allowBaseCell: true },
+        );
+      } catch (err) {
+        warnings.push(`eoc_pa_write_failed:${slug}:${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
@@ -504,51 +597,74 @@ async function persistEOCSections(
     // health / transplant.
     const validSlugs = await loadValidServiceSlugs(supabase);
 
+    const renameMap = await loadServiceRenameMap(supabase);
+
     for (const criterion of parsed.sections.medical_necessity.data.criteria) {
       // For medical_necessity, service_slug_hint is the parser's best-guess at which
       // service catalog entry this maps to. If present + matches existing service_catalog,
-      // write to coverage_rules. If unknown, enqueue for admin promotion (Pattern 1 #1).
+      // capture into coverage_rules. If unknown, enqueue for admin promotion (Pattern 1 #1).
       // If no slug hint at all, log for admin review (criteria without slug binding
       // can't merge into coverage_rules).
-      if (criterion.service_slug_hint) {
-        if (!validSlugs.has(criterion.service_slug_hint)) {
-          try {
-            const { isNew } = await enqueueUnknownServiceSlug(supabase, {
-              sourceDocId: documentId,
-              proposedByUserId,
-              parserSource: "eoc",
-              proposedServiceSlug: criterion.service_slug_hint,
-              proposedServiceLabel: criterion.criteria_text.slice(0, 200),
-              proposedCategory: null,
-              sourceExcerpt: criterion.source_excerpt,
-              sourceExcerptVerified: criterion.source_excerpt_verified,
-              sourceExcerptExtractionMethod: criterion.source_excerpt_extraction_method,
-              sourceSectionHint: criterion.source_section_hint,
-              sourceSectionVerified: criterion.source_section_verified,
-              contextExtract: extractContext(parsed, criterion.source_excerpt),
-            });
-            warnings.push(
-              isNew
-                ? `eoc_medical_necessity_slug_enqueued_new:${criterion.service_slug_hint}`
-                : `eoc_medical_necessity_slug_enqueued_existing:${criterion.service_slug_hint}`,
-            );
-          } catch (err) {
-            warnings.push(`eoc_medical_necessity_slug_enqueue_failed:${criterion.service_slug_hint}:${err instanceof Error ? err.message : String(err)}`);
-          }
-          continue;
-        }
-        try {
-          await mergeCoverageRules(supabase, planId, criterion.service_slug_hint, {
-            medical_necessity_text: criterion.criteria_text,
-            diagnosis_qualifiers: criterion.diagnosis_qualifiers,
-            medical_necessity_source_excerpt: criterion.source_excerpt,
-            medical_necessity_source_excerpt_verified: criterion.source_excerpt_verified,
-          });
-        } catch (err) {
-          warnings.push(`eoc_medical_necessity_persist_failed:${criterion.service_slug_hint}:${err instanceof Error ? err.message : String(err)}`);
-        }
-      } else {
+      if (!criterion.service_slug_hint) {
         warnings.push(`eoc_medical_necessity_no_slug:criteria_text_len_${criterion.criteria_text.length}`);
+        continue;
+      }
+      // Canonicalize the hint through the dead→live rename-map BEFORE the catalog check (always-on,
+      // like Step B): the stale EOC prompt still emits deprecated slugs that would otherwise be
+      // wrongly enqueued instead of resolving to their live replacement.
+      const hint = canonicalizeSlug(criterion.service_slug_hint, renameMap);
+      if (!validSlugs.has(hint)) {
+        try {
+          const { isNew } = await enqueueUnknownServiceSlug(supabase, {
+            sourceDocId: documentId,
+            proposedByUserId,
+            parserSource: "eoc",
+            proposedServiceSlug: hint,
+            proposedServiceLabel: criterion.criteria_text.slice(0, 200),
+            proposedCategory: null,
+            sourceExcerpt: criterion.source_excerpt,
+            sourceExcerptVerified: criterion.source_excerpt_verified,
+            sourceExcerptExtractionMethod: criterion.source_excerpt_extraction_method,
+            sourceSectionHint: criterion.source_section_hint,
+            sourceSectionVerified: criterion.source_section_verified,
+            contextExtract: extractContext(parsed, criterion.source_excerpt),
+          });
+          warnings.push(
+            isNew
+              ? `eoc_medical_necessity_slug_enqueued_new:${hint}`
+              : `eoc_medical_necessity_slug_enqueued_existing:${hint}`,
+          );
+        } catch (err) {
+          warnings.push(`eoc_medical_necessity_slug_enqueue_failed:${hint}:${err instanceof Error ? err.message : String(err)}`);
+        }
+        continue;
+      }
+      // Valid hint → capture medical necessity into coverage_rules on EXISTING cells ONLY. There is
+      // no typed column for medical necessity and no /plan reader yet, so we do NOT mint a phantom
+      // covered=true base cell from what are often generic criteria tables (a reader + base-cell
+      // surfacing is a deliberate follow-up).
+      const serviceId = await resolveServiceIdBySlug(supabase, hint);
+      if (!serviceId) {
+        warnings.push(`eoc_medical_necessity_no_service_id:${hint}`);
+        continue;
+      }
+      try {
+        await upsertServiceCoverage(
+          supabase,
+          planId,
+          serviceId,
+          {
+            coverageRules: {
+              medical_necessity_text: criterion.criteria_text,
+              diagnosis_qualifiers: criterion.diagnosis_qualifiers,
+              medical_necessity_source_excerpt: criterion.source_excerpt,
+              medical_necessity_source_excerpt_verified: criterion.source_excerpt_verified,
+            },
+          },
+          { allowBaseCell: false },
+        );
+      } catch (err) {
+        warnings.push(`eoc_medical_necessity_persist_failed:${hint}:${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
@@ -584,38 +700,6 @@ async function persistEOCSections(
   }
 
   return warnings;
-}
-
-/**
- * Merge a coverage_rules JSONB patch into plan_covered_services for a given
- * (plan_id, service_slug). Creates the row if it doesn't exist; deep-merges patch
- * into existing coverage_rules JSONB. Preserves Pattern P-A FIELD_EXCEPTIONS by
- * NOT overwriting non-EOC-authoritative fields.
- */
-async function mergeCoverageRules(
-  supabase: SupabaseClient,
-  planId: string,
-  serviceSlug: string,
-  patch: Record<string, unknown>,
-): Promise<void> {
-  const { data: existing } = await supabase
-    .from("plan_covered_services")
-    .select("id, coverage_rules")
-    .eq("plan_id", planId)
-    .eq("service_slug", serviceSlug)
-    .maybeSingle();
-
-  if (existing) {
-    const existingRules = (existing.coverage_rules as Record<string, unknown>) ?? {};
-    const merged = { ...existingRules, ...patch };
-    await supabase.from("plan_covered_services").update({ coverage_rules: merged }).eq("id", existing.id);
-  } else {
-    await supabase.from("plan_covered_services").insert({
-      plan_id: planId,
-      service_slug: serviceSlug,
-      coverage_rules: patch,
-    });
-  }
 }
 
 /**

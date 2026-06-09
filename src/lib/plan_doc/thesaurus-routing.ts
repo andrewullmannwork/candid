@@ -51,6 +51,21 @@ export function canonicalizeSlug(slug: string, renameMap: ReadonlyMap<string, st
   return renameMap.get(slug) ?? slug;
 }
 
+/**
+ * EOC Section-A prior-auth carries a real billing CODE, but the resolver "description" fed for it is
+ * criteria PROSE (e.g. "required for procedures over $500") — NOT a service label. So only the
+ * CODE-ANCHORED cache may win: a `signature_cache`/`trigram` match on prose manufactures a
+ * confident-wrong slug. Returns the `code_cache` slug, or null for any other tier.
+ *
+ * Distinct from `WINNING_SOURCES` (which also trusts `signature_cache`) because plan-doc routes a
+ * real `rawLabel` while EOC routes a billing code against prose — keep the two acceptance sets apart.
+ */
+export function acceptCodeAnchoredSlug(
+  res: Pick<ServiceResolution, "slug" | "source"> | undefined,
+): string | null {
+  return res && res.source === "code_cache" && res.slug ? res.slug : null;
+}
+
 export interface ThesaurusRoutingResult {
   /** Services considered (the 1:1-aligned prefix). */
   total: number;

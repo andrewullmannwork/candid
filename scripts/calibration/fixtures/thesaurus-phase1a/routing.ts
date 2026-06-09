@@ -15,6 +15,7 @@
 import {
   applyThesaurusRouting,
   canonicalizeSlug,
+  acceptCodeAnchoredSlug,
   type ThesaurusRoutingResult,
 } from "@/lib/plan_doc/thesaurus-routing";
 import type { ResolutionSource } from "@/lib/claims/service-resolver";
@@ -40,6 +41,16 @@ const renameMap = new Map<string, string>([
 ]);
 check("canonicalizeSlug: dead slug -> live", canonicalizeSlug("dead5", renameMap) === "live5");
 check("canonicalizeSlug: live slug unchanged", canonicalizeSlug("office_visit", renameMap) === "office_visit");
+
+// ── acceptCodeAnchoredSlug unit (EOC Section-A: CODE-anchored ONLY) ───────────
+// EOC prior-auth feeds criteria PROSE as the description → a signature/trigram match would be a
+// wrong slug; only a code_cache hit may win.
+check("acceptCodeAnchoredSlug: code_cache hit -> slug", acceptCodeAnchoredSlug({ slug: "imaging", source: "code_cache" }) === "imaging");
+check("acceptCodeAnchoredSlug: signature_cache REJECTED (prose ≠ label)", acceptCodeAnchoredSlug({ slug: "wrong", source: "signature_cache" }) === null);
+check("acceptCodeAnchoredSlug: trigram_exact REJECTED", acceptCodeAnchoredSlug({ slug: "wrong", source: "trigram_exact" }) === null);
+check("acceptCodeAnchoredSlug: haiku REJECTED", acceptCodeAnchoredSlug({ slug: "wrong", source: "haiku" }) === null);
+check("acceptCodeAnchoredSlug: undefined (no resolution) -> null", acceptCodeAnchoredSlug(undefined) === null);
+check("acceptCodeAnchoredSlug: code_cache with null slug -> null", acceptCodeAnchoredSlug({ slug: null, source: "code_cache" }) === null);
 
 // ── applyThesaurusRouting over a multi-service plan-doc ───────────────────────
 // One service per scenario; legacy[i] and haiku[i] start with the SAME extractor slug.
