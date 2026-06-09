@@ -101,6 +101,14 @@ export function validateIdBlockConfigInput(raw: unknown): ConfigValidationResult
   const mode = gate?.mode;
   if (mode !== "shadow" && mode !== "active") errors.push("gate.mode must be 'shadow' or 'active'");
 
+  // reEval (PR3c): cadence + sweep bound. cadenceDays ≥ 1 (the daily cron's finest
+  // granularity is one day); maxRowsPerSweep ≥ 1 (a sweep that processes 0 rows is a
+  // misconfiguration, not a throttle). Both integers.
+  const reEval = asObj(root.reEval);
+  if (!reEval) errors.push("reEval must be an object");
+  num(reEval, "cadenceDays", "reEval.cadenceDays", { min: 1, integer: true });
+  num(reEval, "maxRowsPerSweep", "reEval.maxRowsPerSweep", { min: 1, integer: true });
+
   const slack = asObj(root.slack);
   if (!slack) errors.push("slack must be an object");
   else if (typeof slack.enabled !== "boolean") errors.push("slack.enabled must be a boolean");
@@ -124,6 +132,10 @@ export function validateIdBlockConfigInput(raw: unknown): ConfigValidationResult
       hammingNearDupThreshold: gate!.hammingNearDupThreshold as number,
       sameContentMajority: gate!.sameContentMajority as number,
       mode: mode as QuarantineMode,
+    },
+    reEval: {
+      cadenceDays: reEval!.cadenceDays as number,
+      maxRowsPerSweep: reEval!.maxRowsPerSweep as number,
     },
     slack: { enabled: slack!.enabled as boolean },
   };

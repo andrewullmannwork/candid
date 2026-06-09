@@ -399,10 +399,23 @@ interface IdBlockCfgShape {
   normCaps: { accountAgeDaysCap: number; signupLatencyDaysCap: number; activityBreadthCap: number };
   shape: { thinScore: number; burstWindowHours: number; signupCorrelationWindowHours: number };
   gate: { clusterLegitimacyThreshold: number; hammingNearDupThreshold: number; sameContentMajority: number; mode: "shadow" | "active" };
+  reEval: { cadenceDays: number; maxRowsPerSweep: number };
   slack: { enabled: boolean };
 }
 
-function CfgNum({ label, value, onChange, step }: { label: string; value: number; onChange: (n: number) => void; step?: string }) {
+function CfgNum({
+  label,
+  value,
+  onChange,
+  step,
+  desc,
+}: {
+  label: string;
+  value: number;
+  onChange: (n: number) => void;
+  step?: string;
+  desc?: string;
+}) {
   return (
     <label className="flex flex-col gap-0.5">
       <span className="text-[11px] uppercase tracking-wide text-gray-400">{label}</span>
@@ -413,6 +426,7 @@ function CfgNum({ label, value, onChange, step }: { label: string; value: number
         onChange={(e) => onChange(e.target.value === "" ? NaN : Number(e.target.value))}
         className="rounded border border-gray-300 px-2 py-1 text-sm"
       />
+      {desc && <span className="text-[10px] leading-tight text-gray-400">{desc}</span>}
     </label>
   );
 }
@@ -505,6 +519,27 @@ function ConfigEditor({ token }: { token: () => Promise<string> }) {
                   <span className="text-sm text-gray-700">Slack alerts</span>
                 </label>
               </div>
+              <div className="mt-3 border-t border-gray-100 pt-3">
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                  Daily re-eval (PR3c — delayed, not denied)
+                </div>
+                <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+                  <CfgNum
+                    label="re-eval cadence (days)"
+                    value={cfg.reEval.cadenceDays}
+                    onChange={(n) => upd("reEval", "cadenceDays", n)}
+                    step="1"
+                    desc="How often the nightly job re-checks each held promotion (1 = every night). Lower = a thin-but-real cluster auto-releases sooner once it looks legitimate. Never affects the user's own data — only paces re-evaluation of community promotions paused for fraud-suspicion. No retry limit: a held row is re-checked indefinitely until it clears or an admin acts."
+                  />
+                  <CfgNum
+                    label="max rows / sweep"
+                    value={cfg.reEval.maxRowsPerSweep}
+                    onChange={(n) => upd("reEval", "maxRowsPerSweep", n)}
+                    step="1"
+                    desc="Safety cap on held rows re-checked per nightly run (oldest-due first). Overflow is logged and re-checked the next night — never dropped, and never a limit on whether a promotion eventually clears."
+                  />
+                </div>
+              </div>
               {cfg.gate.mode === "active" && (
                 <div className="mt-2 rounded bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
                   ⚠ active mode WITHHOLDS flagged promotions. Only switch once the shadow flag-rate is calibrated.
@@ -536,7 +571,15 @@ function ConfigEditor({ token }: { token: () => Promise<string> }) {
 
 export default function PromotionQuarantinePage() {
   const { user } = useAuth();
-  const [scope, setScope] = useState<"live" | "all">("live");
+  // Init scope from the URL (Slack release deep-links land at ?scope=all so the promoted
+  // row is visible). SSR-safe: window-guarded, and all scope-dependent UI is gated behind
+  // {data && …} (null at hydration) so there is no hydration mismatch.
+  const [scope, setScope] = useState<"live" | "all">(() =>
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("scope") === "all"
+      ? "all"
+      : "live",
+  );
   const [data, setData] = useState<InventoryResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -598,6 +641,16 @@ export default function PromotionQuarantinePage() {
     if (user) void load();
   }, [user, load]);
 
+  // Scroll to the deep-linked cluster card once data has rendered (the cards load async,
+  // so the browser's native #hash scroll fires before the anchor element exists).
+  useEffect(() => {
+    if (!data || typeof window === "undefined") return;
+    const hash = window.location.hash;
+    if (!hash.startsWith("#canonical-")) return;
+    const el = document.getElementById(hash.slice(1));
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [data]);
+
   // anchor only the first card per canonical (Slack deep-link → #canonical-<id>).
   const anchoredIds = useMemo(() => {
     const seen = new Set<string>();
@@ -621,8 +674,9 @@ export default function PromotionQuarantinePage() {
       </div>
       <p className="mb-4 text-sm text-gray-500">
         Corroboration source-independence work-list (anti-Sybil/replay). Per-cluster
-        Confirm/Clear/Hold below (§4.3); gate config editor below (§5); the daily re-eval
-        cron lands in PR3c.
+        Confirm/Clear/Hold below (§4.3); gate config editor + re-eval cadence below (§5).
+        A held promotion is auto-re-evaluated nightly and releases on its own once the
+        cluster legitimacy clears (delayed, not denied) — no admin action required.
       </p>
 
       <ConfigEditor token={token} />

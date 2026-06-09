@@ -297,8 +297,14 @@ export function computeLayer3Inputs(
   };
 }
 
-/** Stable key for an identity-value tuple (NULLs distinguished from 0). */
-function identityKey(values: Record<IdentityField, number | null>): string {
+/**
+ * Stable key for an identity-value tuple (NULLs distinguished from 0). Exported so
+ * the ID-Block re-eval cron's tuple-drift guard (apply-confirmed-promotion.ts) can
+ * compare the CURRENT supermajority winner against the held row's value_tuple_key —
+ * which the gate produced with the identical field list/order (id-block/gate.ts
+ * tupleKey ≡ this; locked by the cf40-v4/__fixtures__ tuple-key-parity fixture).
+ */
+export function identityKey(values: Record<IdentityField, number | null>): string {
   return SUPERMAJORITY_IDENTITY_FIELDS.map((f) => (values[f] === null ? "∅" : String(values[f]))).join(
     "|",
   );

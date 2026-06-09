@@ -42,8 +42,13 @@ const IDENTITY_FIELDS = [
   "in_oop_max_family",
 ] as const;
 
-/** Stable key of an identity tuple (NULL distinguished from 0) — mirrors identityKey. */
-function tupleKey(t: Record<string, unknown>): string {
+/**
+ * Stable key of an identity tuple (NULL distinguished from 0) — mirrors the aggregator's
+ * identityKey (same field list/order; locked by the tuple-key-parity fixture). Exported
+ * because value_tuple_key (produced by this) is compared against identityKey(currentTuple)
+ * in the re-eval tuple-drift guard (apply-confirmed-promotion.ts), so the two MUST agree.
+ */
+export function tupleKey(t: Record<string, unknown>): string {
   return IDENTITY_FIELDS.map((f) => {
     const v = t[f];
     return v === null || v === undefined ? "∅" : String(v);
