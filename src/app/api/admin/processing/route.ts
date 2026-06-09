@@ -3,6 +3,10 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { getUsageStats } from "@/lib/config/processing-usage";
 import { FLAGS } from "@/lib/config/feature-flags";
+import { processDocument } from "@/lib/documents/process-document";
+import type { DocumentRow } from "@/lib/supabase/types";
+
+export const maxDuration = 300;
 
 async function verifyAdmin(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -62,29 +66,26 @@ export async function POST(req: NextRequest) {
   const { action, documentId } = await req.json();
 
   if (action === "process_document" && documentId) {
-    // Look up the document's actual type
+    // Look up the document, then process it directly with admin override
+    // (bypasses the per-day cost cap; this route is is_admin-gated above). The
+    // previous internal HTTP hop with an `x-admin-override` header is removed.
     const supabase = createServerClient();
-    const { data: docRecord } = await supabase
+    const { data: doc } = await supabase
       .from("documents")
-      .select("doc_type")
+      .select("*")
       .eq("id", documentId)
       .single();
-    const billType = docRecord?.doc_type || "eob";
+    if (!doc) {
+      return NextResponse.json({ error: "Document not found" }, { status: 404 });
+    }
+    const billType = doc.doc_type || "eob";
 
-    // Trigger processing with admin override
-    const processRes = await fetch(
-      new URL("/api/documents/process", req.url).toString(),
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-admin-override": "true",
-        },
-        body: JSON.stringify({ documentId, billType }),
-      }
-    );
-    const result = await processRes.json();
-    return NextResponse.json(result);
+    const result = await processDocument(supabase, {
+      doc: doc as DocumentRow,
+      billType,
+      adminOverride: true,
+    });
+    return NextResponse.json(result.body, { status: result.status });
   }
 
   if (action === "process_all_queued") {
@@ -92,7 +93,7 @@ export async function POST(req: NextRequest) {
     const supabase = createServerClient();
     const { data: queued } = await supabase
       .from("documents")
-      .select("id, doc_type")
+      .select("*")
       .eq("status", "queued")
       .limit(10); // Process in batches of 10
 
@@ -105,18 +106,12 @@ export async function POST(req: NextRequest) {
     for (const doc of queued) {
       try {
         const billType = ["sbc", "plan_document", "itemized_bill"].includes(doc.doc_type) ? doc.doc_type : "eob";
-        const res = await fetch(
-          new URL("/api/documents/process", req.url).toString(),
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-admin-override": "true",
-            },
-            body: JSON.stringify({ documentId: doc.id, billType }),
-          }
-        );
-        if (res.ok) processed++;
+        const result = await processDocument(supabase, {
+          doc: doc as DocumentRow,
+          billType,
+          adminOverride: true,
+        });
+        if (result.status >= 200 && result.status < 300) processed++;
         else errors++;
       } catch {
         errors++;
