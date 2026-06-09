@@ -23,6 +23,7 @@ import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
 import { recordCostEvent } from "@/lib/cost/parse-cost-events";
 import { matchInsurerWithPlanFallback } from "@/lib/plan/insurer-match";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { routePlanDocServices } from "@/lib/plan_doc/thesaurus-routing";
 import { votedParseSBC } from "@/lib/sbc/voted-parser";
 import type { VotedParseSBCResult } from "@/lib/sbc/voted-parser";
 import { translateHaikuToLegacy } from "@/lib/sbc/legacy-adapter";
@@ -315,6 +316,33 @@ export async function processPlanDocumentData(
       });
       parseResult = planDocResult.legacy;
       planDocHaikuResult = planDocResult.haiku;
+
+      // ── Thesaurus Phase 1a (T3a) — plan-doc slug routing ────────────────────
+      // ALWAYS canonicalize each extractor slug via the service_catalog rename-map
+      // (dead→live). The prompt still emits deprecated slugs (mig 148+); without this
+      // they resolve to a merged catalog row consumer-reads exclude → service dropped.
+      // Pure correctness, no exposure risk → NOT flag-gated (S175). The trustworthy
+      // signature-cache OVERRIDE (synonym routing) stays gated by `thesaurus_phase1a_v1`
+      // (synonym-inferred coverage is exposure-held for Phase 2/6).
+      const cacheRoutingOn = await isFeatureEnabled(
+        "thesaurus_phase1a_v1",
+        userForFlagCheck?.email ?? undefined,
+      );
+      if (planDocResult.haiku && planDocResult.legacy.services.length > 0) {
+        const haikuResult = planDocResult.haiku;
+        const routed = await routePlanDocServices({
+          supabase,
+          userId: doc.user_id,
+          legacyServices: planDocResult.legacy.services,
+          haikuServices: haikuResult.services,
+          cacheRoutingEnabled: cacheRoutingOn,
+        });
+        if (routed) {
+          console.log(
+            `[process-plan] thesaurus routing: ${routed.cacheWins} cache-win(s), ${routed.slugChanged} slug change(s) / ${routed.total} service(s)`,
+          );
+        }
+      }
     } else {
       // SBC classification with sbc_parser_v1 OFF — explicit failure.
       // The flag stays in code as a kill-switch for debugging; flipping a specific

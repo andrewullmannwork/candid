@@ -335,6 +335,15 @@ $$;
 COMMENT ON FUNCTION evaluate_pattern1_corroboration(UUID, TEXT, TEXT, TEXT, TEXT) IS
   'Phase 4.0.6 + S67 (mig 074) + S69 (mig 076) + S99 B5 (mig 108) + S173 Thesaurus Phase 1a (mig 156): concept_id-grouped corroboration counting, NOW also cell-grouped on (place_of_service, component) via two NULL-conditional params. NULL pos/component = aggregate (byte-identical mig 108; the live 3-arg caller path). Non-NULL = restrict the per-service user-row count AND the canonical-current-value read to that cost-share cell (also pins the otherwise-multi-row post-148 canonical read to one 4-col-unique row). Plan-identity branch (p_service_slug IS NULL) unchanged. Flag-gating (thesaurus_phase1a_v1) lives in the TS caller, which passes pos/component only when ON. The plan_covered_services UNIQUE re-key (3→4-col) ships in mig 157 with the T4 write-path. Pattern 1 #14 storage-side authority preserved.';
 
+-- ── PART B2 — re-establish the explicit grant the DROP discarded (mirrors mig 068:650) ──
+-- The signature change forces DROP+CREATE (CREATE OR REPLACE cannot add params), and DROP
+-- discards the grant that mig 074/076/108 kept alive through CREATE OR REPLACE. Re-issue it
+-- on the 5-arg signature so a later REVOKE-FROM-PUBLIC hardening pass cannot strip the live
+-- caller's EXECUTE access. (Today PUBLIC has default EXECUTE, so this is intent-preserving,
+-- not a behavior change.)
+GRANT EXECUTE ON FUNCTION evaluate_pattern1_corroboration(UUID, TEXT, TEXT, TEXT, TEXT)
+  TO authenticated, service_role;
+
 -- ── PART C — flag seed thesaurus_phase1a_v1 (OFF/global; mirrors mig 075 shape) ──
 INSERT INTO feature_flag_rules (flag_key, enabled, description, target_type, config)
 VALUES (
