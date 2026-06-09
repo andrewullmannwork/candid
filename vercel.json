@@ -11,6 +11,10 @@
     {
       "path": "/api/cron/pii-audit",
       "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/id-block-reeval",
+      "schedule": "0 6 * * *"
     }
   ]
 }

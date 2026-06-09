@@ -26,7 +26,7 @@
 import type { createServerClient } from "@/lib/supabase/server";
 import { ADMIN_ATTESTATION_FLAG_KEY } from "./index";
 import { loadCF40V4Config } from "./config";
-import { decideDoctypePromotion, gatherLayer3Inputs } from "./doctype-promotion-aggregator";
+import { decideDoctypePromotion, gatherLayer3Inputs, identityKey } from "./doctype-promotion-aggregator";
 import { upsertDoctypePromotionState } from "./record-parse-event";
 import { toPlanDocType } from "@/lib/parser/doctype-expected-counts";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
@@ -39,6 +39,7 @@ export type ApplyPromotionReason =
   | "deferred_layer4" //   re-baseline / verification in progress — Layer-4 owns it
   | "no_inputs" //         no user-side uploads to evaluate (cluster gone)
   | "criteria_not_met" //  Layer-3 no longer promotes (e.g. cluster shrank) — nothing forced
+  | "tuple_drifted" //     current supermajority winner ≠ the gated/expected tuple — refuse
   | "write_failed"; //     upsert did not land (verify read came back not-promoted)
 
 export interface ApplyConfirmedPromotionResult {
@@ -51,16 +52,26 @@ export interface ApplyConfirmedPromotionResult {
 }
 
 /**
- * Re-apply a withheld doc-type promotion on admin confirm/clear. Bypasses the
- * ID-Block gate (admin override) and routes through the real promote writer, then
- * VERIFIES the write landed so the caller can fail loud (G2 — leave the row 'held' if
- * the apply didn't take). Returns a structured outcome; it does not throw for the
- * "didn't promote" cases (those are legitimate verdicts to record).
+ * Re-apply a withheld doc-type promotion on admin confirm/clear OR on a re-eval-cron
+ * release. Bypasses the ID-Block gate (the admin is the override authority; the cron
+ * has already re-run the gate and it cleared — S175/S176) and routes through the real
+ * promote writer, then VERIFIES the write landed so the caller can fail loud (G2 —
+ * leave the row 'held' if the apply didn't take). Returns a structured outcome; it
+ * does not throw for the "didn't promote" cases (those are legitimate verdicts to record).
+ *
+ * `opts.expectedTupleKey` (S176 tuple-drift guard): when provided, the apply promotes
+ * ONLY if the CURRENT supermajority winner's key equals it — i.e. the value about to be
+ * promoted is the SAME value that was gated/held. Decouples "what we gated" from "what we
+ * promote": a (canonical, doc_type) promotes whatever the live supermajority is, so a
+ * consensus that drifted T→T′ while a row sat held would otherwise launder an un-gated T′
+ * past the gate. On mismatch → reason 'tuple_drifted' (promote nothing). Omit it for the
+ * legacy unconditional behavior.
  */
 export async function applyAdminConfirmedPromotion(
   supabase: SupabaseClient,
   canonicalPlanId: string,
   docType: string,
+  opts: { expectedTupleKey?: string } = {},
 ): Promise<ApplyConfirmedPromotionResult> {
   const planDocType = toPlanDocType(docType);
   if (!planDocType) return { applied: false, reason: "invalid_doc_type" };
@@ -92,6 +103,17 @@ export async function applyAdminConfirmedPromotion(
     coverageScore: result.observed.coverageScore,
   };
   if (!result.promoted) return { applied: false, reason: "criteria_not_met", observed };
+
+  // Tuple-drift guard (S176): only promote if the live supermajority winner is the SAME
+  // value the caller gated/held. result.promoted ⇒ baselineTuple is non-null. If the
+  // consensus drifted away from expectedTupleKey, refuse — the new winner has its own
+  // gate evaluation (its own live-gate quarantine row); we never promote an un-gated value.
+  if (opts.expectedTupleKey !== undefined) {
+    const currentKey = inputs.baselineTuple ? identityKey(inputs.baselineTuple) : null;
+    if (currentKey !== opts.expectedTupleKey) {
+      return { applied: false, reason: "tuple_drifted", observed };
+    }
+  }
 
   // Route through the EXACT promote writer the recorder uses (sticky upsert).
   // clearReBaseline=false: we already deferred when re_baseline_required was set.

@@ -71,13 +71,33 @@ export interface IdBlockGateConfig {
   mode: QuarantineMode;
 }
 
+export interface ReEvalConfig {
+  /**
+   * Per-row re-evaluation cadence (days). After the daily PR3c cron re-checks a
+   * still-held promotion, it re-stamps next_eval_at = now + cadenceDays, so this is
+   * how many daily sweeps to skip before re-checking the same row. 1 = every night
+   * (most responsive — a thin-but-real cluster auto-releases ~1 day after it crosses
+   * the legitimacy bar). Tuned in the §5 editor. Does NOT cap retries — a held row is
+   * re-checked indefinitely until it clears or an admin acts (delayed-not-denied).
+   */
+  cadenceDays: number;
+  /**
+   * Safety throughput bound: max held rows re-checked per nightly sweep (oldest-due
+   * first). Overflow is logged and rides the next sweep — never silently dropped, and
+   * never a limit on whether a promotion eventually clears. A backstop, not policy.
+   */
+  maxRowsPerSweep: number;
+}
+
 export interface IdBlockConfig {
   weights: LegitimacyWeights;
   normCaps: LegitimacyNormCaps;
   shape: ClusterShapeConfig;
   gate: IdBlockGateConfig;
+  /** PR3c daily re-eval cron cadence (delayed-not-denied). */
+  reEval: ReEvalConfig;
   slack: {
-    /** fire a Fraud/Spam Slack alert on each would-flag (per-cluster, deduped). */
+    /** fire an ID-Block Slack alert on each would-flag (per-cluster, deduped). */
     enabled: boolean;
   };
 }
@@ -104,6 +124,10 @@ export const DEFAULT_ID_BLOCK_CONFIG: IdBlockConfig = {
     hammingNearDupThreshold: 3,
     sameContentMajority: 0.5,
     mode: "shadow",
+  },
+  reEval: {
+    cadenceDays: 1,
+    maxRowsPerSweep: 100,
   },
   slack: { enabled: true },
 };

@@ -104,7 +104,7 @@ export async function POST(req: NextRequest) {
   // Load the target row.
   const { data: row, error: loadErr } = await supabase
     .from("canonical_promotion_quarantine")
-    .select("id, canonical_plan_id, document_type, state")
+    .select("id, canonical_plan_id, document_type, state, value_tuple_key")
     .eq("id", id)
     .maybeSingle();
   if (loadErr) return NextResponse.json({ error: loadErr.message }, { status: 500 });
@@ -117,6 +117,7 @@ export async function POST(req: NextRequest) {
   }
   const canonicalPlanId = (row as { canonical_plan_id: string }).canonical_plan_id;
   const documentType = (row as { document_type: string }).document_type;
+  const valueTupleKey = (row as { value_tuple_key: string }).value_tuple_key;
 
   const effect = decideClusterActionEffect(verifiedAction, currentState);
 
@@ -125,7 +126,12 @@ export async function POST(req: NextRequest) {
   let finalState = effect.newState;
   if (effect.needsReApply) {
     try {
-      reapply = await applyAdminConfirmedPromotion(supabase, canonicalPlanId, documentType);
+      // expectedTupleKey: promote ONLY the value this row was flagged for. If the
+      // corroboration consensus drifted to a different tuple since the hold, refuse —
+      // the admin would otherwise promote a value they didn't review (S176 guard).
+      reapply = await applyAdminConfirmedPromotion(supabase, canonicalPlanId, documentType, {
+        expectedTupleKey: valueTupleKey,
+      });
     } catch (err) {
       console.error("[promotion-quarantine] re-apply threw:", err);
       return NextResponse.json(
@@ -141,6 +147,17 @@ export async function POST(req: NextRequest) {
         reason: reapply.reason,
         message:
           "Canonical is under Layer-4 adjudication (re-baseline/verification). Resolve it on /admin/canonical-quality, then retry.",
+      });
+    }
+    if (reapply.reason === "tuple_drifted") {
+      // The supermajority winner is no longer the value this row was flagged for — leave
+      // it held; the admin re-reviews the current cluster (the new winner has its own row).
+      return NextResponse.json({
+        ok: false,
+        deferred: true,
+        reason: reapply.reason,
+        message:
+          "The corroboration consensus has shifted to a different value since this row was flagged. Re-review the current cluster before confirming/clearing.",
       });
     }
     if (reapply.reason === "write_failed") {
