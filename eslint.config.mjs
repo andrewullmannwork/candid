@@ -122,7 +122,14 @@ const eslintConfig = defineConfig([
       "src/app/api/billing/**",
       "src/app/api/compare/**",
       "src/app/api/consent/**",
-      "src/app/api/disputes/**",
+      // disputes/generate MIGRATED onto the layer (S183 PR-C, F04+F09): covered
+      // by default now. The rest of the disputes family stays ledgered until B1.2.
+      "src/app/api/disputes/\\[disputeId\\]/**",
+      "src/app/api/disputes/escalate/**",
+      "src/app/api/disputes/followups/**",
+      "src/app/api/disputes/insurer-appeals/**",
+      "src/app/api/disputes/metrics/**",
+      "src/app/api/disputes/outcome/**",
       "src/app/api/legal/**",
       "src/app/api/profile/**",
       "src/app/api/support/**",

@@ -10,6 +10,7 @@
 import * as crypto from "crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AuditFinding } from "../billing/types";
+import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 
 interface LineItemSlugInput {
   service_slug: string | null;
@@ -32,19 +33,33 @@ export interface FingerprintInput {
 export async function loadFingerprintInputForClaim(
   supabase: SupabaseClient,
   claimId: string,
+  userId: string,
 ): Promise<FingerprintInput | null> {
-  const { data: claim } = await supabase
-    .from("claims")
+  // B9-F12 — claimId is caller/request-supplied (disputes/generate passes
+  // body.claimId; outcome / [disputeId] pass a dispute's claim_id, which a Pro
+  // user could have smuggled in foreign since persist doesn't validate claim
+  // ownership). Scope both reads to the authenticated user via the B1 layer:
+  // a foreign claimId yields no claim → null (no fingerprint, no cross-tenant
+  // read). createServerClient bypasses RLS, so this app-layer scope enforces it.
+  const { data: claim } = await userScoped(supabase, userId)
+    .table("claims")
     .select("id, metadata")
     .eq("id", claimId)
     .maybeSingle();
   if (!claim) return null;
 
-  const { data: lineItems } = await supabase
-    .from("claim_line_items")
-    .select("line_number, service_slug, metadata")
-    .eq("claim_id", claimId)
-    .order("line_number", { ascending: true });
+  // selectOwnedChildren scopes line items to the owned claim; re-apply the
+  // line_number order the prior `.order(...)` provided (the fingerprint hash
+  // sorts internally, so this is belt-and-suspenders for op-equivalence).
+  const lineItems = (
+    await selectOwnedChildren(
+      supabase,
+      userId,
+      "claim_line_items",
+      [claimId],
+      "line_number, service_slug, metadata",
+    )
+  ).sort((a, b) => (a.line_number ?? 0) - (b.line_number ?? 0));
 
   const claimMeta = (claim.metadata as Record<string, unknown> | null) ?? {};
   const auditSummary =

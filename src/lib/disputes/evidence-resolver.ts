@@ -43,6 +43,7 @@ import {
   type SecondaryCoverage,
 } from "@/lib/audit/coverage-loader";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 
 const K_ANON_PRICING = 5;
 
@@ -514,27 +515,36 @@ export async function resolveEvidence(
   // Fetch claims + line items in parallel. Pull metadata on line items so
   // audit findings captured at claim creation can flow into the letter as
   // Medicare-benchmark / overcharge evidence.
-  const [{ data: claims }, { data: lineItems }] = await Promise.all([
-    supabase
-      .from("claims")
+  // B9-F09 — both reads go through the B1 layer (this resolver is a service-role
+  // accessor; createServerClient bypasses RLS). claims: userScoped injects the
+  // ownership filter (op-equivalent to the prior `.eq("user_id", userId)`).
+  // claim_line_items has NO user_id, so it is scoped via selectOwnedChildren —
+  // line items are fetched ONLY for the user's owned claims, by construction, so
+  // a foreign claimId can no longer leak its lines into totals.totalDiscrepancy
+  // (the prior unscoped `.in("claim_id", claimIds)` did).
+  const [{ data: claims }, lineItems] = await Promise.all([
+    userScoped(supabase, userId)
+      .table("claims")
       // S140 fix-pass H4 — header total fields needed by resolveEffectiveClaimTotals
       // helper. Without them, helper sees null headers, defaults all provenance
       // to 'per_line_sum' (broken telemetry signal + wrong Case D citation
       // framing prefix).
       .select("id, date_of_service, total_billed, total_insurance_paid, total_insurance_adjusted, total_patient_paid, total_patient_responsibility, amount_still_outstanding, plan_year, metadata, insurance_plan_id")
-      .in("id", claimIds)
-      .eq("user_id", userId),
-    supabase
-      .from("claim_line_items")
-      // S140 fix-pass H4 — per-line numeric fields needed by helper to compute
-      // accurate per-line sums against claim header. patient_paid_amount +
-      // insurance_adjusted_amount were missing, causing sums = 0 always.
-      .select("id, claim_id, line_number, billing_code, billing_code_type, service_slug, description, billed_amount, insurance_paid, insurance_adjusted_amount, patient_owes, patient_paid_amount, plan_year, metadata")
-      .in("claim_id", claimIds),
+      .in("id", claimIds),
+    // S140 fix-pass H4 — per-line numeric fields needed by helper to compute
+    // accurate per-line sums against claim header. patient_paid_amount +
+    // insurance_adjusted_amount were missing, causing sums = 0 always.
+    selectOwnedChildren(
+      supabase,
+      userId,
+      "claim_line_items",
+      claimIds,
+      "id, claim_id, line_number, billing_code, billing_code_type, service_slug, description, billed_amount, insurance_paid, insurance_adjusted_amount, patient_owes, patient_paid_amount, plan_year, metadata",
+    ),
   ]);
 
   const claimRows = claims ?? [];
-  const rawLineItems = lineItems ?? [];
+  const rawLineItems = lineItems;
   const filteredLineItems = lineItemIds && lineItemIds.length > 0
     ? rawLineItems.filter((li) => lineItemIds.includes(li.id))
     : rawLineItems;

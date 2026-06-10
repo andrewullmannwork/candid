@@ -216,6 +216,7 @@ export async function POST(req: NextRequest) {
             const fpInput = await loadFingerprintInputForClaim(
               supabase,
               existing.claim_id as string,
+              userId,
             );
             if (fpInput) fingerprint = computeEvidenceFingerprint(fpInput);
           }

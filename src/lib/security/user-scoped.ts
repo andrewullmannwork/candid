@@ -71,6 +71,8 @@ export const PARENT_JOIN_TABLES = {
   plan_covered_services: { parent: "insurance_plans", fk: "insurance_plan_id" },
 } as const;
 
+export type ParentJoinChildTable = keyof typeof PARENT_JOIN_TABLES;
+
 const DIRECT_SET = new Set<string>(DIRECT_USER_OWNED_TABLES);
 
 /** Fail closed: a null/empty userId would become `user_id IS NULL` and could
@@ -163,4 +165,51 @@ export async function selectOwnedParentIds(
     .eq("user_id", uid)
     .in("id", unique);
   return new Set((data ?? []).map((r) => r.id as string));
+}
+
+/**
+ * Parent-join child READ: the lint-clean way for a route to read a child table
+ * that has NO `user_id` (claim_line_items, plan_covered_services). Composes
+ * selectOwnedParentIds (resolve the owned parent ids) + a child fetch scoped to
+ * those ids (`.in(fk, ownedIds)`) — so the raw child `.from()` that the B1 lint
+ * bans in routes lives ONCE here, inside the security layer. Scoped BY
+ * CONSTRUCTION: a non-owned/foreign parent id is never resolved, so its children
+ * are never fetched (not post-filtered away) — an attacker-supplied foreign
+ * parent yields []. Fails closed (empty candidate set or no owned parent → []).
+ *
+ * `columns` is the PostgREST select string; embedded resources
+ * (`service_catalog!inner(slug,name)`) are sent verbatim at runtime. The
+ * `as "*"` cast is compile-time only — the same widening
+ * userScoped().table().select() relies on (this codebase has no generated
+ * Database types). The return type is left to inference (the untyped client
+ * makes rows permissive), so callers keep their existing field access with no
+ * `any` annotations and no new lint warnings.
+ */
+export async function selectOwnedChildren(
+  supabase: SupabaseClient,
+  userId: string,
+  childTable: ParentJoinChildTable,
+  candidateParentIds: (string | null | undefined)[],
+  columns = "*",
+) {
+  const meta = PARENT_JOIN_TABLES[childTable];
+  if (!meta) {
+    // Defense-in-depth for a dynamic (non-literal) childTable that escapes the
+    // compile-time union. Fail closed rather than do an unscoped child read.
+    throw new Error(
+      `selectOwnedChildren: "${childTable}" is not a parent-join child table`,
+    );
+  }
+  const ownedParentIds = await selectOwnedParentIds(
+    supabase,
+    userId,
+    meta.parent,
+    candidateParentIds,
+  );
+  if (ownedParentIds.size === 0) return [];
+  const { data } = await supabase
+    .from(childTable)
+    .select(columns as "*")
+    .in(meta.fk, [...ownedParentIds]);
+  return data ?? [];
 }
