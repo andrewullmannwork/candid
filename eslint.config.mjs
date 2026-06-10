@@ -157,8 +157,11 @@ const eslintConfig = defineConfig([
       "src/app/api/plan/field/**",
       "src/app/api/plan/premium/**",
       "src/app/api/plan/reparse-field/**",
-      "src/app/api/documents/confirm-doc-type/**",
-      "src/app/api/documents/reprocess/**",
+      // documents/confirm-doc-type + documents/reprocess FULLY MIGRATED onto the
+      // layer (S188 B1.2: userScoped().table("documents") — direct user_id table,
+      // no child primitives). Covered by default — both removed from the ledger.
+      // documents/process-chunk + documents/upload stay permanent-exempt (above).
+      // documents/status remains = F05/PR-D (cross-workstream no-auth GET fix).
       "src/app/api/documents/status/**",
     ],
     plugins: { "candid-security": candidSecurityPlugin },
