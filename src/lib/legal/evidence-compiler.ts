@@ -52,6 +52,12 @@ interface CompileParams {
   evidence?: DisputeEvidence | null;
 }
 
+/**
+ * SECURITY CONTRACT: callers MUST pass an ownership-validated `claimId` (verified
+ * to belong to `userId`). Sections 2 + 5 read claim-keyed tables and the resolvers
+ * read by claimId; this fn does NOT re-verify claim ownership. Enforced today by
+ * the route (assertOwnership before this call); B1 will make it structural.
+ */
 export async function compileEvidencePackage(
   supabase: SupabaseClient,
   params: CompileParams,
@@ -177,7 +183,8 @@ ${bullets}`,
     .from("claim_discrepancies")
     .select("service_slug, expected_value, actual_value, systemic_user_count")
     .eq("claim_id", claimId)
-    .eq("is_systemic", true);
+    .eq("is_systemic", true)
+    .eq("user_id", userId);
   if (systemicDiscs && systemicDiscs.length > 0) {
     sections.push({
       title: "5. Network / Systemic Evidence",
@@ -218,6 +225,7 @@ ${bullets}`,
       .from("dispute_outcomes")
       .select("filed_date, status, resolution_date, amount_recovered")
       .eq("id", disputeId)
+      .eq("user_id", userId)
       .maybeSingle();
     if (dispute?.filed_date) {
       events.push({ date: dispute.filed_date, event: `Dispute drafted — status: ${dispute.status}` });
