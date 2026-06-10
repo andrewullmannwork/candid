@@ -132,6 +132,9 @@ export interface PlanDocSectionResult<T> {
   haiku_input_tokens: number;
   haiku_output_tokens: number;
   haiku_cost_usd: number;
+  /** S187 cache-class breakout (REQUIRED; see eoc/types.ts rationale). */
+  haiku_cache_create_tokens: number;
+  haiku_cache_read_tokens: number;
   warnings: string[];
 }
 

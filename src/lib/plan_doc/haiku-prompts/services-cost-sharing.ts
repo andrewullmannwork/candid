@@ -17,6 +17,7 @@ import type {
 import type { PlanDocLayout } from "../layout-detector";
 import { loadActiveSupplement } from "../prompt-loader";
 import { callHaikuWithCache } from "./_shared";
+import { HAIKU_CACHE_PAD } from "@/lib/haiku-client/cache-pad";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 
 const PROMPT_FILE_PATH = "src/lib/plan_doc/haiku-prompts/services-cost-sharing.ts";
@@ -422,7 +423,7 @@ export async function extractServicesCostSharing(
     thesaurusPhase1aOverride ?? (await isFeatureEnabled("thesaurus_phase1a_v1"));
   const systemPrompt = await buildInstructions(layout, thesaurusEnabled);
   const result = await callHaikuWithCache<RawResponse>({
-    systemPrompt,
+    systemPrompt: HAIKU_CACHE_PAD + systemPrompt,
     userContent: sectionText,
     sectionLabel:
       layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant"
@@ -496,6 +497,8 @@ export async function extractServicesCostSharing(
     haiku_input_tokens: result.inputTokens,
     haiku_output_tokens: result.outputTokens,
     haiku_cost_usd: result.costUsd,
+    haiku_cache_create_tokens: result.cacheCreateTokens ?? 0,
+    haiku_cache_read_tokens: result.cacheReadTokens ?? 0,
     warnings: result.warnings,
   };
 }

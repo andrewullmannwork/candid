@@ -167,11 +167,33 @@ interface ChunkDispatchOutcome<T> {
 }
 
 /**
- * Dispatch chunks SEQUENTIALLY for one section. Cost-cap 90% threshold pre-dispatch
- * guard fires before each chunk's Haiku call. Sections themselves run in PARALLEL
- * via Promise.allSettled at the orchestrator level.
+ * Per-in-flight cost reservation for the pooled path (S187 D8). Conservative upper bound on one
+ * chunk call at the RECORDED rates the tracker uses: padded-prompt cold cache-write (~8K tok x
+ * $0.8/M x 1.25 ~= $0.008) + worst observed chunk input (~1.8K tok ~= $0.0015) + output reserve
+ * (~1.5K tok x $4/M = $0.006) ~= $0.016 -> $0.02. Keeps accumulated + reserved <= the 90% guard so
+ * concurrent chunks can NEVER push past the $1.00 hard cap (which THROWS the whole parse).
  */
-async function dispatchChunksSequentially<T>(
+const CHUNK_INFLIGHT_RESERVE_USD = 0.02;
+
+/** S187 D8 — chunk-concurrency clamp (1..16; non-finite/absent → 1 = exact pre-S187 dispatch). */
+function clampChunkConcurrency(k: number | undefined): number {
+  if (typeof k !== "number" || !Number.isFinite(k) || k < 1) return 1;
+  return Math.min(Math.floor(k), 16);
+}
+
+/**
+ * Dispatch chunks for one section. `chunkConcurrency <= 1` (the PROD default until the
+ * eoc_parser_v1.config flip) takes the EXACT pre-S187 sequential path. `> 1` runs a bounded
+ * worker pool: chunk 0 completes SOLO first (warm-then-fan — a cache entry is readable only
+ * after the first response begins, so the warm call writes the padded prefix and the fanned
+ * chunks read it), results land at their chunk INDEX (`new Array(n).fill(null)` — combine fns
+ * filter `c !== null`, and `undefined !== null` would pass the filter and TypeError; explicit
+ * nulls reproduce failed/skipped semantics exactly), and admission reserves in-flight cost so
+ * the 90% pre-dispatch guard cannot be overrun into the post-aggregation $1 hard-cap THROW.
+ * Sections themselves run in PARALLEL via Promise.allSettled at the orchestrator level.
+ * Every path emits the per-section `eoc_chunks` summary warning (probe + G7 telemetry).
+ */
+async function dispatchChunks<T>(
   hint: EOCSectionHint,
   config: DispatchConfig,
   sectionRange: { start: number; end: number },
@@ -179,6 +201,7 @@ async function dispatchChunksSequentially<T>(
   fn: (text: string, range: { start: number; end: number }, em: ExtractionMethod) => Promise<EOCSectionResult<T>>,
   extractionMethod: ExtractionMethod,
   costTracker: CostTracker,
+  chunkConcurrency: number,
 ): Promise<ChunkDispatchOutcome<T>> {
   const warnings: string[] = [];
   const chunks: Chunk[] = subSegmentSection(sectionText, config.granularity, config.maxTokens, config.fallback);
@@ -194,41 +217,119 @@ async function dispatchChunksSequentially<T>(
     }
   }
 
-  const chunkResults: Array<EOCSectionResult<T> | null> = [];
-  for (const chunk of chunks) {
-    if (costTracker.totalUsd > COST_HARD_CAP_USD * COST_GUARD_THRESHOLD_USD) {
-      warnings.push(`chunk_skipped_near_cost_cap:${hint}:${chunk.start}`);
-      break;
+  let dispatched = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  if (chunkConcurrency <= 1) {
+    // EXACT pre-S187 sequential path (PROD default; byte-equivalent behavior).
+    const chunkResults: Array<EOCSectionResult<T> | null> = [];
+    for (const chunk of chunks) {
+      if (costTracker.totalUsd > COST_HARD_CAP_USD * COST_GUARD_THRESHOLD_USD) {
+        warnings.push(`chunk_skipped_near_cost_cap:${hint}:${chunk.start}`);
+        skipped = chunks.length - chunkResults.length;
+        break;
+      }
+      const absRange = { start: sectionRange.start + chunk.start, end: sectionRange.start + chunk.end };
+      try {
+        dispatched++;
+        const r = await fn(chunk.text, absRange, extractionMethod);
+        chunkResults.push(r);
+        costTracker.totalUsd += r.haiku_cost_usd;
+      } catch (err) {
+        failed++;
+        chunkResults.push(null);
+        warnings.push(`chunk_failed:${hint}:${chunk.start}:${err instanceof Error ? err.message : String(err)}`);
+      }
     }
-    const absRange = { start: sectionRange.start + chunk.start, end: sectionRange.start + chunk.end };
-    try {
-      const r = await fn(chunk.text, absRange, extractionMethod);
-      chunkResults.push(r);
-      costTracker.totalUsd += r.haiku_cost_usd;
-    } catch (err) {
-      chunkResults.push(null);
-      warnings.push(`chunk_failed:${hint}:${chunk.start}:${err instanceof Error ? err.message : String(err)}`);
-    }
+    warnings.push(`eoc_chunks:${hint}:planned=${chunks.length}:dispatched=${dispatched}:failed=${failed}:skipped=${skipped}`);
+    return { chunkResults, warnings };
   }
 
+  // Bounded pool (indexed writes preserve document order for the order-sensitive combine fns
+  // + the S185 accumulator's first-passage semantics, regardless of completion order).
+  const chunkResults: Array<EOCSectionResult<T> | null> = new Array<EOCSectionResult<T> | null>(chunks.length).fill(null);
+  let next = 0;
+  let inflight = 0;
+  let firstSkipWarned = false;
+  const wakers: Array<() => void> = [];
+  const settle = (): void => {
+    wakers.splice(0).forEach((w) => w());
+  };
+  const waitSettle = (): Promise<void> => new Promise<void>((res) => wakers.push(res));
+
+  const runIdx = async (i: number): Promise<void> => {
+    const chunk = chunks[i];
+    const absRange = { start: sectionRange.start + chunk.start, end: sectionRange.start + chunk.end };
+    inflight++;
+    dispatched++;
+    try {
+      const r = await fn(chunk.text, absRange, extractionMethod);
+      chunkResults[i] = r;
+      costTracker.totalUsd += r.haiku_cost_usd;
+    } catch (err) {
+      failed++;
+      warnings.push(`chunk_failed:${hint}:${chunk.start}:${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      inflight--;
+      settle();
+    }
+  };
+
+  const workerLoop = async (): Promise<void> => {
+    for (;;) {
+      if (next >= chunks.length) return;
+      if (costTracker.totalUsd > COST_HARD_CAP_USD * COST_GUARD_THRESHOLD_USD) {
+        // Hard stop: skip every remaining chunk (single warning, today's semantics).
+        if (!firstSkipWarned) {
+          firstSkipWarned = true;
+          warnings.push(`chunk_skipped_near_cost_cap:${hint}:${chunks[next].start}`);
+        }
+        skipped += chunks.length - next;
+        next = chunks.length;
+        return;
+      }
+      if (inflight > 0 && costTracker.totalUsd + inflight * CHUNK_INFLIGHT_RESERVE_USD > COST_HARD_CAP_USD * COST_GUARD_THRESHOLD_USD) {
+        // Reservation pressure: wait for an in-flight settle, then re-check (do NOT skip yet —
+        // only an actual totalUsd breach above breaks the section).
+        await waitSettle();
+        continue;
+      }
+      const i = next++;
+      await runIdx(i);
+    }
+  };
+
+  // Warm-then-fan: chunk 0 solo writes the cache prefix, then K workers over the rest.
+  next = 1;
+  await runIdx(0);
+  const workerCount = Math.min(chunkConcurrency, Math.max(chunks.length - 1, 0));
+  if (workerCount > 0) {
+    await Promise.all(Array.from({ length: workerCount }, () => workerLoop()));
+  }
+  warnings.push(`eoc_chunks:${hint}:planned=${chunks.length}:dispatched=${dispatched}:failed=${failed}:skipped=${skipped}`);
   return { chunkResults, warnings };
 }
 
 function sumTelemetry<T>(
   chunks: Array<EOCSectionResult<T> | null>,
-): { input: number; output: number; cost: number; warnings: string[] } {
+): { input: number; output: number; cost: number; cacheCreate: number; cacheRead: number; warnings: string[] } {
   let input = 0;
   let output = 0;
   let cost = 0;
+  let cacheCreate = 0;
+  let cacheRead = 0;
   const warnings: string[] = [];
   for (const c of chunks) {
     if (!c) continue;
     input += c.haiku_input_tokens;
     output += c.haiku_output_tokens;
     cost += c.haiku_cost_usd;
+    cacheCreate += c.haiku_cache_create_tokens;
+    cacheRead += c.haiku_cache_read_tokens;
     warnings.push(...c.warnings);
   }
-  return { input, output, cost, warnings };
+  return { input, output, cost, cacheCreate, cacheRead, warnings };
 }
 
 // ── Combine helpers per section ────────────────────────────────────────────
@@ -247,6 +348,8 @@ function combinePriorAuthCodes(
     haiku_input_tokens: tel.input,
     haiku_output_tokens: tel.output,
     haiku_cost_usd: tel.cost,
+    haiku_cache_create_tokens: tel.cacheCreate,
+    haiku_cache_read_tokens: tel.cacheRead,
     warnings: tel.warnings,
   };
 }
@@ -265,6 +368,8 @@ function combineMedicalNecessity(
     haiku_input_tokens: tel.input,
     haiku_output_tokens: tel.output,
     haiku_cost_usd: tel.cost,
+    haiku_cache_create_tokens: tel.cacheCreate,
+    haiku_cache_read_tokens: tel.cacheRead,
     warnings: tel.warnings,
   };
 }
@@ -283,6 +388,8 @@ function combineDefinitions(
     haiku_input_tokens: tel.input,
     haiku_output_tokens: tel.output,
     haiku_cost_usd: tel.cost,
+    haiku_cache_create_tokens: tel.cacheCreate,
+    haiku_cache_read_tokens: tel.cacheRead,
     warnings: tel.warnings,
   };
 }
@@ -323,6 +430,8 @@ function combineAppealsProcedures(
     haiku_input_tokens: tel.input,
     haiku_output_tokens: tel.output,
     haiku_cost_usd: tel.cost,
+    haiku_cache_create_tokens: tel.cacheCreate,
+    haiku_cache_read_tokens: tel.cacheRead,
     warnings: tel.warnings,
   };
 }
@@ -360,6 +469,8 @@ function combineCOBRules(
     haiku_input_tokens: tel.input,
     haiku_output_tokens: tel.output,
     haiku_cost_usd: tel.cost,
+    haiku_cache_create_tokens: tel.cacheCreate,
+    haiku_cache_read_tokens: tel.cacheRead,
     warnings: tel.warnings,
   };
 }
@@ -394,6 +505,8 @@ function combineEligibilityRules(
     haiku_input_tokens: tel.input,
     haiku_output_tokens: tel.output,
     haiku_cost_usd: tel.cost,
+    haiku_cache_create_tokens: tel.cacheCreate,
+    haiku_cache_read_tokens: tel.cacheRead,
     warnings: tel.warnings,
   };
 }
@@ -419,6 +532,17 @@ export async function parseEOC(
     // and the routeCriterion dispatch (no split-brain). OFF/omitted → the frozen pre-P2 prompt, so a
     // flag-OFF parse is byte-identical to post-D1 (no split → no coverage_rules clobber).
     eocContentTypeRoutingOn?: boolean;
+    // S187 D8 — bounded per-chunk concurrency within each section. Read ONCE by process-eoc from
+    // eoc_parser_v1.config.chunk_concurrency (the parser itself NEVER reads flags — tsx harnesses
+    // can't construct the server client; single-read no-split-brain pattern as above). Omitted/1 →
+    // the exact pre-S187 sequential dispatch. Clamped 1..16.
+    chunkConcurrency?: number;
+    // S187 D8 — same knob for the embedded plan-doc leg (threaded into parsePlanDocument's options;
+    // PROD leaves it undefined → that dispatcher reads plan_doc_parser_v2.config.chunk_concurrency).
+    planDocChunkConcurrency?: number;
+    // S187 (calibration/eval ONLY — e.g. T5 measures section extraction, which never consumes
+    // plan-identity output). Skips the plan-identity leg entirely; PROD never sets this.
+    skipPlanIdentity?: boolean;
   },
 ): Promise<EOCParseResult> {
   const { documentId, extractionMethod } = options;
@@ -445,8 +569,17 @@ export async function parseEOC(
     ).toFixed(1)}%`,
   );
 
+  // S187 D8 — leg overlap: the plan-identity + ACA legs ran SERIALLY BEFORE the sections
+  // (S187 baseline measured the plan-doc leg alone at ~91 sequential Haiku calls on ecm-14).
+  // Both legs were ALREADY failure-isolated (catch → warning), so overlapping them with the
+  // sections pipeline preserves failure semantics; their results are awaited before aggregation.
+  const parseStartMs = Date.now();
+  let planIdentityMs = 0;
+  let acaMs = 0;
+  const costTracker: CostTracker = { totalUsd: 0 };
+
   // 1. Plan identity REUSE per Q-P3.1A-11.
-  let planIdentity: EOCPlanIdentity = {
+  const planIdentityDefaults: EOCPlanIdentity = {
     insurer_name: null,
     plan_name: null,
     plan_year: null,
@@ -455,25 +588,40 @@ export async function parseEOC(
     out_deductible_individual: null,
     out_oop_max_individual: null,
   };
-  try {
-    // Per Q-S72-2 (b) LOCK: parsePlanDocument is now an async flag-gated dispatcher.
-    // When `plan_doc_parser_v2` OFF → legacy regex (Q-P3.1A-11 LOCK behavior unchanged).
-    // When ON → Haiku-first plan-identity extraction (~49% → ~80%+ recall lift for EOC).
-    // Plan-doc parser internally applies its own subtractive cleanup; passing cleanedText
-    // is idempotent (second cleanup pass finds nothing to strip — same input shape).
-    const planParse = await parsePlanDocument(workingText, { documentId, extractionMethod });
-    planIdentity = {
-      insurer_name: planParse.plan.insurer_name ?? null,
-      plan_name: planParse.plan.plan_name ?? null,
-      plan_year: planParse.plan.plan_year ?? null,
-      in_deductible_individual: planParse.plan.in_deductible_individual ?? null,
-      in_oop_max_individual: planParse.plan.in_oop_max_individual ?? null,
-      out_deductible_individual: planParse.plan.out_deductible_individual ?? null,
-      out_oop_max_individual: planParse.plan.out_oop_max_individual ?? null,
-    };
-  } catch (err) {
-    warnings.push(`plan_identity_extraction_failed:${documentId}:${err instanceof Error ? err.message : String(err)}`);
-  }
+  const planIdentityLeg = (async (): Promise<EOCPlanIdentity> => {
+    const t0 = Date.now();
+    if (options.skipPlanIdentity) {
+      warnings.push(`plan_identity_skipped_by_option:${documentId}`);
+      planIdentityMs = Date.now() - t0;
+      return planIdentityDefaults;
+    }
+    try {
+      // Per Q-S72-2 (b) LOCK: parsePlanDocument is now an async flag-gated dispatcher.
+      // When `plan_doc_parser_v2` OFF → legacy regex (Q-P3.1A-11 LOCK behavior unchanged).
+      // When ON → Haiku-first plan-identity extraction (~49% → ~80%+ recall lift for EOC).
+      // Plan-doc parser internally applies its own subtractive cleanup; passing cleanedText
+      // is idempotent (second cleanup pass finds nothing to strip — same input shape).
+      const planParse = await parsePlanDocument(workingText, {
+        documentId,
+        extractionMethod,
+        chunkConcurrency: options.planDocChunkConcurrency,
+      });
+      planIdentityMs = Date.now() - t0;
+      return {
+        insurer_name: planParse.plan.insurer_name ?? null,
+        plan_name: planParse.plan.plan_name ?? null,
+        plan_year: planParse.plan.plan_year ?? null,
+        in_deductible_individual: planParse.plan.in_deductible_individual ?? null,
+        in_oop_max_individual: planParse.plan.in_oop_max_individual ?? null,
+        out_deductible_individual: planParse.plan.out_deductible_individual ?? null,
+        out_oop_max_individual: planParse.plan.out_oop_max_individual ?? null,
+      };
+    } catch (err) {
+      warnings.push(`plan_identity_extraction_failed:${documentId}:${err instanceof Error ? err.message : String(err)}`);
+      planIdentityMs = Date.now() - t0;
+      return planIdentityDefaults;
+    }
+  })();
 
   // 1.5 S74.6 D1 §A.1 — ACA-compliance extraction. Independent of the 6
   // priority sections because ACA signal lives in cover page / preamble /
@@ -482,20 +630,30 @@ export async function parseEOC(
   // Non-fatal: dispatch failure logs a warning + leaves aca_compliance=null
   // so process-eoc.ts falls back to the conservative-for-users default per
   // Subplan §1 LOCK.
-  let acaCompliance: EOCSectionResult<EocAcaComplianceData> | null = null;
-  try {
-    const acaSliceEnd = Math.min(workingText.length, ACA_SCAN_CHAR_BUDGET);
-    const acaText = workingText.slice(0, acaSliceEnd);
-    acaCompliance = await extractAcaCompliance(
-      acaText,
-      { start: 0, end: acaSliceEnd },
-      extractionMethod,
-    );
-  } catch (err) {
-    warnings.push(
-      `eoc_aca_compliance_extraction_failed:${documentId}:${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
+  const acaLeg = (async (): Promise<EOCSectionResult<EocAcaComplianceData> | null> => {
+    const t0 = Date.now();
+    try {
+      const acaSliceEnd = Math.min(workingText.length, ACA_SCAN_CHAR_BUDGET);
+      const acaText = workingText.slice(0, acaSliceEnd);
+      const aca = await extractAcaCompliance(
+        acaText,
+        { start: 0, end: acaSliceEnd },
+        extractionMethod,
+      );
+      // S187: seed the chunk guard with the ACA spend. Pre-S187 the guard tracker EXCLUDED the
+      // ACA call while the post-aggregation $1 hard cap INCLUDED it — a latent mismatch; aligning
+      // them is deliberate (guard trips marginally earlier, the throw becomes unreachable-by-guard).
+      costTracker.totalUsd += aca.haiku_cost_usd;
+      acaMs = Date.now() - t0;
+      return aca;
+    } catch (err) {
+      warnings.push(
+        `eoc_aca_compliance_extraction_failed:${documentId}:${err instanceof Error ? err.message : String(err)}`,
+      );
+      acaMs = Date.now() - t0;
+      return null;
+    }
+  })();
 
   // 2. Section segmentation — regex first (on cleaned text).
   let sectionRanges = segmentEOCSections(workingText);
@@ -519,8 +677,9 @@ export async function parseEOC(
     segmentationUsed = "preamble_only";
   }
 
-  // 4. Per-section sub-segmented dispatch — sections in parallel; chunks sequential within section.
-  const costTracker: CostTracker = { totalUsd: 0 };
+  // 4. Per-section sub-segmented dispatch — sections in parallel; chunks sequential (K=1, the
+  // PROD default) or bounded-pooled (K>1) within each section per dispatchChunks (S187 D8).
+  const chunkConcurrency = clampChunkConcurrency(options.chunkConcurrency);
 
   const dispatchSection = async <T>(
     hint: EOCSectionHint,
@@ -536,7 +695,7 @@ export async function parseEOC(
     const config = SECTION_CONFIGS[hint];
     if (!config) return { result: null, warnings: [] };
     const sectionText = sliceSection(workingText, range);
-    const { chunkResults, warnings: chunkWarnings } = await dispatchChunksSequentially(
+    const { chunkResults, warnings: chunkWarnings } = await dispatchChunks(
       hint,
       config,
       range,
@@ -544,11 +703,13 @@ export async function parseEOC(
       fn,
       extractionMethod,
       costTracker,
+      chunkConcurrency,
     );
     const combined = combineFn(chunkResults, range, sectionText);
     return { result: combined, warnings: chunkWarnings };
   };
 
+  const sectionsStartMs = Date.now();
   const [paOutcome, mnOutcome, apOutcome, cobOutcome, elOutcome, defOutcome] = await Promise.allSettled([
     dispatchSection(
       "prior_auth_codes",
@@ -583,11 +744,18 @@ export async function parseEOC(
     ),
   ]);
 
+  const sectionsMs = Date.now() - sectionsStartMs;
+  // S187 leg overlap: join the plan-identity + ACA legs before aggregation (both are
+  // failure-isolated; rejection is impossible by construction — they resolve their values).
+  const [planIdentity, acaCompliance] = await Promise.all([planIdentityLeg, acaLeg]);
+
   // 5. Aggregate + assign.
   const sections: EOCParseResult["sections"] = {};
   let totalCostUsd = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let totalCacheCreateTokens = 0;
+  let totalCacheReadTokens = 0;
 
   // Fold ACA dispatch telemetry into the run totals (cost-cap + soft-alarm
   // checks below must account for the additional Haiku call).
@@ -595,6 +763,8 @@ export async function parseEOC(
     totalCostUsd += acaCompliance.haiku_cost_usd;
     totalInputTokens += acaCompliance.haiku_input_tokens;
     totalOutputTokens += acaCompliance.haiku_output_tokens;
+    totalCacheCreateTokens += acaCompliance.haiku_cache_create_tokens;
+    totalCacheReadTokens += acaCompliance.haiku_cache_read_tokens;
     warnings.push(...acaCompliance.warnings);
   }
 
@@ -611,6 +781,8 @@ export async function parseEOC(
         totalCostUsd += r.haiku_cost_usd;
         totalInputTokens += r.haiku_input_tokens;
         totalOutputTokens += r.haiku_output_tokens;
+        totalCacheCreateTokens += r.haiku_cache_create_tokens;
+        totalCacheReadTokens += r.haiku_cache_read_tokens;
         warnings.push(...r.warnings);
         // full_text size diagnostic (DR-3.1A.1-B-3 LOCK)
         const ft = (r.data as unknown as { full_text?: string }).full_text;
@@ -667,6 +839,14 @@ export async function parseEOC(
     total_cost_usd: totalCostUsd,
     total_input_tokens: totalInputTokens,
     total_output_tokens: totalOutputTokens,
+    total_cache_create_tokens: totalCacheCreateTokens,
+    total_cache_read_tokens: totalCacheReadTokens,
+    timings: {
+      plan_identity_ms: planIdentityMs,
+      aca_ms: acaMs,
+      sections_ms: sectionsMs,
+      total_ms: Date.now() - parseStartMs,
+    },
     segmentation_used: segmentationUsed,
     aca_compliance: acaCompliance,
     warnings,

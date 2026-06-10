@@ -7,7 +7,7 @@
 import type { InsurancePlanInsert, PlanCoveredServiceInsert } from "@/lib/supabase/types";
 import type { SBCParseResult, SBCParsedService } from "@/lib/sbc/types";
 import type { ExtractionMethod } from "@/lib/parser/types";
-import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { isFeatureEnabled, readFeatureFlagConfig } from "@/lib/config/product-flags";
 import { parsePlanDocumentHaiku } from "@/lib/plan_doc/parser";
 import { toLegacyPlanDocResult } from "@/lib/plan_doc/legacy-adapter";
 import type { PlanDocHaikuParseResult } from "@/lib/plan_doc/types";
@@ -20,6 +20,9 @@ export type PlanDocParseResult = SBCParseResult;
 export interface ParsePlanDocumentOptions {
   documentId?: string;
   extractionMethod?: ExtractionMethod;
+  /** S187 D8 — explicit per-chunk concurrency override (harness/eval). PROD callers leave it
+   *  undefined → read from plan_doc_parser_v2.config.chunk_concurrency (absent → 1 = sequential). */
+  chunkConcurrency?: number;
 }
 
 /**
@@ -48,6 +51,8 @@ export async function parsePlanDocument(
       ocrText,
       extractionMethod: opts?.extractionMethod ?? "pdftotext",
       documentId: opts?.documentId ?? "unknown",
+      chunkConcurrency:
+        opts?.chunkConcurrency ?? (await readFeatureFlagConfig("plan_doc_parser_v2", "chunk_concurrency", 1)),
     });
     return toLegacyPlanDocResult(haikuResult);
   }
@@ -73,6 +78,8 @@ export async function parsePlanDocumentWithMeta(
       ocrText,
       extractionMethod: opts?.extractionMethod ?? "pdftotext",
       documentId: opts?.documentId ?? "unknown",
+      chunkConcurrency:
+        opts?.chunkConcurrency ?? (await readFeatureFlagConfig("plan_doc_parser_v2", "chunk_concurrency", 1)),
     });
     return { legacy: toLegacyPlanDocResult(haiku), haiku };
   }

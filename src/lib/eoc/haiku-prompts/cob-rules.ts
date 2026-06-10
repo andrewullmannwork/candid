@@ -6,6 +6,7 @@
 import type { ExtractionMethod } from "../../parser/types";
 import type { COBRulesData, EOCSectionResult } from "../types";
 import { callHaikuWithCache } from "./_shared";
+import { HAIKU_CACHE_PAD } from "@/lib/haiku-client/cache-pad";
 
 const INSTRUCTIONS = `You are extracting Coordination of Benefits (COB) rules from an Evidence of Coverage (EOC) document section. Return a single JSON object describing how this plan determines primary vs secondary coverage.
 
@@ -69,7 +70,7 @@ export async function extractCOBRules(
   extractionMethod: ExtractionMethod,
 ): Promise<EOCSectionResult<COBRulesData>> {
   const result = await callHaikuWithCache<RawResponse>({
-    systemPrompt: INSTRUCTIONS,
+    systemPrompt: HAIKU_CACHE_PAD + INSTRUCTIONS,
     userContent: sectionText,
     sectionLabel: "cob_rules",
   });
@@ -103,6 +104,8 @@ export async function extractCOBRules(
     haiku_input_tokens: result.inputTokens,
     haiku_output_tokens: result.outputTokens,
     haiku_cost_usd: result.costUsd,
+    haiku_cache_create_tokens: result.cacheCreateTokens ?? 0,
+    haiku_cache_read_tokens: result.cacheReadTokens ?? 0,
     warnings: result.warnings,
   };
 }

@@ -194,6 +194,14 @@ export interface EOCSectionResult<T> {
   haiku_input_tokens: number;
   haiku_output_tokens: number;
   haiku_cost_usd: number;
+  /**
+   * S187 cache-class breakout (REQUIRED — the compiler forces every producer to thread these,
+   * preventing a recurrence of the silent-false-zero ledger defect). Match the parse_audit_runs /
+   * parse_cost_events column names. Non-zero only once the prompt prefix is cache-eligible
+   * (cache_pad_v1).
+   */
+  haiku_cache_create_tokens: number;
+  haiku_cache_read_tokens: number;
   warnings: string[];
 }
 
@@ -232,6 +240,11 @@ export interface EOCParseResult {
   total_cost_usd: number;
   total_input_tokens: number;
   total_output_tokens: number;
+  /** S187 cache-class totals (sum over all section + ACA dispatches; see EOCSectionResult). */
+  total_cache_create_tokens: number;
+  total_cache_read_tokens: number;
+  /** S187 leg-separated wall-clock (the latency gate reads sections_ms+aca as the EOC half). */
+  timings: { plan_identity_ms: number; aca_ms: number; sections_ms: number; total_ms: number };
   /**
    * Diagnostic — which segmentation path produced the section ranges.
    * - regex_only: regex found ≥2 of 6 priority sections (no Haiku discovery needed)

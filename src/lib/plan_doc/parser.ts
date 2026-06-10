@@ -61,6 +61,11 @@ const COST_SOFT_ALARM_USD = 0.5;
 
 interface CostTracker {
   totalUsd: number;
+  /** S187: real token telemetry accumulated at the same sites as cost (was hardcoded 0 in the result). */
+  tokensInput: number;
+  tokensOutput: number;
+  cacheCreateTokens: number;
+  cacheReadTokens: number;
 }
 
 interface DispatchConfig {
@@ -136,8 +141,22 @@ function accessInstructionsCoreFieldsPopulated(ai: PlanDocAccessInstructions | n
 }
 
 /**
- * Sub-segment a section's text into chunks per the config, dispatch each chunk to
- * `fn` sequentially with cost-cap pre-dispatch guard, return chunk results.
+ * S187 D8 — per-in-flight cost reservation for the pooled path. Conservative per-chunk upper
+ * bound at the RECORDED rates the tracker uses (padded-prompt cold cache-write + chunk input +
+ * output reserve ~= $0.016 -> $0.02); keeps accumulated + reserved <= the 90% guard so concurrent
+ * chunks cannot overrun the $2 hard cap.
+ */
+const PD_CHUNK_INFLIGHT_RESERVE_USD = 0.02;
+
+/**
+ * Sub-segment a section's text into chunks per the config and dispatch each chunk to `fn`.
+ * `chunkConcurrency <= 1` (the PROD default until the plan_doc_parser_v2.config flip) takes the
+ * EXACT pre-S187 sequential path. `> 1` runs a bounded worker pool: chunk 0 completes SOLO first
+ * (warm-then-fan — writes the padded cache prefix once, the fanned chunks read it), results land
+ * at their chunk INDEX and are compacted in order (pre-S187 semantics: failures dropped, order
+ * preserved — the merge fns are order-sensitive), and admission reserves in-flight cost so the
+ * 90% pre-dispatch guard cannot be overrun. Both paths emit a per-section `plan_doc_chunks`
+ * summary warning (probe + G7 telemetry).
  */
 async function dispatchSectionAsChunks<T>(
   hint: PlanDocSectionHint,
@@ -148,11 +167,12 @@ async function dispatchSectionAsChunks<T>(
     range: { start: number; end: number },
     em: ExtractionMethod,
     sectionHint: PlanDocSectionHint,
-  ) => Promise<{ data: T; haiku_input_tokens: number; haiku_output_tokens: number; haiku_cost_usd: number; warnings: string[] }>,
+  ) => Promise<{ data: T; haiku_input_tokens: number; haiku_output_tokens: number; haiku_cost_usd: number; haiku_cache_create_tokens: number; haiku_cache_read_tokens: number; warnings: string[] }>,
   extractionMethod: ExtractionMethod,
   costTracker: CostTracker,
   warnings: string[],
   sectionHintOverride?: PlanDocSectionHint,
+  chunkConcurrency = 1,
 ): Promise<T[]> {
   const config = SECTION_CONFIGS[hint];
   if (!config) return [];
@@ -161,31 +181,114 @@ async function dispatchSectionAsChunks<T>(
   if (chunks.length === 0) return [];
 
   const effectiveHint = sectionHintOverride ?? hint;
-  const results: T[] = [];
+  let dispatched = 0;
+  let failed = 0;
+  let skipped = 0;
 
-  for (const chunk of chunks) {
-    if (costTracker.totalUsd > COST_HARD_CAP_USD * COST_GUARD_THRESHOLD_USD) {
-      warnings.push(`chunk_skipped_near_cost_cap:${effectiveHint}:${chunk.start}`);
-      break;
+  const absRangeOf = (chunk: { start: number; end: number }): { start: number; end: number } => ({
+    start: sectionRange.start + chunk.start,
+    end: sectionRange.start + chunk.end,
+  });
+  const fold = (r: { haiku_input_tokens: number; haiku_output_tokens: number; haiku_cost_usd: number; haiku_cache_create_tokens: number; haiku_cache_read_tokens: number; warnings: string[] }): void => {
+    costTracker.totalUsd += r.haiku_cost_usd;
+    costTracker.tokensInput += r.haiku_input_tokens;
+    costTracker.tokensOutput += r.haiku_output_tokens;
+    costTracker.cacheCreateTokens += r.haiku_cache_create_tokens;
+    costTracker.cacheReadTokens += r.haiku_cache_read_tokens;
+    warnings.push(...r.warnings);
+  };
+
+  if (chunkConcurrency <= 1) {
+    // EXACT pre-S187 sequential path (PROD default; byte-equivalent behavior).
+    const results: T[] = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      if (costTracker.totalUsd > COST_HARD_CAP_USD * COST_GUARD_THRESHOLD_USD) {
+        warnings.push(`chunk_skipped_near_cost_cap:${effectiveHint}:${chunk.start}`);
+        skipped = chunks.length - i;
+        break;
+      }
+      if (chunk.tokenEstimate > config.maxTokens) {
+        warnings.push(`chunk_oversized:${effectiveHint}:${chunk.start}:${chunk.tokenEstimate}`);
+      }
+      try {
+        dispatched++;
+        const r = await fn(chunk.text, absRangeOf(chunk), extractionMethod, effectiveHint);
+        fold(r);
+        results.push(r.data);
+      } catch (err) {
+        failed++;
+        const msg = err instanceof Error ? err.message : String(err);
+        warnings.push(`chunk_failed:${effectiveHint}:${chunk.start}:${msg}`);
+      }
     }
+    warnings.push(`plan_doc_chunks:${effectiveHint}:planned=${chunks.length}:dispatched=${dispatched}:failed=${failed}:skipped=${skipped}`);
+    return results;
+  }
+
+  // Bounded pool — indexed slots, order-preserving compaction (failures dropped, as today).
+  for (const chunk of chunks) {
     if (chunk.tokenEstimate > config.maxTokens) {
       warnings.push(`chunk_oversized:${effectiveHint}:${chunk.start}:${chunk.tokenEstimate}`);
     }
-    const absRange = {
-      start: sectionRange.start + chunk.start,
-      end: sectionRange.start + chunk.end,
-    };
+  }
+  const slots: Array<{ data: T } | null> = new Array<{ data: T } | null>(chunks.length).fill(null);
+  let next = 0;
+  let inflight = 0;
+  let firstSkipWarned = false;
+  const wakers: Array<() => void> = [];
+  const settle = (): void => {
+    wakers.splice(0).forEach((w) => w());
+  };
+  const waitSettle = (): Promise<void> => new Promise<void>((res) => wakers.push(res));
+
+  const runIdx = async (i: number): Promise<void> => {
+    const chunk = chunks[i];
+    inflight++;
+    dispatched++;
     try {
-      const r = await fn(chunk.text, absRange, extractionMethod, effectiveHint);
-      costTracker.totalUsd += r.haiku_cost_usd;
-      warnings.push(...r.warnings);
-      results.push(r.data);
+      const r = await fn(chunk.text, absRangeOf(chunk), extractionMethod, effectiveHint);
+      fold(r);
+      slots[i] = { data: r.data };
     } catch (err) {
+      failed++;
       const msg = err instanceof Error ? err.message : String(err);
       warnings.push(`chunk_failed:${effectiveHint}:${chunk.start}:${msg}`);
+    } finally {
+      inflight--;
+      settle();
     }
+  };
+
+  const workerLoop = async (): Promise<void> => {
+    for (;;) {
+      if (next >= chunks.length) return;
+      if (costTracker.totalUsd > COST_HARD_CAP_USD * COST_GUARD_THRESHOLD_USD) {
+        if (!firstSkipWarned) {
+          firstSkipWarned = true;
+          warnings.push(`chunk_skipped_near_cost_cap:${effectiveHint}:${chunks[next].start}`);
+        }
+        skipped += chunks.length - next;
+        next = chunks.length;
+        return;
+      }
+      if (inflight > 0 && costTracker.totalUsd + inflight * PD_CHUNK_INFLIGHT_RESERVE_USD > COST_HARD_CAP_USD * COST_GUARD_THRESHOLD_USD) {
+        await waitSettle();
+        continue;
+      }
+      const i = next++;
+      await runIdx(i);
+    }
+  };
+
+  next = 1;
+  await runIdx(0);
+  const workerCount = Math.min(chunkConcurrency, Math.max(chunks.length - 1, 0));
+  if (workerCount > 0) {
+    await Promise.all(Array.from({ length: workerCount }, () => workerLoop()));
   }
-  return results;
+  warnings.push(`plan_doc_chunks:${effectiveHint}:planned=${chunks.length}:dispatched=${dispatched}:failed=${failed}:skipped=${skipped}`);
+  return slots.filter((s): s is { data: T } => s !== null).map((s) => s.data);
 }
 
 /**
@@ -201,7 +304,7 @@ async function dispatchSectionSingle<T>(
     range: { start: number; end: number },
     em: ExtractionMethod,
     sectionHint: PlanDocSectionHint,
-  ) => Promise<{ data: T; haiku_input_tokens: number; haiku_output_tokens: number; haiku_cost_usd: number; warnings: string[] }>,
+  ) => Promise<{ data: T; haiku_input_tokens: number; haiku_output_tokens: number; haiku_cost_usd: number; haiku_cache_create_tokens: number; haiku_cache_read_tokens: number; warnings: string[] }>,
   extractionMethod: ExtractionMethod,
   costTracker: CostTracker,
   warnings: string[],
@@ -214,6 +317,10 @@ async function dispatchSectionSingle<T>(
   try {
     const r = await fn(sectionText, sectionRange, extractionMethod, sectionHint);
     costTracker.totalUsd += r.haiku_cost_usd;
+    costTracker.tokensInput += r.haiku_input_tokens;
+    costTracker.tokensOutput += r.haiku_output_tokens;
+    costTracker.cacheCreateTokens += r.haiku_cache_create_tokens;
+    costTracker.cacheReadTokens += r.haiku_cache_read_tokens;
     warnings.push(...r.warnings);
     return r.data;
   } catch (err) {
@@ -252,14 +359,22 @@ export interface ParsePlanDocInput {
   ocrText: string;
   extractionMethod: ExtractionMethod;
   documentId: string;
+  /** S187 D8 — bounded per-chunk concurrency (caller-resolved: the plan-doc-parser dispatcher
+   *  reads plan_doc_parser_v2.config.chunk_concurrency; harnesses pass it explicitly). 1/absent
+   *  = exact pre-S187 sequential dispatch. Clamped 1..16 here. */
+  chunkConcurrency?: number;
 }
 
 export async function parsePlanDocumentHaiku(
   input: ParsePlanDocInput,
 ): Promise<PlanDocHaikuParseResult> {
   const { ocrText, extractionMethod, documentId } = input;
+  const chunkConcurrency =
+    typeof input.chunkConcurrency === "number" && Number.isFinite(input.chunkConcurrency) && input.chunkConcurrency >= 1
+      ? Math.min(Math.floor(input.chunkConcurrency), 16)
+      : 1;
   const warnings: string[] = [];
-  const costTracker: CostTracker = { totalUsd: 0 };
+  const costTracker: CostTracker = { totalUsd: 0, tokensInput: 0, tokensOutput: 0, cacheCreateTokens: 0, cacheReadTokens: 0 };
 
   // Step 0: Subtractive boilerplate cleanup (S72 commit 7)
   const cleanup = cleanupBoilerplate(ocrText);
@@ -353,6 +468,8 @@ export async function parsePlanDocumentHaiku(
       extractionMethod,
       costTracker,
       warnings,
+      undefined,
+      chunkConcurrency,
     );
     planIdentityChunks.push(...chunks);
     if (chunks.length > 0) dispatchedSectionsSet.add("plan_identity");
@@ -426,6 +543,8 @@ export async function parsePlanDocumentHaiku(
       extractionMethod,
       costTracker,
       warnings,
+      undefined,
+      chunkConcurrency,
     );
     if (chunks.length > 0) {
       services = mergeServicesChunks(chunks.map((c) => c.services));
@@ -445,6 +564,8 @@ export async function parsePlanDocumentHaiku(
       extractionMethod,
       costTracker,
       warnings,
+      undefined,
+      chunkConcurrency,
     );
     accessInstructionsChunks.push(...chunks);
     if (chunks.length > 0) dispatchedSectionsSet.add("access_instructions");
@@ -572,10 +693,10 @@ export async function parsePlanDocumentHaiku(
     services,
     accessInstructions: mergedAccess,
     parseWarnings: warnings,
-    haikuTokensInput: 0,
-    haikuTokensOutput: 0,
-    haikuCacheCreateTokens: 0,
-    haikuCacheReadTokens: 0,
+    haikuTokensInput: costTracker.tokensInput,
+    haikuTokensOutput: costTracker.tokensOutput,
+    haikuCacheCreateTokens: costTracker.cacheCreateTokens,
+    haikuCacheReadTokens: costTracker.cacheReadTokens,
     costUsd: costTracker.totalUsd,
     parseStrategyV2: true,
     dispatchedSections,

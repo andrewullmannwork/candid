@@ -24,6 +24,7 @@
 import type { ExtractionMethod } from "../../parser/types";
 import type { EOCSectionResult } from "../types";
 import { callHaikuWithCache } from "./_shared";
+import { HAIKU_CACHE_PAD } from "@/lib/haiku-client/cache-pad";
 
 export type EocAcaComplianceBasis =
   | "explicit_attestation"
@@ -217,7 +218,7 @@ export async function extractAcaCompliance(
   extractionMethod: ExtractionMethod,
 ): Promise<EOCSectionResult<EocAcaComplianceData>> {
   const result = await callHaikuWithCache<RawResponse>({
-    systemPrompt: INSTRUCTIONS,
+    systemPrompt: HAIKU_CACHE_PAD + INSTRUCTIONS,
     userContent: sectionText,
     sectionLabel: "aca_compliance",
   });
@@ -245,6 +246,8 @@ export async function extractAcaCompliance(
     haiku_input_tokens: result.inputTokens,
     haiku_output_tokens: result.outputTokens,
     haiku_cost_usd: result.costUsd,
+    haiku_cache_create_tokens: result.cacheCreateTokens ?? 0,
+    haiku_cache_read_tokens: result.cacheReadTokens ?? 0,
     warnings: result.warnings,
   };
 }

@@ -45,7 +45,7 @@ import {
 } from "@/lib/parser/canonical-haiku-extractions";
 import { validatePlanField } from "@/lib/plan/garbage-validators";
 import { recordCostEvent } from "@/lib/cost/parse-cost-events";
-import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { isFeatureEnabled, readFeatureFlagConfig } from "@/lib/config/product-flags";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
@@ -85,6 +85,10 @@ export async function processEOCDocumentData(
   // routeCriterion dispatch + telemetry + facts-clear). A single read = one consistent value across
   // parse+persist (no split-brain / mid-parse flip). OFF → byte-identical to post-D1 end-to-end.
   const eocRoutingFlagOn = await isFeatureEnabled("eoc_prose_prior_auth_v1");
+  // S187 D8: per-chunk concurrency, read ONCE here (same single-read pattern as the routing flag;
+  // the parser itself never reads flags). Absent config key -> 1 = the exact pre-S187 sequential
+  // dispatch; flip via eoc_parser_v1.config.chunk_concurrency (clamped 1..16 in parseEOC).
+  const eocChunkConcurrency = await readFeatureFlagConfig("eoc_parser_v1", "chunk_concurrency", 1);
   let parsed: EOCParseResult;
   try {
     parsed = await parseEOC(ocrText, {
@@ -94,6 +98,7 @@ export async function processEOCDocumentData(
       selectiveSelfCheckEnabled,
       serviceVocabulary,
       eocContentTypeRoutingOn: eocRoutingFlagOn,
+      chunkConcurrency: eocChunkConcurrency,
     });
   } catch (err) {
     const reason = `EOC parser exception: ${err instanceof Error ? err.message : String(err)}`;
@@ -259,6 +264,8 @@ export async function processEOCDocumentData(
       costUsd: parsed.total_cost_usd,
       haikuTokensInput: parsed.total_input_tokens,
       haikuTokensOutput: parsed.total_output_tokens,
+      haikuCacheCreateTokens: parsed.total_cache_create_tokens,
+      haikuCacheReadTokens: parsed.total_cache_read_tokens,
       metadata: {
         sections_extracted: Object.keys(parsed.sections),
         segmentation_used: parsed.segmentation_used,
@@ -914,8 +921,8 @@ async function writeParseAuditRun(
     cost_usd: parsed.total_cost_usd,
     haiku_tokens_input: parsed.total_input_tokens,
     haiku_tokens_output: parsed.total_output_tokens,
-    haiku_cache_read_tokens: 0, // SDK-reported usage breakdown stored in _shared.ts; v1.5 pipe through
-    haiku_cache_create_tokens: 0,
+    haiku_cache_read_tokens: parsed.total_cache_read_tokens, // S187: threaded from HaikuCallResult via EOCSectionResult (the deferred v1.5 pipe-through; admin /parse-audit-runs renders these)
+    haiku_cache_create_tokens: parsed.total_cache_create_tokens,
     per_field_results: parsed.sections, // section-level results for admin drilldown
     warnings: { eoc_warnings: parsed.warnings, segmentation_used: parsed.segmentation_used },
     parse_duration_ms: null,

@@ -458,8 +458,8 @@ async function runEOCFixture(
     cost_usd: parsed.total_cost_usd,
     haiku_tokens_input: parsed.total_input_tokens,
     haiku_tokens_output: parsed.total_output_tokens,
-    haiku_cache_read_tokens: 0, // EOC parser tracks aggregated tokens; cache breakdown in v1.5
-    haiku_cache_create_tokens: 0,
+    haiku_cache_read_tokens: parsed.total_cache_read_tokens, // S187: real cache classes (cache_pad_v1 engagement evidence)
+    haiku_cache_create_tokens: parsed.total_cache_create_tokens,
     per_field_results: perFieldResults,
     warnings: {
       meta_warnings: otherWarnings,

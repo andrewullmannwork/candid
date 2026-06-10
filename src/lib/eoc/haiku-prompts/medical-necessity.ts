@@ -11,6 +11,7 @@ import type { ExtractionMethod } from "../../parser/types";
 import type { EOCSectionResult, MedicalNecessityContentType, MedicalNecessityCriterion, MedicalNecessityData, PriorAuthPolarity } from "../types";
 import { callHaikuWithCache } from "./_shared";
 import { INSTRUCTIONS_BODY_PRE_P2 } from "./medical-necessity-pre-p2";
+import { HAIKU_CACHE_PAD } from "@/lib/haiku-client/cache-pad";
 
 const INSTRUCTIONS_BODY = `You are extracting Medical Necessity Criteria from an Evidence of Coverage (EOC) document section. Return a single JSON object listing the criteria per service.
 
@@ -164,14 +165,16 @@ Source: "All inpatient admissions require precertification, except inpatient mat
  *
  * `contentTypeRoutingOn` gates the P2 type-classification + C1 split (the `eoc_prose_prior_auth_v1`
  * flag): OFF → the FROZEN pre-P2 body (`INSTRUCTIONS_BODY_PRE_P2`), so a flag-OFF parse is
- * byte-identical to post-D1 (no split → no `coverage_rules` clobber — M1 fix). The flag is read once
+ * INSTRUCTION-byte-identical to post-D1 modulo the always-on cache pad (carve-out D7, S187 — the
+ * pad is prepended in BOTH flag states by construction, so the flag still toggles ONLY the P2
+ * type/split block; no split → no `coverage_rules` clobber — M1 fix). The flag is read once
  * in `process-eoc` and threaded here via `parseEOC` options. Default OFF = fail-toward-today (an
  * un-updated caller gets the safe pre-P2 prompt). Exported for the byte-identity fixture (both directions).
  */
 export function buildMedicalNecessityPrompt(serviceVocabulary?: string, contentTypeRoutingOn = false): string {
   const body = contentTypeRoutingOn ? INSTRUCTIONS_BODY : INSTRUCTIONS_BODY_PRE_P2;
   const vocab = serviceVocabulary && serviceVocabulary.trim().length > 0 ? `\n\n${serviceVocabulary}` : "";
-  return `${body}${vocab}\n\n## NOW EXTRACT FROM THIS DOCUMENT SECTION:`;
+  return `${HAIKU_CACHE_PAD}${body}${vocab}\n\n## NOW EXTRACT FROM THIS DOCUMENT SECTION:`;
 }
 
 interface RawResponse {
@@ -283,6 +286,8 @@ export async function extractMedicalNecessity(
     haiku_input_tokens: result.inputTokens,
     haiku_output_tokens: result.outputTokens,
     haiku_cost_usd: result.costUsd,
+    haiku_cache_create_tokens: result.cacheCreateTokens ?? 0,
+    haiku_cache_read_tokens: result.cacheReadTokens ?? 0,
     warnings: result.warnings,
   };
 }
