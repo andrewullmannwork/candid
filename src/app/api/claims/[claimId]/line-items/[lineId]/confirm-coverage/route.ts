@@ -23,6 +23,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { userScoped, selectOwnedChildren, updateOwnedChildren } from "@/lib/security/user-scoped";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -81,24 +82,28 @@ export async function POST(
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  // Ownership: the claim must belong to this user.
-  const { data: claim } = await supabase
-    .from("claims")
+  // Ownership: the claim must belong to this user (userScoped injects user_id).
+  const { data: claim } = await userScoped(supabase, user.id)
+    .table("claims")
     .select("id")
     .eq("id", claimId)
-    .eq("user_id", user.id)
     .maybeSingle();
   if (!claim) {
     return NextResponse.json({ error: "Claim not found" }, { status: 404 });
   }
 
-  // The line item must belong to that claim.
-  const { data: li } = await supabase
-    .from("claim_line_items")
-    .select("id, metadata")
-    .eq("id", lineId)
-    .eq("claim_id", claimId)
-    .maybeSingle();
+  // The line item must belong to that claim. B9 B1.2 — claim_line_items has no
+  // user_id; selectOwnedChildren re-verifies the parent claim is owned then
+  // returns its lines; resolve the requested line by id in JS (parent-in-scope,
+  // the S185 child-read-by-id pattern). Foreign claim → [] → 404.
+  const ownedLines = await selectOwnedChildren(
+    supabase,
+    user.id,
+    "claim_line_items",
+    [claimId],
+    "id, metadata",
+  );
+  const li = ownedLines.find((r) => r.id === lineId) ?? null;
   if (!li) {
     return NextResponse.json({ error: "Line item not found" }, { status: 404 });
   }
@@ -122,12 +127,19 @@ export async function POST(
     delete nextMeta.coverage_rejected_at;
   }
 
-  const { error } = await supabase
-    .from("claim_line_items")
-    .update({ metadata: nextMeta })
-    .eq("id", lineId);
-  if (error) {
-    console.error("[confirm-coverage] update failed:", error.message);
+  // B9 B1.2 — child WRITE via the parent-scoped primitive: verifies claimId is
+  // owned once, then updates the line scoped by id AND claim_id (fail-closed).
+  // The line is already proven to exist + belong to claimId above, so updated=0
+  // here means a write failure (op-equivalent to the prior error→500).
+  const { updated } = await updateOwnedChildren(
+    supabase,
+    user.id,
+    "claim_line_items",
+    claimId,
+    [{ id: lineId, values: { metadata: nextMeta } }],
+  );
+  if (updated === 0) {
+    console.error("[confirm-coverage] update failed for line:", lineId);
     return NextResponse.json({ error: "Update failed" }, { status: 500 });
   }
 

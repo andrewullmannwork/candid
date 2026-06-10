@@ -24,6 +24,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { userScoped, selectOwnedChildren, updateOwnedChildren } from "@/lib/security/user-scoped";
 
 const VALID_REASONS = new Set([
   "legitimate_adjustment",
@@ -94,8 +95,10 @@ export async function POST(
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  const { data: claim } = await supabase
-    .from("claims")
+  // B9 B1.2 — userScoped injects `.eq("user_id")`; foreign/missing claimId →
+  // null → 404. The JS owner check stays (harmless; unreachable for the owner).
+  const { data: claim } = await userScoped(supabase, user.id)
+    .table("claims")
     .select("id, user_id, metadata")
     .eq("id", claimId)
     .single();
@@ -108,10 +111,15 @@ export async function POST(
   //   2. claim_line_items.metadata.auditFindings on multiple lines — multi-line finding
   //   3. claim.metadata.auditSummary.claimLevelFindings — claim-header findings (§1.7)
   // Walk all three; touch every match.
-  const { data: lineItems } = await supabase
-    .from("claim_line_items")
-    .select("id, line_number, metadata")
-    .eq("claim_id", claimId);
+  // B9 B1.2 — claim_line_items has no user_id; selectOwnedChildren verifies the
+  // parent claim is owned (claimId verified above) then returns its lines.
+  const lineItems = await selectOwnedChildren(
+    supabase,
+    user.id,
+    "claim_line_items",
+    [claimId],
+    "id, line_number, metadata",
+  );
 
   let touched = 0;
   const dismissedAt = new Date().toISOString();
@@ -125,7 +133,11 @@ export async function POST(
   // lines" so analytics queries don't have to GROUP-BY the last-iterated line.
   const touchedLineNumbers: number[] = [];
 
-  // Pass 1 — line-level findings
+  // Pass 1 — line-level findings. B9 B1.2 — collect each matched line's metadata
+  // update, then apply them in ONE parent-scoped child write below (claimId
+  // proven owned above). Op-equivalent to the prior per-line loop: every line
+  // came from the owned claim, so each update lands → updated === #matched.
+  const lineUpdates: { id: string; values: Record<string, unknown> }[] = [];
   for (const li of lineItems ?? []) {
     const meta = (li.metadata as Record<string, unknown> | null) ?? {};
     const findings =
@@ -146,11 +158,20 @@ export async function POST(
     });
     if (!mutated) continue;
     touchedLineNumbers.push(li.line_number as number);
-    await supabase
-      .from("claim_line_items")
-      .update({ metadata: { ...meta, auditFindings: next } })
-      .eq("id", li.id);
-    touched += 1;
+    lineUpdates.push({
+      id: li.id as string,
+      values: { metadata: { ...meta, auditFindings: next } },
+    });
+  }
+  if (lineUpdates.length > 0) {
+    const { updated } = await updateOwnedChildren(
+      supabase,
+      user.id,
+      "claim_line_items",
+      claimId,
+      lineUpdates,
+    );
+    touched += updated;
   }
   // C-5 — single-line: store the one line_number. Multi-line: NULL — telemetry
   // analytics treat NULL as "span" (vs claim-level which is also NULL but has
@@ -187,8 +208,8 @@ export async function POST(
       };
     });
     if (mutated) {
-      await supabase
-        .from("claims")
+      await userScoped(supabase, user.id)
+        .table("claims")
         .update({
           metadata: {
             ...claimMeta,
@@ -211,8 +232,9 @@ export async function POST(
   // action and must succeed even if the telemetry write fails (table may not
   // exist on pre-mig-091 DBs).
   try {
-    await supabase.from("finding_dismissals").insert({
-      user_id: user.id,
+    // B9 B1.2 — finding_dismissals is a direct user_id table; userScoped.insert
+    // stamps user_id (drop the explicit field — the layer overrides it anyway).
+    await userScoped(supabase, user.id).table("finding_dismissals").insert({
       claim_id: claimId,
       finding_id: findingId,
       finding_type: touchedFindingType,
