@@ -1,23 +1,9 @@
-/**
- * EOC Section B — Medical Necessity Criteria.
- * Per [[plans/findings/eoc_field_differential]] §1.2 B.
- *
- * Note: ICD-10 diagnosis codes referenced here are stored as `diagnosis_qualifiers`
- * (string array) on the criterion row — they do NOT enter `concept_admin_review_queue`
- * per Q-DR-3.1A-B-2 LOCK (queue is for billing codes only, not diagnosis codes).
- */
-
-import type { ExtractionMethod } from "../../parser/types";
-import type { EOCSectionResult, MedicalNecessityContentType, MedicalNecessityCriterion, MedicalNecessityData, PriorAuthPolarity } from "../types";
-import { callHaikuWithCache } from "./_shared";
-import { INSTRUCTIONS_BODY_PRE_P2 } from "./medical-necessity-pre-p2";
-
-const INSTRUCTIONS_BODY = `You are extracting Medical Necessity Criteria from an Evidence of Coverage (EOC) document section. Return a single JSON object listing the criteria per service.
+You are extracting Medical Necessity Criteria from an Evidence of Coverage (EOC) document section. Return a single JSON object listing the criteria per service.
 
 ## CRITICAL EXTRACTION RULES
 
 1. **Verbatim source_excerpt** per criterion (≤200 chars). MUST be a CHARACTER-FOR-CHARACTER substring of the document section text — NEVER paraphrase, summarize, or normalize whitespace/punctuation. If you cannot find a verbatim ≤200-char span that supports the field, set source_excerpt to "" (empty) — the verifier marks empty as 'not_found' (graceful degradation), which is the correct outcome rather than a wrong excerpt.
-2. **service_slug_hint**: emit a CANONICAL service slug from the "CANONICAL SERVICE SLUG VOCABULARY" section below (e.g., "bariatric_surgery", "pcp_visit", "specialist_visit", "pt_rehab", "advanced_imaging"). For a service that GENUINELY doesn't fit ANY canonical slug, emit \`proposed_<snake_case_descriptive_name>\` (e.g., \`proposed_hyperbaric_oxygen_therapy\`). NEVER invent a bare snake_case slug — either use a listed canonical OR use \`proposed_*\`. Set null only if no service is identifiable.
+2. **service_slug_hint**: emit a CANONICAL service slug from the "CANONICAL SERVICE SLUG VOCABULARY" section below (e.g., "bariatric_surgery", "pcp_visit", "specialist_visit", "pt_rehab", "advanced_imaging"). For a service that GENUINELY doesn't fit ANY canonical slug, emit `proposed_<snake_case_descriptive_name>` (e.g., `proposed_hyperbaric_oxygen_therapy`). NEVER invent a bare snake_case slug — either use a listed canonical OR use `proposed_*`. Set null only if no service is identifiable.
 3. **criteria_text**: verbatim full criteria description (NOT summarized). May be multi-sentence.
 4. **diagnosis_qualifiers**: extract any ICD-10 diagnosis codes referenced in the criteria (e.g., "E66.01" for obesity). Empty array if none. These codes are NOT extracted as billing codes — they are conditions of coverage.
 5. **DO NOT extract**: criteria from glossary cross-references, header marketing, or footer disclaimers.
@@ -154,135 +140,6 @@ Source: "All inpatient admissions require precertification, except inpatient mat
   ]
 }
 
-`;
 
-/**
- * Build the medical-necessity system prompt. When the live catalog `serviceVocabulary` block is
- * provided (always, in PROD — `process-eoc` loads it), it is appended so Haiku maps to a real slug
- * instead of inventing one (Pattern S Hard Rule #17). On a vocab-load failure the block is empty →
- * graceful degradation to the (still anti-invention) rules above, never the old "best-guess" prompt.
- *
- * `contentTypeRoutingOn` gates the P2 type-classification + C1 split (the `eoc_prose_prior_auth_v1`
- * flag): OFF → the FROZEN pre-P2 body (`INSTRUCTIONS_BODY_PRE_P2`), so a flag-OFF parse is
- * byte-identical to post-D1 (no split → no `coverage_rules` clobber — M1 fix). The flag is read once
- * in `process-eoc` and threaded here via `parseEOC` options. Default OFF = fail-toward-today (an
- * un-updated caller gets the safe pre-P2 prompt). Exported for the byte-identity fixture (both directions).
- */
-export function buildMedicalNecessityPrompt(serviceVocabulary?: string, contentTypeRoutingOn = false): string {
-  const body = contentTypeRoutingOn ? INSTRUCTIONS_BODY : INSTRUCTIONS_BODY_PRE_P2;
-  const vocab = serviceVocabulary && serviceVocabulary.trim().length > 0 ? `\n\n${serviceVocabulary}` : "";
-  return `${body}${vocab}\n\n## NOW EXTRACT FROM THIS DOCUMENT SECTION:`;
-}
 
-interface RawResponse {
-  criteria?: Array<Record<string, unknown>>;
-}
-
-const VALID_CONTENT_TYPES = new Set<MedicalNecessityContentType>([
-  "clinical_criterion",
-  "prior_auth",
-  "admin_provision",
-]);
-
-/** Normalize a free-text place_of_service axis to a lowercase token, or null. */
-function coercePlaceOfService(raw: unknown): string | null {
-  if (typeof raw !== "string") return null;
-  const s = raw.toLowerCase().trim();
-  return s.length > 0 ? s : null;
-}
-
-/**
- * Coerce Haiku's raw classification fields (`type` / `type_confidence` / `pa_polarity` / `place_of_service`),
- * with a FAIL-TOWARD-TODAY default: a missing or invalid `type` becomes `clinical_criterion` at
- * `type_confidence = 0`, so the fact lands exactly where it landed before P2 (`coverage_rules` — zero
- * regression vs post-D1). NOTE: `routeCriterion` reads `type_confidence` ONLY on the `prior_auth`+`requires`
- * branch (the user-visible column write); a `clinical_criterion` routes to `coverage_rules` at face value
- * regardless of confidence — there is NO review gate on it. Only prose prior-auth surfacing is confidence-gated.
- * `pa_polarity` is set ONLY for an explicit "requires"/"waived" on a prior_auth — otherwise null
- * (uncertain), which the router treats as fail-toward-safe (NOT surfaced to the column).
- */
-function coerceClassification(raw: Record<string, unknown>): {
-  type: MedicalNecessityContentType;
-  type_confidence: number | null;
-  pa_polarity: PriorAuthPolarity | null;
-  place_of_service: string | null;
-} {
-  const place_of_service = coercePlaceOfService(raw.place_of_service);
-  const valid =
-    typeof raw.type === "string" && VALID_CONTENT_TYPES.has(raw.type as MedicalNecessityContentType)
-      ? (raw.type as MedicalNecessityContentType)
-      : null;
-  if (!valid) return { type: "clinical_criterion", type_confidence: 0, pa_polarity: null, place_of_service };
-  const tc =
-    typeof raw.type_confidence === "number" && raw.type_confidence >= 0 && raw.type_confidence <= 1
-      ? raw.type_confidence
-      : null;
-  const pa_polarity: PriorAuthPolarity | null =
-    valid === "prior_auth" && (raw.pa_polarity === "requires" || raw.pa_polarity === "waived")
-      ? raw.pa_polarity
-      : null;
-  return { type: valid, type_confidence: tc, pa_polarity, place_of_service };
-}
-
-/**
- * Pure parse of Haiku's raw criteria array into typed `MedicalNecessityCriterion[]`. Exported so the
- * T1 logic fixture exercises the type-coercion + shape WITHOUT a live Haiku call (parser-independent,
- * per [[feedback_calibration_independence]]). `extractMedicalNecessity` is the thin Haiku-calling shell.
- */
-export function parseMedicalNecessityCriteria(
-  rawCriteria: Array<Record<string, unknown>> | undefined,
-  extractionMethod: ExtractionMethod,
-): MedicalNecessityCriterion[] {
-  return (rawCriteria ?? [])
-    .map((raw): MedicalNecessityCriterion | null => {
-      const criteriaText = typeof raw.criteria_text === "string" ? raw.criteria_text : null;
-      if (!criteriaText) return null;
-      const sourceExcerpt = typeof raw.source_excerpt === "string" ? raw.source_excerpt.slice(0, 200) : "";
-      const dxQualifiers = Array.isArray(raw.diagnosis_qualifiers)
-        ? raw.diagnosis_qualifiers.filter((d): d is string => typeof d === "string")
-        : [];
-      const { type, type_confidence, pa_polarity, place_of_service } = coerceClassification(raw);
-      return {
-        service_slug_hint: typeof raw.service_slug_hint === "string" ? raw.service_slug_hint : null,
-        criteria_text: criteriaText,
-        diagnosis_qualifiers: dxQualifiers,
-        type,
-        type_confidence,
-        pa_polarity,
-        place_of_service,
-        source_excerpt: sourceExcerpt,
-        source_excerpt_verified: "not_found",
-        source_excerpt_extraction_method: extractionMethod,
-        source_section_hint: "medical_necessity",
-        source_section_verified: false,
-        haiku_confidence: typeof raw.haiku_confidence === "number" ? raw.haiku_confidence : undefined,
-      };
-    })
-    .filter((c): c is MedicalNecessityCriterion => c !== null);
-}
-
-export async function extractMedicalNecessity(
-  sectionText: string,
-  sectionRange: { start: number; end: number },
-  extractionMethod: ExtractionMethod,
-  serviceVocabulary?: string,
-  contentTypeRoutingOn = false,
-): Promise<EOCSectionResult<MedicalNecessityData>> {
-  const result = await callHaikuWithCache<RawResponse>({
-    systemPrompt: buildMedicalNecessityPrompt(serviceVocabulary, contentTypeRoutingOn),
-    userContent: sectionText,
-    sectionLabel: "medical_necessity",
-  });
-
-  const criteria = parseMedicalNecessityCriteria(result.data.criteria, extractionMethod);
-
-  return {
-    section_type: "medical_necessity",
-    section_range: sectionRange,
-    data: { criteria },
-    haiku_input_tokens: result.inputTokens,
-    haiku_output_tokens: result.outputTokens,
-    haiku_cost_usd: result.costUsd,
-    warnings: result.warnings,
-  };
-}
+## NOW EXTRACT FROM THIS DOCUMENT SECTION:

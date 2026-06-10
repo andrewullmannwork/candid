@@ -414,6 +414,11 @@ export async function parseEOC(
     // Loaded by the caller (process-eoc, which holds the supabase client); omitted by
     // supabase-free callers → the prompt keeps its anti-invention rules without the explicit list.
     serviceVocabulary?: string;
+    // S182 thesaurus P2 (M1 fix) — the `eoc_prose_prior_auth_v1` flag, read ONCE by process-eoc and
+    // threaded here so a single read gates BOTH the medical_necessity prompt (content-type + C1 split)
+    // and the routeCriterion dispatch (no split-brain). OFF/omitted → the frozen pre-P2 prompt, so a
+    // flag-OFF parse is byte-identical to post-D1 (no split → no coverage_rules clobber).
+    eocContentTypeRoutingOn?: boolean;
   },
 ): Promise<EOCParseResult> {
   const { documentId, extractionMethod } = options;
@@ -552,7 +557,8 @@ export async function parseEOC(
     ),
     dispatchSection(
       "medical_necessity",
-      (text, range, em) => extractMedicalNecessity(text, range, em, options.serviceVocabulary),
+      (text, range, em) =>
+        extractMedicalNecessity(text, range, em, options.serviceVocabulary, options.eocContentTypeRoutingOn ?? false),
       (cs, r) => combineMedicalNecessity(cs, r),
     ),
     dispatchSection(

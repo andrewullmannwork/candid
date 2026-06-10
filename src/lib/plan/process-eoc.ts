@@ -81,6 +81,11 @@ export async function processEOCDocumentData(
   // prompt (Pattern S #17: constrain extraction to real slugs, no bare invention). Always-on; on a
   // load failure the block is empty → the prompt degrades gracefully (anti-invention rules remain).
   const serviceVocabulary = await loadServiceVocabularyBlock(supabase);
+  // S182 P2 (M1 fix): read `eoc_prose_prior_auth_v1` ONCE here and thread it to BOTH parseEOC (gates the
+  // medical_necessity prompt's content-type classification + C1 split) and persistEOCSections (gates the
+  // routeCriterion dispatch + telemetry + facts-clear). A single read = one consistent value across
+  // parse+persist (no split-brain / mid-parse flip). OFF → byte-identical to post-D1 end-to-end.
+  const eocRoutingFlagOn = await isFeatureEnabled("eoc_prose_prior_auth_v1");
   let parsed: EOCParseResult;
   try {
     parsed = await parseEOC(ocrText, {
@@ -89,6 +94,7 @@ export async function processEOCDocumentData(
                                       // OCR fallback is refused upstream (Q-P3.1A-12 image-PDF refusal)
       selectiveSelfCheckEnabled,
       serviceVocabulary,
+      eocContentTypeRoutingOn: eocRoutingFlagOn,
     });
   } catch (err) {
     const reason = `EOC parser exception: ${err instanceof Error ? err.message : String(err)}`;
@@ -155,7 +161,7 @@ export async function processEOCDocumentData(
   }
 
   // 3. Per-section persistence.
-  const persistenceWarnings = await persistEOCSections(supabase, doc, documentId, targetPlanId, parsed);
+  const persistenceWarnings = await persistEOCSections(supabase, doc, documentId, targetPlanId, parsed, eocRoutingFlagOn);
   parseWarnings.push(...persistenceWarnings);
 
   // 3.5 Phase 4.0.6 corroboration evaluator post-commit. Single discipline point
@@ -268,8 +274,13 @@ export async function processEOCDocumentData(
   // so admin can see "which heuristic decision drove this parse's self-check"
   // alongside the parse output stats.
   // Read-merge-write (NOT a blind overwrite): this must preserve keys written earlier in THIS flow —
-  // notably the G7 eoc_routing_telemetry from persistEOCSections (a prior blind overwrite here wiped it),
-  // plus any upstream documents.metadata keys (cf40_*, adversarial_pdf_assessment).
+  // the G7 eoc_routing_telemetry from persistEOCSections (flag-ON only now; D3) — plus any UPSTREAM
+  // documents.metadata keys (cf40_*, adversarial_pdf_assessment). The prior blind overwrite WIPED them.
+  // DOCUMENTED CARVE-OUT (M1/D2): this read-merge is an intentional, FLAG-INDEPENDENT correctness fix and
+  // is the ONE deliberate exception to "flag-OFF = byte-identical post-D1". Reverting to the blind
+  // overwrite would re-introduce data loss (e.g. dropping adversarial_pdf_assessment when THAT separate
+  // flag is ON). The byte-identity guarantee is scoped to PLAN DATA + the cite-grade cache, not this
+  // observability blob — do NOT "restore" the overwrite to satisfy a literal-bytes reading.
   {
     const { data: docMetaRow } = await supabase
       .from("documents")
@@ -467,6 +478,7 @@ async function persistEOCSections(
   documentId: string,
   planId: string,
   parsed: EOCParseResult,
+  eocRoutingFlagOn: boolean,
 ): Promise<string[]> {
   const warnings: string[] = [];
 
@@ -491,9 +503,9 @@ async function persistEOCSections(
   const tallyRoute = (reason: string): void => {
     routingTelemetry[reason] = (routingTelemetry[reason] ?? 0) + 1;
   };
-  // The routing flag + config, loaded once (used by Section B's dispatch AND the telemetry payload).
-  // Flag absent/OFF → byte-identical post-D1 routing; config absent → default floor (0.7).
-  const eocRoutingFlagOn = await isFeatureEnabled("eoc_prose_prior_auth_v1");
+  // The routing flag is read ONCE in the orchestrator (above parseEOC) and passed in as a param, so the
+  // prompt gating and this dispatch share a single consistent value (no split-brain / mid-parse flip).
+  // Flag OFF → byte-identical post-D1 routing. The config (floor) is only consumed flag-ON; absent → 0.7.
   const eocRoutingConfig = await loadEocRoutingConfig(supabase);
   // Loaded once + shared by Section A and Section B so the dead→live canonicalization (and the D1 dedup
   // keyed on the canonical slug) is provably identical across both sections.
@@ -818,34 +830,46 @@ async function persistEOCSections(
   if (parsed.sections.definitions) {
     planMetadataPatch.eoc_definitions = parsed.sections.definitions.data;
   }
-  // P2: structured PA facts + admin provisions from Section B's dispatch. REPLACE-per-parse: set when this
-  // parse produced them; when Section B RAN but produced none (incl. ANY flag-OFF re-parse — routeCriterion
-  // can never emit pa_facts/admin_metadata with the flag OFF), CLEAR any stale key so a re-parse / rollback
-  // leaves no orphaned facts for the future reader-resolution block to act on.
+  // P2: structured PA facts + admin provisions from Section B's dispatch are SET here when this parse
+  // produced them (flag-ON only); the stale-key CLEAR for a flag-ON→OFF rollback is handled just below (D4).
   const sectionBRan = Boolean(parsed.sections.medical_necessity) && Boolean(proposedByUserId);
   if (eocPriorAuthFacts.length > 0) planMetadataPatch.eoc_prior_auth_facts = eocPriorAuthFacts;
   if (eocCoverageProvisions.length > 0) planMetadataPatch.eoc_coverage_provisions = eocCoverageProvisions;
-  const clearKeys: string[] = [];
-  if (sectionBRan && eocPriorAuthFacts.length === 0) clearKeys.push("eoc_prior_auth_facts");
-  if (sectionBRan && eocCoverageProvisions.length === 0) clearKeys.push("eoc_coverage_provisions");
+  // REPLACE-per-parse clear: a parse that RAN Section B but produced no PA-facts/provisions should drop any
+  // STALE key a prior flag-ON parse left behind (rollback hygiene). M1/D4 fix: only schedule a clear for a
+  // key that ACTUALLY EXISTS, so a clean parse with no stale P2 keys (including ANY flag-OFF parse, where
+  // routeCriterion can never emit pa_facts/admin_metadata) issues ZERO insurance_plans writes — no spurious
+  // `updated_at` bump → byte-identical to post-D1. The auto-cleanup after a real flag-ON→OFF rollback is
+  // preserved (it fires only when there is genuinely a key to remove).
+  const mayNeedFactsClear = sectionBRan && eocPriorAuthFacts.length === 0;
+  const mayNeedProvClear = sectionBRan && eocCoverageProvisions.length === 0;
 
-  if (Object.keys(planMetadataPatch).length > 0 || clearKeys.length > 0) {
-    // Read existing metadata, merge (preserve other keys), drop the to-clear keys, write back.
+  if (Object.keys(planMetadataPatch).length > 0 || mayNeedFactsClear || mayNeedProvClear) {
+    // Read existing metadata, merge (preserve other keys), drop ONLY genuinely-present stale keys, write back.
     const { data: planRow } = await supabase
       .from("insurance_plans")
       .select("metadata")
       .eq("id", planId)
       .single();
     const existingMetadata = (planRow?.metadata as Record<string, unknown>) ?? {};
-    const mergedMetadata = { ...existingMetadata, ...planMetadataPatch };
-    for (const k of clearKeys) delete mergedMetadata[k];
-    await supabase.from("insurance_plans").update({ metadata: mergedMetadata }).eq("id", planId);
+    const clearKeys: string[] = [];
+    if (mayNeedFactsClear && existingMetadata.eoc_prior_auth_facts !== undefined) clearKeys.push("eoc_prior_auth_facts");
+    if (mayNeedProvClear && existingMetadata.eoc_coverage_provisions !== undefined) clearKeys.push("eoc_coverage_provisions");
+    // Nothing to patch AND nothing genuinely stale to clear → no write at all (the clean flag-OFF no-op path).
+    if (Object.keys(planMetadataPatch).length > 0 || clearKeys.length > 0) {
+      const mergedMetadata = { ...existingMetadata, ...planMetadataPatch };
+      for (const k of clearKeys) delete mergedMetadata[k];
+      await supabase.from("insurance_plans").update({ metadata: mergedMetadata }).eq("id", planId);
+    }
   }
 
   // Non-fire telemetry (Ship Gate G7): the per-parse routing distribution — captures what was routed
-  // AWAY (admin out of coverage_rules, low-conf/waived/axis PA parked), not just what was written. Always
-  // on (a measurement instrument, distinct from the flag-gated plan-data writes) and non-fatal.
-  if (Object.keys(routingTelemetry).length > 0) {
+  // AWAY (admin out of coverage_rules, low-conf/waived/axis PA parked), not just what was written. Non-fatal.
+  // FLAG-GATED (M1/D3 fix): written ONLY when routing is ON. Flag OFF → routeCriterion is byte-identical
+  // post-D1 (no real routing decisions to measure — only `flag_off_*` buckets), and adding a new
+  // documents.metadata key would break the byte-identical-rollback guarantee. For a flag-OFF distribution,
+  // log it out-of-band — never into documents.metadata (which is inside the byte-identity surface).
+  if (eocRoutingFlagOn && Object.keys(routingTelemetry).length > 0) {
     try {
       const { data: docRow } = await supabase
         .from("documents")
