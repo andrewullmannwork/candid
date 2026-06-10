@@ -11,7 +11,11 @@ import nextTs from "eslint-config-next/typescript";
 // Object.keys(PARENT_JOIN_TABLES) in src/lib/security/user-scoped.ts. The B1
 // contract harness asserts the two match — drift is either an un-guarded user
 // table (silent IDOR surface) or a false lint error.
-const USER_OWNED_TABLES = [
+// Exported so scripts/check-user-table-registry-sync.mjs can assert this list
+// stays identical to the layer's DIRECT_USER_OWNED_TABLES + PARENT_JOIN_TABLES
+// (CI step; drift = a silent IDOR surface or a false lint error). ESLint reads
+// only the default export, so this named export is inert to linting.
+export const USER_OWNED_TABLES = [
   // direct user_id
   "claims",
   "insurance_plans",
@@ -122,14 +126,9 @@ const eslintConfig = defineConfig([
       "src/app/api/billing/**",
       "src/app/api/compare/**",
       "src/app/api/consent/**",
-      // disputes/generate MIGRATED onto the layer (S183 PR-C, F04+F09): covered
-      // by default now. The rest of the disputes family stays ledgered until B1.2.
-      "src/app/api/disputes/\\[disputeId\\]/**",
-      "src/app/api/disputes/escalate/**",
-      "src/app/api/disputes/followups/**",
-      "src/app/api/disputes/insurer-appeals/**",
-      "src/app/api/disputes/metrics/**",
-      "src/app/api/disputes/outcome/**",
+      // disputes/** FULLY MIGRATED onto the layer (S183 PR-C: generate; S185
+      // B1.2: the remaining 16 routes + the new updateOwnedChildren child-write
+      // primitive). Covered by default — NO disputes entry remains in the ledger.
       "src/app/api/legal/**",
       "src/app/api/profile/**",
       "src/app/api/support/**",

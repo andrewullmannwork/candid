@@ -19,6 +19,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 import { validateUsAddress } from "@/lib/address/validate-us-address";
 import type { InsurerAddressOverride } from "@/lib/disputes/plan-context";
 
@@ -85,11 +86,10 @@ export async function POST(
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  const { data: dispute, error: fetchErr } = await supabase
-    .from("dispute_outcomes")
+  const { data: dispute, error: fetchErr } = await userScoped(supabase, user.id)
+    .table("dispute_outcomes")
     .select("id, metadata")
     .eq("id", disputeId)
-    .eq("user_id", user.id)
     .single();
   if (fetchErr || !dispute) {
     return NextResponse.json({ error: "Dispute not found" }, { status: 404 });
@@ -108,8 +108,8 @@ export async function POST(
     confirmedAt: new Date().toISOString(),
   };
   const baseMetadata = (dispute.metadata as Record<string, unknown>) ?? {};
-  const { error: updateErr } = await supabase
-    .from("dispute_outcomes")
+  const { error: updateErr } = await userScoped(supabase, user.id)
+    .table("dispute_outcomes")
     .update({
       metadata: { ...baseMetadata, insurerAddressOverride },
       updated_at: new Date().toISOString(),

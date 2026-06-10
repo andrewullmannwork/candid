@@ -15,6 +15,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import { resolvePlanContext, type InsurerAddressOverride } from "@/lib/disputes/plan-context";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
 import {
@@ -88,11 +89,10 @@ export async function GET(
     user.email ?? undefined,
   );
 
-  const { data: dispute, error } = await supabase
-    .from("dispute_outcomes")
+  const { data: dispute, error } = await userScoped(supabase, user.id)
+    .table("dispute_outcomes")
     .select("*")
     .eq("id", disputeId)
-    .eq("user_id", user.id)
     .single();
 
   if (error || !dispute) {
@@ -115,12 +115,19 @@ export async function GET(
   ) as string[];
 
   let lineItems: unknown[] = [];
-  if (allLineItemIds.length > 0) {
-    const { data: items } = await supabase
-      .from("claim_line_items")
-      .select("id, line_number, description, billing_code, billed_amount, insurance_paid, patient_owes, plan_year")
-      .in("id", allLineItemIds);
-    lineItems = items || [];
+  if (allLineItemIds.length > 0 && dispute.claim_id) {
+    // claim_line_items has no user_id — scope through the owned parent claim,
+    // then narrow to the dispute's requested line ids. Op-equivalent: a dispute's
+    // line items belong to its own claim; any foreign/cross-claim id resolves to [].
+    const ownedLines = await selectOwnedChildren(
+      supabase,
+      user.id,
+      "claim_line_items",
+      [dispute.claim_id as string],
+      "id, line_number, description, billing_code, billed_amount, insurance_paid, patient_owes, plan_year",
+    );
+    const requested = new Set(allLineItemIds);
+    lineItems = ownedLines.filter((li) => requested.has(li.id as string));
   }
 
   // S74 — resolved letter type is authoritative regardless of whether the claim
@@ -265,8 +272,8 @@ export async function GET(
               delete cleanedMetadata.preBindCoverageSnapshot;
               cleanedMetadata.coverageDiffAutoClearedAt =
                 new Date().toISOString();
-              await supabase
-                .from("dispute_outcomes")
+              await userScoped(supabase, user.id)
+                .table("dispute_outcomes")
                 .update({ metadata: cleanedMetadata })
                 .eq("id", dispute.id);
             } catch (clearErr) {
@@ -346,8 +353,8 @@ export async function GET(
             bodyLength: regeneratedLetterContent.length,
             snippet: regeneratedLetterContent.slice(0, 120),
           });
-          await supabase
-            .from("dispute_outcomes")
+          await userScoped(supabase, user.id)
+            .table("dispute_outcomes")
             .update({
               letter_content: regeneratedLetterContent,
               metadata: {
@@ -393,8 +400,8 @@ export async function GET(
   let accountName = "";
   try {
     const [{ data: claim }, { data: userRow }] = await Promise.all([
-      supabase
-        .from("claims")
+      userScoped(supabase, user.id)
+        .table("claims")
         .select("metadata")
         .eq("id", dispute.claim_id)
         .maybeSingle(),
