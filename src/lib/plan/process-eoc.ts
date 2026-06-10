@@ -25,7 +25,9 @@ import { createServerClient } from "@/lib/supabase/server";
 import { getUserContextByPk } from "@/lib/users/resolve-user-by-pk";
 import { parseEOC } from "@/lib/eoc/parser";
 import { resolveOrEnqueueConcept } from "@/lib/eoc/concept-resolver";
-import type { EOCParseResult, PriorAuthCode } from "@/lib/eoc/types";
+import type { EOCParseResult, PriorAuthCode, MedicalNecessityCriterion } from "@/lib/eoc/types";
+import { routeCriterion, type RouteContext } from "@/lib/eoc/route-criterion";
+import { loadEocRoutingConfig } from "@/lib/eoc/routing-config";
 import type { ProcessPlanResult } from "@/lib/plan/process-plan";
 import { buildEOCPlanIdentityProvenance } from "@/lib/parser/provenance-builders";
 import { buildProvenanceEntry } from "@/lib/parser/field-categories";
@@ -265,25 +267,37 @@ export async function processEOCDocumentData(
   // Ing-H (CF-44, S129) decision struct is co-located with eoc_sections_summary
   // so admin can see "which heuristic decision drove this parse's self-check"
   // alongside the parse output stats.
-  await supabase
-    .from("documents")
-    .update({
-      metadata: {
-        eoc_sections_summary: {
-          segmentation_used: parsed.segmentation_used,
-          sections_extracted: Object.keys(parsed.sections),
-          total_cost_usd: parsed.total_cost_usd,
-          total_input_tokens: parsed.total_input_tokens,
-          total_output_tokens: parsed.total_output_tokens,
-          parse_errors: parsed.parse_errors,
-          warning_count: parsed.warnings.length,
+  // Read-merge-write (NOT a blind overwrite): this must preserve keys written earlier in THIS flow —
+  // notably the G7 eoc_routing_telemetry from persistEOCSections (a prior blind overwrite here wiped it),
+  // plus any upstream documents.metadata keys (cf40_*, adversarial_pdf_assessment).
+  {
+    const { data: docMetaRow } = await supabase
+      .from("documents")
+      .select("metadata")
+      .eq("id", documentId)
+      .maybeSingle();
+    const existingDocMeta = (docMetaRow?.metadata ?? {}) as Record<string, unknown>;
+    await supabase
+      .from("documents")
+      .update({
+        metadata: {
+          ...existingDocMeta,
+          eoc_sections_summary: {
+            segmentation_used: parsed.segmentation_used,
+            sections_extracted: Object.keys(parsed.sections),
+            total_cost_usd: parsed.total_cost_usd,
+            total_input_tokens: parsed.total_input_tokens,
+            total_output_tokens: parsed.total_output_tokens,
+            parse_errors: parsed.parse_errors,
+            warning_count: parsed.warnings.length,
+          },
+          ...(parsed.column_wrap_decision
+            ? { column_wrap_decision: parsed.column_wrap_decision }
+            : {}),
         },
-        ...(parsed.column_wrap_decision
-          ? { column_wrap_decision: parsed.column_wrap_decision }
-          : {}),
-      },
-    })
-    .eq("id", documentId);
+      })
+      .eq("id", documentId);
+  }
 
   return {
     success: true,
@@ -466,9 +480,27 @@ async function persistEOCSections(
     warnings.push(`eoc_persist_user_lookup_failed:${doc.user_id}`);
   }
 
+  // ── P2 content-routing collectors (filled by Section B's routeCriterion dispatch) ──────────────
+  // `codeAnchoredPaSlugs`: slugs Section A (code tables) already set prior_auth_required on → code wins
+  // the dedup tie (D1); Section B prose-PA defers. Structured PA facts (axis / plan-wide / waived /
+  // low-conf) + admin provisions are captured here and flushed to insurance_plans.metadata below.
+  const codeAnchoredPaSlugs = new Set<string>();
+  const eocPriorAuthFacts: Array<Record<string, unknown>> = [];
+  const eocCoverageProvisions: Array<Record<string, unknown>> = [];
+  const routingTelemetry: Record<string, number> = {};
+  const tallyRoute = (reason: string): void => {
+    routingTelemetry[reason] = (routingTelemetry[reason] ?? 0) + 1;
+  };
+  // The routing flag + config, loaded once (used by Section B's dispatch AND the telemetry payload).
+  // Flag absent/OFF → byte-identical post-D1 routing; config absent → default floor (0.7).
+  const eocRoutingFlagOn = await isFeatureEnabled("eoc_prose_prior_auth_v1");
+  const eocRoutingConfig = await loadEocRoutingConfig(supabase);
+  // Loaded once + shared by Section A and Section B so the dead→live canonicalization (and the D1 dedup
+  // keyed on the canonical slug) is provably identical across both sections.
+  const renameMap = await loadServiceRenameMap(supabase);
+
   // ── Section A: prior_auth_codes ──────────────────────────────────────────────
   if (parsed.sections.prior_auth_codes && proposedByUserId) {
-    const renameMap = await loadServiceRenameMap(supabase);
     const thesaurusOn = await isFeatureEnabled("thesaurus_phase1a_v1");
     // Accumulate by canonicalized SLUG (not service_id): EOC prior-auth tables run 5–50 pages of
     // codes, many collapsing to one service — so the slug→id lookup + the typed column + provenance
@@ -585,91 +617,186 @@ async function persistEOCSections(
           },
           { allowBaseCell: true },
         );
+        codeAnchoredPaSlugs.add(slug); // code-anchored PA recorded → Section B prose-PA defers (D1 dedup)
       } catch (err) {
         warnings.push(`eoc_pa_write_failed:${slug}:${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
 
-  // ── Section B: medical_necessity ──────────────────────────────────────────────
+  // ── Section B: medical_necessity (P2 content-type routing) ───────────────────────────────────────
+  // Each extracted fact carries a `type` (T1); `routeCriterion` (pure, T2) decides its store. Flag OFF →
+  // byte-identical post-D1 (type ignored: valid slug → coverage_rules, unknown → admin enqueue, no slug →
+  // drop). Flag ON → route by type: clinical → coverage_rules; service-specific prior_auth (requires,
+  // confident, deduped vs Section-A code-PA) → the typed prior_auth_required column; admin / axis / waived /
+  // low-conf / no-slug PA → captured in insurance_plans.metadata (never silently dropped, never wrongly
+  // surfaced). validSlugs uses service_catalog (broad), not STANDARD_SLUGS, so EOC-legitimate slugs survive.
   if (parsed.sections.medical_necessity && proposedByUserId) {
-    // Bundle PR #1 (Session 55, audit item #8) — Pattern 1 #1 admin gate for slug
-    // growth. Validate Haiku-emitted service_slug_hint against service_catalog;
-    // unknowns route to service_catalog_admin_review_queue (mig 065) for admin
-    // promotion. Prior behavior dropped unknowns silently — anti-flywheel.
-    // service_catalog is the broader DB-truth vocabulary; STANDARD_SLUGS (51
-    // SBC-curated) would over-prune EOC-legitimate slugs like specialty mental
-    // health / transplant.
     const validSlugs = await loadValidServiceSlugs(supabase);
-
-    const renameMap = await loadServiceRenameMap(supabase);
+    const ctx: RouteContext = {
+      flagOn: eocRoutingFlagOn,
+      confidenceFloor: eocRoutingConfig.prosePaTypeConfidenceFloor,
+      validSlugs,
+      renameMap,
+    };
 
     for (const criterion of parsed.sections.medical_necessity.data.criteria) {
-      // For medical_necessity, service_slug_hint is the parser's best-guess at which
-      // service catalog entry this maps to. If present + matches existing service_catalog,
-      // capture into coverage_rules. If unknown, enqueue for admin promotion (Pattern 1 #1).
-      // If no slug hint at all, log for admin review (criteria without slug binding
-      // can't merge into coverage_rules).
-      if (!criterion.service_slug_hint) {
-        warnings.push(`eoc_medical_necessity_no_slug:criteria_text_len_${criterion.criteria_text.length}`);
-        continue;
-      }
-      // Canonicalize the hint through the dead→live rename-map BEFORE the catalog check (always-on,
-      // like Step B): the stale EOC prompt still emits deprecated slugs that would otherwise be
-      // wrongly enqueued instead of resolving to their live replacement.
-      const hint = canonicalizeSlug(criterion.service_slug_hint, renameMap);
-      if (!validSlugs.has(hint)) {
-        try {
-          const { isNew } = await enqueueUnknownServiceSlug(supabase, {
-            sourceDocId: documentId,
-            proposedByUserId,
-            parserSource: "eoc",
-            proposedServiceSlug: hint,
-            proposedServiceLabel: criterion.criteria_text.slice(0, 200),
-            proposedCategory: null,
-            sourceExcerpt: criterion.source_excerpt,
-            sourceExcerptVerified: criterion.source_excerpt_verified,
-            sourceExcerptExtractionMethod: criterion.source_excerpt_extraction_method,
-            sourceSectionHint: criterion.source_section_hint,
-            sourceSectionVerified: criterion.source_section_verified,
-            contextExtract: extractContext(parsed, criterion.source_excerpt),
-          });
-          warnings.push(
-            isNew
-              ? `eoc_medical_necessity_slug_enqueued_new:${hint}`
-              : `eoc_medical_necessity_slug_enqueued_existing:${hint}`,
-          );
-        } catch (err) {
-          warnings.push(`eoc_medical_necessity_slug_enqueue_failed:${hint}:${err instanceof Error ? err.message : String(err)}`);
+      const decision = routeCriterion(criterion, ctx);
+      const canonSlug = criterion.service_slug_hint
+        ? canonicalizeSlug(criterion.service_slug_hint, renameMap)
+        : null;
+
+      switch (decision.store) {
+        case "drop":
+          tallyRoute(decision.reason);
+          warnings.push(`eoc_mn_drop:${decision.reason}:criteria_text_len_${criterion.criteria_text.length}`);
+          break;
+
+        case "enqueue_unknown_slug": {
+          tallyRoute(decision.reason);
+          if (!canonSlug) break;
+          // Pattern 1 #1 admin gate for slug growth (unchanged behavior; canonicalized hint already applied).
+          try {
+            const { isNew } = await enqueueUnknownServiceSlug(supabase, {
+              sourceDocId: documentId,
+              proposedByUserId,
+              parserSource: "eoc",
+              proposedServiceSlug: canonSlug,
+              proposedServiceLabel: criterion.criteria_text.slice(0, 200),
+              proposedCategory: null,
+              sourceExcerpt: criterion.source_excerpt,
+              sourceExcerptVerified: criterion.source_excerpt_verified,
+              sourceExcerptExtractionMethod: criterion.source_excerpt_extraction_method,
+              sourceSectionHint: criterion.source_section_hint,
+              sourceSectionVerified: criterion.source_section_verified,
+              contextExtract: extractContext(parsed, criterion.source_excerpt),
+            });
+            warnings.push(
+              isNew
+                ? `eoc_medical_necessity_slug_enqueued_new:${canonSlug}`
+                : `eoc_medical_necessity_slug_enqueued_existing:${canonSlug}`,
+            );
+          } catch (err) {
+            warnings.push(`eoc_medical_necessity_slug_enqueue_failed:${canonSlug}:${err instanceof Error ? err.message : String(err)}`);
+          }
+          break;
         }
-        continue;
-      }
-      // Valid hint → capture medical necessity into coverage_rules on EXISTING cells ONLY. There is
-      // no typed column for medical necessity and no /plan reader yet, so we do NOT mint a phantom
-      // covered=true base cell from what are often generic criteria tables (a reader + base-cell
-      // surfacing is a deliberate follow-up).
-      const serviceId = await resolveServiceIdBySlug(supabase, hint);
-      if (!serviceId) {
-        warnings.push(`eoc_medical_necessity_no_service_id:${hint}`);
-        continue;
-      }
-      try {
-        await upsertServiceCoverage(
-          supabase,
-          planId,
-          serviceId,
-          {
-            coverageRules: {
-              medical_necessity_text: criterion.criteria_text,
-              diagnosis_qualifiers: criterion.diagnosis_qualifiers,
-              medical_necessity_source_excerpt: criterion.source_excerpt,
-              medical_necessity_source_excerpt_verified: criterion.source_excerpt_verified,
+
+        case "coverage_rules": {
+          tallyRoute(decision.reason);
+          if (!canonSlug) break;
+          // Clinical criterion → coverage_rules on EXISTING cells ONLY (no phantom covered=true base cell;
+          // no typed column / /plan reader for medical necessity yet — a deliberate follow-up). Today's path.
+          const serviceId = await resolveServiceIdBySlug(supabase, canonSlug);
+          if (!serviceId) {
+            warnings.push(`eoc_medical_necessity_no_service_id:${canonSlug}`);
+            break;
+          }
+          try {
+            await upsertServiceCoverage(
+              supabase,
+              planId,
+              serviceId,
+              {
+                coverageRules: {
+                  medical_necessity_text: criterion.criteria_text,
+                  diagnosis_qualifiers: criterion.diagnosis_qualifiers,
+                  medical_necessity_source_excerpt: criterion.source_excerpt,
+                  medical_necessity_source_excerpt_verified: criterion.source_excerpt_verified,
+                },
+              },
+              { allowBaseCell: false },
+            );
+          } catch (err) {
+            warnings.push(`eoc_medical_necessity_persist_failed:${canonSlug}:${err instanceof Error ? err.message : String(err)}`);
+          }
+          break;
+        }
+
+        case "admin_metadata":
+          tallyRoute(decision.reason);
+          // Out of coverage_rules (the over-capture fix); preserved, reversibly, in plan metadata.
+          eocCoverageProvisions.push(buildAdminProvisionRecord(criterion, canonSlug));
+          break;
+
+        case "pa_facts":
+          tallyRoute(decision.reason);
+          // Captured-not-surfaced: axis / plan-wide / waived / low-conf / no-slug PA. The pre-launch
+          // reader-resolution block reads this carve-out-ready record to apply axis/plan-wide/waived PA.
+          eocPriorAuthFacts.push(buildPriorAuthFactRecord(criterion, canonSlug, decision.reason));
+          break;
+
+        case "pa_column": {
+          // Tally the ACTUAL terminal outcome, not the router's optimistic decision: pa_column can re-route
+          // to pa_facts at runtime (code-dedup / no service id) and the write can throw — the G7 instrument
+          // must reflect what truly happened (else it overstates user-visible PA writes).
+          if (!canonSlug) {
+            tallyRoute("pa_column_no_slug_defensive"); // unreachable (pa_column ⇒ slugValid); defensive
+            break;
+          }
+          // Section-A dedup (D1): a code-anchored PA already wrote this slug → code wins the 0.5 tie. Do
+          // not clobber its cite-grade provenance; capture the prose corroboration in the structured record.
+          if (codeAnchoredPaSlugs.has(canonSlug)) {
+            tallyRoute("pa_requires_code_dedup");
+            warnings.push(`eoc_prose_pa_deduped_code_wins:${canonSlug}`);
+            eocPriorAuthFacts.push(buildPriorAuthFactRecord(criterion, canonSlug, "pa_requires_code_dedup"));
+            break;
+          }
+          const serviceId = await resolveServiceIdBySlug(supabase, canonSlug);
+          if (!serviceId) {
+            // No service row to carry the typed column → capture instead of dropping.
+            tallyRoute("pa_requires_no_service_id");
+            eocPriorAuthFacts.push(buildPriorAuthFactRecord(criterion, canonSlug, "pa_requires_no_service_id"));
+            break;
+          }
+          const provEntry = buildProvenanceEntry(
+            "plan_covered_services",
+            "prior_auth_required",
+            "doc_extraction_eoc",
+            criterion.haiku_confidence,
+            {
+              sourceExcerpt: criterion.source_excerpt,
+              sourceExcerptVerified: criterion.source_excerpt_verified,
+              sourceExcerptExtractionMethod: criterion.source_excerpt_extraction_method,
+              sourceSectionHint: criterion.source_section_hint,
+              sourceSectionVerified: criterion.source_section_verified,
             },
-          },
-          { allowBaseCell: false },
-        );
-      } catch (err) {
-        warnings.push(`eoc_medical_necessity_persist_failed:${hint}:${err instanceof Error ? err.message : String(err)}`);
+          );
+          try {
+            // Same typed col + provenance builder the SBC/plan-doc/Section-A parsers use → cite-grade parity.
+            await upsertServiceCoverage(
+              supabase,
+              planId,
+              serviceId,
+              {
+                typed: { prior_auth_required: true },
+                provenance: provEntry ? { prior_auth_required: provEntry } : undefined,
+                coverageRules: {
+                  requires_prior_auth: true,
+                  prior_auth_criteria: criterion.criteria_text,
+                  prior_auth_source_excerpt: criterion.source_excerpt,
+                  prior_auth_source_excerpt_verified: criterion.source_excerpt_verified,
+                },
+              },
+              { allowBaseCell: true },
+            );
+            tallyRoute("pa_requires_service_specific"); // only count the column write on SUCCESS
+          } catch (err) {
+            tallyRoute("pa_requires_write_failed");
+            warnings.push(`eoc_prose_pa_write_failed:${canonSlug}:${err instanceof Error ? err.message : String(err)}`);
+          }
+          break;
+        }
+
+        default: {
+          // Exhaustiveness guard: a future RouteStore member forces a COMPILE error here (the `never`
+          // assignment), and defensively never silently drops at runtime (the anti-flywheel behavior this
+          // routing was built to eliminate).
+          const _exhaustive: never = decision.store;
+          tallyRoute("unrouted");
+          warnings.push(`eoc_mn_unrouted:${String(_exhaustive)}`);
+          break;
+        }
       }
     }
   }
@@ -691,9 +818,19 @@ async function persistEOCSections(
   if (parsed.sections.definitions) {
     planMetadataPatch.eoc_definitions = parsed.sections.definitions.data;
   }
+  // P2: structured PA facts + admin provisions from Section B's dispatch. REPLACE-per-parse: set when this
+  // parse produced them; when Section B RAN but produced none (incl. ANY flag-OFF re-parse — routeCriterion
+  // can never emit pa_facts/admin_metadata with the flag OFF), CLEAR any stale key so a re-parse / rollback
+  // leaves no orphaned facts for the future reader-resolution block to act on.
+  const sectionBRan = Boolean(parsed.sections.medical_necessity) && Boolean(proposedByUserId);
+  if (eocPriorAuthFacts.length > 0) planMetadataPatch.eoc_prior_auth_facts = eocPriorAuthFacts;
+  if (eocCoverageProvisions.length > 0) planMetadataPatch.eoc_coverage_provisions = eocCoverageProvisions;
+  const clearKeys: string[] = [];
+  if (sectionBRan && eocPriorAuthFacts.length === 0) clearKeys.push("eoc_prior_auth_facts");
+  if (sectionBRan && eocCoverageProvisions.length === 0) clearKeys.push("eoc_coverage_provisions");
 
-  if (Object.keys(planMetadataPatch).length > 0) {
-    // Read existing metadata, merge (preserve other keys), write back.
+  if (Object.keys(planMetadataPatch).length > 0 || clearKeys.length > 0) {
+    // Read existing metadata, merge (preserve other keys), drop the to-clear keys, write back.
     const { data: planRow } = await supabase
       .from("insurance_plans")
       .select("metadata")
@@ -701,10 +838,78 @@ async function persistEOCSections(
       .single();
     const existingMetadata = (planRow?.metadata as Record<string, unknown>) ?? {};
     const mergedMetadata = { ...existingMetadata, ...planMetadataPatch };
+    for (const k of clearKeys) delete mergedMetadata[k];
     await supabase.from("insurance_plans").update({ metadata: mergedMetadata }).eq("id", planId);
   }
 
+  // Non-fire telemetry (Ship Gate G7): the per-parse routing distribution — captures what was routed
+  // AWAY (admin out of coverage_rules, low-conf/waived/axis PA parked), not just what was written. Always
+  // on (a measurement instrument, distinct from the flag-gated plan-data writes) and non-fatal.
+  if (Object.keys(routingTelemetry).length > 0) {
+    try {
+      const { data: docRow } = await supabase
+        .from("documents")
+        .select("metadata")
+        .eq("id", documentId)
+        .maybeSingle();
+      const existingDocMeta = (docRow?.metadata ?? {}) as Record<string, unknown>;
+      await supabase
+        .from("documents")
+        .update({
+          metadata: {
+            ...existingDocMeta,
+            eoc_routing_telemetry: {
+              counts: routingTelemetry,
+              flag_on: eocRoutingFlagOn,
+              prose_pa_type_confidence_floor: eocRoutingConfig.prosePaTypeConfidenceFloor,
+              decided_at: new Date().toISOString(),
+            },
+          },
+        })
+        .eq("id", documentId);
+    } catch (err) {
+      warnings.push(`eoc_routing_telemetry_write_failed:${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   return warnings;
+}
+
+/**
+ * Build a carve-out-ready `eoc_prior_auth_facts[]` record (P2). Holds `service_slug` + `place_of_service`
+ * (axis) + `polarity` (requires/waived) so the pre-launch reader-resolution block can apply axis / plan-wide
+ * / waived PA. `routing_reason` records WHY it landed here (axis / no-slug / low-conf / waived / dedup).
+ */
+function buildPriorAuthFactRecord(
+  c: MedicalNecessityCriterion,
+  canonicalSlug: string | null,
+  routingReason: string,
+): Record<string, unknown> {
+  return {
+    service_slug: canonicalSlug,
+    place_of_service: c.place_of_service,
+    polarity: c.pa_polarity,
+    routing_reason: routingReason,
+    criteria_text: c.criteria_text,
+    source_excerpt: c.source_excerpt,
+    source_excerpt_verified: c.source_excerpt_verified,
+    type_confidence: c.type_confidence,
+  };
+}
+
+/** Build an `eoc_coverage_provisions[]` record — admin provisions routed OUT of coverage_rules (reversible). */
+function buildAdminProvisionRecord(
+  c: MedicalNecessityCriterion,
+  canonicalSlug: string | null,
+): Record<string, unknown> {
+  return {
+    service_slug: canonicalSlug,
+    place_of_service: c.place_of_service,
+    text: c.criteria_text,
+    source_excerpt: c.source_excerpt,
+    source_excerpt_verified: c.source_excerpt_verified,
+    type_confidence: c.type_confidence,
+  };
 }
 
 /**

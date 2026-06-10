@@ -69,10 +69,50 @@ export interface PriorAuthCodesData {
  * Section B — Medical Necessity Criteria.
  * Per [[eoc_field_differential]] §1.2 B: diagnostic + treatment criteria per service.
  */
+/**
+ * Content type of an extracted `medical_necessity` fact (Service Thesaurus P2 — content-type routing).
+ * The `medical_necessity` region is the one EOC region where region ≠ content type: it intermixes
+ * clinical criteria, prose prior-auth, and admin provisions. The extractor labels each fact; the router
+ * (`process-eoc`) routes by label — `clinical_criterion`→`coverage_rules`, `prior_auth`→the typed
+ * `prior_auth_required` column, `admin_provision`→`insurance_plans.metadata`. Sections A/C/D/F/K are
+ * type-by-construction (a PA code table, an appeals block, …) so they carry NO `type` — only this region
+ * needs one.
+ */
+export type MedicalNecessityContentType = "clinical_criterion" | "prior_auth" | "admin_provision";
+
+/**
+ * Polarity of a `prior_auth` fact (P2). `requires` IMPOSES approval/referral before coverage — the ONLY
+ * value that gates the `prior_auth_required` column. `waived` records that PA is explicitly NOT required
+ * ("you do not need prior authorization") — still PA information, never sets the column. null = not a
+ * prior_auth fact, OR polarity was uncertain (the router then will NOT surface it — fail-toward-safe).
+ */
+export type PriorAuthPolarity = "requires" | "waived";
+
 export interface MedicalNecessityCriterion extends PatternP8Provenance {
   service_slug_hint: string | null; // matched to existing service_catalog or null
   criteria_text: string;
   diagnosis_qualifiers: string[]; // ICD-10 codes referenced (stored in coverage_rules.diagnosis_qualifiers JSONB; NOT queued)
+  /**
+   * Content-type label (P2) — drives routing. The interface name says "Criterion" for historical
+   * reasons (it is the `medical_necessity` *region* extractor's output); a row may legitimately carry
+   * `type: 'admin_provision'` or `'prior_auth'`. The name reflects provenance, not a content claim.
+   */
+  type: MedicalNecessityContentType;
+  /**
+   * Classification confidence ∈ [0,1], or null when Haiku reported none. DISTINCT from `haiku_confidence`
+   * (extraction confidence). The prose-PA confidence-gate (T2/T4) reads THIS field, not `haiku_confidence`.
+   */
+  type_confidence: number | null;
+  /** prior_auth polarity (requires/waived); null for non-PA OR uncertain polarity. See `PriorAuthPolarity`. */
+  pa_polarity: PriorAuthPolarity | null;
+  /**
+   * The place-of-service axis a fact is scoped to ('inpatient' | 'outpatient' | 'office' | 'emergency' | …)
+   * when it applies to an AXIS rather than one service (e.g. "all inpatient admissions require precert").
+   * P2 CAPTURES this (into `eoc_prior_auth_facts[]`); the pre-launch reader-resolution block APPLIES it.
+   * null = service-scoped (the common case). A carve-out ("all inpatient except maternity") is emitted as
+   * two entries: the axis fact (place_of_service set, service null) + the exception (service set, waived).
+   */
+  place_of_service: string | null;
   haiku_confidence?: number;
 }
 
