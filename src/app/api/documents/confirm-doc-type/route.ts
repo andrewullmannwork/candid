@@ -22,6 +22,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { enqueueChunk } from "@/lib/queue/qstash";
+import { userScoped } from "@/lib/security/user-scoped";
 
 const ALLOWED_DOC_TYPES = new Set([
   "sbc",
@@ -75,16 +76,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    const { data: doc, error: docError } = await supabase
-      .from("documents")
+    const { data: doc, error: docError } = await userScoped(supabase, user.id)
+      .table("documents")
       .select("id, user_id, status, processing_step, doc_type, metadata")
       .eq("id", documentId)
       .single();
     if (docError || !doc) {
       return NextResponse.json({ error: "Document not found" }, { status: 404 });
     }
+    // Ownership is enforced by userScoped (foreign/unknown id → 0 rows → 404 above);
+    // this check is now defense-in-depth. 404 (not 403) on miss = anti-enum (B9 F01 parity).
     if (doc.user_id !== user.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+      return NextResponse.json({ error: "Document not found" }, { status: 404 });
     }
     if (doc.processing_step !== "awaiting_doc_type_confirmation") {
       return NextResponse.json(
@@ -100,8 +103,8 @@ export async function POST(req: NextRequest) {
     const allowedOptions = confirmationMeta?.options ?? [];
 
     if (action === "cancel") {
-      await supabase
-        .from("documents")
+      await userScoped(supabase, user.id)
+        .table("documents")
         .update({
           status: "cancelled",
           processing_step: "cancelled_by_user",
@@ -133,8 +136,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    await supabase
-      .from("documents")
+    await userScoped(supabase, user.id)
+      .table("documents")
       .update({
         doc_type: confirmedDocType,
         status: "queued",
@@ -154,8 +157,8 @@ export async function POST(req: NextRequest) {
     const baseUrl = new URL(req.url).origin;
     const enqueued = await enqueueChunk(documentId, baseUrl);
     if (!enqueued) {
-      await supabase
-        .from("documents")
+      await userScoped(supabase, user.id)
+        .table("documents")
         .update({
           status: "error",
           processing_error: "Failed to re-enqueue after doc-type confirmation. Please retry.",

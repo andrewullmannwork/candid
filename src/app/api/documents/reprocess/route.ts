@@ -13,6 +13,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { enqueueChunk } from "@/lib/queue/qstash";
+import { userScoped } from "@/lib/security/user-scoped";
 
 const MAX_RETRIES = 3;
 const STUCK_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
@@ -51,8 +52,8 @@ export async function POST(req: NextRequest) {
     }
 
     // Fetch document and verify ownership
-    const { data: doc, error: docError } = await supabase
-      .from("documents")
+    const { data: doc, error: docError } = await userScoped(supabase, user.id)
+      .table("documents")
       .select("id, user_id, status, processing_step, processing_started_at, processing_ocr_text, processing_completed_pages, processing_total_pages, retry_count")
       .eq("id", documentId)
       .single();
@@ -61,8 +62,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Document not found" }, { status: 404 });
     }
 
+    // Ownership is enforced by userScoped (foreign/unknown id → 0 rows → 404 above);
+    // this check is now defense-in-depth. 404 (not 403) on miss = anti-enum (B9 F01 parity).
     if (doc.user_id !== user.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+      return NextResponse.json({ error: "Document not found" }, { status: 404 });
     }
 
     // Validate status: must be error or stuck
@@ -94,7 +97,7 @@ export async function POST(req: NextRequest) {
     if (hasOcrText) {
       // OCR completed — resume from classification
       resumeFrom = "classifying";
-      await supabase.from("documents").update({
+      await userScoped(supabase, user.id).table("documents").update({
         status: "processing",
         processing_step: "classifying",
         processing_error: null,
@@ -104,7 +107,7 @@ export async function POST(req: NextRequest) {
     } else {
       // OCR never completed — full restart
       resumeFrom = "init";
-      await supabase.from("documents").update({
+      await userScoped(supabase, user.id).table("documents").update({
         status: "queued",
         processing_step: null,
         processing_error: null,
