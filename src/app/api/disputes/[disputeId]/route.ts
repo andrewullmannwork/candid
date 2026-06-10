@@ -165,6 +165,7 @@ export async function GET(
         const fpInput = await loadFingerprintInputForClaim(
           supabase,
           dispute.claim_id as string,
+          user.id,
         );
         if (fpInput) {
           currentEvidenceFingerprint = computeEvidenceFingerprint(fpInput);

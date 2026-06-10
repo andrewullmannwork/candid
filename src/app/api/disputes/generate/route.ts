@@ -23,6 +23,7 @@ import {
 } from "@/lib/disputes/evidence-fingerprint";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
+import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import { loadServerSubscription } from "@/lib/subscription/server";
 
 export async function POST(req: NextRequest) {
@@ -228,12 +229,20 @@ export async function POST(req: NextRequest) {
 
           // Look up coverage for those service slugs
           if (serviceSlugs.size > 0) {
-            const { data: covered } = await supabaseForEvidence
-              .from("plan_covered_services")
-              .select("covered, in_copay, in_coinsurance, source, service_catalog!inner(slug, name)")
-              .eq("insurance_plan_id", insurancePlanId);
+            // B9-F04 — insurancePlanId is body-supplied/attacker-controlled.
+            // selectOwnedChildren verifies the parent insurance_plan is owned by
+            // the token user, then scopes the plan_covered_services read to it. A
+            // foreign/unknown plan → [] → planEvidence stays undefined (non-fatal;
+            // the letter still generates without plan evidence).
+            const covered = await selectOwnedChildren(
+              supabaseForEvidence,
+              authedUser.id,
+              "plan_covered_services",
+              [insurancePlanId],
+              "covered, in_copay, in_coinsurance, source, service_catalog!inner(slug, name)",
+            );
 
-            if (covered) {
+            if (covered.length > 0) {
               planEvidence = covered
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 .filter((s) => serviceSlugs.has((s.service_catalog as any)?.slug))
@@ -374,11 +383,15 @@ export async function POST(req: NextRequest) {
             const input = await loadFingerprintInputForClaim(
               supabase,
               body.claimId as string,
+              auditReport.userId,
             );
             if (input) {
               const evidenceFingerprint = computeEvidenceFingerprint(input);
-              await supabase
-                .from("dispute_outcomes")
+              // B9 B1 — dispute_outcomes is a direct user_id table; scope the
+              // update through the layer. disputeId was just created for this
+              // user by persistDisputeLetter, so this is op-equivalent.
+              await userScoped(supabase, auditReport.userId)
+                .table("dispute_outcomes")
                 .update({
                   evidence_fingerprint: evidenceFingerprint,
                   last_refresh_at: new Date().toISOString(),
