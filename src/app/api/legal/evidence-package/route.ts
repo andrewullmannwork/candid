@@ -10,27 +10,20 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import {
   compileEvidencePackage,
   formatEvidencePackageAsText,
 } from "@/lib/legal/evidence-compiler";
 import { loadServerSubscription } from "@/lib/subscription/server";
-
-async function getAuthUser(req: NextRequest) {
-  const authHeader = req.headers.get("authorization");
-  if (!authHeader?.startsWith("Bearer ")) return null;
-  try {
-    return await getAdminAuth().verifyIdToken(authHeader.slice(7));
-  } catch {
-    return null;
-  }
-}
+import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
+import { assertOwnership } from "@/lib/security/assert-ownership";
 
 export async function GET(req: NextRequest) {
-  const decoded = await getAuthUser(req);
-  if (!decoded) {
+  // B9-1 — Firebase bearer token → users row via the canonical helper. Returns
+  // null on missing/invalid token OR unknown user (both → 401).
+  const user = await requireAuthenticatedUser(req);
+  if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -43,16 +36,6 @@ export async function GET(req: NextRequest) {
   }
 
   const supabase = createServerClient();
-
-  const { data: user } = await supabase
-    .from("users")
-    .select("id")
-    .eq("firebase_uid", decoded.uid)
-    .single();
-
-  if (!user) {
-    return NextResponse.json({ error: "User not found" }, { status: 404 });
-  }
 
   // Block B (P6) — server-side Stream-1 tier gate. Case File / evidence-package
   // compilation is a Pro feature (FEATURE_ACCESS.documentationAggregation);
@@ -68,6 +51,14 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  // B9-F02 — claimId is attacker-controlled (query param); the compiler reads
+  // claim_discrepancies + claim_line_items by claim_id only (service-role bypasses
+  // RLS). Verify ownership at the trust boundary before any compile work.
+  const ownedClaim = await assertOwnership(supabase, "claims", claimId, user.id);
+  if (!ownedClaim) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
   // If a disputeId is provided, pull the persisted letter body so Section 0
   // can embed it verbatim.
   let letterContent: string | null = null;
@@ -78,7 +69,12 @@ export async function GET(req: NextRequest) {
       .eq("id", disputeId)
       .eq("user_id", user.id)
       .maybeSingle();
-    letterContent = dispute?.letter_content ?? null;
+    if (!dispute) {
+      // B9-F03 — a provided disputeId must belong to the token user; the
+      // compiler's Section 7 reads dispute_outcomes by id only. Reject foreign ids.
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+    letterContent = dispute.letter_content ?? null;
   }
 
   const pkg = await compileEvidencePackage(supabase, {
