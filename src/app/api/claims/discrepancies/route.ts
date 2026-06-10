@@ -8,6 +8,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
+import { assertOwnership } from "@/lib/security/assert-ownership";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -42,10 +44,9 @@ export async function GET(req: NextRequest) {
   const tier = req.nextUrl.searchParams.get("tier"); // 1, 2, 3
   const limit = Math.min(parseInt(req.nextUrl.searchParams.get("limit") || "50", 10), 100);
 
-  let query = supabase
-    .from("claim_discrepancies")
+  let query = userScoped(supabase, user.id)
+    .table("claim_discrepancies")
     .select("*, claim_line_items!inner(description, billing_code, billing_code_type, billed_amount, patient_owes, user_corrected_at)")
-    .eq("user_id", user.id)
     .order("created_at", { ascending: false })
     .limit(limit);
 
@@ -67,10 +68,9 @@ export async function GET(req: NextRequest) {
   }
 
   // Compute summary
-  const { data: allActive } = await supabase
-    .from("claim_discrepancies")
+  const { data: allActive } = await userScoped(supabase, user.id)
+    .table("claim_discrepancies")
     .select("id, tier, field, expected_value, actual_value")
-    .eq("user_id", user.id)
     .in("status", ["flagged", "verifying", "disputed"]);
 
   const summary = {
@@ -112,13 +112,13 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: `status must be one of: ${validStatuses.join(", ")}` }, { status: 400 });
   }
 
-  // Verify ownership
-  const { data: existing } = await supabase
-    .from("claim_discrepancies")
-    .select("id")
-    .eq("id", discrepancyId)
-    .eq("user_id", user.id)
-    .single();
+  // Verify ownership (assertOwnership → { id } | null, 404 on miss; userScoped-backed).
+  const existing = await assertOwnership(
+    supabase,
+    "claim_discrepancies",
+    discrepancyId,
+    user.id,
+  );
 
   if (!existing) {
     return NextResponse.json({ error: "Discrepancy not found" }, { status: 404 });
@@ -132,8 +132,10 @@ export async function PATCH(req: NextRequest) {
   if (status === "resolved") {
     updates.resolved_at = nowIso;
   }
-  const { error } = await supabase
-    .from("claim_discrepancies")
+  // B1 — userScoped injects `.eq("user_id")`; ownership already verified above,
+  // so this is op-equivalent + belt-and-suspenders against a write-IDOR.
+  const { error } = await userScoped(supabase, user.id)
+    .table("claim_discrepancies")
     .update(updates)
     .eq("id", discrepancyId);
 

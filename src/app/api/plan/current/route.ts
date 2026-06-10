@@ -17,6 +17,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 
 export async function GET(req: NextRequest) {
   // ── Auth ────────────────────────────────────────────────────────────────
@@ -48,10 +49,9 @@ export async function GET(req: NextRequest) {
   // ── Resolve plan ID — prefer profile.active_insurance_plan_id, fall back
   // to the user's latest active insurance_plans row if profile doesn't have
   // it set (stale-profile recovery). ──────────────────────────────────────
-  const { data: profile } = await supabase
-    .from("profiles")
+  const { data: profile } = await userScoped(supabase, userRow.id)
+    .table("profiles")
     .select("active_insurance_plan_id")
-    .eq("user_id", userRow.id)
     .single();
 
   let planId: string | null = (profile?.active_insurance_plan_id as string | null) ?? null;
@@ -63,10 +63,9 @@ export async function GET(req: NextRequest) {
     // Latest plan period — active OR inactive — to handle users whose plans
     // were deactivated by earlier (buggy) upload paths but still represent
     // "their plan" intent. Better to show the most recent plan than nothing.
-    const { data: latest } = await supabase
-      .from("insurance_plans")
+    const { data: latest } = await userScoped(supabase, userRow.id)
+      .table("insurance_plans")
       .select("id")
-      .eq("user_id", userRow.id)
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -91,8 +90,12 @@ export async function GET(req: NextRequest) {
   // Split the destructuring: `plan` reassigned in the orphan-recovery branch
   // below (must be `let`); `planErr` only read here (must be `const` per
   // eslint prefer-const). Separate bindings keep both rules happy.
-  const planQuery = await supabase
-    .from("insurance_plans")
+  // B1 — userScoped injects `.eq("user_id")` here. planId is always user-derived
+  // (from the user-scoped profile / latest-plan reads above), so this is
+  // op-equivalent on owned data AND hardens the one read that previously fetched
+  // by id alone (defense-in-depth on the derive-from-owned path).
+  const planQuery = await userScoped(supabase, userRow.id)
+    .table("insurance_plans")
     .select("canonical_plan_id, plan_name, plan_type, state, plan_year, insurer_name")
     .eq("id", planId)
     .maybeSingle();
@@ -112,10 +115,9 @@ export async function GET(req: NextRequest) {
       ") — falling back to latest plan for user",
       userRow.id,
     );
-    const { data: latest, error: latestErr } = await supabase
-      .from("insurance_plans")
+    const { data: latest, error: latestErr } = await userScoped(supabase, userRow.id)
+      .table("insurance_plans")
       .select("id, canonical_plan_id, plan_name, plan_type, state, plan_year, insurer_name")
-      .eq("user_id", userRow.id)
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();

@@ -32,6 +32,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 import { getStripe } from "@/lib/stripe";
 import type Stripe from "stripe";
 
@@ -149,12 +150,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  const { data: row, error: rowError } = await supabase
-    .from("stripe_customers")
+  const { data: row, error: rowError } = await userScoped(supabase, user.id)
+    .table("stripe_customers")
     .select(
       "stripe_customer_id, default_payment_method_id, subscription_tier, subscription_status, tier_cycle, cancel_at_period_end, current_period_end, card_brand, card_last4, card_exp_month, card_exp_year",
     )
-    .eq("user_id", user.id)
     .maybeSingle();
 
   // Surface real query errors (e.g. missing column, network failure) as 500
