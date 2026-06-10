@@ -30,9 +30,8 @@ import { routeCriterion, type RouteContext } from "@/lib/eoc/route-criterion";
 import { loadEocRoutingConfig } from "@/lib/eoc/routing-config";
 import type { ProcessPlanResult } from "@/lib/plan/process-plan";
 import { buildEOCPlanIdentityProvenance } from "@/lib/parser/provenance-builders";
-import { buildProvenanceEntry } from "@/lib/parser/field-categories";
 import { canonicalizeSlug, loadServiceRenameMap, acceptCodeAnchoredSlug } from "@/lib/plan_doc/thesaurus-routing";
-import { upsertServiceCoverage, resolveServiceIdBySlug } from "@/lib/plan/coverage-targeting";
+import { EocCoverageAccumulator } from "@/lib/plan/coverage-targeting";
 import { resolveServices, type ResolveLineInput } from "@/lib/claims/service-resolver";
 import { loadValidServiceSlugs, enqueueUnknownServiceSlug, loadServiceVocabularyBlock } from "@/lib/parser/service-catalog-slugs";
 import {
@@ -511,18 +510,18 @@ async function persistEOCSections(
   // keyed on the canonical slug) is provably identical across both sections.
   const renameMap = await loadServiceRenameMap(supabase);
 
+  // S185 clobber fix — write-once-per-(parse, slug): Sections A + B accumulate fragments per canonical
+  // slug and flush per section (A before B: the code-wins dedup is success-gated on A's writes), so a
+  // service's multi-passage facts merge losslessly instead of last-write-winning per criterion.
+  const coverageAcc = new EocCoverageAccumulator();
+
   // ── Section A: prior_auth_codes ──────────────────────────────────────────────
   if (parsed.sections.prior_auth_codes && proposedByUserId) {
     const thesaurusOn = await isFeatureEnabled("thesaurus_phase1a_v1");
     // Accumulate by canonicalized SLUG (not service_id): EOC prior-auth tables run 5–50 pages of
     // codes, many collapsing to one service — so the slug→id lookup + the typed column + provenance
-    // happen ONCE per service, not per code.
-    const bySlug = new Map<string, { code: PriorAuthCode; criteria: string[] }>();
-    const accumulate = (slug: string, code: PriorAuthCode): void => {
-      const acc = bySlug.get(slug) ?? { code, criteria: [] };
-      if (code.pa_criteria) acc.criteria.push(code.pa_criteria);
-      bySlug.set(slug, acc);
-    };
+    // happen ONCE per service, not per code. (S185: the fold lives in EocCoverageAccumulator — same
+    // first-code-anchors semantics, now shared with Section B + equivalence-fixtured.)
     // Codes the concept registry gave no usable slug for → candidates for the bills-fed code-cache
     // rescue (D1-A). The line index lets the single batched resolver map results back.
     const rescue: Array<{ line: number; code: PriorAuthCode }> = [];
@@ -551,7 +550,7 @@ async function persistEOCSections(
           rescue.push({ line: rescue.length, code });
         } else if (result.serviceSlug) {
           // Matched concept's slug WINS (curated authority); canonicalize dead→live.
-          accumulate(canonicalizeSlug(result.serviceSlug, renameMap), code);
+          coverageAcc.addCodeAnchoredPa(canonicalizeSlug(result.serviceSlug, renameMap), code);
         } else {
           // Concept matched but carries no service_slug mapping — also rescuable.
           rescue.push({ line: rescue.length, code });
@@ -581,7 +580,7 @@ async function persistEOCSections(
         });
         for (const r of rescue) {
           const slug = acceptCodeAnchoredSlug(resolved.get(r.line));
-          if (slug) accumulate(canonicalizeSlug(slug, renameMap), r.code);
+          if (slug) coverageAcc.addCodeAnchoredPa(canonicalizeSlug(slug, renameMap), r.code);
         }
       } catch (err) {
         warnings.push(`eoc_pa_rescue_failed:${err instanceof Error ? err.message : String(err)}`);
@@ -592,54 +591,23 @@ async function persistEOCSections(
     // /plan + /compare actually read) + its field_provenance (cite-grade, the SAME key + builder the
     // SBC/plan-doc parsers use) + the criteria detail in coverage_rules JSONB. A PA-required service
     // is a real covered service → create a base cell if it has none.
-    for (const [slug, acc] of bySlug) {
-      const serviceId = await resolveServiceIdBySlug(supabase, slug);
-      if (!serviceId) {
-        warnings.push(`eoc_pa_slug_no_service_id:${slug}`);
-        continue;
-      }
-      const provEntry = buildProvenanceEntry(
-        "plan_covered_services",
-        "prior_auth_required",
-        "doc_extraction_eoc",
-        acc.code.haiku_confidence,
-        {
-          sourceExcerpt: acc.code.source_excerpt,
-          sourceExcerptVerified: acc.code.source_excerpt_verified,
-          sourceExcerptExtractionMethod: acc.code.source_excerpt_extraction_method,
-          sourceSectionHint: acc.code.source_section_hint,
-          sourceSectionVerified: acc.code.source_section_verified,
-        },
-      );
-      try {
-        await upsertServiceCoverage(
-          supabase,
-          planId,
-          serviceId,
-          {
-            typed: { prior_auth_required: true },
-            provenance: provEntry ? { prior_auth_required: provEntry } : undefined,
-            coverageRules: {
-              requires_prior_auth: true,
-              prior_auth_criteria: acc.criteria[0] ?? acc.code.pa_criteria ?? null,
-              prior_auth_all_criteria: acc.criteria,
-              prior_auth_source_excerpt: acc.code.source_excerpt,
-              prior_auth_source_excerpt_verified: acc.code.source_excerpt_verified,
-            },
-          },
-          { allowBaseCell: true },
-        );
-        codeAnchoredPaSlugs.add(slug); // code-anchored PA recorded → Section B prose-PA defers (D1 dedup)
-      } catch (err) {
-        warnings.push(`eoc_pa_write_failed:${slug}:${err instanceof Error ? err.message : String(err)}`);
+    for (const o of await coverageAcc.flushCodeAnchoredPa(supabase, planId)) {
+      if (o.status === "no_service_id") {
+        warnings.push(`eoc_pa_slug_no_service_id:${o.slug}`);
+      } else if (o.status === "written") {
+        codeAnchoredPaSlugs.add(o.slug); // code-anchored PA recorded → Section B prose-PA defers (D1 dedup)
+      } else {
+        warnings.push(`eoc_pa_write_failed:${o.slug}:${o.error}`);
       }
     }
   }
 
   // ── Section B: medical_necessity (P2 content-type routing) ───────────────────────────────────────
   // Each extracted fact carries a `type` (T1); `routeCriterion` (pure, T2) decides its store. Flag OFF →
-  // byte-identical post-D1 (type ignored: valid slug → coverage_rules, unknown → admin enqueue, no slug →
-  // drop). Flag ON → route by type: clinical → coverage_rules; service-specific prior_auth (requires,
+  // ROUTING byte-identical post-D1 (type ignored: valid slug → coverage_rules, unknown → admin enqueue,
+  // no slug → drop); the S185 write SHAPE (accumulate: criteria array + first-passage scalars + the
+  // medical_necessity_text provenance entry) applies in BOTH flag states — the data-loss-prevention
+  // carve-out, same class as D2. Flag ON → route by type: clinical → coverage_rules; service-specific prior_auth (requires,
   // confident, deduped vs Section-A code-PA) → the typed prior_auth_required column; admin / axis / waived /
   // low-conf / no-slug PA → captured in insurance_plans.metadata (never silently dropped, never wrongly
   // surfaced). validSlugs uses service_catalog (broad), not STANDARD_SLUGS, so EOC-legitimate slugs survive.
@@ -698,30 +666,10 @@ async function persistEOCSections(
           tallyRoute(decision.reason);
           if (!canonSlug) break;
           // Clinical criterion → coverage_rules on EXISTING cells ONLY (no phantom covered=true base cell;
-          // no typed column / /plan reader for medical necessity yet — a deliberate follow-up). Today's path.
-          const serviceId = await resolveServiceIdBySlug(supabase, canonSlug);
-          if (!serviceId) {
-            warnings.push(`eoc_medical_necessity_no_service_id:${canonSlug}`);
-            break;
-          }
-          try {
-            await upsertServiceCoverage(
-              supabase,
-              planId,
-              serviceId,
-              {
-                coverageRules: {
-                  medical_necessity_text: criterion.criteria_text,
-                  diagnosis_qualifiers: criterion.diagnosis_qualifiers,
-                  medical_necessity_source_excerpt: criterion.source_excerpt,
-                  medical_necessity_source_excerpt_verified: criterion.source_excerpt_verified,
-                },
-              },
-              { allowBaseCell: false },
-            );
-          } catch (err) {
-            warnings.push(`eoc_medical_necessity_persist_failed:${canonSlug}:${err instanceof Error ? err.message : String(err)}`);
-          }
+          // no typed column / /plan reader for medical necessity yet — a deliberate follow-up). S185:
+          // ACCUMULATE — a slug's multi-passage criteria merge losslessly at the post-loop flush
+          // (medical_necessity_criteria[] + first-passage scalars) instead of last-write-winning here.
+          coverageAcc.addClinical(canonSlug, criterion);
           break;
         }
 
@@ -754,49 +702,11 @@ async function persistEOCSections(
             eocPriorAuthFacts.push(buildPriorAuthFactRecord(criterion, canonSlug, "pa_requires_code_dedup"));
             break;
           }
-          const serviceId = await resolveServiceIdBySlug(supabase, canonSlug);
-          if (!serviceId) {
-            // No service row to carry the typed column → capture instead of dropping.
-            tallyRoute("pa_requires_no_service_id");
-            eocPriorAuthFacts.push(buildPriorAuthFactRecord(criterion, canonSlug, "pa_requires_no_service_id"));
-            break;
-          }
-          const provEntry = buildProvenanceEntry(
-            "plan_covered_services",
-            "prior_auth_required",
-            "doc_extraction_eoc",
-            criterion.haiku_confidence,
-            {
-              sourceExcerpt: criterion.source_excerpt,
-              sourceExcerptVerified: criterion.source_excerpt_verified,
-              sourceExcerptExtractionMethod: criterion.source_excerpt_extraction_method,
-              sourceSectionHint: criterion.source_section_hint,
-              sourceSectionVerified: criterion.source_section_verified,
-            },
-          );
-          try {
-            // Same typed col + provenance builder the SBC/plan-doc/Section-A parsers use → cite-grade parity.
-            await upsertServiceCoverage(
-              supabase,
-              planId,
-              serviceId,
-              {
-                typed: { prior_auth_required: true },
-                provenance: provEntry ? { prior_auth_required: provEntry } : undefined,
-                coverageRules: {
-                  requires_prior_auth: true,
-                  prior_auth_criteria: criterion.criteria_text,
-                  prior_auth_source_excerpt: criterion.source_excerpt,
-                  prior_auth_source_excerpt_verified: criterion.source_excerpt_verified,
-                },
-              },
-              { allowBaseCell: true },
-            );
-            tallyRoute("pa_requires_service_specific"); // only count the column write on SUCCESS
-          } catch (err) {
-            tallyRoute("pa_requires_write_failed");
-            warnings.push(`eoc_prose_pa_write_failed:${canonSlug}:${err instanceof Error ? err.message : String(err)}`);
-          }
+          // S185: ACCUMULATE — the slug's requires-PA criteria flush as ONE write + ONE provenance
+          // entry after the loop (was: per-criterion writes clobbering prior_auth_criteria AND the
+          // field_provenance entry). The no-service-id divert + success/failure tallies move to the
+          // flush, criterion-denominated (G7 semantics preserved).
+          coverageAcc.addProsePa(canonSlug, criterion);
           break;
         }
 
@@ -809,6 +719,36 @@ async function persistEOCSections(
           warnings.push(`eoc_mn_unrouted:${String(_exhaustive)}`);
           break;
         }
+      }
+    }
+
+    // ── S185 flush: write-once-per-(parse, slug) ──────────────────────────────────────────────
+    // Prose-PA FIRST: it may create the base cell (allowBaseCell:true) a same-slug clinical write
+    // (allowBaseCell:false) then lands on — deterministic + retention-maximizing (the old
+    // per-criterion writes made this a document-order lottery). Outcomes map back to the exact
+    // per-criterion telemetry + divert semantics the inline writes had (criterion-denominated G7;
+    // per-criterion pa_facts records on the no-service-id divert). Flag-OFF: the prose-PA map is
+    // empty by routing (routeCriterion never emits pa_column), so only the clinical flush runs.
+    for (const o of await coverageAcc.flushProsePa(supabase, planId)) {
+      if (o.status === "no_service_id") {
+        // No service row to carry the typed column → capture each criterion instead of dropping.
+        for (const c of o.fragments) {
+          tallyRoute("pa_requires_no_service_id");
+          eocPriorAuthFacts.push(buildPriorAuthFactRecord(c, o.slug, "pa_requires_no_service_id"));
+        }
+      } else if (o.status === "written") {
+        // Same typed col + provenance builder the SBC/plan-doc/Section-A parsers use → cite-grade parity.
+        for (let i = 0; i < o.fragments.length; i++) tallyRoute("pa_requires_service_specific"); // success only
+      } else {
+        for (let i = 0; i < o.fragments.length; i++) tallyRoute("pa_requires_write_failed");
+        warnings.push(`eoc_prose_pa_write_failed:${o.slug}:${o.error}`);
+      }
+    }
+    for (const o of await coverageAcc.flushClinicalMn(supabase, planId)) {
+      if (o.status === "no_service_id") {
+        warnings.push(`eoc_medical_necessity_no_service_id:${o.slug}`);
+      } else if (o.status === "write_failed") {
+        warnings.push(`eoc_medical_necessity_persist_failed:${o.slug}:${o.error}`);
       }
     }
   }
