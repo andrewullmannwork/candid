@@ -20,13 +20,15 @@
  *     (those should just live in the email inbox + dashboard listing).
  *   - 30-page filter — small docs use sync PlayfulParsingScreen and don't need
  *     the banner since the user already saw the doc finish in-session.
- *   - RLS-aware (Supabase client uses auth context; only user's own docs returned).
+ *   - User-scoped via userScoped() (service-role bypasses RLS; the app-layer
+ *     ownership filter on user_id is the enforcement, not RLS).
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { userScoped } from "@/lib/security/user-scoped";
 
 // Same cutoff used in onboarding-emails.ts + upload route.ts. Sub-30-page docs
 // don't trigger the async UX and don't need banner surfacing.
@@ -81,10 +83,9 @@ export async function GET(req: NextRequest) {
 
   const cutoff = new Date(Date.now() - LOOKBACK_HOURS * 60 * 60 * 1000).toISOString();
 
-  const { data: docs, error } = await supabase
-    .from("documents")
+  const { data: docs, error } = await userScoped(supabase, user.id)
+    .table("documents")
     .select("id, file_name, processing_total_pages, created_at")
-    .eq("user_id", user.id)
     .eq("status", "processed")
     .gte("created_at", cutoff)
     .order("created_at", { ascending: false })

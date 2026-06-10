@@ -14,6 +14,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 
 interface UserDocument {
   id: string;
@@ -47,10 +48,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ documents: [] });
   }
 
-  const { data: docs, error } = await supabase
-    .from("documents")
+  const { data: docs, error } = await userScoped(supabase, user.id)
+    .table("documents")
     .select("id, doc_type, file_name, created_at")
-    .eq("user_id", user.id)
     .eq("status", "processed")
     .order("created_at", { ascending: false })
     .limit(50);
