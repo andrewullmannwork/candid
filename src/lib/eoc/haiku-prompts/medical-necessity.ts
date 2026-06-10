@@ -11,12 +11,12 @@ import type { ExtractionMethod } from "../../parser/types";
 import type { EOCSectionResult, MedicalNecessityCriterion, MedicalNecessityData } from "../types";
 import { callHaikuWithCache } from "./_shared";
 
-const INSTRUCTIONS = `You are extracting Medical Necessity Criteria from an Evidence of Coverage (EOC) document section. Return a single JSON object listing the criteria per service.
+const INSTRUCTIONS_BODY = `You are extracting Medical Necessity Criteria from an Evidence of Coverage (EOC) document section. Return a single JSON object listing the criteria per service.
 
 ## CRITICAL EXTRACTION RULES
 
 1. **Verbatim source_excerpt** per criterion (≤200 chars). MUST be a CHARACTER-FOR-CHARACTER substring of the document section text — NEVER paraphrase, summarize, or normalize whitespace/punctuation. If you cannot find a verbatim ≤200-char span that supports the field, set source_excerpt to "" (empty) — the verifier marks empty as 'not_found' (graceful degradation), which is the correct outcome rather than a wrong excerpt.
-2. **service_slug_hint**: best-guess match to a known service slug (e.g., "bariatric_surgery", "pcp_visit", "specialist_visit", "physical_therapy", "mri_brain"). Set null if uncertain.
+2. **service_slug_hint**: emit a CANONICAL service slug from the "CANONICAL SERVICE SLUG VOCABULARY" section below (e.g., "bariatric_surgery", "pcp_visit", "specialist_visit", "pt_rehab", "advanced_imaging"). For a service that GENUINELY doesn't fit ANY canonical slug, emit \`proposed_<snake_case_descriptive_name>\` (e.g., \`proposed_hyperbaric_oxygen_therapy\`). NEVER invent a bare snake_case slug — either use a listed canonical OR use \`proposed_*\`. Set null only if no service is identifiable.
 3. **criteria_text**: verbatim full criteria description (NOT summarized). May be multi-sentence.
 4. **diagnosis_qualifiers**: extract any ICD-10 diagnosis codes referenced in the criteria (e.g., "E66.01" for obesity). Empty array if none. These codes are NOT extracted as billing codes — they are conditions of coverage.
 5. **DO NOT extract**: criteria from glossary cross-references, header marketing, or footer disclaimers.
@@ -84,7 +84,18 @@ Correct extraction:
   ]
 }
 
-## NOW EXTRACT FROM THIS DOCUMENT SECTION:`;
+`;
+
+/**
+ * Build the medical-necessity system prompt. When the live catalog `serviceVocabulary` block is
+ * provided (always, in PROD — `process-eoc` loads it), it is appended so Haiku maps to a real slug
+ * instead of inventing one (Pattern S Hard Rule #17). On a vocab-load failure the block is empty →
+ * graceful degradation to the (still anti-invention) rules above, never the old "best-guess" prompt.
+ */
+function buildMedicalNecessityPrompt(serviceVocabulary?: string): string {
+  const vocab = serviceVocabulary && serviceVocabulary.trim().length > 0 ? `\n\n${serviceVocabulary}` : "";
+  return `${INSTRUCTIONS_BODY}${vocab}\n\n## NOW EXTRACT FROM THIS DOCUMENT SECTION:`;
+}
 
 interface RawResponse {
   criteria?: Array<Record<string, unknown>>;
@@ -94,9 +105,10 @@ export async function extractMedicalNecessity(
   sectionText: string,
   sectionRange: { start: number; end: number },
   extractionMethod: ExtractionMethod,
+  serviceVocabulary?: string,
 ): Promise<EOCSectionResult<MedicalNecessityData>> {
   const result = await callHaikuWithCache<RawResponse>({
-    systemPrompt: INSTRUCTIONS,
+    systemPrompt: buildMedicalNecessityPrompt(serviceVocabulary),
     userContent: sectionText,
     sectionLabel: "medical_necessity",
   });

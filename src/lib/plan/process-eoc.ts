@@ -32,7 +32,7 @@ import { buildProvenanceEntry } from "@/lib/parser/field-categories";
 import { canonicalizeSlug, loadServiceRenameMap, acceptCodeAnchoredSlug } from "@/lib/plan_doc/thesaurus-routing";
 import { upsertServiceCoverage, resolveServiceIdBySlug } from "@/lib/plan/coverage-targeting";
 import { resolveServices, type ResolveLineInput } from "@/lib/claims/service-resolver";
-import { loadValidServiceSlugs, enqueueUnknownServiceSlug } from "@/lib/parser/service-catalog-slugs";
+import { loadValidServiceSlugs, enqueueUnknownServiceSlug, loadServiceVocabularyBlock } from "@/lib/parser/service-catalog-slugs";
 import {
   commitUploadAndEvaluateCorroboration,
   PHASE_4_0_6_PLAN_IDENTITY_FIELDS_EOC,
@@ -75,6 +75,10 @@ export async function processEOCDocumentData(
   const selectiveSelfCheckEnabled = await isFeatureEnabled("cf44_selective_self_check");
 
   // 1. Run EOC parser (Pattern P-D + P-8 inheritance via Task 3.1A-C).
+  // S180 thesaurus P1 — load the live catalog vocabulary and inject it into the medical_necessity
+  // prompt (Pattern S #17: constrain extraction to real slugs, no bare invention). Always-on; on a
+  // load failure the block is empty → the prompt degrades gracefully (anti-invention rules remain).
+  const serviceVocabulary = await loadServiceVocabularyBlock(supabase);
   let parsed: EOCParseResult;
   try {
     parsed = await parseEOC(ocrText, {
@@ -82,6 +86,7 @@ export async function processEOCDocumentData(
       extractionMethod: "pdftotext", // upload pipeline uses pdftotext-then-OCR-fallback;
                                       // OCR fallback is refused upstream (Q-P3.1A-12 image-PDF refusal)
       selectiveSelfCheckEnabled,
+      serviceVocabulary,
     });
   } catch (err) {
     const reason = `EOC parser exception: ${err instanceof Error ? err.message : String(err)}`;

@@ -409,6 +409,11 @@ export async function parseEOC(
     // When true, self-check fires only when column_wrap_score > 0.6.
     // When false (or omitted), preserves current always-fire behavior.
     selectiveSelfCheckEnabled?: boolean;
+    // S180 thesaurus P1 — live catalog vocabulary block injected into the medical_necessity
+    // extraction prompt so Haiku maps to a real slug instead of inventing one (Pattern S #17).
+    // Loaded by the caller (process-eoc, which holds the supabase client); omitted by
+    // supabase-free callers → the prompt keeps its anti-invention rules without the explicit list.
+    serviceVocabulary?: string;
   },
 ): Promise<EOCParseResult> {
   const { documentId, extractionMethod } = options;
@@ -547,7 +552,7 @@ export async function parseEOC(
     ),
     dispatchSection(
       "medical_necessity",
-      extractMedicalNecessity,
+      (text, range, em) => extractMedicalNecessity(text, range, em, options.serviceVocabulary),
       (cs, r) => combineMedicalNecessity(cs, r),
     ),
     dispatchSection(

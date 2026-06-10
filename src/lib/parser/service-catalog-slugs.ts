@@ -48,6 +48,46 @@ export async function loadValidServiceSlugs(
   return new Set(data.map((r: { slug: string }) => r.slug));
 }
 
+/**
+ * Build the canonical service-slug vocabulary block injected into extraction prompts so a Haiku
+ * extractor maps to a REAL catalog slug instead of inventing a bare one (Pattern S Hard Rule #17;
+ * mirrors the plan-doc prompt's "CANONICAL SERVICE SLUG VOCABULARY" section). Loaded DYNAMICALLY
+ * from the live catalog — strictly better than a hardcoded list, which goes stale (the plan-doc
+ * prompt still lists dead slugs like `inpatient_facility`/`vision_exam`).
+ *
+ * Scope = the same live, non-alias slugs `loadValidServiceSlugs` validates against
+ * (`merged_into_id IS NULL`), minus `proposed_*` rows (admin-review candidates, never offered as
+ * canonical). Grouped by category, slugs sorted (deterministic → stable Haiku prompt cache key).
+ * Returns "" on error → callers fall back to the prompt's anti-invention rules without the list.
+ */
+export async function loadServiceVocabularyBlock(supabase: SupabaseClient): Promise<string> {
+  const { data, error } = await supabase
+    .from("service_catalog")
+    .select("slug, category")
+    .is("merged_into_id", null);
+
+  if (error || !data) return "";
+
+  const byCategory = new Map<string, string[]>();
+  for (const row of data as Array<{ slug: string; category: string | null }>) {
+    if (!row.slug || row.slug.startsWith("proposed_")) continue;
+    const cat = row.category ?? "other";
+    const arr = byCategory.get(cat) ?? [];
+    arr.push(row.slug);
+    byCategory.set(cat, arr);
+  }
+  if (byCategory.size === 0) return "";
+
+  const lines: string[] = [];
+  let total = 0;
+  for (const [cat, slugs] of [...byCategory.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    slugs.sort((a, b) => a.localeCompare(b));
+    total += slugs.length;
+    lines.push(`**${cat} (${slugs.length})**: ${slugs.join(", ")}`);
+  }
+  return `### CANONICAL SERVICE SLUG VOCABULARY (${total} slugs)\n\n${lines.join("\n\n")}`;
+}
+
 export type ParserSource = "sbc" | "eoc" | "plan_document" | "eob" | "card" | "manual";
 
 export interface UnknownSlugInput {
