@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import {
   computeRecoveryV2,
   resolveStillOutstanding,
@@ -40,6 +41,23 @@ async function getAuthUser(req: NextRequest) {
   }
 }
 
+/**
+ * B9 B1.2 — selectOwnedChildren returns child rows unordered; re-apply the
+ * original `.order("line_number", { ascending: true })` as a JS post-sort.
+ * PostgREST sorts ASC NULLS LAST, so nulls sink here too; JS sort is stable
+ * (matches PostgREST's order for equal keys in practice) → byte-identical order.
+ * Unconstrained generic so the permissive row type from the layer flows through.
+ */
+function sortByLineNumberAsc<T>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => {
+    const av = (a as { line_number?: unknown }).line_number;
+    const bv = (b as { line_number?: unknown }).line_number;
+    const an = av == null ? Infinity : Number(av);
+    const bn = bv == null ? Infinity : Number(bv);
+    return an - bn;
+  });
+}
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ claimId: string }> }
@@ -63,12 +81,11 @@ export async function GET(
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  // Fetch claim and verify ownership
-  const { data: claim, error: claimError } = await supabase
-    .from("claims")
+  // Fetch claim and verify ownership (userScoped injects `.eq("user_id")`).
+  const { data: claim, error: claimError } = await userScoped(supabase, user.id)
+    .table("claims")
     .select("*")
     .eq("id", claimId)
-    .eq("user_id", user.id)
     .single();
 
   if (claimError || !claim) {
@@ -105,11 +122,12 @@ export async function GET(
     : DEFAULT_SECONDARY_GATE;
 
   // Fetch line items (SELECT * picks up the new mig 092 columns automatically).
-  let { data: lineItems } = await supabase
-    .from("claim_line_items")
-    .select("*")
-    .eq("claim_id", claimId)
-    .order("line_number", { ascending: true });
+  // B9 B1.2 — claim_line_items has no user_id; selectOwnedChildren verifies the
+  // parent claim is owned (claimId proven owned above) then returns its lines;
+  // re-apply the line_number sort in JS (the layer returns rows unordered).
+  let lineItems = sortByLineNumberAsc(
+    await selectOwnedChildren(supabase, user.id, "claim_line_items", [claimId], "*"),
+  );
 
   // S74.5 D7 — view-fetch re-audit hook (1/min + 5/day throttle inside).
   // Runs only when flag is ON AND claim is marked stale. On success, the
@@ -120,17 +138,13 @@ export async function GET(
     reauditResult = await maybeReauditClaim(supabase, claim, lineItems);
     if (reauditResult.reaudited) {
       // Re-read updated rows so the response reflects fresh findings.
-      const refresh = await supabase
-        .from("claim_line_items")
-        .select("*")
-        .eq("claim_id", claimId)
-        .order("line_number", { ascending: true });
-      lineItems = refresh.data ?? lineItems;
-      const refreshedClaim = await supabase
-        .from("claims")
+      lineItems = sortByLineNumberAsc(
+        await selectOwnedChildren(supabase, user.id, "claim_line_items", [claimId], "*"),
+      );
+      const refreshedClaim = await userScoped(supabase, user.id)
+        .table("claims")
         .select("*")
         .eq("id", claimId)
-        .eq("user_id", user.id)
         .single();
       if (refreshedClaim.data) Object.assign(claim, refreshedClaim.data);
     }
@@ -182,10 +196,17 @@ export async function GET(
   const coveredMeta: CoveredSlugMeta[] = [];
 
   if (claim.insurance_plan_id) {
-    const { data: coveredServices } = await supabase
-      .from("plan_covered_services")
-      .select("covered, in_copay, in_coinsurance, source, service_catalog!inner(slug, category)")
-      .eq("insurance_plan_id", claim.insurance_plan_id);
+    // B9 B1.2 — plan_covered_services has no user_id; selectOwnedChildren
+    // verifies the parent insurance_plan is owned then returns its rows (the
+    // embedded service_catalog!inner select is sent verbatim). +DiD: a plan not
+    // owned by this user yields [] (op-equivalent — the claim's plan is theirs).
+    const coveredServices = await selectOwnedChildren(
+      supabase,
+      user.id,
+      "plan_covered_services",
+      [claim.insurance_plan_id as string],
+      "covered, in_copay, in_coinsurance, source, service_catalog!inner(slug, category)",
+    );
 
     if (coveredServices) {
       for (const svc of coveredServices) {
@@ -229,8 +250,8 @@ export async function GET(
   }
   let planAcaCompliant: boolean | null = null;
   if (claim.insurance_plan_id) {
-    const { data: planRow } = await supabase
-      .from("insurance_plans")
+    const { data: planRow } = await userScoped(supabase, user.id)
+      .table("insurance_plans")
       .select("is_aca_compliant")
       .eq("id", claim.insurance_plan_id)
       .maybeSingle();
@@ -597,9 +618,10 @@ export async function GET(
     };
   }
 
-  // Fetch linked disputes
-  const { data: disputes } = await supabase
-    .from("dispute_outcomes")
+  // Fetch linked disputes (userScoped adds `.eq("user_id")`; +DiD — these are
+  // the owner's disputes on the owned claim).
+  const { data: disputes } = await userScoped(supabase, user.id)
+    .table("dispute_outcomes")
     .select("id, dispute_type, status, amount_disputed, amount_recovered, filed_date, resolution_date")
     .eq("claim_id", claimId);
 
@@ -616,8 +638,12 @@ export async function GET(
     provider_name: string | null;
   }> = [];
   if (claim.claim_group_id) {
-    const { data: grouped } = await supabase
-      .from("claims")
+    // B9 B1.2 (L1) — was scoped only by claim_group_id; userScoped adds
+    // `.eq("user_id")`. claim_group_id is a per-user random UUID (claim-matching
+    // crypto.randomUUID), so this is defense-in-depth (op-equivalent for the
+    // owner — all grouped claims are theirs), closing a latent cross-tenant read.
+    const { data: grouped } = await userScoped(supabase, user.id)
+      .table("claims")
       .select("id, date_of_service, status, total_billed, metadata")
       .eq("claim_group_id", claim.claim_group_id)
       .neq("id", claimId);

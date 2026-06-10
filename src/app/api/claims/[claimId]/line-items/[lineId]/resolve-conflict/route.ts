@@ -23,6 +23,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { userScoped, selectOwnedChildren, updateOwnedChildren } from "@/lib/security/user-scoped";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -78,28 +79,21 @@ export async function POST(
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  // Load line item + verify ownership
-  const { data: lineItem } = await supabase
-    .from("claim_line_items")
-    .select(
-      "id, claim_id, service_slug, metadata, user_correction_locked_at, claims!inner(id, user_id)",
-    )
-    .eq("id", lineId)
-    .eq("claim_id", claimId)
-    .single();
-
+  // Load line item + verify ownership. B9 B1.2 — replace the `claims!inner`
+  // ownership join + JS 403 with the layer: selectOwnedChildren proves the
+  // parent claim is owned by construction (foreign/unknown claim → []), then we
+  // resolve the requested line by id (parent [claimId] in scope). A non-owned
+  // claim now yields 404 (anti-enum standard) rather than the prior 403.
+  const ownedLines = await selectOwnedChildren(
+    supabase,
+    user.id,
+    "claim_line_items",
+    [claimId],
+    "id, claim_id, service_slug, metadata, user_correction_locked_at",
+  );
+  const lineItem = ownedLines.find((r) => r.id === lineId) ?? null;
   if (!lineItem) {
     return NextResponse.json({ error: "Line item not found" }, { status: 404 });
-  }
-
-  const claimsJoin = (lineItem as {
-    claims?: { user_id?: string } | { user_id?: string }[];
-  }).claims;
-  const claimUserId = Array.isArray(claimsJoin)
-    ? claimsJoin[0]?.user_id
-    : claimsJoin?.user_id;
-  if (claimUserId !== user.id) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const meta = (lineItem.metadata as Record<string, unknown> | null) ?? {};
@@ -130,25 +124,30 @@ export async function POST(
     // (handled at claim level below).
   }
 
-  const { error: updateErr } = await supabase
-    .from("claim_line_items")
-    .update(updates)
-    .eq("id", lineId);
-  if (updateErr) {
-    return NextResponse.json({ error: updateErr.message }, { status: 500 });
+  // B9 B1.2 — child WRITE via the parent-scoped primitive (claimId proven owned
+  // above). updated=0 here ⇒ write failure (the line is known to exist).
+  const { updated } = await updateOwnedChildren(
+    supabase,
+    user.id,
+    "claim_line_items",
+    claimId,
+    [{ id: lineId, values: updates }],
+  );
+  if (updated === 0) {
+    return NextResponse.json({ error: "Update failed" }, { status: 500 });
   }
 
   // Mark claim audit_status='stale' so D7 re-audit fires on next view fetch
   // (only relevant when slug actually changed, but cheap regardless).
   if (action === "revert") {
-    const { data: claimRow } = await supabase
-      .from("claims")
+    const { data: claimRow } = await userScoped(supabase, user.id)
+      .table("claims")
       .select("metadata")
       .eq("id", claimId)
       .maybeSingle();
     const claimMeta = (claimRow?.metadata as Record<string, unknown> | null) ?? {};
-    await supabase
-      .from("claims")
+    await userScoped(supabase, user.id)
+      .table("claims")
       .update({
         metadata: {
           ...claimMeta,

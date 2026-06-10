@@ -34,6 +34,11 @@ import {
   type RecordCorrectionResult,
 } from "@/lib/parser/code-identity-promotion";
 import type { ProcedureCodeType } from "@/lib/billing/types";
+import {
+  userScoped,
+  selectOwnedChildren,
+  updateOwnedChildren,
+} from "@/lib/security/user-scoped";
 
 const VALID_REASONS = new Set<CorrectionReason>([
   "wrong_service",
@@ -125,25 +130,21 @@ export async function POST(
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  // Verify claim ownership + load line item
-  const { data: lineItem, error: lineErr } = await supabase
-    .from("claim_line_items")
-    .select(
-      "id, claim_id, billing_code, billing_code_type, description, user_corrected_at, claims!inner(id, user_id)",
-    )
-    .eq("id", lineId)
-    .eq("claim_id", claimId)
-    .single();
-
-  if (lineErr || !lineItem) {
+  // Verify claim ownership + load line item. B9 B1.2 — replace the
+  // `claims!inner` ownership join + JS 403 with the layer: selectOwnedChildren
+  // proves the parent claim is owned by construction (foreign/unknown claim →
+  // []), then resolve the requested line by id (parent [claimId] in scope). A
+  // non-owned claim now yields 404 (anti-enum standard) rather than the prior 403.
+  const ownedLines = await selectOwnedChildren(
+    supabase,
+    user.id,
+    "claim_line_items",
+    [claimId],
+    "id, claim_id, billing_code, billing_code_type, description, user_corrected_at",
+  );
+  const lineItem = ownedLines.find((r) => r.id === lineId) ?? null;
+  if (!lineItem) {
     return NextResponse.json({ error: "Line item not found" }, { status: 404 });
-  }
-
-  // Safe accessor for joined claim (Supabase returns either object or array depending on shape)
-  const claimsJoin = (lineItem as { claims?: { user_id?: string } | { user_id?: string }[] }).claims;
-  const claimUserId = Array.isArray(claimsJoin) ? claimsJoin[0]?.user_id : claimsJoin?.user_id;
-  if (claimUserId !== user.id) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   // B4.2 Pattern Y throttle: grace window (≤30s since prior correction) allows
@@ -213,11 +214,21 @@ export async function POST(
       correctionNote: noteRaw || undefined,
     });
   } else {
-    const { error: liErr } = await supabase
-      .from("claim_line_items")
-      .update({ service_slug: slug, user_corrected_at: new Date().toISOString() })
-      .eq("id", lineId);
-    result = liErr
+    // B9 B1.2 — child WRITE via the parent-scoped primitive (claimId proven
+    // owned above; line known to exist). updated=0 ⇒ write failure.
+    const { updated } = await updateOwnedChildren(
+      supabase,
+      user.id,
+      "claim_line_items",
+      claimId,
+      [
+        {
+          id: lineId,
+          values: { service_slug: slug, user_corrected_at: new Date().toISOString() },
+        },
+      ],
+    );
+    result = updated === 0
       ? { ok: false, contributedToFlywheel: false, reason: "user_row_update_failed" }
       : { ok: true, contributedToFlywheel: false, reason: "code_less_user_correction" };
   }
@@ -255,14 +266,14 @@ export async function POST(
   // daily cap. User explicitly correcting categorization should never
   // get throttled into "Findings will refresh tomorrow" — the 1/min rate
   // limit still applies as a safety guard against double-submits.
-  const { data: claimRow } = await supabase
-    .from("claims")
+  const { data: claimRow } = await userScoped(supabase, user.id)
+    .table("claims")
     .select("metadata")
     .eq("id", claimId)
     .maybeSingle();
   const claimMeta = (claimRow?.metadata as Record<string, unknown> | null) ?? {};
-  await supabase
-    .from("claims")
+  await userScoped(supabase, user.id)
+    .table("claims")
     .update({
       metadata: {
         ...claimMeta,
@@ -287,8 +298,11 @@ export async function POST(
   // and writes fresh findings; if real issues remain on the line, they re-surface
   // through metadata.auditFindings (the source of truth for the row UI).
   const nowIso = new Date().toISOString();
-  const { error: discrepancyUpdateError } = await supabase
-    .from("claim_discrepancies")
+  // B9 B1.2 — claim_discrepancies is a direct user_id table; userScoped adds
+  // `.eq("user_id")` (defense-in-depth — lineId already belongs to the owned
+  // claim, so this is op-equivalent for the owner).
+  const { error: discrepancyUpdateError } = await userScoped(supabase, user.id)
+    .table("claim_discrepancies")
     .update({
       status: "resolved",
       resolved_at: nowIso,

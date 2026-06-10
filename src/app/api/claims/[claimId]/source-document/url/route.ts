@@ -20,6 +20,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 
 const SIGNED_URL_EXPIRY_SECONDS = 3600; // 1 hour
 
@@ -35,8 +36,11 @@ export async function GET(
   const { claimId } = await params;
   const supabase = createServerClient();
 
-  const { data: claim, error: claimErr } = await supabase
-    .from("claims")
+  // B9 B1.2 — userScoped injects `.eq("user_id")`; a foreign/missing claimId
+  // resolves to null → 404 (anti-enum). The explicit owner check below is now
+  // belt-and-suspenders (kept for minimal diff; unreachable for the owner path).
+  const { data: claim, error: claimErr } = await userScoped(supabase, user.id)
+    .table("claims")
     .select("user_id, source_document_id")
     .eq("id", claimId)
     .maybeSingle();
@@ -56,8 +60,11 @@ export async function GET(
     );
   }
 
-  const { data: doc, error: docErr } = await supabase
-    .from("documents")
+  // B9 B1.2 — documents is a direct user_id table; userScoped scopes the read
+  // (foreign/missing → null → 404). The defense-in-depth owner check below is
+  // now belt-and-suspenders (kept for minimal diff).
+  const { data: doc, error: docErr } = await userScoped(supabase, user.id)
+    .table("documents")
     .select("user_id, storage_path, file_name")
     .eq("id", sourceDocumentId)
     .maybeSingle();

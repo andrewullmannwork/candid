@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import {
   computeRecoveryV2,
   resolveStillOutstanding,
@@ -126,10 +127,9 @@ export async function GET(req: NextRequest) {
   // lives at the ingestion layer + needs migration to merge existing dupes).
   // S74.5 D11 — exclude soft-deleted claims (merge losers + future
   // user-requested erasures). Filter is partial-index-backed (idx_claims_user_live).
-  const { data: rawClaims, error } = await supabase
-    .from("claims")
+  const { data: rawClaims, error } = await userScoped(supabase, user.id)
+    .table("claims")
     .select("*")
-    .eq("user_id", user.id)
     .is("deleted_at", null)
     .order("created_at", { ascending: false });
 
@@ -165,10 +165,15 @@ export async function GET(req: NextRequest) {
   if (secondaryV2) {
     const claimIdsForSlugs = (claims || []).map((c) => c.id as string);
     if (claimIdsForSlugs.length > 0) {
-      const { data: slugRows } = await supabase
-        .from("claim_line_items")
-        .select("service_slug")
-        .in("claim_id", claimIdsForSlugs);
+      // B9 B1.2 — claimIdsForSlugs are owned (from the user-scoped claims fetch);
+      // selectOwnedChildren re-verifies + returns their lines.
+      const slugRows = await selectOwnedChildren(
+        supabase,
+        user.id,
+        "claim_line_items",
+        claimIdsForSlugs,
+        "service_slug",
+      );
       billSlugMeta = await loadBillSlugMeta(
         supabase,
         (slugRows ?? []).map((r) => r.service_slug as string | null),
@@ -183,10 +188,17 @@ export async function GET(req: NextRequest) {
   // For each claim, get line item summary + top findings + potential savings + recovery
   const claimsWithSummary = await Promise.all(
     (claims || []).map(async (claim) => {
-      const { data: lineItems } = await supabase
-        .from("claim_line_items")
-        .select("id, line_number, service_slug, billing_code, billing_code_type, metadata, billed_amount, patient_owes, insurance_paid, description, amount_still_outstanding, patient_paid_amount, insurance_adjusted_amount")
-        .eq("claim_id", claim.id);
+      // B9 B1.2 — claim.id is already an owned claim (from the user-scoped claims
+      // fetch above); selectOwnedChildren re-verifies ownership + returns its
+      // lines. Per-claim call (minimal diff; runs inside Promise.all so the extra
+      // ownership round-trip is parallel). cols byte-identical to the prior select.
+      const lineItems = await selectOwnedChildren(
+        supabase,
+        user.id,
+        "claim_line_items",
+        [claim.id as string],
+        "id, line_number, service_slug, billing_code, billing_code_type, metadata, billed_amount, patient_owes, insurance_paid, description, amount_still_outstanding, patient_paid_amount, insurance_adjusted_amount",
+      );
 
       const items = lineItems || [];
       const planMeta = claim.insurance_plan_id
@@ -430,10 +442,9 @@ export async function GET(req: NextRequest) {
 
   // Summary stats — also deduped via the same fingerprint so totalBills and
   // issues counts match what the paginated /claim view actually shows.
-  const { data: allClaimsRaw } = await supabase
-    .from("claims")
+  const { data: allClaimsRaw } = await userScoped(supabase, user.id)
+    .table("claims")
     .select("id, status, total_billed, total_patient_responsibility, source_document_id, date_of_service, metadata, created_at, claim_group_id, insurance_plan_id, amount_still_outstanding")
-    .eq("user_id", user.id)
     .is("deleted_at", null)
     .order("created_at", { ascending: false });
   const allClaims = dedupBillsByFingerprint((allClaimsRaw as RawClaim[]) || []);
@@ -443,10 +454,15 @@ export async function GET(req: NextRequest) {
   let totalPotentialSavings = 0;
   let totalIssuesFlagged = 0;
   if (allClaims && allClaims.length > 0) {
-    const { data: allLineItems } = await supabase
-      .from("claim_line_items")
-      .select("metadata, claim_id, billed_amount, insurance_paid, patient_owes")
-      .in("claim_id", allClaims.map((c) => c.id));
+    // B9 B1.2 — allClaims are owned (deduped from the user-scoped fetch);
+    // selectOwnedChildren re-verifies + returns their lines.
+    const allLineItems = await selectOwnedChildren(
+      supabase,
+      user.id,
+      "claim_line_items",
+      allClaims.map((c) => c.id as string),
+      "metadata, claim_id, billed_amount, insurance_paid, patient_owes",
+    );
 
     for (const li of allLineItems || []) {
       const findings = (li.metadata as Record<string, unknown>)?.auditFindings;

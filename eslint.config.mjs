@@ -41,6 +41,8 @@ export const USER_OWNED_TABLES = [
  * candid-security/no-raw-user-table-from — bans a literal `.from("<table>")`
  * call for any user-owned table. AST-precise (won't match strings/comments);
  * catches the read- AND write-IDOR shape (the table is named before the verb).
+ * Skips Supabase Storage bucket access (`<x>.storage.from("documents")`) — same
+ * literal, but object storage, not a user-table read (see create() below).
  * Limitation: only the string-literal arg form (a dynamic `.from(tableVar)` is
  * itself a code smell worth a manual flag).
  */
@@ -71,6 +73,20 @@ const noRawUserTableFrom = {
           typeof node.arguments[0].value === "string" &&
           banned.has(node.arguments[0].value)
         ) {
+          // Supabase Storage buckets share names with DB tables
+          // (`supabase.storage.from("documents")`) but are object-storage
+          // access, NOT a user-table read/write — never an IDOR surface. Skip
+          // when the `.from` receiver is a `.storage` member so the bucket call
+          // isn't a false positive. (First needed by the claims family's
+          // source-document/url signed-URL route, S186 B1.2.)
+          const receiver = callee.object;
+          if (
+            receiver.type === "MemberExpression" &&
+            receiver.property.type === "Identifier" &&
+            receiver.property.name === "storage"
+          ) {
+            return;
+          }
           context.report({
             node,
             messageId: "banned",
@@ -132,8 +148,10 @@ const eslintConfig = defineConfig([
       "src/app/api/legal/**",
       "src/app/api/profile/**",
       "src/app/api/support/**",
-      "src/app/api/claims/route.ts",
-      "src/app/api/claims/\\[claimId\\]/**",
+      // claims/** FULLY MIGRATED onto the layer (S186 B1.2: the 7 claims routes
+      // — claims/route.ts + claims/[claimId]/** — onto userScoped /
+      // selectOwnedChildren / updateOwnedChildren; claims/discrepancies migrated
+      // S182 B1.1). Covered by default — NO claims entry remains in the ledger.
       "src/app/api/plan/analyze/**",
       "src/app/api/plan/corrections/**",
       "src/app/api/plan/field/**",
