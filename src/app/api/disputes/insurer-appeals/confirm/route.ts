@@ -13,6 +13,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 
 const DEDUPE_WINDOW_DAYS = 30;
 
@@ -65,11 +66,10 @@ export async function POST(req: NextRequest) {
   if (body.action === "confirmed") {
     // Dedupe: skip if this user already confirmed recently.
     const cutoff = new Date(Date.now() - DEDUPE_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
-    const { data: recent } = await supabase
-      .from("insurer_appeals_confirmations")
+    const { data: recent } = await userScoped(supabase, user.id)
+      .table("insurer_appeals_confirmations")
       .select("id")
       .eq("insurer_id", insurer.id)
-      .eq("user_id", user.id)
       .eq("action", "confirmed")
       .gte("confirmed_at", cutoff)
       .limit(1)
@@ -78,9 +78,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, deduped: true });
     }
 
-    await supabase.from("insurer_appeals_confirmations").insert({
+    await userScoped(supabase, user.id).table("insurer_appeals_confirmations").insert({
       insurer_id: insurer.id,
-      user_id: user.id,
       action: "confirmed",
       metadata: {},
     });
@@ -130,9 +129,8 @@ export async function POST(req: NextRequest) {
       status: "pending",
     });
 
-    await supabase.from("insurer_appeals_confirmations").insert({
+    await userScoped(supabase, user.id).table("insurer_appeals_confirmations").insert({
       insurer_id: insurer.id,
-      user_id: user.id,
       action: "proposed_correction",
       metadata: { source: "verify_strip" },
     });

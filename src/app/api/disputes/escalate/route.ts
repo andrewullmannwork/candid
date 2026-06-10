@@ -10,6 +10,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 import { recordEscalation } from "@/lib/disputes/post-escalation-followup";
 
 async function getAuthUser(req: NextRequest) {
@@ -52,11 +53,10 @@ export async function POST(req: NextRequest) {
   }
 
   // Verify user owns this dispute
-  const { data: dispute } = await supabase
-    .from("dispute_outcomes")
+  const { data: dispute } = await userScoped(supabase, user.id)
+    .table("dispute_outcomes")
     .select("id")
     .eq("id", disputeId)
-    .eq("user_id", user.id)
     .single();
 
   if (!dispute) {

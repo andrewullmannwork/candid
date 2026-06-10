@@ -12,6 +12,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 import { updateDisputeOutcome, getUserDisputes } from "@/lib/disputes/persist";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import {
@@ -112,8 +113,8 @@ export async function POST(req: NextRequest) {
     // Ownership check — verify the dispute belongs to the authenticated user
     // BEFORE running the update. Without this guard any authenticated user
     // could mutate any dispute by knowing its UUID.
-    const { data: existing } = await supabase
-      .from("dispute_outcomes")
+    const { data: existing } = await userScoped(supabase, userId)
+      .table("dispute_outcomes")
       .select("id, user_id, status, filed_date, claim_id, letter_content, sent_at")
       .eq("id", disputeId)
       .single();
@@ -150,8 +151,8 @@ export async function POST(req: NextRequest) {
       const recodedCode = recodedAs.code.trim();
       const recodedCodeType = recodedAs.codeType.trim();
       try {
-        await supabase
-          .from("dispute_outcomes")
+        await userScoped(supabase, userId)
+          .table("dispute_outcomes")
           .update({
             recoded_as_code: recodedCode,
             recoded_as_code_type: recodedCodeType,
@@ -221,8 +222,8 @@ export async function POST(req: NextRequest) {
             if (fpInput) fingerprint = computeEvidenceFingerprint(fpInput);
           }
 
-          await supabase
-            .from("dispute_outcomes")
+          await userScoped(supabase, userId)
+            .table("dispute_outcomes")
             .update({
               sent_letter: existing.letter_content,
               sent_at: sentAt.toISOString(),

@@ -213,3 +213,52 @@ export async function selectOwnedChildren(
     .in(meta.fk, [...ownedParentIds]);
   return data ?? [];
 }
+
+/**
+ * Parent-join child WRITE: the lint-clean way for a route to UPDATE child-table
+ * rows (claim_line_items, plan_covered_services) that have NO `user_id`, by their
+ * own id. Verifies the parent is owned ONCE (selectOwnedParentIds), then applies
+ * each update scoped BOTH by the child id AND `.eq(fk, parentId)` — belt-and-
+ * suspenders so a child id from a different parent can never be written. Fails
+ * closed: empty userId throws; a non-owned/foreign parent → 0 writes. The raw
+ * child `.from()` the B1 lint bans in routes lives ONCE here, inside the layer.
+ *
+ * Symmetric to selectOwnedChildren (read): every child access in the codebase
+ * happens where the parent id is already in scope (a dispute's claim_id, a
+ * [claimId] path param), so this single PARENT-scoped write primitive covers the
+ * write side with no by-raw-child-id variant. `updates` is `{ id, values }[]`;
+ * returns the count actually written (op-equivalent: for an owner every update
+ * lands, so the count equals the original per-row loop's success count).
+ */
+export async function updateOwnedChildren(
+  supabase: SupabaseClient,
+  userId: string,
+  childTable: ParentJoinChildTable,
+  parentId: string,
+  updates: { id: string; values: Record<string, unknown> }[],
+): Promise<{ updated: number }> {
+  assertUserId(userId);
+  const meta = PARENT_JOIN_TABLES[childTable];
+  if (!meta) {
+    // Defense-in-depth for a dynamic (non-literal) childTable that escapes the
+    // compile-time union. Fail closed rather than do an unscoped child write.
+    throw new Error(
+      `updateOwnedChildren: "${childTable}" is not a parent-join child table`,
+    );
+  }
+  if (updates.length === 0) return { updated: 0 };
+  const ownedParentIds = await selectOwnedParentIds(supabase, userId, meta.parent, [
+    parentId,
+  ]);
+  if (!ownedParentIds.has(parentId)) return { updated: 0 };
+  let updated = 0;
+  for (const { id, values } of updates) {
+    const { error } = await supabase
+      .from(childTable)
+      .update(values)
+      .eq("id", id)
+      .eq(meta.fk, parentId);
+    if (!error) updated += 1;
+  }
+  return { updated };
+}

@@ -15,6 +15,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import {
+  userScoped,
+  selectOwnedChildren,
+  updateOwnedChildren,
+} from "@/lib/security/user-scoped";
 import { runAudit } from "@/lib/audit";
 import type { ParsedBill } from "@/lib/billing/types";
 
@@ -50,33 +55,37 @@ export async function POST(
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  const { data: dispute } = await supabase
-    .from("dispute_outcomes")
+  const { data: dispute } = await userScoped(supabase, user.id)
+    .table("dispute_outcomes")
     .select("id, claim_id, user_id")
     .eq("id", disputeId)
-    .eq("user_id", user.id)
     .maybeSingle();
 
   if (!dispute || !dispute.claim_id) {
     return NextResponse.json({ error: "Dispute or linked claim not found" }, { status: 404 });
   }
 
-  const { data: claim } = await supabase
-    .from("claims")
+  const { data: claim } = await userScoped(supabase, user.id)
+    .table("claims")
     .select("id, source_document_id, date_of_service, total_billed, total_allowed, total_insurance_paid, total_patient_responsibility, metadata, user_id, insurance_plan_id")
     .eq("id", dispute.claim_id)
-    .eq("user_id", user.id)
     .maybeSingle();
 
   if (!claim) {
     return NextResponse.json({ error: "Claim not found" }, { status: 404 });
   }
 
-  const { data: lineItems } = await supabase
-    .from("claim_line_items")
-    .select("id, line_number, billing_code, description, units, billed_amount, allowed_amount, insurance_paid, patient_owes, modifier_codes, service_slug, billing_code_identity_id, metadata")
-    .eq("claim_id", claim.id)
-    .order("line_number", { ascending: true });
+  const lineItems = (
+    await selectOwnedChildren(
+      supabase,
+      user.id,
+      "claim_line_items",
+      [claim.id as string],
+      "id, line_number, billing_code, description, units, billed_amount, allowed_amount, insurance_paid, patient_owes, modifier_codes, service_slug, billing_code_identity_id, metadata",
+    )
+  ).sort(
+    (a, b) => ((a.line_number as number) ?? 0) - ((b.line_number as number) ?? 0),
+  );
 
   if (!lineItems || lineItems.length === 0) {
     return NextResponse.json({ error: "Claim has no line items" }, { status: 400 });
@@ -178,8 +187,8 @@ export async function POST(
   // dispute-rerun path (S87 left this site passing no insurerName).
   let insurerNameForAudit: string | null = null;
   if (planIdForAudit) {
-    const { data: planRow } = await supabase
-      .from("insurance_plans")
+    const { data: planRow } = await userScoped(supabase, user.id)
+      .table("insurance_plans")
       .select("insurer_name")
       .eq("id", planIdForAudit)
       .maybeSingle();
@@ -208,32 +217,34 @@ export async function POST(
   // Update claim_line_items.metadata.auditFindings in place. Match the
   // shape used at upload time in src/lib/claims/persist.ts so downstream
   // consumers (evidence-resolver, dispute templates) see the same fields.
-  let updatedCount = 0;
-  for (const li of lineItems) {
+  const lineItemUpdates = lineItems.map((li) => {
     const findings = findingsByLine.get(li.line_number) ?? [];
     const existingMeta = (li.metadata as Record<string, unknown> | null) ?? {};
-    const nextMeta = {
-      ...existingMeta,
-      auditFindings: findings.map((f) => ({
-        id: f.id,
-        type: f.type,
-        severity: f.severity,
-        estimatedOvercharge: f.estimatedOvercharge,
-        title: f.title,
-        actionable: f.actionable,
-      })),
-      auditRerunAt: new Date().toISOString(),
+    return {
+      id: li.id as string,
+      values: {
+        metadata: {
+          ...existingMeta,
+          auditFindings: findings.map((f) => ({
+            id: f.id,
+            type: f.type,
+            severity: f.severity,
+            estimatedOvercharge: f.estimatedOvercharge,
+            title: f.title,
+            actionable: f.actionable,
+          })),
+          auditRerunAt: new Date().toISOString(),
+        },
+      },
     };
-    const { error: updateErr } = await supabase
-      .from("claim_line_items")
-      .update({ metadata: nextMeta })
-      .eq("id", li.id);
-    if (updateErr) {
-      console.error("[disputes/rerun-audit] line item update failed", { lineItemId: li.id, error: updateErr });
-      continue;
-    }
-    updatedCount += 1;
-  }
+  });
+  const { updated: updatedCount } = await updateOwnedChildren(
+    supabase,
+    user.id,
+    "claim_line_items",
+    claim.id as string,
+    lineItemUpdates,
+  );
 
   console.log("[disputes/rerun-audit] complete", {
     disputeId: dispute.id,

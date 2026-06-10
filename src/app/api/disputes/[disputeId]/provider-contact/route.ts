@@ -19,6 +19,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 
 interface ProviderAddressFieldsInput {
   addressLine1?: string;
@@ -128,8 +129,8 @@ export async function POST(
 
   // Ownership: dispute must belong to user, AND we need the linked claim id to
   // mutate the claim's metadata.
-  const { data: dispute } = await supabase
-    .from("dispute_outcomes")
+  const { data: dispute } = await userScoped(supabase, user.id)
+    .table("dispute_outcomes")
     .select("id, user_id, claim_id")
     .eq("id", disputeId)
     .single();
@@ -143,11 +144,10 @@ export async function POST(
     );
   }
 
-  const { data: claim } = await supabase
-    .from("claims")
+  const { data: claim } = await userScoped(supabase, user.id)
+    .table("claims")
     .select("id, metadata")
     .eq("id", dispute.claim_id)
-    .eq("user_id", user.id)
     .single();
   if (!claim) {
     return NextResponse.json({ error: "Claim not found" }, { status: 404 });
@@ -208,11 +208,10 @@ export async function POST(
 
   const nextMetadata = { ...existingMetadata, provider: mergedProvider };
 
-  const { error: updateError } = await supabase
-    .from("claims")
+  const { error: updateError } = await userScoped(supabase, user.id)
+    .table("claims")
     .update({ metadata: nextMetadata, updated_at: new Date().toISOString() })
-    .eq("id", claim.id)
-    .eq("user_id", user.id);
+    .eq("id", claim.id);
 
   if (updateError) {
     console.error("[provider-contact] update failed:", updateError);

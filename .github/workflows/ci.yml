@@ -28,6 +28,17 @@ jobs:
         # get cleaned up as a separate maintenance ticket.
         run: npx eslint . --max-warnings 60
 
+      - name: User-table registry/lint sync (B9 B1)
+        # Fails the build if eslint.config.mjs USER_OWNED_TABLES drifts from the
+        # userScoped layer registry (DIRECT_USER_OWNED_TABLES + PARENT_JOIN_TABLES)
+        # — drift is a silent IDOR surface or a false lint error.
+        run: npx tsx scripts/check-user-table-registry-sync.mjs
+
+      - name: Security-layer contract (B9 B1)
+        # Mock-Supabase contract for the userScoped ownership layer: closure +
+        # fail-closed + the parent-scoped child read/write primitives.
+        run: npx tsx scripts/security-layer-contract.mjs
+
       - name: Type check
         run: npx tsc --noEmit
 

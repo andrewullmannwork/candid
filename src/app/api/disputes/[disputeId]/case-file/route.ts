@@ -35,6 +35,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
+import { userScoped } from "@/lib/security/user-scoped";
 import { loadServerSubscription } from "@/lib/subscription/server";
 import { resolvePlanContext } from "@/lib/disputes/plan-context";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
@@ -81,11 +82,10 @@ export async function GET(
 
   // 3) Ownership / IDOR (P4) — scope the dispute to the authenticated user.
   const { disputeId } = await params;
-  const { data: dispute, error } = await supabase
-    .from("dispute_outcomes")
+  const { data: dispute, error } = await userScoped(supabase, authedUser.id)
+    .table("dispute_outcomes")
     .select("*")
     .eq("id", disputeId)
-    .eq("user_id", authedUser.id)
     .single();
   if (error || !dispute) {
     return NextResponse.json(
@@ -165,8 +165,8 @@ export async function GET(
       .maybeSingle();
     let billName = "";
     if (dispute.claim_id) {
-      const { data: claim } = await supabase
-        .from("claims")
+      const { data: claim } = await userScoped(supabase, authedUser.id)
+        .table("claims")
         .select("metadata")
         .eq("id", dispute.claim_id)
         .maybeSingle();

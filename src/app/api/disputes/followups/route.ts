@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 import { getActiveFollowups, handleFollowupAction } from "@/lib/disputes/followups";
 
 async function getAuthUser(req: NextRequest) {
@@ -90,15 +91,15 @@ export async function POST(req: NextRequest) {
   if (action === "lost") {
     try {
       // Get dispute details for the email
-      const { data: followup } = await supabase
-        .from("dispute_followups")
+      const { data: followup } = await userScoped(supabase, user.id)
+        .table("dispute_followups")
         .select("dispute_id")
         .eq("id", followupId)
         .single();
 
       if (followup) {
-        const { data: dispute } = await supabase
-          .from("dispute_outcomes")
+        const { data: dispute } = await userScoped(supabase, user.id)
+          .table("dispute_outcomes")
           .select("dispute_type, amount_disputed")
           .eq("id", followup.dispute_id)
           .single();

@@ -45,6 +45,7 @@
     "eslint-config-next": "16.2.0",
     "pg": "^8.20.0",
     "tailwindcss": "^4",
+    "tsx": "^4.22.4",
     "typescript": "^5"
   }
 }
