@@ -543,6 +543,14 @@ export async function parseEOC(
     // S187 (calibration/eval ONLY — e.g. T5 measures section extraction, which never consumes
     // plan-identity output). Skips the plan-identity leg entirely; PROD never sets this.
     skipPlanIdentity?: boolean;
+    // S190 (calibration/eval ONLY — every T5 §5 floor reads the medical_necessity leg only).
+    // When set, ONLY the named sections dispatch; each filtered-out section returns the same
+    // null shape as a section absent from the document, a path aggregation/verifier/cost
+    // handling already covers. Undefined → all sections dispatch (PROD never sets this).
+    sectionFilter?: EOCSectionHint[];
+    // S190 (calibration/eval ONLY — mirrors skipPlanIdentity). Skips the ACA-compliance leg;
+    // PROD never sets this.
+    skipAca?: boolean;
   },
 ): Promise<EOCParseResult> {
   const { documentId, extractionMethod } = options;
@@ -631,6 +639,11 @@ export async function parseEOC(
   // so process-eoc.ts falls back to the conservative-for-users default per
   // Subplan §1 LOCK.
   const acaLeg = (async (): Promise<EOCSectionResult<EocAcaComplianceData> | null> => {
+    // S190 skipAca (calibration/eval ONLY — mirrors skipPlanIdentity; PROD never sets it).
+    if (options.skipAca) {
+      warnings.push("eoc_aca_skipped_by_option");
+      return null;
+    }
     const t0 = Date.now();
     try {
       const acaSliceEnd = Math.min(workingText.length, ACA_SCAN_CHAR_BUDGET);
@@ -690,6 +703,11 @@ export async function parseEOC(
       sectionText: string,
     ) => EOCSectionResult<T> | null,
   ): Promise<{ result: EOCSectionResult<T> | null; warnings: string[] }> => {
+    // S190 sectionFilter (calibration/eval ONLY): a filtered-out section returns the same null
+    // shape as a section absent from the document — aggregation/verifier/cost already handle it.
+    if (options.sectionFilter && !options.sectionFilter.includes(hint)) {
+      return { result: null, warnings: [`eoc_section_skipped_by_filter:${hint}`] };
+    }
     const range = pickFirstRange(sectionRanges, hint);
     if (!range) return { result: null, warnings: [] };
     const config = SECTION_CONFIGS[hint];
