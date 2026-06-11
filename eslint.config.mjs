@@ -137,29 +137,20 @@ const eslintConfig = defineConfig([
       "src/app/api/documents/upload/**",
       // — B1 migration ledger (SHRINKING → ∅ over B1.2). Unmigrated user-facing
       //   routes still using a raw `.from(<user-table>)` + hand-written filter. —
-      "src/app/api/account/**",
-      "src/app/api/auth/**",
-      "src/app/api/billing/**",
+      // FULLY MIGRATED onto the layer (covered by default; NO ledger entry):
+      //   disputes/** (S183 PR-C + S185) · claims/** (S182 + S186) ·
+      //   documents/{confirm-doc-type,reprocess} (S188) · account-cluster
+      //   account/auth/billing/consent/legal/profile/support (S190 — incl. the
+      //   NEW userScoped.upsert [profiles] + upsertOwnedChildren child-upsert
+      //   [profile's plan_covered_services] primitives).
+      // Remaining ledger = plan+compare (cross-WS LAST, with compare-v2) +
+      // documents/status (F05/PR-D no-auth GET fix):
       "src/app/api/compare/**",
-      "src/app/api/consent/**",
-      // disputes/** FULLY MIGRATED onto the layer (S183 PR-C: generate; S185
-      // B1.2: the remaining 16 routes + the new updateOwnedChildren child-write
-      // primitive). Covered by default — NO disputes entry remains in the ledger.
-      "src/app/api/legal/**",
-      "src/app/api/profile/**",
-      "src/app/api/support/**",
-      // claims/** FULLY MIGRATED onto the layer (S186 B1.2: the 7 claims routes
-      // — claims/route.ts + claims/[claimId]/** — onto userScoped /
-      // selectOwnedChildren / updateOwnedChildren; claims/discrepancies migrated
-      // S182 B1.1). Covered by default — NO claims entry remains in the ledger.
       "src/app/api/plan/analyze/**",
       "src/app/api/plan/corrections/**",
       "src/app/api/plan/field/**",
       "src/app/api/plan/premium/**",
       "src/app/api/plan/reparse-field/**",
-      // documents/confirm-doc-type + documents/reprocess FULLY MIGRATED onto the
-      // layer (S188 B1.2: userScoped().table("documents") — direct user_id table,
-      // no child primitives). Covered by default — both removed from the ledger.
       // documents/process-chunk + documents/upload stay permanent-exempt (above).
       // documents/status remains = F05/PR-D (cross-workstream no-auth GET fix).
       "src/app/api/documents/status/**",

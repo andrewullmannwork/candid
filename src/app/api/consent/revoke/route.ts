@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 
 export async function POST(req: NextRequest) {
   try {
@@ -30,10 +31,9 @@ export async function POST(req: NextRequest) {
     // If revoking health_data_upload, delete all uploaded documents
     if (consentType === "health_data_upload") {
       // Get all document storage paths
-      const { data: docs } = await supabase
-        .from("documents")
-        .select("id, storage_path")
-        .eq("user_id", user.id);
+      const { data: docs } = await userScoped(supabase, user.id)
+        .table("documents")
+        .select("id, storage_path");
 
       if (docs && docs.length > 0) {
         // Delete from storage
@@ -42,7 +42,7 @@ export async function POST(req: NextRequest) {
 
         // Delete document records
         for (const doc of docs) {
-          await supabase.from("documents").delete().eq("id", doc.id);
+          await userScoped(supabase, user.id).table("documents").delete().eq("id", doc.id);
         }
       }
     }

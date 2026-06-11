@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped, selectOwnedChildren, upsertOwnedChildren } from "@/lib/security/user-scoped";
 import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
 import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
@@ -39,29 +40,30 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  const { data: profile } = await supabase
-    .from("profiles")
+  const { data: profile } = await userScoped(supabase, user.id)
+    .table("profiles")
     .select("*")
-    .eq("user_id", user.id)
     .single();
 
   // Fetch active insurance plan if linked
   let insurancePlan = null;
   let coveredServices = null;
   if (profile?.active_insurance_plan_id) {
-    const { data: plan } = await supabase
-      .from("insurance_plans")
+    const { data: plan } = await userScoped(supabase, user.id)
+      .table("insurance_plans")
       .select("*")
       .eq("id", profile.active_insurance_plan_id)
       .single();
     insurancePlan = plan;
 
     if (plan) {
-      const { data: services } = await supabase
-        .from("plan_covered_services")
-        .select("*, service_catalog(slug, name, category)")
-        .eq("insurance_plan_id", plan.id);
-      coveredServices = services;
+      coveredServices = await selectOwnedChildren(
+        supabase,
+        user.id,
+        "plan_covered_services",
+        [plan.id],
+        "*, service_catalog(slug, name, category)",
+      );
     }
   }
 
@@ -87,7 +89,7 @@ export async function POST(req: NextRequest) {
     const { data: u } = await supabase.from("users").select("id").eq("firebase_uid", decoded.uid).single();
     if (!u) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
-    const { data: profile } = await supabase.from("profiles").select("active_insurance_plan_id").eq("user_id", u.id).single();
+    const { data: profile } = await userScoped(supabase, u.id).table("profiles").select("active_insurance_plan_id").single();
     if (!profile?.active_insurance_plan_id) {
       return NextResponse.json({ error: "No active plan" }, { status: 400 });
     }
@@ -171,11 +173,11 @@ export async function POST(req: NextRequest) {
 
   // Guard: card scan with no insurer extracted — warn user if they already have a plan
   if (isCardScanRequest && !force_plan_switch && !insurer) {
-    const { data: preProfile } = await supabase
-      .from("profiles").select("active_insurance_plan_id").eq("user_id", user.id).single();
+    const { data: preProfile } = await userScoped(supabase, user.id)
+      .table("profiles").select("active_insurance_plan_id").single();
     if (preProfile?.active_insurance_plan_id) {
-      const { data: existPlan } = await supabase
-        .from("insurance_plans").select("insurer_name").eq("id", preProfile.active_insurance_plan_id).single();
+      const { data: existPlan } = await userScoped(supabase, user.id)
+        .table("insurance_plans").select("insurer_name").eq("id", preProfile.active_insurance_plan_id).single();
       if (existPlan?.insurer_name) {
         return NextResponse.json({
           success: true,
@@ -192,15 +194,14 @@ export async function POST(req: NextRequest) {
   }
 
   if (isCardScanRequest && !force_plan_switch && insurer) {
-    const { data: preCheckProfile } = await supabase
-      .from("profiles")
+    const { data: preCheckProfile } = await userScoped(supabase, user.id)
+      .table("profiles")
       .select("active_insurance_plan_id, plan_name, group_number")
-      .eq("user_id", user.id)
       .single();
 
     if (preCheckProfile?.active_insurance_plan_id) {
-      const { data: existingPlanCheck } = await supabase
-        .from("insurance_plans")
+      const { data: existingPlanCheck } = await userScoped(supabase, user.id)
+        .table("insurance_plans")
         .select("insurer_name, plan_name, group_number")
         .eq("id", preCheckProfile.active_insurance_plan_id)
         .single();
@@ -319,8 +320,8 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const { error } = await supabase
-    .from("profiles")
+  const { error } = await userScoped(supabase, user.id)
+    .table("profiles")
     .upsert(update, { onConflict: "user_id" });
 
   if (error) {
@@ -337,10 +338,9 @@ export async function POST(req: NextRequest) {
   if (hasPlanData) {
     try {
       // Check if user already has an active insurance plan
-      const { data: existingProfile } = await supabase
-        .from("profiles")
+      const { data: existingProfile } = await userScoped(supabase, user.id)
+        .table("profiles")
         .select("active_insurance_plan_id")
-        .eq("user_id", user.id)
         .single();
 
       const isCardScan = plan_source === "insurance_card";
@@ -360,20 +360,18 @@ export async function POST(req: NextRequest) {
       // The user's form values then flow through the update branch +
       // isFormAfterDoc preserves SBC cost data while updating identity fields.
       if (existingProfile && !existingProfile.active_insurance_plan_id) {
-        const { data: orphanedActive } = await supabase
-          .from("insurance_plans")
+        const { data: orphanedActive } = await userScoped(supabase, user.id)
+          .table("insurance_plans")
           .select("id")
-          .eq("user_id", user.id)
           .eq("is_active", true)
           .order("created_at", { ascending: false })
           .limit(1)
           .maybeSingle();
         if (orphanedActive) {
           existingProfile.active_insurance_plan_id = orphanedActive.id;
-          await supabase
-            .from("profiles")
-            .update({ active_insurance_plan_id: orphanedActive.id })
-            .eq("user_id", user.id);
+          await userScoped(supabase, user.id)
+            .table("profiles")
+            .update({ active_insurance_plan_id: orphanedActive.id });
           console.log(`[profile] CF-25 orphan-discovery: repointed profile.active_insurance_plan_id → ${orphanedActive.id} for user ${user.id}`);
         }
       }
@@ -381,8 +379,8 @@ export async function POST(req: NextRequest) {
       // Fetch existing plan source for isFormAfterDoc detection
       let existingPlan: { insurer_name: string | null; source: string | null } | null = null;
       if (existingProfile?.active_insurance_plan_id) {
-        const { data: plan } = await supabase
-          .from("insurance_plans")
+        const { data: plan } = await userScoped(supabase, user.id)
+          .table("insurance_plans")
           .select("insurer_name, source")
           .eq("id", existingProfile.active_insurance_plan_id)
           .single();
@@ -391,15 +389,15 @@ export async function POST(req: NextRequest) {
 
       // If force_plan_switch, deactivate old plan before creating new one
       if (force_plan_switch && existingProfile?.active_insurance_plan_id) {
-        await supabase
-          .from("insurance_plans")
+        await userScoped(supabase, user.id)
+          .table("insurance_plans")
           .update({ is_active: false })
           .eq("id", existingProfile.active_insurance_plan_id);
         // Clear the reference so the code below creates a new plan
         existingProfile.active_insurance_plan_id = null;
         // Clear stale profile plan fields (all cost/plan fields; personal info preserved)
-        await supabase
-          .from("profiles")
+        await userScoped(supabase, user.id)
+          .table("profiles")
           .update({
             active_insurance_plan_id: null,
             insurer: null, plan_name: null, plan_type: null, state: null,
@@ -408,8 +406,7 @@ export async function POST(req: NextRequest) {
             copay_primary: null, copay_specialist: null, copay_er: null,
             copay_urgent_care: null, copay_rx: null, coinsurance_pct: null,
             matched_plan_id: null, plan_source: null,
-          })
-          .eq("user_id", user.id);
+          });
       }
 
       {
@@ -488,8 +485,8 @@ export async function POST(req: NextRequest) {
 
         if (existingProfile?.active_insurance_plan_id) {
           // Update existing plan
-          await supabase
-            .from("insurance_plans")
+          await userScoped(supabase, user.id)
+            .table("insurance_plans")
             .update(planUpdate)
             .eq("id", existingProfile.active_insurance_plan_id);
         } else {
@@ -498,37 +495,35 @@ export async function POST(req: NextRequest) {
           // (concurrent SBC upload between discovery and insert) could still
           // leave one. Deactivate any other active rows before inserting.
           // Mirrors extraction-dedup.ts:508-512.
-          await supabase
-            .from("insurance_plans")
+          await userScoped(supabase, user.id)
+            .table("insurance_plans")
             .update({ is_active: false })
-            .eq("user_id", user.id)
             .eq("is_active", true);
 
           // Create new plan
-          const { data: newPlan } = await supabase
-            .from("insurance_plans")
+          const { data: newPlan } = await userScoped(supabase, user.id)
+            .table("insurance_plans")
             .insert({ ...planUpdate, source: isCardScan ? "insurance_card" : "manual", is_active: true })
             .select("id")
             .single();
 
           if (newPlan) {
             // Link to profile
-            await supabase
-              .from("profiles")
-              .update({ active_insurance_plan_id: newPlan.id })
-              .eq("user_id", user.id);
+            await userScoped(supabase, user.id)
+              .table("profiles")
+              .update({ active_insurance_plan_id: newPlan.id });
 
             // Track the new plan ID for canonical matching below
             if (existingProfile) existingProfile.active_insurance_plan_id = newPlan.id;
 
             // Create plan_covered_services rows for copays
-            await syncCopayServices(supabase, newPlan.id, { copay_primary, copay_specialist, copay_er, copay_urgent_care, copay_rx });
+            await syncCopayServices(supabase, user.id, newPlan.id, { copay_primary, copay_specialist, copay_er, copay_urgent_care, copay_rx });
           }
         }
 
         // If updating existing plan, also sync copays (skip for card-after-doc — SBC copays are more complete)
         if (!isFormAfterDoc && existingProfile?.active_insurance_plan_id && (copay_primary !== undefined || copay_specialist !== undefined || copay_er !== undefined || copay_urgent_care !== undefined || copay_rx !== undefined)) {
-          await syncCopayServices(supabase, existingProfile.active_insurance_plan_id, { copay_primary, copay_specialist, copay_er, copay_urgent_care, copay_rx });
+          await syncCopayServices(supabase, user.id, existingProfile.active_insurance_plan_id, { copay_primary, copay_specialist, copay_er, copay_urgent_care, copay_rx });
         }
 
         // ── Canonical plan matching for card scans ────────────────────────────
@@ -542,8 +537,8 @@ export async function POST(req: NextRequest) {
                 const activePlanId = existingProfile?.active_insurance_plan_id; // Uses newPlan.id if just created
                 // Only attempt canonical matching if we have a plan ID
                 if (activePlanId) {
-                  const { data: currentPlan } = await supabase
-                    .from("insurance_plans")
+                  const { data: currentPlan } = await userScoped(supabase, user.id)
+                    .table("insurance_plans")
                     .select("canonical_plan_id")
                     .eq("id", activePlanId)
                     .single();
@@ -560,8 +555,8 @@ export async function POST(req: NextRequest) {
 
                     if (!canonicalResult.needsConfirmation) {
                       // High confidence — auto-link
-                      await supabase
-                        .from("insurance_plans")
+                      await userScoped(supabase, user.id)
+                        .table("insurance_plans")
                         .update({ canonical_plan_id: canonicalResult.canonicalPlanId })
                         .eq("id", activePlanId);
                     } else {
@@ -643,6 +638,7 @@ type SupabaseClient = ReturnType<typeof createServerClient>;
 
 async function syncCopayServices(
   supabase: SupabaseClient,
+  userId: string,
   insurancePlanId: string,
   copays: { copay_primary?: number; copay_specialist?: number; copay_er?: number; copay_urgent_care?: number; copay_rx?: number }
 ) {
@@ -654,6 +650,12 @@ async function syncCopayServices(
     generic_rx_tier1: copays.copay_rx,
   };
 
+  // Resolve each slug → service_catalog id, then write all copay rows through
+  // upsertOwnedChildren so the parent insurance_plan ownership is verified once
+  // (B1 child-write primitive) — the raw .from("plan_covered_services") the lint
+  // bans lives only inside the security layer. The fk (insurance_plan_id) is
+  // stamped by the primitive, so it is omitted from each row here.
+  const rows: Record<string, unknown>[] = [];
   for (const [slug, copay] of Object.entries(copayMap)) {
     if (copay === undefined) continue;
 
@@ -666,19 +668,18 @@ async function syncCopayServices(
 
     if (!service) continue;
 
-    // Upsert the covered service row
-    await supabase
-      .from("plan_covered_services")
-      .upsert(
-        {
-          insurance_plan_id: insurancePlanId,
-          service_id: service.id,
-          place_of_service: "any",
-          in_copay: copay,
-          source: "manual",
-          confidence: 1,
-        },
-        { onConflict: "insurance_plan_id,service_id,place_of_service" }
-      );
+    rows.push({
+      service_id: service.id,
+      place_of_service: "any",
+      in_copay: copay,
+      source: "manual",
+      confidence: 1,
+    });
+  }
+
+  if (rows.length > 0) {
+    await upsertOwnedChildren(supabase, userId, "plan_covered_services", insurancePlanId, rows, {
+      onConflict: "insurance_plan_id,service_id,place_of_service",
+    });
   }
 }

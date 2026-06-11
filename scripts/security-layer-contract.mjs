@@ -14,6 +14,7 @@ import {
   selectOwnedChildren,
   selectOwnedParentIds,
   updateOwnedChildren,
+  upsertOwnedChildren,
 } from "../src/lib/security/user-scoped";
 
 // In-memory dataset: u1 owns c1 (lines li1,li2); u2 owns c2 (line li3).
@@ -31,6 +32,7 @@ const DB = {
 };
 const writes = [];
 const inserts = [];
+const upserts = [];
 
 class QB {
   constructor(table) {
@@ -57,6 +59,12 @@ class QB {
     this.rows = rows;
     return this;
   }
+  upsert(rows, options) {
+    this.op = "upsert";
+    this.rows = rows;
+    this.onConflict = options?.onConflict;
+    return this;
+  }
   eq(col, val) {
     this.filters.push(["eq", col, val]);
     return this;
@@ -80,6 +88,11 @@ class QB {
     if (this.op === "insert") {
       const rows = Array.isArray(this.rows) ? this.rows : [this.rows];
       for (const r of rows) inserts.push({ table: this.table, row: r });
+      return { data: null, error: null };
+    }
+    if (this.op === "upsert") {
+      const rows = Array.isArray(this.rows) ? this.rows : [this.rows];
+      for (const r of rows) upserts.push({ table: this.table, row: r, onConflict: this.onConflict });
       return { data: null, error: null };
     }
     const rows = this._rows();
@@ -183,6 +196,59 @@ check("userScoped.insert: stamps user_id=u1 (overrides caller)", inserts.length 
 
 // 8) updateOwnedChildren — unregistered child table fails closed.
 check("updateOwnedChildren: non-parent-join table THROWS", await throws(() => updateOwnedChildren(client, "u1", "documents", "c1", [{ id: "x", values: {} }])));
+
+// 9) userScoped.upsert — stamps user_id (overrides caller) + requires user_id in onConflict.
+upserts.length = 0;
+await userScoped(client, "u1")
+  .table("dispute_outcomes")
+  .upsert({ id: "d1", user_id: "u2", foo: "x" }, { onConflict: "user_id" });
+check(
+  "userScoped.upsert: stamps user_id=u1 (overrides caller u2)",
+  upserts.length === 1 && upserts[0].row.user_id === "u1",
+);
+check(
+  "userScoped.upsert: onConflict missing user_id THROWS",
+  await throws(() =>
+    userScoped(client, "u1").table("dispute_outcomes").upsert({ foo: "x" }, { onConflict: "id" }),
+  ),
+);
+
+// 10) upsertOwnedChildren — owner upserts (fk stamped); foreign parent → 0 (closure); guards.
+upserts.length = 0;
+const upOk = await upsertOwnedChildren(
+  client,
+  "u1",
+  "claim_line_items",
+  "c1",
+  [{ id: "li1", metadata: { z: 1 } }],
+  { onConflict: "claim_id,id" },
+);
+check(
+  "upsertOwnedChildren: owner u1/c1 → upserted=1 + fk stamped to c1",
+  upOk.upserted === 1 && upserts.length === 1 && upserts[0].row.claim_id === "c1",
+);
+upserts.length = 0;
+const upForeign = await upsertOwnedChildren(client, "u2", "claim_line_items", "c1", [{ id: "li1" }], {
+  onConflict: "claim_id,id",
+});
+check(
+  "upsertOwnedChildren: foreign u2/c1 → upserted=0 (closure)",
+  upForeign.upserted === 0 && upserts.length === 0,
+);
+check(
+  "upsertOwnedChildren: onConflict missing fk THROWS",
+  await throws(() =>
+    upsertOwnedChildren(client, "u1", "claim_line_items", "c1", [{ id: "li1" }], { onConflict: "id" }),
+  ),
+);
+check(
+  "upsertOwnedChildren: empty userId THROWS",
+  await throws(() =>
+    upsertOwnedChildren(client, "", "claim_line_items", "c1", [{ id: "li1" }], {
+      onConflict: "claim_id,id",
+    }),
+  ),
+);
 
 if (failures === 0) {
   console.log("✓ security-layer contract PASSED");

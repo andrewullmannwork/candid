@@ -26,6 +26,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 import { postSupportTicket } from "@/lib/slack/support-notifications";
 
 const ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024; // 25 MB
@@ -111,10 +112,9 @@ export async function POST(req: NextRequest) {
     }
 
     // Insert ticket first so we have the UUID for storage path
-    const { data: inserted, error: dbError } = await supabase
-      .from("support_tickets")
+    const { data: inserted, error: dbError } = await userScoped(supabase, user.id)
+      .table("support_tickets")
       .insert({
-        user_id: user.id,
         email: user.email,
         category: category ?? null,
         subject: subject.trim(),
@@ -150,8 +150,8 @@ export async function POST(req: NextRequest) {
       } else {
         storedAttachmentFilename = attachment.name;
         storedAttachmentPath = storagePath;
-        await supabase
-          .from("support_tickets")
+        await userScoped(supabase, user.id)
+          .table("support_tickets")
           .update({
             attachment_url: storagePath,
             attachment_filename: attachment.name,
@@ -173,11 +173,10 @@ export async function POST(req: NextRequest) {
     let linkedDocumentName: string | null = null;
     let linkedDocumentSignedUrl: string | null = null;
     if (linkedDocumentId) {
-      const { data: linkedDoc } = await supabase
-        .from("documents")
+      const { data: linkedDoc } = await userScoped(supabase, user.id)
+        .table("documents")
         .select("file_name, storage_path")
         .eq("id", linkedDocumentId)
-        .eq("user_id", user.id)
         .single();
       if (linkedDoc) {
         linkedDocumentName = linkedDoc.file_name;
@@ -218,8 +217,8 @@ export async function POST(req: NextRequest) {
     });
 
     if (threadTs) {
-      const { error: tsError } = await supabase
-        .from("support_tickets")
+      const { error: tsError } = await userScoped(supabase, user.id)
+        .table("support_tickets")
         .update({ slack_thread_ts: threadTs })
         .eq("id", inserted.id);
       if (tsError) {

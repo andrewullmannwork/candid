@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 
 export async function POST(req: NextRequest) {
   try {
@@ -41,10 +42,9 @@ export async function POST(req: NextRequest) {
 
     if (action === "check") {
       // Check current consent status
-      const { data } = await supabase
-        .from("consent_events")
+      const { data } = await userScoped(supabase, user.id)
+        .table("consent_events")
         .select("consent_version, granted")
-        .eq("user_id", user.id)
         .eq("consent_type", consentType)
         .order("created_at", { ascending: false })
         .limit(1)
@@ -61,16 +61,17 @@ export async function POST(req: NextRequest) {
     const ip = req.headers.get("x-forwarded-for") || req.headers.get("x-real-ip") || null;
     const userAgent = req.headers.get("user-agent") || null;
 
-    const { error: insertError } = await supabase.from("consent_events").insert({
-      user_id: user.id,
-      email: user.email,
-      consent_type: consentType,
-      consent_version: consentVersion,
-      consent_text_hash: consentTextHash,
-      granted: action === "grant",
-      ip_address: ip,
-      user_agent: userAgent,
-    });
+    const { error: insertError } = await userScoped(supabase, user.id)
+      .table("consent_events")
+      .insert({
+        email: user.email,
+        consent_type: consentType,
+        consent_version: consentVersion,
+        consent_text_hash: consentTextHash,
+        granted: action === "grant",
+        ip_address: ip,
+        user_agent: userAgent,
+      });
 
     if (insertError) {
       console.error("[consent] Insert error:", insertError);

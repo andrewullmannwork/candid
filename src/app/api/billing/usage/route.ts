@@ -22,6 +22,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 
 const MONTHLY_PRICE_USD = 5;
 const ANNUAL_PRICE_USD = 48;
@@ -69,26 +70,22 @@ export async function GET(req: NextRequest) {
     planDocs,
     stripeRow,
   ] = await Promise.all([
-    supabase
-      .from("dispute_outcomes")
-      .select("status, amount_recovered")
-      .eq("user_id", userId),
-    supabase
-      .from("documents")
+    userScoped(supabase, userId)
+      .table("dispute_outcomes")
+      .select("status, amount_recovered"),
+    userScoped(supabase, userId)
+      .table("documents")
       .select("id, metadata")
-      .eq("user_id", userId)
       .in("doc_type", ["eob", "itemized_bill"])
       .eq("status", "processed"),
-    supabase
-      .from("documents")
+    userScoped(supabase, userId)
+      .table("documents")
       .select("id, metadata")
-      .eq("user_id", userId)
       .in("doc_type", ["plan_document", "eoc"])
       .eq("status", "processed"),
-    supabase
-      .from("stripe_customers")
+    userScoped(supabase, userId)
+      .table("stripe_customers")
       .select("created_at, subscription_tier, subscription_status, tier_cycle")
-      .eq("user_id", userId)
       .maybeSingle(),
   ]);
 

@@ -18,6 +18,7 @@ import {
 import { loadServerSubscription } from "@/lib/subscription/server";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { assertOwnership } from "@/lib/security/assert-ownership";
+import { userScoped } from "@/lib/security/user-scoped";
 
 export async function GET(req: NextRequest) {
   // B9-1 — Firebase bearer token → users row via the canonical helper. Returns
@@ -63,11 +64,10 @@ export async function GET(req: NextRequest) {
   // can embed it verbatim.
   let letterContent: string | null = null;
   if (disputeId) {
-    const { data: dispute } = await supabase
-      .from("dispute_outcomes")
+    const { data: dispute } = await userScoped(supabase, user.id)
+      .table("dispute_outcomes")
       .select("letter_content")
       .eq("id", disputeId)
-      .eq("user_id", user.id)
       .maybeSingle();
     if (!dispute) {
       // B9-F03 — a provided disputeId must belong to the token user; the

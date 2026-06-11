@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 
 export async function POST(req: NextRequest) {
   try {
@@ -32,10 +33,9 @@ export async function POST(req: NextRequest) {
     }
 
     // Create a support ticket for the CCPA data export request
-    const { error: insertError } = await supabase
-      .from("support_tickets")
+    const { error: insertError } = await userScoped(supabase, user.id)
+      .table("support_tickets")
       .insert({
-        user_id: user.id,
         email: user.email,
         category: "data_export_request",
         subject: "CCPA Data Export Request",
