@@ -30,6 +30,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { reparseField, type ReparseError } from "@/lib/plan/reparse-field";
 import { loadDecorationContext } from "@/lib/plan/analyze-decoration";
@@ -109,11 +110,13 @@ export async function POST(req: NextRequest) {
   // Decoration context — needed to compute final DecoratedValue.state for response.
   // Loads multiSourceThreshold from feature_flag_rules; canonicalSourceCount from
   // canonical_plans.verification_count if userPlan is canonical-mapped.
-  const { data: userPlanCanon } = await supabase
-    .from("insurance_plans")
+  // B9 B1.2 — scope the decoration-context plan read to the owner (closes a latent
+  // foreign-id read; ownership is also re-verified inside reparseField()).
+  const { data: userPlanCanon } = await userScoped(supabase, internalUser.id)
+    .table("insurance_plans")
     .select("canonical_plan_id")
     .eq("id", body.planId)
-    .single();
+    .maybeSingle();
   const decoration = await loadDecorationContext(
     supabase,
     internalUser.email ?? null,

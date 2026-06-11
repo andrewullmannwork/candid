@@ -12,6 +12,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped, adminScoped } from "@/lib/security/user-scoped";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import type { CorrectionField } from "@/lib/supabase/types";
 import { applyPromotionEvent } from "@/lib/parser/promotion-event";
@@ -48,15 +49,19 @@ export async function GET(req: NextRequest) {
   const isAdmin = internalUser.is_admin === true;
   const status = req.nextUrl.searchParams.get("status") || "pending";
 
-  let query = supabase
-    .from("benefit_corrections")
-    .select("*")
+  // B9 B1.2 — a non-admin reads only their own corrections (userScoped injects
+  // .eq("user_id")); an admin reads the cross-user review queue (adminScoped
+  // re-verifies is_admin and is intentionally un-scoped). Op-equivalent to the
+  // prior single query with its branch filter.
+  const adminClient = isAdmin ? await adminScoped(supabase, internalUser.id) : null;
+  let query = (
+    adminClient
+      ? adminClient.table("benefit_corrections").select("*")
+      : userScoped(supabase, internalUser.id).table("benefit_corrections").select("*")
+  )
     .order("created_at", { ascending: false })
     .limit(100);
-
-  if (!isAdmin) {
-    query = query.eq("user_id", internalUser.id);
-  } else if (status !== "all") {
+  if (adminClient && status !== "all") {
     query = query.eq("status", status);
   }
 
@@ -111,10 +116,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "serviceSlug, field, and proposedValue are required" }, { status: 400 });
     }
 
-    const { data: correction, error } = await supabase
-      .from("benefit_corrections")
+    // B9 B1.2 — userScoped stamps user_id (op-equivalent to the prior explicit value).
+    const { data: correction, error } = await userScoped(supabase, internalUser.id)
+      .table("benefit_corrections")
       .insert({
-        user_id: internalUser.id,
         insurance_plan_id: insurancePlanId || null,
         canonical_plan_id: canonicalPlanId || null,
         service_slug: serviceSlug,
@@ -156,8 +161,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "correctionId and decision required" }, { status: 400 });
     }
 
-    const { error } = await supabase
-      .from("benefit_corrections")
+    // B9 B1.2 — admin-authority cross-user update (is_admin verified above; adminScoped re-verifies).
+    const admin = await adminScoped(supabase, internalUser.id);
+    const { error } = await admin
+      .table("benefit_corrections")
       .update({
         status: decision,
         reviewed_by: internalUser.id,
@@ -186,9 +193,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "correctionId required" }, { status: 400 });
     }
 
+    // B9 B1.2 — admin-authority cross-user access (is_admin verified above; adminScoped
+    // re-verifies). One verification, reused for the read here + the status update below.
+    const admin = await adminScoped(supabase, internalUser.id);
+
     // Fetch the correction
-    const { data: correction } = await supabase
-      .from("benefit_corrections")
+    const { data: correction } = await admin
+      .table("benefit_corrections")
       .select("*")
       .eq("id", correctionId)
       .single();
@@ -299,9 +310,9 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Mark as applied
-    await supabase
-      .from("benefit_corrections")
+    // Mark as applied (B9 B1.2 — same admin-authority accessor as the fetch above)
+    await admin
+      .table("benefit_corrections")
       .update({ status: "applied", updated_at: new Date().toISOString() })
       .eq("id", correctionId);
 

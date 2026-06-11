@@ -16,6 +16,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 
 const ALLOWED_FIELDS = [
   "premium_monthly",
@@ -106,12 +107,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  // ── Verify the plan belongs to the caller (defense in depth on top of RLS) ─
-  const { data: plan } = await supabase
-    .from("insurance_plans")
+  // ── Verify the plan belongs to the caller (B9 B1.2: userScoped scopes the read
+  //    to the owner — foreign/unknown id → null → 404; the JS check below stays as
+  //    harmless defense-in-depth) ─────────────────────────────────────────────
+  const { data: plan } = await userScoped(supabase, userRow.id)
+    .table("insurance_plans")
     .select("id, user_id, field_provenance")
     .eq("id", planId)
-    .single();
+    .maybeSingle();
   if (!plan || plan.user_id !== userRow.id) {
     return NextResponse.json(
       { error: "Plan not found or not owned by you" },
@@ -135,9 +138,9 @@ export async function POST(req: NextRequest) {
     },
   };
 
-  // ── Update ──────────────────────────────────────────────────────────────
-  const { error: updateErr } = await supabase
-    .from("insurance_plans")
+  // ── Update (B9 B1.2: userScoped also scopes the write — owner-equivalent + DiD) ─
+  const { error: updateErr } = await userScoped(supabase, userRow.id)
+    .table("insurance_plans")
     .update({ [column]: value, field_provenance: mergedProv })
     .eq("id", planId);
   if (updateErr) {

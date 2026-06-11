@@ -11,6 +11,7 @@
  */
 import {
   userScoped,
+  adminScoped,
   selectOwnedChildren,
   selectOwnedParentIds,
   updateOwnedChildren,
@@ -29,6 +30,16 @@ const DB = {
     { id: "li3", claim_id: "c2", metadata: { c: 3 } },
   ],
   dispute_outcomes: [{ id: "d1", user_id: "u1" }],
+  // adminScoped fixtures: admin1 is an admin, u1 is not; benefit_corrections
+  // owned by two different users (admin must read BOTH; a user only their own).
+  users: [
+    { id: "u1", is_admin: false },
+    { id: "admin1", is_admin: true },
+  ],
+  benefit_corrections: [
+    { id: "bc1", user_id: "u1" },
+    { id: "bc2", user_id: "u2" },
+  ],
 };
 const writes = [];
 const inserts = [];
@@ -248,6 +259,29 @@ check(
       onConflict: "claim_id,id",
     }),
   ),
+);
+
+// 11) adminScoped — admin-authority cross-user access. Reads users.is_admin
+//     (fail-closed): admin → un-scoped builder (sees ALL users' rows, NO user_id
+//     filter); non-admin / unknown / empty → throws. (S192 B1.2 — corrections admin.)
+const adminRows = await (await adminScoped(client, "admin1"))
+  .table("benefit_corrections")
+  .select("*");
+check(
+  "adminScoped: admin reads cross-user (bc1+bc2, NO user_id filter)",
+  Array.isArray(adminRows.data) && adminRows.data.length === 2,
+);
+check(
+  "adminScoped: non-admin (u1) THROWS (fail-closed)",
+  await throws(() => adminScoped(client, "u1")),
+);
+check(
+  "adminScoped: unknown user THROWS (fail-closed)",
+  await throws(() => adminScoped(client, "ghost")),
+);
+check(
+  "adminScoped: empty userId THROWS",
+  await throws(() => adminScoped(client, "")),
 );
 
 if (failures === 0) {

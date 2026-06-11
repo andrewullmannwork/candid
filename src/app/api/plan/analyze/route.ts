@@ -7,6 +7,7 @@ import { decorateFieldFromEntry } from "@/lib/parser/consumer-read";
 import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import { resolveCanonicalSlugs } from "@/lib/parser/canonical-resolution";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
+import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 
 export async function POST(request: NextRequest) {
@@ -22,10 +23,10 @@ export async function POST(request: NextRequest) {
     const supabase = createServerClient();
 
     // Fetch user profile with demographics + plan match
-    const { data: profile, error } = await supabase
-      .from("profiles")
+    // B9 B1.2 — userScoped injects .eq("user_id", userId) (op-equivalent to the prior explicit filter).
+    const { data: profile, error } = await userScoped(supabase, userId)
+      .table("profiles")
       .select("insurer, plan_type, state, date_of_birth, sex, dependents, matched_plan_id, plan_source, active_insurance_plan_id, deductible_individual, oop_max_individual, county_fips")
-      .eq("user_id", userId)
       .single();
 
     if (error || !profile) {
@@ -49,11 +50,13 @@ export async function POST(request: NextRequest) {
     // whyUnderutilized, howToAccess) and overlay with actual cost sharing data
     // from the user's uploaded plan documents.
     if (profile.active_insurance_plan_id) {
-      const { data: userPlan } = await supabase
-        .from("insurance_plans")
+      // B9 B1.2 — scope the active-plan read to the owner (id comes from the user's own
+      // profile; userScoped adds .eq("user_id") → closes a latent foreign read, Pattern-B).
+      const { data: userPlan } = await userScoped(supabase, userId)
+        .table("insurance_plans")
         .select("*")
         .eq("id", profile.active_insurance_plan_id)
-        .single();
+        .maybeSingle();
 
       if (userPlan) {
         // Phase 4 Task 4-B: load consumer-read filter decoration context.
@@ -89,11 +92,21 @@ export async function POST(request: NextRequest) {
           });
         }
 
-        const { data: coveredServices } = await supabase
-          .from("plan_covered_services")
-          .select("*, service_catalog!inner(slug, name, category, merged_into_id)")
-          .eq("insurance_plan_id", userPlan.id)
-          .is("service_catalog.merged_into_id", null);
+        // B9 B1.2 — plan_covered_services has no user_id; read via the parent-join layer
+        // (the parent insurance_plan is owned-verified by construction). The !inner join is
+        // sent via the columns string; the `merged_into_id IS NULL` filter is re-applied in
+        // JS (the primitive takes columns only) — op-equivalent: a foreign plan yields [],
+        // and the owner's row set is identical to the prior query.
+        const coveredRows = await selectOwnedChildren(
+          supabase,
+          userId,
+          "plan_covered_services",
+          [userPlan.id],
+          "*, service_catalog!inner(slug, name, category, merged_into_id)",
+        );
+        const coveredServices = coveredRows.filter(
+          (cs) => (cs.service_catalog?.merged_into_id ?? null) === null,
+        );
 
         // ── S72 commit 5: plan-level access-instructions fallback ──
         // When plan_doc Haiku extracted plan-level customer service phone / network
