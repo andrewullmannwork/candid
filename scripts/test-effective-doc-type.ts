@@ -117,6 +117,7 @@ const tunedConfig: DocTypeOverrideConfig = {
   enabled: true,
   classifier_confidence_override: 0.7, // lowered from default 0.8
   sbc_max_pages: 20,
+  family_refinement_confidence: 0.5, // S195 Rule 1.5 (default value)
 };
 expect(
   "T11 tunable threshold (0.7): user=sbc, classifier=plan_document@0.75 → classifier_high_confidence (below default 0.8 but above tuned 0.7)",

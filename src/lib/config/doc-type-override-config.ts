@@ -51,10 +51,18 @@ export async function loadDocTypeOverrideConfig(
         ? Math.round(raw.sbc_max_pages)
         : DEFAULT_DOC_TYPE_OVERRIDE_CONFIG.sbc_max_pages;
 
+    const familyRefinementConfidence =
+      typeof raw.family_refinement_confidence === "number" &&
+      raw.family_refinement_confidence >= 0 &&
+      raw.family_refinement_confidence <= 1
+        ? raw.family_refinement_confidence
+        : DEFAULT_DOC_TYPE_OVERRIDE_CONFIG.family_refinement_confidence;
+
     return {
       enabled,
       classifier_confidence_override: classifierConfidenceOverride,
       sbc_max_pages: sbcMaxPages,
+      family_refinement_confidence: familyRefinementConfidence,
     };
   } catch (err) {
     console.warn("[doc-type-override-config] load failed, using defaults:", err);

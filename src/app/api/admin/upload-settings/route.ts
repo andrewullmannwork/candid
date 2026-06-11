@@ -6,6 +6,9 @@
  *   - enabled (boolean): kill switch; when false, all overrides bypassed
  *   - classifier_confidence_override (0-1 float): Rule 1 threshold (default 0.8)
  *   - sbc_max_pages (positive integer): Rule 2 SBC-max ceiling (default 20)
+ *   - family_refinement_confidence (0-1 float): Rule 1.5 plan-family refinement
+ *     threshold (default 0.5; S195). OPTIONAL in POST — absent preserves the
+ *     stored value so the pre-S195 admin UI keeps saving non-destructively.
  *
  * S91 — admin tuning surface for the doc-type resolver. See
  * `src/lib/documents/effective-doc-type.ts` + `src/lib/config/doc-type-override-config.ts`.
@@ -60,6 +63,8 @@ function rowToResponse(row: FlagRow | null) {
       classifier_confidence_override:
         DEFAULT_DOC_TYPE_OVERRIDE_CONFIG.classifier_confidence_override,
       sbc_max_pages: DEFAULT_DOC_TYPE_OVERRIDE_CONFIG.sbc_max_pages,
+      family_refinement_confidence:
+        DEFAULT_DOC_TYPE_OVERRIDE_CONFIG.family_refinement_confidence,
       rowExists: false,
       description: null as string | null,
     };
@@ -75,6 +80,10 @@ function rowToResponse(row: FlagRow | null) {
       typeof raw.sbc_max_pages === "number"
         ? raw.sbc_max_pages
         : DEFAULT_DOC_TYPE_OVERRIDE_CONFIG.sbc_max_pages,
+    family_refinement_confidence:
+      typeof raw.family_refinement_confidence === "number"
+        ? raw.family_refinement_confidence
+        : DEFAULT_DOC_TYPE_OVERRIDE_CONFIG.family_refinement_confidence,
     rowExists: true,
     description: row.description,
   };
@@ -137,10 +146,18 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const config = {
-    classifier_confidence_override: classifierConfidenceOverride,
-    sbc_max_pages: Math.round(sbcMaxPages),
-  };
+  // OPTIONAL (S195): absent → preserve the stored value, so the pre-S195 admin
+  // UI's whole-config overwrite can't silently reset the knob to default.
+  const famRefRaw = body.family_refinement_confidence;
+  if (
+    famRefRaw !== undefined &&
+    (typeof famRefRaw !== "number" || famRefRaw < 0 || famRefRaw > 1)
+  ) {
+    return NextResponse.json(
+      { error: "family_refinement_confidence must be a number between 0 and 1" },
+      { status: 400 },
+    );
+  }
 
   const supabase = createServerClient();
   const { data: existing } = await supabase
@@ -148,6 +165,20 @@ export async function POST(req: NextRequest) {
     .select("enabled, config")
     .eq("flag_key", FLAG_KEY)
     .maybeSingle();
+
+  const existingConfig = ((existing?.config ?? {}) as Record<string, unknown>);
+  const familyRefinementConfidence =
+    typeof famRefRaw === "number"
+      ? famRefRaw
+      : typeof existingConfig.family_refinement_confidence === "number"
+        ? (existingConfig.family_refinement_confidence as number)
+        : DEFAULT_DOC_TYPE_OVERRIDE_CONFIG.family_refinement_confidence;
+
+  const config = {
+    classifier_confidence_override: classifierConfidenceOverride,
+    sbc_max_pages: Math.round(sbcMaxPages),
+    family_refinement_confidence: familyRefinementConfidence,
+  };
 
   let upsertError;
   if (existing) {
@@ -177,7 +208,7 @@ export async function POST(req: NextRequest) {
     adminEmail: auth.adminEmail,
     action: "upload_settings.update",
     targetTable: "feature_flag_rules",
-    details: `flag_key=${FLAG_KEY} enabled=${enabled} classifier_confidence_override=${config.classifier_confidence_override} sbc_max_pages=${config.sbc_max_pages}`,
+    details: `flag_key=${FLAG_KEY} enabled=${enabled} classifier_confidence_override=${config.classifier_confidence_override} sbc_max_pages=${config.sbc_max_pages} family_refinement_confidence=${config.family_refinement_confidence}`,
   });
 
   return NextResponse.json({
@@ -185,6 +216,7 @@ export async function POST(req: NextRequest) {
     enabled,
     classifier_confidence_override: config.classifier_confidence_override,
     sbc_max_pages: config.sbc_max_pages,
+    family_refinement_confidence: config.family_refinement_confidence,
     rowExists: true,
   });
 }
