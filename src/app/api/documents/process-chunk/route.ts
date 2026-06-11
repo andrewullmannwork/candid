@@ -20,6 +20,7 @@ import { assessAdversarialPdf } from "@/lib/parser/adversarial-pdf-ingest";
 import { computeContentFingerprint } from "@/lib/parser/id-block/content-fingerprint";
 import { processPlanDocumentData, type ProcessPlanResult } from "@/lib/plan/process-plan";
 import { processEOCDocumentData } from "@/lib/plan/process-eoc";
+import { resolvePlanFamilyDispatch } from "@/lib/documents/plan-family-dispatch";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { getUserContextByPk } from "@/lib/users/resolve-user-by-pk";
 import { parseBillFromOCR } from "@/lib/billing/parser";
@@ -405,15 +406,13 @@ const CONFIDENCE_LOW = 0.4;
 /**
  * Phase 3.1A — dispatcher for plan-doc OR EOC processing.
  *
- * Three responsibilities:
- *   1. Image-PDF refusal (Q-P3.1A-12 LOCK): if classifiedType=='eoc' AND ocrText is
- *      degraded (<EOC_MIN_TEXT_CHARS), mark document rejected_image_eoc + surface
- *      UI prompt; do NOT invoke EOC parser (cost ceiling per Q-P3.1A-6).
- *   2. Feature-flag gate (Q-P3.1A-10 LOCK): if classifiedType=='eoc' AND
- *      eoc_parser_v1 flag OFF for this user, fall through to legacy plan-doc-parser
- *      (gives plan-identity extraction without EOC-specific section parsing).
- *   3. Otherwise: invoke processPlanDocumentData (existing legacy path) for sbc,
- *      plan_document, and EOC-with-flag-OFF.
+ * The ROUTING DECISION is the pure `resolvePlanFamilyDispatch`
+ * (`src/lib/documents/plan-family-dispatch.ts`) — flag precedence, image-PDF
+ * refusal floors, and the unified/legacy coercion contract live there with a
+ * fixture-backed truth table (incl. the S195 fix: `eoc_parser_v1` ON now wins
+ * over the `unified_plan_doc_parser_v1` short-circuit that had made the EOC
+ * parser unreachable in PROD). This wrapper owns the I/O: flag lookups, the
+ * refusal DB writes + log lines, and the parser invocations.
  */
 async function dispatchPlanOrEOC(args: {
   supabase: ReturnType<typeof createServerClient>;
@@ -425,88 +424,31 @@ async function dispatchPlanOrEOC(args: {
 }): Promise<ProcessPlanResult> {
   const { supabase, doc, ocrText, documentId, classification, skipCanonical } = args;
 
-  // S93 Stage 3 — unified plan_doc dispatch (mig 101).
-  // When unified_plan_doc_parser_v1 ON for the user, all plan-doc-family
-  // classifications (sbc, eoc, plan_document) route through the Haiku-first
-  // plan_doc parser. Layout detector + federal-SBC supplement (Stage 3a from
-  // S92 PR #76) handle SBC-specific extraction patterns automatically.
-  // EOCs detect as full_eoc_narrative so the supplement does NOT inject —
-  // code path identical to today's plan_doc Haiku-first behavior.
-  //
-  // OFF (default) preserves the legacy per-classification routing below.
-  // Andrew flips ON for himself first via /admin/flags before global rollout
-  // (per Stage 3 v1 ROLLOUT spec in mig 101 description).
   const planDocFamily =
     classification.classifiedType === "sbc" ||
     classification.classifiedType === "eoc" ||
     classification.classifiedType === "plan_document";
   if (planDocFamily) {
-    const userForUnified = await getUserContextByPk(supabase, doc.user_id, "process-chunk:unified_plan_doc_parser_v1");
-    const unifiedEnabled = await isFeatureEnabled(
-      "unified_plan_doc_parser_v1",
-      userForUnified?.email || undefined,
-    );
-    if (unifiedEnabled) {
-      // Image-PDF refusal still fires (mirrors legacy gates below) — protects
-      // against scanned-image inputs that produce garbage OCR + confident-but-
-      // wrong values that poison the canonical seed.
-      if (
-        classification.classifiedType === "sbc" &&
-        ocrText.length < SBC_MIN_TEXT_CHARS
-      ) {
-        const reason = `SBC document appears to be a scanned image (only ${ocrText.length} chars of text extracted). Please upload a text-based PDF version from your insurer's portal for accurate processing.`;
-        console.warn(`[process-chunk] ${reason} (documentId=${documentId})`);
-        await supabase
-          .from("documents")
-          .update({
-            status: "error",
-            processing_error: reason,
-            processing_step: "rejected_image_sbc",
-          })
-          .eq("id", documentId);
-        return { success: false, error: reason, parseWarnings: [reason] };
-      }
-      if (
-        classification.classifiedType === "eoc" &&
-        ocrText.length < EOC_MIN_TEXT_CHARS
-      ) {
-        const reason = `EOC document appears to be a scanned image (only ${ocrText.length} chars of text extracted). Please upload a text-based PDF version from your insurer's portal for accurate processing.`;
-        console.warn(`[process-chunk] ${reason} (documentId=${documentId})`);
-        await supabase
-          .from("documents")
-          .update({
-            status: "error",
-            processing_error: reason,
-            processing_step: "rejected_image_eoc",
-          })
-          .eq("id", documentId);
-        return { success: false, error: reason, parseWarnings: [reason] };
-      }
-      console.log(
-        `[process-chunk] unified_plan_doc_parser_v1 ON — routing ${classification.classifiedType} through plan_doc parser`,
-      );
-      // Coerce classifiedType to 'plan_document' so processPlanDocumentData's
-      // isFullPlanDoc=true branch fires (line ~207) → routes to plan_doc
-      // parser via parsePlanDocumentWithMeta. SBC parser branch (sbc_parser_v1)
-      // is bypassed — DR-3C voting + service_catalog admin-queue enqueue NOT
-      // applied for SBCs under unified flag. Trade-off accepted in Stage 3 v1
-      // (federal-SBC supplement preserves extraction quality at 88.8% > 86.8%
-      // SBC parser baseline empirically; voting+enqueue can be ported to
-      // plan_doc later if telemetry shows either is load-bearing).
-      return processPlanDocumentData(
-        supabase,
-        doc,
-        ocrText,
-        documentId,
-        { ...classification, classifiedType: "plan_document" },
-        { skipCanonical },
-      );
-    }
-  }
+    // One user-context fetch feeds both flag lookups (pre-S195 each branch did
+    // its own fetch of the same column — read-only, op-equivalent).
+    const userCtx = await getUserContextByPk(supabase, doc.user_id, "process-chunk:plan-family-dispatch");
+    const email = userCtx?.email || undefined;
+    const unifiedEnabled = await isFeatureEnabled("unified_plan_doc_parser_v1", email);
+    const eocParserEnabled =
+      classification.classifiedType === "eoc"
+        ? await isFeatureEnabled("eoc_parser_v1", email)
+        : false;
 
-  if (classification.classifiedType === "eoc") {
-    // 1. Image-PDF refusal per Q-P3.1A-12 LOCK.
-    if (ocrText.length < EOC_MIN_TEXT_CHARS) {
+    const decision = resolvePlanFamilyDispatch({
+      classifiedType: classification.classifiedType,
+      ocrTextLength: ocrText.length,
+      unifiedEnabled,
+      eocParserEnabled,
+      sbcMinTextChars: SBC_MIN_TEXT_CHARS,
+      eocMinTextChars: EOC_MIN_TEXT_CHARS,
+    });
+
+    if (decision.route === "reject_image_eoc") {
       const reason = `EOC document appears to be a scanned image (only ${ocrText.length} chars of text extracted). Please upload a text-based PDF version from your insurer's portal for accurate processing.`;
       console.warn(`[process-chunk] ${reason} (documentId=${documentId})`);
       await supabase
@@ -519,50 +461,45 @@ async function dispatchPlanOrEOC(args: {
         .eq("id", documentId);
       return { success: false, error: reason, parseWarnings: [reason] };
     }
-
-    // 2. Feature-flag gate per Q-P3.1A-10 LOCK.
-    const userForFlag = await getUserContextByPk(supabase, doc.user_id, "process-chunk:eoc_parser_v1");
-    const eocEnabled = await isFeatureEnabled("eoc_parser_v1", userForFlag?.email || undefined);
-
-    if (eocEnabled) {
+    if (decision.route === "reject_image_sbc") {
+      const reason = `SBC document appears to be a scanned image (only ${ocrText.length} chars of text extracted). Please upload a text-based PDF version from your insurer's portal for accurate processing.`;
+      console.warn(`[process-chunk] ${reason} (documentId=${documentId})`);
+      await supabase
+        .from("documents")
+        .update({
+          status: "error",
+          processing_error: reason,
+          processing_step: "rejected_image_sbc",
+        })
+        .eq("id", documentId);
+      return { success: false, error: reason, parseWarnings: [reason] };
+    }
+    if (decision.route === "eoc_parser") {
       console.log(`[process-chunk] EOC parser v1 ENABLED for user. Routing to processEOCDocumentData.`);
       return processEOCDocumentData(supabase, { doc, ocrText, documentId, classification });
     }
-
-    // Flag OFF — fall through to legacy plan-doc-parser path so EOC docs still get
-    // plan-identity extraction. Coerce classifiedType to 'plan_document' for the
-    // legacy classifier branch (since processPlanDocumentData uses isFullPlanDoc=true
-    // for plan_document AND eoc with current logic).
-    console.log(`[process-chunk] EOC parser v1 DISABLED for user. Falling back to legacy plan-doc-parser.`);
+    // decision.route === "plan_doc_parser"
+    if (decision.via === "unified") {
+      console.log(
+        `[process-chunk] unified_plan_doc_parser_v1 ON — routing ${classification.classifiedType} through plan_doc parser`,
+      );
+    } else if (decision.via === "eoc_flag_off") {
+      console.log(`[process-chunk] EOC parser v1 DISABLED for user. Falling back to legacy plan-doc-parser.`);
+    }
     return processPlanDocumentData(
       supabase,
       doc,
       ocrText,
       documentId,
-      { ...classification, classifiedType: "plan_document" },
+      decision.coerceToPlanDocument
+        ? { ...classification, classifiedType: "plan_document" }
+        : classification,
       { skipCanonical },
     );
   }
 
-  // Bundle PR #1 (Session 55, audit item #17) — image-PDF refusal for SBC.
-  // EOC has analogous refusal above; SBC was unprotected. Without this, scanned-image
-  // SBCs hit Haiku with garbage OCR and produce confident-but-wrong values that
-  // poison the canonical seed. T0.4 retry button surfaces the explicit error to user.
-  if (classification.classifiedType === "sbc" && ocrText.length < SBC_MIN_TEXT_CHARS) {
-    const reason = `SBC document appears to be a scanned image (only ${ocrText.length} chars of text extracted). Please upload a text-based PDF version from your insurer's portal for accurate processing.`;
-    console.warn(`[process-chunk] ${reason} (documentId=${documentId})`);
-    await supabase
-      .from("documents")
-      .update({
-        status: "error",
-        processing_error: reason,
-        processing_step: "rejected_image_sbc",
-      })
-      .eq("id", documentId);
-    return { success: false, error: reason, parseWarnings: [reason] };
-  }
-
-  // Non-EOC types: existing legacy path.
+  // Non-family types (defensive — process-chunk only calls this for the family):
+  // existing legacy path, classification untouched.
   return processPlanDocumentData(supabase, doc, ocrText, documentId, classification, { skipCanonical });
 }
 

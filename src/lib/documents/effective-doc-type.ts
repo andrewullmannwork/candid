@@ -3,13 +3,22 @@
  * actually use, given a user's pick from the upload form + the quick-classifier's
  * verdict + confidence + page count.
  *
- * Two rules, in priority order:
+ * Three rules, in priority order:
  *
  *   Rule 1 (PRIMARY) — Classifier high-confidence override:
  *     If classifierConfidence >= CLASSIFIER_CONFIDENCE_OVERRIDE AND classifier
  *     disagrees with user, use the classifier's verdict.
  *     Catches: user picks "SBC" on a 150-page EOC; user picks "EOB" on an
  *     itemized bill; user picks "Plan Doc" on a 6-page actual SBC; etc.
+ *
+ *   Rule 1.5 (REFINEMENT, S195) — Plan-family refinement to EOC:
+ *     If user picked the GENERIC "plan_document" card and the classifier says
+ *     eoc at >= FAMILY_REFINEMENT_CONFIDENCE with long-form page corroboration
+ *     (pages > sbc_max_pages), adopt eoc. A plan_document pick is not a vote
+ *     against its own subtypes — the picker card's copy explicitly covers
+ *     "SBC, EOC, or plan booklet". eoc-ONLY by design: plan_document → sbc
+ *     stays at Rule 1's full bar (S91 SOB-protection lock, test T5 — same
+ *     rationale as Rule 2's asymmetry note below).
  *
  *   Rule 2 (SAFETY NET) — SBC max-pages override:
  *     If user picks SBC AND pageCount > SBC_MAX_PAGES, force plan_document.
@@ -47,6 +56,7 @@ export type OverrideReason =
   | "user_pick" // classifier agreed with user; no override
   | "user_pick_classifier_low_confidence" // classifier disagreed but conf < threshold
   | "classifier_high_confidence" // Rule 1 fired
+  | "family_refinement" // Rule 1.5 fired — generic plan_document pick refined to the classifier's family subtype
   | "page_count_safety_net" // Rule 2 fired
   | "feature_disabled"; // kill switch — flag disabled; trust user pick always
 
@@ -57,12 +67,21 @@ export interface DocTypeOverrideConfig {
   classifier_confidence_override: number;
   /** Max page count for an SBC; over this triggers the safety net. Default 20. */
   sbc_max_pages: number;
+  /**
+   * Minimum classifier confidence (0-1) for Rule 1.5 plan-family refinement —
+   * a `plan_document` pick adopting the classifier's `eoc` verdict with
+   * long-form page corroboration (pages > sbc_max_pages). Deliberately below
+   * Rule 1's bar: the generic family pick carries no signal AGAINST the eoc
+   * subtype. eoc-only (S91 SOB-protection keeps sbc at Rule 1). Default 0.5.
+   */
+  family_refinement_confidence: number;
 }
 
 export const DEFAULT_DOC_TYPE_OVERRIDE_CONFIG: DocTypeOverrideConfig = {
   enabled: true,
   classifier_confidence_override: 0.8,
   sbc_max_pages: 20,
+  family_refinement_confidence: 0.5,
 };
 
 export interface DocTypeResolution {
@@ -133,6 +152,37 @@ export function resolveEffectiveDocType(
       ...baseResolution,
       effectiveDocType: classifierType as ClassifiedDocType,
       overrideReason: "classifier_high_confidence",
+    };
+  }
+
+  // Rule 1.5 — Plan-family refinement to EOC (S195).
+  // "Plan Document" is the picker's GENERIC family card — its own copy tells
+  // users EOCs belong there — so a plan_document pick carries no signal
+  // AGAINST the eoc subtype. Treat the classifier's eoc verdict as a
+  // refinement, not a disagreement: a lower confidence bar than Rule 1,
+  // corroborated by page count the way Rule 2 uses it (eoc is long-form →
+  // pages must exceed the SBC ceiling; pageCount 0 = unknown → never refine).
+  // Without this, a real EOC uploaded under the generic card resolved
+  // plan_document at sub-Rule-1 classifier confidence (observed S195:
+  // eoc@0.69 vs the 0.95 PROD bar) and the dedicated EOC parser was
+  // unreachable for it.
+  //
+  // DELIBERATELY eoc-only — NO sbc arm. Refining plan_document → sbc on
+  // moderate confidence would route SOB/SPD look-alikes into SBC-specific
+  // handling; that is the S91 "SOB protection" lock (test T5) and the same
+  // rationale as Rule 2's documented asymmetry (short plan docs are
+  // legitimately diverse; long-form + classifier-eoc is the only objective
+  // refinement signal). sbc adoption keeps Rule 1's full bar.
+  if (
+    userPick === "plan_document" &&
+    classifierType === "eoc" &&
+    classifierConfidence >= config.family_refinement_confidence &&
+    pageCount > config.sbc_max_pages
+  ) {
+    return {
+      ...baseResolution,
+      effectiveDocType: "eoc",
+      overrideReason: "family_refinement",
     };
   }
 

@@ -472,6 +472,7 @@ export async function POST(req: NextRequest) {
         override_reason: resolution.overrideReason,
         config_classifier_confidence_override: overrideConfig.classifier_confidence_override,
         config_sbc_max_pages: overrideConfig.sbc_max_pages,
+        config_family_refinement_confidence: overrideConfig.family_refinement_confidence,
         config_enabled: overrideConfig.enabled,
         resolved_at: new Date().toISOString(),
       };
