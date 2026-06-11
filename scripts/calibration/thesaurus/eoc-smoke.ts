@@ -73,7 +73,10 @@ interface Cli {
 }
 // The 6 dispatchable hints (parser SECTION_CONFIGS keys; the other EOCSectionHint members are
 // DO_NOT_EXTRACT/other markers). Typed against the exported union so a hint rename breaks tsc here.
-const DISPATCHABLE_SECTIONS: EOCSectionHint[] = [
+const DISPATCHABLE_SECTIONS: (EOCSectionHint | "prior_auth_prose")[] = [
+  // S193 D-P2-4: prior_auth_prose is the prose-PA leg's FILTER KEY (not a region hint) — it
+  // dispatches the MN extractor over the prior_auth_codes REGION while Section A stays filterable.
+  "prior_auth_prose",
   "prior_auth_codes",
   "medical_necessity",
   "appeals_procedures",
@@ -115,7 +118,7 @@ function parseCli(argv: string[]): Cli {
   if (cli.sections) {
     if (cli.sections.length === 0) throw new Error("--sections: empty list");
     for (const s of cli.sections) {
-      if (!DISPATCHABLE_SECTIONS.includes(s)) throw new Error(`--sections: unknown section "${s}" (valid: ${DISPATCHABLE_SECTIONS.join(",")})`);
+      if (!DISPATCHABLE_SECTIONS.includes(s as EOCSectionHint | "prior_auth_prose")) throw new Error(`--sections: unknown section "${s}" (valid: ${DISPATCHABLE_SECTIONS.join(",")})`);
     }
   }
   if (cli.inputs.length === 0) throw new Error("no input files/dirs given");
