@@ -14,6 +14,8 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import type { CorrectionField } from "@/lib/supabase/types";
+import { applyPromotionEvent } from "@/lib/parser/promotion-event";
+import { coerceComponent, type CoverageComponent } from "@/lib/plan/coverage-targeting";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -201,59 +203,99 @@ export async function POST(req: NextRequest) {
     }
 
     if (correction.canonical_plan_id) {
-      const updateData: Record<string, unknown> = {};
-      const value = correction.proposed_value;
+      // 'other' is free-text → genuinely needs human judgment (no typed field to map to). Every
+      // structured field — including annual_limit (mig 157 added its apply_promotion_event arm) —
+      // routes through the canonical write authority below.
+      if (correction.field === "other") {
+        return NextResponse.json(
+          { error: "Corrections with field type 'other' cannot be auto-applied. Review the notes and update the canonical plan manually." },
+          { status: 400 },
+        );
+      }
 
+      // Map the correction field → apply_promotion_event field name + a typed JSON value.
+      const value = correction.proposed_value as string;
+      let fieldName: string;
+      let promotedValue: unknown;
       switch (correction.field) {
         case "copay": {
           const parsed = parseFloat(value.replace(/[$,]/g, ""));
           if (isNaN(parsed)) return NextResponse.json({ error: "Invalid copay value — must be a number" }, { status: 400 });
-          updateData.copay = parsed;
-          break;
+          fieldName = "copay"; promotedValue = parsed; break;
         }
         case "coinsurance": {
           const parsed = parseFloat(value.replace(/%/g, ""));
           if (isNaN(parsed)) return NextResponse.json({ error: "Invalid coinsurance value — must be a number" }, { status: 400 });
-          // Normalize: if user entered 20 (percent), store as 0.20
-          updateData.coinsurance = parsed > 1 ? parsed / 100 : parsed;
-          break;
+          // Normalize percent → fraction (apply_promotion_event also clamps to [0,1]).
+          fieldName = "coinsurance"; promotedValue = parsed > 1 ? parsed / 100 : parsed; break;
         }
         case "covered":
-          updateData.is_covered = value.toLowerCase() === "true" || value.toLowerCase() === "yes";
-          break;
+          fieldName = "is_covered"; promotedValue = value.toLowerCase() === "true" || value.toLowerCase() === "yes"; break;
         case "prior_auth":
-          updateData.requires_prior_auth = value.toLowerCase() === "true" || value.toLowerCase() === "yes";
-          break;
+          fieldName = "requires_prior_auth"; promotedValue = value.toLowerCase() === "true" || value.toLowerCase() === "yes"; break;
         case "deductible_applies":
-          updateData.deductible_applies = value.toLowerCase() === "true" || value.toLowerCase() === "yes";
-          break;
+          fieldName = "deductible_applies"; promotedValue = value.toLowerCase() === "true" || value.toLowerCase() === "yes"; break;
         case "annual_limit": {
           const parsed = parseInt(value.replace(/[,$]/g, ""), 10);
           if (isNaN(parsed)) return NextResponse.json({ error: "Invalid annual limit — must be a number" }, { status: 400 });
-          updateData.annual_limit = parsed;
-          break;
+          fieldName = "annual_limit"; promotedValue = parsed; break;
         }
+        default:
+          return NextResponse.json({ error: `Unsupported correction field '${correction.field}'.` }, { status: 400 });
       }
 
-      if (correction.field === "other") {
-        // "Other" corrections require manual admin intervention — cannot auto-apply to DB
-        return NextResponse.json({ error: "Corrections with field type 'other' cannot be auto-applied. Review the notes and update the plan manually." }, { status: 400 });
-      }
-
-      if (Object.keys(updateData).length > 0) {
-        updateData.confidence = 1.0; // Admin-applied = highest confidence
-        updateData.source = "admin";
-
-        const { error: updateError } = await supabase
+      // Resolve the ONE cost-share cell to correct — never over-write all pos/component variants.
+      // Priority: the cell the user flagged (captured at submit, mig 157) → the sole existing cell
+      // → base (any, global) when none exist yet. A multi-cell service with no captured cell is
+      // rejected rather than guessed (no silent corruption of the other variants).
+      let targetPos: string | null = (correction.place_of_service as string | null) ?? null;
+      let targetComponent: CoverageComponent | null = correction.component
+        ? coerceComponent(correction.component)
+        : null;
+      if (!targetPos || !targetComponent) {
+        const { data: cells } = await supabase
           .from("canonical_plan_services")
-          .update(updateData)
+          .select("place_of_service, component")
           .eq("canonical_plan_id", correction.canonical_plan_id)
           .eq("service_slug", correction.service_slug);
-
-        if (updateError) {
-          console.error("[corrections] Apply error:", updateError);
-          return NextResponse.json({ error: "Failed to apply correction" }, { status: 500 });
+        if (!cells || cells.length === 0) {
+          targetPos = "any";
+          targetComponent = "global";
+        } else if (cells.length === 1) {
+          targetPos = (cells[0].place_of_service as string) ?? "any";
+          targetComponent = coerceComponent(cells[0].component);
+        } else {
+          return NextResponse.json(
+            { error: `This service has ${cells.length} cost-sharing variants (e.g. facility vs professional). Re-submit the correction from the specific benefit row, or apply it manually — applying one value to all variants would corrupt the others.` },
+            { status: 409 },
+          );
         }
+      }
+
+      // Route through the canonical write authority: cell-targeted (4-col), typed column +
+      // field_provenance synced atomically, audited as an admin_override (source='admin_attested').
+      const sources = [{
+        user_id_hash: `admin:${internalUser.id}`,
+        excerpt: correction.notes || `Admin-applied benefit correction ${correctionId}`,
+        document_ref: `benefit_correction:${correctionId}`,
+        recorded_at: new Date().toISOString(),
+      }];
+      const { eventId, error: applyError } = await applyPromotionEvent(
+        supabase,
+        correction.canonical_plan_id,
+        correction.service_slug,
+        fieldName,
+        promotedValue,
+        sources,
+        "admin-ui",
+        internalUser.id,
+        "admin_override",
+        targetPos ?? "any",
+        targetComponent ?? "global",
+      );
+      if (applyError || !eventId) {
+        console.error("[corrections] Apply error:", applyError);
+        return NextResponse.json({ error: "Failed to apply correction" }, { status: 500 });
       }
     }
 

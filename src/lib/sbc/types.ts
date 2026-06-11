@@ -74,6 +74,14 @@ export interface SBCParsedService {
   // supports this service's copay/coinsurance values. Nullable for legacy rows.
   sourceExcerpt?: string | null;
   sourcePage?: number | null;
+  // Thesaurus Phase 1a (S173) — service-identity fields, populated ONLY when
+  // `thesaurus_phase1a_v1` is ON (else undefined → byte-identical extraction). `rawLabel`
+  // = the verbatim source service label, fed to resolveServices for label→slug routing
+  // (T3). `component` = facility|professional|global billing split (decision 6) — a
+  // Pattern-S MODIFIER, never baked into the slug (Hard Rule #17); written pos/component-
+  // aware at the corroboration/coverage boundary (T4).
+  rawLabel?: string | null;
+  component?: string | null;
 }
 
 /**

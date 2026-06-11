@@ -1,0 +1,413 @@
+## CACHE PADDING (NON-OPERATIVE) - cache_pad_v1
+This block exists only to enable Anthropic prompt caching by lifting the static prompt
+prefix above the minimum cacheable length. It contains no instructions and no document
+content. The task instructions begin after the END CACHE PADDING marker.
+Padding line 1 of 262. No operational content.
+Padding line 2 of 262. No operational content.
+Padding line 3 of 262. No operational content.
+Padding line 4 of 262. No operational content.
+Padding line 5 of 262. No operational content.
+Padding line 6 of 262. No operational content.
+Padding line 7 of 262. No operational content.
+Padding line 8 of 262. No operational content.
+Padding line 9 of 262. No operational content.
+Padding line 10 of 262. No operational content.
+Padding line 11 of 262. No operational content.
+Padding line 12 of 262. No operational content.
+Padding line 13 of 262. No operational content.
+Padding line 14 of 262. No operational content.
+Padding line 15 of 262. No operational content.
+Padding line 16 of 262. No operational content.
+Padding line 17 of 262. No operational content.
+Padding line 18 of 262. No operational content.
+Padding line 19 of 262. No operational content.
+Padding line 20 of 262. No operational content.
+Padding line 21 of 262. No operational content.
+Padding line 22 of 262. No operational content.
+Padding line 23 of 262. No operational content.
+Padding line 24 of 262. No operational content.
+Padding line 25 of 262. No operational content.
+Padding line 26 of 262. No operational content.
+Padding line 27 of 262. No operational content.
+Padding line 28 of 262. No operational content.
+Padding line 29 of 262. No operational content.
+Padding line 30 of 262. No operational content.
+Padding line 31 of 262. No operational content.
+Padding line 32 of 262. No operational content.
+Padding line 33 of 262. No operational content.
+Padding line 34 of 262. No operational content.
+Padding line 35 of 262. No operational content.
+Padding line 36 of 262. No operational content.
+Padding line 37 of 262. No operational content.
+Padding line 38 of 262. No operational content.
+Padding line 39 of 262. No operational content.
+Padding line 40 of 262. No operational content.
+Padding line 41 of 262. No operational content.
+Padding line 42 of 262. No operational content.
+Padding line 43 of 262. No operational content.
+Padding line 44 of 262. No operational content.
+Padding line 45 of 262. No operational content.
+Padding line 46 of 262. No operational content.
+Padding line 47 of 262. No operational content.
+Padding line 48 of 262. No operational content.
+Padding line 49 of 262. No operational content.
+Padding line 50 of 262. No operational content.
+Padding line 51 of 262. No operational content.
+Padding line 52 of 262. No operational content.
+Padding line 53 of 262. No operational content.
+Padding line 54 of 262. No operational content.
+Padding line 55 of 262. No operational content.
+Padding line 56 of 262. No operational content.
+Padding line 57 of 262. No operational content.
+Padding line 58 of 262. No operational content.
+Padding line 59 of 262. No operational content.
+Padding line 60 of 262. No operational content.
+Padding line 61 of 262. No operational content.
+Padding line 62 of 262. No operational content.
+Padding line 63 of 262. No operational content.
+Padding line 64 of 262. No operational content.
+Padding line 65 of 262. No operational content.
+Padding line 66 of 262. No operational content.
+Padding line 67 of 262. No operational content.
+Padding line 68 of 262. No operational content.
+Padding line 69 of 262. No operational content.
+Padding line 70 of 262. No operational content.
+Padding line 71 of 262. No operational content.
+Padding line 72 of 262. No operational content.
+Padding line 73 of 262. No operational content.
+Padding line 74 of 262. No operational content.
+Padding line 75 of 262. No operational content.
+Padding line 76 of 262. No operational content.
+Padding line 77 of 262. No operational content.
+Padding line 78 of 262. No operational content.
+Padding line 79 of 262. No operational content.
+Padding line 80 of 262. No operational content.
+Padding line 81 of 262. No operational content.
+Padding line 82 of 262. No operational content.
+Padding line 83 of 262. No operational content.
+Padding line 84 of 262. No operational content.
+Padding line 85 of 262. No operational content.
+Padding line 86 of 262. No operational content.
+Padding line 87 of 262. No operational content.
+Padding line 88 of 262. No operational content.
+Padding line 89 of 262. No operational content.
+Padding line 90 of 262. No operational content.
+Padding line 91 of 262. No operational content.
+Padding line 92 of 262. No operational content.
+Padding line 93 of 262. No operational content.
+Padding line 94 of 262. No operational content.
+Padding line 95 of 262. No operational content.
+Padding line 96 of 262. No operational content.
+Padding line 97 of 262. No operational content.
+Padding line 98 of 262. No operational content.
+Padding line 99 of 262. No operational content.
+Padding line 100 of 262. No operational content.
+Padding line 101 of 262. No operational content.
+Padding line 102 of 262. No operational content.
+Padding line 103 of 262. No operational content.
+Padding line 104 of 262. No operational content.
+Padding line 105 of 262. No operational content.
+Padding line 106 of 262. No operational content.
+Padding line 107 of 262. No operational content.
+Padding line 108 of 262. No operational content.
+Padding line 109 of 262. No operational content.
+Padding line 110 of 262. No operational content.
+Padding line 111 of 262. No operational content.
+Padding line 112 of 262. No operational content.
+Padding line 113 of 262. No operational content.
+Padding line 114 of 262. No operational content.
+Padding line 115 of 262. No operational content.
+Padding line 116 of 262. No operational content.
+Padding line 117 of 262. No operational content.
+Padding line 118 of 262. No operational content.
+Padding line 119 of 262. No operational content.
+Padding line 120 of 262. No operational content.
+Padding line 121 of 262. No operational content.
+Padding line 122 of 262. No operational content.
+Padding line 123 of 262. No operational content.
+Padding line 124 of 262. No operational content.
+Padding line 125 of 262. No operational content.
+Padding line 126 of 262. No operational content.
+Padding line 127 of 262. No operational content.
+Padding line 128 of 262. No operational content.
+Padding line 129 of 262. No operational content.
+Padding line 130 of 262. No operational content.
+Padding line 131 of 262. No operational content.
+Padding line 132 of 262. No operational content.
+Padding line 133 of 262. No operational content.
+Padding line 134 of 262. No operational content.
+Padding line 135 of 262. No operational content.
+Padding line 136 of 262. No operational content.
+Padding line 137 of 262. No operational content.
+Padding line 138 of 262. No operational content.
+Padding line 139 of 262. No operational content.
+Padding line 140 of 262. No operational content.
+Padding line 141 of 262. No operational content.
+Padding line 142 of 262. No operational content.
+Padding line 143 of 262. No operational content.
+Padding line 144 of 262. No operational content.
+Padding line 145 of 262. No operational content.
+Padding line 146 of 262. No operational content.
+Padding line 147 of 262. No operational content.
+Padding line 148 of 262. No operational content.
+Padding line 149 of 262. No operational content.
+Padding line 150 of 262. No operational content.
+Padding line 151 of 262. No operational content.
+Padding line 152 of 262. No operational content.
+Padding line 153 of 262. No operational content.
+Padding line 154 of 262. No operational content.
+Padding line 155 of 262. No operational content.
+Padding line 156 of 262. No operational content.
+Padding line 157 of 262. No operational content.
+Padding line 158 of 262. No operational content.
+Padding line 159 of 262. No operational content.
+Padding line 160 of 262. No operational content.
+Padding line 161 of 262. No operational content.
+Padding line 162 of 262. No operational content.
+Padding line 163 of 262. No operational content.
+Padding line 164 of 262. No operational content.
+Padding line 165 of 262. No operational content.
+Padding line 166 of 262. No operational content.
+Padding line 167 of 262. No operational content.
+Padding line 168 of 262. No operational content.
+Padding line 169 of 262. No operational content.
+Padding line 170 of 262. No operational content.
+Padding line 171 of 262. No operational content.
+Padding line 172 of 262. No operational content.
+Padding line 173 of 262. No operational content.
+Padding line 174 of 262. No operational content.
+Padding line 175 of 262. No operational content.
+Padding line 176 of 262. No operational content.
+Padding line 177 of 262. No operational content.
+Padding line 178 of 262. No operational content.
+Padding line 179 of 262. No operational content.
+Padding line 180 of 262. No operational content.
+Padding line 181 of 262. No operational content.
+Padding line 182 of 262. No operational content.
+Padding line 183 of 262. No operational content.
+Padding line 184 of 262. No operational content.
+Padding line 185 of 262. No operational content.
+Padding line 186 of 262. No operational content.
+Padding line 187 of 262. No operational content.
+Padding line 188 of 262. No operational content.
+Padding line 189 of 262. No operational content.
+Padding line 190 of 262. No operational content.
+Padding line 191 of 262. No operational content.
+Padding line 192 of 262. No operational content.
+Padding line 193 of 262. No operational content.
+Padding line 194 of 262. No operational content.
+Padding line 195 of 262. No operational content.
+Padding line 196 of 262. No operational content.
+Padding line 197 of 262. No operational content.
+Padding line 198 of 262. No operational content.
+Padding line 199 of 262. No operational content.
+Padding line 200 of 262. No operational content.
+Padding line 201 of 262. No operational content.
+Padding line 202 of 262. No operational content.
+Padding line 203 of 262. No operational content.
+Padding line 204 of 262. No operational content.
+Padding line 205 of 262. No operational content.
+Padding line 206 of 262. No operational content.
+Padding line 207 of 262. No operational content.
+Padding line 208 of 262. No operational content.
+Padding line 209 of 262. No operational content.
+Padding line 210 of 262. No operational content.
+Padding line 211 of 262. No operational content.
+Padding line 212 of 262. No operational content.
+Padding line 213 of 262. No operational content.
+Padding line 214 of 262. No operational content.
+Padding line 215 of 262. No operational content.
+Padding line 216 of 262. No operational content.
+Padding line 217 of 262. No operational content.
+Padding line 218 of 262. No operational content.
+Padding line 219 of 262. No operational content.
+Padding line 220 of 262. No operational content.
+Padding line 221 of 262. No operational content.
+Padding line 222 of 262. No operational content.
+Padding line 223 of 262. No operational content.
+Padding line 224 of 262. No operational content.
+Padding line 225 of 262. No operational content.
+Padding line 226 of 262. No operational content.
+Padding line 227 of 262. No operational content.
+Padding line 228 of 262. No operational content.
+Padding line 229 of 262. No operational content.
+Padding line 230 of 262. No operational content.
+Padding line 231 of 262. No operational content.
+Padding line 232 of 262. No operational content.
+Padding line 233 of 262. No operational content.
+Padding line 234 of 262. No operational content.
+Padding line 235 of 262. No operational content.
+Padding line 236 of 262. No operational content.
+Padding line 237 of 262. No operational content.
+Padding line 238 of 262. No operational content.
+Padding line 239 of 262. No operational content.
+Padding line 240 of 262. No operational content.
+Padding line 241 of 262. No operational content.
+Padding line 242 of 262. No operational content.
+Padding line 243 of 262. No operational content.
+Padding line 244 of 262. No operational content.
+Padding line 245 of 262. No operational content.
+Padding line 246 of 262. No operational content.
+Padding line 247 of 262. No operational content.
+Padding line 248 of 262. No operational content.
+Padding line 249 of 262. No operational content.
+Padding line 250 of 262. No operational content.
+Padding line 251 of 262. No operational content.
+Padding line 252 of 262. No operational content.
+Padding line 253 of 262. No operational content.
+Padding line 254 of 262. No operational content.
+Padding line 255 of 262. No operational content.
+Padding line 256 of 262. No operational content.
+Padding line 257 of 262. No operational content.
+Padding line 258 of 262. No operational content.
+Padding line 259 of 262. No operational content.
+Padding line 260 of 262. No operational content.
+Padding line 261 of 262. No operational content.
+Padding line 262 of 262. No operational content.
+## END CACHE PADDING
+
+You are extracting Medical Necessity Criteria from an Evidence of Coverage (EOC) document section. Return a single JSON object listing the criteria per service.
+
+## CRITICAL EXTRACTION RULES
+
+1. **Verbatim source_excerpt** per criterion (≤200 chars). MUST be a CHARACTER-FOR-CHARACTER substring of the document section text — NEVER paraphrase, summarize, or normalize whitespace/punctuation. If you cannot find a verbatim ≤200-char span that supports the field, set source_excerpt to "" (empty) — the verifier marks empty as 'not_found' (graceful degradation), which is the correct outcome rather than a wrong excerpt.
+2. **service_slug_hint**: emit a CANONICAL service slug from the "CANONICAL SERVICE SLUG VOCABULARY" section below (e.g., "bariatric_surgery", "pcp_visit", "specialist_visit", "pt_rehab", "advanced_imaging"). For a service that GENUINELY doesn't fit ANY canonical slug, emit `proposed_<snake_case_descriptive_name>` (e.g., `proposed_hyperbaric_oxygen_therapy`). NEVER invent a bare snake_case slug — either use a listed canonical OR use `proposed_*`. Set null only if no service is identifiable.
+3. **criteria_text**: verbatim full criteria description (NOT summarized). May be multi-sentence.
+4. **diagnosis_qualifiers**: extract any ICD-10 diagnosis codes referenced in the criteria (e.g., "E66.01" for obesity). Empty array if none. These codes are NOT extracted as billing codes — they are conditions of coverage.
+5. **DO NOT extract**: criteria from glossary cross-references, header marketing, or footer disclaimers.
+6. **source_section_hint**: always 'medical_necessity'.
+
+## CONTENT TYPE CLASSIFICATION (REQUIRED on every entry)
+
+This region of the EOC intermixes THREE kinds of fact. Label each entry with **type** and **type_confidence** (0-1 — how sure you are of the LABEL, not of the extraction):
+
+- **clinical_criterion** — a medical-necessity condition, or a coverage limit/exclusion. Signals: "is medically necessary when…", "covered when…", "covered except…", "limited to N visits/days". Use for a genuine per-service clinical rule. This is the default when a fact is a real coverage rule and neither type below applies.
+- **prior_auth** — the service needs APPROVAL or a service-specific REFERRAL BEFORE it is covered. Trigger phrases (any of): "prior authorization", "prior authorisation", "pre-authorization", "preauthorization", "pre-certification", "precertification", "prior approval", "prior review", "step therapy" (must try another treatment first), "must be authorized in advance", AND a service-specific referral gate ("coverage for X requires referral by a doctor"). prior_auth is PERMISSION-before-service — NOT the clinical conditions for necessity. NOTE the referral line: a *general* access description ("see your PCP for referrals"; "you do not need a referral") is admin_provision; a referral stated as a coverage CONDITION for a specific service ("coverage for physical therapy requires referral") is prior_auth.
+- **admin_provision** — administrative / coverage mechanics that are neither a per-service clinical rule nor a prior-auth: out-of-area rules, GENERAL network/referral mechanics, member rights, post-stabilization, cost-share mechanics, continuity-of-care. Signals: "outside the service area", "network provider", "you have the right to", "the member may".
+
+### CLASSIFICATION RULES
+- **C1 — one entry = one fact of one type.** If a passage states BOTH a clinical criterion AND a prior-auth requirement (very common — e.g. "covered when BMI ≥40 … and requires prior authorization"), emit **TWO separate entries**: one clinical_criterion for the clinical condition, one prior_auth for the approval requirement. Never collapse them — each must route to its own destination.
+- **C2 — fact-scoped excerpt on a split.** Each entry's source_excerpt must be the verbatim span supporting THAT entry's fact: the clinical entry quotes the criteria span; the prior_auth entry quotes the "requires prior authorization" span. Never reuse one excerpt for both.
+- **C3 — a mention is not a relabel.** A clinical criterion that merely *mentions* PA is still split: the clinical part stays clinical_criterion; only the approval sentence becomes prior_auth. Do not retype a whole clinical rule as prior_auth just because PA appears in it.
+- **C4 — split entries share one service_slug_hint.** Both halves describe the same service; set the same service_slug_hint identically on each.
+- **C5 — PA polarity (REQUIRED on every prior_auth entry).** Set **pa_polarity**: "requires" if the text IMPOSES approval/referral before coverage; "waived" if it states approval is NOT required / is waived ("you do not need prior authorization", "will not impose prior authorization", "no precertification required"). A "waived" entry is STILL prior_auth — it records the absence; only "requires" gates coverage. (Non-PA entries: omit or null.)
+- **C6 — axis scope (place_of_service).** If a prior_auth or coverage rule applies to a place-of-service AXIS rather than one service ("all INPATIENT admissions require precert", "OUTPATIENT surgery"), set **place_of_service** ("inpatient" | "outpatient" | "office" | "emergency" | "home" | …) and leave service_slug_hint null (unless one specific service is also named). For a CARVE-OUT ("all inpatient require precert EXCEPT maternity"), emit TWO entries: the broad axis fact (place_of_service:"inpatient", pa_polarity:"requires", service_slug_hint:null) AND the exception (service_slug_hint:"maternity_care", place_of_service:"inpatient", pa_polarity:"waived").
+
+## RESPONSE SCHEMA
+
+{
+  "criteria": [
+    {
+      "type": "clinical_criterion",  // or "prior_auth" or "admin_provision" (see CONTENT TYPE CLASSIFICATION)
+      "type_confidence": 0.95,
+      "pa_polarity": null,  // "requires" | "waived" — REQUIRED when type is "prior_auth"; null otherwise (C5)
+      "place_of_service": null,  // "inpatient" | "outpatient" | … when axis-scoped; null when service-scoped (C6)
+      "service_slug_hint": "bariatric_surgery" (or null),
+      "criteria_text": "Bariatric surgery is medically necessary when patient has BMI ≥40 OR BMI ≥35 with documented comorbidity (E66.01, E11.9, I10) AND has completed 6 months of supervised weight loss program",
+      "diagnosis_qualifiers": ["E66.01", "E11.9", "I10"],
+      "source_excerpt": "verbatim ≤200 chars",
+      "source_section_hint": "medical_necessity",
+      "haiku_confidence": 0.93
+    }
+  ]
+}
+
+## OUTPUT FAILURE MODE
+
+If you cannot quote verbatim with high confidence, return:
+  "source_excerpt": ""
+  "haiku_confidence": (lower value reflecting uncertainty)
+The verifier marks empty excerpts as 'not_found' — graceful degradation to display-only rendering. This is preferred over a wrong excerpt that will fail verification.
+
+## CORRECT vs INCORRECT EXCERPT EXAMPLES
+
+Source text in section: "Bariatric surgery is medically necessary when the member has BMI ≥40, OR BMI ≥35 with at least one documented comorbidity (Type 2 diabetes E11.9, hypertension I10)."
+
+❌ INCORRECT (paraphrased): "BMI must be 40 or higher, or 35 with a comorbidity"
+Why wrong: not a substring of the document.
+
+❌ INCORRECT (whitespace adjusted): "BMI ≥40 OR BMI ≥35 with comorbidity"
+Why wrong: collapsed punctuation and dropped commas; not exact-match.
+
+❌ INCORRECT (semantically right but from wrong location): "Pre-authorization is required for bariatric surgery"
+Why wrong: from the prior_auth section, not the medical_necessity criteria.
+
+✅ CORRECT (verbatim substring of source): "BMI ≥40, OR BMI ≥35 with at least one documented comorbidity"
+
+## EXAMPLE
+
+EOC text snippet:
+"Bariatric Surgery — Coverage Criteria
+Bariatric surgery is medically necessary when the member meets ALL of the following:
+1. BMI ≥40, OR BMI ≥35 with at least one documented comorbidity (Type 2 diabetes E11.9, hypertension I10, obstructive sleep apnea G47.33, or osteoarthritis M19.91)
+2. Documentation of 6 consecutive months of supervised weight loss program within the past 24 months
+3. Psychological evaluation confirming readiness for surgery
+
+Coverage requires prior authorization."
+
+Correct extraction (note the SPLIT per C1/C2 — the passage states a clinical criterion AND a prior-auth requirement, so it yields TWO entries with the SAME service_slug_hint and FACT-SCOPED excerpts):
+{
+  "criteria": [
+    {
+      "type": "clinical_criterion",
+      "type_confidence": 0.96,
+      "pa_polarity": null,
+      "place_of_service": null,
+      "service_slug_hint": "bariatric_surgery",
+      "criteria_text": "Bariatric surgery is medically necessary when the member meets ALL of the following: 1. BMI ≥40, OR BMI ≥35 with at least one documented comorbidity (Type 2 diabetes E11.9, hypertension I10, obstructive sleep apnea G47.33, or osteoarthritis M19.91) 2. Documentation of 6 consecutive months of supervised weight loss program within the past 24 months 3. Psychological evaluation confirming readiness for surgery",
+      "diagnosis_qualifiers": ["E11.9", "I10", "G47.33", "M19.91"],
+      "source_excerpt": "Bariatric surgery is medically necessary when the member meets ALL of the following: 1. BMI ≥40, OR BMI ≥35 with at least one documented comorbidity",
+      "source_section_hint": "medical_necessity",
+      "haiku_confidence": 0.95
+    },
+    {
+      "type": "prior_auth",
+      "type_confidence": 0.98,
+      "pa_polarity": "requires",
+      "place_of_service": null,
+      "service_slug_hint": "bariatric_surgery",
+      "criteria_text": "Coverage requires prior authorization.",
+      "diagnosis_qualifiers": [],
+      "source_excerpt": "Coverage requires prior authorization",
+      "source_section_hint": "medical_necessity",
+      "haiku_confidence": 0.97
+    }
+  ]
+}
+
+## AXIS CARVE-OUT EXAMPLE (C6 — one passage, axis rule + its exception → TWO entries)
+
+Source: "All inpatient admissions require precertification, except inpatient maternity stays."
+
+{
+  "criteria": [
+    {
+      "type": "prior_auth",
+      "type_confidence": 0.95,
+      "pa_polarity": "requires",
+      "place_of_service": "inpatient",
+      "service_slug_hint": null,
+      "criteria_text": "All inpatient admissions require precertification",
+      "diagnosis_qualifiers": [],
+      "source_excerpt": "All inpatient admissions require precertification",
+      "source_section_hint": "medical_necessity",
+      "haiku_confidence": 0.95
+    },
+    {
+      "type": "prior_auth",
+      "type_confidence": 0.92,
+      "pa_polarity": "waived",
+      "place_of_service": "inpatient",
+      "service_slug_hint": "maternity_care",
+      "criteria_text": "except inpatient maternity stays",
+      "diagnosis_qualifiers": [],
+      "source_excerpt": "except inpatient maternity stays",
+      "source_section_hint": "medical_necessity",
+      "haiku_confidence": 0.9
+    }
+  ]
+}
+
+
+
+## NOW EXTRACT FROM THIS DOCUMENT SECTION:

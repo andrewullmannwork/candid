@@ -16,6 +16,7 @@ import type {
   PlanDocSectionHint,
 } from "../types";
 import { callHaikuWithCache } from "./_shared";
+import { HAIKU_CACHE_PAD } from "@/lib/haiku-client/cache-pad";
 
 const INSTRUCTIONS = `You are extracting plan-level access instructions from a section of a health plan document. Access-instructions scalars (customer service phone, network finder URL, per-domain contacts) may appear in dedicated access sections OR scattered through services schedules / cover preambles / plan-identity sections. Extract every contact you can find in THIS chunk; the system runs this prompt on multiple sections and merges results.
 
@@ -97,7 +98,7 @@ export async function extractAccessInstructions(
   sectionHint: PlanDocSectionHint = "access_instructions",
 ): Promise<PlanDocSectionResult<PlanDocAccessInstructions>> {
   const result = await callHaikuWithCache<RawResponse>({
-    systemPrompt: INSTRUCTIONS,
+    systemPrompt: HAIKU_CACHE_PAD + INSTRUCTIONS,
     userContent: sectionText,
     sectionLabel: "access_instructions",
   });
@@ -127,6 +128,8 @@ export async function extractAccessInstructions(
     haiku_input_tokens: result.inputTokens,
     haiku_output_tokens: result.outputTokens,
     haiku_cost_usd: result.costUsd,
+    haiku_cache_create_tokens: result.cacheCreateTokens ?? 0,
+    haiku_cache_read_tokens: result.cacheReadTokens ?? 0,
     warnings: result.warnings,
   };
 }

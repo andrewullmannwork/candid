@@ -17,6 +17,8 @@ import type {
 import type { PlanDocLayout } from "../layout-detector";
 import { loadActiveSupplement } from "../prompt-loader";
 import { callHaikuWithCache } from "./_shared";
+import { HAIKU_CACHE_PAD } from "@/lib/haiku-client/cache-pad";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
 
 const PROMPT_FILE_PATH = "src/lib/plan_doc/haiku-prompts/services-cost-sharing.ts";
 
@@ -89,29 +91,70 @@ priorAuthRequired in EOC:
   "must be obtained before treatment". Set priorAuthRequired=true.
 - Source_excerpt should quote the prior-auth sentence directly.`;
 
+// Thesaurus Phase 1a supplement (S173). Appended ONLY when `thesaurus_phase1a_v1` is ON,
+// so OFF = byte-identical Haiku output (no extraction drift on the live path). Adds the two
+// service-identity fields the resolver-routing (T3) + pos/component corroboration (T4) consume:
+// `rawLabel` (verbatim source service name → label→slug routing) + `component`
+// (facility|professional|global; a Pattern-S modifier, NOT baked into the slug — Hard Rule #17).
+const THESAURUS_PHASE1A_SUPPLEMENT = `
+
+## ADDITIONAL FIELDS — SERVICE IDENTITY (emit these on EVERY service object)
+
+In ADDITION to all fields above, add TWO fields to each service:
+
+- **rawLabel**: the service's NAME/LABEL exactly as it appears in the source — the heading or
+  row label you used to recognize this service. NOT the cost-sharing text, NOT a paraphrase.
+  Quote the source wording verbatim where possible (≤120 chars). Examples:
+    "Primary care visit to treat an injury or illness"
+    "Outpatient surgery — Facility fee (e.g., ambulatory surgery center)"
+    "Physician/surgeon fees"
+    "Tier 2 drugs (Preferred brand)"
+  If no distinct service label is identifiable for this row, set rawLabel to null.
+
+- **component**: which billing component this row represents — EXACTLY one of:
+    "facility"     → an institutional/facility charge ("Facility fee", ambulatory surgery
+                     center, the hospital-facility portion of a stay)
+    "professional" → a professional/physician charge ("Physician/surgeon fees", the
+                     provider/professional portion)
+    "global"       → NOT split into facility vs professional — the DEFAULT for ordinary
+                     services (office visits, drugs, labs, imaging, therapy, ER, etc.)
+  Use "facility"/"professional" ONLY when the source row is explicitly a facility-only or
+  professional-only charge (typically the surgery / inpatient-stay / delivery split). When in
+  doubt, use "global".
+
+Example service object with the new fields:
+  { "serviceSlug": "outpatient_surgery_physician", "rawLabel": "Physician/surgeon fees",
+    "component": "professional", "inCoinsurance": 20, ... }`;
+
 // S93 Stage 5a — supplements load from `parser_prompt_versions` (mig 102) at
 // parse time with a 5-min in-process cache. The compile-time consts above are
 // fallbacks when no active DB row exists (initial state pre-tuning) or when DB
 // fetch fails. Admin tunes via /admin/parse-quality-tuning (Stage 5c) which
 // writes a new active row + busts the cache.
-async function buildInstructions(layout: PlanDocLayout | undefined): Promise<string> {
+async function buildInstructions(
+  layout: PlanDocLayout | undefined,
+  thesaurusEnabled: boolean,
+): Promise<string> {
+  let prompt = BASE_INSTRUCTIONS;
   if (layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant") {
-    const supplement = await loadActiveSupplement(
+    prompt += await loadActiveSupplement(
       PROMPT_FILE_PATH,
       "FEDERAL_SBC_TABULAR_SUPPLEMENT",
       FEDERAL_SBC_TABULAR_SUPPLEMENT,
     );
-    return BASE_INSTRUCTIONS + supplement;
-  }
-  if (layout === "full_eoc_narrative") {
-    const supplement = await loadActiveSupplement(
+  } else if (layout === "full_eoc_narrative") {
+    prompt += await loadActiveSupplement(
       PROMPT_FILE_PATH,
       "FULL_EOC_NARRATIVE_SUPPLEMENT",
       FULL_EOC_NARRATIVE_SUPPLEMENT,
     );
-    return BASE_INSTRUCTIONS + supplement;
   }
-  return BASE_INSTRUCTIONS;
+  // Thesaurus Phase 1a: append the service-identity fields ONLY when the flag is ON.
+  // OFF → `prompt` is exactly BASE (+ layout supplement) as before = byte-identical.
+  if (thesaurusEnabled) {
+    prompt += THESAURUS_PHASE1A_SUPPLEMENT;
+  }
+  return prompt;
 }
 
 const BASE_INSTRUCTIONS = `You are extracting per-service cost-sharing from a Plan Document services section. Return a single JSON object listing every covered service with cost-sharing fields per service.
@@ -337,10 +380,19 @@ interface RawService {
   source_excerpt?: string;
   source_row_index?: number | null;
   haiku_confidence?: number;
+  rawLabel?: string | null;
+  component?: string | null;
 }
 
 interface RawResponse {
   services?: RawService[];
+}
+
+// Thesaurus Phase 1a — normalize Haiku's `component` to the billing-grounded whitelist.
+// Anything other than facility/professional defaults to 'global' (decision 6: default global
+// only when genuinely ambiguous), so a bad/missing emission can never invent a split cell.
+function normalizeComponent(v: unknown): "facility" | "professional" | "global" {
+  return v === "facility" || v === "professional" ? v : "global";
 }
 
 /**
@@ -362,10 +414,16 @@ export async function extractServicesCostSharing(
   extractionMethod: ExtractionMethod,
   sectionHint: PlanDocSectionHint = "services_cost_sharing",
   layout?: PlanDocLayout,
+  // Test/dry-run override for `thesaurus_phase1a_v1`. PROD leaves it undefined → reads the
+  // live flag (OFF → byte-identical). The calibration harness passes `true` to measure the
+  // flag-ON before/after without depending on DB flag state (calibration independence).
+  thesaurusPhase1aOverride?: boolean,
 ): Promise<PlanDocSectionResult<{ services: PlanDocService[] }>> {
-  const systemPrompt = await buildInstructions(layout);
+  const thesaurusEnabled =
+    thesaurusPhase1aOverride ?? (await isFeatureEnabled("thesaurus_phase1a_v1"));
+  const systemPrompt = await buildInstructions(layout, thesaurusEnabled);
   const result = await callHaikuWithCache<RawResponse>({
-    systemPrompt,
+    systemPrompt: HAIKU_CACHE_PAD + systemPrompt,
     userContent: sectionText,
     sectionLabel:
       layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant"
@@ -420,6 +478,14 @@ export async function extractServicesCostSharing(
         patternP8,
         haikuConfidence: typeof raw.haiku_confidence === "number" ? raw.haiku_confidence : undefined,
         sourceRowIndex,
+        // Thesaurus Phase 1a: populated ONLY when ON; OFF → undefined (Haiku wasn't asked for
+        // them → struct is byte-identical to pre-Phase-1a).
+        rawLabel: thesaurusEnabled
+          ? typeof raw.rawLabel === "string" && raw.rawLabel.trim().length > 0
+            ? raw.rawLabel.trim().slice(0, 120)
+            : null
+          : undefined,
+        component: thesaurusEnabled ? normalizeComponent(raw.component) : undefined,
       };
     })
     .filter((s): s is PlanDocService => s !== null);
@@ -431,6 +497,8 @@ export async function extractServicesCostSharing(
     haiku_input_tokens: result.inputTokens,
     haiku_output_tokens: result.outputTokens,
     haiku_cost_usd: result.costUsd,
+    haiku_cache_create_tokens: result.cacheCreateTokens ?? 0,
+    haiku_cache_read_tokens: result.cacheReadTokens ?? 0,
     warnings: result.warnings,
   };
 }

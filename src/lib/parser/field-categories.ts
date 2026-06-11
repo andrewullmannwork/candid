@@ -124,6 +124,8 @@ export const FIELD_EXCEPTIONS: Record<string, FieldCategory> = {
   // category lookup uses the JSONB column name; consumer-read parses the inner key.
   "plan_covered_services.coverage_rules": "eoc_authoritative",
   "plan_covered_services.medical_necessity_text": "eoc_authoritative",
+  // S185: the lossless multi-passage sibling of medical_necessity_text (same EOC authority).
+  "plan_covered_services.medical_necessity_criteria": "eoc_authoritative",
   "plan_covered_services.requires_prior_auth": "eoc_authoritative",
   "insurance_plans.appeals_internal_timing_days": "eoc_authoritative",
   "insurance_plans.cob_primary_determination_method": "eoc_authoritative",

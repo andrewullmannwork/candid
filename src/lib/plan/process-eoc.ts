@@ -25,10 +25,15 @@ import { createServerClient } from "@/lib/supabase/server";
 import { getUserContextByPk } from "@/lib/users/resolve-user-by-pk";
 import { parseEOC } from "@/lib/eoc/parser";
 import { resolveOrEnqueueConcept } from "@/lib/eoc/concept-resolver";
-import type { EOCParseResult } from "@/lib/eoc/types";
+import type { EOCParseResult, PriorAuthCode, MedicalNecessityCriterion } from "@/lib/eoc/types";
+import { routeCriterion, type RouteContext } from "@/lib/eoc/route-criterion";
+import { loadEocRoutingConfig } from "@/lib/eoc/routing-config";
 import type { ProcessPlanResult } from "@/lib/plan/process-plan";
 import { buildEOCPlanIdentityProvenance } from "@/lib/parser/provenance-builders";
-import { loadValidServiceSlugs, enqueueUnknownServiceSlug } from "@/lib/parser/service-catalog-slugs";
+import { canonicalizeSlug, loadServiceRenameMap, acceptCodeAnchoredSlug } from "@/lib/plan_doc/thesaurus-routing";
+import { EocCoverageAccumulator } from "@/lib/plan/coverage-targeting";
+import { resolveServices, type ResolveLineInput } from "@/lib/claims/service-resolver";
+import { loadValidServiceSlugs, enqueueUnknownServiceSlug, loadServiceVocabularyBlock } from "@/lib/parser/service-catalog-slugs";
 import {
   commitUploadAndEvaluateCorroboration,
   PHASE_4_0_6_PLAN_IDENTITY_FIELDS_EOC,
@@ -40,7 +45,7 @@ import {
 } from "@/lib/parser/canonical-haiku-extractions";
 import { validatePlanField } from "@/lib/plan/garbage-validators";
 import { recordCostEvent } from "@/lib/cost/parse-cost-events";
-import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { isFeatureEnabled, readFeatureFlagConfig } from "@/lib/config/product-flags";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
@@ -71,6 +76,19 @@ export async function processEOCDocumentData(
   const selectiveSelfCheckEnabled = await isFeatureEnabled("cf44_selective_self_check");
 
   // 1. Run EOC parser (Pattern P-D + P-8 inheritance via Task 3.1A-C).
+  // S180 thesaurus P1 — load the live catalog vocabulary and inject it into the medical_necessity
+  // prompt (Pattern S #17: constrain extraction to real slugs, no bare invention). Always-on; on a
+  // load failure the block is empty → the prompt degrades gracefully (anti-invention rules remain).
+  const serviceVocabulary = await loadServiceVocabularyBlock(supabase);
+  // S182 P2 (M1 fix): read `eoc_prose_prior_auth_v1` ONCE here and thread it to BOTH parseEOC (gates the
+  // medical_necessity prompt's content-type classification + C1 split) and persistEOCSections (gates the
+  // routeCriterion dispatch + telemetry + facts-clear). A single read = one consistent value across
+  // parse+persist (no split-brain / mid-parse flip). OFF → byte-identical to post-D1 end-to-end.
+  const eocRoutingFlagOn = await isFeatureEnabled("eoc_prose_prior_auth_v1");
+  // S187 D8: per-chunk concurrency, read ONCE here (same single-read pattern as the routing flag;
+  // the parser itself never reads flags). Absent config key -> 1 = the exact pre-S187 sequential
+  // dispatch; flip via eoc_parser_v1.config.chunk_concurrency (clamped 1..16 in parseEOC).
+  const eocChunkConcurrency = await readFeatureFlagConfig("eoc_parser_v1", "chunk_concurrency", 1);
   let parsed: EOCParseResult;
   try {
     parsed = await parseEOC(ocrText, {
@@ -78,6 +96,9 @@ export async function processEOCDocumentData(
       extractionMethod: "pdftotext", // upload pipeline uses pdftotext-then-OCR-fallback;
                                       // OCR fallback is refused upstream (Q-P3.1A-12 image-PDF refusal)
       selectiveSelfCheckEnabled,
+      serviceVocabulary,
+      eocContentTypeRoutingOn: eocRoutingFlagOn,
+      chunkConcurrency: eocChunkConcurrency,
     });
   } catch (err) {
     const reason = `EOC parser exception: ${err instanceof Error ? err.message : String(err)}`;
@@ -144,7 +165,7 @@ export async function processEOCDocumentData(
   }
 
   // 3. Per-section persistence.
-  const persistenceWarnings = await persistEOCSections(supabase, doc, documentId, targetPlanId, parsed);
+  const persistenceWarnings = await persistEOCSections(supabase, doc, documentId, targetPlanId, parsed, eocRoutingFlagOn);
   parseWarnings.push(...persistenceWarnings);
 
   // 3.5 Phase 4.0.6 corroboration evaluator post-commit. Single discipline point
@@ -243,6 +264,8 @@ export async function processEOCDocumentData(
       costUsd: parsed.total_cost_usd,
       haikuTokensInput: parsed.total_input_tokens,
       haikuTokensOutput: parsed.total_output_tokens,
+      haikuCacheCreateTokens: parsed.total_cache_create_tokens,
+      haikuCacheReadTokens: parsed.total_cache_read_tokens,
       metadata: {
         sections_extracted: Object.keys(parsed.sections),
         segmentation_used: parsed.segmentation_used,
@@ -256,25 +279,42 @@ export async function processEOCDocumentData(
   // Ing-H (CF-44, S129) decision struct is co-located with eoc_sections_summary
   // so admin can see "which heuristic decision drove this parse's self-check"
   // alongside the parse output stats.
-  await supabase
-    .from("documents")
-    .update({
-      metadata: {
-        eoc_sections_summary: {
-          segmentation_used: parsed.segmentation_used,
-          sections_extracted: Object.keys(parsed.sections),
-          total_cost_usd: parsed.total_cost_usd,
-          total_input_tokens: parsed.total_input_tokens,
-          total_output_tokens: parsed.total_output_tokens,
-          parse_errors: parsed.parse_errors,
-          warning_count: parsed.warnings.length,
+  // Read-merge-write (NOT a blind overwrite): this must preserve keys written earlier in THIS flow —
+  // the G7 eoc_routing_telemetry from persistEOCSections (flag-ON only now; D3) — plus any UPSTREAM
+  // documents.metadata keys (cf40_*, adversarial_pdf_assessment). The prior blind overwrite WIPED them.
+  // DOCUMENTED CARVE-OUT (M1/D2): this read-merge is an intentional, FLAG-INDEPENDENT correctness fix and
+  // is the ONE deliberate exception to "flag-OFF = byte-identical post-D1". Reverting to the blind
+  // overwrite would re-introduce data loss (e.g. dropping adversarial_pdf_assessment when THAT separate
+  // flag is ON). The byte-identity guarantee is scoped to PLAN DATA + the cite-grade cache, not this
+  // observability blob — do NOT "restore" the overwrite to satisfy a literal-bytes reading.
+  {
+    const { data: docMetaRow } = await supabase
+      .from("documents")
+      .select("metadata")
+      .eq("id", documentId)
+      .maybeSingle();
+    const existingDocMeta = (docMetaRow?.metadata ?? {}) as Record<string, unknown>;
+    await supabase
+      .from("documents")
+      .update({
+        metadata: {
+          ...existingDocMeta,
+          eoc_sections_summary: {
+            segmentation_used: parsed.segmentation_used,
+            sections_extracted: Object.keys(parsed.sections),
+            total_cost_usd: parsed.total_cost_usd,
+            total_input_tokens: parsed.total_input_tokens,
+            total_output_tokens: parsed.total_output_tokens,
+            parse_errors: parsed.parse_errors,
+            warning_count: parsed.warnings.length,
+          },
+          ...(parsed.column_wrap_decision
+            ? { column_wrap_decision: parsed.column_wrap_decision }
+            : {}),
         },
-        ...(parsed.column_wrap_decision
-          ? { column_wrap_decision: parsed.column_wrap_decision }
-          : {}),
-      },
-    })
-    .eq("id", documentId);
+      })
+      .eq("id", documentId);
+  }
 
   return {
     success: true,
@@ -444,6 +484,7 @@ async function persistEOCSections(
   documentId: string,
   planId: string,
   parsed: EOCParseResult,
+  eocRoutingFlagOn: boolean,
 ): Promise<string[]> {
   const warnings: string[] = [];
 
@@ -457,8 +498,42 @@ async function persistEOCSections(
     warnings.push(`eoc_persist_user_lookup_failed:${doc.user_id}`);
   }
 
+  // ── P2 content-routing collectors (filled by Section B's routeCriterion dispatch) ──────────────
+  // `codeAnchoredPaSlugs`: slugs Section A (code tables) already set prior_auth_required on → code wins
+  // the dedup tie (D1); Section B prose-PA defers. Structured PA facts (axis / plan-wide / waived /
+  // low-conf) + admin provisions are captured here and flushed to insurance_plans.metadata below.
+  const codeAnchoredPaSlugs = new Set<string>();
+  const eocPriorAuthFacts: Array<Record<string, unknown>> = [];
+  const eocCoverageProvisions: Array<Record<string, unknown>> = [];
+  const routingTelemetry: Record<string, number> = {};
+  const tallyRoute = (reason: string): void => {
+    routingTelemetry[reason] = (routingTelemetry[reason] ?? 0) + 1;
+  };
+  // The routing flag is read ONCE in the orchestrator (above parseEOC) and passed in as a param, so the
+  // prompt gating and this dispatch share a single consistent value (no split-brain / mid-parse flip).
+  // Flag OFF → byte-identical post-D1 routing. The config (floor) is only consumed flag-ON; absent → 0.7.
+  const eocRoutingConfig = await loadEocRoutingConfig(supabase);
+  // Loaded once + shared by Section A and Section B so the dead→live canonicalization (and the D1 dedup
+  // keyed on the canonical slug) is provably identical across both sections.
+  const renameMap = await loadServiceRenameMap(supabase);
+
+  // S185 clobber fix — write-once-per-(parse, slug): Sections A + B accumulate fragments per canonical
+  // slug and flush per section (A before B: the code-wins dedup is success-gated on A's writes), so a
+  // service's multi-passage facts merge losslessly instead of last-write-winning per criterion.
+  const coverageAcc = new EocCoverageAccumulator();
+
   // ── Section A: prior_auth_codes ──────────────────────────────────────────────
   if (parsed.sections.prior_auth_codes && proposedByUserId) {
+    const thesaurusOn = await isFeatureEnabled("thesaurus_phase1a_v1");
+    // Accumulate by canonicalized SLUG (not service_id): EOC prior-auth tables run 5–50 pages of
+    // codes, many collapsing to one service — so the slug→id lookup + the typed column + provenance
+    // happen ONCE per service, not per code. (S185: the fold lives in EocCoverageAccumulator — same
+    // first-code-anchors semantics, now shared with Section B + equivalence-fixtured.)
+    // Codes the concept registry gave no usable slug for → candidates for the bills-fed code-cache
+    // rescue (D1-A). The line index lets the single batched resolver map results back.
+    const rescue: Array<{ line: number; code: PriorAuthCode }> = [];
+
+    // Pass 1 — concept registry (curated authority) + Pattern 1 #1 admin gate.
     for (const code of parsed.sections.prior_auth_codes.data.codes) {
       try {
         const result = await resolveOrEnqueueConcept(supabase, {
@@ -475,49 +550,105 @@ async function persistEOCSections(
           sourceSectionVerified: code.source_section_verified,
           contextExtract: extractContext(parsed, code.source_excerpt),
         });
-
-        if (result.matched && result.serviceSlug) {
-          // Write coverage_rules JSONB on plan_covered_services for this service_slug.
-          await mergeCoverageRules(supabase, planId, result.serviceSlug, {
-            requires_prior_auth: true,
-            prior_auth_criteria: code.pa_criteria,
-            prior_auth_source_excerpt: code.source_excerpt,
-            prior_auth_source_excerpt_verified: code.source_excerpt_verified,
-          });
-        } else if (!result.matched) {
+        if (!result.matched) {
+          // Unknown code: enqueued for admin (Pattern 1 #1, preserved). The coverage write is
+          // still rescuable from the corroborated code-cache below.
           warnings.push(`eoc_unknown_pa_code_enqueued:${code.billing_code}:${code.billing_code_type}`);
+          rescue.push({ line: rescue.length, code });
+        } else if (result.serviceSlug) {
+          // Matched concept's slug WINS (curated authority); canonicalize dead→live.
+          coverageAcc.addCodeAnchoredPa(canonicalizeSlug(result.serviceSlug, renameMap), code);
+        } else {
+          // Concept matched but carries no service_slug mapping — also rescuable.
+          rescue.push({ line: rescue.length, code });
         }
       } catch (err) {
         warnings.push(`eoc_pa_code_persist_failed:${code.billing_code}:${err instanceof Error ? err.message : String(err)}`);
       }
     }
+
+    // Pass 2 (D1-A, flag-gated) — bills-fed CODE-cache rescue for codes the registry couldn't slug.
+    // ONE batched resolveServices (cache-first; no Haiku, no writeback). ACCEPT ONLY a code_cache
+    // hit (`acceptCodeAnchoredSlug`): the "description" here is criteria prose, so a signature/trigram
+    // match would manufacture a wrong slug. OFF → today's behavior (coverage dropped).
+    if (thesaurusOn && rescue.length > 0) {
+      const lines: ResolveLineInput[] = rescue.map((r) => ({
+        lineNumber: r.line,
+        description: r.code.pa_criteria ?? "",
+        billingCode: r.code.billing_code,
+        billingCodeType: r.code.billing_code_type,
+      }));
+      try {
+        const resolved = await resolveServices(lines, {
+          supabase,
+          userId: proposedByUserId,
+          skipHaiku: true,
+          skipWriteback: true,
+        });
+        for (const r of rescue) {
+          const slug = acceptCodeAnchoredSlug(resolved.get(r.line));
+          if (slug) coverageAcc.addCodeAnchoredPa(canonicalizeSlug(slug, renameMap), r.code);
+        }
+      } catch (err) {
+        warnings.push(`eoc_pa_rescue_failed:${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // Write once per service: set the EOC-authoritative typed `prior_auth_required` column (what
+    // /plan + /compare actually read) + its field_provenance (cite-grade, the SAME key + builder the
+    // SBC/plan-doc parsers use) + the criteria detail in coverage_rules JSONB. A PA-required service
+    // is a real covered service → create a base cell if it has none.
+    for (const o of await coverageAcc.flushCodeAnchoredPa(supabase, planId)) {
+      if (o.status === "no_service_id") {
+        warnings.push(`eoc_pa_slug_no_service_id:${o.slug}`);
+      } else if (o.status === "written") {
+        codeAnchoredPaSlugs.add(o.slug); // code-anchored PA recorded → Section B prose-PA defers (D1 dedup)
+      } else {
+        warnings.push(`eoc_pa_write_failed:${o.slug}:${o.error}`);
+      }
+    }
   }
 
-  // ── Section B: medical_necessity ──────────────────────────────────────────────
+  // ── Section B: medical_necessity (P2 content-type routing) ───────────────────────────────────────
+  // Each extracted fact carries a `type` (T1); `routeCriterion` (pure, T2) decides its store. Flag OFF →
+  // ROUTING byte-identical post-D1 (type ignored: valid slug → coverage_rules, unknown → admin enqueue,
+  // no slug → drop); the S185 write SHAPE (accumulate: criteria array + first-passage scalars + the
+  // medical_necessity_text provenance entry) applies in BOTH flag states — the data-loss-prevention
+  // carve-out, same class as D2. Flag ON → route by type: clinical → coverage_rules; service-specific prior_auth (requires,
+  // confident, deduped vs Section-A code-PA) → the typed prior_auth_required column; admin / axis / waived /
+  // low-conf / no-slug PA → captured in insurance_plans.metadata (never silently dropped, never wrongly
+  // surfaced). validSlugs uses service_catalog (broad), not STANDARD_SLUGS, so EOC-legitimate slugs survive.
   if (parsed.sections.medical_necessity && proposedByUserId) {
-    // Bundle PR #1 (Session 55, audit item #8) — Pattern 1 #1 admin gate for slug
-    // growth. Validate Haiku-emitted service_slug_hint against service_catalog;
-    // unknowns route to service_catalog_admin_review_queue (mig 065) for admin
-    // promotion. Prior behavior dropped unknowns silently — anti-flywheel.
-    // service_catalog is the broader DB-truth vocabulary; STANDARD_SLUGS (51
-    // SBC-curated) would over-prune EOC-legitimate slugs like specialty mental
-    // health / transplant.
     const validSlugs = await loadValidServiceSlugs(supabase);
+    const ctx: RouteContext = {
+      flagOn: eocRoutingFlagOn,
+      confidenceFloor: eocRoutingConfig.prosePaTypeConfidenceFloor,
+      validSlugs,
+      renameMap,
+    };
 
     for (const criterion of parsed.sections.medical_necessity.data.criteria) {
-      // For medical_necessity, service_slug_hint is the parser's best-guess at which
-      // service catalog entry this maps to. If present + matches existing service_catalog,
-      // write to coverage_rules. If unknown, enqueue for admin promotion (Pattern 1 #1).
-      // If no slug hint at all, log for admin review (criteria without slug binding
-      // can't merge into coverage_rules).
-      if (criterion.service_slug_hint) {
-        if (!validSlugs.has(criterion.service_slug_hint)) {
+      const decision = routeCriterion(criterion, ctx);
+      const canonSlug = criterion.service_slug_hint
+        ? canonicalizeSlug(criterion.service_slug_hint, renameMap)
+        : null;
+
+      switch (decision.store) {
+        case "drop":
+          tallyRoute(decision.reason);
+          warnings.push(`eoc_mn_drop:${decision.reason}:criteria_text_len_${criterion.criteria_text.length}`);
+          break;
+
+        case "enqueue_unknown_slug": {
+          tallyRoute(decision.reason);
+          if (!canonSlug) break;
+          // Pattern 1 #1 admin gate for slug growth (unchanged behavior; canonicalized hint already applied).
           try {
             const { isNew } = await enqueueUnknownServiceSlug(supabase, {
               sourceDocId: documentId,
               proposedByUserId,
               parserSource: "eoc",
-              proposedServiceSlug: criterion.service_slug_hint,
+              proposedServiceSlug: canonSlug,
               proposedServiceLabel: criterion.criteria_text.slice(0, 200),
               proposedCategory: null,
               sourceExcerpt: criterion.source_excerpt,
@@ -529,26 +660,102 @@ async function persistEOCSections(
             });
             warnings.push(
               isNew
-                ? `eoc_medical_necessity_slug_enqueued_new:${criterion.service_slug_hint}`
-                : `eoc_medical_necessity_slug_enqueued_existing:${criterion.service_slug_hint}`,
+                ? `eoc_medical_necessity_slug_enqueued_new:${canonSlug}`
+                : `eoc_medical_necessity_slug_enqueued_existing:${canonSlug}`,
             );
           } catch (err) {
-            warnings.push(`eoc_medical_necessity_slug_enqueue_failed:${criterion.service_slug_hint}:${err instanceof Error ? err.message : String(err)}`);
+            warnings.push(`eoc_medical_necessity_slug_enqueue_failed:${canonSlug}:${err instanceof Error ? err.message : String(err)}`);
           }
-          continue;
+          break;
         }
-        try {
-          await mergeCoverageRules(supabase, planId, criterion.service_slug_hint, {
-            medical_necessity_text: criterion.criteria_text,
-            diagnosis_qualifiers: criterion.diagnosis_qualifiers,
-            medical_necessity_source_excerpt: criterion.source_excerpt,
-            medical_necessity_source_excerpt_verified: criterion.source_excerpt_verified,
-          });
-        } catch (err) {
-          warnings.push(`eoc_medical_necessity_persist_failed:${criterion.service_slug_hint}:${err instanceof Error ? err.message : String(err)}`);
+
+        case "coverage_rules": {
+          tallyRoute(decision.reason);
+          if (!canonSlug) break;
+          // Clinical criterion → coverage_rules on EXISTING cells ONLY (no phantom covered=true base cell;
+          // no typed column / /plan reader for medical necessity yet — a deliberate follow-up). S185:
+          // ACCUMULATE — a slug's multi-passage criteria merge losslessly at the post-loop flush
+          // (medical_necessity_criteria[] + first-passage scalars) instead of last-write-winning here.
+          coverageAcc.addClinical(canonSlug, criterion);
+          break;
         }
+
+        case "admin_metadata":
+          tallyRoute(decision.reason);
+          // Out of coverage_rules (the over-capture fix); preserved, reversibly, in plan metadata.
+          eocCoverageProvisions.push(buildAdminProvisionRecord(criterion, canonSlug));
+          break;
+
+        case "pa_facts":
+          tallyRoute(decision.reason);
+          // Captured-not-surfaced: axis / plan-wide / waived / low-conf / no-slug PA. The pre-launch
+          // reader-resolution block reads this carve-out-ready record to apply axis/plan-wide/waived PA.
+          eocPriorAuthFacts.push(buildPriorAuthFactRecord(criterion, canonSlug, decision.reason));
+          break;
+
+        case "pa_column": {
+          // Tally the ACTUAL terminal outcome, not the router's optimistic decision: pa_column can re-route
+          // to pa_facts at runtime (code-dedup / no service id) and the write can throw — the G7 instrument
+          // must reflect what truly happened (else it overstates user-visible PA writes).
+          if (!canonSlug) {
+            tallyRoute("pa_column_no_slug_defensive"); // unreachable (pa_column ⇒ slugValid); defensive
+            break;
+          }
+          // Section-A dedup (D1): a code-anchored PA already wrote this slug → code wins the 0.5 tie. Do
+          // not clobber its cite-grade provenance; capture the prose corroboration in the structured record.
+          if (codeAnchoredPaSlugs.has(canonSlug)) {
+            tallyRoute("pa_requires_code_dedup");
+            warnings.push(`eoc_prose_pa_deduped_code_wins:${canonSlug}`);
+            eocPriorAuthFacts.push(buildPriorAuthFactRecord(criterion, canonSlug, "pa_requires_code_dedup"));
+            break;
+          }
+          // S185: ACCUMULATE — the slug's requires-PA criteria flush as ONE write + ONE provenance
+          // entry after the loop (was: per-criterion writes clobbering prior_auth_criteria AND the
+          // field_provenance entry). The no-service-id divert + success/failure tallies move to the
+          // flush, criterion-denominated (G7 semantics preserved).
+          coverageAcc.addProsePa(canonSlug, criterion);
+          break;
+        }
+
+        default: {
+          // Exhaustiveness guard: a future RouteStore member forces a COMPILE error here (the `never`
+          // assignment), and defensively never silently drops at runtime (the anti-flywheel behavior this
+          // routing was built to eliminate).
+          const _exhaustive: never = decision.store;
+          tallyRoute("unrouted");
+          warnings.push(`eoc_mn_unrouted:${String(_exhaustive)}`);
+          break;
+        }
+      }
+    }
+
+    // ── S185 flush: write-once-per-(parse, slug) ──────────────────────────────────────────────
+    // Prose-PA FIRST: it may create the base cell (allowBaseCell:true) a same-slug clinical write
+    // (allowBaseCell:false) then lands on — deterministic + retention-maximizing (the old
+    // per-criterion writes made this a document-order lottery). Outcomes map back to the exact
+    // per-criterion telemetry + divert semantics the inline writes had (criterion-denominated G7;
+    // per-criterion pa_facts records on the no-service-id divert). Flag-OFF: the prose-PA map is
+    // empty by routing (routeCriterion never emits pa_column), so only the clinical flush runs.
+    for (const o of await coverageAcc.flushProsePa(supabase, planId)) {
+      if (o.status === "no_service_id") {
+        // No service row to carry the typed column → capture each criterion instead of dropping.
+        for (const c of o.fragments) {
+          tallyRoute("pa_requires_no_service_id");
+          eocPriorAuthFacts.push(buildPriorAuthFactRecord(c, o.slug, "pa_requires_no_service_id"));
+        }
+      } else if (o.status === "written") {
+        // Same typed col + provenance builder the SBC/plan-doc/Section-A parsers use → cite-grade parity.
+        for (let i = 0; i < o.fragments.length; i++) tallyRoute("pa_requires_service_specific"); // success only
       } else {
-        warnings.push(`eoc_medical_necessity_no_slug:criteria_text_len_${criterion.criteria_text.length}`);
+        for (let i = 0; i < o.fragments.length; i++) tallyRoute("pa_requires_write_failed");
+        warnings.push(`eoc_prose_pa_write_failed:${o.slug}:${o.error}`);
+      }
+    }
+    for (const o of await coverageAcc.flushClinicalMn(supabase, planId)) {
+      if (o.status === "no_service_id") {
+        warnings.push(`eoc_medical_necessity_no_service_id:${o.slug}`);
+      } else if (o.status === "write_failed") {
+        warnings.push(`eoc_medical_necessity_persist_failed:${o.slug}:${o.error}`);
       }
     }
   }
@@ -570,52 +777,110 @@ async function persistEOCSections(
   if (parsed.sections.definitions) {
     planMetadataPatch.eoc_definitions = parsed.sections.definitions.data;
   }
+  // P2: structured PA facts + admin provisions from Section B's dispatch are SET here when this parse
+  // produced them (flag-ON only); the stale-key CLEAR for a flag-ON→OFF rollback is handled just below (D4).
+  const sectionBRan = Boolean(parsed.sections.medical_necessity) && Boolean(proposedByUserId);
+  if (eocPriorAuthFacts.length > 0) planMetadataPatch.eoc_prior_auth_facts = eocPriorAuthFacts;
+  if (eocCoverageProvisions.length > 0) planMetadataPatch.eoc_coverage_provisions = eocCoverageProvisions;
+  // REPLACE-per-parse clear: a parse that RAN Section B but produced no PA-facts/provisions should drop any
+  // STALE key a prior flag-ON parse left behind (rollback hygiene). M1/D4 fix: only schedule a clear for a
+  // key that ACTUALLY EXISTS, so a clean parse with no stale P2 keys (including ANY flag-OFF parse, where
+  // routeCriterion can never emit pa_facts/admin_metadata) issues ZERO insurance_plans writes — no spurious
+  // `updated_at` bump → byte-identical to post-D1. The auto-cleanup after a real flag-ON→OFF rollback is
+  // preserved (it fires only when there is genuinely a key to remove).
+  const mayNeedFactsClear = sectionBRan && eocPriorAuthFacts.length === 0;
+  const mayNeedProvClear = sectionBRan && eocCoverageProvisions.length === 0;
 
-  if (Object.keys(planMetadataPatch).length > 0) {
-    // Read existing metadata, merge (preserve other keys), write back.
+  if (Object.keys(planMetadataPatch).length > 0 || mayNeedFactsClear || mayNeedProvClear) {
+    // Read existing metadata, merge (preserve other keys), drop ONLY genuinely-present stale keys, write back.
     const { data: planRow } = await supabase
       .from("insurance_plans")
       .select("metadata")
       .eq("id", planId)
       .single();
     const existingMetadata = (planRow?.metadata as Record<string, unknown>) ?? {};
-    const mergedMetadata = { ...existingMetadata, ...planMetadataPatch };
-    await supabase.from("insurance_plans").update({ metadata: mergedMetadata }).eq("id", planId);
+    const clearKeys: string[] = [];
+    if (mayNeedFactsClear && existingMetadata.eoc_prior_auth_facts !== undefined) clearKeys.push("eoc_prior_auth_facts");
+    if (mayNeedProvClear && existingMetadata.eoc_coverage_provisions !== undefined) clearKeys.push("eoc_coverage_provisions");
+    // Nothing to patch AND nothing genuinely stale to clear → no write at all (the clean flag-OFF no-op path).
+    if (Object.keys(planMetadataPatch).length > 0 || clearKeys.length > 0) {
+      const mergedMetadata = { ...existingMetadata, ...planMetadataPatch };
+      for (const k of clearKeys) delete mergedMetadata[k];
+      await supabase.from("insurance_plans").update({ metadata: mergedMetadata }).eq("id", planId);
+    }
+  }
+
+  // Non-fire telemetry (Ship Gate G7): the per-parse routing distribution — captures what was routed
+  // AWAY (admin out of coverage_rules, low-conf/waived/axis PA parked), not just what was written. Non-fatal.
+  // FLAG-GATED (M1/D3 fix): written ONLY when routing is ON. Flag OFF → routeCriterion is byte-identical
+  // post-D1 (no real routing decisions to measure — only `flag_off_*` buckets), and adding a new
+  // documents.metadata key would break the byte-identical-rollback guarantee. For a flag-OFF distribution,
+  // log it out-of-band — never into documents.metadata (which is inside the byte-identity surface).
+  if (eocRoutingFlagOn && Object.keys(routingTelemetry).length > 0) {
+    try {
+      const { data: docRow } = await supabase
+        .from("documents")
+        .select("metadata")
+        .eq("id", documentId)
+        .maybeSingle();
+      const existingDocMeta = (docRow?.metadata ?? {}) as Record<string, unknown>;
+      await supabase
+        .from("documents")
+        .update({
+          metadata: {
+            ...existingDocMeta,
+            eoc_routing_telemetry: {
+              counts: routingTelemetry,
+              flag_on: eocRoutingFlagOn,
+              prose_pa_type_confidence_floor: eocRoutingConfig.prosePaTypeConfidenceFloor,
+              decided_at: new Date().toISOString(),
+            },
+          },
+        })
+        .eq("id", documentId);
+    } catch (err) {
+      warnings.push(`eoc_routing_telemetry_write_failed:${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   return warnings;
 }
 
 /**
- * Merge a coverage_rules JSONB patch into plan_covered_services for a given
- * (plan_id, service_slug). Creates the row if it doesn't exist; deep-merges patch
- * into existing coverage_rules JSONB. Preserves Pattern P-A FIELD_EXCEPTIONS by
- * NOT overwriting non-EOC-authoritative fields.
+ * Build a carve-out-ready `eoc_prior_auth_facts[]` record (P2). Holds `service_slug` + `place_of_service`
+ * (axis) + `polarity` (requires/waived) so the pre-launch reader-resolution block can apply axis / plan-wide
+ * / waived PA. `routing_reason` records WHY it landed here (axis / no-slug / low-conf / waived / dedup).
  */
-async function mergeCoverageRules(
-  supabase: SupabaseClient,
-  planId: string,
-  serviceSlug: string,
-  patch: Record<string, unknown>,
-): Promise<void> {
-  const { data: existing } = await supabase
-    .from("plan_covered_services")
-    .select("id, coverage_rules")
-    .eq("plan_id", planId)
-    .eq("service_slug", serviceSlug)
-    .maybeSingle();
+function buildPriorAuthFactRecord(
+  c: MedicalNecessityCriterion,
+  canonicalSlug: string | null,
+  routingReason: string,
+): Record<string, unknown> {
+  return {
+    service_slug: canonicalSlug,
+    place_of_service: c.place_of_service,
+    polarity: c.pa_polarity,
+    routing_reason: routingReason,
+    criteria_text: c.criteria_text,
+    source_excerpt: c.source_excerpt,
+    source_excerpt_verified: c.source_excerpt_verified,
+    type_confidence: c.type_confidence,
+  };
+}
 
-  if (existing) {
-    const existingRules = (existing.coverage_rules as Record<string, unknown>) ?? {};
-    const merged = { ...existingRules, ...patch };
-    await supabase.from("plan_covered_services").update({ coverage_rules: merged }).eq("id", existing.id);
-  } else {
-    await supabase.from("plan_covered_services").insert({
-      plan_id: planId,
-      service_slug: serviceSlug,
-      coverage_rules: patch,
-    });
-  }
+/** Build an `eoc_coverage_provisions[]` record — admin provisions routed OUT of coverage_rules (reversible). */
+function buildAdminProvisionRecord(
+  c: MedicalNecessityCriterion,
+  canonicalSlug: string | null,
+): Record<string, unknown> {
+  return {
+    service_slug: canonicalSlug,
+    place_of_service: c.place_of_service,
+    text: c.criteria_text,
+    source_excerpt: c.source_excerpt,
+    source_excerpt_verified: c.source_excerpt_verified,
+    type_confidence: c.type_confidence,
+  };
 }
 
 /**
@@ -656,8 +921,8 @@ async function writeParseAuditRun(
     cost_usd: parsed.total_cost_usd,
     haiku_tokens_input: parsed.total_input_tokens,
     haiku_tokens_output: parsed.total_output_tokens,
-    haiku_cache_read_tokens: 0, // SDK-reported usage breakdown stored in _shared.ts; v1.5 pipe through
-    haiku_cache_create_tokens: 0,
+    haiku_cache_read_tokens: parsed.total_cache_read_tokens, // S187: threaded from HaikuCallResult via EOCSectionResult (the deferred v1.5 pipe-through; admin /parse-audit-runs renders these)
+    haiku_cache_create_tokens: parsed.total_cache_create_tokens,
     per_field_results: parsed.sections, // section-level results for admin drilldown
     warnings: { eoc_warnings: parsed.warnings, segmentation_used: parsed.segmentation_used },
     parse_duration_ms: null,

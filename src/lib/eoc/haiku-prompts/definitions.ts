@@ -10,6 +10,7 @@
 import type { ExtractionMethod } from "../../parser/types";
 import type { DefinitionEntry, DefinitionsData, EOCSectionResult } from "../types";
 import { callHaikuWithCache } from "./_shared";
+import { HAIKU_CACHE_PAD } from "@/lib/haiku-client/cache-pad";
 
 const INSTRUCTIONS = `You are extracting Definitions from an Evidence of Coverage (EOC) document section. Return a single JSON object listing each defined term + verbatim definition text.
 
@@ -99,7 +100,7 @@ export async function extractDefinitions(
   extractionMethod: ExtractionMethod,
 ): Promise<EOCSectionResult<DefinitionsData>> {
   const result = await callHaikuWithCache<RawResponse>({
-    systemPrompt: INSTRUCTIONS,
+    systemPrompt: HAIKU_CACHE_PAD + INSTRUCTIONS,
     userContent: sectionText,
     sectionLabel: "definitions",
   });
@@ -129,6 +130,8 @@ export async function extractDefinitions(
     haiku_input_tokens: result.inputTokens,
     haiku_output_tokens: result.outputTokens,
     haiku_cost_usd: result.costUsd,
+    haiku_cache_create_tokens: result.cacheCreateTokens ?? 0,
+    haiku_cache_read_tokens: result.cacheReadTokens ?? 0,
     warnings: result.warnings,
   };
 }
