@@ -30,7 +30,7 @@ INSERT INTO feature_flag_rules (flag_key, enabled, description, target_type, con
 VALUES (
   'eoc_prose_prior_auth_v1',
   false,
-  'S190 (thesaurus P2). Gates the WHOLE EOC content-type routing: the medical_necessity content-type/C1-split prompt (OFF = frozen pre-P2 body, instruction-byte-identical to post-D1 modulo the always-on cache pad) + the routeCriterion type dispatch (prior_auth requires/service-specific/conf>=floor -> typed prior_auth_required column; waived/axis/no-slug/low-conf -> structured eoc_prior_auth_facts[] capture; admin_provision -> insurance_plans.metadata.eoc_coverage_provisions[]) + G7 routing telemetry. Flip ON only after the [[eoc_content_type_routing]] §5 universal eval floors pass (4 carriers, oracle-adjudicated) + one real flag-ON EOC parse verified E2E in PROD. Rollback = flip OFF.',
+  'S190 (thesaurus P2). Gates the WHOLE EOC content-type routing: the medical_necessity content-type/C1-split prompt (OFF = frozen pre-P2 body, instruction-byte-identical to post-D1 modulo the always-on cache pad) + the routeCriterion type dispatch (prior_auth requires/service-specific/conf>=floor -> typed prior_auth_required column · waived/axis/no-slug/low-conf -> structured eoc_prior_auth_facts[] capture · admin_provision -> insurance_plans.metadata.eoc_coverage_provisions[]) + G7 routing telemetry. Flip ON only after the [[eoc_content_type_routing]] §5 universal eval floors pass (4 carriers, oracle-adjudicated) + one real flag-ON EOC parse verified E2E in PROD. Rollback = flip OFF.',
   'global',
   '{}'::jsonb
 )

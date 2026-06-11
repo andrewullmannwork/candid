@@ -106,7 +106,7 @@ ALTER TABLE benefit_corrections
 COMMENT ON COLUMN benefit_corrections.place_of_service IS
   'S173 Thesaurus Phase 1a (mig 157): the cost-share cell the user was viewing when they flagged '
   'the value. NULL until the /plan submit payload carries it (Backend→Frontend request). The apply '
-  'handler uses (place_of_service, component) to target ONE canonical cell via apply_promotion_event; '
+  'handler uses (place_of_service, component) to target ONE canonical cell via apply_promotion_event — '
   'NULL + multi-cell service → reject (never a silent over-write of all variants).';
 COMMENT ON COLUMN benefit_corrections.component IS
   'S173 Thesaurus Phase 1a (mig 157): facility|professional|global modifier of the flagged cell. '
