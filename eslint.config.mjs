@@ -152,6 +152,68 @@ const eslintConfig = defineConfig([
     plugins: { "candid-security": candidSecurityPlugin },
     rules: { "candid-security/no-raw-user-table-from": "error" },
   },
+  // ── B9 B1 user-table ownership guard — src/lib (F12-class backstop, S194) ───
+  // Extends the route guard to shared lib accessors. The B9 audit reviewed route
+  // files but NOT shared `src/lib` helpers taking a raw request-supplied id —
+  // exactly the class that let F12 (`loadFingerprintInputForClaim`) ship
+  // un-audited (S183, found by accident). Covering `src/lib` BY DEFAULT means any
+  // NEW lib accessor that reads a user-owned table is caught by construction.
+  //
+  // Unlike the route ledger (which drains to ∅), this ledger keeps a large
+  // PERMANENT-EXEMPT tier: the parser pipeline + cross-user (Rule #5) aggregates
+  // are service-role by nature — there is no authenticated user to scope to. The
+  // MIGRATION-LEDGER tier is user-request-reached and was proven safe-by-upstream
+  // ownership by the S194 triage (every read/write by a non-user_id id is gated
+  // at the route via userScoped, or in the lib via an explicit user_id guard); it
+  // drains onto the layer family-by-family as defense-in-depth.
+  {
+    files: ["src/lib/**/*.ts"],
+    ignores: [
+      // ── TIER 1 — PERMANENT-EXEMPT (service-role; never user-request-scoped) ──
+      // parser pipeline + id-block cross-user aggregates:
+      "src/lib/parser/**",
+      // claim-processing engine (runs during parse/persist; no request id):
+      "src/lib/claims/**",
+      // the ownership layer itself (holds the one legitimate raw `.from`):
+      "src/lib/security/**",
+      // plan/document parse pipeline (process-chunk / upload / cron context):
+      "src/lib/plan/process-plan.ts",
+      "src/lib/plan/process-eoc.ts",
+      "src/lib/plan/extraction-dedup.ts",
+      "src/lib/plan/reparse-fields-batch.ts",
+      "src/lib/documents/process-document.ts",
+      "src/lib/billing/truncation-telemetry.ts",
+      // Rule #5 cross-user aggregates (k-anon dispute metrics):
+      "src/lib/disputes/metrics.ts",
+      "src/lib/disputes/accuracy.ts",
+      "src/lib/disputes/outlier-eval.ts",
+      // ── TIER 2 — MIGRATION LEDGER (user-request-reached; safe-by-upstream per
+      //   the S194 triage; drain onto userScoped as defense-in-depth) ──────────
+      "src/lib/audit/aca-coverage-fallback.ts",
+      "src/lib/audit/coverage-loader.ts",
+      "src/lib/audit/reaudit.ts",
+      "src/lib/audit/zero-cost-share.ts",
+      "src/lib/disputes/evidence-resolver.ts",
+      "src/lib/disputes/insurer-appeals-upsert.ts",
+      "src/lib/disputes/persist.ts",
+      "src/lib/disputes/plan-context.ts",
+      "src/lib/disputes/post-escalation-followup.ts",
+      "src/lib/disputes/rerender.ts",
+      "src/lib/email/onboarding-emails.ts",
+      "src/lib/legal/evidence-compiler.ts",
+      // confirmCanonicalMatch — PR-D-coupled: the documents/status caller has no
+      // trustworthy userId to thread until F05 adds auth (S190 finding).
+      "src/lib/plan/canonical-match.ts",
+      "src/lib/plan/compare.ts",
+      "src/lib/plan/coverage-targeting.ts",
+      "src/lib/plan/reparse-field.ts",
+      "src/lib/subscription/server.ts",
+      // disputes/followups.ts — MIGRATED onto userScoped this session (S194
+      //   proof-of-pattern); NOT ledgered (it is covered + clean).
+    ],
+    plugins: { "candid-security": candidSecurityPlugin },
+    rules: { "candid-security/no-raw-user-table-from": "error" },
+  },
 ]);
 
 export default eslintConfig;

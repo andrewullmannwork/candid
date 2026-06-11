@@ -13,6 +13,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { userScoped } from "@/lib/security/user-scoped";
 
 const DEFAULT_FIRST_DAYS = 30;
 const DEFAULT_REPEAT_DAYS = 14;
@@ -94,9 +95,8 @@ export async function createFollowups(
   const { firstDays } = await readCadence(supabase);
   const dueDate = addDays(firstDays);
 
-  await supabase.from("dispute_followups").insert({
+  await userScoped(supabase, userId).table("dispute_followups").insert({
     dispute_id: disputeId,
-    user_id: userId,
     followup_type: "initial_30d",
     due_date: dueDate,
     status: "pending",
@@ -115,10 +115,9 @@ export async function getActiveFollowups(
 ): Promise<ActiveFollowup[]> {
   const today = new Date().toISOString().split("T")[0];
 
-  const { data, error } = await supabase
-    .from("dispute_followups")
+  const { data, error } = await userScoped(supabase, userId)
+    .table("dispute_followups")
     .select("*, dispute_outcomes!inner(id, dispute_type, status, amount_disputed, filed_date, metadata)")
-    .eq("user_id", userId)
     .eq("status", "pending")
     .lte("due_date", today)
     .order("due_date", { ascending: true });
@@ -161,18 +160,17 @@ export async function handleFollowupAction(
   const { followupId, userId, action, amountRecovered } = params;
 
   // Fetch the follow-up and verify ownership
-  const { data: followup, error } = await supabase
-    .from("dispute_followups")
+  const { data: followup, error } = await userScoped(supabase, userId)
+    .table("dispute_followups")
     .select("id, dispute_id, followup_type, status")
     .eq("id", followupId)
-    .eq("user_id", userId)
     .single();
 
   if (error || !followup) return { success: false };
 
   // Mark this follow-up as acted
-  await supabase
-    .from("dispute_followups")
+  await userScoped(supabase, userId)
+    .table("dispute_followups")
     .update({ status: "acted", updated_at: new Date().toISOString() })
     .eq("id", followupId);
 
@@ -186,14 +184,14 @@ export async function handleFollowupAction(
       updateData.amount_recovered = amountRecovered;
     }
 
-    await supabase
-      .from("dispute_outcomes")
+    await userScoped(supabase, userId)
+      .table("dispute_outcomes")
       .update(updateData)
       .eq("id", followup.dispute_id);
 
     // Cancel any other pending follow-ups for this dispute
-    await supabase
-      .from("dispute_followups")
+    await userScoped(supabase, userId)
+      .table("dispute_followups")
       .update({ status: "dismissed", updated_at: new Date().toISOString() })
       .eq("dispute_id", followup.dispute_id)
       .eq("status", "pending")
@@ -213,9 +211,8 @@ export async function handleFollowupAction(
       // Create reprompt (admin-tunable cadence)
       const dueDate = addDays(repeatDays);
 
-      await supabase.from("dispute_followups").insert({
+      await userScoped(supabase, userId).table("dispute_followups").insert({
         dispute_id: followup.dispute_id,
-        user_id: userId,
         followup_type: "reprompt_14d",
         due_date: dueDate,
         status: "pending",
@@ -228,9 +225,8 @@ export async function handleFollowupAction(
       // Create final follow-up (admin-tunable cadence; same repeat interval)
       const dueDate = addDays(repeatDays);
 
-      await supabase.from("dispute_followups").insert({
+      await userScoped(supabase, userId).table("dispute_followups").insert({
         dispute_id: followup.dispute_id,
-        user_id: userId,
         followup_type: "final",
         due_date: dueDate,
         status: "pending",
@@ -245,8 +241,8 @@ export async function handleFollowupAction(
 
   // "dismiss" — just mark as dismissed (already marked as acted above, update to dismissed)
   if (action === "dismiss") {
-    await supabase
-      .from("dispute_followups")
+    await userScoped(supabase, userId)
+      .table("dispute_followups")
       .update({ status: "dismissed", updated_at: new Date().toISOString() })
       .eq("id", followupId);
   }
@@ -271,9 +267,8 @@ export async function createPostEscalationFollowup(
   const dueDate = new Date();
   dueDate.setDate(dueDate.getDate() + 60);
 
-  await supabase.from("dispute_followups").insert({
+  await userScoped(supabase, userId).table("dispute_followups").insert({
     dispute_id: disputeId,
-    user_id: userId,
     followup_type: "post_escalation_60d",
     due_date: dueDate.toISOString().split("T")[0],
     status: "pending",
