@@ -15,13 +15,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
 import { runPiiSweep, recordPiiAuditRun } from "@/lib/parser/pii-audit-core";
 import { postPiiAlert } from "@/lib/parser/pii-alert-slack";
+import { isAuthorizedCron } from "@/lib/security/require-cron-secret";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120; // exhaustive sweep over ~30 tables
 
 export async function GET(req: NextRequest) {
-  const authHeader = req.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!isAuthorizedCron(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
