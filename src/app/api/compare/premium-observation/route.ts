@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 
 /**
  * POST /api/compare/premium-observation — record a user-scoped premium observation
@@ -54,17 +55,20 @@ export async function POST(req: NextRequest) {
     typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null;
 
   const supabase = createServerClient();
-  const { error } = await supabase.from("compare_premium_observations").insert({
-    user_id: internalUserId,
-    canonical_plan_id: str(body.canonicalPlanId, 64),
-    insurance_plan_id: str(body.insurancePlanId, 64),
-    plan_label: str(body.planLabel, 200),
-    metal_level: str(body.metalLevel, 40),
-    state: str(body.state, 8),
-    premium_monthly: Math.round(premium),
-    incl_employer: body.inclEmployer === true,
-    source: "compare_user_entry",
-  });
+  // B9 B1.2 — userScoped stamps user_id (cannot write as another user); op-equivalent
+  // to the prior explicit `user_id: internalUserId` (the layer overrides any caller value).
+  const { error } = await userScoped(supabase, internalUserId)
+    .table("compare_premium_observations")
+    .insert({
+      canonical_plan_id: str(body.canonicalPlanId, 64),
+      insurance_plan_id: str(body.insurancePlanId, 64),
+      plan_label: str(body.planLabel, 200),
+      metal_level: str(body.metalLevel, 40),
+      state: str(body.state, 8),
+      premium_monthly: Math.round(premium),
+      incl_employer: body.inclEmployer === true,
+      source: "compare_user_entry",
+    });
 
   if (error) {
     // Non-fatal — a flywheel write must never break the comparison UI.

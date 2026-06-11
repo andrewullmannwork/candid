@@ -135,24 +135,18 @@ const eslintConfig = defineConfig([
       "src/app/api/slack/**",
       "src/app/api/documents/process-chunk/**",
       "src/app/api/documents/upload/**",
-      // — B1 migration ledger (SHRINKING → ∅ over B1.2). Unmigrated user-facing
-      //   routes still using a raw `.from(<user-table>)` + hand-written filter. —
+      // — B1 migration ledger (the account-adjacent codemod arc is COMPLETE → this
+      //   block is now ∅; only the cross-WS F05/PR-D route remains below). —
       // FULLY MIGRATED onto the layer (covered by default; NO ledger entry):
       //   disputes/** (S183 PR-C + S185) · claims/** (S182 + S186) ·
       //   documents/{confirm-doc-type,reprocess} (S188) · account-cluster
-      //   account/auth/billing/consent/legal/profile/support (S190 — incl. the
-      //   NEW userScoped.upsert [profiles] + upsertOwnedChildren child-upsert
-      //   [profile's plan_covered_services] primitives).
-      // Remaining ledger = plan+compare (cross-WS LAST, with compare-v2) +
-      // documents/status (F05/PR-D no-auth GET fix):
-      "src/app/api/compare/**",
-      "src/app/api/plan/analyze/**",
-      "src/app/api/plan/corrections/**",
-      "src/app/api/plan/field/**",
-      "src/app/api/plan/premium/**",
-      "src/app/api/plan/reparse-field/**",
+      //   account/auth/billing/consent/legal/profile/support (S190 — userScoped.upsert
+      //   + upsertOwnedChildren primitives) · plan+compare (S192 — compare/premium-
+      //   observation + plan/{analyze,corrections,field,premium,reparse-field}, incl.
+      //   the NEW adminScoped admin-authority accessor for corrections review/apply).
       // documents/process-chunk + documents/upload stay permanent-exempt (above).
-      // documents/status remains = F05/PR-D (cross-workstream no-auth GET fix).
+      // ONLY remaining ledger entry = documents/status (F05/PR-D no-auth GET fix,
+      // cross-workstream — the last B9 B1.2 route).
       "src/app/api/documents/status/**",
     ],
     plugins: { "candid-security": candidSecurityPlugin },

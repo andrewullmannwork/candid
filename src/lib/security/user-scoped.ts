@@ -166,6 +166,55 @@ export function userScoped(supabase: SupabaseClient, userId: string) {
 }
 
 /**
+ * Admin-authority cross-user access to a user-owned table (admin review queues,
+ * admin apply-to-canonical). This is NOT caller-owned data, so it cannot use
+ * userScoped() — that injects `.eq("user_id", <the admin>)` and would hide every
+ * OTHER user's rows, breaking admin review. The B1 lint bans raw
+ * `.from("<user-owned-table>")` in routes to kill the IDOR class; legitimate
+ * admin cross-user access routes through HERE so it is explicit, centralized, and
+ * ENFORCED — not a scattered `eslint-disable` whose only guard is a comment.
+ *
+ * Re-verifies `users.is_admin` for `adminUserId` and FAILS CLOSED (throws) if the
+ * caller is not an admin — so the un-scoped builder can never reach a non-admin
+ * even if a route's own is_admin gate is later removed or weakened. Returns the
+ * raw Supabase builder (no `user_id` filter — an admin reads/writes across users
+ * by authority); the caller chains `.select/.update/.delete/.eq/...` natively, so
+ * a migrated call is op-equivalent to the prior raw `.from()`. `.table()` may be
+ * called multiple times after a single verification (each yields a fresh
+ * builder). First use: plan/corrections admin list/review/apply (S192 B1.2).
+ *
+ * The raw `.from()` the B1 lint bans in routes lives ONCE here, inside the
+ * security layer (the lint covers `src/app/api/**` only). `table` is the same
+ * DirectUserOwnedTable union userScoped uses — an admin acts by authority, so no
+ * separate registry; the is_admin re-check is the access control.
+ */
+export async function adminScoped(supabase: SupabaseClient, adminUserId: string) {
+  const uid = assertUserId(adminUserId);
+  const { data } = await supabase
+    .from("users")
+    .select("is_admin")
+    .eq("id", uid)
+    .maybeSingle();
+  if (data?.is_admin !== true) {
+    throw new Error(
+      "adminScoped: caller is not an admin (fail-closed cross-user authority)",
+    );
+  }
+  return {
+    table(table: DirectUserOwnedTable) {
+      if (!DIRECT_SET.has(table)) {
+        // Defense-in-depth for a dynamic (non-literal) table arg that escapes
+        // the compile-time union. Fail closed rather than touch an unknown table.
+        throw new Error(
+          `adminScoped.table: "${table}" is not a registered user-owned table`,
+        );
+      }
+      return supabase.from(table);
+    },
+  };
+}
+
+/**
  * Parent-join ownership: given request-supplied candidate parent ids, return
  * the subset the user owns. The caller then filters child rows
  * (`.in(fk, [...owned])`, or post-filters `rows.filter(r => owned.has(r[fk]))`
