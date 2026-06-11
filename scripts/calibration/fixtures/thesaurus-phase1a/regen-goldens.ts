@@ -22,6 +22,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { INSTRUCTIONS_BODY_PRE_P2 } from "@/lib/eoc/haiku-prompts/medical-necessity-pre-p2";
+import { INSTRUCTIONS_BODY } from "@/lib/eoc/haiku-prompts/medical-necessity";
 import { HAIKU_CACHE_PAD, HAIKU_CACHE_PAD_VERSION } from "@/lib/haiku-client/cache-pad";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -35,6 +36,32 @@ function fail(msg: string): never {
 }
 
 if (process.env.REGEN_GOLDENS !== "1") fail("set REGEN_GOLDENS=1 to confirm (this rewrites committed byte anchors)");
+
+// ── S193 mode: REGEN_MODE=live-body — regenerate the ON golden after a LEGITIMATE live-body edit ──
+// (this round: C7 scenario-PA + C8 process-notice rules + their example block). Same philosophy as
+// the pad re-anchor: goldens derive from CONSTANTS (PAD + INSTRUCTIONS_BODY + TAIL), the builder is
+// NEVER called — a builder bug must fail the fixture, not get baked in. OFF golden is NOT touched
+// (the frozen flag-OFF contract is permanent); it is re-verified against its composition instead.
+if (process.env.REGEN_MODE === "live-body") {
+  const offCur = fs.readFileSync(OFF_PATH).toString("utf8");
+  const onCur = fs.readFileSync(ON_PATH).toString("utf8");
+  if (offCur !== `${HAIKU_CACHE_PAD}${INSTRUCTIONS_BODY_PRE_P2}${TAIL}`) {
+    fail("OFF golden !== PAD + frozen body + TAIL (contract broken — investigate, never regenerate OFF)");
+  }
+  if (!onCur.startsWith(HAIKU_CACHE_PAD) || !onCur.endsWith(TAIL)) fail("ON golden does not satisfy the post-pad contract");
+  const newOnLive = `${HAIKU_CACHE_PAD}${INSTRUCTIONS_BODY}${TAIL}`;
+  if (newOnLive === onCur) fail("live body unchanged — nothing to regenerate");
+  for (const m of ["C7 — scenario-scoped PA", "C8 — process descriptions are NOT prior_auth"]) {
+    if (!INSTRUCTIONS_BODY.includes(m)) fail(`live body missing expected S193 marker "${m}"`);
+    if (HAIKU_CACHE_PAD.includes(m)) fail(`pad contains S193 marker "${m}"`);
+    if (INSTRUCTIONS_BODY_PRE_P2.includes(m)) fail(`FROZEN body contains S193 marker "${m}" — the flag-OFF contract would break`);
+  }
+  fs.writeFileSync(ON_PATH, Buffer.from(newOnLive, "utf8"));
+  console.log(`Regenerated ON golden from live INSTRUCTIONS_BODY (${HAIKU_CACHE_PAD_VERSION}):`);
+  console.log(`  ${path.basename(ON_PATH)}: ${onCur.length} -> ${newOnLive.length} bytes (OFF untouched, contract re-verified)`);
+  console.log(`Run the gate: npx tsx scripts/calibration/fixtures/thesaurus-phase1a/eoc-mn-prompt-gate.ts`);
+  process.exit(0);
+}
 
 const offBytes = fs.readFileSync(OFF_PATH);
 const onBytes = fs.readFileSync(ON_PATH);

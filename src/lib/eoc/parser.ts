@@ -151,6 +151,36 @@ function pickHighestConfidence(
   return highest;
 }
 
+/**
+ * S193 D-P2-4 (pure; fixture-covered): merge the prose-PA leg into `sections.medical_necessity`.
+ * The leg is a PA SWEEP over the `prior_auth_codes` REGION, not a second general extractor —
+ * ONLY `prior_auth`-typed entries survive (clinical/admin from the broad PA region are DROPPED, so
+ * over-capture cannot regress through this back door), and survivors are retagged
+ * `source_section_hint: "prior_auth_codes"` (their true region — P-8 verifies them against that
+ * range). Cost/token fields sum for section-level honesty (run totals are summed separately by
+ * the caller's tryAssign).
+ */
+export function mergePriorAuthProseLeg(
+  mn: EOCSectionResult<MedicalNecessityData> | null,
+  leg: EOCSectionResult<MedicalNecessityData> | null,
+): EOCSectionResult<MedicalNecessityData> | null {
+  if (!leg) return mn;
+  const paOnly = leg.data.criteria
+    .filter((c) => c.type === "prior_auth")
+    .map((c) => ({ ...c, source_section_hint: "prior_auth_codes" as EOCSectionHint }));
+  if (paOnly.length === 0) return mn;
+  if (!mn) return { ...leg, data: { criteria: paOnly } };
+  return {
+    ...mn,
+    data: { criteria: [...mn.data.criteria, ...paOnly] },
+    haiku_cost_usd: mn.haiku_cost_usd + leg.haiku_cost_usd,
+    haiku_input_tokens: mn.haiku_input_tokens + leg.haiku_input_tokens,
+    haiku_output_tokens: mn.haiku_output_tokens + leg.haiku_output_tokens,
+    haiku_cache_create_tokens: (mn.haiku_cache_create_tokens ?? 0) + (leg.haiku_cache_create_tokens ?? 0),
+    haiku_cache_read_tokens: (mn.haiku_cache_read_tokens ?? 0) + (leg.haiku_cache_read_tokens ?? 0),
+  };
+}
+
 function mergeStringArrays(arrays: string[][]): string[] {
   const seen = new Set<string>();
   for (const arr of arrays) for (const s of arr) if (typeof s === "string") seen.add(s);
@@ -702,19 +732,28 @@ export async function parseEOC(
       sectionRange: { start: number; end: number },
       sectionText: string,
     ) => EOCSectionResult<T> | null,
+    opts?: {
+      /** S193 D-P2-4: chunking config override (the prose-PA leg uses paragraph/800 over a region whose default is line-granularity Section A chunking). */
+      configOverride?: (typeof SECTION_CONFIGS)[EOCSectionHint];
+      /** S193 D-P2-4: sectionFilter key when it differs from the REGION hint (lets the eval dispatch the prose leg without Section A — they share the region). */
+      filterKey?: string;
+      /** S193 D-P2-4: label for chunk warnings/telemetry when two dispatches share one region hint. */
+      warnLabel?: string;
+    },
   ): Promise<{ result: EOCSectionResult<T> | null; warnings: string[] }> => {
     // S190 sectionFilter (calibration/eval ONLY): a filtered-out section returns the same null
     // shape as a section absent from the document — aggregation/verifier/cost already handle it.
-    if (options.sectionFilter && !options.sectionFilter.includes(hint)) {
-      return { result: null, warnings: [`eoc_section_skipped_by_filter:${hint}`] };
+    const filterKey = opts?.filterKey ?? hint;
+    if (options.sectionFilter && !options.sectionFilter.includes(filterKey as EOCSectionHint)) {
+      return { result: null, warnings: [`eoc_section_skipped_by_filter:${filterKey}`] };
     }
     const range = pickFirstRange(sectionRanges, hint);
     if (!range) return { result: null, warnings: [] };
-    const config = SECTION_CONFIGS[hint];
+    const config = opts?.configOverride ?? SECTION_CONFIGS[hint];
     if (!config) return { result: null, warnings: [] };
     const sectionText = sliceSection(workingText, range);
     const { chunkResults, warnings: chunkWarnings } = await dispatchChunks(
-      hint,
+      (opts?.warnLabel ?? hint) as EOCSectionHint,
       config,
       range,
       sectionText,
@@ -728,7 +767,7 @@ export async function parseEOC(
   };
 
   const sectionsStartMs = Date.now();
-  const [paOutcome, mnOutcome, apOutcome, cobOutcome, elOutcome, defOutcome] = await Promise.allSettled([
+  const [paOutcome, mnOutcome, apOutcome, cobOutcome, elOutcome, defOutcome, paProseOutcome] = await Promise.allSettled([
     dispatchSection(
       "prior_auth_codes",
       extractPriorAuthCodes,
@@ -760,6 +799,24 @@ export async function parseEOC(
       extractDefinitions,
       (cs, r) => combineDefinitions(cs, r),
     ),
+    // S193 D-P2-4: prose-PA sweep over the prior_auth_codes REGION (flag-ON ONLY — flag OFF this
+    // leg never dispatches, preserving the byte-identical rollback contract). The type-classify
+    // extractor harvests the prior_auth facts the code-table Section A is structurally blind to
+    // (real EOCs state PA in prose — §9.10 Finding 1). Results are post-filtered to PA-typed
+    // entries and merged into medical_necessity via mergePriorAuthProseLeg below.
+    options.eocContentTypeRoutingOn
+      ? dispatchSection(
+          "prior_auth_codes",
+          (text, range, em) =>
+            extractMedicalNecessity(text, range, em, options.serviceVocabulary, true),
+          (cs, r) => combineMedicalNecessity(cs, r),
+          {
+            configOverride: { granularity: "paragraph", maxTokens: 800 },
+            filterKey: "prior_auth_prose",
+            warnLabel: "prior_auth_prose",
+          },
+        )
+      : Promise.resolve({ result: null, warnings: [] } as { result: EOCSectionResult<MedicalNecessityData> | null; warnings: string[] }),
   ]);
 
   const sectionsMs = Date.now() - sectionsStartMs;
@@ -835,6 +892,16 @@ export async function parseEOC(
   tryAssign("definitions", defOutcome, (r) => {
     sections.definitions = r;
   });
+  // S193 D-P2-4: fold the prose-PA leg into medical_necessity (PA-typed entries only, retagged to
+  // their true region). Flag OFF → the leg never dispatched → result null → byte-identical no-op.
+  let proseLeg: EOCSectionResult<MedicalNecessityData> | null = null;
+  tryAssign("prior_auth_prose" as EOCSectionHint, paProseOutcome, (r) => {
+    proseLeg = r as EOCSectionResult<MedicalNecessityData>;
+  });
+  if (proseLeg) {
+    const merged = mergePriorAuthProseLeg(sections.medical_necessity ?? null, proseLeg);
+    if (merged) sections.medical_necessity = merged;
+  }
 
   // Hard cap check (post-aggregation).
   if (totalCostUsd > COST_HARD_CAP_USD) {
@@ -851,6 +918,11 @@ export async function parseEOC(
   // had a successful Haiku result populate the map entry; failed sections appear
   // in parse_errors instead per Promise.allSettled pattern).
   const dispatched_sections = Object.keys(sections) as EOCSectionHint[];
+  // S193 D-P2-4: the prose leg dispatched over the prior_auth_codes REGION even when Section A was
+  // filtered out (eval) — record it so verbatim-absent derivation treats the region as dispatched.
+  if (proseLeg && !dispatched_sections.includes("prior_auth_codes")) {
+    dispatched_sections.push("prior_auth_codes");
+  }
   const preliminary: EOCParseResult = {
     plan_identity: planIdentity,
     sections,

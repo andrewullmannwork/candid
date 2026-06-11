@@ -13,7 +13,9 @@ import { callHaikuWithCache } from "./_shared";
 import { INSTRUCTIONS_BODY_PRE_P2 } from "./medical-necessity-pre-p2";
 import { HAIKU_CACHE_PAD } from "@/lib/haiku-client/cache-pad";
 
-const INSTRUCTIONS_BODY = `You are extracting Medical Necessity Criteria from an Evidence of Coverage (EOC) document section. Return a single JSON object listing the criteria per service.
+// Exported for regen-goldens.ts ONLY (constants-derived golden regeneration — the builder is never
+// the source of golden bytes; mirrors the exported INSTRUCTIONS_BODY_PRE_P2 twin).
+export const INSTRUCTIONS_BODY = `You are extracting Medical Necessity Criteria from an Evidence of Coverage (EOC) document section. Return a single JSON object listing the criteria per service.
 
 ## CRITICAL EXTRACTION RULES
 
@@ -30,7 +32,7 @@ This region of the EOC intermixes THREE kinds of fact. Label each entry with **t
 
 - **clinical_criterion** — a medical-necessity condition, or a coverage limit/exclusion. Signals: "is medically necessary when…", "covered when…", "covered except…", "limited to N visits/days". Use for a genuine per-service clinical rule. This is the default when a fact is a real coverage rule and neither type below applies.
 - **prior_auth** — the service needs APPROVAL or a service-specific REFERRAL BEFORE it is covered. Trigger phrases (any of): "prior authorization", "prior authorisation", "pre-authorization", "preauthorization", "pre-certification", "precertification", "prior approval", "prior review", "step therapy" (must try another treatment first), "must be authorized in advance", AND a service-specific referral gate ("coverage for X requires referral by a doctor"). prior_auth is PERMISSION-before-service — NOT the clinical conditions for necessity. NOTE the referral line: a *general* access description ("see your PCP for referrals"; "you do not need a referral") is admin_provision; a referral stated as a coverage CONDITION for a specific service ("coverage for physical therapy requires referral") is prior_auth.
-- **admin_provision** — administrative / coverage mechanics that are neither a per-service clinical rule nor a prior-auth: out-of-area rules, GENERAL network/referral mechanics, member rights, post-stabilization, cost-share mechanics, continuity-of-care. Signals: "outside the service area", "network provider", "you have the right to", "the member may".
+- **admin_provision** — administrative / coverage mechanics that are neither a per-service clinical rule nor a prior-auth: out-of-area rules, GENERAL network/referral mechanics, member rights, cost-share mechanics, continuity-of-care. Signals: "outside the service area", "network provider", "you have the right to", "the member may". (Scenario-conditioned PA — e.g. post-stabilization care requiring authorization — is prior_auth per C7, NOT admin.)
 
 ### CLASSIFICATION RULES
 - **C1 — one entry = one fact of one type.** If a passage states BOTH a clinical criterion AND a prior-auth requirement (very common — e.g. "covered when BMI ≥40 … and requires prior authorization"), emit **TWO separate entries**: one clinical_criterion for the clinical condition, one prior_auth for the approval requirement. Never collapse them — each must route to its own destination.
@@ -39,6 +41,8 @@ This region of the EOC intermixes THREE kinds of fact. Label each entry with **t
 - **C4 — split entries share one service_slug_hint.** Both halves describe the same service; set the same service_slug_hint identically on each.
 - **C5 — PA polarity (REQUIRED on every prior_auth entry).** Set **pa_polarity**: "requires" if the text IMPOSES approval/referral before coverage; "waived" if it states approval is NOT required / is waived ("you do not need prior authorization", "will not impose prior authorization", "no precertification required"). A "waived" entry is STILL prior_auth — it records the absence; only "requires" gates coverage. (Non-PA entries: omit or null.)
 - **C6 — axis scope (place_of_service).** If a prior_auth or coverage rule applies to a place-of-service AXIS rather than one service ("all INPATIENT admissions require precert", "OUTPATIENT surgery"), set **place_of_service** ("inpatient" | "outpatient" | "office" | "emergency" | "home" | …) and leave service_slug_hint null (unless one specific service is also named). For a CARVE-OUT ("all inpatient require precert EXCEPT maternity"), emit TWO entries: the broad axis fact (place_of_service:"inpatient", pa_polarity:"requires", service_slug_hint:null) AND the exception (service_slug_hint:"maternity_care", place_of_service:"inpatient", pa_polarity:"waived").
+- **C7 — scenario-scoped PA gets NO service slug.** PA conditioned on a CARE SCENARIO rather than a specific service — post-stabilization care, out-of-area or out-of-network situations, services from non-plan providers — is type prior_auth with the correct pa_polarity and **service_slug_hint: null** (and place_of_service only when a true place axis is ALSO stated). NEVER attribute scenario PA to a service slug (er_visit, urgent_care, etc.) — the requirement conditions on the SCENARIO, not on that service.
+- **C8 — process descriptions are NOT prior_auth.** Statements that merely DEFINE the PA/UM process or say WHERE TO FIND criteria or materials ("utilization review criteria … are available at kp.org", "prior authorization is the process of …", "for details visit … / call …") are **admin_provision** — they are member-information mechanics and impose nothing on any service. Only text that IMPOSES (or explicitly waives) approval for identifiable care is prior_auth.
 
 ## RESPONSE SCHEMA
 
@@ -151,6 +155,39 @@ Source: "All inpatient admissions require precertification, except inpatient mat
       "source_excerpt": "except inpatient maternity stays",
       "source_section_hint": "medical_necessity",
       "haiku_confidence": 0.9
+    }
+  ]
+}
+
+## SCENARIO PA + PROCESS NOTICE EXAMPLE (C7/C8 — neither gets a service slug write)
+
+Source: "We cover Post-Stabilization Care from a Non-Plan Provider only if prior authorization for the care is obtained. Utilization review determination criteria for mental health Services are available at kp.org at no cost."
+
+{
+  "criteria": [
+    {
+      "type": "prior_auth",
+      "type_confidence": 0.94,
+      "pa_polarity": "requires",
+      "place_of_service": null,
+      "service_slug_hint": null,
+      "criteria_text": "Post-Stabilization Care from a Non-Plan Provider requires prior authorization (C7 — scenario-scoped: the condition is the care scenario, never a service slug like er_visit)",
+      "diagnosis_qualifiers": [],
+      "source_excerpt": "Post-Stabilization Care from a Non-Plan Provider only if prior authorization for the care is obtained",
+      "source_section_hint": "medical_necessity",
+      "haiku_confidence": 0.93
+    },
+    {
+      "type": "admin_provision",
+      "type_confidence": 0.95,
+      "pa_polarity": null,
+      "place_of_service": null,
+      "service_slug_hint": null,
+      "criteria_text": "Utilization review determination criteria are available at kp.org at no cost (C8 — a where-to-find notice, NOT a PA requirement on mental health services)",
+      "diagnosis_qualifiers": [],
+      "source_excerpt": "Utilization review determination criteria for mental health Services are available at kp.org at no cost",
+      "source_section_hint": "medical_necessity",
+      "haiku_confidence": 0.94
     }
   ]
 }

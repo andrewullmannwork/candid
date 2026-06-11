@@ -66,6 +66,9 @@ const P2_MARKERS = [
   "pa_polarity",
   "AXIS CARVE-OUT",
   "note the SPLIT",
+  // S193 T5-remediation rules (D-P2-4 round): scenario-PA null-slug + process-notice suppression
+  "C7 — scenario-scoped PA",
+  "C8 — process descriptions are NOT prior_auth",
 ];
 
 console.log("P2 M1 — medical_necessity prompt-gate byte-identity fixture\n");
