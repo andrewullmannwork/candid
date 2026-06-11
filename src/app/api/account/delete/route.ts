@@ -66,6 +66,19 @@ export async function POST(req: NextRequest) {
     await userScoped(supabase, userId).table("profiles").delete();
     deletionLog.push("Profile deleted");
 
+    // 6b. Records whose user_id FK is ON DELETE SET NULL (NOT cascade) — these
+    // would otherwise be ORPHANED (de-identified but RETAINED, incl. the
+    // insurer_appeals_confirmations.metadata PII blob) when the users row is
+    // deleted below, defeating the right-to-erasure promise. Hard-delete them so
+    // account deletion is a true full erasure. (S194 erasure-completeness audit;
+    // both are direct user_id tables in the userScoped layer. No aggregate reads
+    // them post-deletion, so removal is safe — not de-identification.)
+    await userScoped(supabase, userId).table("finding_dismissals").delete();
+    deletionLog.push("Finding dismissals deleted");
+
+    await userScoped(supabase, userId).table("insurer_appeals_confirmations").delete();
+    deletionLog.push("Insurer appeal confirmations deleted");
+
     // 7. Delete user record (cascade handles anything remaining)
     await supabase.from("users").delete().eq("id", userId);
     deletionLog.push("User record deleted");
