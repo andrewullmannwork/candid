@@ -15,6 +15,10 @@
     {
       "path": "/api/cron/id-block-reeval",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/send-followups",
+      "schedule": "0 14 * * *"
     }
   ]
 }
