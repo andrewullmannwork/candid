@@ -16,11 +16,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
 import { evaluateAndFireAlerts } from "@/lib/cost/cost-alert-engine";
+import { isAuthorizedCron } from "@/lib/security/require-cron-secret";
 
 export async function GET(req: NextRequest) {
-  // Verify Vercel cron secret (Vercel auto-includes this header on scheduled invocations)
-  const authHeader = req.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!isAuthorizedCron(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

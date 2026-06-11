@@ -5,6 +5,13 @@ import { Webhook } from "svix";
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 const RESEND_API_BASE = "https://api.resend.com";
 
+// Minimal HTML-escape for untrusted inbound email text interpolated into the
+// <pre> fallback (B9-F11). The `html` branch is the sender's own Resend-rendered
+// HTML (forwarded verbatim to a single trusted inbox); only this `text` fallback
+// is interpolated here, so it must be escaped to neutralize tag injection.
+const escapeHtml = (s: string) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
 // Strict signature verification on Vercel deploys (Preview + Production).
 // Local dev (no VERCEL_ENV) skips verification — the local dev server is not
 // a Resend webhook target in practice, and Resend's webhook URL points only
@@ -57,7 +64,10 @@ export async function POST(req: NextRequest) {
     // Resend webhook only includes metadata — fetch full email content via API
     let html = "";
     let text = "";
-    console.log("[email-forward] Webhook payload:", JSON.stringify(body).slice(0, 500));
+    // B9-F11 — do NOT log the full payload (carries sender/subject = PHI if a
+    // user forwards a bill). Log only the type + Resend's opaque email_id for
+    // correlation.
+    console.log("[email-forward] received", { type: body?.type, emailId: email_id });
     if (email_id && process.env.RESEND_API_KEY) {
       try {
         const url = `${RESEND_API_BASE}/emails/receiving/${email_id}`;
@@ -88,7 +98,7 @@ export async function POST(req: NextRequest) {
       to: "andrew.david.ullmann@gmail.com",
       subject: `[CandidClaim] ${subject || "(no subject)"}`,
       replyTo: from || undefined,
-      html: html || `<pre>${text || "(email body unavailable — check Resend dashboard)"}</pre>`,
+      html: html || `<pre>${escapeHtml(text || "(email body unavailable — check Resend dashboard)")}</pre>`,
     });
 
     return NextResponse.json({ received: true });
