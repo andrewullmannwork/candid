@@ -271,13 +271,26 @@ export async function findOrCreateCanonicalPlan(
 
 /**
  * Confirm a pending canonical match — link the user's plan and merge services.
+ *
+ * ⚠ SECURITY CONTRACT (B9 B1.2, S190): the caller MUST pass an `insurancePlanId`
+ * the authenticated user OWNS. This accessor does not re-scope the
+ * `insurance_plans` write by `user_id` (no userId in scope here), so a foreign id
+ * would mutate another user's plan. Both current callers satisfy the contract:
+ *   - api/profile (confirm_canonical_match): id = the user's own
+ *     profile.active_insurance_plan_id, read via userScoped.
+ *   - api/documents/status (POST confirm_canonical_match): the handler 403s
+ *     unless authUser.id === docOwner.user_id before this runs.
+ * Defense-in-depth (scope this write inside the layer irrespective of caller) is
+ * tracked for the systematic lint-to-`src/lib` pass — see
+ * plans/findings/b9_remediation_playbook.md.
  */
 export async function confirmCanonicalMatch(
   supabase: SupabaseClient,
   insurancePlanId: string,
   canonicalPlanId: string
 ): Promise<void> {
-  // Link insurance_plan to canonical
+  // Link insurance_plan to canonical. NOTE: not userScoped-wrapped — see the
+  // SECURITY CONTRACT above (caller passes an owned insurancePlanId).
   await supabase
     .from("insurance_plans")
     .update({ canonical_plan_id: canonicalPlanId })

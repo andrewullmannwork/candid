@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 import { getStripe } from "@/lib/stripe";
 import { sendVerificationEmail, sendWelcomeEmail } from "@/lib/email/onboarding-emails";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
@@ -204,8 +205,8 @@ export async function POST(req: NextRequest) {
         user_agent: userAgent,
       }));
 
-      const { error: consentError } = await supabase
-        .from("consent_events")
+      const { error: consentError } = await userScoped(supabase, userId)
+        .table("consent_events")
         .insert(consentRows);
 
       if (consentError) {
@@ -218,10 +219,9 @@ export async function POST(req: NextRequest) {
 
     // 4. Ensure Stripe Customer exists
     console.log("[auth/sync] Step 4: Checking Stripe customer...");
-    const { data: stripeRecord } = await supabase
-      .from("stripe_customers")
+    const { data: stripeRecord } = await userScoped(supabase, userId)
+      .table("stripe_customers")
       .select("stripe_customer_id")
-      .eq("user_id", userId)
       .single();
 
     let stripeCustomerId: string;
@@ -238,8 +238,7 @@ export async function POST(req: NextRequest) {
         });
         stripeCustomerId = customer.id;
 
-        await supabase.from("stripe_customers").insert({
-          user_id: userId,
+        await userScoped(supabase, userId).table("stripe_customers").insert({
           stripe_customer_id: stripeCustomerId,
         });
         console.log("[auth/sync] Step 4 OK — new Stripe customer:", stripeCustomerId);

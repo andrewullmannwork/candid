@@ -3,6 +3,7 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { extractTextFromDocument } from "@/lib/ocr";
 import { matchPlan } from "@/lib/plan/matcher";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 import { extractCardWithHaiku, calculateHaikuConfidence } from "@/lib/card/haiku-card-extractor";
 import type { MatchResult } from "@/lib/plan/matcher";
 import type { InsuranceCardFields } from "@/types/insurance-card";
@@ -501,10 +502,9 @@ export async function POST(req: NextRequest) {
         .single();
 
       if (internalUser) {
-        const { data: consentEvent } = await supabase
-          .from("consent_events")
+        const { data: consentEvent } = await userScoped(supabase, internalUser.id)
+          .table("consent_events")
           .select("id")
-          .eq("user_id", internalUser.id)
           .eq("consent_type", "health_data_upload")
           .eq("granted", true)
           .order("created_at", { ascending: false })
@@ -521,9 +521,8 @@ export async function POST(req: NextRequest) {
             .from("documents")
             .upload(storagePath, buffer, { contentType });
 
-          await supabase.from("documents").insert({
+          await userScoped(supabase, internalUser.id).table("documents").insert({
             id: documentId,
-            user_id: internalUser.id,
             storage_path: storagePath,
             file_name: file.name,
             file_size: buffer.length,

@@ -137,6 +137,29 @@ export function userScoped(supabase: SupabaseClient, userId: string) {
             : { ...rows, user_id: uid };
           return supabase.from(table).insert(stamped);
         },
+        // UPSERT — stamps user_id on every row (like insert, overriding any
+        // caller-supplied value) AND requires "user_id" in the conflict target.
+        // Without that guard an upsert whose onConflict is a non-owner natural
+        // key could MATCH another user's row and overwrite it stamped as ours
+        // (row-theft); requiring user_id in onConflict means a conflict can only
+        // resolve within the owner's own rows. Fail-closed on a missing guard.
+        // (First use: profiles save, onConflict "user_id", S190 B1.2.)
+        upsert(
+          values: Record<string, unknown> | Record<string, unknown>[],
+          options: { onConflict: string; ignoreDuplicates?: boolean },
+        ) {
+          const targets = options.onConflict.split(",").map((s) => s.trim());
+          if (!targets.includes("user_id")) {
+            throw new Error(
+              `userScoped.upsert: onConflict ("${options.onConflict}") must include ` +
+                `"user_id" (fail-closed: an upsert may only dedupe within the owner's rows)`,
+            );
+          }
+          const stamped = Array.isArray(values)
+            ? values.map((r) => ({ ...r, user_id: uid }))
+            : { ...values, user_id: uid };
+          return supabase.from(table).upsert(stamped, options);
+        },
       };
     },
   };
@@ -261,4 +284,56 @@ export async function updateOwnedChildren(
     if (!error) updated += 1;
   }
   return { updated };
+}
+
+/**
+ * Parent-join child UPSERT: the lint-clean way for a route to UPSERT child-table
+ * rows (plan_covered_services) that have NO `user_id`, keyed by a natural
+ * conflict target. Verifies the parent is owned ONCE (selectOwnedParentIds),
+ * stamps the fk = parentId on every row (override caller), then upserts with the
+ * caller's onConflict. Requires the fk in the conflict target — symmetric to
+ * userScoped.upsert's user_id guard — so a natural-key conflict can only resolve
+ * within the (verified-owned) parent, never across plans. Fails closed: empty
+ * userId throws; a non-owned/foreign parent → 0 writes. The raw child `.from()`
+ * the B1 lint bans in routes lives ONCE here, inside the security layer.
+ *
+ * Symmetric to selectOwnedChildren/updateOwnedChildren: every child access in
+ * the codebase happens where the parent id is already in scope (here: the user's
+ * own active insurance_plan_id from their profile). First use: syncCopayServices
+ * writing plan_covered_services copay rows, onConflict
+ * "insurance_plan_id,service_id,place_of_service" (S190 B1.2). Returns the count
+ * actually written (op-equivalent: for an owner every row lands).
+ */
+export async function upsertOwnedChildren(
+  supabase: SupabaseClient,
+  userId: string,
+  childTable: ParentJoinChildTable,
+  parentId: string,
+  rows: Record<string, unknown>[],
+  options: { onConflict: string; ignoreDuplicates?: boolean },
+): Promise<{ upserted: number }> {
+  assertUserId(userId);
+  const meta = PARENT_JOIN_TABLES[childTable];
+  if (!meta) {
+    // Defense-in-depth for a dynamic (non-literal) childTable that escapes the
+    // compile-time union. Fail closed rather than do an unscoped child upsert.
+    throw new Error(
+      `upsertOwnedChildren: "${childTable}" is not a parent-join child table`,
+    );
+  }
+  const targets = options.onConflict.split(",").map((s) => s.trim());
+  if (!targets.includes(meta.fk)) {
+    throw new Error(
+      `upsertOwnedChildren: onConflict ("${options.onConflict}") must include the ` +
+        `parent fk "${meta.fk}" (fail-closed: a conflict may only resolve within the owned parent)`,
+    );
+  }
+  if (rows.length === 0) return { upserted: 0 };
+  const ownedParentIds = await selectOwnedParentIds(supabase, userId, meta.parent, [
+    parentId,
+  ]);
+  if (!ownedParentIds.has(parentId)) return { upserted: 0 };
+  const stamped = rows.map((r) => ({ ...r, [meta.fk]: parentId }));
+  const { error } = await supabase.from(childTable).upsert(stamped, options);
+  return { upserted: error ? 0 : stamped.length };
 }

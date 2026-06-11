@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { userScoped } from "@/lib/security/user-scoped";
 
 export async function POST(req: NextRequest) {
   try {
@@ -35,10 +36,9 @@ export async function POST(req: NextRequest) {
     const deletionLog: string[] = [];
 
     // 1. Delete document files from Supabase Storage
-    const { data: docs } = await supabase
-      .from("documents")
-      .select("id, storage_path")
-      .eq("user_id", userId);
+    const { data: docs } = await userScoped(supabase, userId)
+      .table("documents")
+      .select("id, storage_path");
 
     if (docs && docs.length > 0) {
       const paths = docs.map((d) => d.storage_path);
@@ -47,23 +47,23 @@ export async function POST(req: NextRequest) {
     }
 
     // 2. Delete document records
-    await supabase.from("documents").delete().eq("user_id", userId);
+    await userScoped(supabase, userId).table("documents").delete();
     deletionLog.push("Document records deleted");
 
     // 3. Delete support tickets
-    await supabase.from("support_tickets").delete().eq("user_id", userId);
+    await userScoped(supabase, userId).table("support_tickets").delete();
     deletionLog.push("Support tickets deleted");
 
     // 4. Delete consent events (bypasses immutable RLS via service role)
-    await supabase.from("consent_events").delete().eq("user_id", userId);
+    await userScoped(supabase, userId).table("consent_events").delete();
     deletionLog.push("Consent events deleted");
 
     // 5. Delete stripe_customers
-    await supabase.from("stripe_customers").delete().eq("user_id", userId);
+    await userScoped(supabase, userId).table("stripe_customers").delete();
     deletionLog.push("Stripe record deleted");
 
     // 6. Delete profile
-    await supabase.from("profiles").delete().eq("user_id", userId);
+    await userScoped(supabase, userId).table("profiles").delete();
     deletionLog.push("Profile deleted");
 
     // 7. Delete user record (cascade handles anything remaining)
