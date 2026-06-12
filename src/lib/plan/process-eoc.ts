@@ -421,6 +421,15 @@ export async function processEOCDocumentData(
     // final result + warnings (the parse still succeeds; the data just lives
     // on its own row).
     if (planResult.parseWarnings) parseWarnings.push(...planResult.parseWarnings);
+    // Legacy-path parity (v1 gap): link the document to its plan — the
+    // mismatch modal's activate_plan reads documents.linked_insurance_plan_id,
+    // and doc→plan traceability depends on it.
+    if (planResult.planId) {
+      await supabase
+        .from("documents")
+        .update({ linked_insurance_plan_id: planResult.planId })
+        .eq("id", documentId);
+    }
     const identityMismatch = planResult.insurerMismatch ?? null;
     const targetPlanId = planResult.planId;
     if (!targetPlanId) {
@@ -802,6 +811,25 @@ async function persistEOCPlanIdentity(
     console.warn(
       `[process-eoc] insurer mismatch — EOC parked on NEW inactive plan ${newPlan.id}: existing="${insurerMismatch.existingInsurer}" parsed="${insurerMismatch.parsedInsurer}" doc=${documentId}`,
     );
+    // S195 UX parity with the SBC path: the SAME documents.insurer_mismatch
+    // JSONB the status poller + upload modal already consume — the user gets
+    // the standard "this looks like a different plan" messaging, the data is
+    // kept either way, and the modal's activate_plan action (which reads
+    // documents.linked_insurance_plan_id) performs the switch ONLY on
+    // explicit approval. Zero frontend changes.
+    await supabase
+      .from("documents")
+      .update({
+        insurer_mismatch: {
+          mismatch: true,
+          type: "insurer",
+          existingInsurer: insurerMismatch.existingInsurer,
+          parsedInsurer: insurerMismatch.parsedInsurer,
+          ...(existingActive?.plan_name ? { existingPlanName: existingActive.plan_name } : {}),
+          ...(parsed.plan_identity.plan_name ? { parsedPlanName: parsed.plan_identity.plan_name } : {}),
+        },
+      })
+      .eq("id", documentId);
     return {
       success: true,
       planId: newPlan.id,
