@@ -405,15 +405,23 @@ export async function processEOCDocumentData(
     lap("pre_identity");
     const planResult = await persistEOCPlanIdentity(supabase, doc, documentId, parsed);
     if (!planResult.success) {
-      return planResult;
+      // S195 loudness fix: this return was SILENT — no log, no status write, and
+      // process-chunk answers 200 so QStash never retries. The document parked
+      // in 'processing' forever and the real DB error vanished (the failure
+      // mode behind every "stalled" run on 2026-06-11/12: units done, then
+      // nothing). failEocResume names the error in processing_error + the
+      // runlog + Slack, and the doc lands in a retryable error state.
+      const reason = `eoc_identity_persist_failed: ${planResult.error ?? "unknown"}`;
+      console.error(`[process-eoc] ${reason} doc=${documentId}`);
+      await failEocResume(supabase, documentId, state, reason, doc.file_name, slackChannelId);
+      return { success: false, error: reason, parseWarnings: [...parseWarnings, reason] };
     }
     const targetPlanId = planResult.planId;
     if (!targetPlanId) {
-      return {
-        success: false,
-        error: "EOC plan persistence returned no planId",
-        parseWarnings,
-      };
+      const reason = "eoc_identity_persist_failed: returned no planId";
+      console.error(`[process-eoc] ${reason} doc=${documentId}`);
+      await failEocResume(supabase, documentId, state, reason, doc.file_name, slackChannelId);
+      return { success: false, error: reason, parseWarnings: [...parseWarnings, reason] };
     }
 
     // 3. Per-section persistence.
