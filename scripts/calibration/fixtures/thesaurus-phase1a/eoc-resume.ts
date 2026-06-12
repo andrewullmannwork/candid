@@ -115,7 +115,18 @@ console.log("PART 1 — planNextEocWork:");
   const s = freshState();
   s.invocations = 9;
   const n = planNextEocWork(s, CAPS);
-  check("invocation cap → fail", n.action === "fail" && n.reason.includes("invocation_cap"));
+  check("invocation cap (units pending) → fail", n.action === "fail" && n.reason.includes("invocation_cap"));
+}
+{
+  // S195 night-1 lesson: caps bound UNIT work only. With all units done, every
+  // Haiku dollar is banked — assemble must proceed at ANY counter/cost reading
+  // (the observed failure: clobber-bumped invocations hit the cap at 6/6 and
+  // threw away a complete parse as "We had an issue with your upload").
+  const s = freshState();
+  for (const u of EOC_RESUME_UNITS) s.units[u] = { status: "done", attempts: 2, cost_usd: 0.4, ms: 1 };
+  s.invocations = 99;
+  const n = planNextEocWork(s, CAPS);
+  check("ASSEMBLE EXEMPT FROM CAPS: all-done + inv=99 + cost>$1 → assemble (never fail)", n.action === "assemble");
 }
 {
   const s = freshState();

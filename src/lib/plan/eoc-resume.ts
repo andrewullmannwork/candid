@@ -108,6 +108,13 @@ export interface EocParseState {
    * and "is anything alive?" signal (a killed function leaves it stale). */
   heartbeat_at: string;
   invocations: number;
+  /** S195 hardening — optimistic-claim revision. Bumped on every CLAIM write;
+   * a claimant that loads state at rev N and finds rev≠N at claim time lost
+   * the race to a sibling and abandons quietly. With the QStash publish
+   * timeout fix the race class should not occur at all; this is the belt to
+   * that suspender (the night-1 run showed concurrent claimants clobbering
+   * each other's checkpoint state via unguarded read-merge-write). */
+  state_rev?: number;
   /** TRUE between a clean checkpoint handoff (state written + re-enqueue
    * fired) and the next invocation picking the work up. The duplicate-delivery
    * guard skips ONLY on a fresh heartbeat WITHOUT this flag — otherwise the
@@ -189,6 +196,15 @@ export type EocNextWork =
   | { action: "fail"; reason: string };
 
 export function planNextEocWork(state: EocParseState, caps: EocResumeCaps): EocNextWork {
+  // S195 hardening: assemble is EXEMPT from every cap. When all units are
+  // done, every Haiku dollar is already banked — refusing to finish on a
+  // counter would throw a complete parse away. (Observed night-1: duplicate
+  // claimants clobber-bumped `invocations` past the cap while sitting at 6/6.)
+  // Caps exist to bound UNIT work, and are checked only when units remain.
+  const pending = EOC_RESUME_UNITS.filter((u) => state.units[u]?.status !== "done");
+  if (pending.length === 0) {
+    return { action: "assemble" };
+  }
   if (state.invocations > caps.maxInvocations) {
     return {
       action: "fail",
@@ -202,18 +218,15 @@ export function planNextEocWork(state: EocParseState, caps: EocResumeCaps): EocN
       reason: `eoc_resume_cost_cap:$${spent.toFixed(4)}>$${caps.maxCostUsd.toFixed(2)}`,
     };
   }
-  for (const u of EOC_RESUME_UNITS) {
-    const us = state.units[u];
-    if (us.status === "done") continue;
-    if (us.attempts >= caps.unitAttemptCap) {
-      return {
-        action: "fail",
-        reason: `eoc_resume_unit_attempt_cap:${u}:${us.attempts}>=${caps.unitAttemptCap}`,
-      };
-    }
-    return { action: "run", unit: u };
+  const u = pending[0];
+  const us = state.units[u];
+  if (us.attempts >= caps.unitAttemptCap) {
+    return {
+      action: "fail",
+      reason: `eoc_resume_unit_attempt_cap:${u}:${us.attempts}>=${caps.unitAttemptCap}`,
+    };
   }
-  return { action: "assemble" };
+  return { action: "run", unit: u };
 }
 
 // ── Fragment assembly (pure) ─────────────────────────────────────────────────
