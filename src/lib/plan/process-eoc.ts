@@ -53,6 +53,7 @@ import {
   mergeEocFragments,
   unitParseOptions,
   runnableUnits,
+  decideEocPlanMerge,
   cumulativeCostUsd,
   shouldSkipAsDuplicateDelivery,
   buildEocParseRunlog,
@@ -416,6 +417,11 @@ export async function processEOCDocumentData(
       await failEocResume(supabase, documentId, state, reason, doc.file_name, slackChannelId);
       return { success: false, error: reason, parseWarnings: [...parseWarnings, reason] };
     }
+    // S195 merge guard — surface a parked-on-inactive-plan mismatch in the
+    // final result + warnings (the parse still succeeds; the data just lives
+    // on its own row).
+    if (planResult.parseWarnings) parseWarnings.push(...planResult.parseWarnings);
+    const identityMismatch = planResult.insurerMismatch ?? null;
     const targetPlanId = planResult.planId;
     if (!targetPlanId) {
       const reason = "eoc_identity_persist_failed: returned no planId";
@@ -617,6 +623,7 @@ export async function processEOCDocumentData(
     return {
       success: true,
       planId: targetPlanId,
+      insurerMismatch: identityMismatch,
       servicesCreated: countCoverageServices(parsed),
       planData: {
         planName: parsed.plan_identity.plan_name,
@@ -725,7 +732,18 @@ async function persistEOCPlanIdentity(
         .eq("is_active", true)
         .maybeSingle();
 
-  if (existingActive) {
+  // S195 merge guard — merge ONLY when insurers plausibly agree; a mismatched
+  // EOC gets its OWN inactive plan row instead of grafting onto the user's
+  // active plan (decideEocPlanMerge in eoc-resume.ts holds the full rule —
+  // the v1 unconditional merge would have written a Blue Shield EOC's data
+  // onto an Ambetter active plan, observed S195).
+  const mergeDecision = decideEocPlanMerge(
+    existingActive ?? null,
+    parsed.plan_identity.insurer_name,
+  );
+  const insurerMismatch = mergeDecision.action === "insert_inactive" ? mergeDecision.mismatch : null;
+
+  if (existingActive && mergeDecision.action === "merge") {
     // Merge: update existing plan with EOC plan_identity (where EOC has values; preserve existing where EOC is null).
     const updates: Record<string, unknown> = {
       source: "eoc_upload",
@@ -751,10 +769,15 @@ async function persistEOCPlanIdentity(
     return { success: true, planId: existingActive.id };
   }
 
-  // No existing active plan — create new.
+  // No mergeable active plan — create new. On an insurer MISMATCH the row is
+  // forced INACTIVE (never silently steal primary, never corrupt the active
+  // plan); downstream coverage/facts attach to THIS row.
+  const insertFields = insurerMismatch
+    ? { ...planFields, is_active: false }
+    : planFields;
   const { data: newPlan, error: insertErr } = await supabase
     .from("insurance_plans")
-    .insert(planFields)
+    .insert(insertFields)
     .select("id")
     .single();
   if (insertErr || !newPlan) {
@@ -762,8 +785,9 @@ async function persistEOCPlanIdentity(
   }
 
   // Back-populate profile pointer — but NOT for comparison uploads (they
-  // must never become the user's active plan).
-  if (!isComparisonUpload) {
+  // must never become the user's active plan) and NOT on an insurer mismatch
+  // (the new row is deliberately non-primary).
+  if (!isComparisonUpload && !insurerMismatch) {
     await supabase
       .from("profiles")
       .update({
@@ -772,6 +796,27 @@ async function persistEOCPlanIdentity(
         ...(planFields.plan_name ? { plan_name: planFields.plan_name } : {}),
       })
       .eq("user_id", doc.user_id);
+  }
+
+  if (insurerMismatch) {
+    console.warn(
+      `[process-eoc] insurer mismatch — EOC parked on NEW inactive plan ${newPlan.id}: existing="${insurerMismatch.existingInsurer}" parsed="${insurerMismatch.parsedInsurer}" doc=${documentId}`,
+    );
+    return {
+      success: true,
+      planId: newPlan.id,
+      parseWarnings: [
+        `eoc_insurer_mismatch_new_inactive_plan:existing=${insurerMismatch.existingInsurer}:parsed=${insurerMismatch.parsedInsurer}`,
+      ],
+      insurerMismatch: {
+        mismatch: true,
+        type: "eoc_vs_active_plan",
+        existingInsurer: insurerMismatch.existingInsurer,
+        parsedInsurer: insurerMismatch.parsedInsurer,
+        existingPlanName: existingActive?.plan_name ?? undefined,
+        parsedPlanName: parsed.plan_identity.plan_name ?? undefined,
+      },
+    };
   }
 
   return { success: true, planId: newPlan.id };

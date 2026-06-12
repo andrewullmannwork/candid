@@ -32,6 +32,7 @@ import {
   type EocResumeCaps,
 } from "@/lib/plan/eoc-resume";
 import { buildEocParseSlackText, resolveEocSlackChannelId } from "@/lib/plan/eoc-parse-slack";
+import { decideEocPlanMerge } from "@/lib/plan/eoc-resume";
 import type { EOCParseResult } from "@/lib/eoc/types";
 
 let pass = 0;
@@ -343,6 +344,34 @@ console.log("\nPART 4 — runnableUnits (wave) + Slack notifier:");
   check("channel resolution: unset everywhere → null (skip, never a wrong default)", resolveEocSlackChannelId("") === null);
   check("channel resolution: config value used when env absent", resolveEocSlackChannelId("C123") === "C123");
   if (saved !== undefined) process.env.SLACK_EOC_PARSE_CHANNEL_ID = saved;
+}
+
+// ── PART 5 — plan-merge guard (S195: never graft onto a different insurer) ──
+console.log("\nPART 5 — decideEocPlanMerge:");
+check(
+  "no active plan → insert_active (v1 behavior preserved)",
+  decideEocPlanMerge(null, "Blue Shield of California").action === "insert_active",
+);
+check(
+  "matching insurers (case/space-insensitive) → merge",
+  decideEocPlanMerge({ insurer_name: "  blue shield of california " }, "Blue Shield of California").action === "merge",
+);
+check(
+  "existing plan with NO insurer recorded → merge (nothing to contradict)",
+  decideEocPlanMerge({ insurer_name: null }, "Blue Shield of California").action === "merge",
+);
+check(
+  "parsed EOC with NO insurer → merge (cannot prove mismatch; null-preserving writes)",
+  decideEocPlanMerge({ insurer_name: "Ambetter Health" }, null).action === "merge",
+);
+{
+  const d = decideEocPlanMerge({ insurer_name: "Ambetter Health" }, "Blue Shield of California");
+  check(
+    "THE S195 case: Ambetter active + Blue Shield EOC → insert_inactive with mismatch payload",
+    d.action === "insert_inactive" &&
+      d.mismatch.existingInsurer === "Ambetter Health" &&
+      d.mismatch.parsedInsurer === "Blue Shield of California",
+  );
 }
 
 console.log(`\n${pass}/${pass + fail} assertions passed.`);
