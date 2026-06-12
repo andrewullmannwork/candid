@@ -30,9 +30,11 @@ import { createServerClient } from "@/lib/supabase/server";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { userScoped } from "@/lib/security/user-scoped";
 
-// Same cutoff used in onboarding-emails.ts + upload route.ts. Sub-30-page docs
-// don't trigger the async UX and don't need banner surfacing.
-const LARGE_DOC_PAGE_THRESHOLD = 30;
+// Cost-H.2 (S198) — the banner fires for docs that took the async "go explore"
+// path, i.e. pageCount > ASYNC_REDIRECT_MAX_PAGES (the redirect tier — the
+// in-app completion surface, esp. for the future 15-30 band that gets NO email).
+// Read from flags in the handler (was a hardcoded 30 shared with
+// onboarding-emails + upload route; both now read their own tier flag).
 
 // 24h cap — older processed docs shouldn't pop a banner. Email + dashboard
 // listing are the long-term surfaces.
@@ -97,10 +99,13 @@ export async function GET(req: NextRequest) {
   }
 
   // Filter to large docs only — small docs use sync PlayfulParsingScreen so the
-  // banner isn't a useful surface for them.
+  // banner isn't a useful surface for them. Cost-H.2 (S198): the cutoff is the
+  // redirect tier (flag-tunable, default 30).
+  const { getFlags } = await import("@/lib/config/feature-flags");
+  const { ASYNC_REDIRECT_MAX_PAGES } = await getFlags();
   const eligible = (docs ?? []).filter((d: RecentDoc) => {
     const pages = d.processing_total_pages ?? 0;
-    return pages > LARGE_DOC_PAGE_THRESHOLD;
+    return pages > ASYNC_REDIRECT_MAX_PAGES;
   });
 
   return NextResponse.json({ documents: eligible });

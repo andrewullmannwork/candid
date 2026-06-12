@@ -81,6 +81,14 @@ export async function getFlags() {
     UPLOAD_MAX_FILE_SIZE: await getFlagInt("UPLOAD_MAX_FILE_SIZE", 20 * 1024 * 1024),
     UPLOAD_MAX_PAGES: await getFlagInt("UPLOAD_MAX_PAGES", 100),
     UPLOAD_MAX_PER_USER: await getFlagInt("UPLOAD_MAX_PER_USER", 10),
+    // Cost-H.2 (S198) — async-ingestion UX two-tier page gates, decoupled per
+    // Andrew: pageCount > REDIRECT → async "go explore" splash (isLargeDoc);
+    // pageCount > EMAIL → ALSO send the parse-complete email. Both default 30
+    // (= the prior single hardcoded LARGE_DOC_PAGE_THRESHOLD) so behavior is
+    // unchanged until REDIRECT is lowered (to 15) in lockstep with the frontend
+    // tier-aware splash copy (§R.2). Tunable in /admin/settings — no deploy.
+    ASYNC_REDIRECT_MAX_PAGES: await getFlagInt("ASYNC_REDIRECT_MAX_PAGES", 30),
+    ASYNC_EMAIL_MAX_PAGES: await getFlagInt("ASYNC_EMAIL_MAX_PAGES", 30),
     ON_DEMAND_EXTRACTION_ENABLED: await getFlagBool("ON_DEMAND_EXTRACTION_ENABLED", true),
     MAX_EXTRACTED_SERVICES: await getFlagInt("MAX_EXTRACTED_SERVICES", 125),
     // Compare premium flywheel: min distinct member observations on a plan before
@@ -103,10 +111,35 @@ export const FLAGS = {
   UPLOAD_MAX_FILE_SIZE: envInt("UPLOAD_MAX_FILE_SIZE", 20 * 1024 * 1024),
   UPLOAD_MAX_PAGES: envInt("UPLOAD_MAX_PAGES", 100),
   UPLOAD_MAX_PER_USER: envInt("UPLOAD_MAX_PER_USER", 10),
+  ASYNC_REDIRECT_MAX_PAGES: envInt("ASYNC_REDIRECT_MAX_PAGES", 30),
+  ASYNC_EMAIL_MAX_PAGES: envInt("ASYNC_EMAIL_MAX_PAGES", 30),
   ON_DEMAND_EXTRACTION_ENABLED: envBool("ON_DEMAND_EXTRACTION_ENABLED", true),
   MAX_EXTRACTED_SERVICES: envInt("MAX_EXTRACTED_SERVICES", 125),
   COMPARE_FLYWHEEL_MIN_MEMBERS: envInt("COMPARE_FLYWHEEL_MIN_MEMBERS", 5),
 } as const;
+
+/**
+ * Cost-H.2 (S198) — the async-ingestion UX tier for a PDF upload. Two DECOUPLED
+ * page gates: REDIRECT (→ async "go explore" splash + completion banner) and
+ * EMAIL (→ ALSO send the parse-complete email). When EMAIL >= REDIRECT the email
+ * tier is a subset of the redirect tier, so the future 15-30 band (once
+ * REDIRECT=15) gets the splash + banner but NO email. Pure + exported so the
+ * upload route AND the fixture share ONE definition. `willEmail` mirrors the
+ * onboarding-emails gate (pageCount > EMAIL) so the frontend can pick
+ * email-promise vs in-app-banner copy without duplicating the threshold.
+ */
+export function classifyAsyncDocTier(args: {
+  pageCount: number;
+  isPdf: boolean;
+  asyncEnabled: boolean;
+  redirectMaxPages: number;
+  emailMaxPages: number;
+}): { isLargeDoc: boolean; willEmail: boolean } {
+  return {
+    isLargeDoc: args.asyncEnabled && args.isPdf && args.pageCount > args.redirectMaxPages,
+    willEmail: args.pageCount > args.emailMaxPages,
+  };
+}
 
 function envBool(key: string, defaultValue: boolean): boolean {
   const val = process.env[key];

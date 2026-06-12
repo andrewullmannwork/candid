@@ -6,7 +6,8 @@
  * empirical test results that drove this implementation.
  *
  * Architecture summary:
- * - Monolithic prompt with 5 section headings + 4 few-shot examples (~4400 cached tokens)
+ * - Monolithic prompt with 5 section headings + 4 few-shot examples (8,849 tok raw_json /
+ *   13,018 tool_use — over Haiku's 4096 cache floor, so cache_control caches cross-parse; S198)
  * - Adaptive max_tokens: min(input + 4000, 32000) with truncation retry at 32K
  * - Prompt caching via cache_control: ephemeral (86% input cost savings on cached calls)
  * - Per-occurrence _meta confidence emission (high-leverage fields)
@@ -30,6 +31,9 @@ import { isFeatureEnabled } from "../config/product-flags";
 import { scanForSbcMarkers } from "./sbc-marker-scan";
 import { lineIsImplausible } from "./line-plausibility";
 import { recordBillTruncation } from "./truncation-telemetry";
+import { recordCostEvent } from "@/lib/cost/parse-cost-events";
+import { haikuUsageCostUsd } from "@/lib/haiku-client/base";
+import { createServerClient } from "@/lib/supabase/server";
 
 const MODEL = "claude-haiku-4-5-20251001";
 const HAIKU_MAX_OUTPUT = 32000;
@@ -619,6 +623,47 @@ export interface ParseBillCalibrationOpts {
 }
 
 /**
+ * Cost-H.2 (S198) — record a bill parse into parse_cost_events with the cache-
+ * class token split. The bill INSTRUCTIONS measures 8,849 tok (raw_json) / 13,018
+ * (tool_use, +tool schema) — over Haiku's 4096 cache floor — so the existing
+ * cache_control DOES cache cross-parse; this wiring is what finally makes those
+ * savings visible (the cost-event cache columns read 0 only because the bill path
+ * never recorded an event, NOT because caching wasn't happening). Creates its own
+ * server client (matches the parser's existing isFeatureEnabled DB-read pattern);
+ * recordCostEvent is itself non-fatal so telemetry never blocks or breaks a parse.
+ */
+async function recordBillCost(
+  documentId: string,
+  userId: string,
+  billType: "eob" | "itemized_bill",
+  usage: Anthropic.Usage,
+  mode: "raw_json" | "tool_use",
+): Promise<void> {
+  try {
+    const u = usage as unknown as {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_creation_input_tokens?: number;
+      cache_read_input_tokens?: number;
+    };
+    await recordCostEvent(createServerClient(), {
+      documentId,
+      userId,
+      parserKind: billType === "eob" ? "eob_parse" : "bill_parse",
+      costSource: "user_upload",
+      costUsd: haikuUsageCostUsd(u),
+      haikuTokensInput: u.input_tokens ?? null,
+      haikuTokensOutput: u.output_tokens ?? null,
+      haikuCacheReadTokens: u.cache_read_input_tokens ?? 0,
+      haikuCacheCreateTokens: u.cache_creation_input_tokens ?? 0,
+      metadata: { mode },
+    });
+  } catch (err) {
+    console.warn("[haiku-bill-parser] cost-event record (non-fatal):", err);
+  }
+}
+
+/**
  * Parse a bill or EOB using Haiku. Falls back to null on failure.
  * EOB-mode triggers post-process: cycle detection, accumulator merge, EX hash, _meta parse.
  */
@@ -910,6 +955,7 @@ export async function parseBillWithHaiku(
       usage: response.usage,
       durationMs: Date.now() - callStart,
     });
+    await recordBillCost(documentId, userId, billType, response.usage, "raw_json");
     return parsedBill;
   } catch (err) {
     console.error("[haiku-bill-parser] Extraction failed:", err);
@@ -1152,6 +1198,7 @@ async function parseBillWithHaikuToolUse(
       usage: response.usage,
       durationMs: Date.now() - callStart,
     });
+    await recordBillCost(documentId, userId, billType, response.usage, "tool_use");
     return parsedBill;
   } catch (err) {
     console.error("[haiku-bill-parser:tool] Extraction failed:", err);
