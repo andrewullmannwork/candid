@@ -644,22 +644,35 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ documentId, storagePath, status: "error", error: "Failed to enqueue" }, { status: 500 });
       }
 
-      // S78 — async ingestion gate: large PDFs (>30 pages) get the async splash
-      // + parse-complete email + banner UX. Sub-30 page docs keep the existing
-      // sync PlayfulParsingScreen flow. Gated behind `async_ingestion_ux_v1`
-      // feature flag (mig 085, default OFF in dev). Page-count gate is purely
-      // PDF-based — HEIC / JPEG cards are 1 "page" and always sync.
+      // S78 / Cost-H.2 (S198) — async ingestion gate. Large PDFs get the async
+      // "go explore" splash + banner UX (isLargeDoc, pageCount > REDIRECT) and,
+      // for the larger tier, the parse-complete email too (pageCount > EMAIL).
+      // Sub-REDIRECT docs keep the sync PlayfulParsingScreen flow. Gated behind
+      // `async_ingestion_ux_v1` (mig 085). Page-count gate is purely PDF-based —
+      // HEIC / JPEG cards are 1 "page" and always sync. Both thresholds default
+      // 30 (= the prior single gate) → unchanged until REDIRECT is lowered (15)
+      // in lockstep with the frontend tier-aware copy (§R.2).
       const asyncIngestionEnabled = await isFeatureEnabled("async_ingestion_ux_v1", userEmail);
-      const isLargeDoc =
-        asyncIngestionEnabled &&
-        classification.pageCount > 30 &&
-        contentType === "application/pdf";
+      const { getFlags, classifyAsyncDocTier } = await import("@/lib/config/feature-flags");
+      const { ASYNC_REDIRECT_MAX_PAGES, ASYNC_EMAIL_MAX_PAGES } = await getFlags();
+      // Tier decision shared with the fixture (one source of truth). isLargeDoc =
+      // async splash; willEmail = the splash may promise an email (§R.3 additive,
+      // frontend-read). At default (30==30) willEmail == isLargeDoc, preserving
+      // today's "we'll email you" splash for >30-page PDFs.
+      const { isLargeDoc, willEmail } = classifyAsyncDocTier({
+        pageCount: classification.pageCount,
+        isPdf: contentType === "application/pdf",
+        asyncEnabled: asyncIngestionEnabled,
+        redirectMaxPages: ASYNC_REDIRECT_MAX_PAGES,
+        emailMaxPages: ASYNC_EMAIL_MAX_PAGES,
+      });
 
       return NextResponse.json({
         documentId,
         storagePath,
         autoProcessed: true,
         isLargeDoc,
+        willEmail,
         // B2-UP.1 — surface effective doc-type post-resolver so the frontend
         // can reconcile state + show a "looks like this was actually a X"
         // banner when Pattern P silently overrode the user's pick at high

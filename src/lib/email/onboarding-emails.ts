@@ -12,10 +12,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://www.candidclaim.com";
 const FROM = "Candid <noreply@candidclaim.com>";
 
-// S78 — large-doc cutoff matches upload-route + frontend gating. Page count
-// at or below this threshold uses the existing sync PlayfulParsingScreen UX;
-// above it triggers the async splash + email + banner notification.
-const LARGE_DOC_PAGE_THRESHOLD = 30;
+// S78 / Cost-H.2 (S198) — the parse-complete email fires for the EMAIL tier
+// (pageCount > ASYNC_EMAIL_MAX_PAGES, default 30), read from flags in
+// sendParseCompleteEmail. Docs in the lower async "redirect" tier (the future
+// 15-30 band) take the splash + in-app banner but get NO email.
 
 function getResend(): Resend | null {
   return process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
@@ -179,10 +179,9 @@ export async function sendWelcomeEmail(
  * upstream process-chunk endpoint never trigger a duplicate send.
  *
  * Guardrails:
- *   - Only fires when `processing_total_pages > LARGE_DOC_PAGE_THRESHOLD` (30)
- *     OR when pageCount is unknown but file_size is heuristically large.
- *     Small documents already finish during the sync PlayfulParsingScreen flow
- *     and don't need a separate completion email.
+ *   - Only fires when `processing_total_pages > ASYNC_EMAIL_MAX_PAGES` (flag,
+ *     default 30 — the email tier). Small documents already finish during the
+ *     sync PlayfulParsingScreen flow and don't need a separate completion email.
  *   - Looks up the user's verified email via Firebase admin SDK (so we can
  *     send even when the user's session has expired).
  *   - Skipped silently if Resend isn't configured (local dev without RESEND_API_KEY).
@@ -228,10 +227,14 @@ export async function sendParseCompleteEmail(
     return;
   }
 
-  // Only fire for "large" docs that actually went through the async UX path.
+  // Only fire for the EMAIL tier — Cost-H.2 (S198): the redirect tier (async
+  // splash) is wider than the email tier, so docs in the future 15-30 band get
+  // the in-app banner, not an email. Flag-tunable, default 30.
+  const { getFlags } = await import("@/lib/config/feature-flags");
+  const emailThresholdPages = (await getFlags()).ASYNC_EMAIL_MAX_PAGES;
   const pageCount = typeof doc.processing_total_pages === "number" ? doc.processing_total_pages : 0;
-  if (pageCount <= LARGE_DOC_PAGE_THRESHOLD) {
-    return; // small docs use sync PlayfulParsingScreen; no email needed
+  if (pageCount <= emailThresholdPages) {
+    return; // sub-email-tier docs use the sync screen or in-app banner; no email
   }
 
   if (doc.status !== "processed") {
