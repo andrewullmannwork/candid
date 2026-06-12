@@ -63,6 +63,9 @@ export interface ProcessPlanResult {
   error?: string;
   insurerMismatch?: { mismatch: boolean; type?: string; existingInsurer: string; parsedInsurer: string; existingPlanName?: string; parsedPlanName?: string } | null;
   yearRollover?: { currentYear: number; newYear: number } | null;
+  /** S195 EOC-RESUME: this invocation checkpointed + re-enqueued itself; the
+   * parse continues in a later invocation. Not an error, not completion. */
+  resumeRequested?: boolean;
 }
 
 /**
