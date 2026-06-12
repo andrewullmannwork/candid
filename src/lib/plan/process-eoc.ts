@@ -46,16 +46,77 @@ import {
 import { validatePlanField } from "@/lib/plan/garbage-validators";
 import { recordCostEvent } from "@/lib/cost/parse-cost-events";
 import { isFeatureEnabled, readFeatureFlagConfig } from "@/lib/config/product-flags";
+import { enqueueChunk } from "@/lib/queue/qstash";
+import {
+  initEocParseState,
+  planNextEocWork,
+  mergeEocFragments,
+  unitParseOptions,
+  shouldSkipAsDuplicateDelivery,
+  buildEocParseRunlog,
+  type EocParseState,
+  type EocResumeCaps,
+} from "@/lib/plan/eoc-resume";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
 const COST_HARD_CAP_USD = 1.0;
+/** Duplicate-delivery guard window — a heartbeat younger than this means
+ * another invocation is alive on this doc right now (see eoc-resume.ts). */
+const EOC_RESUME_HEARTBEAT_FRESH_MS = 120_000;
 
 export interface ProcessEOCInput {
   doc: { id: string; user_id: string; file_name: string };
   ocrText: string;
   documentId: string;
   classification: { classifiedType: string; confidence: number; mismatch: boolean };
+  /** Origin for QStash self-re-enqueue (S195 EOC-RESUME). The caller
+   * (process-chunk) derives it from its own request URL. */
+  baseUrl: string;
+}
+
+/** Read-merge-write of `documents.metadata.eoc_parse_state` (preserves all
+ * other metadata keys — same pattern as the eoc_sections_summary write). */
+async function writeEocParseState(
+  supabase: SupabaseClient,
+  documentId: string,
+  state: EocParseState,
+): Promise<void> {
+  const { data: row } = await supabase
+    .from("documents")
+    .select("metadata")
+    .eq("id", documentId)
+    .maybeSingle();
+  const existing = (row?.metadata ?? {}) as Record<string, unknown>;
+  await supabase
+    .from("documents")
+    .update({ metadata: { ...existing, eoc_parse_state: state } })
+    .eq("id", documentId);
+}
+
+/** Terminal-state write: drops the (large) checkpoint state, banks the compact
+ * runlog, and marks the document errored with a loud, unit-naming reason. */
+async function failEocResume(
+  supabase: SupabaseClient,
+  documentId: string,
+  state: EocParseState,
+  reason: string,
+): Promise<void> {
+  const { data: row } = await supabase
+    .from("documents")
+    .select("metadata")
+    .eq("id", documentId)
+    .maybeSingle();
+  const existing = (row?.metadata ?? {}) as Record<string, unknown>;
+  delete existing.eoc_parse_state;
+  await supabase
+    .from("documents")
+    .update({
+      status: "error",
+      processing_error: reason,
+      metadata: { ...existing, eoc_parse_runlog: buildEocParseRunlog(state, reason) },
+    })
+    .eq("id", documentId);
 }
 
 /**
@@ -66,7 +127,7 @@ export async function processEOCDocumentData(
   supabase: SupabaseClient,
   input: ProcessEOCInput,
 ): Promise<ProcessPlanResult> {
-  const { doc, ocrText, documentId } = input;
+  const { doc, ocrText, documentId, baseUrl } = input;
   const parseWarnings: string[] = [];
 
   // Ing-H (CF-44, S129): resolve cf44_selective_self_check flag — when ON,
@@ -75,43 +136,143 @@ export async function processEOCDocumentData(
   // (preserves current always-fire behavior).
   const selectiveSelfCheckEnabled = await isFeatureEnabled("cf44_selective_self_check");
 
-  // 1. Run EOC parser (Pattern P-D + P-8 inheritance via Task 3.1A-C).
+  // 1. Run EOC parser (Pattern P-D + P-8 inheritance via Task 3.1A-C) —
+  // S195 EOC-RESUME: as a checkpointed UNIT LOOP, not one monolithic call.
+  // See eoc-resume.ts for the full design. Per-invocation Haiku work is
+  // bounded by a soft time budget; the parse spans invocations via QStash
+  // self-re-enqueue; nothing persists below until ALL units are assembled.
+  //
   // S180 thesaurus P1 — load the live catalog vocabulary and inject it into the medical_necessity
   // prompt (Pattern S #17: constrain extraction to real slugs, no bare invention). Always-on; on a
   // load failure the block is empty → the prompt degrades gracefully (anti-invention rules remain).
   const serviceVocabulary = await loadServiceVocabularyBlock(supabase);
-  // S182 P2 (M1 fix): read `eoc_prose_prior_auth_v1` ONCE here and thread it to BOTH parseEOC (gates the
-  // medical_necessity prompt's content-type classification + C1 split) and persistEOCSections (gates the
-  // routeCriterion dispatch + telemetry + facts-clear). A single read = one consistent value across
-  // parse+persist (no split-brain / mid-parse flip). OFF → byte-identical to post-D1 end-to-end.
-  const eocRoutingFlagOn = await isFeatureEnabled("eoc_prose_prior_auth_v1");
-  // S187 D8: per-chunk concurrency, read ONCE here (same single-read pattern as the routing flag;
-  // the parser itself never reads flags). Absent config key -> 1 = the exact pre-S187 sequential
-  // dispatch; flip via eoc_parser_v1.config.chunk_concurrency (clamped 1..16 in parseEOC).
+  // S187 D8: per-chunk concurrency, read per-invocation (the parser itself never reads flags).
+  // Absent config key -> 1 = the exact pre-S187 sequential dispatch; flip via
+  // eoc_parser_v1.config.chunk_concurrency (clamped 1..16 in parseEOC).
   const eocChunkConcurrency = await readFeatureFlagConfig("eoc_parser_v1", "chunk_concurrency", 1);
+  // S195 EOC-RESUME caps — all tunable on eoc_parser_v1.config (Ship Gate G6).
+  // Soft budget is per-INVOCATION wall clock; checked between units, well under
+  // process-chunk's 800s maxDuration so a checkpoint always lands before the kill.
+  const caps: EocResumeCaps = {
+    unitAttemptCap: await readFeatureFlagConfig("eoc_parser_v1", "resume_unit_attempt_cap", 2),
+    maxInvocations: await readFeatureFlagConfig("eoc_parser_v1", "resume_max_invocations", 8),
+    maxCostUsd: await readFeatureFlagConfig("eoc_parser_v1", "max_parse_cost_usd", COST_HARD_CAP_USD),
+  };
+  const softBudgetMs = await readFeatureFlagConfig("eoc_parser_v1", "resume_soft_budget_ms", 550_000);
+
+  // Load-or-init checkpoint state. An existing state (any phase — pending
+  // units OR all-done-but-persistence-died) is CONTINUED; init happens only on
+  // a fresh run. The eoc_prose_prior_auth_v1 read is SNAPSHOTTED into state at
+  // init — the S182 M1 single-read consistency contract, extended across
+  // invocations (a mid-run flag flip cannot split the parse's brain).
+  const { data: stateRow } = await supabase
+    .from("documents")
+    .select("metadata")
+    .eq("id", documentId)
+    .maybeSingle();
+  const existingState = ((stateRow?.metadata ?? {}) as Record<string, unknown>)
+    .eoc_parse_state as EocParseState | undefined;
+  let state: EocParseState;
+  if (existingState && existingState.version === 1) {
+    if (shouldSkipAsDuplicateDelivery(existingState, Date.now(), EOC_RESUME_HEARTBEAT_FRESH_MS)) {
+      console.log(`[process-eoc] resume duplicate-delivery skip (fresh heartbeat) doc=${documentId}`);
+      return { success: true, parseWarnings: ["eoc_resume_duplicate_invocation_skipped"] };
+    }
+    state = existingState;
+  } else {
+    const routingFlagOn = await isFeatureEnabled("eoc_prose_prior_auth_v1");
+    state = initEocParseState(new Date().toISOString(), routingFlagOn, `${documentId}:${Date.now()}`);
+  }
+  const eocRoutingFlagOn = state.routing_flag_snapshot;
+  state.invocations += 1;
+  state.awaiting_resume = false; // this invocation has claimed the handoff
+  state.heartbeat_at = new Date().toISOString();
+  await writeEocParseState(supabase, documentId, state);
+  // Keep stuck-detection + the UI's staleness heuristics honest across a
+  // multi-invocation parse: each invocation re-stamps the started marker.
+  await supabase
+    .from("documents")
+    .update({ processing_started_at: new Date().toISOString() })
+    .eq("id", documentId);
+
+  const invocationStartMs = Date.now();
   let parsed: EOCParseResult;
-  try {
-    parsed = await parseEOC(ocrText, {
-      documentId,
-      extractionMethod: "pdftotext", // upload pipeline uses pdftotext-then-OCR-fallback;
-                                      // OCR fallback is refused upstream (Q-P3.1A-12 image-PDF refusal)
-      selectiveSelfCheckEnabled,
-      serviceVocabulary,
-      eocContentTypeRoutingOn: eocRoutingFlagOn,
-      chunkConcurrency: eocChunkConcurrency,
-    });
-  } catch (err) {
-    const reason = `EOC parser exception: ${err instanceof Error ? err.message : String(err)}`;
-    console.error("[process-eoc]", reason);
-    await supabase
-      .from("documents")
-      .update({ status: "error", processing_error: reason })
-      .eq("id", documentId);
-    return {
-      success: false,
-      error: reason,
-      parseWarnings: [reason],
-    };
+  for (;;) {
+    const next = planNextEocWork(state, caps);
+    if (next.action === "fail") {
+      console.error(`[process-eoc] resume FAIL doc=${documentId} reason=${next.reason}`);
+      await failEocResume(supabase, documentId, state, next.reason);
+      return { success: false, error: next.reason, parseWarnings: [next.reason] };
+    }
+    if (next.action === "assemble") {
+      parsed = mergeEocFragments(state.fragments);
+      break;
+    }
+    // Out of budget for this invocation → checkpoint + hand off to the next one.
+    if (Date.now() - invocationStartMs > softBudgetMs) {
+      state.awaiting_resume = true; // the handoff marker — see eoc-resume.ts
+      state.heartbeat_at = new Date().toISOString();
+      await writeEocParseState(supabase, documentId, state);
+      const enqueued = await enqueueChunk(documentId, baseUrl);
+      if (!enqueued) {
+        const reason = "eoc_resume_enqueue_failed";
+        await failEocResume(supabase, documentId, state, reason);
+        return { success: false, error: reason, parseWarnings: [reason] };
+      }
+      console.log(
+        `[process-eoc] resume checkpoint doc=${documentId} invocation=${state.invocations} next=${next.unit} elapsed_ms=${Date.now() - invocationStartMs}`,
+      );
+      return { success: true, resumeRequested: true, parseWarnings: [] };
+    }
+    const unit = next.unit;
+    state.units[unit].attempts += 1;
+    state.heartbeat_at = new Date().toISOString();
+    await writeEocParseState(supabase, documentId, state);
+    try {
+      const t0 = Date.now();
+      const frag = await parseEOC(ocrText, {
+        documentId,
+        extractionMethod: "pdftotext", // upload pipeline uses pdftotext-then-OCR-fallback;
+                                        // OCR fallback is refused upstream (Q-P3.1A-12 image-PDF refusal)
+        selectiveSelfCheckEnabled,
+        serviceVocabulary,
+        eocContentTypeRoutingOn: eocRoutingFlagOn,
+        chunkConcurrency: eocChunkConcurrency,
+        ...unitParseOptions(unit),
+      });
+      state.units[unit] = {
+        status: "done",
+        attempts: state.units[unit].attempts,
+        cost_usd: frag.total_cost_usd,
+        ms: Date.now() - t0,
+      };
+      state.fragments[unit] = frag;
+      state.heartbeat_at = new Date().toISOString();
+      await writeEocParseState(supabase, documentId, state);
+      console.log(
+        `[process-eoc] resume unit done doc=${documentId} unit=${unit} ms=${Date.now() - t0} cost=$${frag.total_cost_usd.toFixed(4)}`,
+      );
+    } catch (err) {
+      const reason = `EOC parser exception (unit=${unit}): ${err instanceof Error ? err.message : String(err)}`;
+      console.error("[process-eoc]", reason);
+      if (state.units[unit].attempts >= caps.unitAttemptCap) {
+        state.heartbeat_at = new Date().toISOString();
+        await writeEocParseState(supabase, documentId, state); // attempt is banked
+        await failEocResume(supabase, documentId, state, reason);
+        return { success: false, error: reason, parseWarnings: [reason] };
+      }
+      // Retry the unit in a FRESH invocation (backoff via QStash) rather than
+      // hot-looping inside this one.
+      state.awaiting_resume = true; // the handoff marker — see eoc-resume.ts
+      state.heartbeat_at = new Date().toISOString();
+      await writeEocParseState(supabase, documentId, state); // attempt is banked
+      const enqueued = await enqueueChunk(documentId, baseUrl);
+      if (!enqueued) {
+        await failEocResume(supabase, documentId, state, "eoc_resume_enqueue_failed_after_unit_error");
+        return { success: false, error: reason, parseWarnings: [reason] };
+      }
+      return { success: true, resumeRequested: true, parseWarnings: [reason] };
+    }
   }
 
   parseWarnings.push(...parsed.warnings);
@@ -294,11 +455,18 @@ export async function processEOCDocumentData(
       .eq("id", documentId)
       .maybeSingle();
     const existingDocMeta = (docMetaRow?.metadata ?? {}) as Record<string, unknown>;
+    // S195 EOC-RESUME finish: the (large, transient) checkpoint state is
+    // replaced by the compact per-unit runlog — invocations, attempts, cost,
+    // latency per unit. This is the observability that answers "where do the
+    // PROD minutes go" with data on every parse.
+    state.heartbeat_at = new Date().toISOString();
+    delete existingDocMeta.eoc_parse_state;
     await supabase
       .from("documents")
       .update({
         metadata: {
           ...existingDocMeta,
+          eoc_parse_runlog: buildEocParseRunlog(state, "completed"),
           eoc_sections_summary: {
             segmentation_used: parsed.segmentation_used,
             sections_extracted: Object.keys(parsed.sections),
@@ -315,6 +483,15 @@ export async function processEOCDocumentData(
       })
       .eq("id", documentId);
   }
+
+  // 6. Terminal status (S195). Latent defect found with EOC-RESUME: this path
+  // NEVER wrote status='processed' (the legacy plan-doc parser does it
+  // internally at process-plan.ts) — a successful EOC parse would have left
+  // the document in 'processing' forever. The driver owns the terminal write.
+  await supabase
+    .from("documents")
+    .update({ status: "processed", processing_step: null })
+    .eq("id", documentId);
 
   return {
     success: true,

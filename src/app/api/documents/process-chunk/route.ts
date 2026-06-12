@@ -21,6 +21,7 @@ import { computeContentFingerprint } from "@/lib/parser/id-block/content-fingerp
 import { processPlanDocumentData, type ProcessPlanResult } from "@/lib/plan/process-plan";
 import { processEOCDocumentData } from "@/lib/plan/process-eoc";
 import { resolvePlanFamilyDispatch } from "@/lib/documents/plan-family-dispatch";
+import type { EocParseState } from "@/lib/plan/eoc-resume";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { getUserContextByPk } from "@/lib/users/resolve-user-by-pk";
 import { parseBillFromOCR } from "@/lib/billing/parser";
@@ -421,8 +422,10 @@ async function dispatchPlanOrEOC(args: {
   documentId: string;
   classification: { classifiedType: string; confidence: number; mismatch: boolean };
   skipCanonical: boolean;
+  /** Origin for the EOC parser's QStash self-re-enqueue (S195 EOC-RESUME). */
+  baseUrl: string;
 }): Promise<ProcessPlanResult> {
-  const { supabase, doc, ocrText, documentId, classification, skipCanonical } = args;
+  const { supabase, doc, ocrText, documentId, classification, skipCanonical, baseUrl } = args;
 
   const planDocFamily =
     classification.classifiedType === "sbc" ||
@@ -476,7 +479,7 @@ async function dispatchPlanOrEOC(args: {
     }
     if (decision.route === "eoc_parser") {
       console.log(`[process-chunk] EOC parser v1 ENABLED for user. Routing to processEOCDocumentData.`);
-      return processEOCDocumentData(supabase, { doc, ocrText, documentId, classification });
+      return processEOCDocumentData(supabase, { doc, ocrText, documentId, classification, baseUrl });
     }
     // decision.route === "plan_doc_parser"
     if (decision.via === "unified") {
@@ -715,6 +718,55 @@ export async function POST(req: NextRequest) {
     // Only process documents in the right state
     if (!["queued", "processing"].includes(doc.status)) {
       return NextResponse.json({ skip: true, reason: `Status is ${doc.status}` });
+    }
+
+    // ── S195 EOC-RESUME short-circuit ─────────────────────────────────────
+    // A doc carrying live checkpoint state is a multi-invocation EOC parse in
+    // flight: jump straight back into the driver — no re-classification (the
+    // type was settled when the run started; re-classifying would cost a
+    // Haiku call per invocation and risk mid-run type flap). Keyed on the
+    // state blob (not processing_step) so QStash retries of the ORIGINAL
+    // classify message land here too; the driver's heartbeat guard dedupes
+    // concurrent deliveries. Rollback semantics: eoc_parser_v1 OFF mid-run
+    // aborts the resume loudly instead of finishing a parse the operator
+    // turned off.
+    {
+      const resumeState = (doc.metadata as Record<string, unknown> | null)
+        ?.eoc_parse_state as EocParseState | undefined;
+      if (doc.status === "processing" && resumeState?.version === 1) {
+        const userForResume = await getUserContextByPk(supabase, doc.user_id, "process-chunk:eoc-resume");
+        const eocStillEnabled = await isFeatureEnabled("eoc_parser_v1", userForResume?.email || undefined);
+        if (!eocStillEnabled) {
+          const reason = "eoc_resume_aborted_flag_off";
+          console.warn(`[process-chunk] ${reason} (documentId=${documentId})`);
+          const meta = { ...((doc.metadata as Record<string, unknown> | null) ?? {}) };
+          delete meta.eoc_parse_state;
+          await supabase
+            .from("documents")
+            .update({ status: "error", processing_error: reason, metadata: meta })
+            .eq("id", documentId);
+          return NextResponse.json({ step: "eoc_resume_aborted", continue: false, error: reason });
+        }
+        const resumeResult = await processEOCDocumentData(supabase, {
+          doc: { id: doc.id, user_id: doc.user_id, file_name: doc.file_name },
+          ocrText: doc.processing_ocr_text || "",
+          documentId,
+          classification: {
+            classifiedType: "eoc",
+            confidence: (doc.classification_confidence as number | null) ?? 0.95,
+            mismatch: (doc.type_mismatch as boolean | null) ?? false,
+          },
+          baseUrl: new URL(req.url).origin,
+        });
+        console.log(
+          `[process-chunk] EOC resume invocation: success=${resumeResult.success}, resumeRequested=${resumeResult.resumeRequested === true}`,
+        );
+        return NextResponse.json({
+          step: resumeResult.resumeRequested ? "eoc_resume_pending" : "done",
+          continue: resumeResult.resumeRequested === true,
+          ...resumeResult,
+        });
+      }
     }
 
     const step = doc.processing_step || "init";
@@ -1061,10 +1113,11 @@ export async function POST(req: NextRequest) {
         documentId,
         classification: { classifiedType: effectiveType, confidence: classification.confidence, mismatch: typeMismatch || false },
         skipCanonical,
+        baseUrl: new URL(req.url).origin,
       });
 
-      console.log(`[process-chunk] Inline result: success=${result.success}, services=${result.servicesCreated}, skipCanonical=${skipCanonical}`);
-      return NextResponse.json({ step: "done", continue: false, ...result });
+      console.log(`[process-chunk] Inline result: success=${result.success}, services=${result.servicesCreated}, skipCanonical=${skipCanonical}, resumeRequested=${result.resumeRequested === true}`);
+      return NextResponse.json({ step: result.resumeRequested ? "eoc_resume_pending" : "done", continue: result.resumeRequested === true, ...result });
     }
 
     // ── STEP: CLASSIFYING + EXTRACTING + SAVING (all inline) ──────────────
@@ -1222,10 +1275,11 @@ export async function POST(req: NextRequest) {
         documentId,
         classification: { classifiedType: fbEffectiveType, confidence: classification.confidence, mismatch: fallbackMismatch || false },
         skipCanonical: fbSkipCanonical,
+        baseUrl: new URL(req.url).origin,
       });
 
-      console.log(`[process-chunk] Fallback result: success=${fbResult.success}, services=${fbResult.servicesCreated}, skipCanonical=${fbSkipCanonical}`);
-      return NextResponse.json({ step: "done", continue: false, ...fbResult });
+      console.log(`[process-chunk] Fallback result: success=${fbResult.success}, services=${fbResult.servicesCreated}, skipCanonical=${fbSkipCanonical}, resumeRequested=${fbResult.resumeRequested === true}`);
+      return NextResponse.json({ step: fbResult.resumeRequested ? "eoc_resume_pending" : "done", continue: fbResult.resumeRequested === true, ...fbResult });
     }
 
     // Working state — a step is in progress, check if it's stale
