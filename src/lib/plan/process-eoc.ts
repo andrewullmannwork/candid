@@ -52,11 +52,14 @@ import {
   planNextEocWork,
   mergeEocFragments,
   unitParseOptions,
+  runnableUnits,
+  cumulativeCostUsd,
   shouldSkipAsDuplicateDelivery,
   buildEocParseRunlog,
   type EocParseState,
   type EocResumeCaps,
 } from "@/lib/plan/eoc-resume";
+import { notifyEocParseTerminal } from "@/lib/plan/eoc-parse-slack";
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
@@ -101,6 +104,8 @@ async function failEocResume(
   documentId: string,
   state: EocParseState,
   reason: string,
+  fileName?: string,
+  slackChannelId?: string,
 ): Promise<void> {
   const { data: row } = await supabase
     .from("documents")
@@ -109,14 +114,30 @@ async function failEocResume(
     .maybeSingle();
   const existing = (row?.metadata ?? {}) as Record<string, unknown>;
   delete existing.eoc_parse_state;
+  const runlog = buildEocParseRunlog(state, reason);
   await supabase
     .from("documents")
     .update({
       status: "error",
       processing_error: reason,
-      metadata: { ...existing, eoc_parse_runlog: buildEocParseRunlog(state, reason) },
+      metadata: { ...existing, eoc_parse_runlog: runlog },
     })
     .eq("id", documentId);
+  // S195 Phase B — failure is a terminal event: push the runlog to Slack
+  // (non-fatal, skipped when no channel configured) so "what doesn't work"
+  // arrives without DB spelunking.
+  void notifyEocParseTerminal(
+    {
+      outcome: reason,
+      documentId,
+      fileName: fileName ?? documentId,
+      invocations: state.invocations,
+      totalCostUsd: runlog.total_cost_usd,
+      units: runlog.units,
+      wallMs: Date.now() - Date.parse(state.started_at),
+    },
+    slackChannelId || null,
+  );
 }
 
 /**
@@ -159,6 +180,10 @@ export async function processEOCDocumentData(
     maxCostUsd: await readFeatureFlagConfig("eoc_parser_v1", "max_parse_cost_usd", COST_HARD_CAP_USD),
   };
   const softBudgetMs = await readFeatureFlagConfig("eoc_parser_v1", "resume_soft_budget_ms", 550_000);
+  // S195 Phase B — wave width (1 = exact sequential rollback) + the Slack
+  // channel for terminal notifications (empty = skip; set via Studio, G6).
+  const unitPool = await readFeatureFlagConfig("eoc_parser_v1", "resume_unit_pool", 3);
+  const slackChannelId = await readFeatureFlagConfig("eoc_parser_v1", "slack_channel_id", "");
 
   // Load-or-init checkpoint state. An existing state (any phase — pending
   // units OR all-done-but-persistence-died) is CONTINUED; init happens only on
@@ -230,16 +255,26 @@ export async function processEOCDocumentData(
   // loop (the night-1 failure mode: 8 silent claim cycles, no error anywhere).
   try {
     const invocationStartMs = Date.now();
+    // S195 Phase B — finish-phase stopwatch: each step laps into the runlog's
+    // finish_ms so the persist tail is measured, not guessed.
+    const finishMs: Record<string, number> = {};
+    let finishStepT = Date.now();
+    const lap = (name: string) => {
+      finishMs[name] = Date.now() - finishStepT;
+      finishStepT = Date.now();
+    };
     let parsed: EOCParseResult;
     for (;;) {
       const next = planNextEocWork(state, caps);
       if (next.action === "fail") {
         console.error(`[process-eoc] resume FAIL doc=${documentId} reason=${next.reason}`);
-        await failEocResume(supabase, documentId, state, next.reason);
+        await failEocResume(supabase, documentId, state, next.reason, doc.file_name, slackChannelId);
         return { success: false, error: next.reason, parseWarnings: [next.reason] };
       }
       if (next.action === "assemble") {
+        finishStepT = Date.now();
         parsed = mergeEocFragments(state.fragments);
+        lap("assemble");
         break;
       }
       // Out of budget for this invocation → checkpoint + hand off to the next one.
@@ -250,7 +285,7 @@ export async function processEOCDocumentData(
         const enqueued = await enqueueChunk(documentId, baseUrl);
         if (!enqueued) {
           const reason = "eoc_resume_enqueue_failed";
-          await failEocResume(supabase, documentId, state, reason);
+          await failEocResume(supabase, documentId, state, reason, doc.file_name, slackChannelId);
           return { success: false, error: reason, parseWarnings: [reason] };
         }
         console.log(
@@ -258,51 +293,72 @@ export async function processEOCDocumentData(
         );
         return { success: true, resumeRequested: true, parseWarnings: [] };
       }
-      const unit = next.unit;
-      state.units[unit].attempts += 1;
+      // S195 Phase B — WAVE execution: launch up to `unitPool` independent
+      // units concurrently (plan_identity first — the measured ~147s critical
+      // path; everything else drafts behind it). Wall-time collapses from
+      // sum(units) to ~max(unit-in-wave). Pool=1 reproduces the exact
+      // sequential behavior (the rollback dial). In-flight Haiku calls ≈
+      // pool × chunk_concurrency (default 3×4 = 12; both config-backed).
+      const wave = runnableUnits(state, caps, unitPool);
+      for (const u of wave) state.units[u].attempts += 1;
       state.heartbeat_at = new Date().toISOString();
       await writeEocParseState(supabase, documentId, state);
-      try {
-        const t0 = Date.now();
-        const frag = await parseEOC(ocrText, {
-          documentId,
-          extractionMethod: "pdftotext", // upload pipeline uses pdftotext-then-OCR-fallback;
-                                          // OCR fallback is refused upstream (Q-P3.1A-12 image-PDF refusal)
-          selectiveSelfCheckEnabled,
-          serviceVocabulary,
-          eocContentTypeRoutingOn: eocRoutingFlagOn,
-          chunkConcurrency: eocChunkConcurrency,
-          ...unitParseOptions(unit),
-        });
-        state.units[unit] = {
-          status: "done",
-          attempts: state.units[unit].attempts,
-          cost_usd: frag.total_cost_usd,
-          ms: Date.now() - t0,
-        };
-        state.fragments[unit] = frag;
-        state.heartbeat_at = new Date().toISOString();
-        await writeEocParseState(supabase, documentId, state);
-        console.log(
-          `[process-eoc] resume unit done doc=${documentId} unit=${unit} ms=${Date.now() - t0} cost=$${frag.total_cost_usd.toFixed(4)}`,
-        );
-      } catch (err) {
-        const reason = `EOC parser exception (unit=${unit}): ${err instanceof Error ? err.message : String(err)}`;
+      const settled = await Promise.allSettled(
+        wave.map(async (u) => {
+          const t0 = Date.now();
+          const frag = await parseEOC(ocrText, {
+            documentId,
+            extractionMethod: "pdftotext", // upload pipeline uses pdftotext-then-OCR-fallback;
+                                            // OCR fallback is refused upstream (Q-P3.1A-12 image-PDF refusal)
+            selectiveSelfCheckEnabled,
+            serviceVocabulary,
+            eocContentTypeRoutingOn: eocRoutingFlagOn,
+            chunkConcurrency: eocChunkConcurrency,
+            ...unitParseOptions(u),
+          });
+          return { frag, ms: Date.now() - t0 };
+        }),
+      );
+      const waveErrors: string[] = [];
+      settled.forEach((s, i) => {
+        const u = wave[i];
+        if (s.status === "fulfilled") {
+          state.units[u] = {
+            status: "done",
+            attempts: state.units[u].attempts,
+            cost_usd: s.value.frag.total_cost_usd,
+            ms: s.value.ms,
+          };
+          state.fragments[u] = s.value.frag;
+          console.log(
+            `[process-eoc] resume unit done doc=${documentId} unit=${u} ms=${s.value.ms} cost=$${s.value.frag.total_cost_usd.toFixed(4)}`,
+          );
+        } else {
+          waveErrors.push(
+            `EOC parser exception (unit=${u}): ${s.reason instanceof Error ? s.reason.message : String(s.reason)}`,
+          );
+        }
+      });
+      state.heartbeat_at = new Date().toISOString();
+      await writeEocParseState(supabase, documentId, state); // attempts + completions banked
+      if (waveErrors.length > 0) {
+        const reason = waveErrors.join(" | ");
         console.error("[process-eoc]", reason);
-        if (state.units[unit].attempts >= caps.unitAttemptCap) {
-          state.heartbeat_at = new Date().toISOString();
-          await writeEocParseState(supabase, documentId, state); // attempt is banked
-          await failEocResume(supabase, documentId, state, reason);
+        const capBreached = wave.some(
+          (u) => state.units[u].status !== "done" && state.units[u].attempts >= caps.unitAttemptCap,
+        );
+        if (capBreached) {
+          await failEocResume(supabase, documentId, state, reason, doc.file_name, slackChannelId);
           return { success: false, error: reason, parseWarnings: [reason] };
         }
-        // Retry the unit in a FRESH invocation (backoff via QStash) rather than
-        // hot-looping inside this one.
+        // Retry the failed unit(s) in a FRESH invocation (backoff via QStash)
+        // rather than hot-looping inside this one; completed wave members stay banked.
         state.awaiting_resume = true; // the handoff marker — see eoc-resume.ts
         state.heartbeat_at = new Date().toISOString();
-        await writeEocParseState(supabase, documentId, state); // attempt is banked
+        await writeEocParseState(supabase, documentId, state);
         const enqueued = await enqueueChunk(documentId, baseUrl);
         if (!enqueued) {
-          await failEocResume(supabase, documentId, state, "eoc_resume_enqueue_failed_after_unit_error");
+          await failEocResume(supabase, documentId, state, "eoc_resume_enqueue_failed_after_unit_error", doc.file_name, slackChannelId);
           return { success: false, error: reason, parseWarnings: [reason] };
         }
         return { success: true, resumeRequested: true, parseWarnings: [reason] };
@@ -346,6 +402,7 @@ export async function processEOCDocumentData(
     // 2. Plan-identity persistence.
     // V1 minimal: insert insurance_plans OR update existing active plan for this user.
     // Defer insurer mismatch + year rollover handling (Q-P3.1A-11 v1 limitation).
+    lap("pre_identity");
     const planResult = await persistEOCPlanIdentity(supabase, doc, documentId, parsed);
     if (!planResult.success) {
       return planResult;
@@ -360,7 +417,9 @@ export async function processEOCDocumentData(
     }
 
     // 3. Per-section persistence.
+    lap("identity_persist");
     const persistenceWarnings = await persistEOCSections(supabase, doc, documentId, targetPlanId, parsed, eocRoutingFlagOn);
+    lap("sections_persist");
     parseWarnings.push(...persistenceWarnings);
 
     // 3.5 Phase 4.0.6 corroboration evaluator post-commit. Single discipline point
@@ -436,8 +495,10 @@ export async function processEOCDocumentData(
       console.error("[canonical-promotion] [eoc] non-fatal:", err);
     }
 
+    lap("corroboration_cite_grade");
     // 4. parse_audit_runs telemetry per Pattern P-7.
     await writeParseAuditRun(supabase, doc, documentId, parsed);
+    lap("audit_run");
 
     // 4b. parse_cost_events ledger (Cost-F, S129) — parallel write to unified
     // cost ledger. Same canonicalPlanId lookup as the canonical-promotion
@@ -469,6 +530,7 @@ export async function processEOCDocumentData(
     } catch (err) {
       console.warn("[parse-cost-events] [eoc] non-fatal:", err);
     }
+    lap("cost_event");
 
     // 5. documents.metadata.eoc_sections + Ing-H column_wrap_decision summary write.
     // Ing-H (CF-44, S129) decision struct is co-located with eoc_sections_summary
@@ -500,7 +562,7 @@ export async function processEOCDocumentData(
         .update({
           metadata: {
             ...existingDocMeta,
-            eoc_parse_runlog: buildEocParseRunlog(state, "completed"),
+            eoc_parse_runlog: buildEocParseRunlog(state, "completed", finishMs),
             eoc_sections_summary: {
               segmentation_used: parsed.segmentation_used,
               sections_extracted: Object.keys(parsed.sections),
@@ -522,10 +584,27 @@ export async function processEOCDocumentData(
     // NEVER wrote status='processed' (the legacy plan-doc parser does it
     // internally at process-plan.ts) — a successful EOC parse would have left
     // the document in 'processing' forever. The driver owns the terminal write.
+    lap("summary_write");
     await supabase
       .from("documents")
       .update({ status: "processed", processing_step: null })
       .eq("id", documentId);
+    lap("status_write");
+    // S195 Phase B — success is a terminal event too: the full timing/cost
+    // table lands in Slack (non-fatal; skipped when no channel configured).
+    void notifyEocParseTerminal(
+      {
+        outcome: "processed",
+        documentId,
+        fileName: doc.file_name,
+        invocations: state.invocations,
+        totalCostUsd: cumulativeCostUsd(state),
+        units: buildEocParseRunlog(state, "completed", finishMs).units,
+        finishMs,
+        wallMs: Date.now() - Date.parse(state.started_at),
+      },
+      slackChannelId || null,
+    );
 
     return {
       success: true,
@@ -545,7 +624,7 @@ export async function processEOCDocumentData(
   } catch (err) {
     const reason = `eoc_finish_exception: ${err instanceof Error ? err.message : String(err)}`;
     console.error("[process-eoc]", reason, err);
-    await failEocResume(supabase, documentId, state, reason);
+    await failEocResume(supabase, documentId, state, reason, doc.file_name, slackChannelId);
     return { success: false, error: reason, parseWarnings: [reason] };
   } finally {
     clearInterval(heartbeater);

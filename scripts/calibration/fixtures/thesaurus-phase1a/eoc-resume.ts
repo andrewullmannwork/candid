@@ -22,6 +22,7 @@ import {
   planNextEocWork,
   mergeEocFragments,
   unitParseOptions,
+  runnableUnits,
   heartbeatIsFresh,
   shouldSkipAsDuplicateDelivery,
   hasPendingUnits,
@@ -30,6 +31,7 @@ import {
   type EocParseState,
   type EocResumeCaps,
 } from "@/lib/plan/eoc-resume";
+import { buildEocParseSlackText, resolveEocSlackChannelId } from "@/lib/plan/eoc-parse-slack";
 import type { EOCParseResult } from "@/lib/eoc/types";
 
 let pass = 0;
@@ -275,6 +277,72 @@ console.log("\nPART 3 — heartbeat, slices, runlog:");
     "runlog carries outcome + per-unit attempts/cost/ms + invocations",
     log.outcome === "completed" && log.invocations === 1 && log.units.plan_identity.cost_usd === 0.02,
   );
+  const logF = buildEocParseRunlog(s, "completed", { assemble: 12, sections_persist: 4000 });
+  check(
+    "runlog finish_ms passthrough (Phase B persist stopwatch)",
+    logF.finish_ms?.sections_persist === 4000 && log.finish_ms === undefined,
+  );
+}
+
+// ── PART 4 — Phase B: wave scheduler + Slack builder ─────────────────────────
+console.log("\nPART 4 — runnableUnits (wave) + Slack notifier:");
+{
+  const s = freshState();
+  const w = runnableUnits(s, CAPS, 3);
+  check(
+    "fresh state, pool 3 → [plan_identity, aca, medical_necessity] (identity-first critical path)",
+    w.length === 3 && w[0] === "plan_identity" && w[1] === "aca" && w[2] === "medical_necessity",
+  );
+  check("pool 1 → sequential rollback (single unit, in order)", runnableUnits(s, CAPS, 1).join() === "plan_identity");
+  check("pool larger than pending → all pending, no padding", runnableUnits(s, CAPS, 99).length === EOC_RESUME_UNITS.length);
+}
+{
+  const s = freshState();
+  s.units.plan_identity = { status: "done", attempts: 1, cost_usd: 0.01, ms: 1 };
+  s.units.aca.attempts = 2; // attempt-capped — must be EXCLUDED from waves
+  const w = runnableUnits(s, CAPS, 3);
+  check(
+    "done + attempt-capped units excluded from the wave",
+    !w.includes("plan_identity") && !w.includes("aca") && w[0] === "medical_necessity",
+  );
+}
+{
+  const text = buildEocParseSlackText({
+    outcome: "processed",
+    documentId: "doc-1",
+    fileName: "ecm-12-eoc-only.pdf",
+    invocations: 1,
+    totalCostUsd: 0.151,
+    units: { plan_identity: { attempts: 1, ms: 147000, cost_usd: 0 }, medical_necessity: { attempts: 2, ms: 33000, cost_usd: 0.1 } },
+    finishMs: { assemble: 15, sections_persist: 42000 },
+    wallMs: 210_000,
+  });
+  check(
+    "Slack success text carries file + spend + unit timings + finish breakdown + retries",
+    text.includes("ecm-12-eoc-only.pdf") &&
+      text.includes("$0.151") &&
+      text.includes("147.0s") &&
+      text.includes("attempts=2") &&
+      text.includes("sections_persist: 42.0s") &&
+      text.includes(":white_check_mark:"),
+  );
+  const failText = buildEocParseSlackText({
+    outcome: "eoc_finish_exception: boom",
+    documentId: "doc-1",
+    fileName: "ecm-12-eoc-only.pdf",
+    invocations: 3,
+    totalCostUsd: 0.2,
+    units: {},
+  });
+  check(
+    "Slack failure text carries the reason loudly",
+    failText.includes(":rotating_light:") && failText.includes("eoc_finish_exception: boom"),
+  );
+  const saved = process.env.SLACK_EOC_PARSE_CHANNEL_ID;
+  delete process.env.SLACK_EOC_PARSE_CHANNEL_ID;
+  check("channel resolution: unset everywhere → null (skip, never a wrong default)", resolveEocSlackChannelId("") === null);
+  check("channel resolution: config value used when env absent", resolveEocSlackChannelId("C123") === "C123");
+  if (saved !== undefined) process.env.SLACK_EOC_PARSE_CHANNEL_ID = saved;
 }
 
 console.log(`\n${pass}/${pass + fail} assertions passed.`);
