@@ -229,6 +229,25 @@ export function planNextEocWork(state: EocParseState, caps: EocResumeCaps): EocN
   return { action: "run", unit: u };
 }
 
+/**
+ * S195 Phase B — the units to launch CONCURRENTLY this wave: pending units
+ * whose attempt budget remains, in canonical order (plan_identity first — it
+ * is the measured critical path at ~147s; everything else drafts behind it),
+ * sliced to the pool size. Pool size 1 reproduces the exact sequential
+ * behavior (the rollback dial). Caller consults `planNextEocWork` FIRST for
+ * fail/assemble authority; this only shapes the "run" action into a wave.
+ */
+export function runnableUnits(
+  state: EocParseState,
+  caps: EocResumeCaps,
+  maxPool: number,
+): EocUnitName[] {
+  const pool = Math.max(1, Math.floor(maxPool));
+  return EOC_RESUME_UNITS.filter(
+    (u) => state.units[u]?.status !== "done" && (state.units[u]?.attempts ?? 0) < caps.unitAttemptCap,
+  ).slice(0, pool);
+}
+
 // ── Fragment assembly (pure) ─────────────────────────────────────────────────
 
 /** Slice artifacts emitted by parseEOC when a leg/section is skipped by the
@@ -325,12 +344,20 @@ export function mergeEocFragments(
 }
 
 /** Compact post-run observability blob (replaces the fragments on finish) —
- * per-unit cost/latency/attempts answer "where do PROD minutes go" with data. */
-export function buildEocParseRunlog(state: EocParseState, outcome: "completed" | string): {
+ * per-unit cost/latency/attempts answer "where do PROD minutes go" with data.
+ * S195 Phase B: optionally carries the finish-phase step timings (assemble →
+ * persist → corroboration → audit → summary) so the persist tail is measured,
+ * not guessed. */
+export function buildEocParseRunlog(
+  state: EocParseState,
+  outcome: "completed" | string,
+  finishMs?: Record<string, number>,
+): {
   outcome: string;
   invocations: number;
   total_cost_usd: number;
   units: Record<string, { attempts: number; cost_usd?: number; ms?: number }>;
+  finish_ms?: Record<string, number>;
   started_at: string;
   finished_at: string;
 } {
@@ -344,6 +371,7 @@ export function buildEocParseRunlog(state: EocParseState, outcome: "completed" |
     invocations: state.invocations,
     total_cost_usd: cumulativeCostUsd(state),
     units,
+    ...(finishMs && Object.keys(finishMs).length > 0 ? { finish_ms: finishMs } : {}),
     started_at: state.started_at,
     finished_at: state.heartbeat_at,
   };
