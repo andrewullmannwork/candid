@@ -186,328 +186,370 @@ export async function processEOCDocumentData(
   const eocRoutingFlagOn = state.routing_flag_snapshot;
   state.invocations += 1;
   state.awaiting_resume = false; // this invocation has claimed the handoff
+  state.state_rev = (state.state_rev ?? 0) + 1;
   state.heartbeat_at = new Date().toISOString();
   await writeEocParseState(supabase, documentId, state);
+  // S195 hardening — pragmatic claim-CAS: re-read and confirm OUR rev stuck.
+  // A sibling claimant interleaving its own claim write loses or wins here;
+  // the loser abandons quietly instead of clobbering checkpoints for the rest
+  // of the parse (the night-1 failure mode). See eoc-resume.ts `state_rev`.
+  {
+    const { data: verifyRow } = await supabase
+      .from("documents")
+      .select("metadata")
+      .eq("id", documentId)
+      .maybeSingle();
+    const verifyRev = (((verifyRow?.metadata ?? {}) as Record<string, unknown>)
+      .eoc_parse_state as EocParseState | undefined)?.state_rev;
+    if (verifyRev !== state.state_rev) {
+      console.log(
+        `[process-eoc] resume claim LOST (our rev=${state.state_rev}, db rev=${verifyRev}) doc=${documentId} — abandoning quietly`,
+      );
+      return { success: true, parseWarnings: ["eoc_resume_claim_lost"] };
+    }
+  }
   // Keep stuck-detection + the UI's staleness heuristics honest across a
   // multi-invocation parse: each invocation re-stamps the started marker.
   await supabase
     .from("documents")
     .update({ processing_started_at: new Date().toISOString() })
     .eq("id", documentId);
-
-  const invocationStartMs = Date.now();
-  let parsed: EOCParseResult;
-  for (;;) {
-    const next = planNextEocWork(state, caps);
-    if (next.action === "fail") {
-      console.error(`[process-eoc] resume FAIL doc=${documentId} reason=${next.reason}`);
-      await failEocResume(supabase, documentId, state, next.reason);
-      return { success: false, error: next.reason, parseWarnings: [next.reason] };
-    }
-    if (next.action === "assemble") {
-      parsed = mergeEocFragments(state.fragments);
-      break;
-    }
-    // Out of budget for this invocation → checkpoint + hand off to the next one.
-    if (Date.now() - invocationStartMs > softBudgetMs) {
-      state.awaiting_resume = true; // the handoff marker — see eoc-resume.ts
-      state.heartbeat_at = new Date().toISOString();
-      await writeEocParseState(supabase, documentId, state);
-      const enqueued = await enqueueChunk(documentId, baseUrl);
-      if (!enqueued) {
-        const reason = "eoc_resume_enqueue_failed";
-        await failEocResume(supabase, documentId, state, reason);
-        return { success: false, error: reason, parseWarnings: [reason] };
-      }
-      console.log(
-        `[process-eoc] resume checkpoint doc=${documentId} invocation=${state.invocations} next=${next.unit} elapsed_ms=${Date.now() - invocationStartMs}`,
-      );
-      return { success: true, resumeRequested: true, parseWarnings: [] };
-    }
-    const unit = next.unit;
-    state.units[unit].attempts += 1;
+  // S195 hardening — background heartbeater: long units and the persist phase
+  // previously left the heartbeat stale for minutes, so QStash re-deliveries
+  // mistook a LIVE invocation for a dead one and claimed over it. Beats every
+  // 45s for the invocation's whole lifetime (cleared in the finally below).
+  const heartbeater = setInterval(() => {
     state.heartbeat_at = new Date().toISOString();
-    await writeEocParseState(supabase, documentId, state);
-    try {
-      const t0 = Date.now();
-      const frag = await parseEOC(ocrText, {
-        documentId,
-        extractionMethod: "pdftotext", // upload pipeline uses pdftotext-then-OCR-fallback;
-                                        // OCR fallback is refused upstream (Q-P3.1A-12 image-PDF refusal)
-        selectiveSelfCheckEnabled,
-        serviceVocabulary,
-        eocContentTypeRoutingOn: eocRoutingFlagOn,
-        chunkConcurrency: eocChunkConcurrency,
-        ...unitParseOptions(unit),
-      });
-      state.units[unit] = {
-        status: "done",
-        attempts: state.units[unit].attempts,
-        cost_usd: frag.total_cost_usd,
-        ms: Date.now() - t0,
-      };
-      state.fragments[unit] = frag;
+    void writeEocParseState(supabase, documentId, state).catch(() => {});
+  }, 45_000);
+
+  // S195 hardening — the unit loop AND the finish pipeline run inside one
+  // try: any exception not handled by the per-unit catch (i.e. anything in
+  // assemble/persist/finish) lands in the catch below, which writes the REAL
+  // error to the document instead of 500-ing invisibly into a QStash retry
+  // loop (the night-1 failure mode: 8 silent claim cycles, no error anywhere).
+  try {
+    const invocationStartMs = Date.now();
+    let parsed: EOCParseResult;
+    for (;;) {
+      const next = planNextEocWork(state, caps);
+      if (next.action === "fail") {
+        console.error(`[process-eoc] resume FAIL doc=${documentId} reason=${next.reason}`);
+        await failEocResume(supabase, documentId, state, next.reason);
+        return { success: false, error: next.reason, parseWarnings: [next.reason] };
+      }
+      if (next.action === "assemble") {
+        parsed = mergeEocFragments(state.fragments);
+        break;
+      }
+      // Out of budget for this invocation → checkpoint + hand off to the next one.
+      if (Date.now() - invocationStartMs > softBudgetMs) {
+        state.awaiting_resume = true; // the handoff marker — see eoc-resume.ts
+        state.heartbeat_at = new Date().toISOString();
+        await writeEocParseState(supabase, documentId, state);
+        const enqueued = await enqueueChunk(documentId, baseUrl);
+        if (!enqueued) {
+          const reason = "eoc_resume_enqueue_failed";
+          await failEocResume(supabase, documentId, state, reason);
+          return { success: false, error: reason, parseWarnings: [reason] };
+        }
+        console.log(
+          `[process-eoc] resume checkpoint doc=${documentId} invocation=${state.invocations} next=${next.unit} elapsed_ms=${Date.now() - invocationStartMs}`,
+        );
+        return { success: true, resumeRequested: true, parseWarnings: [] };
+      }
+      const unit = next.unit;
+      state.units[unit].attempts += 1;
       state.heartbeat_at = new Date().toISOString();
       await writeEocParseState(supabase, documentId, state);
-      console.log(
-        `[process-eoc] resume unit done doc=${documentId} unit=${unit} ms=${Date.now() - t0} cost=$${frag.total_cost_usd.toFixed(4)}`,
-      );
-    } catch (err) {
-      const reason = `EOC parser exception (unit=${unit}): ${err instanceof Error ? err.message : String(err)}`;
-      console.error("[process-eoc]", reason);
-      if (state.units[unit].attempts >= caps.unitAttemptCap) {
-        state.heartbeat_at = new Date().toISOString();
-        await writeEocParseState(supabase, documentId, state); // attempt is banked
-        await failEocResume(supabase, documentId, state, reason);
-        return { success: false, error: reason, parseWarnings: [reason] };
-      }
-      // Retry the unit in a FRESH invocation (backoff via QStash) rather than
-      // hot-looping inside this one.
-      state.awaiting_resume = true; // the handoff marker — see eoc-resume.ts
-      state.heartbeat_at = new Date().toISOString();
-      await writeEocParseState(supabase, documentId, state); // attempt is banked
-      const enqueued = await enqueueChunk(documentId, baseUrl);
-      if (!enqueued) {
-        await failEocResume(supabase, documentId, state, "eoc_resume_enqueue_failed_after_unit_error");
-        return { success: false, error: reason, parseWarnings: [reason] };
-      }
-      return { success: true, resumeRequested: true, parseWarnings: [reason] };
-    }
-  }
-
-  parseWarnings.push(...parsed.warnings);
-
-  // Cost hard cap defensive check (parser also enforces; double-check at boundary).
-  if (parsed.total_cost_usd > COST_HARD_CAP_USD) {
-    const reason = `eoc_cost_hard_cap_breached:${documentId}:cost=${parsed.total_cost_usd.toFixed(4)}`;
-    parseWarnings.push(reason);
-  }
-
-  // ── Ing-B: Garbage-pattern validators on EOC plan-identity ────────────────
-  // Same defense surface as process-plan.ts; doc-type-agnostic per
-  // feedback_universal_fixes_only. EOC parser today only emits plan_name +
-  // insurer_name on plan_identity (metal_tier + group_number not extracted),
-  // so we validate the two relevant fields. Mutates parsed.plan_identity
-  // in-place so all downstream uses (planFields build, provenance, profile
-  // back-populate) see the cleaned values. Gated by garbage_validators_enabled
-  // (mig 121, default ON).
-  const garbageValidatorsEnabled = await isFeatureEnabled("garbage_validators_enabled");
-  if (garbageValidatorsEnabled) {
-    const planNameResult = validatePlanField(parsed.plan_identity.plan_name, "plan_name");
-    if (planNameResult.warning) {
-      parsed.plan_identity.plan_name = null;
-      parseWarnings.push(planNameResult.warning);
-    }
-    const insurerNameResult = validatePlanField(parsed.plan_identity.insurer_name, "insurer_name");
-    if (insurerNameResult.warning) {
-      parsed.plan_identity.insurer_name = null;
-      parseWarnings.push(insurerNameResult.warning);
-    }
-    if (planNameResult.warning || insurerNameResult.warning) {
-      const fired = [planNameResult.warning, insurerNameResult.warning].filter(Boolean);
-      console.warn("[process-eoc] Garbage-pattern validator nulled fields:", fired.join(", "));
-    }
-  }
-
-  // 2. Plan-identity persistence.
-  // V1 minimal: insert insurance_plans OR update existing active plan for this user.
-  // Defer insurer mismatch + year rollover handling (Q-P3.1A-11 v1 limitation).
-  const planResult = await persistEOCPlanIdentity(supabase, doc, documentId, parsed);
-  if (!planResult.success) {
-    return planResult;
-  }
-  const targetPlanId = planResult.planId;
-  if (!targetPlanId) {
-    return {
-      success: false,
-      error: "EOC plan persistence returned no planId",
-      parseWarnings,
-    };
-  }
-
-  // 3. Per-section persistence.
-  const persistenceWarnings = await persistEOCSections(supabase, doc, documentId, targetPlanId, parsed, eocRoutingFlagOn);
-  parseWarnings.push(...persistenceWarnings);
-
-  // 3.5 Phase 4.0.6 corroboration evaluator post-commit. Single discipline point
-  // — all upload paths route through commitUploadAndEvaluateCorroboration helper
-  // (Q-P4.0.6-1 LOCK v4; Engineering North Star #1 single code path). EOC
-  // plan-identity is regex-extracted (no Pattern P-8 verified excerpts in v1) so
-  // EOC's own contribution doesn't count toward corroboration; calling the
-  // helper still runs evaluator on this canonical to detect threshold-met state
-  // from prior SBC uploads on the same canonical. Phase 5+ may upgrade EOC
-  // plan-identity to Pattern P-8 verified excerpts so cross-source corroboration
-  // fires. Helper invocation is unconditional post-Task 4.0.6-I cleanup
-  // (mig 064 RPC value-write branch sunset 2026-05-04).
-  try {
-    const { data: planRow } = await supabase
-      .from("insurance_plans")
-      .select("canonical_plan_id, user_id")
-      .eq("id", targetPlanId)
-      .maybeSingle();
-    const canonicalPlanId = planRow?.canonical_plan_id as string | null | undefined;
-    if (canonicalPlanId) {
-      const candidates = PHASE_4_0_6_PLAN_IDENTITY_FIELDS_EOC.map((fieldName) => ({
-        serviceSlug: null as string | null,
-        fieldName,
-      }));
-      const result = await commitUploadAndEvaluateCorroboration(supabase, {
-        canonicalPlanId,
-        actorUserId: (planRow?.user_id as string | undefined) ?? doc.user_id,
-        fireSource: "process-eoc",
-        candidates,
-        documentId: doc.id,
-      });
-      console.log(
-        `[canonical-promotion] [eoc] canonical=${canonicalPlanId} candidates=${candidates.length} fired=${result.promotionsFired} challenges=${result.challengeCandidates} errors=${result.errors.length}`,
-      );
-      if (result.errors.length > 0) {
-        console.error("[canonical-promotion] [eoc] errors:", result.errors);
-        parseWarnings.push(...result.errors.map((e) => `canonical_promotion_eoc:${e}`));
-      }
-
-      // ── S72 commit 4: canonical_haiku_extractions cite-grade write ──
-      // Per-section cite-grade Pattern P-8 source_excerpts from EOC parser
-      // (prior_auth_codes / medical_necessity / appeals / cob / eligibility /
-      // definitions). Closes CF-20 cite-grade gap for EOC dispute-letter citations.
-      // Plan-identity rows excluded — EOC plan_identity is regex-extracted (no P-8).
-      // Non-fatal on insert error.
       try {
-        const userId = (planRow?.user_id as string | undefined) ?? doc.user_id;
-        const { data: docMeta } = await supabase
-          .from("documents")
-          .select("file_hash")
-          .eq("id", documentId)
-          .maybeSingle();
-        const sourceUserDocHash = (docMeta?.file_hash as string | null | undefined) ?? null;
-
-        const eocRows = extractRowsFromEOCParseResult(parsed);
-        const eocWrite = await writeCanonicalHaikuExtractions(supabase, {
-          canonicalPlanId,
-          userId,
+        const t0 = Date.now();
+        const frag = await parseEOC(ocrText, {
           documentId,
-          sourceUserDocHash,
-          haikuRunId: generateHaikuRunId("eoc", documentId),
-          parserKind: "eoc",
-          rows: eocRows,
+          extractionMethod: "pdftotext", // upload pipeline uses pdftotext-then-OCR-fallback;
+                                          // OCR fallback is refused upstream (Q-P3.1A-12 image-PDF refusal)
+          selectiveSelfCheckEnabled,
+          serviceVocabulary,
+          eocContentTypeRoutingOn: eocRoutingFlagOn,
+          chunkConcurrency: eocChunkConcurrency,
+          ...unitParseOptions(unit),
         });
+        state.units[unit] = {
+          status: "done",
+          attempts: state.units[unit].attempts,
+          cost_usd: frag.total_cost_usd,
+          ms: Date.now() - t0,
+        };
+        state.fragments[unit] = frag;
+        state.heartbeat_at = new Date().toISOString();
+        await writeEocParseState(supabase, documentId, state);
         console.log(
-          `[canonical-haiku-extractions] eoc canonical=${canonicalPlanId} cite_grade_rows_written=${eocWrite.rowsWritten}`,
+          `[process-eoc] resume unit done doc=${documentId} unit=${unit} ms=${Date.now() - t0} cost=$${frag.total_cost_usd.toFixed(4)}`,
         );
       } catch (err) {
-        console.error("[canonical-haiku-extractions] [eoc] non-fatal write error:", err);
+        const reason = `EOC parser exception (unit=${unit}): ${err instanceof Error ? err.message : String(err)}`;
+        console.error("[process-eoc]", reason);
+        if (state.units[unit].attempts >= caps.unitAttemptCap) {
+          state.heartbeat_at = new Date().toISOString();
+          await writeEocParseState(supabase, documentId, state); // attempt is banked
+          await failEocResume(supabase, documentId, state, reason);
+          return { success: false, error: reason, parseWarnings: [reason] };
+        }
+        // Retry the unit in a FRESH invocation (backoff via QStash) rather than
+        // hot-looping inside this one.
+        state.awaiting_resume = true; // the handoff marker — see eoc-resume.ts
+        state.heartbeat_at = new Date().toISOString();
+        await writeEocParseState(supabase, documentId, state); // attempt is banked
+        const enqueued = await enqueueChunk(documentId, baseUrl);
+        if (!enqueued) {
+          await failEocResume(supabase, documentId, state, "eoc_resume_enqueue_failed_after_unit_error");
+          return { success: false, error: reason, parseWarnings: [reason] };
+        }
+        return { success: true, resumeRequested: true, parseWarnings: [reason] };
       }
     }
-  } catch (err) {
-    console.error("[canonical-promotion] [eoc] non-fatal:", err);
-  }
 
-  // 4. parse_audit_runs telemetry per Pattern P-7.
-  await writeParseAuditRun(supabase, doc, documentId, parsed);
+    parseWarnings.push(...parsed.warnings);
 
-  // 4b. parse_cost_events ledger (Cost-F, S129) — parallel write to unified
-  // cost ledger. Same canonicalPlanId lookup as the canonical-promotion
-  // block above; done in a fresh small read here to keep the cost write
-  // self-contained (negligible round-trip cost).
-  try {
-    const { data: planRowForCost } = await supabase
-      .from("insurance_plans")
-      .select("canonical_plan_id, user_id")
-      .eq("id", targetPlanId)
-      .maybeSingle();
-    await recordCostEvent(supabase, {
-      canonicalPlanId: (planRowForCost?.canonical_plan_id as string | null | undefined) ?? null,
-      insurancePlanId: targetPlanId,
-      documentId,
-      userId: (planRowForCost?.user_id as string | undefined) ?? doc.user_id,
-      parserKind: "eoc_base",
-      costSource: "user_upload",
-      costUsd: parsed.total_cost_usd,
-      haikuTokensInput: parsed.total_input_tokens,
-      haikuTokensOutput: parsed.total_output_tokens,
-      haikuCacheCreateTokens: parsed.total_cache_create_tokens,
-      haikuCacheReadTokens: parsed.total_cache_read_tokens,
-      metadata: {
-        sections_extracted: Object.keys(parsed.sections),
-        segmentation_used: parsed.segmentation_used,
-      },
-    });
-  } catch (err) {
-    console.warn("[parse-cost-events] [eoc] non-fatal:", err);
-  }
+    // Cost hard cap defensive check (parser also enforces; double-check at boundary).
+    if (parsed.total_cost_usd > COST_HARD_CAP_USD) {
+      const reason = `eoc_cost_hard_cap_breached:${documentId}:cost=${parsed.total_cost_usd.toFixed(4)}`;
+      parseWarnings.push(reason);
+    }
 
-  // 5. documents.metadata.eoc_sections + Ing-H column_wrap_decision summary write.
-  // Ing-H (CF-44, S129) decision struct is co-located with eoc_sections_summary
-  // so admin can see "which heuristic decision drove this parse's self-check"
-  // alongside the parse output stats.
-  // Read-merge-write (NOT a blind overwrite): this must preserve keys written earlier in THIS flow —
-  // the G7 eoc_routing_telemetry from persistEOCSections (flag-ON only now; D3) — plus any UPSTREAM
-  // documents.metadata keys (cf40_*, adversarial_pdf_assessment). The prior blind overwrite WIPED them.
-  // DOCUMENTED CARVE-OUT (M1/D2): this read-merge is an intentional, FLAG-INDEPENDENT correctness fix and
-  // is the ONE deliberate exception to "flag-OFF = byte-identical post-D1". Reverting to the blind
-  // overwrite would re-introduce data loss (e.g. dropping adversarial_pdf_assessment when THAT separate
-  // flag is ON). The byte-identity guarantee is scoped to PLAN DATA + the cite-grade cache, not this
-  // observability blob — do NOT "restore" the overwrite to satisfy a literal-bytes reading.
-  {
-    const { data: docMetaRow } = await supabase
-      .from("documents")
-      .select("metadata")
-      .eq("id", documentId)
-      .maybeSingle();
-    const existingDocMeta = (docMetaRow?.metadata ?? {}) as Record<string, unknown>;
-    // S195 EOC-RESUME finish: the (large, transient) checkpoint state is
-    // replaced by the compact per-unit runlog — invocations, attempts, cost,
-    // latency per unit. This is the observability that answers "where do the
-    // PROD minutes go" with data on every parse.
-    state.heartbeat_at = new Date().toISOString();
-    delete existingDocMeta.eoc_parse_state;
+    // ── Ing-B: Garbage-pattern validators on EOC plan-identity ────────────────
+    // Same defense surface as process-plan.ts; doc-type-agnostic per
+    // feedback_universal_fixes_only. EOC parser today only emits plan_name +
+    // insurer_name on plan_identity (metal_tier + group_number not extracted),
+    // so we validate the two relevant fields. Mutates parsed.plan_identity
+    // in-place so all downstream uses (planFields build, provenance, profile
+    // back-populate) see the cleaned values. Gated by garbage_validators_enabled
+    // (mig 121, default ON).
+    const garbageValidatorsEnabled = await isFeatureEnabled("garbage_validators_enabled");
+    if (garbageValidatorsEnabled) {
+      const planNameResult = validatePlanField(parsed.plan_identity.plan_name, "plan_name");
+      if (planNameResult.warning) {
+        parsed.plan_identity.plan_name = null;
+        parseWarnings.push(planNameResult.warning);
+      }
+      const insurerNameResult = validatePlanField(parsed.plan_identity.insurer_name, "insurer_name");
+      if (insurerNameResult.warning) {
+        parsed.plan_identity.insurer_name = null;
+        parseWarnings.push(insurerNameResult.warning);
+      }
+      if (planNameResult.warning || insurerNameResult.warning) {
+        const fired = [planNameResult.warning, insurerNameResult.warning].filter(Boolean);
+        console.warn("[process-eoc] Garbage-pattern validator nulled fields:", fired.join(", "));
+      }
+    }
+
+    // 2. Plan-identity persistence.
+    // V1 minimal: insert insurance_plans OR update existing active plan for this user.
+    // Defer insurer mismatch + year rollover handling (Q-P3.1A-11 v1 limitation).
+    const planResult = await persistEOCPlanIdentity(supabase, doc, documentId, parsed);
+    if (!planResult.success) {
+      return planResult;
+    }
+    const targetPlanId = planResult.planId;
+    if (!targetPlanId) {
+      return {
+        success: false,
+        error: "EOC plan persistence returned no planId",
+        parseWarnings,
+      };
+    }
+
+    // 3. Per-section persistence.
+    const persistenceWarnings = await persistEOCSections(supabase, doc, documentId, targetPlanId, parsed, eocRoutingFlagOn);
+    parseWarnings.push(...persistenceWarnings);
+
+    // 3.5 Phase 4.0.6 corroboration evaluator post-commit. Single discipline point
+    // — all upload paths route through commitUploadAndEvaluateCorroboration helper
+    // (Q-P4.0.6-1 LOCK v4; Engineering North Star #1 single code path). EOC
+    // plan-identity is regex-extracted (no Pattern P-8 verified excerpts in v1) so
+    // EOC's own contribution doesn't count toward corroboration; calling the
+    // helper still runs evaluator on this canonical to detect threshold-met state
+    // from prior SBC uploads on the same canonical. Phase 5+ may upgrade EOC
+    // plan-identity to Pattern P-8 verified excerpts so cross-source corroboration
+    // fires. Helper invocation is unconditional post-Task 4.0.6-I cleanup
+    // (mig 064 RPC value-write branch sunset 2026-05-04).
+    try {
+      const { data: planRow } = await supabase
+        .from("insurance_plans")
+        .select("canonical_plan_id, user_id")
+        .eq("id", targetPlanId)
+        .maybeSingle();
+      const canonicalPlanId = planRow?.canonical_plan_id as string | null | undefined;
+      if (canonicalPlanId) {
+        const candidates = PHASE_4_0_6_PLAN_IDENTITY_FIELDS_EOC.map((fieldName) => ({
+          serviceSlug: null as string | null,
+          fieldName,
+        }));
+        const result = await commitUploadAndEvaluateCorroboration(supabase, {
+          canonicalPlanId,
+          actorUserId: (planRow?.user_id as string | undefined) ?? doc.user_id,
+          fireSource: "process-eoc",
+          candidates,
+          documentId: doc.id,
+        });
+        console.log(
+          `[canonical-promotion] [eoc] canonical=${canonicalPlanId} candidates=${candidates.length} fired=${result.promotionsFired} challenges=${result.challengeCandidates} errors=${result.errors.length}`,
+        );
+        if (result.errors.length > 0) {
+          console.error("[canonical-promotion] [eoc] errors:", result.errors);
+          parseWarnings.push(...result.errors.map((e) => `canonical_promotion_eoc:${e}`));
+        }
+
+        // ── S72 commit 4: canonical_haiku_extractions cite-grade write ──
+        // Per-section cite-grade Pattern P-8 source_excerpts from EOC parser
+        // (prior_auth_codes / medical_necessity / appeals / cob / eligibility /
+        // definitions). Closes CF-20 cite-grade gap for EOC dispute-letter citations.
+        // Plan-identity rows excluded — EOC plan_identity is regex-extracted (no P-8).
+        // Non-fatal on insert error.
+        try {
+          const userId = (planRow?.user_id as string | undefined) ?? doc.user_id;
+          const { data: docMeta } = await supabase
+            .from("documents")
+            .select("file_hash")
+            .eq("id", documentId)
+            .maybeSingle();
+          const sourceUserDocHash = (docMeta?.file_hash as string | null | undefined) ?? null;
+
+          const eocRows = extractRowsFromEOCParseResult(parsed);
+          const eocWrite = await writeCanonicalHaikuExtractions(supabase, {
+            canonicalPlanId,
+            userId,
+            documentId,
+            sourceUserDocHash,
+            haikuRunId: generateHaikuRunId("eoc", documentId),
+            parserKind: "eoc",
+            rows: eocRows,
+          });
+          console.log(
+            `[canonical-haiku-extractions] eoc canonical=${canonicalPlanId} cite_grade_rows_written=${eocWrite.rowsWritten}`,
+          );
+        } catch (err) {
+          console.error("[canonical-haiku-extractions] [eoc] non-fatal write error:", err);
+        }
+      }
+    } catch (err) {
+      console.error("[canonical-promotion] [eoc] non-fatal:", err);
+    }
+
+    // 4. parse_audit_runs telemetry per Pattern P-7.
+    await writeParseAuditRun(supabase, doc, documentId, parsed);
+
+    // 4b. parse_cost_events ledger (Cost-F, S129) — parallel write to unified
+    // cost ledger. Same canonicalPlanId lookup as the canonical-promotion
+    // block above; done in a fresh small read here to keep the cost write
+    // self-contained (negligible round-trip cost).
+    try {
+      const { data: planRowForCost } = await supabase
+        .from("insurance_plans")
+        .select("canonical_plan_id, user_id")
+        .eq("id", targetPlanId)
+        .maybeSingle();
+      await recordCostEvent(supabase, {
+        canonicalPlanId: (planRowForCost?.canonical_plan_id as string | null | undefined) ?? null,
+        insurancePlanId: targetPlanId,
+        documentId,
+        userId: (planRowForCost?.user_id as string | undefined) ?? doc.user_id,
+        parserKind: "eoc_base",
+        costSource: "user_upload",
+        costUsd: parsed.total_cost_usd,
+        haikuTokensInput: parsed.total_input_tokens,
+        haikuTokensOutput: parsed.total_output_tokens,
+        haikuCacheCreateTokens: parsed.total_cache_create_tokens,
+        haikuCacheReadTokens: parsed.total_cache_read_tokens,
+        metadata: {
+          sections_extracted: Object.keys(parsed.sections),
+          segmentation_used: parsed.segmentation_used,
+        },
+      });
+    } catch (err) {
+      console.warn("[parse-cost-events] [eoc] non-fatal:", err);
+    }
+
+    // 5. documents.metadata.eoc_sections + Ing-H column_wrap_decision summary write.
+    // Ing-H (CF-44, S129) decision struct is co-located with eoc_sections_summary
+    // so admin can see "which heuristic decision drove this parse's self-check"
+    // alongside the parse output stats.
+    // Read-merge-write (NOT a blind overwrite): this must preserve keys written earlier in THIS flow —
+    // the G7 eoc_routing_telemetry from persistEOCSections (flag-ON only now; D3) — plus any UPSTREAM
+    // documents.metadata keys (cf40_*, adversarial_pdf_assessment). The prior blind overwrite WIPED them.
+    // DOCUMENTED CARVE-OUT (M1/D2): this read-merge is an intentional, FLAG-INDEPENDENT correctness fix and
+    // is the ONE deliberate exception to "flag-OFF = byte-identical post-D1". Reverting to the blind
+    // overwrite would re-introduce data loss (e.g. dropping adversarial_pdf_assessment when THAT separate
+    // flag is ON). The byte-identity guarantee is scoped to PLAN DATA + the cite-grade cache, not this
+    // observability blob — do NOT "restore" the overwrite to satisfy a literal-bytes reading.
+    {
+      const { data: docMetaRow } = await supabase
+        .from("documents")
+        .select("metadata")
+        .eq("id", documentId)
+        .maybeSingle();
+      const existingDocMeta = (docMetaRow?.metadata ?? {}) as Record<string, unknown>;
+      // S195 EOC-RESUME finish: the (large, transient) checkpoint state is
+      // replaced by the compact per-unit runlog — invocations, attempts, cost,
+      // latency per unit. This is the observability that answers "where do the
+      // PROD minutes go" with data on every parse.
+      state.heartbeat_at = new Date().toISOString();
+      delete existingDocMeta.eoc_parse_state;
+      await supabase
+        .from("documents")
+        .update({
+          metadata: {
+            ...existingDocMeta,
+            eoc_parse_runlog: buildEocParseRunlog(state, "completed"),
+            eoc_sections_summary: {
+              segmentation_used: parsed.segmentation_used,
+              sections_extracted: Object.keys(parsed.sections),
+              total_cost_usd: parsed.total_cost_usd,
+              total_input_tokens: parsed.total_input_tokens,
+              total_output_tokens: parsed.total_output_tokens,
+              parse_errors: parsed.parse_errors,
+              warning_count: parsed.warnings.length,
+            },
+            ...(parsed.column_wrap_decision
+              ? { column_wrap_decision: parsed.column_wrap_decision }
+              : {}),
+          },
+        })
+        .eq("id", documentId);
+    }
+
+    // 6. Terminal status (S195). Latent defect found with EOC-RESUME: this path
+    // NEVER wrote status='processed' (the legacy plan-doc parser does it
+    // internally at process-plan.ts) — a successful EOC parse would have left
+    // the document in 'processing' forever. The driver owns the terminal write.
     await supabase
       .from("documents")
-      .update({
-        metadata: {
-          ...existingDocMeta,
-          eoc_parse_runlog: buildEocParseRunlog(state, "completed"),
-          eoc_sections_summary: {
-            segmentation_used: parsed.segmentation_used,
-            sections_extracted: Object.keys(parsed.sections),
-            total_cost_usd: parsed.total_cost_usd,
-            total_input_tokens: parsed.total_input_tokens,
-            total_output_tokens: parsed.total_output_tokens,
-            parse_errors: parsed.parse_errors,
-            warning_count: parsed.warnings.length,
-          },
-          ...(parsed.column_wrap_decision
-            ? { column_wrap_decision: parsed.column_wrap_decision }
-            : {}),
-        },
-      })
+      .update({ status: "processed", processing_step: null })
       .eq("id", documentId);
+
+    return {
+      success: true,
+      planId: targetPlanId,
+      servicesCreated: countCoverageServices(parsed),
+      planData: {
+        planName: parsed.plan_identity.plan_name,
+        planType: null, // plan-doc-parser populates this; v1 doesn't surface back through EOC
+        inDeductible: parsed.plan_identity.in_deductible_individual,
+        outDeductible: parsed.plan_identity.out_deductible_individual,
+        inOopMax: parsed.plan_identity.in_oop_max_individual,
+        outOopMax: parsed.plan_identity.out_oop_max_individual,
+        servicesExtracted: countCoverageServices(parsed),
+      },
+      parseWarnings,
+    };
+  } catch (err) {
+    const reason = `eoc_finish_exception: ${err instanceof Error ? err.message : String(err)}`;
+    console.error("[process-eoc]", reason, err);
+    await failEocResume(supabase, documentId, state, reason);
+    return { success: false, error: reason, parseWarnings: [reason] };
+  } finally {
+    clearInterval(heartbeater);
   }
-
-  // 6. Terminal status (S195). Latent defect found with EOC-RESUME: this path
-  // NEVER wrote status='processed' (the legacy plan-doc parser does it
-  // internally at process-plan.ts) — a successful EOC parse would have left
-  // the document in 'processing' forever. The driver owns the terminal write.
-  await supabase
-    .from("documents")
-    .update({ status: "processed", processing_step: null })
-    .eq("id", documentId);
-
-  return {
-    success: true,
-    planId: targetPlanId,
-    servicesCreated: countCoverageServices(parsed),
-    planData: {
-      planName: parsed.plan_identity.plan_name,
-      planType: null, // plan-doc-parser populates this; v1 doesn't surface back through EOC
-      inDeductible: parsed.plan_identity.in_deductible_individual,
-      outDeductible: parsed.plan_identity.out_deductible_individual,
-      inOopMax: parsed.plan_identity.in_oop_max_individual,
-      outOopMax: parsed.plan_identity.out_oop_max_individual,
-      servicesExtracted: countCoverageServices(parsed),
-    },
-    parseWarnings,
-  };
 }
 
 /**

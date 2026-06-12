@@ -42,6 +42,12 @@ export async function enqueueChunk(documentId: string, baseUrl: string): Promise
         retries: 3,
         // Delay 1s to avoid overlapping with in-flight requests
         delay: 1,
+        // S195 hardening: wait as long as the receiving function may legally
+        // run (process-chunk maxDuration=800). Without this, QStash gave up on
+        // long invocations and RE-DELIVERED while they were still alive —
+        // duplicate claimants re-ran finished work and clobbered each other's
+        // checkpoint state (observed live on the EOC-RESUME validation parse).
+        timeout: "800s",
       });
       return true;
     } catch (err) {
