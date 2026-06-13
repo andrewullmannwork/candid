@@ -129,6 +129,9 @@ export interface EocParseState {
   units: Record<EocUnitName, EocUnitState>;
   /** Raw per-unit EOCParseResult fragments; cleared on finish/fail. */
   fragments: Partial<Record<EocUnitName, EOCParseResult>>;
+  /** S195 — coverage-persist result, stamped at finish so the runlog carries it
+   * on BOTH the success and loud-fail paths. */
+  persistOutcome?: EocPersistOutcome;
 }
 
 export function initEocParseState(nowIso: string, routingFlagOn: boolean, runId: string): EocParseState {
@@ -295,6 +298,49 @@ export function decideEocPlanMerge(
   };
 }
 
+// ── Coverage-persist outcome + invariant (pure; S195) ───────────────────────
+
+/**
+ * Structured result of `persistEOCSections`'s plan-targeted writes — the
+ * observability that was missing (warnings were returned then dropped; DB
+ * errors were swallowed). `cellsWritten` counts coverage cells that LANDED;
+ * `writeFailed` counts slugs whose write errored (de-swallowed); `metadataError`
+ * carries a failed `insurance_plans.metadata` UPDATE. Persisted into
+ * `eoc_parse_runlog.persist` so every parse's data-landing result is readable.
+ */
+export interface EocPersistOutcome {
+  cellsWritten: number;
+  writeFailed: number;
+  noServiceId: number;
+  firstError?: string;
+  metadataError?: string;
+}
+
+export function emptyPersistOutcome(): EocPersistOutcome {
+  return { cellsWritten: 0, writeFailed: 0, noServiceId: 0 };
+}
+
+/**
+ * The write-always invariant gate (S195). A parse that ROUTED services but
+ * landed nothing — because every coverage write errored, or the plan-metadata
+ * write errored — is a silent data-loss, the exact failure mode that hid EOC
+ * coverage never persisting. Make it LOUD + retryable instead of a false
+ * "processed". Partial success (some cells landed, some failed) is recorded,
+ * NOT fatal — the data that can land, does (Andrew's "always write" intent).
+ */
+export function assessEocPersist(p: EocPersistOutcome): { ok: boolean; reason?: string } {
+  if (p.writeFailed > 0 && p.cellsWritten === 0) {
+    return {
+      ok: false,
+      reason: `eoc_coverage_all_writes_failed:${p.writeFailed}_failed:${p.firstError ?? "unknown"}`,
+    };
+  }
+  if (p.metadataError) {
+    return { ok: false, reason: `eoc_metadata_write_failed:${p.metadataError}` };
+  }
+  return { ok: true };
+}
+
 // ── Fragment assembly (pure) ─────────────────────────────────────────────────
 
 /** Slice artifacts emitted by parseEOC when a leg/section is skipped by the
@@ -405,6 +451,7 @@ export function buildEocParseRunlog(
   total_cost_usd: number;
   units: Record<string, { attempts: number; cost_usd?: number; ms?: number }>;
   finish_ms?: Record<string, number>;
+  persist?: EocPersistOutcome;
   started_at: string;
   finished_at: string;
 } {
@@ -419,6 +466,7 @@ export function buildEocParseRunlog(
     total_cost_usd: cumulativeCostUsd(state),
     units,
     ...(finishMs && Object.keys(finishMs).length > 0 ? { finish_ms: finishMs } : {}),
+    ...(state.persistOutcome ? { persist: state.persistOutcome } : {}),
     started_at: state.started_at,
     finished_at: state.heartbeat_at,
   };

@@ -32,7 +32,7 @@ import {
   type EocResumeCaps,
 } from "@/lib/plan/eoc-resume";
 import { buildEocParseSlackText, resolveEocSlackChannelId } from "@/lib/plan/eoc-parse-slack";
-import { decideEocPlanMerge } from "@/lib/plan/eoc-resume";
+import { decideEocPlanMerge, assessEocPersist, emptyPersistOutcome } from "@/lib/plan/eoc-resume";
 import type { EOCParseResult } from "@/lib/eoc/types";
 
 let pass = 0;
@@ -371,6 +371,40 @@ check(
     d.action === "insert_inactive" &&
       d.mismatch.existingInsurer === "Ambetter Health" &&
       d.mismatch.parsedInsurer === "Blue Shield of California",
+  );
+}
+
+// ── PART 6 — write-always invariant gate (S195: extracted ⇒ persisted, else loud) ──
+console.log("\nPART 6 — assessEocPersist:");
+check(
+  "clean parse (nothing routed) → ok",
+  assessEocPersist(emptyPersistOutcome()).ok === true,
+);
+check(
+  "all cells landed → ok",
+  assessEocPersist({ cellsWritten: 17, writeFailed: 0, noServiceId: 2 }).ok === true,
+);
+check(
+  "partial: some landed, some failed → ok (data that can land, does)",
+  assessEocPersist({ cellsWritten: 10, writeFailed: 3, noServiceId: 0, firstError: "x" }).ok === true,
+);
+{
+  // THE S195 case: routed services, every coverage write failed, 0 landed.
+  const v = assessEocPersist({ cellsWritten: 0, writeFailed: 17, noServiceId: 0, firstError: "violates check constraint foo" });
+  check(
+    "all writes failed + 0 landed → LOUD FAIL naming the DB cause",
+    v.ok === false && (v.reason ?? "").includes("violates check constraint foo"),
+  );
+}
+check(
+  "no_service_id-only (slugs unresolved, NO write failures) → ok (not a write bug)",
+  assessEocPersist({ cellsWritten: 0, writeFailed: 0, noServiceId: 9 }).ok === true,
+);
+{
+  const v = assessEocPersist({ cellsWritten: 5, writeFailed: 0, noServiceId: 0, metadataError: "metadata update boom" });
+  check(
+    "plan-metadata write failed → LOUD FAIL even if coverage landed",
+    v.ok === false && (v.reason ?? "").includes("metadata update boom"),
   );
 }
 

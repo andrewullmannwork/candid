@@ -73,7 +73,7 @@ async function testExistingCellsSurface(): Promise<void> {
     { id: "pro", coverage_rules: null, field_provenance: null },
   ];
   const { fake, selectEqCols, updates } = makeFake(cells);
-  const n = await upsertServiceCoverage(fake, "plan1", "svc1", {
+  const { cellsWritten: n } = await upsertServiceCoverage(fake, "plan1", "svc1", {
     typed: { prior_auth_required: true },
     coverageRules: { requires_prior_auth: true, prior_auth_criteria: "over $500" },
     provenance: { prior_auth_required: fakeProvEntry },
@@ -98,7 +98,7 @@ async function testExistingCellsSurface(): Promise<void> {
 
 async function testBaseCellCreation(): Promise<void> {
   const { fake, upserts } = makeFake([]); // no existing cells
-  const n = await upsertServiceCoverage(fake, "plan2", "svc2", {
+  const { cellsWritten: n } = await upsertServiceCoverage(fake, "plan2", "svc2", {
     typed: { prior_auth_required: true },
     coverageRules: { requires_prior_auth: true },
     provenance: { prior_auth_required: fakeProvEntry },
@@ -114,7 +114,7 @@ async function testBaseCellCreation(): Promise<void> {
 
 async function testMedicalNecessityNoPhantomCell(): Promise<void> {
   const { fake, upserts, updates } = makeFake([]); // no existing cells
-  const n = await upsertServiceCoverage(fake, "plan3", "svc3", {
+  const { cellsWritten: n } = await upsertServiceCoverage(fake, "plan3", "svc3", {
     coverageRules: { medical_necessity_text: "documented failure of conservative therapy" },
   }, { allowBaseCell: false });
   check("medical-necessity-only (no cells, allowBaseCell=false) → 0 writes, no phantom covered row",

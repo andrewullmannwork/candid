@@ -57,7 +57,10 @@ import {
   cumulativeCostUsd,
   shouldSkipAsDuplicateDelivery,
   buildEocParseRunlog,
+  assessEocPersist,
+  emptyPersistOutcome,
   type EocParseState,
+  type EocPersistOutcome,
   type EocResumeCaps,
 } from "@/lib/plan/eoc-resume";
 import { notifyEocParseTerminal } from "@/lib/plan/eoc-parse-slack";
@@ -441,9 +444,22 @@ export async function processEOCDocumentData(
 
     // 3. Per-section persistence.
     lap("identity_persist");
-    const persistenceWarnings = await persistEOCSections(supabase, doc, documentId, targetPlanId, parsed, eocRoutingFlagOn);
+    const { warnings: persistenceWarnings, persist } = await persistEOCSections(supabase, doc, documentId, targetPlanId, parsed, eocRoutingFlagOn);
     lap("sections_persist");
     parseWarnings.push(...persistenceWarnings);
+    // S195 — stamp the coverage-persist tally into state so the runlog carries
+    // it on BOTH paths (B), then enforce the write-always invariant (C): a parse
+    // that routed services but landed nothing (every write errored, or the
+    // plan-metadata write errored) fails LOUDLY + retryably instead of a false
+    // "processed" — the de-swallowed DB cause is named in processing_error.
+    state.persistOutcome = persist;
+    const persistVerdict = assessEocPersist(persist);
+    if (!persistVerdict.ok) {
+      const reason = persistVerdict.reason ?? "eoc_persist_invariant_violation";
+      console.error(`[process-eoc] persist invariant FAIL doc=${documentId} ${reason} persist=${JSON.stringify(persist)}`);
+      await failEocResume(supabase, documentId, state, reason, doc.file_name, slackChannelId);
+      return { success: false, error: reason, parseWarnings: [...parseWarnings, reason] };
+    }
 
     // 3.5 Phase 4.0.6 corroboration evaluator post-commit. Single discipline point
     // — all upload paths route through commitUploadAndEvaluateCorroboration helper
@@ -864,8 +880,12 @@ async function persistEOCSections(
   planId: string,
   parsed: EOCParseResult,
   eocRoutingFlagOn: boolean,
-): Promise<string[]> {
+): Promise<{ warnings: string[]; persist: EocPersistOutcome }> {
   const warnings: string[] = [];
+  // S195 — structured coverage-persist tally (de-swallowed): counts cells that
+  // LANDED vs writes that FAILED, + the first real DB error. Surfaced in the
+  // runlog and gated by the write-always invariant (assessEocPersist).
+  const persist: EocPersistOutcome = emptyPersistOutcome();
 
   // Resolve the proposer's users.id from doc.user_id (which IS the users PK, NOT a
   // firebase_uid; proposed_by_user_id is a UUID). S164: was .eq("firebase_uid", …),
@@ -979,10 +999,14 @@ async function persistEOCSections(
     // is a real covered service → create a base cell if it has none.
     for (const o of await coverageAcc.flushCodeAnchoredPa(supabase, planId)) {
       if (o.status === "no_service_id") {
+        persist.noServiceId++;
         warnings.push(`eoc_pa_slug_no_service_id:${o.slug}`);
       } else if (o.status === "written") {
+        persist.cellsWritten += o.cellsWritten ?? 0;
         codeAnchoredPaSlugs.add(o.slug); // code-anchored PA recorded → Section B prose-PA defers (D1 dedup)
       } else {
+        persist.writeFailed++;
+        persist.firstError ??= o.error;
         warnings.push(`eoc_pa_write_failed:${o.slug}:${o.error}`);
       }
     }
@@ -1117,24 +1141,34 @@ async function persistEOCSections(
     // empty by routing (routeCriterion never emits pa_column), so only the clinical flush runs.
     for (const o of await coverageAcc.flushProsePa(supabase, planId)) {
       if (o.status === "no_service_id") {
+        persist.noServiceId++;
         // No service row to carry the typed column → capture each criterion instead of dropping.
         for (const c of o.fragments) {
           tallyRoute("pa_requires_no_service_id");
           eocPriorAuthFacts.push(buildPriorAuthFactRecord(c, o.slug, "pa_requires_no_service_id"));
         }
       } else if (o.status === "written") {
+        persist.cellsWritten += o.cellsWritten ?? 0;
         // Same typed col + provenance builder the SBC/plan-doc/Section-A parsers use → cite-grade parity.
         for (let i = 0; i < o.fragments.length; i++) tallyRoute("pa_requires_service_specific"); // success only
       } else {
+        persist.writeFailed++;
+        persist.firstError ??= o.error;
         for (let i = 0; i < o.fragments.length; i++) tallyRoute("pa_requires_write_failed");
         warnings.push(`eoc_prose_pa_write_failed:${o.slug}:${o.error}`);
       }
     }
     for (const o of await coverageAcc.flushClinicalMn(supabase, planId)) {
       if (o.status === "no_service_id") {
+        persist.noServiceId++;
         warnings.push(`eoc_medical_necessity_no_service_id:${o.slug}`);
       } else if (o.status === "write_failed") {
+        persist.writeFailed++;
+        persist.firstError ??= o.error;
         warnings.push(`eoc_medical_necessity_persist_failed:${o.slug}:${o.error}`);
+      } else {
+        // clinical enrich-only: cellsWritten 0 here is a legitimate no-op (no base cell).
+        persist.cellsWritten += o.cellsWritten ?? 0;
       }
     }
   }
@@ -1185,7 +1219,17 @@ async function persistEOCSections(
     if (Object.keys(planMetadataPatch).length > 0 || clearKeys.length > 0) {
       const mergedMetadata = { ...existingMetadata, ...planMetadataPatch };
       for (const k of clearKeys) delete mergedMetadata[k];
-      await supabase.from("insurance_plans").update({ metadata: mergedMetadata }).eq("id", planId);
+      const { error: metaErr } = await supabase
+        .from("insurance_plans")
+        .update({ metadata: mergedMetadata })
+        .eq("id", planId);
+      if (metaErr) {
+        // S195 de-swallow: this was an unchecked write — a failure here dropped
+        // eoc_prior_auth_facts/provisions/sections silently.
+        persist.metadataError = metaErr.message;
+        persist.firstError ??= metaErr.message;
+        warnings.push(`eoc_plan_metadata_write_failed:${metaErr.message}`);
+      }
     }
   }
 
@@ -1222,7 +1266,7 @@ async function persistEOCSections(
     }
   }
 
-  return warnings;
+  return { warnings, persist };
 }
 
 /**
