@@ -1,11 +1,7 @@
 import type { Metadata } from "next";
-import Script from "next/script";
 import { Geist, Geist_Mono } from "next/font/google";
-import { Analytics } from "@vercel/analytics/next";
 import { AuthProvider } from "@/lib/auth/auth-context";
 import "./globals.css";
-
-const GA_ID = "G-T2345232RV";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -129,18 +125,10 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        <Script
-          src={`https://www.googletagmanager.com/gtag/js?id=${GA_ID}`}
-          strategy="afterInteractive"
-        />
-        <Script id="google-analytics" strategy="afterInteractive">
-          {`
-            window.dataLayer = window.dataLayer || [];
-            function gtag(){dataLayer.push(arguments);}
-            gtag('js', new Date());
-            gtag('config', '${GA_ID}');
-          `}
-        </Script>
+        {/* GA4 + Vercel Analytics removed (S199 — E2): they previously loaded on
+            the root layout, firing on authenticated, health-data pages
+            (/claim, /disputes, /plan, /upload) with no consent gate. Removed
+            entirely to keep third-party analytics off consumer-health surfaces. */}
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{
@@ -251,7 +239,7 @@ export default function RootLayout({
                       name: "Is my medical data safe with Candid?",
                       acceptedAnswer: {
                         "@type": "Answer",
-                        text: "Candid is HIPAA-aware by design. Your documents are encrypted at rest and in transit. We never sell your personal health information. Every consent event is logged and you can revoke access anytime.",
+                        text: "Candid applies HIPAA-grade security safeguards by design (we are not a HIPAA-covered entity). Your documents are encrypted at rest and in transit. We never sell your personal health information. Every consent event is logged and you can revoke access anytime.",
                       },
                     },
                   ],
@@ -261,7 +249,6 @@ export default function RootLayout({
           }}
         />
         <AuthProvider>{children}</AuthProvider>
-        <Analytics />
       </body>
     </html>
   );

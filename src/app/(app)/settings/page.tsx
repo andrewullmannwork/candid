@@ -7,6 +7,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useConsent } from "@/lib/consent/use-consent";
+import { ModalShell } from "@/components/modal/modal-shell";
 import type { ConsentType } from "@/lib/supabase/types";
 
 // ─── Consent row component ──────────────────────────────────────────────────
@@ -21,9 +22,40 @@ interface ConsentRowProps {
 
 function ConsentRow({ label, description, type, revocable, revokeWarning }: ConsentRowProps) {
   const { hasConsented, loading, currentVersion, revokeConsent } = useConsent(type);
+  const { user } = useAuth();
+  // Health-data revoke is a FULL erasure (S199) — it gets a rich danger modal
+  // with an active-dispute pre-check; the other (non-destructive) consents keep
+  // the lightweight inline confirm.
+  const isHealthData = type === "health_data_upload";
+
   const [confirming, setConfirming] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [activeDisputeCount, setActiveDisputeCount] = useState<number | null>(null);
   const [revoking, setRevoking] = useState(false);
   const [error, setError] = useState("");
+
+  // Open the erasure modal and pre-check how many in-progress disputes would be
+  // destroyed (revoke route's check phase, confirm:false → deletes nothing).
+  async function openHealthModal() {
+    setModalOpen(true);
+    setActiveDisputeCount(null);
+    setError("");
+    if (!user) return;
+    try {
+      const idToken = await user.firebaseUser.getIdToken();
+      const res = await fetch("/api/consent/revoke", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify({ consentType: type, confirm: false }),
+      });
+      const data = res.ok ? await res.json() : {};
+      setActiveDisputeCount(
+        typeof data.activeDisputeCount === "number" ? data.activeDisputeCount : 0,
+      );
+    } catch {
+      setActiveDisputeCount(0);
+    }
+  }
 
   async function handleRevoke() {
     setRevoking(true);
@@ -31,6 +63,7 @@ function ConsentRow({ label, description, type, revocable, revokeWarning }: Cons
     try {
       await revokeConsent();
       setConfirming(false);
+      setModalOpen(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to revoke consent.");
     } finally {
@@ -52,12 +85,19 @@ function ConsentRow({ label, description, type, revocable, revokeWarning }: Cons
             <span className="text-gray-400">Not granted</span>
           )}
         </p>
-        {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
+        {error && !modalOpen && <p className="mt-1 text-xs text-red-600">{error}</p>}
       </div>
 
       {revocable && hasConsented && !loading && (
         <div className="flex-shrink-0">
-          {confirming ? (
+          {isHealthData ? (
+            <button
+              onClick={openHealthModal}
+              className="px-3 py-1.5 text-xs text-red-600 border border-red-200 rounded-lg hover:bg-red-50"
+            >
+              Revoke
+            </button>
+          ) : confirming ? (
             <div className="flex flex-col items-end gap-1.5">
               {revokeWarning && (
                 <p className="text-xs text-red-600 text-right max-w-[220px]">{revokeWarning}</p>
@@ -94,6 +134,78 @@ function ConsentRow({ label, description, type, revocable, revokeWarning }: Cons
         <span className="flex-shrink-0 px-2.5 py-1 text-xs text-gray-400 bg-gray-50 rounded-lg">
           Required
         </span>
+      )}
+
+      {/* Health-data revoke = full erasure → rich danger confirmation */}
+      {isHealthData && (
+        <ModalShell
+          open={modalOpen}
+          onClose={() => {
+            if (!revoking) setModalOpen(false);
+          }}
+          tone="danger"
+          size="md"
+          dismissable={!revoking}
+          title="Revoke Health Data Consent?"
+          subtitle="This permanently erases your health data. It cannot be undone."
+          icon={
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+            </svg>
+          }
+          footer={
+            <>
+              <button
+                onClick={() => setModalOpen(false)}
+                disabled={revoking}
+                className="px-4 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleRevoke}
+                disabled={revoking}
+                className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 disabled:opacity-50"
+              >
+                {revoking ? "Erasing..." : "Permanently erase & revoke"}
+              </button>
+            </>
+          }
+        >
+          <p>
+            Revoking permanently deletes everything we hold that is linked to you: every
+            document you uploaded (bills, EOBs, SBCs, insurance cards), your claims and billing
+            line items, audit findings, dispute drafts, and your insurance-plan and coverage
+            records.
+          </p>
+          <p className="mt-3">
+            We keep only de-identified, general plan information that cannot be traced back to
+            you.{" "}
+            <span className="font-medium text-gray-900">Your account stays open</span> — you can
+            upload again later.
+          </p>
+          {activeDisputeCount === null ? (
+            <p className="mt-3 text-xs text-gray-400">Checking for in-progress disputes…</p>
+          ) : activeDisputeCount > 0 ? (
+            <p className="mt-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-800">
+              ⚠ You have {activeDisputeCount} in-progress dispute
+              {activeDisputeCount === 1 ? "" : "s"}. The records and drafts{" "}
+              {activeDisputeCount === 1 ? "it relies" : "they rely"} on will be permanently
+              deleted — consider finishing or exporting{" "}
+              {activeDisputeCount === 1 ? "it" : "them"} first.
+            </p>
+          ) : null}
+          {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+        </ModalShell>
       )}
     </div>
   );
@@ -201,7 +313,7 @@ export default function SettingsPage() {
           description="Allows you to upload insurance documents for auditing."
           type="health_data_upload"
           revocable={true}
-          revokeWarning="Revoking this consent will permanently delete all uploaded documents."
+          revokeWarning="Permanently erases all your health data; your account stays open."
         />
         <ConsentRow
           label="Marketplace Data Sharing"

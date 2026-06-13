@@ -133,7 +133,10 @@ export function useConsent(type: ConsentType): UseConsentReturn {
           "Content-Type": "application/json",
           Authorization: `Bearer ${idToken}`,
         },
-        body: JSON.stringify({ consentType: type }),
+        // confirm:true — revokeConsent() is only reached after the user confirms
+        // the destructive warning in the Settings modal; the route's check phase
+        // (confirm:false) is called separately by that modal to surface impact.
+        body: JSON.stringify({ consentType: type, confirm: true }),
       });
     }
 
