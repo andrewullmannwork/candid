@@ -411,15 +411,17 @@ async function testReviewFindings(): Promise<void> {
     (fac?.coverage_rules as Record<string, unknown>).medical_necessity_text === "criteria for imaging" &&
     (pro?.coverage_rules as Record<string, unknown>).medical_necessity_text === "criteria for imaging");
 
-  // (c) Swallowed supabase error objects (no throw) — LOCKS carried pre-S185 semantics.
+  // (c) S195 DE-SWALLOW: a supabase error OBJECT (no throw) on the update path is
+  // no longer reported as a 0-cell "written" success — it surfaces as write_failed
+  // carrying the real DB message (was the bug that hid EOC coverage never landing).
   const accumErr = new EocCoverageAccumulator();
   accumErr.addProsePa("mri", crit({ criteria_text: "PA", type: "prior_auth", pa_polarity: "requires" }));
   const dbErr = makeFakeDb({ slugToId: { mri: "svc-mri" }, cells: [
     { id: "c1", service_id: "svc-mri", coverage_rules: null, field_provenance: null },
   ], returnErrorOnUpdate: true });
   const errOut = await accumErr.flushProsePa(dbErr.fake, "plan1");
-  check("carried semantics locked: swallowed DB error → status 'written' with cellsWritten 0 (pre-S185 parity)",
-    errOut[0]?.status === "written" && errOut[0]?.cellsWritten === 0);
+  check("S195 de-swallow: DB error object (no throw) → status 'write_failed' with cellsWritten 0 + error surfaced",
+    errOut[0]?.status === "write_failed" && errOut[0]?.cellsWritten === 0 && !!errOut[0]?.error);
 
   // (d) Section A write-failure disengages the code-wins dedup → prose-PA then writes the slug.
   const accumFail = new EocCoverageAccumulator();

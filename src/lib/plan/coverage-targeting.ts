@@ -85,13 +85,14 @@ export async function mergeServiceCoverageRules(
   serviceId: string,
   patch: Record<string, unknown>,
 ): Promise<number> {
-  return upsertServiceCoverage(
+  const { cellsWritten } = await upsertServiceCoverage(
     supabase,
     insurancePlanId,
     serviceId,
     { coverageRules: patch },
     { allowBaseCell: false },
   );
+  return cellsWritten;
 }
 
 /** Resolve a service slug to its `service_catalog` id (null when the slug isn't in the catalog). */
@@ -144,13 +145,26 @@ export interface BaseCellDefaults {
  * `plan_id`/`service_slug` columns → supabase-js returned an unchecked error object → silent no-op
  * (every EOC prior-auth / medical-necessity write was dropped). `mergeServiceCoverageRules` delegates here.
  */
+export interface UpsertCoverageResult {
+  /** Cells patched (update path) or created (base-cell path). */
+  cellsWritten: number;
+  /**
+   * S195: the DB error message when a write FAILED — was silently discarded
+   * (`return error ? 0 : 1`), which let a constraint/column failure masquerade
+   * as a 0-cell "success" (the bug that hid EOC coverage never landing on a
+   * fresh plan). NEVER set on the legitimate `allowBaseCell:false` +
+   * no-existing-cell no-op.
+   */
+  error?: string;
+}
+
 export async function upsertServiceCoverage(
   supabase: SupabaseClient,
   insurancePlanId: string,
   serviceId: string,
   patch: ServiceCoveragePatch,
   opts: { allowBaseCell?: boolean; baseDefaults?: BaseCellDefaults } = {},
-): Promise<number> {
+): Promise<UpsertCoverageResult> {
   const { data: cells } = await supabase
     .from("plan_covered_services")
     .select("id, coverage_rules, field_provenance")
@@ -159,6 +173,7 @@ export async function upsertServiceCoverage(
 
   if (cells && cells.length > 0) {
     let written = 0;
+    let firstError: string | undefined;
     for (const cell of cells) {
       const update: Record<string, unknown> = { ...(patch.typed ?? {}) };
       if (patch.coverageRules) {
@@ -175,11 +190,14 @@ export async function upsertServiceCoverage(
         .update(update)
         .eq("id", cell.id as string);
       if (!error) written++;
+      else if (!firstError) firstError = error.message;
     }
-    return written;
+    return { cellsWritten: written, error: firstError };
   }
 
-  if (!opts.allowBaseCell) return 0;
+  // No existing cell. For allowBaseCell:false (clinical MN enrich-only) this is
+  // a LEGITIMATE no-op — 0 cells, no error.
+  if (!opts.allowBaseCell) return { cellsWritten: 0 };
 
   const base: PlanCoverageRow = {
     insurance_plan_id: insurancePlanId,
@@ -194,7 +212,9 @@ export async function upsertServiceCoverage(
     ...(patch.provenance ? { field_provenance: patch.provenance } : {}),
   };
   const { error } = await applyPlanCoverageCell(supabase, base);
-  return error ? 0 : 1;
+  // allowBaseCell:true MUST write a cell; 0 is never legitimate here — surface
+  // the real DB error instead of swallowing it as a "0-cell success".
+  return error ? { cellsWritten: 0, error: error.message } : { cellsWritten: 1 };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────
@@ -457,7 +477,7 @@ export class EocCoverageAccumulator {
         buildP8Args(merged.provenanceSource),
       );
       try {
-        const cellsWritten = await upsertServiceCoverage(
+        const { cellsWritten, error } = await upsertServiceCoverage(
           supabase,
           insurancePlanId,
           serviceId,
@@ -468,7 +488,13 @@ export class EocCoverageAccumulator {
           },
           { allowBaseCell: true },
         );
-        outcomes.push({ slug, status: "written", fragments: [acc], cellsWritten });
+        // S195: a de-swallowed DB error → real write_failed (was reported as
+        // "written" with cellsWritten:0 — the bug that hid EOC coverage loss).
+        outcomes.push(
+          error
+            ? { slug, status: "write_failed", fragments: [acc], cellsWritten, error }
+            : { slug, status: "written", fragments: [acc], cellsWritten },
+        );
       } catch (err) {
         outcomes.push({
           slug,
@@ -505,7 +531,7 @@ export class EocCoverageAccumulator {
         buildP8Args(merged.provenanceSource),
       );
       try {
-        const cellsWritten = await upsertServiceCoverage(
+        const { cellsWritten, error } = await upsertServiceCoverage(
           supabase,
           insurancePlanId,
           serviceId,
@@ -516,7 +542,11 @@ export class EocCoverageAccumulator {
           },
           { allowBaseCell: true },
         );
-        outcomes.push({ slug, status: "written", fragments: criteria, cellsWritten });
+        outcomes.push(
+          error
+            ? { slug, status: "write_failed", fragments: criteria, cellsWritten, error }
+            : { slug, status: "written", fragments: criteria, cellsWritten },
+        );
       } catch (err) {
         outcomes.push({
           slug,
@@ -557,7 +587,9 @@ export class EocCoverageAccumulator {
         buildP8Args(merged.provenanceSource),
       );
       try {
-        const cellsWritten = await upsertServiceCoverage(
+        // allowBaseCell:false — clinical MN enriches EXISTING cells only;
+        // cellsWritten:0 with NO error is the legitimate no-op (no cell yet).
+        const { cellsWritten, error } = await upsertServiceCoverage(
           supabase,
           insurancePlanId,
           serviceId,
@@ -567,7 +599,11 @@ export class EocCoverageAccumulator {
           },
           { allowBaseCell: false },
         );
-        outcomes.push({ slug, status: "written", fragments: criteria, cellsWritten });
+        outcomes.push(
+          error
+            ? { slug, status: "write_failed", fragments: criteria, cellsWritten, error }
+            : { slug, status: "written", fragments: criteria, cellsWritten },
+        );
       } catch (err) {
         outcomes.push({
           slug,
