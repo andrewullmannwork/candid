@@ -248,6 +248,53 @@ export function runnableUnits(
   ).slice(0, pool);
 }
 
+// ── Plan-merge decision (pure; S195) ─────────────────────────────────────────
+
+export type EocPlanMergeDecision =
+  | { action: "merge" }
+  | {
+      action: "insert_inactive";
+      mismatch: { existingInsurer: string; parsedInsurer: string };
+    }
+  | { action: "insert_active" };
+
+/**
+ * S195 — whether an EOC's plan identity may MERGE into the user's existing
+ * active plan. The v1 behavior merged unconditionally ("user typically
+ * uploads SBC first"), which would graft one insurer's EOC data onto a
+ * DIFFERENT insurer's active plan (observed: a Blue Shield EOC targeting an
+ * Ambetter row) — and every downstream coverage row/fact would follow it.
+ *
+ * Rule: merge only when the insurers plausibly agree —
+ *   - no existing active plan            → insert (active, the v1 behavior)
+ *   - existing has NO insurer recorded   → merge (nothing to contradict)
+ *   - parsed EOC has NO insurer          → merge (cannot prove a mismatch;
+ *     identity fields are null-preserving on merge so this is write-safe)
+ *   - normalized insurers equal          → merge (the designed enrich case)
+ *   - normalized insurers differ         → insert a NEW plan row, is_active
+ *     FALSE (never silently steal primary, never corrupt the active plan),
+ *     mismatch surfaced via ProcessPlanResult.insurerMismatch.
+ *
+ * Same-insurer-different-plan still merges in v1 (plan-name fuzzy matching is
+ * its own block) — a known, documented limitation.
+ */
+export function decideEocPlanMerge(
+  existingActive: { insurer_name?: string | null } | null,
+  parsedInsurerName: string | null,
+): EocPlanMergeDecision {
+  if (!existingActive) return { action: "insert_active" };
+  const existing = (existingActive.insurer_name ?? "").trim().toLowerCase();
+  const parsed = (parsedInsurerName ?? "").trim().toLowerCase();
+  if (!existing || !parsed || existing === parsed) return { action: "merge" };
+  return {
+    action: "insert_inactive",
+    mismatch: {
+      existingInsurer: existingActive.insurer_name ?? "",
+      parsedInsurer: parsedInsurerName ?? "",
+    },
+  };
+}
+
 // ── Fragment assembly (pure) ─────────────────────────────────────────────────
 
 /** Slice artifacts emitted by parseEOC when a leg/section is skipped by the
