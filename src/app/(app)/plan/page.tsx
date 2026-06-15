@@ -24,6 +24,8 @@ import { BenefitsScoreboard } from "@/components/benefits-scoreboard";
 import { DataSourceContextLine } from "@/components/data-source-context-line";
 import { PlanStat } from "@/components/plan/PlanStat";
 import { CategoryAccordion } from "@/components/plan/CategoryAccordion";
+import { EocPriorAuthCard, EocAboutPlanCard, EocServiceCoverageDetail, type EocServiceItem } from "@/components/plan/EocCoverageRules";
+import type { EocReaderSurfaces } from "@/lib/plan/eoc-reader-resolution";
 
 // B3.2 — POS slug render helper. Backend ships 11 canonical slugs (per
 // process-plan.ts:1068 + mig 009 CHECK constraint); display rendering is
@@ -108,6 +110,8 @@ interface AnalyzeResponse extends PlanAnalysisResult {
   canonicalPlanId?: string | null;
   insurer?: string;
   planType?: string;
+  // S202 §9: present only when eoc_reader_resolution_v1 is ON (plan-wide + by-location PA + About).
+  eocReader?: EocReaderSurfaces;
   planSummary?: {
     inDeductible?: MaybeDecorated<number | null>;
     outDeductible?: MaybeDecorated<number | null>;
@@ -1139,6 +1143,8 @@ export default function CandidPlanPage() {
                                   </span>
                                 )}
                               </div>
+                              {/* S202 §9 Surface 1 — per-service prior-auth + medical-necessity detail (renders null when absent) */}
+                              <EocServiceCoverageDetail item={primary as unknown as EocServiceItem} />
                               {aggDisplay && aggDisplay.excerpt && (aggDisplay.reason === "from_user_document_cite_grade" || aggDisplay.reason === "community_corroborated") && (
                                 <SourceQuote excerpt={aggDisplay.excerpt} />
                               )}
@@ -1282,6 +1288,14 @@ export default function CandidPlanPage() {
           );
         })}
 
+        {/* S202 §9 Surface 2 — plan-level prior-auth aggregate cards (plan-wide + by location) */}
+        {result?.eocReader && result.eocReader.planWidePA.length > 0 && (
+          <EocPriorAuthCard eyebrow="Prior authorization" title="Plan-wide" statements={result.eocReader.planWidePA} />
+        )}
+        {result?.eocReader && result.eocReader.byLocationPA.length > 0 && (
+          <EocPriorAuthCard eyebrow="Prior authorization" title="By location" groups={result.eocReader.byLocationPA} />
+        )}
+
         {/* Not Covered section — collapsed by default */}
         {notCoveredItems.length > 0 && (
           <div className="border border-gray-200 rounded-2xl overflow-hidden">
@@ -1332,6 +1346,11 @@ export default function CandidPlanPage() {
               </div>
             )}
           </div>
+        )}
+
+        {/* S202 §9 Surface 3 — "Good to know" member info (collapsed) */}
+        {result?.eocReader && result.eocReader.aboutGroups.length > 0 && (
+          <EocAboutPlanCard groups={result.eocReader.aboutGroups} />
         )}
 
         {/* ── Plan History (behind plan_year_rollover flag) ────────────────── */}

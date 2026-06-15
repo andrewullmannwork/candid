@@ -9,6 +9,14 @@ import { resolveCanonicalSlugs } from "@/lib/parser/canonical-resolution";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
+import {
+  resolveEocReaderSurfaces,
+  extractServiceCoverageDetail,
+  prettifySlug,
+  type ListedService,
+  type EocReaderSurfaces,
+} from "@/lib/plan/eoc-reader-resolution";
 
 export async function POST(request: NextRequest) {
   try {
@@ -68,6 +76,11 @@ export async function POST(request: NextRequest) {
           authedUser.email,
           userPlan,
         );
+
+        // S202 (block spec [[eoc_content_type_routing]] §9): EOC reader-resolution.
+        // When OFF, the analyze response gains NONE of the reader fields (per-service
+        // Surface 1 detail + the top-level eocReader aggregate) — byte-identical to today.
+        const eocReaderOn = await isFeatureEnabled("eoc_reader_resolution_v1");
 
         // Local helpers — keep route.ts self-contained for the Task 4-B atomic shape.
         // Future Tasks 4-D + 4-E may extract to a shared util when 3+ call sites need them.
@@ -334,6 +347,26 @@ export async function POST(request: NextRequest) {
               priorAuthRequired: s.prior_auth_required,
               covered: s.covered,
               coverageConditions: s.coverage_conditions,
+              // S202 §9 Surface 1: per-service EOC prior-auth + medical-necessity
+              // detail (flag-gated). Keys are absent when the flag is OFF or when the
+              // cell carries no EOC clinical detail (the overwhelming non-EOC case),
+              // keeping the flag-OFF response byte-identical.
+              ...(eocReaderOn
+                ? (() => {
+                    const d = extractServiceCoverageDetail(s.coverage_rules);
+                    return d
+                      ? {
+                          priorAuthCriteria: d.priorAuthCriteria,
+                          priorAuthAllCriteria: d.priorAuthAllCriteria,
+                          priorAuthSourceExcerpt: d.priorAuthSourceExcerpt,
+                          priorAuthSourceExcerptVerified: d.priorAuthSourceExcerptVerified,
+                          medicalNecessityText: d.medicalNecessityText,
+                          medicalNecessityCriteria: d.medicalNecessityCriteria,
+                          diagnosisQualifiers: d.diagnosisQualifiers,
+                        }
+                      : {};
+                  })()
+                : {}),
             };
           });
 
@@ -431,6 +464,45 @@ export async function POST(request: NextRequest) {
           const allBenefits = [...benefits, ...canonicalGapBenefits];
           const coveredCount = allBenefits.filter((b) => b.covered !== false).length;
 
+          // S202 §9 Surface 2/3: resolve the plan-level prior-auth aggregate cards
+          // ("plan-wide" + "by location") and the About-your-plan list from
+          // insurance_plans.metadata. Read-only; suppress/dedup against the user's
+          // own listed services (those with a cost line carry their PA inline).
+          let eocReader: EocReaderSurfaces | undefined;
+          if (eocReaderOn) {
+            const listedServices: ListedService[] = coveredServices.map((s) => ({
+              slug: s.service_catalog?.slug ?? "",
+              priorAuthRequired: s.prior_auth_required ?? null,
+            }));
+            const nameBySlug = new Map<string, string>();
+            for (const s of coveredServices) {
+              const slug = s.service_catalog?.slug;
+              if (slug && s.service_catalog?.name) nameBySlug.set(slug, s.service_catalog.name);
+            }
+            // Clean labels for off-plan fact slugs (named in the EOC's prior-auth
+            // section but lacking a coverage cell) — one read against service_catalog.
+            const md = (userPlan.metadata as Record<string, unknown> | null) ?? null;
+            const factSlugs = Array.isArray(md?.eoc_prior_auth_facts)
+              ? (md!.eoc_prior_auth_facts as { service_slug?: string | null }[])
+                  .map((f) => f.service_slug)
+                  .filter((x): x is string => !!x && !nameBySlug.has(x))
+              : [];
+            if (factSlugs.length > 0) {
+              const { data: catNames } = await supabase
+                .from("service_catalog")
+                .select("slug, name")
+                .in("slug", [...new Set(factSlugs)]);
+              for (const c of catNames ?? []) {
+                if (c.slug && c.name) nameBySlug.set(c.slug as string, c.name as string);
+              }
+            }
+            eocReader = resolveEocReaderSurfaces({
+              metadata: md,
+              listedServices,
+              serviceNameBySlug: (slug) => nameBySlug.get(slug) ?? prettifySlug(slug),
+            });
+          }
+
           return NextResponse.json({
             benefits: allBenefits,
             categoryCounts: {},
@@ -444,6 +516,8 @@ export async function POST(request: NextRequest) {
             insurancePlanId: userPlan.id,
             canonicalPlanId: userPlan.canonical_plan_id || null,
             planSource: userPlan.source,
+            // S202 §9: present only when eoc_reader_resolution_v1 is ON (else absent → byte-identical).
+            ...(eocReader ? { eocReader } : {}),
             planSummary: await (async () => {
               let premiumMonthly: number | null = userPlan.premium_total ?? null;
               let premiumSource: string | undefined;
