@@ -5,7 +5,7 @@ import { LegalText } from "@/components/legal-text";
 
 export const metadata: Metadata = {
   title: "Privacy Policy",
-  description: "Candid Privacy Policy. Learn how we protect your health data, comply with HIPAA, and handle your personal information.",
+  description: "Candid Privacy Policy. Learn how we protect your health data with HIPAA-grade safeguards and handle your personal information.",
   alternates: { canonical: "/privacy" },
 };
 

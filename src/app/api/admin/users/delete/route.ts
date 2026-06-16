@@ -80,6 +80,17 @@ export async function POST(req: NextRequest) {
     await supabase.from("profiles").delete().eq("user_id", userId);
     deletionLog.push("Profile deleted");
 
+    // 6b. Hard-delete the two ON DELETE SET NULL tables (#191 parity with the
+    // self-serve account-delete route). These are NOT cleaned by the users-row
+    // CASCADE below — their FK is SET NULL — so without this they would be
+    // ORPHANED, including the insurer_appeals_confirmations.metadata PII blob,
+    // defeating the right-to-erasure promise for admin-initiated deletions.
+    await supabase.from("finding_dismissals").delete().eq("user_id", userId);
+    deletionLog.push("Finding dismissals deleted");
+
+    await supabase.from("insurer_appeals_confirmations").delete().eq("user_id", userId);
+    deletionLog.push("Insurer appeal confirmations deleted");
+
     // 7. Delete user record (cascade handles anything remaining)
     await supabase.from("users").delete().eq("id", userId);
     deletionLog.push("User record deleted");
