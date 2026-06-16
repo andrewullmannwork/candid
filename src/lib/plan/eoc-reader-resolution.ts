@@ -3,16 +3,15 @@
 // ----------------------------------------------------------------------------
 // Pure, DB-free resolver that turns the EOC facts already persisted on a user's
 // plan (Flip-A E2E, S201) into the read-time surfaces /api/plan/analyze emits:
-//   • plan-level "Prior authorization · plan-wide"   (no setting, not a listed service)
-//   • plan-level "Prior authorization · by location" (carries a care setting)
-//   • "Good to know" / About-your-plan member info
+//   • one plan-level "Prior authorization" card, split Needs-approval / No-approval,
+//     scope shown as chips (handoff-coverage-rules 3 "calm" design)
+//   • "Good to know" / About-your-plan member info (collapsible sub-groups)
 // Per-service (Surface 1) fields are extracted inline in the route from each
 // cell's coverage_rules (helper `extractServiceCoverageDetail` below).
 //
-// Discipline: READ-ONLY (no DB writes, Pattern 1 #14). Honors the 3-case model —
-// these surfaces appear for the user's own plan rows whether the plan is active,
-// switched, or a Case-3 inactive capture. The verbatim quote is the hero; only a
-// 'verified' excerpt earns the green treatment (G tightens display later).
+// Discipline: READ-ONLY (no DB writes, Pattern 1 #14). Honors the 3-case model.
+// The verbatim quote is one tap away (consumer renders it behind a disclosure);
+// only a 'verified' excerpt is surfaced as a quote (G tightens display later).
 // ============================================================================
 
 export type PaPolarity = "requires" | "waived";
@@ -40,24 +39,16 @@ export interface EocCoverageProvision {
 }
 
 export interface ScopeChip {
-  kind: "plan" | "scope";
+  kind: "scope" | "exc";
   label: string;
 }
 
 export interface PaStatement {
   polarity: PaPolarity;
-  scopeChips: ScopeChip[];
+  scopeChips: ScopeChip[]; // [] = plan-wide (no chip); a scope chip for setting/service; + Exception when a carve-out
   text: string;
-  /** source_excerpt when verified, else null (unverified criteria show as plain prose). */
-  quote: string | null;
+  quote: string | null; // source_excerpt when verified, else null
   quoteVerified: boolean;
-  /** true = a waiver that carves an exception out of a requirement in the same scope. */
-  isException: boolean;
-}
-
-export interface ByLocationGroup {
-  setting: string;
-  statements: PaStatement[];
 }
 
 export interface AboutItem {
@@ -72,8 +63,7 @@ export interface AboutGroup {
 }
 
 export interface EocReaderSurfaces {
-  planWidePA: PaStatement[];
-  byLocationPA: ByLocationGroup[];
+  priorAuth: { requires: PaStatement[]; noApproval: PaStatement[] };
   aboutGroups: AboutGroup[];
 }
 
@@ -84,9 +74,9 @@ export interface ListedService {
 
 export interface ResolveEocReaderInput {
   metadata: Record<string, unknown> | null | undefined;
-  /** The services that have a coverage cell on this plan (for dedup + conservative suppress). */
+  /** Services with a coverage cell on this plan (for dedup + conservative suppress). */
   listedServices: ListedService[];
-  /** slug -> human label (loaded from service_catalog; falls back to a prettified slug). */
+  /** slug -> human label (from service_catalog; falls back to a prettified slug). */
   serviceNameBySlug: (slug: string) => string;
 }
 
@@ -107,7 +97,6 @@ const SETTING_LABEL: Record<string, string> = {
   home_delivery_pharmacy: "Pharmacy",
   designated_pharmacy: "Pharmacy",
 };
-const SETTING_ORDER = ["Inpatient", "Outpatient", "Emergency", "Office", "Virtual", "Home", "Pharmacy"];
 
 function prettifySetting(pos: string): string {
   const key = pos.trim().toLowerCase();
@@ -115,29 +104,16 @@ function prettifySetting(pos: string): string {
 }
 
 function titleCase(s: string): string {
-  return s
-    .replace(/_/g, " ")
-    .trim()
-    .replace(/\s+/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
+  return s.replace(/_/g, " ").trim().replace(/\s+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 export function prettifySlug(slug: string): string {
-  // Sentence-case a slug as a last-resort label (off-catalog facts).
   const words = slug.replace(/_/g, " ").trim().replace(/\s+/g, " ");
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 function norm(s: string): string {
   return s.toLowerCase().replace(/\s+/g, " ").trim();
-}
-
-// ── statement ordering: requirements before exceptions; broad before specific ──
-function stmtSort(a: PaStatement, b: PaStatement): number {
-  if (a.polarity !== b.polarity) return a.polarity === "requires" ? -1 : 1;
-  const aSvc = a.scopeChips.some((c) => c.kind === "scope") ? 1 : 0;
-  const bSvc = b.scopeChips.some((c) => c.kind === "scope") ? 1 : 0;
-  return aSvc - bSvc;
 }
 
 function isPaPolarity(v: unknown): v is PaPolarity {
@@ -154,24 +130,34 @@ function asProvisions(metadata: Record<string, unknown> | null | undefined): Eoc
   return Array.isArray(raw) ? (raw as EocCoverageProvision[]) : [];
 }
 
+// breadth: plan-wide (no chip) → setting chip → service chip. Broadest first.
+function breadth(s: PaStatement): number {
+  if (s.scopeChips.length === 0) return 0;
+  return s.scopeChips.some((c) => c.kind === "scope" && /^(Inpatient|Outpatient|Emergency|Office|Virtual|Home|Pharmacy)$/.test(c.label)) ? 1 : 2;
+}
+function stmtSort(a: PaStatement, b: PaStatement): number {
+  const d = breadth(a) - breadth(b);
+  // Deterministic tiebreaker so the output is order-independent (facts arrive in
+  // nondeterministic chunk order) — the "unordered-safe" §9 principle.
+  return d !== 0 ? d : a.text.localeCompare(b.text);
+}
+
 /**
- * Resolve the two plan-level prior-auth aggregate cards + the About groups.
- * Treats the facts array as UNORDERED (dedup -> group -> sort for display).
+ * Resolve the single plan-level prior-auth card (split by polarity) + About groups.
+ * Treats the facts array as UNORDERED (dedup -> classify -> sort for display).
  */
 export function resolveEocReaderSurfaces(input: ResolveEocReaderInput): EocReaderSurfaces {
   const { metadata, listedServices, serviceNameBySlug } = input;
   const listedSlugs = new Set(listedServices.map((s) => s.slug));
 
   // 1. Keep only spillover statements: a real requires/waived polarity, and NOT
-  //    about a listed service (those are shown inline on the service card; a
-  //    waiver contradicting a listed `prior_auth_required` is conservatively
-  //    suppressed everywhere — we never nudge a member to skip a precert).
+  //    about a listed service (those show inline; a waiver contradicting a listed
+  //    prior_auth_required is conservatively suppressed everywhere).
   const spillover = asFacts(metadata).filter(
     (f) => isPaPolarity(f.polarity) && !(f.service_slug && listedSlugs.has(f.service_slug)),
   );
 
-  // 2. Dedup by (polarity, scope, normalized text) — multiple chunks re-extract
-  //    the same statement.
+  // 2. Dedup by (polarity, scope, normalized text).
   const seen = new Set<string>();
   const deduped: EocPriorAuthFact[] = [];
   for (const f of spillover) {
@@ -181,74 +167,30 @@ export function resolveEocReaderSurfaces(input: ResolveEocReaderInput): EocReade
     deduped.push(f);
   }
 
-  // 3. Split plan-wide (no setting) vs by-location (carries a setting) — this is
-  //    where single-service-no-card facts land "most closely applicable".
-  const planWideFacts = deduped.filter((f) => !f.place_of_service);
-  const byLocFacts = deduped.filter((f) => !!f.place_of_service);
+  // 3. Settings that carry a requirement — a waiver in one of these is an Exception (a carve-out).
+  const requiresSettings = new Set(
+    deduped.filter((f) => f.polarity === "requires" && f.place_of_service).map((f) => prettifySetting(f.place_of_service as string)),
+  );
 
-  // 4. Plan-wide card.
-  const planWideHasRequires = planWideFacts.some((f) => f.polarity === "requires");
-  const planWidePA = planWideFacts
-    .map((f) => toStatement(f, planWideHasRequires, "plan", serviceNameBySlug))
-    .sort(stmtSort);
-
-  // 5. By-location card, grouped by setting.
-  const groups = new Map<string, EocPriorAuthFact[]>();
-  for (const f of byLocFacts) {
-    const label = prettifySetting(f.place_of_service as string);
-    (groups.get(label) ?? groups.set(label, []).get(label)!).push(f);
-  }
-  const byLocationPA: ByLocationGroup[] = [...groups.entries()]
-    .sort((a, b) => settingRank(a[0]) - settingRank(b[0]))
-    .map(([setting, fs]) => {
-      const hasRequires = fs.some((f) => f.polarity === "requires");
-      return {
-        setting,
-        statements: fs.map((f) => toStatement(f, hasRequires, "byloc", serviceNameBySlug)).sort(stmtSort),
-      };
-    });
-
-  // 6. About-your-plan member info.
-  const aboutGroups = groupProvisions(asProvisions(metadata));
-
-  return { planWidePA, byLocationPA, aboutGroups };
-}
-
-function settingRank(label: string): number {
-  const i = SETTING_ORDER.indexOf(label);
-  return i === -1 ? SETTING_ORDER.length : i;
-}
-
-function toStatement(
-  f: EocPriorAuthFact,
-  groupHasRequires: boolean,
-  cardKind: "plan" | "byloc",
-  serviceNameBySlug: (slug: string) => string,
-): PaStatement {
-  const scopeChips: ScopeChip[] = [];
-  if (f.service_slug) {
-    scopeChips.push({ kind: "scope", label: serviceNameBySlug(f.service_slug) });
-  } else if (cardKind === "plan") {
-    // True plan-wide (no service, no setting) — label it so the row isn't bare.
-    scopeChips.push({ kind: "plan", label: "Plan-wide" });
-  }
-  // In the by-location card the setting IS the group header, so a slug-less axis
-  // fact needs no chip; a slug-bearing fact keeps its service chip (added above).
-
-  const verified = f.source_excerpt_verified === "verified";
-  return {
-    polarity: f.polarity as PaPolarity,
-    scopeChips,
-    text: f.criteria_text,
-    quote: verified ? f.source_excerpt : null,
-    quoteVerified: verified,
-    isException: f.polarity === "waived" && groupHasRequires,
+  const toStatement = (f: EocPriorAuthFact): PaStatement => {
+    const chips: ScopeChip[] = [];
+    if (f.service_slug) chips.push({ kind: "scope", label: serviceNameBySlug(f.service_slug) });
+    else if (f.place_of_service) chips.push({ kind: "scope", label: prettifySetting(f.place_of_service) });
+    const isException = f.polarity === "waived" && !!f.place_of_service && requiresSettings.has(prettifySetting(f.place_of_service));
+    if (isException) chips.push({ kind: "exc", label: "Exception" });
+    const verified = f.source_excerpt_verified === "verified";
+    return { polarity: f.polarity as PaPolarity, scopeChips: chips, text: f.criteria_text, quote: verified ? f.source_excerpt : null, quoteVerified: verified };
   };
+
+  const requires = deduped.filter((f) => f.polarity === "requires").map(toStatement).sort(stmtSort);
+  const noApproval = deduped.filter((f) => f.polarity === "waived").map(toStatement).sort(stmtSort);
+
+  return { priorAuth: { requires, noApproval }, aboutGroups: groupProvisions(asProvisions(metadata)) };
 }
 
 // ── About-your-plan theming (low-stakes; coarse + universal, General fallback) ─
 const ABOUT_THEMES: { label: string; re: RegExp }[] = [
-  { label: "Getting care", re: /appointment|business day|nurse|advice line|urgent care|referral|wait|schedul|access to care/i },
+  { label: "Getting care", re: /appointment|business day|nurse|advice line|urgent care|referral|wait|schedul|access to care|telehealth/i },
   { label: "Member services", re: /interpreter|language|customer service|bluecard|out of state|away from home|id card|website|portal|phone/i },
 ];
 
@@ -258,8 +200,6 @@ function themeProvision(text: string): string {
 }
 
 function groupProvisions(provisions: EocCoverageProvision[]): AboutGroup[] {
-  // Dedup by normalized text, then theme. Degrade to a single "General" group if
-  // everything would land in one bucket (keeps it from looking artificially split).
   const seen = new Set<string>();
   const items: { text: string; theme: string; excerpt?: string; verified: boolean }[] = [];
   for (const p of provisions) {
@@ -269,31 +209,19 @@ function groupProvisions(provisions: EocCoverageProvision[]): AboutGroup[] {
     if (seen.has(k)) continue;
     seen.add(k);
     const verified = p.source_excerpt_verified === "verified";
-    items.push({
-      text,
-      theme: themeProvision(text),
-      excerpt: verified ? p.source_excerpt : undefined,
-      verified,
-    });
+    items.push({ text, theme: themeProvision(text), excerpt: verified ? p.source_excerpt : undefined, verified });
   }
   if (items.length === 0) return [];
 
   const order = ["Getting care", "Member services", "Plan details"];
   const byTheme = new Map<string, AboutItem[]>();
   for (const it of items) {
-    (byTheme.get(it.theme) ?? byTheme.set(it.theme, []).get(it.theme)!).push({
-      text: it.text,
-      excerpt: it.excerpt,
-      verified: it.verified,
-    });
+    (byTheme.get(it.theme) ?? byTheme.set(it.theme, []).get(it.theme)!).push({ text: it.text, excerpt: it.excerpt, verified: it.verified });
   }
-  // Single populated theme -> collapse to "General" (the universal-safe fallback).
   if (byTheme.size <= 1) {
     return [{ label: "General", items: items.map((it) => ({ text: it.text, excerpt: it.excerpt, verified: it.verified })) }];
   }
-  return [...byTheme.entries()]
-    .sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
-    .map(([label, groupItems]) => ({ label, items: groupItems }));
+  return [...byTheme.entries()].sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0])).map(([label, groupItems]) => ({ label, items: groupItems }));
 }
 
 // ── Surface 1: per-service detail extracted from a cell's coverage_rules ─────
@@ -308,10 +236,9 @@ export interface ServiceCoverageDetail {
 }
 
 /**
- * Pull the per-service prior-auth + medical-necessity detail out of a
+ * Pull per-service prior-auth + medical-necessity detail out of a
  * plan_covered_services.coverage_rules JSONB blob. Returns null when the cell
- * carries no EOC-extracted clinical detail (the overwhelming, non-EOC case) so
- * the route can omit the fields entirely.
+ * carries no EOC-extracted clinical detail (the overwhelming, non-EOC case).
  */
 export function extractServiceCoverageDetail(coverageRules: unknown): ServiceCoverageDetail | null {
   if (!coverageRules || typeof coverageRules !== "object") return null;
@@ -319,10 +246,6 @@ export function extractServiceCoverageDetail(coverageRules: unknown): ServiceCov
 
   const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v : null);
   const strArr = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !!x.trim()) : []);
-
-  const priorAuthCriteria = str(cr.prior_auth_criteria);
-  const priorAuthAllCriteria = strArr(cr.prior_auth_all_criteria);
-  const medicalNecessityText = str(cr.medical_necessity_text);
 
   const mnRaw = Array.isArray(cr.medical_necessity_criteria) ? (cr.medical_necessity_criteria as Record<string, unknown>[]) : [];
   const medicalNecessityCriteria = mnRaw
@@ -335,11 +258,11 @@ export function extractServiceCoverageDetail(coverageRules: unknown): ServiceCov
     .filter((m) => m.text);
 
   const detail: ServiceCoverageDetail = {
-    priorAuthCriteria,
-    priorAuthAllCriteria,
+    priorAuthCriteria: str(cr.prior_auth_criteria),
+    priorAuthAllCriteria: strArr(cr.prior_auth_all_criteria),
     priorAuthSourceExcerpt: cr.prior_auth_source_excerpt_verified === "verified" ? str(cr.prior_auth_source_excerpt) : null,
     priorAuthSourceExcerptVerified: cr.prior_auth_source_excerpt_verified === "verified",
-    medicalNecessityText,
+    medicalNecessityText: str(cr.medical_necessity_text),
     medicalNecessityCriteria,
     diagnosisQualifiers: strArr(cr.diagnosis_qualifiers),
   };

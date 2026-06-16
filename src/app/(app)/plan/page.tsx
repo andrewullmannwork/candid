@@ -1135,17 +1135,33 @@ export default function CandidPlanPage() {
                                   </span>
                                 )}
                                 {primary.priorAuthRequired && (
-                                  <span className="inline-flex items-center gap-1 text-xs font-medium bg-amber-50 text-amber-700 px-2 py-1 rounded-lg">
-                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                                    </svg>
-                                    Prior auth required
-                                  </span>
+                                  result?.eocReader ? (
+                                    <a
+                                      href="#eoc-prior-authorization"
+                                      title="See your plan's prior-authorization rules"
+                                      className="inline-flex items-center gap-1 text-xs font-medium bg-amber-50 text-amber-700 px-2 py-1 rounded-lg hover:bg-amber-100 transition-colors"
+                                    >
+                                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                                      </svg>
+                                      Prior auth required
+                                    </a>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 text-xs font-medium bg-amber-50 text-amber-700 px-2 py-1 rounded-lg">
+                                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                                      </svg>
+                                      Prior auth required
+                                    </span>
+                                  )
                                 )}
                               </div>
-                              {/* S202 §9 Surface 1 — per-service prior-auth + medical-necessity detail (renders null when absent) */}
-                              <EocServiceCoverageDetail item={primary as unknown as EocServiceItem} />
-                              {aggDisplay && aggDisplay.excerpt && (aggDisplay.reason === "from_user_document_cite_grade" || aggDisplay.reason === "community_corroborated") && (
+                              {/* S202 §9 Surface 1 — per-service detail + ONE consolidated cite (cost folds into the disclosure when the reader is on) */}
+                              <EocServiceCoverageDetail
+                                item={primary as unknown as EocServiceItem}
+                                costQuote={result?.eocReader && aggDisplay && aggDisplay.excerpt && (aggDisplay.reason === "from_user_document_cite_grade" || aggDisplay.reason === "community_corroborated") ? aggDisplay.excerpt : undefined}
+                              />
+                              {!result?.eocReader && aggDisplay && aggDisplay.excerpt && (aggDisplay.reason === "from_user_document_cite_grade" || aggDisplay.reason === "community_corroborated") && (
                                 <SourceQuote excerpt={aggDisplay.excerpt} />
                               )}
                               {aggDisplay && needsUploadCTA(aggDisplay.state) && (
@@ -1288,14 +1304,6 @@ export default function CandidPlanPage() {
           );
         })}
 
-        {/* S202 §9 Surface 2 — plan-level prior-auth aggregate cards (plan-wide + by location) */}
-        {result?.eocReader && result.eocReader.planWidePA.length > 0 && (
-          <EocPriorAuthCard eyebrow="Prior authorization" title="Plan-wide" statements={result.eocReader.planWidePA} />
-        )}
-        {result?.eocReader && result.eocReader.byLocationPA.length > 0 && (
-          <EocPriorAuthCard eyebrow="Prior authorization" title="By location" groups={result.eocReader.byLocationPA} />
-        )}
-
         {/* Not Covered section — collapsed by default */}
         {notCoveredItems.length > 0 && (
           <div className="border border-gray-200 rounded-2xl overflow-hidden">
@@ -1346,6 +1354,11 @@ export default function CandidPlanPage() {
               </div>
             )}
           </div>
+        )}
+
+        {/* S202 §9 Surface 2 — plan-level prior-auth card (bottom, above About; #eoc-prior-authorization deep-link target) */}
+        {result?.eocReader && (result.eocReader.priorAuth.requires.length > 0 || result.eocReader.priorAuth.noApproval.length > 0) && (
+          <EocPriorAuthCard anchorId="eoc-prior-authorization" requires={result.eocReader.priorAuth.requires} noApproval={result.eocReader.priorAuth.noApproval} />
         )}
 
         {/* S202 §9 Surface 3 — "Good to know" member info (collapsed) */}
