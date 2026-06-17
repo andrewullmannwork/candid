@@ -43,6 +43,13 @@ INSERT INTO plan_covered_services (insurance_plan_id, service_id, place_of_servi
   ('19000003-0000-0000-0000-000000000003', 'a0000001-0000-0000-0000-000000000001', 'any', 'global',
    '{"in_copay":{"value":40,"source_excerpt":"$40 copay","source_excerpt_verified":"verified"},"in_coinsurance":{"value":0.4,"source_excerpt":"40% coinsurance","source_excerpt_verified":"verified"},"prior_auth_required":{"value":false,"source_excerpt":"No prior authorization required","source_excerpt_verified":"verified"}}'::jsonb);
 
+-- Plan-identity provenance (insurance_plans) for the gate-(d) zero-regression check: the same 3 users
+-- agree on in_deductible_individual=1500. Plan-identity corroboration uses the insurance_plans branch
+-- and the S205 fold passes NULL pos/component for it — this MUST stay byte-identical.
+UPDATE insurance_plans SET field_provenance =
+  '{"in_deductible_individual":{"value":1500,"source_excerpt":"$1,500 deductible","source_excerpt_verified":"verified"}}'::jsonb
+WHERE id IN ('19000001-0000-0000-0000-000000000001','19000002-0000-0000-0000-000000000002','19000003-0000-0000-0000-000000000003');
+
 DO $$
 DECLARE
   cp  CONSTANT UUID := 'c9000001-0000-0000-0000-000000000001';
@@ -75,7 +82,15 @@ BEGIN
   ASSERT (r->>'corroborated_value')       = 'false', 'D corroborated_value = '  || COALESCE(r->>'corroborated_value','NULL');
   RAISE NOTICE 'D PASS — boolean false is a valid corroboration value (stored, counted)';
 
-  RAISE NOTICE '==== ALL CORROBORATION-PS GATE (a) ASSERTIONS PASSED ====';
+  -- E — GATE (d) zero-regression: plan-identity (serviceSlug NULL) still corroborates with NULL
+  --     pos/component (the insurance_plans branch is UNCHANGED; the fold passes NULL for it).
+  r := evaluate_pattern1_corroboration(cp, NULL, 'in_deductible_individual', NULL, NULL);
+  ASSERT (r->>'distinct_user_count')::int = 3,                'E plan-identity distinct_user_count = ' || (r->>'distinct_user_count');
+  ASSERT (r->>'corroborated_value')       = '1500',          'E plan-identity corroborated_value = '  || COALESCE(r->>'corroborated_value','NULL');
+  ASSERT (r->>'target_table')             = 'insurance_plans','E target_table = ' || (r->>'target_table');
+  RAISE NOTICE 'E PASS — plan-identity corroboration intact (NULL pos/component, byte-identical)';
+
+  RAISE NOTICE '==== ALL CORROBORATION-PS GATE (a)+(d) ASSERTIONS PASSED ====';
 END $$;
 
 ROLLBACK;
