@@ -42,12 +42,23 @@ export async function POST(req: NextRequest) {
   // Get internal user ID
   const { data: user } = await supabase
     .from("users")
-    .select("id")
+    .select("id, chd_erased_at")
     .eq("firebase_uid", decoded.uid)
     .single();
 
   if (!user) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
+  }
+
+  // Re-block uploads after a health-data erasure (mig 166). The consent check
+  // below filters granted=true and revoke keeps consent_events, so the old grant
+  // row would otherwise still satisfy it. chd_erased_at is cleared on re-grant,
+  // so a returning user who re-consents can upload again.
+  if (user.chd_erased_at) {
+    return NextResponse.json(
+      { error: "Health data consent is required." },
+      { status: 403 }
+    );
   }
 
   // Check consent

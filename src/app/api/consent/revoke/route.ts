@@ -85,6 +85,15 @@ export async function POST(req: NextRequest) {
     }
 
     // Phase 2 (confirmed): full erasure of the user's CHD + plan rows.
+    // 0. Mark the user CHD-erased FIRST so the erasure write guard (mig 166)
+    //    fences any in-flight parse from re-creating rows mid/after this erasure.
+    //    Set before the deletes so a concurrent late parse is blocked immediately;
+    //    cleared on re-grant of health_data_upload consent.
+    await supabase
+      .from("users")
+      .update({ chd_erased_at: new Date().toISOString() })
+      .eq("id", user.id);
+
     // 1. Remove uploaded files from storage, then the document rows.
     const { data: docs } = await userScoped(supabase, user.id)
       .table("documents")

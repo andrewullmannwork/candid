@@ -81,6 +81,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Re-granting health-data consent clears the erasure marker (mig 166) so the
+    // user can upload + parse again. Revoke sets it; this lifts it. No-op on a
+    // first-ever grant (column already NULL).
+    if (action === "grant" && consentType === "health_data_upload") {
+      await supabase
+        .from("users")
+        .update({ chd_erased_at: null })
+        .eq("id", user.id);
+    }
+
     return NextResponse.json({ success: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

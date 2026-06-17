@@ -87,6 +87,9 @@ export interface UserRow {
   display_name: string | null;
   is_admin: boolean;
   created_at: string;
+  // mig 166 — set on CHD erasure (consent revoke / pre account-delete), cleared
+  // on re-grant. Gates parse-persist via the erasure_write_guard trigger.
+  chd_erased_at: string | null;
 }
 
 // Profiles
@@ -376,7 +379,7 @@ export type Database = {
       users: {
         Row: UserRow;
         Insert: Partial<UserRow> & { firebase_uid: string; email: string };
-        Update: { display_name?: string | null; email?: string };
+        Update: { display_name?: string | null; email?: string; chd_erased_at?: string | null };
       };
       profiles: {
         Row: ProfileRow;
