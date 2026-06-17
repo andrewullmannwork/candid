@@ -200,15 +200,23 @@ async function expandPerServiceCandidates(
   const idToSlug = new Map<string, string>();
   for (const s of services ?? []) idToSlug.set(s.id as string, s.slug as string);
 
-  const perServiceFields: { name: string; rowKey: keyof typeof rows[0] }[] = [
-    { name: "copay", rowKey: "in_copay" },
-    { name: "coinsurance", rowKey: "in_coinsurance" },
-    { name: "deductible_applies", rowKey: "in_deductible_applies" },
-    { name: "is_covered", rowKey: "covered" },
-    { name: "requires_prior_auth", rowKey: "prior_auth_required" },
-    { name: "out_copay", rowKey: "out_copay" },
-    { name: "out_coinsurance", rowKey: "out_coinsurance" },
-    { name: "out_deductible_applies", rowKey: "out_deductible_applies" },
+  // S205 (Corroboration-PS): the candidate fieldName MUST be the plan_covered_services
+  // COLUMN name. The mig-156 evaluator reads `plan_covered_services.field_provenance->
+  // fieldName->'value'`, and that provenance is keyed by column name (see
+  // buildPlanCoveredServiceProvenance). Pre-S205 this emitted canonical-style aliases
+  // (copay/requires_prior_auth) that never matched the stored keys (in_copay/
+  // prior_auth_required) → per-service corroboration counted 0 on every row. The
+  // canonical-name mapping that mig-148 promotion needs is a canonical-WRITE concern,
+  // handled in Part 2 (not here — Part 1 is user-scoped counting only).
+  const perServiceColumns: (keyof typeof rows[0])[] = [
+    "in_copay",
+    "in_coinsurance",
+    "in_deductible_applies",
+    "covered",
+    "prior_auth_required",
+    "out_copay",
+    "out_coinsurance",
+    "out_deductible_applies",
   ];
 
   const seen = new Set<string>();
@@ -218,13 +226,13 @@ async function expandPerServiceCandidates(
   for (const row of rows) {
     const slug = idToSlug.get(row.service_id as string);
     if (!slug) continue;
-    for (const { name, rowKey } of perServiceFields) {
-      const v = (row as Record<string, unknown>)[rowKey as string];
+    for (const column of perServiceColumns) {
+      const v = (row as Record<string, unknown>)[column as string];
       if (v === undefined || v === null) continue;
-      const key = `${slug}::${name}`;
+      const key = `${slug}::${column as string}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      added.push({ serviceSlug: slug, fieldName: name });
+      added.push({ serviceSlug: slug, fieldName: column as string });
     }
   }
   return added.length > 0 ? [...existing, ...added] : existing;

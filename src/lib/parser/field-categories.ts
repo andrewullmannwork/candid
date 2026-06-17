@@ -246,6 +246,13 @@ export interface FieldProvenanceEntry {
   // Once populated: enables deterministic `verbatim_absent` derivation when
   // (searched_sections covers ALL_SECTIONS) AND (source_excerpt_verified === "not_found").
   searched_sections?: string[];
+  // S205 (Corroboration-PS): the typed column value this entry describes, normalized to
+  // match the stored column (coinsurance as the decimal the column holds, not the raw
+  // percent). The mig-156 evaluator groups cross-user agreement on
+  // `field_provenance->field->'value'`; without it per-service corroboration counts 0.
+  // Written by buildProvenanceEntry single-writer alongside the column. Optional for
+  // back-compat (pre-S205 rows; claim_line_items callers that don't pass it).
+  value?: unknown;
 }
 
 /**
@@ -262,6 +269,13 @@ export interface FieldProvenanceEntry {
  * at consumer-read time. Pass parser-level `dispatchedSections` (e.g.,
  * `SBCHaikuParseResult.dispatchedSections`) so every field on the same parse
  * result inherits the same coverage array.
+ *
+ * S205 (Corroboration-PS): `value` is the typed column value this entry describes,
+ * pre-normalized by the caller to MATCH the stored column (so cross-user `GROUP BY value`
+ * in the mig-156 evaluator agrees). Appended last to keep all prior callers back-compat;
+ * callers that don't pass it leave `value` absent (pre-S205 behavior). `false`/`0` are
+ * valid values (PA=false, copay=0) and ARE stored; only null/undefined are skipped
+ * (mirrors the evaluator's `? 'value'` + `jsonb_typeof != 'null'` gate).
  */
 export function buildProvenanceEntry(
   table: string,
@@ -276,6 +290,7 @@ export function buildProvenanceEntry(
     sourceSectionVerified?: boolean;
   },
   searchedSections?: string[],
+  value?: unknown,
 ): FieldProvenanceEntry | null {
   const category = lookupCategory(table, column);
   if (!category) return null;
@@ -286,6 +301,7 @@ export function buildProvenanceEntry(
     last_corroborated_at: new Date().toISOString(),
   };
   if (haikuConfidence !== undefined) entry.haiku_confidence = haikuConfidence;
+  if (value !== undefined && value !== null) entry.value = value;
 
   if (patternP8) {
     if (patternP8.sourceExcerpt !== undefined) entry.source_excerpt = patternP8.sourceExcerpt;
