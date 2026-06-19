@@ -111,7 +111,7 @@ function Hero({ loggedIn }: { loggedIn: boolean }) {
           </h1>
           <p className="hero-sub">
             Find out if you were overcharged. Find out what your insurance actually covers.
-            In under two minutes.
+            In under five minutes.
           </p>
           <div className="hero-ctas">
             <Link

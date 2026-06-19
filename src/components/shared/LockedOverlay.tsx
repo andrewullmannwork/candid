@@ -69,6 +69,8 @@ const TONE_STYLES: Record<Tone, {
  * - `extraSlot` — custom content between CTAs + fineprint (e.g. HSA partner form)
  * - `closable` — renders X button (top-right of card); navigates back via
  *   `router.back()` if same-origin referrer else falls back to `/dashboard`.
+ * - `closeHref` — when set, the X button navigates to this explicit route
+ *   instead of the `router.back()`/`/dashboard` default (e.g. HSA → `/plan`).
  */
 export function LockedOverlay({
   title,
@@ -87,6 +89,7 @@ export function LockedOverlay({
   fineprint,
   extraSlot,
   closable,
+  closeHref,
   children,
 }: {
   title: string;
@@ -105,12 +108,17 @@ export function LockedOverlay({
   fineprint?: string;
   extraSlot?: ReactNode;
   closable?: boolean;
+  closeHref?: string;
   children: ReactNode;
 }) {
   const styles = TONE_STYLES[tone];
   const router = useRouter();
 
   function handleClose() {
+    if (closeHref) {
+      router.push(closeHref);
+      return;
+    }
     const referrer = typeof document !== "undefined" ? document.referrer : "";
     if (referrer) {
       try {
