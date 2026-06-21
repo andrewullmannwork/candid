@@ -33,7 +33,7 @@ function SignInContent() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!turnstileToken) {
-      setError("Bot defense check still loading. Please wait a moment and try again.");
+      setError("Please check 'Verify you are human' above to continue.");
       return;
     }
     setLoading(true);
@@ -67,7 +67,7 @@ function SignInContent() {
       return;
     }
     if (!turnstileToken) {
-      setError("Bot defense check still loading. Please wait a moment and try again.");
+      setError("Please check 'Verify you are human' above to continue.");
       return;
     }
     try {
@@ -91,7 +91,7 @@ function SignInContent() {
 
   async function handleGoogle() {
     if (!turnstileToken) {
-      setError("Bot defense check still loading. Please wait a moment and try again.");
+      setError("Please check 'Verify you are human' above to continue.");
       return;
     }
     try {

@@ -36,6 +36,12 @@ interface Props {
   onRedraft?: () => void;
   /** Disables the redraft link while a redraft is already in flight. */
   redraftInFlight?: boolean;
+  /**
+   * Bugbash Item 3 — when set, the "Evidence: {band}" chip becomes a button
+   * that opens the explanation modal. Omitted callers render the chip as a
+   * static span (unchanged).
+   */
+  onBandClick?: () => void;
 }
 
 const LETTER_TYPE_EYEBROW: Record<DisputeLetter["letterType"], string> = {
@@ -57,6 +63,7 @@ export function DisputeLetterHero({
   strength,
   onRedraft,
   redraftInFlight,
+  onBandClick,
 }: Props) {
   const title = [
     titleForType(letter.letterType),
@@ -89,13 +96,30 @@ export function DisputeLetterHero({
           {band || qualitySummary ? (
             <div className="mt-3 flex flex-wrap items-center gap-2">
               {band ? (
-                <span
-                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${band.chip}`}
-                  title="How well-backed this dispute is by the evidence on file — a measure of evidence quality, not a prediction of whether the insurer will agree."
-                >
-                  <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${band.dot}`} />
-                  Evidence: {band.label}
-                </span>
+                onBandClick ? (
+                  <button
+                    type="button"
+                    onClick={onBandClick}
+                    aria-haspopup="dialog"
+                    className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold transition hover:brightness-95 ${band.chip}`}
+                    title="Why this rating? — see what's backing this dispute and what would strengthen it."
+                  >
+                    <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${band.dot}`} />
+                    Evidence: {band.label}
+                    <svg aria-hidden className="h-3 w-3 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="9" />
+                      <path d="M12 16v-4M12 8h.01" />
+                    </svg>
+                  </button>
+                ) : (
+                  <span
+                    className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${band.chip}`}
+                    title="How well-backed this dispute is by the evidence on file — a measure of evidence quality, not a prediction of whether the insurer will agree."
+                  >
+                    <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${band.dot}`} />
+                    Evidence: {band.label}
+                  </span>
+                )
               ) : null}
               {qualitySummary ? (
                 <span

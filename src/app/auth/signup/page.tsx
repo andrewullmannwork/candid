@@ -135,7 +135,7 @@ export default function SignUpPage() {
       return;
     }
     if (!turnstileToken) {
-      setAccountError("Bot defense check still loading. Please wait a moment and try again.");
+      setAccountError("Please check 'Verify you are human' above to continue.");
       return;
     }
     const pwErrors = validatePassword(password);
@@ -237,7 +237,7 @@ export default function SignUpPage() {
 
   async function doGoogleSignIn() {
     if (!turnstileToken) {
-      setAccountError("Bot defense check still loading. Please wait a moment and try again.");
+      setAccountError("Please check 'Verify you are human' above to continue.");
       return;
     }
     setGoogleLoading(true);

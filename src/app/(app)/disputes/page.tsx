@@ -10,6 +10,7 @@ import { InlineSubscribePanel } from "@/components/billing/InlineSubscribePanel"
 import { downloadCaseFile } from "@/lib/casefile";
 import { disputeUrlForResult } from "@/lib/disputes/url";
 import { DisputeLetterHero } from "@/components/disputes/DisputeLetterHero";
+import { EvidenceStrengthModal } from "@/components/disputes/EvidenceStrengthModal";
 import { DisputeRecipientCard } from "@/components/disputes/DisputeRecipientCard";
 import { EvidenceBlock } from "@/components/disputes/EvidenceBlock";
 import { VerifStrip } from "@/components/disputes/VerifStrip";
@@ -263,6 +264,8 @@ function DisputesContent() {
   const [markSentToast, setMarkSentToast] = useState<string | null>(null);
   // S74.6 D5 §E.2 — outcome reporting modal state.
   const [outcomeModalOpen, setOutcomeModalOpen] = useState(false);
+  // Bugbash Item 3 — "Why {band}?" evidence-strength explanation modal.
+  const [evidenceModalOpen, setEvidenceModalOpen] = useState(false);
   const [outcomeToast, setOutcomeToast] = useState<string | null>(null);
   const disputeId = searchParams.get("dispute");
 
@@ -692,6 +695,8 @@ function DisputesContent() {
       strength={v3DesignOn ? strength : undefined}
       onRedraft={handleRedraft}
       redraftInFlight={redrafting}
+      // Item 3 — band chip becomes a button only when the band is shown (v3 + strength).
+      onBandClick={v3DesignOn && strength ? () => setEvidenceModalOpen(true) : undefined}
     />
   );
 
@@ -1308,6 +1313,13 @@ function DisputesContent() {
         getIdToken={getAuthToken}
       />
 
+      {/* Item 3 — "Why {band}?" evidence-strength explanation (v3 only). */}
+      <EvidenceStrengthModal
+        open={evidenceModalOpen}
+        onClose={() => setEvidenceModalOpen(false)}
+        band={strength?.evidenceStrength.band ?? "partially_supported"}
+        evidence={evidence}
+      />
 
       {planContext?.insurer && disputeId ? (
         <InsurerAddressCorrectionModal
