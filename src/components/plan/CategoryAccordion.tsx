@@ -69,6 +69,17 @@ interface CategoryAccordionProps {
   aggregateState?: DisplayState | null;
   /** Controlled open state from parent. */
   open: boolean;
+  /**
+   * True when the user has drilled into a specific service within this (open)
+   * category. Drives the header choreography (§ bugbash Item 2):
+   *  - not drilled (collapsed OR open-but-no-service-clicked): the "X of Y
+   *    verified" pill sits on the RIGHT next to the chevron; the used-count +
+   *    progress bar are hidden (they read as confusing before drill-in).
+   *  - drilled (a service is expanded): the verified pill moves back to the
+   *    LEFT next to the title, and the used-count + bar appear on the right.
+   * Legacy flag-OFF (no verified pill) always shows the count + bar.
+   */
+  serviceSelected?: boolean;
   /** Toggle handler called when header button is clicked. */
   onToggle: () => void;
   /** Body content (rendered only when `open=true`). */
@@ -85,6 +96,7 @@ export function CategoryAccordion({
   verifiedCount,
   aggregateState,
   open,
+  serviceSelected = false,
   onToggle,
   children,
   className,
@@ -93,6 +105,39 @@ export function CategoryAccordion({
   const isFull = totalCount > 0 && usedCount === totalCount;
   const showVerifiedPill = typeof verifiedCount === "number";
   const verifiedTier = isVerifiedAggregateTier(aggregateState);
+  // Item 2 choreography: the used-count + bar only appear once the user drills
+  // into a service. When there is no verified pill (legacy flag-OFF), fall back
+  // to always showing the count + bar so the header isn't left empty.
+  const showCountBar = serviceSelected || !showVerifiedPill;
+  // The verified pill lives on the LEFT (next to the title) only after drill-in;
+  // otherwise it sits on the RIGHT next to the chevron (replacing the count+bar).
+  const verifiedPill = showVerifiedPill ? (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border whitespace-nowrap",
+        verifiedTier
+          ? "bg-green-50 text-green-700 border-green-200"
+          : "bg-amber-50 text-amber-700 border-amber-200",
+      )}
+    >
+      {verifiedTier && (
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M5 13l4 4L19 7" />
+        </svg>
+      )}
+      {verifiedCount} of {totalCount} verified
+    </span>
+  ) : null;
 
   return (
     <div
@@ -111,49 +156,28 @@ export function CategoryAccordion({
         <div className="flex items-center gap-3 min-w-0 flex-1">
           <span className="shrink-0">{icon}</span>
           <span className="font-semibold text-gray-900 truncate">{label}</span>
-          {showVerifiedPill && (
-            <span
-              className={cn(
-                "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border whitespace-nowrap",
-                verifiedTier
-                  ? "bg-green-50 text-green-700 border-green-200"
-                  : "bg-amber-50 text-amber-700 border-amber-200",
-              )}
-            >
-              {verifiedTier && (
-                <svg
-                  width="10"
-                  height="10"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="3"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="M5 13l4 4L19 7" />
-                </svg>
-              )}
-              {verifiedCount} of {totalCount} verified
-            </span>
-          )}
+          {serviceSelected && verifiedPill}
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <span
-            className={cn(
-              "text-xs font-semibold",
-              isFull ? "text-green-600" : "text-gray-400",
-            )}
-          >
-            {usedCount}/{totalCount}
-          </span>
-          <div className="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-green-500 rounded-full transition-all"
-              style={{ width: `${pct}%` }}
-            />
-          </div>
+          {!serviceSelected && verifiedPill}
+          {showCountBar && (
+            <>
+              <span
+                className={cn(
+                  "text-xs font-semibold",
+                  isFull ? "text-green-600" : "text-gray-400",
+                )}
+              >
+                {usedCount}/{totalCount}
+              </span>
+              <div className="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-green-500 rounded-full transition-all"
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+            </>
+          )}
           <svg
             className={cn(
               "w-4 h-4 text-gray-400 transition-transform",
