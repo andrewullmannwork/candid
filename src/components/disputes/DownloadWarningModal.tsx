@@ -28,15 +28,29 @@ export function DownloadWarningModal({
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
       role="dialog"
       aria-modal="true"
+      onClick={onCancel}
     >
-      <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-        <div className="text-lg font-semibold text-slate-900">
-          Your {claimYear} plan isn&apos;t on file yet
+      <div
+        className="relative w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          onClick={onCancel}
+          aria-label="Close"
+          className="absolute right-3 top-3 inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+        >
+          <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </button>
+        {/* Interpolate the year + word as ONE string so the space can never be
+            dropped by JSX whitespace handling (the "2025plan" bug). */}
+        <div className="pr-8 text-lg font-semibold text-slate-900">
+          {`Your ${claimYear} plan isn't on file yet`}
         </div>
         <p className="mt-2 text-sm text-slate-600">
-          This Case File will be more persuasive with your {claimYear} plan document.
-          Copays, coverage status, and the &ldquo;Why this should be covered&rdquo; analysis
-          will be generic without it.
+          {`This Case File will be more persuasive with your ${claimYear} plan document. Copays, coverage status, and the "Why this should be covered" analysis will be generic without it.`}
         </p>
         <div className="mt-5 flex flex-col-reverse gap-2 md:flex-row md:justify-end">
           <button
@@ -51,7 +65,7 @@ export function DownloadWarningModal({
             onClick={onCancel}
             className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-700"
           >
-            Upload {claimYear} plan instead
+            {`Upload ${claimYear} plan instead`}
           </Link>
         </div>
       </div>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { ChangePlanModal } from "@/components/plan/ChangePlanModal";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
 import { createBrowserClient } from "@/lib/supabase/client";
@@ -211,7 +212,7 @@ function CategoryIcon({ category }: { category: string }) {
 
 // ── Plan Summary Card ──────────────────────────────────────────────────────────
 
-function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insurancePlanId, userHasDoc, insurer }: {
+function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insurancePlanId, userHasDoc, insurer, changePlanEnabled, onChangePlan }: {
   planName?: string;
   planYear?: number | null;
   planSummary?: AnalyzeResponse["planSummary"];
@@ -219,6 +220,9 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
   insurancePlanId?: string;
   userHasDoc?: boolean;
   insurer?: string;
+  /** Bugbash Stretch 1 — show the "Change plan" link (flag change_plan_v1). */
+  changePlanEnabled?: boolean;
+  onChangePlan?: () => void;
 }) {
   if (!planSummary || dataSource === "static_catalog") return null;
 
@@ -303,11 +307,20 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
             <p className="mt-0.5 text-xs text-gray-500">{planYear} plan year</p>
           )}
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
           {/* CF-19 (Session 64): summary-card aggregate badge — verified-tier only;
               S71 hotfix #3 (Session 73) preserved (no legacy verification_status badge). */}
           {summaryAggState && summaryAggReason && isVisibleState(summaryAggState) && (
             <DisplayStateBadge state={summaryAggState} reason={summaryAggReason} size="xs" />
+          )}
+          {changePlanEnabled && onChangePlan && (
+            <button
+              type="button"
+              onClick={onChangePlan}
+              className="text-xs font-semibold text-blue-600 hover:text-blue-700 hover:underline whitespace-nowrap"
+            >
+              Change plan
+            </button>
           )}
         </div>
       </div>
@@ -466,6 +479,13 @@ export default function CandidPlanPage() {
   // Feature flags
   const [correctionsEnabled, setCorrectionsEnabled] = useState(false);
   const [yearRolloverEnabled, setYearRolloverEnabled] = useState(false);
+  // Bugbash Stretch 1 — "Change plan" feature (flag change_plan_v1). Flag read
+  // via /api/feature-flags (NOT a browser-Supabase feature_flag_rules read,
+  // which returns [] under Firebase auth — see feedback_candid_client_flag_reads).
+  const [changePlanEnabled, setChangePlanEnabled] = useState(false);
+  const [changePlanOpen, setChangePlanOpen] = useState(false);
+  // Bump to force a re-analyze after the active plan is replaced.
+  const [reloadKey, setReloadKey] = useState(0);
 
   // Historical plans state
   const [historicalPlans, setHistoricalPlans] = useState<Array<{
@@ -636,7 +656,19 @@ export default function CandidPlanPage() {
         if (rolloverFlagRes.data?.enabled) setYearRolloverEnabled(true);
       } catch { /* non-critical — corrections + rollover flags fall back to OFF */ }
     })();
-  }, [user]);
+  }, [user, reloadKey]);
+
+  // Bugbash Stretch 1 — read change_plan_v1 via the API route. A browser-Supabase
+  // feature_flag_rules read returns [] under Firebase auth (no Supabase session),
+  // so the flag MUST come from /api/feature-flags (feedback_candid_client_flag_reads).
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/feature-flags/change_plan_v1")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d) setChangePlanEnabled(!!d.enabled); })
+      .catch(() => { /* flag falls back to OFF */ });
+    return () => { cancelled = true; };
+  }, []);
 
   if (loading) {
     return (
@@ -753,7 +785,17 @@ export default function CandidPlanPage() {
         insurancePlanId={result.insurancePlanId}
         userHasDoc={userHasDoc}
         insurer={result.insurer}
+        changePlanEnabled={changePlanEnabled}
+        onChangePlan={() => setChangePlanOpen(true)}
       />
+      {changePlanEnabled && (
+        <ChangePlanModal
+          open={changePlanOpen}
+          onClose={() => setChangePlanOpen(false)}
+          currentCanonicalId={result.canonicalPlanId}
+          onChanged={() => setReloadKey((k) => k + 1)}
+        />
+      )}
 
       {/* D-§1.C.2-E: inline profile-completeness prompt REMOVED from /plan;
           /dashboard's banner stack (B3.1) governs profile-completeness UX

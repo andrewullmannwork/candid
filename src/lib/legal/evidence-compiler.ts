@@ -197,22 +197,28 @@ ${bullets}`,
     });
   }
 
-  // ── Section 6 — Pricing Comparison (real numbers when k-anon met) ────────
-  if (evidence.communityEvidence) {
-    const b = evidence.communityEvidence;
+  // ── Section 6 — Pricing Comparison ───────────────────────────────────────
+  // NEVER surface internal thresholds (k-anonymity / report counts) to the user.
+  const cv = evidence.communityEvidence;
+  const hasPricing =
+    cv != null &&
+    (cv.medianCopayPaid != null ||
+      cv.pricingBenchmarks.medicareRate != null ||
+      cv.pricingBenchmarks.communityMedian != null);
+  if (hasPricing && cv) {
     sections.push({
       title: "6. Pricing Comparison",
-      content: `Community data (${b.sameCodeSamePlanCount} reports${b.sameCodeSamePlanCount < 5 ? " — below k-anonymity threshold; aggregate suppressed" : ""}):
-- Median copay paid: ${b.medianCopayPaid != null ? formatUsd(b.medianCopayPaid) : "—"}
-- Medicare rate: ${b.pricingBenchmarks.medicareRate != null ? formatUsd(b.pricingBenchmarks.medicareRate) : "—"}
-- Community median: ${b.pricingBenchmarks.communityMedian != null ? formatUsd(b.pricingBenchmarks.communityMedian) : "—"}`,
+      content: `Based on community-reported costs for the services in this claim:
+- Median copay paid: ${cv.medianCopayPaid != null ? formatUsd(cv.medianCopayPaid) : "—"}
+- Medicare rate: ${cv.pricingBenchmarks.medicareRate != null ? formatUsd(cv.pricingBenchmarks.medicareRate) : "—"}
+- Community median: ${cv.pricingBenchmarks.communityMedian != null ? formatUsd(cv.pricingBenchmarks.communityMedian) : "—"}`,
       disclaimer: DISCLAIMERS.pricing_care,
     });
   } else {
     sections.push({
       title: "6. Pricing Comparison",
       content:
-        "Community pricing data for the services in this claim is not yet available at the k-anonymity threshold (< 5 independent reports). Candid Care will populate this section once more community data accumulates.",
+        "We don't have enough community pricing data for the services in this claim yet. This section will fill in as more community data becomes available.",
       disclaimer: DISCLAIMERS.pricing_care,
     });
   }
@@ -228,7 +234,7 @@ ${bullets}`,
       .eq("user_id", userId)
       .maybeSingle();
     if (dispute?.filed_date) {
-      events.push({ date: dispute.filed_date, event: `Dispute drafted — status: ${dispute.status}` });
+      events.push({ date: dispute.filed_date, event: "Dispute drafted" });
     }
     if (dispute?.resolution_date) {
       events.push({
@@ -256,7 +262,123 @@ ${bullets}`,
     });
   }
 
-  // ── Section 9 — Disclaimers (unchanged) ─────────────────────────────────
+  // ── Section 9 — Provider & Insurer Directory (Stretch 2) ─────────────────
+  {
+    const pc = planContext?.providerContact ?? null;
+    const ins = planContext?.insurer ?? null;
+    const a = ins?.appealsAddress ?? null;
+    const providerAddr =
+      pc?.address ??
+      (pc?.addressFields
+        ? [
+            pc.addressFields.addressLine1,
+            pc.addressFields.addressLine2,
+            [pc.addressFields.city, pc.addressFields.state, pc.addressFields.postalCode]
+              .filter(Boolean)
+              .join(", "),
+          ]
+            .filter(Boolean)
+            .join(", ")
+        : null);
+    if (pc?.name || ins?.name) {
+      sections.push({
+        title: "9. Provider & Insurer Directory",
+        content: `Provider of service:
+  Name:    ${pc?.name ?? "—"}
+  Address: ${providerAddr || "—"}
+  Phone:   ${pc?.phone ?? "—"}
+  NPI:     ${pc?.npi ?? "—"}
+
+Insurer (appeals contact):
+  Name:            ${ins?.name ?? "—"}
+  Appeals address: ${a ? `${a.line1}${a.line2 ? `, ${a.line2}` : ""}, ${a.city}, ${a.state} ${a.postalCode}` : "—"}
+  Appeals phone:   ${ins?.appealsPhone ?? "—"}`,
+        disclaimer: "",
+      });
+    }
+  }
+
+  // ── Section 10 — Sibling & Peer Codes (Stretch 2) ────────────────────────
+  if (claim) {
+    const codeBullets = claim.lineItemEvidence
+      .filter((li) => (li.siblingCodes?.length ?? 0) > 0 || (li.peerCodes?.length ?? 0) > 0)
+      .map((li) => {
+        const parts: string[] = [
+          `  • ${li.serviceName}${li.billingCode ? ` (${li.billingCode.type} ${li.billingCode.value})` : ""}`,
+        ];
+        if (li.siblingCodes?.length) {
+          parts.push(
+            `      Sibling codes already PAID on this plan: ` +
+              li.siblingCodes
+                .map(
+                  (s) =>
+                    `${s.type} ${s.code} (${s.label}) — paid ${s.paidCount}/${s.totalClaims}${s.avgPaidAmount != null ? `, avg ${formatUsd(s.avgPaidAmount)}` : ""}`,
+                )
+                .join("; "),
+          );
+        }
+        if (li.peerCodes?.length) {
+          parts.push(
+            `      Corroborated alternative codes for this service: ` +
+              li.peerCodes.map((p) => `${p.codeType} ${p.code} (${p.promotionState})`).join("; "),
+          );
+        }
+        return parts.join("\n");
+      })
+      .join("\n\n");
+    if (codeBullets) {
+      sections.push({
+        title: "10. Sibling & Peer Codes",
+        content: `Other billing codes for the same services that have been paid on this plan, or corroborated as alternatives — useful to show a denial is not a category-wide exclusion:\n\n${codeBullets}`,
+        disclaimer: DISCLAIMERS.network_evidence,
+      });
+    }
+  }
+
+  // ── Section 11 — Community Outcomes per line (Stretch 2) ─────────────────
+  if (claim) {
+    const coBullets = claim.lineItemEvidence
+      .filter((li) => li.communityOutcome != null)
+      .map((li) => {
+        const co = li.communityOutcome!;
+        return `  • ${li.serviceName}${li.billingCode ? ` (${li.billingCode.type} ${li.billingCode.value})` : ""}: ${co.paidCount} of ${co.totalClaims} community claims paid (${co.deniedCount} denied)${co.avgPaidAmount != null ? `; avg paid ${formatUsd(co.avgPaidAmount)}` : ""}${co.avgBilledAmount != null ? `; avg billed ${formatUsd(co.avgBilledAmount)}` : ""}`;
+      })
+      .join("\n");
+    if (coBullets) {
+      sections.push({
+        title: "11. Community Outcomes",
+        content: `How other members on this plan fared for the same codes (aggregated community data):\n\n${coBullets}`,
+        disclaimer: DISCLAIMERS.pricing_care,
+      });
+    }
+  }
+
+  // ── Section 12 — What Would Strengthen This (Stretch 2; evidence gaps) ────
+  if (evidence.gaps.length > 0) {
+    sections.push({
+      title: "12. What Would Strengthen This",
+      content:
+        `Open items that would make this dispute stronger:\n\n` +
+        evidence.gaps.map((g) => `  • ${g.title}\n     ${g.description}`).join("\n\n"),
+      disclaimer: "",
+    });
+  }
+
+  // ── Section 13 — Data Sources & Confidence (Stretch 2; transparency) ─────
+  sections.push({
+    title: "13. Data Sources & Confidence",
+    content: `This package draws on:
+  - Your plan terms (uploaded document or corroborated canonical plan) — Plan Coverage Evidence
+  - Your claim / EOB line items — Claim Summary, Discrepancy Documentation
+  - Candid's automated bill audit, where it has run — Audit Analysis
+  - Community data, where available — Pricing Comparison, Community Outcomes
+  - Public statutes & regulations — Legal Framework
+
+Evidence strength is presented qualitatively in the Candid app (e.g. "partially supported"); this package intentionally omits any numeric score or prediction of whether the insurer will agree.`,
+    disclaimer: DISCLAIMERS.accuracy_rate,
+  });
+
+  // ── Disclaimers — rendered via masterDisclaimer + per-section disclaimer ──
 
   return {
     title: `Evidence Package — Claim ${claimId.slice(0, 8)}`,
