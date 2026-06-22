@@ -316,13 +316,13 @@ async function readAdminPerServiceValue(
     }
   }
 
-  // Direct column fallback — map field names to actual columns
+  // Direct column fallback — keyed by the ALIGNED fieldName (candidates emit aligned names; F.0 Phase 2).
   const colMap: Record<string, unknown> = {
-    copay: row.in_copay,
-    coinsurance: row.in_coinsurance,
-    deductible_applies: row.in_deductible_applies,
-    is_covered: row.covered,
-    requires_prior_auth: row.prior_auth_required,
+    in_copay: row.in_copay,
+    in_coinsurance: row.in_coinsurance,
+    in_deductible_applies: row.in_deductible_applies,
+    covered: row.covered,
+    prior_auth_required: row.prior_auth_required,
   };
   const direct = colMap[fieldName];
   if (direct !== undefined && direct !== null) {

@@ -639,12 +639,14 @@ async function mergeServicesIntoCanonical(
       canonical_plan_id: canonicalPlanId,
       concept_id: s.concept_id || null,
       service_slug: idToSlug.get(s.service_id)!,
-      copay: s.in_copay,
-      coinsurance: normalizeCoinsuranceForStorage(s.in_coinsurance),
-      is_covered: s.covered !== false,
-      requires_prior_auth: s.prior_auth_required || false,
+      // F.0 Phase 2 (mig 169): write the ALIGNED canonical columns (in_/covered/prior_auth_required);
+      // the symmetric align_mirror_cps_row trigger mirrors them to the legacy columns.
+      in_copay: s.in_copay,
+      in_coinsurance: normalizeCoinsuranceForStorage(s.in_coinsurance),
+      covered: s.covered !== false,
+      prior_auth_required: s.prior_auth_required || false,
       requires_referral: false,
-      deductible_applies: s.in_deductible_applies !== false,
+      in_deductible_applies: s.in_deductible_applies !== false,
       // CF-63 RC-2 (S128): nullish coalescing preserves $0 annual limits.
       annual_limit: s.annual_limit_value ?? null,
       visit_limit: null,

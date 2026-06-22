@@ -232,20 +232,20 @@ export async function POST(req: NextRequest) {
         case "copay": {
           const parsed = parseFloat(value.replace(/[$,]/g, ""));
           if (isNaN(parsed)) return NextResponse.json({ error: "Invalid copay value — must be a number" }, { status: 400 });
-          fieldName = "copay"; promotedValue = parsed; break;
+          fieldName = "in_copay"; promotedValue = parsed; break;  // F.0 Phase 2 (mig 169): aligned name
         }
         case "coinsurance": {
           const parsed = parseFloat(value.replace(/%/g, ""));
           if (isNaN(parsed)) return NextResponse.json({ error: "Invalid coinsurance value — must be a number" }, { status: 400 });
           // Normalize percent → fraction (apply_promotion_event also clamps to [0,1]).
-          fieldName = "coinsurance"; promotedValue = parsed > 1 ? parsed / 100 : parsed; break;
+          fieldName = "in_coinsurance"; promotedValue = parsed > 1 ? parsed / 100 : parsed; break;
         }
         case "covered":
-          fieldName = "is_covered"; promotedValue = value.toLowerCase() === "true" || value.toLowerCase() === "yes"; break;
+          fieldName = "covered"; promotedValue = value.toLowerCase() === "true" || value.toLowerCase() === "yes"; break;
         case "prior_auth":
-          fieldName = "requires_prior_auth"; promotedValue = value.toLowerCase() === "true" || value.toLowerCase() === "yes"; break;
+          fieldName = "prior_auth_required"; promotedValue = value.toLowerCase() === "true" || value.toLowerCase() === "yes"; break;
         case "deductible_applies":
-          fieldName = "deductible_applies"; promotedValue = value.toLowerCase() === "true" || value.toLowerCase() === "yes"; break;
+          fieldName = "in_deductible_applies"; promotedValue = value.toLowerCase() === "true" || value.toLowerCase() === "yes"; break;
         case "annual_limit": {
           const parsed = parseInt(value.replace(/[,$]/g, ""), 10);
           if (isNaN(parsed)) return NextResponse.json({ error: "Invalid annual limit — must be a number" }, { status: 400 });

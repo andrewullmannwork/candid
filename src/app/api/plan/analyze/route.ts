@@ -392,9 +392,9 @@ export async function POST(request: NextRequest) {
               // Phase 4 Task 4-B: canonical gap-fill rows are CROSS-USER source
               // ("canonical_inherited") — subject to multi-source corroboration
               // threshold per Q-P4-3 LOCK. sourceCount = canonical_plans.verification_count
-              // (denormalized via mig 066). Field-provenance keys differ from
-              // plan_covered_services (canonical schema has copay/coinsurance/etc
-              // without in_/out_ prefix; OON columns absent on canonical).
+              // (denormalized via mig 066). F.0 Phase 2 (mig 169): canonical_plan_services now uses the
+              // aligned in_/covered/prior_auth_required names (same convention as plan_covered_services);
+              // the legacy columns/keys stay synced via the symmetric align trigger.
               const canonicalSourceCount = decoration?.canonicalSourceCount ?? 1;
               const canonicalLogicalSource = "canonical_inherited";
               canonicalGapBenefits = gapServices.map((cs) => {
@@ -416,15 +416,15 @@ export async function POST(request: NextRequest) {
                   id: cs.service_slug || cs.id,
                   category: "other",
                   title: cleanDescription((cs.service_slug || "").replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())),
-                  description: cs.is_covered === false
+                  description: cs.covered === false
                     ? "Not covered under this plan."
                     : [
-                        cs.copay != null ? `$${cs.copay} copay` : null,
-                        cs.coinsurance != null && cs.coinsurance > 0 ? `${normalizeCoinsurancePct(cs.coinsurance)}% coinsurance` : null,
-                        cs.deductible_applies ? "after deductible" : null,
+                        cs.in_copay != null ? `$${cs.in_copay} copay` : null,
+                        cs.in_coinsurance != null && cs.in_coinsurance > 0 ? `${normalizeCoinsurancePct(cs.in_coinsurance)}% coinsurance` : null,
+                        cs.in_deductible_applies ? "after deductible" : null,
                       ].filter(Boolean).join(", ") || "Covered",
                   whyUnderutilized: gapCatalogBenefit?.whyUnderutilized || "",
-                  howToAccess: cs.is_covered === false
+                  howToAccess: cs.covered === false
                     ? ""
                     : (gapCatalogBenefit?.howToAccess || "Contact your insurer for details."),
                   hsaFsaEligible: gapCatalogBenefit?.hsaFsaEligible || false,
@@ -433,28 +433,28 @@ export async function POST(request: NextRequest) {
                 categoryLabel: "other",
                 relevanceNote: "Coverage details from other plan members",
                 relevanceScore: 70,
-                isRecommended: cs.is_covered !== false,
+                isRecommended: cs.covered !== false,
                 costSharing: {
                   inNetwork: {
-                    copay: maybeDecorate<number | null>(cs.is_covered === false ? null : cs.copay, getProv(cs, "copay"), canonicalLogicalSource, canonicalSourceCount),
-                    coinsurance: maybeDecorate<number | null>(cs.is_covered === false ? null : cs.coinsurance, getProv(cs, "coinsurance"), canonicalLogicalSource, canonicalSourceCount),
-                    deductibleApplies: cs.is_covered === false ? false : cs.deductible_applies,
-                    costDescription: cs.is_covered === false ? "Not covered" : "",
+                    copay: maybeDecorate<number | null>(cs.covered === false ? null : cs.in_copay, getProv(cs, "in_copay"), canonicalLogicalSource, canonicalSourceCount),
+                    coinsurance: maybeDecorate<number | null>(cs.covered === false ? null : cs.in_coinsurance, getProv(cs, "in_coinsurance"), canonicalLogicalSource, canonicalSourceCount),
+                    deductibleApplies: cs.covered === false ? false : cs.in_deductible_applies,
+                    costDescription: cs.covered === false ? "Not covered" : "",
                   },
                   // CF-19c (Session 64): canonical_plan_services now carries OON columns
                   // (mig 071). Populate them when present; null until promotion events fire
                   // post-corroboration to populate canonical OON values from user uploads.
                   outOfNetwork: {
-                    copay: maybeDecorate<number | null>(cs.is_covered === false ? null : (cs.out_copay ?? null), getProv(cs, "out_copay"), canonicalLogicalSource, canonicalSourceCount),
-                    coinsurance: maybeDecorate<number | null>(cs.is_covered === false ? null : (cs.out_coinsurance ?? null), getProv(cs, "out_coinsurance"), canonicalLogicalSource, canonicalSourceCount),
-                    deductibleApplies: cs.is_covered === false ? false : (cs.out_deductible_applies ?? false),
-                    costDescription: cs.is_covered === false ? "Not covered" : "",
+                    copay: maybeDecorate<number | null>(cs.covered === false ? null : (cs.out_copay ?? null), getProv(cs, "out_copay"), canonicalLogicalSource, canonicalSourceCount),
+                    coinsurance: maybeDecorate<number | null>(cs.covered === false ? null : (cs.out_coinsurance ?? null), getProv(cs, "out_coinsurance"), canonicalLogicalSource, canonicalSourceCount),
+                    deductibleApplies: cs.covered === false ? false : (cs.out_deductible_applies ?? false),
+                    costDescription: cs.covered === false ? "Not covered" : "",
                   },
                   annualLimit: maybeDecorate<string | null>(cs.annual_limit ? String(cs.annual_limit) : null, getProv(cs, "annual_limit"), canonicalLogicalSource, canonicalSourceCount),
-                  priorAuthRequired: maybeDecorate<boolean | null>(cs.requires_prior_auth, getProv(cs, "requires_prior_auth"), canonicalLogicalSource, canonicalSourceCount),
+                  priorAuthRequired: maybeDecorate<boolean | null>(cs.prior_auth_required, getProv(cs, "prior_auth_required"), canonicalLogicalSource, canonicalSourceCount),
                   penaltyNoPrecert: null,
                 },
-                covered: cs.is_covered,
+                covered: cs.covered,
                 dataSource: "canonical_plan",
                 };
               });
