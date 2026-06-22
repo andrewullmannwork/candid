@@ -102,8 +102,12 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Trigger body unchanged (BEFORE INSERT OR UPDATE; name preserves the 'align' < 'confidence' fire-order).
--- Re-assert via CREATE OR REPLACE TRIGGER (PG14+; paste-safe, no DROP warning) so the migration is self-contained.
-CREATE OR REPLACE TRIGGER canonical_plan_services_align_dualwrite
+-- DROP + CREATE (version-safe; matches mig 165/166). NOT "CREATE OR REPLACE TRIGGER" — that is PG14+ only
+-- and would abort the whole transaction on an older Postgres. The existing trigger (mig 165) already calls
+-- align_mirror_cps_row(); the CREATE OR REPLACE FUNCTION above swapped its body to the symmetric version —
+-- re-creating the trigger just keeps the migration self-contained.
+DROP TRIGGER IF EXISTS canonical_plan_services_align_dualwrite ON canonical_plan_services;
+CREATE TRIGGER canonical_plan_services_align_dualwrite
   BEFORE INSERT OR UPDATE ON canonical_plan_services
   FOR EACH ROW
   EXECUTE FUNCTION align_mirror_cps_row();
