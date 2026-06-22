@@ -899,6 +899,10 @@ export default function CandidPlanPage() {
           const safeAggState = categoryAggState && isVisibleState(categoryAggState) ? categoryAggState : null;
           const label = BENEFIT_CATEGORY_LABELS[category as BenefitCategory] || SERVICE_CATEGORY_LABELS[category] || category.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
           const isOpen = openCategory === category;
+          // Item 2: a service is "drilled into" only when this category is open
+          // AND the currently-expanded benefit belongs to it. Drives the header
+          // verified-pill ↔ used-count/bar choreography in CategoryAccordion.
+          const serviceSelectedInCategory = isOpen && groups.some((g) => g.groupKey === expandedBenefit);
           return (
             <CategoryAccordion
               key={category}
@@ -910,6 +914,7 @@ export default function CandidPlanPage() {
               verifiedCount={verifiedInCategory}
               aggregateState={safeAggState}
               open={isOpen}
+              serviceSelected={serviceSelectedInCategory}
               onToggle={() => setOpenCategory(isOpen ? null : category)}
             >
               {groups.map((group) => {

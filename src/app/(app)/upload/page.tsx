@@ -18,6 +18,7 @@ import { FindTipsPanel } from "@/components/upload/FindTipsPanel";
 import {
   DOC_TYPES,
   PICKER_OPTIONS,
+  getDocTypeClass,
   type DocType,
   type DocTypeConfirmation,
   type PickerOptionKey,
@@ -1162,7 +1163,7 @@ function UploadForm() {
           backend Pattern P silently overrode the user's pick at high
           confidence. Tells the user what we detected + where the results
           will land. Stays visible across the post-upload window. */}
-      {resolvedDocType && userPickAtUpload && (
+      {resolvedDocType && userPickAtUpload && getDocTypeClass(resolvedDocType) !== getDocTypeClass(userPickAtUpload) && (
         <div className="mb-4 flex items-start gap-3 rounded-2xl border border-amber-100 bg-amber-50 p-4">
           <svg className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />

@@ -45,6 +45,7 @@ export default function HsaMarketplacePage() {
       extraSlot={<HsaPartnerSignupForm />}
       fineprint="HSA / FSA eligibility depends on your specific account administrator. Always confirm with your account provider before purchasing. Candid does not sell or fulfill orders."
       closable
+      closeHref="/plan"
     >
       <HsaMarketplaceBackdrop />
     </LockedOverlay>
