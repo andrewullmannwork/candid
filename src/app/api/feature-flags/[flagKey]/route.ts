@@ -19,6 +19,8 @@ const EXPOSED_FLAGS = new Set([
   "plan_year_rollover",
   "benefit_corrections",
   "compare_v2_redesign", // S157 Compare v2 results reskin (frontend UI gate)
+  "change_plan_v1", // S207 Stretch 1 — Change plan control on /plan
+  "case_file_enriched_v1", // S207 Stretch 2 — enriched Case File download on /disputes
 ]);
 
 export async function GET(
