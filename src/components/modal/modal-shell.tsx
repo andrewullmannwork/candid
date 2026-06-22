@@ -218,7 +218,16 @@ export function ModalShell({
         )}
 
         {children && (
-          <div className="px-6 pt-4 pb-2 flex-1 overflow-y-auto text-[15px] text-gray-700 leading-relaxed">
+          <div
+            className={cn(
+              "px-6 pt-4 flex-1 overflow-y-auto text-[15px] text-gray-700 leading-relaxed",
+              // With a footer, the footer's py-4 supplies the bottom inset (keep
+              // pb-2 so the body sits close to the divider). Without a footer the
+              // body is the last element, so it needs a full bottom inset to match
+              // the header's pt-6 — otherwise the card looks bottom-cramped.
+              footer ? "pb-2" : "pb-6",
+            )}
+          >
             {children}
           </div>
         )}
