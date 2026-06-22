@@ -90,17 +90,24 @@ export interface EvaluateCorroborationResult {
  * @param canonicalPlanId UUID of the canonical_plans row
  * @param serviceSlug Service slug (null for plan-identity fields)
  * @param fieldName Field to evaluate (e.g. 'deductible_individual', 'copay')
+ * @param placeOfService S205: per-service cost-share cell coord; null = aggregate (mig-108).
+ *   Plan-identity callers pass null → the evaluator's NULL-conditional predicate is byte-identical.
+ * @param component S205: per-service cell coord (facility/professional/global); null = aggregate.
  */
 export async function evaluateCorroboration(
   supabase: SupabaseClient,
   canonicalPlanId: string,
   serviceSlug: string | null,
   fieldName: string,
+  placeOfService: string | null = null,
+  component: string | null = null,
 ): Promise<EvaluateCorroborationResult> {
   const { data, error } = await supabase.rpc("evaluate_pattern1_corroboration", {
     p_canonical_plan_id: canonicalPlanId,
     p_service_slug: serviceSlug,
     p_field_name: fieldName,
+    p_place_of_service: placeOfService,
+    p_component: component,
   });
 
   if (error) {

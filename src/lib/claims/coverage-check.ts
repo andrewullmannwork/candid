@@ -98,16 +98,16 @@ export async function checkCoverageDiscrepancies(
   if (canonicalPlanId) {
     const { data: canonicalServices } = await supabase
       .from("canonical_plan_services")
-      .select("service_slug, is_covered, copay, coinsurance")
+      .select("service_slug, covered, in_copay, in_coinsurance")
       .eq("canonical_plan_id", canonicalPlanId);
 
     if (canonicalServices) {
       for (const svc of canonicalServices) {
         if (svc.service_slug) {
           canonicalCoverage.set(svc.service_slug, {
-            is_covered: svc.is_covered !== false,
-            copay: svc.copay,
-            coinsurance: svc.coinsurance,
+            is_covered: svc.covered !== false,
+            copay: svc.in_copay,
+            coinsurance: svc.in_coinsurance,
           });
         }
       }

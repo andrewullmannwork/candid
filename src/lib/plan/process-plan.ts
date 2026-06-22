@@ -1506,7 +1506,7 @@ export async function processPlanDocumentData(
 
         const { data: canonicalServices } = await supabase
           .from("canonical_plan_services")
-          .select("service_slug, copay, coinsurance, deductible_applies, is_covered, requires_prior_auth, confidence, field_provenance")
+          .select("service_slug, in_copay, in_coinsurance, in_deductible_applies, covered, prior_auth_required, confidence, field_provenance")
           .eq("canonical_plan_id", canonicalPlanId)
           .gte("confidence", inheritanceMinConfidence);
 
@@ -1540,11 +1540,11 @@ export async function processPlanDocumentData(
                   service_id: svc.id,
                   place_of_service: "any",
                   component: "global",
-                  in_copay: cs.copay,
-                  in_coinsurance: normalizeCoinsuranceForStorage(cs.coinsurance),
-                  in_deductible_applies: cs.deductible_applies,
-                  covered: cs.is_covered,
-                  prior_auth_required: cs.requires_prior_auth,
+                  in_copay: cs.in_copay,
+                  in_coinsurance: normalizeCoinsuranceForStorage(cs.in_coinsurance),
+                  in_deductible_applies: cs.in_deductible_applies,
+                  covered: cs.covered,
+                  prior_auth_required: cs.prior_auth_required,
                   confidence: Math.min(cs.confidence, 0.8), // Inherited data slightly lower confidence
                   source: "canonical_inherited" as const,
                   // Phase 3.2.1 — preserve Pattern P-8 cite chain across inheritance.

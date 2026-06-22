@@ -23,6 +23,11 @@
 
 import type { FieldProvenanceEntry, SourceProvenance } from "./field-categories";
 import { buildProvenanceEntry } from "./field-categories";
+// S205 (Corroboration-PS): coinsurance is stored as a decimal column (mig-level
+// normalizeCoinsuranceForStorage at every INSERT). The provenance `value` must mirror
+// the COLUMN, so normalize coinsurance the same way before stamping it into the entry —
+// otherwise cross-user GROUP BY splits decimal (0.4) vs raw-percent (40) corroborators.
+import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 import type { PatternP8Provenance } from "./verify-source-excerpts";
 import type { SBCHaikuService, SBCPlanIdentity } from "@/lib/sbc/types";
 import type { EOCPlanIdentity } from "@/lib/eoc/types";
@@ -100,6 +105,12 @@ export function buildPlanCoveredServiceProvenance(
       haikuConfidence,
       patternP8,
       searchedSections,
+      // S205: stamp the corroboration value = the typed column value. Coinsurance is
+      // stored as a decimal column, so normalize to match it (else cross-user GROUP BY
+      // splits 0.4-vs-40 corroborators).
+      column === "in_coinsurance" || column === "out_coinsurance"
+        ? normalizeCoinsuranceForStorage(value as number | null)
+        : value,
     );
     if (entry) provenance[column] = entry;
   }
@@ -205,6 +216,7 @@ export function buildSBCPlanIdentityProvenance(
       field.haikuConfidence,
       adaptPatternP8(field.patternP8),
       searchedSections,
+      field.value, // S205: corroboration value = the plan-identity scalar (no coinsurance here)
     );
     if (entry) provenance[column] = entry;
   }
@@ -312,6 +324,12 @@ export function buildPlanDocServiceProvenance(
       haikuConfidence,
       patternP8,
       searchedSections,
+      // S205: stamp the corroboration value = the typed column value. Coinsurance is
+      // stored as a decimal column, so normalize to match it (else cross-user GROUP BY
+      // splits 0.4-vs-40 corroborators).
+      column === "in_coinsurance" || column === "out_coinsurance"
+        ? normalizeCoinsuranceForStorage(value as number | null)
+        : value,
     );
     if (entry) provenance[column] = entry;
   }
@@ -364,6 +382,7 @@ export function buildPlanDocIdentityProvenance(
       field.haikuConfidence,
       adaptPatternP8(field.patternP8),
       searchedSections,
+      field.value, // S205: corroboration value = the plan-identity scalar (no coinsurance here)
     );
     if (entry) provenance[column] = entry;
   }
@@ -399,7 +418,8 @@ export function buildEOCPlanIdentityProvenance(
   for (const [column, value] of fields) {
     if (value === null || value === undefined) continue;
     // No patternP8 — regex extraction. Entry carries source + confidence + timestamp only.
-    const entry = buildProvenanceEntry("insurance_plans", column, source);
+    // S205: stamp the corroboration value (plan-identity scalars; no coinsurance here).
+    const entry = buildProvenanceEntry("insurance_plans", column, source, undefined, undefined, undefined, value);
     if (entry) provenance[column] = entry;
   }
   return provenance;

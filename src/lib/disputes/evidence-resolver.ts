@@ -1451,7 +1451,7 @@ async function loadCoverageFromCanonical(
   const { data: rows } = await supabase
     .from("canonical_plan_services")
     .select(
-      "is_covered, copay, coinsurance, source, confidence, field_provenance, service_catalog!inner(slug, name)",
+      "covered, in_copay, in_coinsurance, source, confidence, field_provenance, service_catalog!inner(slug, name)",
     )
     .eq("canonical_plan_id", canonicalPlanId);
 
@@ -1472,9 +1472,9 @@ async function loadCoverageFromCanonical(
       : new Map<string, string>();
 
   for (const r of rows as unknown as Array<{
-    is_covered: boolean | null;
-    copay: number | null;
-    coinsurance: number | null;
+    covered: boolean | null;
+    in_copay: number | null;
+    in_coinsurance: number | null;
     source: string | null;
     confidence: number | null;
     field_provenance: Record<string, FieldProvenanceEntry> | null;
@@ -1490,7 +1490,7 @@ async function loadCoverageFromCanonical(
     // verified cite-grade). canonical_plan_services rows may have their own
     // field_provenance with admin_attested sources; treat those as verified
     // structurally (Pattern 1 #4) but excerpt comes from haiku-extractions.
-    const primaryField = r.copay !== null ? "copay" : "coinsurance";
+    const primaryField = r.in_copay !== null ? "in_copay" : "in_coinsurance";
     const p8Entry = r.field_provenance?.[primaryField];
     const p8 = extractPatternP8FromEntry(p8Entry);
     const userRowCiteGrade = isCitationGrade(p8);
@@ -1508,9 +1508,9 @@ async function loadCoverageFromCanonical(
 
     const canonicalSlug = coverageCanonicalMap.get(cat.slug) ?? cat.slug;
     byServiceSlug.set(canonicalSlug, {
-      covered: r.is_covered !== false,
-      copay: r.copay,
-      coinsurance: r.coinsurance,
+      covered: r.covered !== false,
+      copay: r.in_copay,
+      coinsurance: r.in_coinsurance,
       source: r.source ?? "canonical",
       confidence,
       citation: `Summary of Benefits and Coverage — ${cat.name}`,

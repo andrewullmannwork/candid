@@ -45,6 +45,15 @@ export interface FieldEvaluationCandidate {
   serviceSlug: string | null;
   /** Field name to evaluate (e.g. 'deductible_individual', 'copay', 'coinsurance'). */
   fieldName: string;
+  /**
+   * S205 (Corroboration-PS): the cost-share CELL coords for per-service candidates, so the
+   * evaluator groups cross-user agreement per (service × place_of_service × component) cell
+   * instead of aggregating across cells (which would mix e.g. facility vs office cost-sharing).
+   * Undefined/null for plan-identity candidates → the evaluator's NULL-conditional predicates
+   * collapse to TRUE = mig-108 aggregate (byte-identical to pre-S205 behavior).
+   */
+  placeOfService?: string | null;
+  component?: string | null;
 }
 
 /**
@@ -170,7 +179,8 @@ export interface CommitAndEvaluateResult {
  * (slug, field) pair where the actor's plan_covered_services has a value.
  * Runs for ALL callers — not admin-only — to fix the silently broken organic path.
  */
-async function expandPerServiceCandidates(
+// Exported for the S205 candidate-cells fixture (gate d) — proves per-cell candidate emission.
+export async function expandPerServiceCandidates(
   supabase: SupabaseClient,
   actorUserId: string,
   canonicalPlanId: string,
@@ -188,7 +198,7 @@ async function expandPerServiceCandidates(
 
   const { data: rows } = await supabase
     .from("plan_covered_services")
-    .select("service_id, in_copay, in_coinsurance, in_deductible_applies, covered, prior_auth_required, out_copay, out_coinsurance, out_deductible_applies")
+    .select("service_id, place_of_service, component, in_copay, in_coinsurance, in_deductible_applies, covered, prior_auth_required, out_copay, out_coinsurance, out_deductible_applies")
     .eq("insurance_plan_id", plan.id);
   if (!rows || rows.length === 0) return existing;
 
@@ -200,31 +210,46 @@ async function expandPerServiceCandidates(
   const idToSlug = new Map<string, string>();
   for (const s of services ?? []) idToSlug.set(s.id as string, s.slug as string);
 
-  const perServiceFields: { name: string; rowKey: keyof typeof rows[0] }[] = [
-    { name: "copay", rowKey: "in_copay" },
-    { name: "coinsurance", rowKey: "in_coinsurance" },
-    { name: "deductible_applies", rowKey: "in_deductible_applies" },
-    { name: "is_covered", rowKey: "covered" },
-    { name: "requires_prior_auth", rowKey: "prior_auth_required" },
-    { name: "out_copay", rowKey: "out_copay" },
-    { name: "out_coinsurance", rowKey: "out_coinsurance" },
-    { name: "out_deductible_applies", rowKey: "out_deductible_applies" },
+  // S205 (Corroboration-PS): the candidate fieldName MUST be the plan_covered_services
+  // COLUMN name. The mig-156 evaluator reads `plan_covered_services.field_provenance->
+  // fieldName->'value'`, and that provenance is keyed by column name (see
+  // buildPlanCoveredServiceProvenance). Pre-S205 this emitted canonical-style aliases
+  // (copay/requires_prior_auth) that never matched the stored keys (in_copay/
+  // prior_auth_required) → per-service corroboration counted 0 on every row. The
+  // canonical-name mapping that mig-148 promotion needs is a canonical-WRITE concern,
+  // handled in Part 2 (not here — Part 1 is user-scoped counting only).
+  const perServiceColumns: (keyof typeof rows[0])[] = [
+    "in_copay",
+    "in_coinsurance",
+    "in_deductible_applies",
+    "covered",
+    "prior_auth_required",
+    "out_copay",
+    "out_coinsurance",
+    "out_deductible_applies",
   ];
 
+  // S205: dedup + emit per CELL (a plan_covered_services row IS one (place_of_service,
+  // component) cell). Pre-S205 the key omitted the cell, so a multi-cell service (e.g.
+  // surgery facility + office) collapsed to one candidate, losing the other cell.
   const seen = new Set<string>();
-  for (const c of existing) seen.add(`${c.serviceSlug ?? ""}::${c.fieldName}`);
+  for (const c of existing) {
+    seen.add(`${c.serviceSlug ?? ""}::${c.fieldName}::${c.placeOfService ?? ""}::${c.component ?? ""}`);
+  }
 
   const added: FieldEvaluationCandidate[] = [];
   for (const row of rows) {
     const slug = idToSlug.get(row.service_id as string);
     if (!slug) continue;
-    for (const { name, rowKey } of perServiceFields) {
-      const v = (row as Record<string, unknown>)[rowKey as string];
+    const placeOfService = (row.place_of_service as string | null) ?? null;
+    const component = (row.component as string | null) ?? null;
+    for (const column of perServiceColumns) {
+      const v = (row as Record<string, unknown>)[column as string];
       if (v === undefined || v === null) continue;
-      const key = `${slug}::${name}`;
+      const key = `${slug}::${column as string}::${placeOfService ?? ""}::${component ?? ""}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      added.push({ serviceSlug: slug, fieldName: name });
+      added.push({ serviceSlug: slug, fieldName: column as string, placeOfService, component });
     }
   }
   return added.length > 0 ? [...existing, ...added] : existing;
@@ -291,13 +316,13 @@ async function readAdminPerServiceValue(
     }
   }
 
-  // Direct column fallback — map field names to actual columns
+  // Direct column fallback — keyed by the ALIGNED fieldName (candidates emit aligned names; F.0 Phase 2).
   const colMap: Record<string, unknown> = {
-    copay: row.in_copay,
-    coinsurance: row.in_coinsurance,
-    deductible_applies: row.in_deductible_applies,
-    is_covered: row.covered,
-    requires_prior_auth: row.prior_auth_required,
+    in_copay: row.in_copay,
+    in_coinsurance: row.in_coinsurance,
+    in_deductible_applies: row.in_deductible_applies,
+    covered: row.covered,
+    prior_auth_required: row.prior_auth_required,
   };
   const direct = colMap[fieldName];
   if (direct !== undefined && direct !== null) {
@@ -402,7 +427,7 @@ export async function commitUploadAndEvaluateCorroboration(
   }
 
   for (const candidate of effectiveCandidates) {
-    const { serviceSlug, fieldName } = candidate;
+    const { serviceSlug, fieldName, placeOfService, component } = candidate;
 
     // Step 1: evaluate corroboration (read-only)
     // Still runs for admin path — evaluator builds corroborated_value +
@@ -414,6 +439,8 @@ export async function commitUploadAndEvaluateCorroboration(
       input.canonicalPlanId,
       serviceSlug,
       fieldName,
+      placeOfService ?? null, // S205: per-cell grouping; null for plan-identity = mig-108 aggregate
+      component ?? null,
     );
 
     if (evalError || !decision) {
@@ -465,6 +492,11 @@ export async function commitUploadAndEvaluateCorroboration(
         input.fireSource,
         input.actorUserId,
         "admin_override",
+        // S205: promote to the candidate's CELL so a multi-cell service doesn't collapse every
+        // cell's value onto the default 'any'/'global' canonical row. No-op for single-cell
+        // (candidate cell IS 'any'/'global'); ignored by mig-148 for plan-identity (slug null).
+        placeOfService ?? "any",
+        component ?? "global",
       );
       if (applyError || !eventId) {
         const message = applyError?.message ?? "apply returned no event_id";
@@ -488,6 +520,11 @@ export async function commitUploadAndEvaluateCorroboration(
         decision.corroborator_excerpts,
         input.fireSource,
         input.actorUserId,
+        null, // forceEventType
+        // S205: promote to the candidate's CELL (no-op for single-cell 'any'/'global'; plan-identity
+        // passes 'any' which mig-148 ignores for the canonical_plans branch).
+        placeOfService ?? "any",
+        component ?? "global",
       );
       if (applyError || !eventId) {
         const message = applyError?.message ?? "apply returned no event_id";
@@ -508,6 +545,11 @@ export async function commitUploadAndEvaluateCorroboration(
         decision.corroborator_excerpts,
         input.fireSource,
         input.actorUserId,
+        null, // forceEventType
+        // S205: promote to the candidate's CELL (no-op for single-cell 'any'/'global'; plan-identity
+        // passes 'any' which mig-148 ignores for the canonical_plans branch).
+        placeOfService ?? "any",
+        component ?? "global",
       );
       if (applyError || !eventId) {
         const message = applyError?.message ?? "apply returned no event_id";

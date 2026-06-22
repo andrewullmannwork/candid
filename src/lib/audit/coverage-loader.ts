@@ -535,7 +535,7 @@ export async function loadCanonicalCoverageMeta(
 
   const { data: services, error } = await supabase
     .from("canonical_plan_services")
-    .select("canonical_plan_id, service_slug, copay, coinsurance, is_covered")
+    .select("canonical_plan_id, service_slug, in_copay, in_coinsurance, covered")
     .in("canonical_plan_id", ids);
   if (error) {
     console.warn("[coverage-loader] loadCanonicalCoverageMeta services load failed", error);
@@ -563,11 +563,11 @@ export async function loadCanonicalCoverageMeta(
       slug,
       category: categoryBySlug.get(slug) ?? null,
       coverage: {
-        covered: r.is_covered as boolean | null,
-        copay: r.copay as number | null,
-        // canonical_plan_services.coinsurance may be integer-percent OR decimal;
-        // normalize to decimal 0-1 (parity with loadPlanCoverageMeta).
-        coinsurance: normalizeCoinsuranceForStorage(r.coinsurance as number | null),
+        covered: r.covered as boolean | null,
+        copay: r.in_copay as number | null,
+        // canonical_plan_services.in_coinsurance is decimal-stored; normalize defensively
+        // (parity with loadPlanCoverageMeta).
+        coinsurance: normalizeCoinsuranceForStorage(r.in_coinsurance as number | null),
       },
     });
   }

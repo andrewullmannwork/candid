@@ -475,6 +475,8 @@ export class EocCoverageAccumulator {
         "doc_extraction_eoc",
         merged.provenanceSource.haiku_confidence,
         buildP8Args(merged.provenanceSource),
+        undefined, // searchedSections
+        true, // S205: value = the typed prior_auth_required column written below (a PA service requires it)
       );
       try {
         const { cellsWritten, error } = await upsertServiceCoverage(
@@ -529,6 +531,8 @@ export class EocCoverageAccumulator {
         "doc_extraction_eoc",
         merged.provenanceSource.haiku_confidence,
         buildP8Args(merged.provenanceSource),
+        undefined, // searchedSections
+        true, // S205: value = the typed prior_auth_required column written below (a PA service requires it)
       );
       try {
         const { cellsWritten, error } = await upsertServiceCoverage(
