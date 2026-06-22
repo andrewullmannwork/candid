@@ -206,6 +206,47 @@ const styles = StyleSheet.create({
     fontStyle: "italic",
     lineHeight: 1.45,
   },
+  // ── Claim Summary table (Section 1) ──
+  claimMeta: {
+    fontSize: 9.5,
+    color: C.sub,
+    marginBottom: 10,
+    lineHeight: 1.45,
+  },
+  table: {
+    borderWidth: 0.5,
+    borderColor: C.line,
+    borderRadius: 6,
+    overflow: "hidden",
+  },
+  tr: {
+    flexDirection: "row",
+    borderBottomWidth: 0.5,
+    borderBottomColor: C.line,
+  },
+  trHead: {
+    backgroundColor: C.card,
+  },
+  th: {
+    fontSize: 7.5,
+    fontWeight: 700,
+    color: C.muted,
+    textTransform: "uppercase",
+    letterSpacing: 0.3,
+    paddingVertical: 6,
+    paddingHorizontal: 7,
+    lineHeight: 1.3,
+  },
+  td: {
+    fontSize: 9,
+    color: C.body,
+    paddingVertical: 6,
+    paddingHorizontal: 7,
+    lineHeight: 1.35,
+  },
+  colService: { flex: 3 },
+  colCode: { flex: 2 },
+  colNum: { flex: 1.5, textAlign: "right" },
 });
 
 interface Props {
@@ -264,9 +305,13 @@ export function CaseFilePdf({ pkg, providerName, referenceId }: Props) {
               <View style={styles.sectionRule} />
               <Text style={styles.sectionTitle}>{section.title}</Text>
             </View>
-            {/* Section 0 (the verbatim letter) renders in a subtle card. */}
+            {/* Section 0 (the verbatim letter) renders in a subtle card;
+                Section 1 (Claim Summary) renders as a real table from the
+                structured evidence; everything else is the string content. */}
             {section.title.startsWith("0.") ? (
               <Text style={styles.letterBody}>{section.content}</Text>
+            ) : section.title.startsWith("1.") && pkg.evidence?.claims?.[0] ? (
+              <ClaimSummaryTable claim={pkg.evidence.claims[0]} />
             ) : (
               <Text style={styles.sectionContent}>{section.content}</Text>
             )}
@@ -300,11 +345,49 @@ function Footer({ left, right }: { left: string; right: string }) {
   );
 }
 
+type ClaimRow = NonNullable<EvidencePackage["evidence"]>["claims"][number];
+
+function ClaimSummaryTable({ claim }: { claim: ClaimRow }) {
+  return (
+    <View>
+      <Text style={styles.claimMeta}>
+        Date of service: {claim.dateOfService ?? "Unknown"}   ·   Provider:{" "}
+        {claim.providerName ?? "Unknown"}   ·   Plan year: {claim.planYear ?? "Unknown"}   ·   Total billed:{" "}
+        {formatUsd(claim.totalBilled)}
+      </Text>
+      <View style={styles.table}>
+        <View style={[styles.tr, styles.trHead]}>
+          <Text style={[styles.th, styles.colService]}>Service</Text>
+          <Text style={[styles.th, styles.colCode]}>Code</Text>
+          <Text style={[styles.th, styles.colNum]}>Billed</Text>
+          <Text style={[styles.th, styles.colNum]}>Ins. paid</Text>
+          <Text style={[styles.th, styles.colNum]}>Patient</Text>
+        </View>
+        {claim.lineItemEvidence.map((li, i) => (
+          <View key={i} style={styles.tr} wrap={false}>
+            <Text style={[styles.td, styles.colService]}>{li.serviceName}</Text>
+            <Text style={[styles.td, styles.colCode]}>
+              {li.billingCode ? `${li.billingCode.type} ${li.billingCode.value}` : "—"}
+            </Text>
+            <Text style={[styles.td, styles.colNum]}>{formatUsd(li.billedAmount)}</Text>
+            <Text style={[styles.td, styles.colNum]}>{formatUsd(li.insurancePaid ?? 0)}</Text>
+            <Text style={[styles.td, styles.colNum]}>{formatUsd(li.patientOwes ?? 0)}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
 function formatPlanLabel(pc: PlanContext | null | undefined): string {
-  if (!pc?.plan) return "—";
-  const name = pc.plan.planName ?? "Plan";
-  const year = pc.plan.planYear ? `, ${pc.plan.planYear}` : "";
-  const insurer = pc.insurer?.name ?? pc.plan.insurerName ?? "";
+  // Prefer the exact-year resolved plan; fall back to the user's plan on file
+  // (fallbackPlan) so the Case File shows their plan instead of "—" when the
+  // year/active resolver can't make an exact match.
+  const p = pc?.plan ?? pc?.fallbackPlan;
+  if (!p) return "—";
+  const name = p.planName ?? "Plan";
+  const year = p.planYear ? `, ${p.planYear}` : "";
+  const insurer = pc?.insurer?.name ?? p.insurerName ?? "";
   return `${name}${year}${insurer ? ` · ${insurer}` : ""}`;
 }
 

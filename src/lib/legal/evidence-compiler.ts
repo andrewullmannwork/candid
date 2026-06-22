@@ -197,22 +197,28 @@ ${bullets}`,
     });
   }
 
-  // ── Section 6 — Pricing Comparison (real numbers when k-anon met) ────────
-  if (evidence.communityEvidence) {
-    const b = evidence.communityEvidence;
+  // ── Section 6 — Pricing Comparison ───────────────────────────────────────
+  // NEVER surface internal thresholds (k-anonymity / report counts) to the user.
+  const cv = evidence.communityEvidence;
+  const hasPricing =
+    cv != null &&
+    (cv.medianCopayPaid != null ||
+      cv.pricingBenchmarks.medicareRate != null ||
+      cv.pricingBenchmarks.communityMedian != null);
+  if (hasPricing && cv) {
     sections.push({
       title: "6. Pricing Comparison",
-      content: `Community data (${b.sameCodeSamePlanCount} reports${b.sameCodeSamePlanCount < 5 ? " — below k-anonymity threshold; aggregate suppressed" : ""}):
-- Median copay paid: ${b.medianCopayPaid != null ? formatUsd(b.medianCopayPaid) : "—"}
-- Medicare rate: ${b.pricingBenchmarks.medicareRate != null ? formatUsd(b.pricingBenchmarks.medicareRate) : "—"}
-- Community median: ${b.pricingBenchmarks.communityMedian != null ? formatUsd(b.pricingBenchmarks.communityMedian) : "—"}`,
+      content: `Based on community-reported costs for the services in this claim:
+- Median copay paid: ${cv.medianCopayPaid != null ? formatUsd(cv.medianCopayPaid) : "—"}
+- Medicare rate: ${cv.pricingBenchmarks.medicareRate != null ? formatUsd(cv.pricingBenchmarks.medicareRate) : "—"}
+- Community median: ${cv.pricingBenchmarks.communityMedian != null ? formatUsd(cv.pricingBenchmarks.communityMedian) : "—"}`,
       disclaimer: DISCLAIMERS.pricing_care,
     });
   } else {
     sections.push({
       title: "6. Pricing Comparison",
       content:
-        "Community pricing data for the services in this claim is not yet available at the k-anonymity threshold (< 5 independent reports). Candid Care will populate this section once more community data accumulates.",
+        "We don't have enough community pricing data for the services in this claim yet. This section will fill in as more community data becomes available.",
       disclaimer: DISCLAIMERS.pricing_care,
     });
   }
@@ -228,7 +234,7 @@ ${bullets}`,
       .eq("user_id", userId)
       .maybeSingle();
     if (dispute?.filed_date) {
-      events.push({ date: dispute.filed_date, event: `Dispute drafted — status: ${dispute.status}` });
+      events.push({ date: dispute.filed_date, event: "Dispute drafted" });
     }
     if (dispute?.resolution_date) {
       events.push({
@@ -329,7 +335,7 @@ Insurer (appeals contact):
     }
   }
 
-  // ── Section 11 — Community Outcomes per line (Stretch 2; k-anon >= 5) ─────
+  // ── Section 11 — Community Outcomes per line (Stretch 2) ─────────────────
   if (claim) {
     const coBullets = claim.lineItemEvidence
       .filter((li) => li.communityOutcome != null)
@@ -341,7 +347,7 @@ Insurer (appeals contact):
     if (coBullets) {
       sections.push({
         title: "11. Community Outcomes",
-        content: `How other members on this plan fared for the same codes (aggregated, k-anonymity >= 5):\n\n${coBullets}`,
+        content: `How other members on this plan fared for the same codes (aggregated community data):\n\n${coBullets}`,
         disclaimer: DISCLAIMERS.pricing_care,
       });
     }
@@ -365,7 +371,7 @@ Insurer (appeals contact):
   - Your plan terms (uploaded document or corroborated canonical plan) — Plan Coverage Evidence
   - Your claim / EOB line items — Claim Summary, Discrepancy Documentation
   - Candid's automated bill audit, where it has run — Audit Analysis
-  - Community data at k-anonymity >= 5, where available — Pricing Comparison, Community Outcomes
+  - Community data, where available — Pricing Comparison, Community Outcomes
   - Public statutes & regulations — Legal Framework
 
 Evidence strength is presented qualitatively in the Candid app (e.g. "partially supported"); this package intentionally omits any numeric score or prediction of whether the insurer will agree.`,
