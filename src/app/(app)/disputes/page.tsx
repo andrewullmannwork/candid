@@ -268,6 +268,17 @@ function DisputesContent() {
   const [evidenceModalOpen, setEvidenceModalOpen] = useState(false);
   const [outcomeToast, setOutcomeToast] = useState<string | null>(null);
   const disputeId = searchParams.get("dispute");
+  // Stretch 2 — enriched Case File rollout flag (case_file_enriched_v1), read
+  // via /api/feature-flags (a browser-Supabase read returns [] under Firebase auth).
+  const [caseFileEnrichedEnabled, setCaseFileEnrichedEnabled] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/feature-flags/case_file_enriched_v1")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d) setCaseFileEnrichedEnabled(!!d.enabled); })
+      .catch(() => { /* OFF → legacy text export */ });
+    return () => { cancelled = true; };
+  }, []);
 
   // S132 iter-2 — drop the layout-level DisputeDraftOverlay once the fetch
   // settles (letter ready OR fetch errored). Cleanup on unmount as safety so
@@ -484,6 +495,35 @@ function DisputesContent() {
     URL.revokeObjectURL(url);
   };
 
+  // Stretch 2 — enriched PDF export via the Pro-gated evidence-package route.
+  // Falls back to the legacy text file on any failure so the user always gets a
+  // download. claimId is carried on letter.auditReportId (set from data.claimId).
+  async function downloadEnrichedCaseFile() {
+    if (!user || !letter) return;
+    const claimId = letter.auditReportId;
+    try {
+      if (!claimId) throw new Error("no claimId");
+      const idToken = await user.firebaseUser.getIdToken();
+      const params = new URLSearchParams({ claimId, format: "pdf" });
+      if (disputeId) params.set("disputeId", disputeId);
+      const res = await fetch(`/api/legal/evidence-package?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${idToken}` },
+      });
+      if (!res.ok) throw new Error(`evidence-package ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `candid-case-file-${letter.letterType || "claim"}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      downloadCaseFile({ ...letter, body: editedBody });
+    }
+  }
+
   const handleDownloadCaseFile = () => {
     if (!letter) return;
     // Phase 3: warn-not-block when plan missing for claim year.
@@ -497,6 +537,8 @@ function DisputesContent() {
       setDownloadWarnOpen(true);
       return;
     }
+    // Stretch 2 — enriched PDF when the rollout flag is ON; legacy text otherwise.
+    if (caseFileEnrichedEnabled) { void downloadEnrichedCaseFile(); return; }
     // Use the edited body so any user edits are included
     downloadCaseFile({ ...letter, body: editedBody });
   };
@@ -504,6 +546,7 @@ function DisputesContent() {
   const forceDownloadCaseFile = () => {
     if (!letter) return;
     setDownloadWarnOpen(false);
+    if (caseFileEnrichedEnabled) { void downloadEnrichedCaseFile(); return; }
     downloadCaseFile({ ...letter, body: editedBody });
   };
 
