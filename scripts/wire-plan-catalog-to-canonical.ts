@@ -381,12 +381,17 @@ async function main() {
         canonical_plan_id: canonicalPlanId,
         concept_id: slugConceptMap.get(serviceSlug) || null,
         service_slug: serviceSlug,
-        copay,
-        coinsurance,
-        is_covered: benefit.covered && parsed.is_covered,
-        requires_prior_auth: false,
+        // F.0 Phase 3 (mig 173): write the ALIGNED canonical columns directly (was legacy
+        // copay/coinsurance/is_covered/requires_prior_auth/deductible_applies). Legacy columns are
+        // frozen/deprecated; the dormant align_mirror_cps_row net only back-fills aligned from
+        // legacy if an unknown writer still sets a legacy column. Values unchanged (pure rename;
+        // coinsurance is already decimal [0,1] via parseDisplayString / coinsurance_rate).
+        in_copay: copay,
+        in_coinsurance: coinsurance,
+        covered: benefit.covered && parsed.is_covered,
+        prior_auth_required: false,
         requires_referral: false,
-        deductible_applies: parsed.deductible_applies,
+        in_deductible_applies: parsed.deductible_applies,
         annual_limit: null,
         visit_limit: null,
         coverage_rules: {},
