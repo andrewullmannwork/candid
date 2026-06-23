@@ -32,6 +32,8 @@ import type { ProcessPlanResult } from "@/lib/plan/process-plan";
 import { buildEOCPlanIdentityProvenance } from "@/lib/parser/provenance-builders";
 import { canonicalizeSlug, loadServiceRenameMap, acceptCodeAnchoredSlug } from "@/lib/plan_doc/thesaurus-routing";
 import { EocCoverageAccumulator } from "@/lib/plan/coverage-targeting";
+import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
+import { matchInsurerWithPlanFallback } from "@/lib/plan/insurer-match";
 import { resolveServices, type ResolveLineInput } from "@/lib/claims/service-resolver";
 import { loadValidServiceSlugs, enqueueUnknownServiceSlug, loadServiceVocabularyBlock } from "@/lib/parser/service-catalog-slugs";
 import {
@@ -807,6 +809,50 @@ async function persistEOCPlanIdentity(
     .single();
   if (insertErr || !newPlan) {
     return { success: false, error: `EOC plan insert failed: ${insertErr?.message ?? "unknown"}` };
+  }
+
+  // Part 2 — Corroboration-PS (S213): give every EOC-created plan a canonical IDENTITY so it can
+  // join the cross-user flywheel. The Pattern-1 evaluator GROUPs by canonical_plan_id, so a
+  // null-canonical plan is invisible to corroboration — and EOC was the ONLY parse path that never
+  // linked a canonical (SBC/plan-doc already do). Runs for both new-plan cases above: insert_active
+  // (incl. comparison uploads, which exist specifically to feed the flywheel) and insert_inactive.
+  //
+  // Rule #10 clean: findOrCreateCanonicalPlan's no-match branch creates a canonical_plans IDENTITY
+  // row ONLY (it never calls mergeServicesIntoCanonical) — canonical service VALUES still come solely
+  // from >=3-user promotion. Inputs are PLAN-SPECIFIC (insurer + plan_name + year + deductible/oop)
+  // and deliberately EXCLUDE the profile's group_number/hios_id: those describe the user's OTHER
+  // (active) plan and would exact-match a Case-3 mismatched-insurer EOC to the wrong canonical.
+  // D1 (Andrew): link CONFIDENT results only (no-match create + >=0.9 auto-link); a 0.7-0.9
+  // needs-confirmation match stays untagged (a wrong tag could let a different plan vote on a shared
+  // value like "$40 copay"). Resolving the uncertain band is the admin-tag fast-follow (Todos F.6).
+  // Non-fatal: the plan row + its coverage are already persisted; the canonical identity is enrichment.
+  try {
+    const eocPlanName = parsed.plan_identity.plan_name;
+    if (eocPlanName) {
+      const insurerMatch = await matchInsurerWithPlanFallback(supabase, {
+        insurerName: parsed.plan_identity.insurer_name,
+        planName: eocPlanName,
+      });
+      if (insurerMatch) {
+        const canonicalResult = await findOrCreateCanonicalPlan(supabase, {
+          insurerId: insurerMatch.id,
+          planName: eocPlanName,
+          planYear: parsed.plan_identity.plan_year ?? new Date().getFullYear(),
+          deductible: parsed.plan_identity.in_deductible_individual ?? undefined,
+          oopMax: parsed.plan_identity.in_oop_max_individual ?? undefined,
+          documentId,
+          insurancePlanId: newPlan.id,
+        });
+        if (!canonicalResult.needsConfirmation) {
+          await supabase
+            .from("insurance_plans")
+            .update({ canonical_plan_id: canonicalResult.canonicalPlanId })
+            .eq("id", newPlan.id);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[process-eoc] Part 2 canonical-identity link failed (non-fatal):", err);
   }
 
   // Back-populate profile pointer — but NOT for comparison uploads (they
