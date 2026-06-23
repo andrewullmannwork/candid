@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import type { BillState } from "@/lib/claims/derive-bill-state";
@@ -16,6 +16,7 @@ import { LineDrawer } from "@/components/claims/LineDrawer";
 import { BundleSuggestion } from "@/components/claims/BundleSuggestion";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useDisputeDraftOverlay } from "@/lib/loading/dispute-draft-overlay";
+import { DisputePlanChooser, type DisputePlanChooserPlan } from "@/components/disputes/DisputePlanChooser";
 
 interface CodeIdentityState {
   identityId: string | null;
@@ -3381,6 +3382,41 @@ function ThrottleToast({
 // back to "insurance_appeal" for mixed bundles (template renders each
 // finding block independently).
 
+// dispute_plan_pinning_v1 (Phase 2) — helpers for the #2 plan chooser.
+function resolveClaimYear(claim: Record<string, unknown>): number | null {
+  const py = claim.plan_year;
+  if (typeof py === "number" && Number.isInteger(py)) return py;
+  const dos = claim.date_of_service;
+  if (typeof dos === "string") {
+    const y = parseInt(dos.slice(0, 4), 10);
+    if (Number.isInteger(y)) return y;
+  }
+  return null;
+}
+
+// Default chooser selection: the claim's current pin (already DOS-correct) →
+// the plan whose coverage window contains the DOS → the active plan → newest.
+function computeDefaultPlanId(
+  plans: DisputePlanChooserPlan[],
+  claimPinId: string | null | undefined,
+  dos: string | null,
+): string | null {
+  if (claimPinId && plans.some((p) => p.insurancePlanId === claimPinId)) return claimPinId;
+  const windowMatch = dos
+    ? plans.find(
+        (p) =>
+          !!(p.coveragePeriodStart &&
+            p.coveragePeriodEnd &&
+            dos >= p.coveragePeriodStart &&
+            dos <= p.coveragePeriodEnd),
+      )
+    : undefined;
+  if (windowMatch) return windowMatch.insurancePlanId;
+  const active = plans.find((p) => p.isActive);
+  if (active) return active.insurancePlanId;
+  return plans[0]?.insurancePlanId ?? null;
+}
+
 function BulkDisputeButton({
   claimId,
   claim,
@@ -3408,6 +3444,16 @@ function BulkDisputeButton({
   // carousel/microcopy reset). BulkDisputeButton drives start()/stop();
   // disputes/page.tsx stops the overlay when its letter is ready.
   const disputeDraftOverlay = useDisputeDraftOverlay();
+
+  // dispute_plan_pinning_v1 (Phase 2) — the #2 confirm/override chooser. The
+  // flag is read lazily on first draft-click and cached (no read on claim pages
+  // where the user never drafts; flag OFF → chooser never opens, draft path is
+  // byte-identical to pre-flag).
+  const [chooserOpen, setChooserOpen] = useState(false);
+  const [chooserPlans, setChooserPlans] = useState<DisputePlanChooserPlan[]>([]);
+  const [chooserDefaultId, setChooserDefaultId] = useState<string | null>(null);
+  const pinningFlagRef = useRef<boolean | null>(null);
+  const preparingRef = useRef(false);
 
   // 1. Per-line actionable findings keyed back to their owning line item.
   const lineLevelActionable: Array<{ lineItemId: string; lineNumber: number; finding: AuditFinding; billedAmount: number }> = [];
@@ -3531,7 +3577,7 @@ function BulkDisputeButton({
     return "insurance_appeal";
   })();
 
-  async function handleClick() {
+  async function submitDispute(pinnedPlanId?: string) {
     if (loading) return;
     setLoading(true);
     setError(null);
@@ -3602,7 +3648,7 @@ function BulkDisputeButton({
           letterType: letterTypeHint,
           claimId,
           claimLineItemIds: distinctLineItemIds,
-          insurancePlanId: (claimMeta.insurance_plan_id as string) || undefined,
+          insurancePlanId: pinnedPlanId,
         }),
       });
       if (!res.ok) {
@@ -3620,6 +3666,66 @@ function BulkDisputeButton({
       setLoading(false);
       disputeDraftOverlay.stop();
     }
+  }
+
+  // dispute_plan_pinning_v1 (Phase 2) — entry point for the draft button. When
+  // the flag is ON and the claim's year has >1 of the user's plans, surface the
+  // #2 chooser so the user confirms/overrides which plan the dispute is pinned
+  // to; otherwise (flag OFF, single-plan year, or any error) draft immediately
+  // with the claim's default pin — byte-identical to pre-flag behavior.
+  async function handleClick() {
+    if (loading || preparingRef.current) return;
+    const claimMeta = claim;
+    const defaultPinId = (claimMeta.insurance_plan_id as string) || undefined;
+
+    preparingRef.current = true;
+    try {
+      if (pinningFlagRef.current === null) {
+        try {
+          const r = await fetch("/api/feature-flags/dispute_plan_pinning_v1");
+          const j = (await r.json()) as { enabled?: boolean };
+          pinningFlagRef.current = j?.enabled === true;
+        } catch {
+          pinningFlagRef.current = false;
+        }
+      }
+
+      if (pinningFlagRef.current) {
+        const year = resolveClaimYear(claimMeta);
+        if (year != null) {
+          const token = await getAuthToken();
+          if (token) {
+            const params = new URLSearchParams({ year: String(year) });
+            if (defaultPinId) params.set("pin", defaultPinId);
+            const r = await fetch(`/api/plan/by-year?${params.toString()}`, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            if (r.ok) {
+              const { plans } = (await r.json()) as { plans: DisputePlanChooserPlan[] };
+              if (plans && plans.length > 1) {
+                // Ambiguous year → prompt. The draft begins on confirm.
+                setChooserPlans(plans);
+                setChooserDefaultId(
+                  computeDefaultPlanId(
+                    plans,
+                    defaultPinId,
+                    (claimMeta.date_of_service as string) || null,
+                  ),
+                );
+                setChooserOpen(true);
+                return;
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // fall through to an immediate draft with the default pin
+    } finally {
+      preparingRef.current = false;
+    }
+
+    void submitDispute(defaultPinId);
   }
 
   // Session 86 round 6 — button shows ACTION only, no specific dollar
@@ -3659,6 +3765,19 @@ function BulkDisputeButton({
       {error && (
         <p className="mt-2 text-xs text-red-700">{error}</p>
       )}
+      <DisputePlanChooser
+        open={chooserOpen}
+        onClose={() => setChooserOpen(false)}
+        plans={chooserPlans}
+        defaultPlanId={chooserDefaultId}
+        serviceDate={(claim.date_of_service as string) || null}
+        year={resolveClaimYear(claim)}
+        submitting={loading}
+        onConfirm={(id) => {
+          setChooserOpen(false);
+          void submitDispute(id);
+        }}
+      />
     </>
   );
 }

@@ -92,6 +92,12 @@ export async function POST(req: NextRequest) {
           claimId: body.claimId ?? null,
           dateOfService: auditReport.parsedBill.serviceDate ?? null,
           planPinningEnabled,
+          // dispute_plan_pinning_v1 (Phase 2) — honor the user's confirm/override
+          // choice from the #2 chooser as the pin. The chosen id arrives in the
+          // request body; resolvePlanContext validates ownership via its
+          // user-scoped lookups and falls back to the claim's DOS-correct plan
+          // when absent, so the non-chooser path stays byte-identical.
+          pinnedInsurancePlanId: planPinningEnabled ? (insurancePlanId ?? null) : null,
         });
       } catch (err) {
         console.error("[disputes] plan-context resolve failed (non-fatal):", err);
