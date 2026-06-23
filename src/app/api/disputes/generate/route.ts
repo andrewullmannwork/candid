@@ -76,6 +76,13 @@ export async function POST(req: NextRequest) {
         );
       }
 
+      // dispute_plan_pinning_v1 — when ON, the dispute is pinned to its
+      // DOS-correct plan and resolution honors that pin across active-plan
+      // changes. Global-eval here (userEmail is a firebase_uid in this route);
+      // the view + lazy-backfill paths do per-user eval, and the backfill
+      // covers any draft created while a users-targeted flag reads OFF here.
+      const planPinningEnabled = await isFeatureEnabled("dispute_plan_pinning_v1");
+
       // Phase 1: resolve plan context — insurer name + appeals address from
       // the user's plan matching the bill's date of service.
       let planContext = null;
@@ -84,6 +91,7 @@ export async function POST(req: NextRequest) {
           userId: auditReport.userId,
           claimId: body.claimId ?? null,
           dateOfService: auditReport.parsedBill.serviceDate ?? null,
+          planPinningEnabled,
         });
       } catch (err) {
         console.error("[disputes] plan-context resolve failed (non-fatal):", err);
@@ -361,6 +369,9 @@ export async function POST(req: NextRequest) {
           amountDisputed: totalDisputed,
           letterContent: letter.body,
           citationSource,
+          // dispute_plan_pinning_v1 — pin to the resolved DOS-correct plan (what
+          // the letter was built on). Undefined when OFF (column stays null).
+          insurancePlanId: planPinningEnabled ? (planContext?.plan?.id ?? null) : undefined,
         });
         disputeId = result?.disputeId || null;
         deduplicated = result?.deduplicated ?? false;

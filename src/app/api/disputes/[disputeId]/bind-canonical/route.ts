@@ -30,6 +30,7 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
 import { resolvePlanContext } from "@/lib/disputes/plan-context";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
 import { captureCoverageSnapshot } from "@/lib/disputes/coverage-snapshot";
 
@@ -75,7 +76,7 @@ export async function POST(
 
   const { data: dispute, error: fetchErr } = await userScoped(supabase, user.id)
     .table("dispute_outcomes")
-    .select("id, metadata, claim_id, claim_line_item_id, dispute_type")
+    .select("id, metadata, claim_id, claim_line_item_id, dispute_type, insurance_plan_id")
     .eq("id", disputeId)
     .single();
   if (fetchErr || !dispute) {
@@ -124,10 +125,16 @@ export async function POST(
               | "no"
               | "not_sure")
           : null;
+      // dispute_plan_pinning_v1 — honor the dispute's pin so the pre-bind
+      // snapshot reflects the plan the dispute is pinned to (avoids a spurious
+      // diff on the next view, which now resolves with the pin).
+      const planPinningEnabled = await isFeatureEnabled("dispute_plan_pinning_v1");
       const prevPlanContext = await resolvePlanContext(supabase, {
         userId: user.id,
         claimId: dispute.claim_id as string,
         canonicalPlanIdForBillYear: prevCanonicalPlanIdForBillYear,
+        planPinningEnabled,
+        pinnedInsurancePlanId: (dispute.insurance_plan_id as string | null) ?? null,
       });
       const extraLineItemIds =
         (prevMetadata.claimLineItemIds as string[] | undefined) ?? [];

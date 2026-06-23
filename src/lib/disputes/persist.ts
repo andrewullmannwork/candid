@@ -27,6 +27,15 @@ export interface PersistDisputeInput {
    * "when can we remove Path B fallback?" trigger query.
    */
   citationSource?: "per_line_sum" | "claim_header";
+  /**
+   * dispute_plan_pinning_v1 — the plan this dispute is written against (the
+   * resolved DOS-correct plan id). Persisted to dispute_outcomes.insurance_plan_id
+   * so resolution honors it across active-plan changes. Set by the caller only
+   * when the flag is ON; null/undefined leaves the column null (flag-OFF =
+   * today). Applied on INSERT only — a dedup re-draft keeps the existing pin
+   * (which a re-bind/lazy-backfill owns), never silently overwriting it.
+   */
+  insurancePlanId?: string | null;
 }
 
 /**
@@ -144,6 +153,9 @@ export async function persistDisputeLetter(
         user_id: input.userId,
         claim_id: input.claimId || null,
         claim_line_item_id: primaryLineItemId,
+        // dispute_plan_pinning_v1 — pin the dispute to its resolved plan (null
+        // when the flag is OFF, leaving today's behavior unchanged).
+        insurance_plan_id: input.insurancePlanId ?? null,
         dispute_type: disputeType,
         status: "dispute_letter_drafted",
         amount_disputed: input.amountDisputed,

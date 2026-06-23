@@ -89,6 +89,14 @@ export async function GET(
     user.email ?? undefined,
   );
 
+  // dispute_plan_pinning_v1 — per-user eval (email available here). When ON, the
+  // resolver honors the dispute's pin, and a legacy un-pinned dispute is lazily
+  // backfilled from its DOS-correct resolved plan on this first view.
+  const planPinningEnabled = await isFeatureEnabled(
+    "dispute_plan_pinning_v1",
+    user.email ?? undefined,
+  );
+
   const { data: dispute, error } = await userScoped(supabase, user.id)
     .table("dispute_outcomes")
     .select("*")
@@ -220,12 +228,32 @@ export async function GET(
       const insurerAddressOverride =
         ((dispute.metadata as Record<string, unknown> | null)
           ?.insurerAddressOverride as InsurerAddressOverride | null) ?? null;
+      // dispute_plan_pinning_v1 — honor the dispute's pin (the plan it was
+      // written against). Explicit pin wins; null → the resolver defaults to the
+      // claim's DOS-correct plan.
+      const pinnedInsurancePlanId =
+        (dispute.insurance_plan_id as string | null) ?? null;
       planContext = await resolvePlanContext(supabase, {
         userId: user.id,
         claimId: dispute.claim_id,
         canonicalPlanIdForBillYear,
         insurerAddressOverride,
+        planPinningEnabled,
+        pinnedInsurancePlanId,
       });
+      // R5 — lazy backfill: persist the resolved pin for a legacy un-pinned
+      // dispute so resolution is stable thereafter. Non-fatal + user-scoped;
+      // never overwrites an existing pin.
+      if (planPinningEnabled && !pinnedInsurancePlanId && planContext.plan?.id) {
+        try {
+          await userScoped(supabase, user.id)
+            .table("dispute_outcomes")
+            .update({ insurance_plan_id: planContext.plan.id })
+            .eq("id", dispute.id);
+        } catch (e) {
+          console.error("[disputes] lazy pin backfill failed (non-fatal):", e);
+        }
+      }
       evidence = await resolveEvidence(supabase, {
         userId: user.id,
         claimIds: [dispute.claim_id],
