@@ -211,11 +211,33 @@ export async function resolvePlanContext(
      * all use the user's address. Null/undefined → catalog address (status quo).
      */
     insurerAddressOverride?: InsurerAddressOverride | null;
+    /**
+     * dispute_plan_pinning_v1 (Phase 1) — when true, resolution honors the
+     * explicit pin FIRST and disambiguates the fallback by date-of-service
+     * (coverage window) BEFORE plan_year, aligning with plan-year-resolver.
+     * When false/undefined, the original year-first behavior is used UNCHANGED
+     * (flag-OFF = byte-identical). Callers set this from
+     * isFeatureEnabled("dispute_plan_pinning_v1", userEmail).
+     */
+    planPinningEnabled?: boolean;
+    /**
+     * dispute_plan_pinning_v1 (Phase 1) — the dispute's pinned insurance_plans
+     * id (the plan it was written against). Honored as Tier-1 (user_exact) when
+     * `planPinningEnabled` and the pinned plan still exists for the user. Read
+     * by the caller from dispute_outcomes.insurance_plan_id (or, at draft, from
+     * claims.insurance_plan_id). Null/undefined → no pin → DOS-window fallback.
+     */
+    pinnedInsurancePlanId?: string | null;
   }
 ): Promise<PlanContext> {
   const { userId, claimId } = params;
   let { planYear, dateOfService } = params;
   let providerContact: ProviderContact | null = null;
+  // dispute_plan_pinning_v1 — the claim's DOS-correct plan (set server-side at
+  // claim creation), used as the draft-time default pin when no explicit
+  // dispute pin is passed (see effectivePin below). Server-sourced, so it is
+  // not subject to the body-supplied insurancePlanId trust issue.
+  let claimPinnedPlanId: string | null = null;
 
   // If given a claim, hydrate year + DOS + provider contact from the claim row.
   if (claimId) {
@@ -229,6 +251,7 @@ export async function resolvePlanContext(
       if (planYear == null) planYear = claim.plan_year ?? null;
       if (!dateOfService) dateOfService = claim.date_of_service ?? null;
       providerContact = extractProviderContact(claim.metadata);
+      claimPinnedPlanId = (claim.insurance_plan_id as string | null) ?? null;
     }
   }
 
@@ -258,16 +281,58 @@ export async function resolvePlanContext(
   // created_at (already pre-sorted DESC by the query above).
   const yearMatch = yearMatches.find((p) => p.is_active) ?? yearMatches[0] ?? null;
 
-  const windowMatches = !yearMatch && dateOfService
-    ? plans.filter((p) =>
-        p.coverage_period_start &&
-        p.coverage_period_end &&
-        dateOfService! >= p.coverage_period_start &&
-        dateOfService! <= p.coverage_period_end)
-    : [];
-  const windowMatch = windowMatches.find((p) => p.is_active) ?? windowMatches[0] ?? null;
-
-  const resolvedPlan = yearMatch ?? windowMatch ?? null;
+  let resolvedPlan: typeof plans[number] | null;
+  if (params.planPinningEnabled === true) {
+    // dispute_plan_pinning_v1 (R4) — precedence: explicit pin (the plan the
+    // dispute was written against) → DOS coverage-window → plan_year. The pin
+    // is authoritative, so changing the active plan never silently re-resolves
+    // the dispute; the window step disambiguates multi-plan years by service
+    // date instead of "currently active" (aligns with plan-year-resolver).
+    // Effective pin: an explicit dispute pin (view / redraft / re-bind) wins;
+    // at draft (no explicit pin yet) default to the claim's DOS-correct plan.
+    const effectivePin = params.pinnedInsurancePlanId ?? claimPinnedPlanId;
+    let pinnedMatch = effectivePin
+      ? plans.find((p) => p.id === effectivePin) ?? null
+      : null;
+    // The pin is authoritative: if it exists for the user but fell OUTSIDE the
+    // bulk fetch above (PostgREST caps that unbounded query at 1000 rows, which
+    // only bites accounts with >1000 plans), fetch it directly by id so the pin
+    // is honored regardless of plan count. Runs ONLY on the bulk-miss — normal
+    // accounts already have the pin in `plans`, so this is never reached.
+    if (effectivePin && !pinnedMatch) {
+      const { data: pinnedRow } = await supabase
+        .from("insurance_plans")
+        .select(
+          "id, plan_name, plan_year, insurer_name, plan_type, canonical_plan_id, coverage_period_start, coverage_period_end, created_at, is_active",
+        )
+        .eq("id", effectivePin)
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (pinnedRow) pinnedMatch = pinnedRow as typeof plans[number];
+    }
+    const windowMatches = dateOfService
+      ? plans.filter((p) =>
+          !!(p.coverage_period_start &&
+             p.coverage_period_end &&
+             dateOfService &&
+             dateOfService >= p.coverage_period_start &&
+             dateOfService <= p.coverage_period_end))
+      : [];
+    const windowMatch =
+      windowMatches.find((p) => p.is_active) ?? windowMatches[0] ?? null;
+    resolvedPlan = pinnedMatch ?? windowMatch ?? yearMatch ?? null;
+  } else {
+    // Flag OFF — VERBATIM original year-first behavior (untouched).
+    const windowMatches = !yearMatch && dateOfService
+      ? plans.filter((p) =>
+          p.coverage_period_start &&
+          p.coverage_period_end &&
+          dateOfService! >= p.coverage_period_start &&
+          dateOfService! <= p.coverage_period_end)
+      : [];
+    const windowMatch = windowMatches.find((p) => p.is_active) ?? windowMatches[0] ?? null;
+    resolvedPlan = yearMatch ?? windowMatch ?? null;
+  }
 
   // Fallback plan = any plan on file when no year/window match, so the
   // resolver can still surface *something* useful (e.g., user's 2026 plan

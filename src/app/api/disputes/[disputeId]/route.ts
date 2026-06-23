@@ -89,6 +89,14 @@ export async function GET(
     user.email ?? undefined,
   );
 
+  // dispute_plan_pinning_v1 — per-user eval (email available here). When ON, the
+  // resolver honors the dispute's pin, and a legacy un-pinned dispute is lazily
+  // backfilled from its DOS-correct resolved plan on this first view.
+  const planPinningEnabled = await isFeatureEnabled(
+    "dispute_plan_pinning_v1",
+    user.email ?? undefined,
+  );
+
   const { data: dispute, error } = await userScoped(supabase, user.id)
     .table("dispute_outcomes")
     .select("*")
@@ -156,6 +164,17 @@ export async function GET(
   // snapshot from current evidence. Cleared via
   // POST /api/disputes/[id]/clear-coverage-diff.
   let coverageDiff: CoverageDiff | null = null;
+  // dispute_plan_pinning_v1 (Phase 3) — view-time plan-change banner (#1) payload.
+  let planChangeBanner:
+    | {
+        previousPlanName: string | null;
+        newPlanName: string | null;
+        newPlanId: string;
+        changedAt: string;
+        serviceDate: string | null;
+        recommend: "keep" | "rebuild" | null;
+      }
+    | null = null;
 
   // Phase 1 + 7: live-resolve plan context from the linked claim, and
   // regenerate letter body if the user has uploaded new plan data since
@@ -220,12 +239,32 @@ export async function GET(
       const insurerAddressOverride =
         ((dispute.metadata as Record<string, unknown> | null)
           ?.insurerAddressOverride as InsurerAddressOverride | null) ?? null;
+      // dispute_plan_pinning_v1 — honor the dispute's pin (the plan it was
+      // written against). Explicit pin wins; null → the resolver defaults to the
+      // claim's DOS-correct plan.
+      const pinnedInsurancePlanId =
+        (dispute.insurance_plan_id as string | null) ?? null;
       planContext = await resolvePlanContext(supabase, {
         userId: user.id,
         claimId: dispute.claim_id,
         canonicalPlanIdForBillYear,
         insurerAddressOverride,
+        planPinningEnabled,
+        pinnedInsurancePlanId,
       });
+      // R5 — lazy backfill: persist the resolved pin for a legacy un-pinned
+      // dispute so resolution is stable thereafter. Non-fatal + user-scoped;
+      // never overwrites an existing pin.
+      if (planPinningEnabled && !pinnedInsurancePlanId && planContext.plan?.id) {
+        try {
+          await userScoped(supabase, user.id)
+            .table("dispute_outcomes")
+            .update({ insurance_plan_id: planContext.plan.id })
+            .eq("id", dispute.id);
+        } catch (e) {
+          console.error("[disputes] lazy pin backfill failed (non-fatal):", e);
+        }
+      }
       evidence = await resolveEvidence(supabase, {
         userId: user.id,
         claimIds: [dispute.claim_id],
@@ -291,6 +330,92 @@ export async function GET(
         );
       }
 
+      // dispute_plan_pinning_v1 (Phase 3) — view-time plan-change banner (#1).
+      // Logbook-driven (R8): fire ONLY when the user switched AWAY from this
+      // dispute's pinned plan AFTER drafting it — NOT a naive pin!=active, which
+      // would nag on every old dispute. Silent on switch-then-revert (pin ==
+      // active) and on a same-identity duplicate row. An explicit re-bind's
+      // stored snapshot (coverageDiff above) takes precedence. Non-fatal.
+      //
+      // Cheap by design: a full coverage diff here (resolveEvidence on the active
+      // plan) added seconds to every banner-showing GET for a marginal precision
+      // gain — a genuinely different plan almost always differs in coverage. We
+      // gate on the cheap signals (switch event + different plan identity); the
+      // user confirms via Keep/Rebuild, and Rebuild's re-pin surfaces the exact
+      // CoverageDiffPanel verdict.
+      if (
+        planPinningEnabled &&
+        sentAt == null &&
+        pinnedInsurancePlanId &&
+        !coverageDiff &&
+        dispute.claim_id
+      ) {
+        try {
+          const { data: switchEvent } = await supabase
+            .from("plan_change_events")
+            .select("changed_at")
+            .eq("user_id", user.id)
+            .eq("previous_plan_id", pinnedInsurancePlanId)
+            .gt("changed_at", dispute.created_at as string)
+            .order("changed_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          const { data: activePlan } = await userScoped(supabase, user.id)
+            .table("insurance_plans")
+            .select("id, plan_name, plan_year")
+            .eq("is_active", true)
+            .maybeSingle();
+          const dismissedAt = (dispute.metadata as Record<string, unknown> | null)
+            ?.planChangeBannerDismissedAt;
+          const prevName = planContext.plan?.planName ?? null;
+          const prevYear = planContext.plan?.planYear ?? null;
+          // Cheap identity gate — suppress a same-plan duplicate row (same name +
+          // year, different id); fire when the active plan is genuinely different.
+          const identityDiffers =
+            !!activePlan &&
+            ((activePlan.plan_name as string | null) !== prevName ||
+              (activePlan.plan_year as number | null) !== prevYear);
+          if (
+            switchEvent &&
+            activePlan &&
+            (activePlan.id as string) !== pinnedInsurancePlanId &&
+            identityDiffers &&
+            dismissedAt !== switchEvent.changed_at
+          ) {
+            const { data: claimRow } = await userScoped(supabase, user.id)
+              .table("claims")
+              .select("date_of_service")
+              .eq("id", dispute.claim_id)
+              .maybeSingle();
+            const serviceDate = (claimRow?.date_of_service as string | null) ?? null;
+            // D5 "recommended" — anchor on the approximate change date (R2/OQ2)
+            // with a ~30-day buffer; suppress (null) in the fuzzy zone / unknown DOS.
+            const changedAt = switchEvent.changed_at as string;
+            let recommend: "keep" | "rebuild" | null = null;
+            const dosT = serviceDate ? Date.parse(serviceDate) : NaN;
+            const chgT = Date.parse(changedAt);
+            const BUF = 30 * 24 * 60 * 60 * 1000;
+            if (!Number.isNaN(dosT) && !Number.isNaN(chgT)) {
+              if (dosT < chgT - BUF) recommend = "keep";
+              else if (dosT > chgT + BUF) recommend = "rebuild";
+            }
+            planChangeBanner = {
+              previousPlanName: prevName,
+              newPlanName: (activePlan.plan_name as string | null) ?? null,
+              newPlanId: activePlan.id as string,
+              changedAt,
+              serviceDate,
+              recommend,
+            };
+          }
+        } catch (bannerErr) {
+          console.warn(
+            "[disputes/[disputeId]] plan-change banner computation failed (non-fatal):",
+            bannerErr,
+          );
+        }
+      }
+
       // Debug logging — helps diagnose why insurer resolution fails for a
       // specific dispute. Visible in `npm run dev` logs.
       console.log("[disputes/[disputeId]] planContext resolved:", {
@@ -353,12 +478,25 @@ export async function GET(
             bodyLength: regeneratedLetterContent.length,
             snippet: regeneratedLetterContent.slice(0, 120),
           });
+          // Lost-update guard: re-read metadata immediately before this write so a
+          // concurrent metadata change committed during the ~6s regenerate (e.g. a
+          // plan-change-banner dismissal, an attestation, a same-plan confirm) is
+          // NOT clobbered by this stale read-modify-write. Overlapping GETs would
+          // otherwise overwrite each other's metadata flags wholesale.
+          const { data: freshMetaRow } = await userScoped(supabase, user.id)
+            .table("dispute_outcomes")
+            .select("metadata")
+            .eq("id", dispute.id)
+            .maybeSingle();
+          const baseMetadataForRegen =
+            (freshMetaRow?.metadata as Record<string, unknown> | null) ??
+            ((dispute.metadata as Record<string, unknown> | null) ?? {});
           await userScoped(supabase, user.id)
             .table("dispute_outcomes")
             .update({
               letter_content: regeneratedLetterContent,
               metadata: {
-                ...(dispute.metadata ?? {}),
+                ...baseMetadataForRegen,
                 planContextFingerprint: fingerprint,
                 planContextUpdatedAt: new Date().toISOString(),
                 // Block C2 item 4 — record which statutory backbone produced this
@@ -559,6 +697,7 @@ export async function GET(
     // between the previous bind state and the current bind, plus a verdict
     // on whether the dispute is still valid.
     coverageDiff,
+    planChangeBanner,
     // S110 Chunk D — surface the bound canonical id (if any) so the UI
     // can hide the strip's pre-bind affordances once a canonical is bound.
     canonicalPlanIdForBillYear: ((): string | null => {

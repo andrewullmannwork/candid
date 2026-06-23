@@ -21,6 +21,7 @@ const EXPOSED_FLAGS = new Set([
   "compare_v2_redesign", // S157 Compare v2 results reskin (frontend UI gate)
   "change_plan_v1", // S207 Stretch 1 — Change plan control on /plan
   "case_file_enriched_v1", // S207 Stretch 2 — enriched Case File download on /disputes
+  "dispute_plan_pinning_v1", // S210 Mid-year plan change × disputes — plan pinning (P0)
 ]);
 
 export async function GET(

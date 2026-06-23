@@ -19,6 +19,7 @@ import { loadServerSubscription } from "@/lib/subscription/server";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { assertOwnership } from "@/lib/security/assert-ownership";
 import { userScoped } from "@/lib/security/user-scoped";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
 
 export async function GET(req: NextRequest) {
   // B9-1 — Firebase bearer token → users row via the canonical helper. Returns
@@ -63,10 +64,11 @@ export async function GET(req: NextRequest) {
   // If a disputeId is provided, pull the persisted letter body so Section 0
   // can embed it verbatim.
   let letterContent: string | null = null;
+  let pinnedInsurancePlanId: string | null = null;
   if (disputeId) {
     const { data: dispute } = await userScoped(supabase, user.id)
       .table("dispute_outcomes")
-      .select("letter_content")
+      .select("letter_content, insurance_plan_id")
       .eq("id", disputeId)
       .maybeSingle();
     if (!dispute) {
@@ -75,13 +77,20 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
     letterContent = dispute.letter_content ?? null;
+    pinnedInsurancePlanId = (dispute.insurance_plan_id as string | null) ?? null;
   }
+
+  // dispute_plan_pinning_v1 — honor the dispute's pin so the legal package cites
+  // the pinned plan (global-eval; flag is global).
+  const planPinningEnabled = await isFeatureEnabled("dispute_plan_pinning_v1");
 
   const pkg = await compileEvidencePackage(supabase, {
     claimId,
     userId: user.id,
     disputeId,
     letterContent,
+    planPinningEnabled,
+    pinnedInsurancePlanId,
   });
 
   if (format === "pdf") {

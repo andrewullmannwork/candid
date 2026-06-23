@@ -50,6 +50,13 @@ interface CompileParams {
   planContext?: PlanContext | null;
   /** Pre-resolved DisputeEvidence; resolver falls back when omitted. */
   evidence?: DisputeEvidence | null;
+  /**
+   * dispute_plan_pinning_v1 — threaded into the internal resolvePlanContext
+   * fallback (when planContext isn't pre-resolved) so the legal package cites
+   * the plan the dispute is pinned to. Off/undefined → today's behavior.
+   */
+  planPinningEnabled?: boolean;
+  pinnedInsurancePlanId?: string | null;
 }
 
 /**
@@ -69,6 +76,8 @@ export async function compileEvidencePackage(
   const planContext = params.planContext ?? (await resolvePlanContext(supabase, {
     userId,
     claimId,
+    planPinningEnabled: params.planPinningEnabled,
+    pinnedInsurancePlanId: params.pinnedInsurancePlanId,
   }));
   const evidence = params.evidence ?? (await resolveEvidence(supabase, {
     userId,
