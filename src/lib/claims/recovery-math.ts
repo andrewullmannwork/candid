@@ -47,6 +47,17 @@ export interface PlanCoverageInput {
    * Mismatching the unit produces 100× inflation in computeShouldOwe.
    */
   coinsurance: number | null;
+  /**
+   * Cost-Share v2 (S214) — optional richer service terms, carried through the
+   * coverage cascade (exact → secondary → ACA) for `computeCostShareV2`.
+   * Legacy/audit consumers ignore them. ACA-synthesized coverage sets
+   * `deductibleApplies=false` (preventive is deductible-exempt by law).
+   */
+  deductibleApplies?: boolean | null;
+  outCopay?: number | null;
+  outCoinsurance?: number | null;
+  outDeductibleApplies?: boolean | null;
+  oonPaidAtInNetwork?: boolean | null;
 }
 
 export interface RecoveryMetrics {

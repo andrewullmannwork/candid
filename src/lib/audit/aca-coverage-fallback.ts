@@ -201,6 +201,8 @@ export async function buildAcaCoverageFallback(opts: {
       covered: true,
       copay: 0,
       coinsurance: 0,
+      // ACA preventive is deductible-exempt by law (cost-share v2 / S214).
+      deductibleApplies: false,
     };
     result.byLineNumber.set(cand.lineNumber, coverage);
     if (cand.serviceSlug) result.bySlug.set(cand.serviceSlug, coverage);

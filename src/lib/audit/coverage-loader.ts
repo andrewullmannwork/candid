@@ -393,13 +393,34 @@ export function resolveSecondaryCoverage(
   // coverage only from their own enumerated services via path 1 above.
   if (billMeta.isPreventiveEligible && planAcaCompliant === true) {
     return {
-      coverage: { covered: true, copay: 0, coinsurance: 0 },
+      // deductibleApplies=false — ACA preventive is deductible-exempt by law.
+      coverage: { covered: true, copay: 0, coinsurance: 0, deductibleApplies: false },
       matchedSlug: null,
       source: "aca_preventive",
       confidence: "confident",
     };
   }
   return null;
+}
+
+/**
+ * Cost-Share v2 (S214) — build a richer PlanCoverageInput from a
+ * plan_covered_services row (in + out terms + deductible-applies). The extra
+ * fields are optional on PlanCoverageInput, so legacy/audit consumers are
+ * unaffected; computeCostShareV2 reads them via buildServiceCostShare.
+ */
+export function planCoverageFromRow(row: Record<string, unknown>): PlanCoverageInput {
+  return {
+    covered: (row.covered as boolean | null) ?? null,
+    copay: (row.in_copay as number | null) ?? null,
+    // in_coinsurance may be integer-percent OR decimal; normalizer → decimal 0-1.
+    coinsurance: normalizeCoinsuranceForStorage(row.in_coinsurance as number | null),
+    deductibleApplies: (row.in_deductible_applies as boolean | null) ?? null,
+    outCopay: (row.out_copay as number | null) ?? null,
+    outCoinsurance: normalizeCoinsuranceForStorage(row.out_coinsurance as number | null),
+    outDeductibleApplies: (row.out_deductible_applies as boolean | null) ?? null,
+    oonPaidAtInNetwork: (row.oon_paid_at_in_network as boolean | null) ?? null,
+  };
 }
 
 export async function loadCoverageMapForPlan(
@@ -409,7 +430,9 @@ export async function loadCoverageMapForPlan(
   if (!insurancePlanId) return null;
   const { data, error } = await supabase
     .from("plan_covered_services")
-    .select("covered, in_copay, in_coinsurance, service_catalog!inner(slug)")
+    .select(
+      "covered, in_copay, in_coinsurance, in_deductible_applies, out_copay, out_coinsurance, out_deductible_applies, oon_paid_at_in_network, service_catalog!inner(slug)",
+    )
     .eq("insurance_plan_id", insurancePlanId);
   if (error) {
     console.warn("[coverage-loader] failed to load coverage for plan", insurancePlanId, error);
@@ -420,16 +443,9 @@ export async function loadCoverageMapForPlan(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const slug = (row.service_catalog as any)?.slug as string | undefined;
     if (!slug) continue;
-    map.set(slug, {
-      covered: row.covered as boolean | null,
-      copay: row.in_copay as number | null,
-      // S132 iter-11 — plan_covered_services.in_coinsurance holds either
-      // integer percent (30) OR already-decimal (0.3); both mean 30% in
-      // plan-document language. normalizeCoinsuranceForStorage handles both
-      // formats uniformly. Prior to this, this loader read the raw value
-      // expecting decimal — broke for rows the parser wrote as integer.
-      coinsurance: normalizeCoinsuranceForStorage(row.in_coinsurance as number | null),
-    });
+    // S132 iter-11 — in_coinsurance may be integer-percent OR decimal; the
+    // normalizer (inside planCoverageFromRow) returns decimal 0-1 uniformly.
+    map.set(slug, planCoverageFromRow(row as unknown as Record<string, unknown>));
   }
   return map;
 }
@@ -474,7 +490,7 @@ export async function loadPlanCoverageMeta(
   const { data: covered, error } = await supabase
     .from("plan_covered_services")
     .select(
-      "insurance_plan_id, covered, in_copay, in_coinsurance, source, service_catalog!inner(slug, category)",
+      "insurance_plan_id, covered, in_copay, in_coinsurance, in_deductible_applies, out_copay, out_coinsurance, out_deductible_applies, oon_paid_at_in_network, source, service_catalog!inner(slug, category)",
     )
     .in("insurance_plan_id", ids);
   if (error) {
@@ -488,13 +504,7 @@ export async function loadPlanCoverageMeta(
       const sc = row.service_catalog as any;
       const slug = sc?.slug as string | undefined;
       if (!slug) continue;
-      const coverage: PlanCoverageInput = {
-        covered: row.covered as boolean | null,
-        copay: row.in_copay as number | null,
-        // S132 iter-11 — in_coinsurance may be integer-percent OR decimal; the
-        // normalizer returns decimal 0-1 uniformly.
-        coinsurance: normalizeCoinsuranceForStorage(row.in_coinsurance as number | null),
-      };
+      const coverage = planCoverageFromRow(row as unknown as Record<string, unknown>);
       entry.coverageMap.set(slug, { ...coverage, source: (row.source as string | null) ?? null });
       entry.coveredMeta.push({ slug, category: (sc?.category as string | null) ?? null, coverage });
     }
