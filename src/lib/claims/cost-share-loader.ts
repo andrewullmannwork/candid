@@ -24,6 +24,7 @@ import type {
   CostShareOverrides,
   ServiceCostShare,
   NetworkTier,
+  InsurerAdjudication,
 } from "./recovery-math";
 
 // ── ServiceCostShare (from the resolved coverage cascade) ──────────────────
@@ -237,5 +238,86 @@ export function resolveOverridesForBill(
     ...raw,
     deductibleMet: raw.deductibleMet === true ? onOrAfter(raw.deductibleMetAsOf) : raw.deductibleMet,
     oopMet: raw.oopMet === true ? onOrAfter(raw.oopMetAsOf) : raw.oopMet,
+  };
+}
+
+// ── Route-side helpers (Step 3 wiring; shared by the detail + list routes so
+//    they assemble byte-identical engine inputs) ───────────────────────────
+
+/**
+ * The engine requires a non-null PlanCostShareParams. When a claim's
+ * insurance_plan_id is null or has no row, the route passes this all-null set =
+ * "unknown plan" (the engine then runs its conservative / insufficient path).
+ */
+export const EMPTY_PLAN_COST_SHARE_PARAMS: PlanCostShareParams = {
+  inDeductibleIndividual: null,
+  inDeductibleFamily: null,
+  outDeductibleIndividual: null,
+  outDeductibleFamily: null,
+  inOopMaxIndividual: null,
+  inOopMaxFamily: null,
+  outOopMaxIndividual: null,
+  outOopMaxFamily: null,
+  inCoinsuranceDefault: null,
+  outCoinsuranceDefault: null,
+  deductibleCalcMethod: null,
+  combinedMedicalRxOop: null,
+  coverageTier: null,
+};
+
+/**
+ * Map a claim_line_items row's insurer breakdown (`member_*`, `denied_amount`,
+ * `insurance_paid`) into the engine's InsurerAdjudication. `insurance_paid` is
+ * passed RAW (null-preserving): the engine distinguishes null ("no insurer
+ * signal") from 0 in its no-defensible-basis + reconciliation logic, so a
+ * header-prorated 0 must NOT be substituted here.
+ */
+export function buildLineInsurer(item: Record<string, unknown>): InsurerAdjudication {
+  const n = (k: string) => (item[k] == null ? null : Number(item[k]));
+  return {
+    memberAppliedToDeductible: n("member_applied_to_deductible"),
+    memberCoinsurance: n("member_coinsurance"),
+    memberCopay: n("member_copay"),
+    deniedAmount: n("denied_amount"),
+    insurancePaid: n("insurance_paid"),
+  };
+}
+
+/**
+ * Coerce a stored network_status string to a NetworkTier; null when absent or
+ * unrecognized (engine then assumes in-network + surfaces the assumption).
+ */
+export function coerceNetworkTier(v: unknown): NetworkTier | null {
+  return v === "in_network" || v === "out_of_network" || v === "tiered" || v === "unknown"
+    ? v
+    : null;
+}
+
+/**
+ * A user network override is only ever in/out-of-network (a deliberate
+ * correction); tiered/unknown are not user-settable corrections → null.
+ */
+export function coerceNetworkOverride(v: unknown): "in_network" | "out_of_network" | null {
+  return v === "in_network" || v === "out_of_network" ? v : null;
+}
+
+/** Cost-Share v2 dispute-assertion threshold — flag-config tunable (Ship Gate
+ *  G6), mirroring loadSecondaryGate. */
+export interface CostShareGate {
+  minRecovery: number;
+}
+export const DEFAULT_COST_SHARE_GATE: CostShareGate = { minRecovery: 1 };
+export async function loadCostShareGate(supabase: SupabaseClient): Promise<CostShareGate> {
+  const { data } = await supabase
+    .from("feature_flag_rules")
+    .select("config")
+    .eq("flag_key", "recovery_cost_share_v2")
+    .maybeSingle();
+  const cfg = (data?.config as Record<string, unknown> | null) ?? null;
+  return {
+    minRecovery:
+      typeof cfg?.minRecovery === "number"
+        ? (cfg.minRecovery as number)
+        : DEFAULT_COST_SHARE_GATE.minRecovery,
   };
 }

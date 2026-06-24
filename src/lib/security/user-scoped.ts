@@ -62,13 +62,16 @@ export type DirectUserOwnedTable = (typeof DIRECT_USER_OWNED_TABLES)[number];
 /**
  * Child tables with NO `user_id`, scoped via a parent that has one. Read via
  * `selectOwnedParentIds()` (resolve the owned parent ids, then filter the
- * children). The provable schema sweep (S182) found exactly these two among
- * the 9 FK-to-user children; the other 7 are admin-queue / canonical / k-anon
- * aggregate tables (exempt).
+ * children). The provable schema sweep (S182) found exactly two among the then-
+ * 9 FK-to-user children (claim_line_items + plan_covered_services); the other 7
+ * are admin-queue / canonical / k-anon aggregate tables (exempt).
+ * `claim_accumulators` (mig 174, Cost-Share v2) is a new FK-to-claims child that
+ * post-dates that sweep and is read by the user-facing claims routes → added.
  */
 export const PARENT_JOIN_TABLES = {
   claim_line_items: { parent: "claims", fk: "claim_id" },
   plan_covered_services: { parent: "insurance_plans", fk: "insurance_plan_id" },
+  claim_accumulators: { parent: "claims", fk: "claim_id" },
 } as const;
 
 export type ParentJoinChildTable = keyof typeof PARENT_JOIN_TABLES;

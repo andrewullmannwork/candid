@@ -113,6 +113,11 @@ interface LineItem {
   // + desktop/mobile YOU PAID column. Falls back to raw insurance_paid.
   insurancePaidResolved?: number;
   codeIdentity?: CodeIdentityState | null;
+  // Cost-Share v2 (S214) — the engine's per-line verdict, attached by the claims
+  // API ONLY when recovery_cost_share_v2 is ON. Its PRESENCE switches the dispute
+  // synthesis below to verdict-driven (vs the legacy deductible-blind
+  // isMysteryGap/hasRecoveryStory). Absent/null → today's behavior.
+  costShareVerdict?: "confident" | "correct" | "recovery" | "not_covered" | "insufficient" | null;
 }
 
 interface CatalogSlug {
@@ -1346,7 +1351,17 @@ export function ClaimDetail({
           const forgivenessComponent = item.recovery?.forgivenessComponent ?? Math.max(0, owedRecovery - refundComponent);
           const rawInsurancePaid = item.insurance_paid || 0;
           const hasGap = billed > 0 && rawInsurancePaid === 0 && owed === 0;
-          const gapRelevant = hasGap && item.coverageStatus !== "not_covered";
+          // Cost-Share v2 (S214) — when the engine ran (verdict present), the
+          // per-line gap panel is VERDICT-DRIVEN like the dispute synthesis:
+          // only a 'recovery' line is an actionable gap. A 'correct'/'confident'/
+          // 'insufficient'/'not_covered' line is NOT "unexplained" — the engine
+          // accounted for it (e.g. cf91a49e's deductible phase) — so suppress the
+          // "Unexplained $X charge" + "should have paid" panel. OFF (verdict
+          // absent) = today's raw-absence logic, verbatim.
+          const gapRelevant =
+            item.costShareVerdict != null
+              ? item.costShareVerdict === "recovery"
+              : hasGap && item.coverageStatus !== "not_covered";
 
           // S74.5 D6 — category pill state per Subplan §3 Layer C. Only
           // renders when flywheel flag ON. Click opens correction modal
@@ -3497,8 +3512,18 @@ function BulkDisputeButton({
     const owed = li.patient_owes || 0;
     const refund = li.recovery?.refundComponent ?? 0;
     const forgiveness = li.recovery?.forgivenessComponent ?? 0;
-    const isMysteryGap = billed > 0 && ins === 0 && owed === 0;
-    const hasRecoveryStory = li.planCoverage != null && (refund >= 1 || forgiveness >= 1);
+    // Cost-Share v2 (S214) — when the engine ran (verdict present), the dispute
+    // synthesis is VERDICT-DRIVEN: only a 'recovery' verdict surfaces a finding,
+    // and it uses the engine's refund+forgiveness (the recovery-story branch
+    // below), never the deductible-blind gross-billed isMysteryGap amount. Every
+    // other verdict (correct/confident/not_covered/insufficient) is suppressed —
+    // the engine-fed recovery block already corrects the ~10 display surfaces.
+    // OFF (verdict absent) = today's deductible-blind logic, verbatim.
+    const onEngine = li.costShareVerdict != null;
+    const isMysteryGap = !onEngine && billed > 0 && ins === 0 && owed === 0;
+    const hasRecoveryStory = onEngine
+      ? li.costShareVerdict === "recovery"
+      : li.planCoverage != null && (refund >= 1 || forgiveness >= 1);
     if (!isMysteryGap && !hasRecoveryStory) continue;
 
     const syntheticId = `gap-${li.id}`;

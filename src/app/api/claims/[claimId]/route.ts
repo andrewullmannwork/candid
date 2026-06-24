@@ -9,9 +9,33 @@ import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import {
   computeRecoveryV2,
+  computeCostShareV2,
+  isFamilyTier,
   resolveStillOutstanding,
   type PlanCoverageInput,
+  type PlanCostShareParams,
+  type CostShareOverrides,
+  type RecoveryMetrics,
+  type CostShareVerdict,
+  type CostShareAssumption,
+  type InsurerDiscrepancy,
 } from "@/lib/claims/recovery-math";
+import {
+  buildServiceCostShare,
+  loadPlanCostShareParams,
+  mapRawAccumulator,
+  resolveAccumulatorForLine,
+  applyPreClaimAdjustment,
+  loadCostShareOverrides,
+  resolveOverridesForBill,
+  loadCostShareGate,
+  buildLineInsurer,
+  coerceNetworkTier,
+  coerceNetworkOverride,
+  EMPTY_PLAN_COST_SHARE_PARAMS,
+  type RawAccumulator,
+  type CostShareGate,
+} from "@/lib/claims/cost-share-loader";
 import {
   resolveEffectiveClaimTotals,
   resolvePerLinePatientPaid,
@@ -120,6 +144,11 @@ export async function GET(
   const secondaryGate = secondaryV2
     ? await loadSecondaryGate(supabase)
     : DEFAULT_SECONDARY_GATE;
+  // Cost-Share v2 (S214) — network/deductible/OOP-aware recovery. Server-side
+  // flag read; OFF short-circuits before any new loader → byte-identical. The
+  // client keys off the presence of the per-line `costShareVerdict` field, so
+  // there is NO client flag read.
+  const costShareV2 = await isFeatureEnabled("recovery_cost_share_v2");
 
   // Fetch line items (SELECT * picks up the new mig 092 columns automatically).
   // B9 B1.2 — claim_line_items has no user_id; selectOwnedChildren verifies the
@@ -300,6 +329,55 @@ export async function GET(
     lineItems: lineItems || [],
   });
 
+  // Cost-Share v2 — load the per-claim engine context ONCE (plan params, the
+  // owned accumulator snapshot, the user's plan-year overrides, the dispute
+  // threshold), only when the flag is ON. claim_accumulators is read via
+  // selectOwnedChildren (parent-join; user-facing) per the B9 layer.
+  let csPlanParams: PlanCostShareParams | null = null;
+  let csAccumulatorRows: RawAccumulator[] = [];
+  let csOverrides: CostShareOverrides | null = null;
+  let csGate: CostShareGate = { minRecovery: 1 };
+  let csPlanYear: number | null = null;
+  const csMemberSums = { deductible: 0, oop: 0 };
+  if (costShareV2) {
+    csGate = await loadCostShareGate(supabase);
+    csPlanParams = await loadPlanCostShareParams(
+      supabase,
+      claim.insurance_plan_id as string | null,
+    );
+    csAccumulatorRows = (
+      await selectOwnedChildren(
+        supabase,
+        user.id,
+        "claim_accumulators",
+        [claimId],
+        "claim_id, benefit_year, network_tier, accumulator_type, is_individual, deductible_applied, deductible_max, oop_applied, oop_max",
+      )
+    ).map(mapRawAccumulator);
+    csPlanYear = claim.date_of_service
+      ? new Date(claim.date_of_service as string).getUTCFullYear()
+      : null;
+    const rawOverrides = await loadCostShareOverrides(
+      supabase,
+      user.id,
+      claim.insurance_plan_id as string | null,
+      csPlanYear,
+      coerceNetworkOverride(claim.user_network_override),
+    );
+    csOverrides = resolveOverridesForBill(
+      rawOverrides,
+      (claim.date_of_service as string | null) ?? null,
+    );
+    // Pre-claim accumulator adjustment needs THIS claim's own member consumption
+    // (a YTD accumulator reflects state AFTER the claim; subtract to recover the
+    // pre-claim snapshot). All-null on legacy/launch rows → no-op.
+    for (const it of lineItems || []) {
+      const r = it as Record<string, unknown>;
+      csMemberSums.deductible += Number(r.member_applied_to_deductible ?? 0);
+      csMemberSums.oop += Number(r.member_coinsurance ?? 0) + Number(r.member_copay ?? 0);
+    }
+  }
+
   // Enrich line items with coverage status + recovery metrics
   const enrichedLineItems = (lineItems || []).map((item) => {
     // S135 — 4-state ACA matrix via shared helper. Plan wins on match; ACA wins
@@ -413,18 +491,89 @@ export async function GET(
           claimTotalBilled,
           claimStillOutstanding,
         });
-    const recovery = computeRecoveryV2({
-      billed,
-      patientResponsibility,
-      patientPaid,
-      // S120 — apply coinsurance to ADJUSTED billed (post-writeoff), not gross.
-      // S140 fix-pass H1 — insuranceAdjusted now reflects pro-rated per-line
-      // writeoff when the per-line column is sparse. Restores coinsurance
-      // math correctness (Dec 12 L2 10% coinsurance: shouldOwe $4 from
-      // $41.10 adjusted, vs old buggy $9 from $89 gross).
-      insuranceAdjusted: lineInsuranceAdjusted,
-      planCoverage: coverage,
-    });
+    // Cost-Share v2 — when ON, the plan-derived phase engine replaces the
+    // deductible-blind computeShouldOwe path. The engine result is a
+    // RecoveryMetrics superset, so the claim-level rollup below consumes it
+    // unchanged. OFF = the exact computeRecoveryV2 call (byte-identical).
+    let recovery: RecoveryMetrics;
+    let lineCostShareVerdict: CostShareVerdict | null = null;
+    let lineCostShareAssumptions: CostShareAssumption[] | null = null;
+    let lineInsurerDiscrepancy: InsurerDiscrepancy | null = null;
+    if (costShareV2) {
+      const lineNetwork = coerceNetworkTier(
+        (item as Record<string, unknown>).network_status,
+      );
+      const accumulator = applyPreClaimAdjustment(
+        resolveAccumulatorForLine(csAccumulatorRows, {
+          benefitYear: csPlanYear != null ? String(csPlanYear) : null,
+          networkTier: lineNetwork ?? "in_network",
+          accumulatorType: "medical",
+          isIndividual: !isFamilyTier(csPlanParams?.coverageTier ?? null),
+        }),
+        csMemberSums,
+      );
+      const cs = computeCostShareV2({
+        line: {
+          billed,
+          // Header-prorated allowed (post-writeoff). The displayed shouldOwe
+          // needs the real allowed (e.g. cf91a49e $163.27, not the sparse $0
+          // raw line value); lineInsuranceAdjusted is the route's prorated
+          // writeoff (S140 fix-pass H1).
+          allowed: adjustedBilled,
+          insuranceAdjusted: lineInsuranceAdjusted,
+          patientPaid,
+          patientResponsibility,
+        },
+        service: buildServiceCostShare(coverage),
+        insurer: buildLineInsurer(item as Record<string, unknown>),
+        plan: csPlanParams ?? EMPTY_PLAN_COST_SHARE_PARAMS,
+        accumulator,
+        overrides:
+          csOverrides ?? {
+            deductibleMet: null,
+            deductibleMetAsOf: null,
+            oopMet: null,
+            oopMetAsOf: null,
+            userNetworkOverride: null,
+          },
+        networkLine: lineNetwork,
+        networkClaim: coerceNetworkTier(claim.network_status),
+        minRecovery: csGate.minRecovery,
+      });
+      recovery = cs;
+      lineCostShareVerdict = cs.verdict;
+      lineCostShareAssumptions = cs.assumptions;
+      lineInsurerDiscrepancy = cs.insurerDiscrepancy;
+      // G7 (Ship Gate) — server-side recall-loss telemetry. The OLD deductible-
+      // blind synthesis fired a "mystery gap" when billed>0 & insurer $0 &
+      // owed $0; log when that shape holds but the engine cleared the line
+      // (verdict ≠ 'recovery'), so the suppression rate is measured, not blind.
+      const oldPathWouldFire =
+        billed > 0 &&
+        Number((item as Record<string, unknown>).insurance_paid ?? 0) === 0 &&
+        Number((item as Record<string, unknown>).patient_owes ?? 0) === 0;
+      if (oldPathWouldFire && cs.verdict !== "recovery") {
+        console.info("[cost-share-v2] mystery-gap suppressed", {
+          claimId,
+          lineId: item.id,
+          verdict: cs.verdict,
+          phase: cs.phase,
+        });
+      }
+    } else {
+      recovery = computeRecoveryV2({
+        billed,
+        patientResponsibility,
+        patientPaid,
+        // S120 — apply coinsurance to ADJUSTED billed (post-writeoff), not gross.
+        // S140 fix-pass H1 — insuranceAdjusted now reflects pro-rated per-line
+        // writeoff when the per-line column is sparse. Restores coinsurance
+        // math correctness (Dec 12 L2 10% coinsurance: shouldOwe $4 from
+        // $41.10 adjusted, vs old buggy $9 from $89 gross).
+        insuranceAdjusted: lineInsuranceAdjusted,
+        planCoverage: coverage,
+      });
+    }
     // S140 — attach provenance so downstream consumers (LineDrawer recovery
     // strip + dispute letter per-line cites) can gate on cite-grade.
     // isCitablePerLine now requires ALL three numeric fields (patientPaid +
@@ -512,6 +661,15 @@ export async function GET(
       // paid $X" + desktop/mobile YOU PAID column derivation.
       insurancePaidResolved,
       recovery: recoveryWithProvenance,
+      // Cost-Share v2 — attached ONLY when the flag is ON (the client keys off
+      // the presence of `costShareVerdict`). Absent → today's verdict-blind UI.
+      ...(costShareV2
+        ? {
+            costShareVerdict: lineCostShareVerdict,
+            costShareAssumptions: lineCostShareAssumptions,
+            insurerDiscrepancy: lineInsurerDiscrepancy,
+          }
+        : {}),
       codeIdentity: flywheelEnabled
         ? {
             identityId,

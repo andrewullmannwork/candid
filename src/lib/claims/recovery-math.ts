@@ -457,6 +457,16 @@ const EMPTY_INSURER: InsurerAdjudication = {
 };
 
 /**
+ * Family-tier detection — shared by the engine's param selection AND the route's
+ * accumulator-key (isIndividual) so the two never drift. Anything that isn't
+ * blank / "individual" / "self" is treated as a family tier (conservative).
+ */
+export function isFamilyTier(coverageTier: string | null): boolean {
+  const t = (coverageTier ?? "").toLowerCase();
+  return t !== "" && t !== "individual" && t !== "self";
+}
+
+/**
  * The pure per-line cost-share engine. Inputs are already resolved by the route
  * (allowed/adjusted prorated, accumulator matched to this line's network/type).
  * For cross-line deductible threading within a claim, use computeClaimCostShareV2.
@@ -486,8 +496,7 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
     Math.max(0, args.line.billed - insuranceAdjusted - providerAdjusted);
 
   // ── 3. Param selection by network × individual/family ──
-  const tierStr = (plan.coverageTier ?? "").toLowerCase();
-  const isFamily = tierStr !== "" && tierStr !== "individual" && tierStr !== "self";
+  const isFamily = isFamilyTier(plan.coverageTier);
   const pick = (indIn: number | null, famIn: number | null, indOut: number | null, famOut: number | null) => {
     const v = useOutParams ? (isFamily ? famOut : indOut) : isFamily ? famIn : indIn;
     if (v != null) return v;
