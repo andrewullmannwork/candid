@@ -23,6 +23,9 @@ export interface ParsePlanDocumentOptions {
   /** S187 D8 — explicit per-chunk concurrency override (harness/eval). PROD callers leave it
    *  undefined → read from plan_doc_parser_v2.config.chunk_concurrency (absent → 1 = sequential). */
   chunkConcurrency?: number;
+  /** S215 cold-start regen — override for `plan_doc_extraction_v2` (calibration independence).
+   *  PROD callers leave it undefined → the parser reads the live flag. */
+  extractionV2?: boolean;
 }
 
 /**
@@ -53,6 +56,7 @@ export async function parsePlanDocument(
       documentId: opts?.documentId ?? "unknown",
       chunkConcurrency:
         opts?.chunkConcurrency ?? (await readFeatureFlagConfig("plan_doc_parser_v2", "chunk_concurrency", 1)),
+      extractionV2: opts?.extractionV2,
     });
     return toLegacyPlanDocResult(haikuResult);
   }
@@ -80,6 +84,7 @@ export async function parsePlanDocumentWithMeta(
       documentId: opts?.documentId ?? "unknown",
       chunkConcurrency:
         opts?.chunkConcurrency ?? (await readFeatureFlagConfig("plan_doc_parser_v2", "chunk_concurrency", 1)),
+      extractionV2: opts?.extractionV2,
     });
     return { legacy: toLegacyPlanDocResult(haiku), haiku };
   }

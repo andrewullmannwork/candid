@@ -126,6 +126,81 @@ Example service object with the new fields:
   { "serviceSlug": "outpatient_surgery_physician", "rawLabel": "Physician/surgeon fees",
     "component": "professional", "inCoinsurance": 20, ... }`;
 
+// Cold-start regen extraction v2 (S215). Appended ONLY when `plan_doc_extraction_v2` is ON, so
+// OFF = byte-identical Haiku output (no drift on the live path). Codifies the learnings measured
+// against Andrew's human-adjudicated multi-dimension oracle (the highest-frequency error classes:
+// `$0` dropped as null, not-covered left blank, wrong line picked on multi-variant services).
+const EXTRACTION_V2_SUPPLEMENT = `
+
+## EXTRACTION v2 — CODIFIED LEARNINGS (apply EXACTLY; these OVERRIDE any default tendency above)
+
+These fix the highest-frequency errors measured against a human-adjudicated oracle. Follow them precisely.
+
+### L1 — "$0" / "No charge" is a REAL value, NEVER null
+"No charge", "No Charge", "$0", "$0 copay", "no cost", "0%", "0% coinsurance", "Covered in full",
+"Covered 100%", "Paid in full" → emit 0, NEVER null. Determinism: a bare "No charge"/"$0"/"Covered in
+full" with no percentage → \`inCopay: 0\`. A bare "0%"/"0% coinsurance" → \`inCoinsurance: 0\`. Preventive
+care is $0 in-network by federal mandate → \`inCopay: 0\` unless the document explicitly states a cost.
+(null = "the document did not state this"; 0 = "the member pays nothing" — these are NOT the same.)
+
+### L2 — NOT COVERED is an AFFIRMATIVE state, never a blank
+When a service, or one network column, is NOT covered ("Not covered", "Not a covered benefit",
+"No coverage", "Excluded", or "Not Applicable" given as the coverage answer) → say so affirmatively:
+- whole service not covered → \`covered: false\` (cost fields null).
+- the OUT-OF-NETWORK column specifically not covered (common on HMO/EPO) → \`outCostDescription: "Not covered"\`
+  with \`outCopay\`/\`outCoinsurance\` null.
+NEVER imply "not covered" by leaving a field blank. A blank/omitted field means "the document did not say."
+
+### L3 — Multiple lines for one service: pick the STANDARD line, and keep the others
+When a service lists several variants (value-tier vs standard, physician-office vs facility, in-person vs
+virtual/telehealth, condition-care/wellness-program vs regular, participating vs non-participating), the
+PRIMARY row takes the STANDARD, in-person, regular-network line — NOT the promotional / value-tier /
+telehealth / special-program line. Emit each OTHER material variant as its OWN additional service row
+(same serviceSlug, different placeOfService). NEVER drop a service because OCR interleaved a page header
+("3 of 7", "What You Will Pay", "Common Medical Event") into its row — locate the real cost-sharing.
+
+### L4 — placeOfService: use ONLY the controlled vocabulary in rule 5 above
+**Freestanding vs hospital (the #1 place error):** \`independent_facility\` = a FREESTANDING / ambulatory
+surgery center (ASC) / independent imaging or lab center — NOT attached to a hospital. \`outpatient_facility\`
+= a HOSPITAL outpatient department. When the source says "ambulatory surgery center", "freestanding",
+"independent", "(e.g., ambulatory surgery center)", or an imaging/lab center → use \`independent_facility\`,
+NOT \`outpatient_facility\`. Use \`outpatient_facility\` only for an explicitly hospital-based outpatient setting.
+Pharmacy network tiers: "participating pharmacy" → in-network (\`in*\`); "non-participating pharmacy" →
+out-of-network (\`out*\`). Retail vs mail vs specialty → retail_pharmacy / home_delivery_pharmacy /
+designated_pharmacy. Never invent a place label outside the rule-5 list.
+
+### L5 — Deductible-applies, BOTH networks (a high-value, under-captured field — work it hard)
+Capture \`inDeductibleApplies\` AND \`outDeductibleApplies\` independently, for EVERY service. Sources of truth,
+in priority order:
+1. **Explicit cell text wins.** "after deductible" / "subject to deductible" / "Deductible + X%" / "then X%" →
+   true. "does not apply" / "not subject to deductible" / "deductible waived" / "no charge" → false.
+2. **The plan-level deductible statement.** SBCs have an "Are there services covered before you meet your
+   deductible?" line (and an overall-deductible row). Services it lists as covered-before-deductible (usually
+   preventive, often PCP/generic-Rx) → \`inDeductibleApplies: false\`. If the plan says the deductible applies
+   to "all services" / is an HDHP → most services true.
+3. **Inference when the cell is silent** (do this rather than leave null): a service priced as a flat **copay**
+   with no deductible language → usually \`false\` (copay-first). A service priced as **coinsurance** (a %) with
+   no "waived"/"does not apply" language → usually \`true\` (coinsurance almost always follows the deductible).
+   Preventive care in-network → \`false\` (federal). Explicit text (1) and the plan-level rule (2) always override
+   this inference.
+Common asymmetry: in-network deductible-EXEMPT while OON is AFTER the deductible (e.g. "In-network: $15 copay /
+Out-of-network: Deductible + $15 copay") → \`inDeductibleApplies: false\`, \`outDeductibleApplies: true\`.
+
+### L6 — A dollar fee AND a coinsurance can BOTH apply
+"$300 copay then 50% coinsurance", "$300 + 50%", "$300 then 50%" → \`inCopay: 300\` AND \`inCoinsurance: 50\`
+(populate both fields).
+
+### L7 — Per-benefit maximums / payout caps — capture, don't drop
+"benefit maximum of $500/day", "limited to $1,000 per year", "up to $X", "X visits/year", "X days/admission"
+→ record the cap VERBATIM in \`coverageConditions\` (and \`annualLimitValue\` when it is an annual visit/day
+count or dollar cap). Rare but real — do not silently drop it.
+
+### L8 — Prior authorization: "may" still counts, but record the wording
+"requires prior authorization" / "preauthorization required" / "precertification required" →
+\`priorAuthRequired: true\`. "MAY require prior authorization" / "may need preauthorization" →
+\`priorAuthRequired: true\` AND put the exact phrase in \`coverageConditions\` (so it can be shown as
+conditional). If the document is SILENT for a service → \`priorAuthRequired: null\` (never infer false).`;
+
 // S93 Stage 5a — supplements load from `parser_prompt_versions` (mig 102) at
 // parse time with a 5-min in-process cache. The compile-time consts above are
 // fallbacks when no active DB row exists (initial state pre-tuning) or when DB
@@ -134,6 +209,7 @@ Example service object with the new fields:
 async function buildInstructions(
   layout: PlanDocLayout | undefined,
   thesaurusEnabled: boolean,
+  extractionV2Enabled: boolean,
 ): Promise<string> {
   let prompt = BASE_INSTRUCTIONS;
   if (layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant") {
@@ -153,6 +229,11 @@ async function buildInstructions(
   // OFF → `prompt` is exactly BASE (+ layout supplement) as before = byte-identical.
   if (thesaurusEnabled) {
     prompt += THESAURUS_PHASE1A_SUPPLEMENT;
+  }
+  // Cold-start regen extraction v2 (S215): codified learnings appended LAST so they override.
+  // OFF → byte-identical to the pre-v2 prompt.
+  if (extractionV2Enabled) {
+    prompt += EXTRACTION_V2_SUPPLEMENT;
   }
   return prompt;
 }
@@ -418,10 +499,16 @@ export async function extractServicesCostSharing(
   // live flag (OFF → byte-identical). The calibration harness passes `true` to measure the
   // flag-ON before/after without depending on DB flag state (calibration independence).
   thesaurusPhase1aOverride?: boolean,
+  // Test/dry-run override for `plan_doc_extraction_v2`. PROD callers resolve it in the orchestrator
+  // (parser.ts) and pass it down so the prompt-supplement gate and the whole-text fallback gate stay
+  // in lockstep; undefined → read the live flag (OFF → byte-identical).
+  extractionV2Override?: boolean,
 ): Promise<PlanDocSectionResult<{ services: PlanDocService[] }>> {
   const thesaurusEnabled =
     thesaurusPhase1aOverride ?? (await isFeatureEnabled("thesaurus_phase1a_v1"));
-  const systemPrompt = await buildInstructions(layout, thesaurusEnabled);
+  const extractionV2Enabled =
+    extractionV2Override ?? (await isFeatureEnabled("plan_doc_extraction_v2"));
+  const systemPrompt = await buildInstructions(layout, thesaurusEnabled, extractionV2Enabled);
   const result = await callHaikuWithCache<RawResponse>({
     systemPrompt: HAIKU_CACHE_PAD + systemPrompt,
     userContent: sectionText,

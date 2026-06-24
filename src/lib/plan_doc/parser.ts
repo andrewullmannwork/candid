@@ -54,10 +54,20 @@ import { extractAccessInstructions } from "./haiku-prompts/access-instructions";
 import { detectLayout } from "./layout-detector";
 import { verifyPlanDocSourceExcerpts } from "./verify-source-excerpts";
 import { isSelfCheckEnabled, selfCheckPlanDocExcerpts } from "./self-check";
+import { isFeatureEnabled, readFeatureFlagConfig } from "@/lib/config/product-flags";
+import { estimateTokens } from "@/lib/haiku-client/base";
 
 const COST_HARD_CAP_USD = 2.0;
 const COST_GUARD_THRESHOLD_USD = 0.9; // 90% of hard cap; pre-dispatch chunk-skip guard
 const COST_SOFT_ALARM_USD = 0.5;
+
+// S215 cold-start regen — default input-size ceiling (estimated tokens) for the whole-text-primary
+// services path. Small docs (SBCs; ≤ ~8.4K tok observed in the 19-plan sample) get whole-text extraction
+// (the model sees the plan-level deductible/PA/place context the isolated services section never showed it);
+// larger booklets/EOCs stay on the segmented path (cost + the 180s timeout the 436KB Blue Shield SBC hit).
+// Tunable via plan_doc_extraction_v2.config.whole_text_max_input_tokens. The size gate just needs generous
+// margin — a mis-sized doc that truncates self-heals to the segmented path (the truncation-fallback is the guarantee).
+const WHOLE_TEXT_MAX_INPUT_TOKENS_DEFAULT = 16000;
 
 interface CostTracker {
   totalUsd: number;
@@ -363,6 +373,10 @@ export interface ParsePlanDocInput {
    *  reads plan_doc_parser_v2.config.chunk_concurrency; harnesses pass it explicitly). 1/absent
    *  = exact pre-S187 sequential dispatch. Clamped 1..16 here. */
   chunkConcurrency?: number;
+  /** S215 cold-start regen — override for `plan_doc_extraction_v2` (calibration independence).
+   *  undefined → read the live flag. Gates BOTH the codified-learnings prompt supplement AND the
+   *  whole-text OCR-collapse fallback. */
+  extractionV2?: boolean;
 }
 
 export async function parsePlanDocumentHaiku(
@@ -375,6 +389,16 @@ export async function parsePlanDocumentHaiku(
       : 1;
   const warnings: string[] = [];
   const costTracker: CostTracker = { totalUsd: 0, tokensInput: 0, tokensOutput: 0, cacheCreateTokens: 0, cacheReadTokens: 0 };
+
+  // S215 cold-start regen: resolve the extraction-v2 flag ONCE (input override for calibration
+  // independence; else the live flag). Threaded to the services prompt supplement AND the
+  // whole-text fallback so both gates stay in lockstep. OFF → byte-identical to the pre-v2 pipeline.
+  const extractionV2Enabled = input.extractionV2 ?? (await isFeatureEnabled("plan_doc_extraction_v2"));
+  const wholeTextMaxInputTokens = await readFeatureFlagConfig(
+    "plan_doc_extraction_v2",
+    "whole_text_max_input_tokens",
+    WHOLE_TEXT_MAX_INPUT_TOKENS_DEFAULT,
+  );
 
   // Step 0: Subtractive boilerplate cleanup (S72 commit 7)
   const cleanup = cleanupBoilerplate(ocrText);
@@ -410,7 +434,7 @@ export async function parsePlanDocumentHaiku(
     range: { start: number; end: number },
     em: ExtractionMethod,
     hint: PlanDocSectionHint,
-  ) => extractServicesCostSharing(text, range, em, hint, layout);
+  ) => extractServicesCostSharing(text, range, em, hint, layout, undefined, extractionV2Enabled);
 
   // Step 1: Section segmentation (regex first, on cleaned text)
   let sectionRanges: SectionRanges = segmentPlanDocSections(workingText);
@@ -532,9 +556,55 @@ export async function parsePlanDocumentHaiku(
     }
   }
 
-  // ── Step 3b: services chunk-dispatch (sub-segment + concat + dedup) ──
+  // ── Step 3b: services extraction ──
   let services: PlanDocService[] = [];
-  if (servicesText && servicesRange) {
+
+  // S215 extraction v2 — WHOLE-TEXT PRIMARY for small docs. A SINGLE call over the whole cleaned document
+  // gives the model the plan-level deductible statement + prior-auth prose + place context that the isolated
+  // services SECTION never showed it (recovers place / in-ded / PA / limits). Gated on input size so large
+  // booklets/EOCs stay on the cheaper segmented path (cost + the 180s timeout the Blue Shield giant hit).
+  // HARD-TRUNCATION SELF-HEALS: if the call truncates even at the 32K budget (haiku_truncation_at_max), throws
+  // a JSON-parse error (cut mid-array), or returns 0 services, it is discarded and the established segmented
+  // path below runs instead — so the size gate only needs generous margin; the fallback is the guarantee.
+  if (
+    extractionV2Enabled &&
+    workingText.trim().length > 0 &&
+    estimateTokens(workingText) <= wholeTextMaxInputTokens &&
+    costTracker.totalUsd <= COST_HARD_CAP_USD * COST_GUARD_THRESHOLD_USD
+  ) {
+    try {
+      const r = await extractServicesCostSharingWithLayout(
+        workingText,
+        { start: 0, end: workingText.length },
+        extractionMethod,
+        "services_cost_sharing",
+      );
+      // Fold cost/tokens exactly as dispatchSectionAsChunks does (single call, no chunk loop).
+      costTracker.totalUsd += r.haiku_cost_usd;
+      costTracker.tokensInput += r.haiku_input_tokens;
+      costTracker.tokensOutput += r.haiku_output_tokens;
+      costTracker.cacheCreateTokens += r.haiku_cache_create_tokens;
+      costTracker.cacheReadTokens += r.haiku_cache_read_tokens;
+      warnings.push(...r.warnings);
+      const truncated = r.warnings.some((w) => w.startsWith("haiku_truncation_at_max"));
+      if (truncated) {
+        warnings.push(`whole_text_truncated:${documentId}:reparse_segmented`);
+      } else if (r.data.services.length > 0) {
+        services = r.data.services;
+        dispatchedSectionsSet.add("services_cost_sharing");
+        segmentationUsed = "whole_text_primary";
+      }
+    } catch (err) {
+      warnings.push(
+        `whole_text_failed:${documentId}:reparse_segmented:${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  // Segmented services dispatch — the ESTABLISHED process. Runs when whole-text-primary was not used
+  // (flag off / big doc) OR was discarded (truncated / failed / 0 services). Byte-identical to the pre-S215
+  // path whenever whole-text-primary did not produce services.
+  if (services.length === 0 && servicesText && servicesRange) {
     const chunks = await dispatchSectionAsChunks<{ services: PlanDocService[] }>(
       "services_cost_sharing",
       servicesText,
@@ -549,6 +619,35 @@ export async function parsePlanDocumentHaiku(
     if (chunks.length > 0) {
       services = mergeServicesChunks(chunks.map((c) => c.services));
       dispatchedSectionsSet.add("services_cost_sharing");
+    }
+  }
+
+  // ── Step 3b.5: whole-text services fallback (S215 extraction v2 — OCR-collapse recovery) ──
+  // When segmentation finds no services section, or the services dispatch yields ZERO services
+  // (the federal_sbc_8page OCR-line-collapse failure: tables OCR into mega-lines so the line-based
+  // segmenter finds nothing), re-run services extraction over the WHOLE cleaned document, size-chunked.
+  // Reflow-robust: no dependence on line-based section headers. Reuses dispatchSectionAsChunks so the
+  // per-chunk cost-cap guard + the $2 hard cap still bound it (a huge doc extracts until ~90% of cap then
+  // stops — a partial recovery is strictly better than a 0-service failure). Gated on the flag (OFF → never
+  // runs) AND on services.length === 0 (so a normal parse is byte-identical even when the flag is ON).
+  if (extractionV2Enabled && services.length === 0 && workingText.trim().length > 0) {
+    warnings.push(`whole_text_services_fallback:${documentId}:segmentation_yielded_0_services`);
+    const wholeRange = { start: 0, end: workingText.length };
+    const chunks = await dispatchSectionAsChunks<{ services: PlanDocService[] }>(
+      "services_cost_sharing",
+      workingText,
+      wholeRange,
+      extractServicesCostSharingWithLayout,
+      extractionMethod,
+      costTracker,
+      warnings,
+      undefined,
+      chunkConcurrency,
+    );
+    if (chunks.length > 0) {
+      services = mergeServicesChunks(chunks.map((c) => c.services));
+      dispatchedSectionsSet.add("services_cost_sharing");
+      segmentationUsed = "whole_text_fallback";
     }
   }
 
