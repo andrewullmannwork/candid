@@ -55,6 +55,10 @@ export const DIRECT_USER_OWNED_TABLES = [
   "support_tickets",
   "consent_events",
   "subscription_events",
+  // Cost-Share v2 (mig 174) — direct user_id; written by the user-facing
+  // cost-share-override route (W3). Registered so a route write goes through
+  // userScoped (the B9 backstop), not raw `.from()`.
+  "user_plan_cost_share_overrides",
 ] as const;
 
 export type DirectUserOwnedTable = (typeof DIRECT_USER_OWNED_TABLES)[number];
