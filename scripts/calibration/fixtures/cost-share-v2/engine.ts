@@ -58,6 +58,8 @@ function mk(o: {
   overrides?: Partial<CostShareOverrides>;
   networkLine?: NetworkTier | null;
   networkClaim?: NetworkTier | null;
+  preventive?: { isPreventive: boolean; acaStatus: "confirmed" | "unknown" | "non_aca" } | null;
+  claimInsurerPaidZero?: boolean;
 }): ComputeCostShareV2Args {
   return {
     line: {
@@ -74,14 +76,20 @@ function mk(o: {
     overrides: { ...OV0, ...(o.overrides ?? {}) },
     networkLine: o.networkLine ?? null,
     networkClaim: o.networkClaim ?? null,
+    preventive: o.preventive ?? null,
+    claimInsurerPaidZero: o.claimInsurerPaidZero,
   };
 }
 
-// 1 — deductible-phase (cf91a49e, real): owe the full allowed pre-deductible → V1, recovery 0.
+// 1 — cf91a49e (REAL shape, W0-verified): HDHP, NO coverage row for the service, insurer paid
+//     $0 on the claim → genuinely pre-deductible, and the charge ($163.27) fits under the
+//     deductible ($7,050) → owe the full allowed → V1 correct. The insurer-$0 is the
+//     corroboration that makes "correct" honest (W1) — without it this would be `insufficient`.
 {
   const r = computeCostShareV2(mk({
     line: { billed: 221, allowed: 163.27, patientPaid: 163.27, patientResponsibility: 163.27 },
-    service: { covered: true, copay: null, coinsurance: null, deductibleApplies: true },
+    service: null,
+    claimInsurerPaidZero: true, // per-line insurer NULL (header-only EOB); claim total $0
     plan: { inDeductibleIndividual: 7050, inOopMaxIndividual: 7050 },
   }));
   check("1 verdict correct", r.verdict === "correct", r.verdict, "correct");
@@ -263,8 +271,9 @@ function mk(o: {
     lines: [
       // line A — $20 copay service, paid $100 → recover $80 (V2)
       { billed: 100, allowed: 100, patientPaid: 100, patientResponsibility: 100, service: { covered: true, copay: 20, coinsurance: null, deductibleApplies: false }, insurer: INSURER0, networkLine: "in_network" },
-      // line B — deductible-phase, paid the allowed → checks out (V1)
-      { billed: 150, allowed: 150, patientPaid: 150, patientResponsibility: 150, service: { covered: true, copay: null, coinsurance: null, deductibleApplies: true }, insurer: INSURER0, networkLine: "in_network" },
+      // line B — deductible-phase, insurer paid $0 (pre-deductible corroboration), paid the
+      //          allowed → checks out (V1)
+      { billed: 150, allowed: 150, patientPaid: 150, patientResponsibility: 150, service: { covered: true, copay: null, coinsurance: null, deductibleApplies: true }, insurer: { ...INSURER0, insurancePaid: 0 }, networkLine: "in_network" },
     ],
     plan: { ...PLAN0, inDeductibleIndividual: 5000, inOopMaxIndividual: 9000 },
     accumulator: null,
@@ -315,6 +324,82 @@ function mk(o: {
   check("18 recovery 0 (no false recovery)", near(r.potentialRecovery, 0), r.potentialRecovery);
   check("18 service_cost assumption", !!assumption(r, "service_cost"), r.assumptions);
   check("18 not a recovery verdict", r.verdict !== "recovery", r.verdict);
+}
+
+// 19 — 106def8d preventive line (W0-verified): preventive code, NO coverage row, ACA UNKNOWN,
+//      insurer paid > 0 on the claim → must be V4 insufficient + ask the ACA question; NEVER
+//      stamped "correct" on care that's often free. Conservative shouldOwe = full allowed.
+{
+  const r = computeCostShareV2(mk({
+    line: { billed: 390, allowed: 390, patientPaid: 50, patientResponsibility: 50 },
+    service: null,
+    insurer: { insurancePaid: 150 },
+    plan: { inDeductibleIndividual: 5800, inOopMaxIndividual: 8850 },
+    preventive: { isPreventive: true, acaStatus: "unknown" },
+  }));
+  check("19 verdict insufficient (preventive + ACA unknown)", r.verdict === "insufficient", r.verdict, "insufficient");
+  check("19 NOT correct (the regression guard)", r.verdict !== "correct", r.verdict);
+  check("19 aca_preventive assumption present", !!assumption(r, "aca_preventive"), r.assumptions);
+  check("19 phase copay_exempt (deductible-exempt)", r.phase === "copay_exempt", r.phase);
+  check("19 conservative shouldOwe 390 (no false dispute)", near(r.shouldOwe, 390), r.shouldOwe);
+  check("19 no service_cost chip (aca_preventive is the ask)", !assumption(r, "service_cost"), r.assumptions);
+}
+
+// 20 — same preventive line, ACA CONFIRMED → free $0 → the recovery surfaces (paid $50 into
+//      free care). The contribution path (confirm ACA) flips V4 → recovery.
+{
+  const r = computeCostShareV2(mk({
+    line: { billed: 390, allowed: 390, patientPaid: 50, patientResponsibility: 50 },
+    service: null,
+    insurer: { insurancePaid: 150 },
+    plan: { inDeductibleIndividual: 5800, inOopMaxIndividual: 8850 },
+    preventive: { isPreventive: true, acaStatus: "confirmed" },
+  }));
+  check("20 shouldOwe 0 (ACA preventive is free)", near(r.shouldOwe, 0), r.shouldOwe);
+  check("20 verdict recovery", r.verdict === "recovery", r.verdict, "recovery");
+  check("20 recovery 50", near(r.potentialRecovery, 50), r.potentialRecovery);
+  check("20 no aca_preventive assumption when confirmed", !assumption(r, "aca_preventive"), r.assumptions);
+}
+
+// 21 — preventive code but ACA = non_aca (short-term/health-sharing) → NOT mandated free →
+//      normal path (here: unknown service → insufficient); no ACA question.
+{
+  const r = computeCostShareV2(mk({
+    line: { billed: 390, allowed: 390, patientPaid: 50, patientResponsibility: 50 },
+    service: null,
+    insurer: { insurancePaid: 150 },
+    plan: { inDeductibleIndividual: 5800, inOopMaxIndividual: 8850 },
+    preventive: { isPreventive: true, acaStatus: "non_aca" },
+  }));
+  check("21 no aca_preventive assumption (non_aca)", !assumption(r, "aca_preventive"), r.assumptions);
+  check("21 not free — normal path, shouldOwe 390", near(r.shouldOwe, 390), r.shouldOwe);
+  check("21 verdict insufficient (uncorroborated)", r.verdict === "insufficient", r.verdict, "insufficient");
+}
+
+// 22 — no coverage, deductible phase, insurer paid > 0 (NOT pre-deductible) → uncorroborated
+//      guess → insufficient (the 106def8d non-preventive shape; the honest tightening).
+{
+  const r = computeCostShareV2(mk({
+    line: { billed: 300, allowed: 300, patientPaid: 100, patientResponsibility: 100 },
+    service: null,
+    insurer: { insurancePaid: 80 },
+    plan: { inDeductibleIndividual: 5000, inOopMaxIndividual: 9000 },
+  }));
+  check("22 verdict insufficient (insurer paid > 0 → not pre-deductible)", r.verdict === "insufficient", r.verdict, "insufficient");
+  check("22 conservative shouldOwe 300", near(r.shouldOwe, 300), r.shouldOwe);
+}
+
+// 23 — insurer paid $0 BUT the charge exceeds the whole deductible, no accumulator → the
+//      coinsurance phase is unknowable → insufficient (the allowed<=deductible grounding guard;
+//      without it the engine would wrongly stamp "owe the full $8000, correct").
+{
+  const r = computeCostShareV2(mk({
+    line: { billed: 8000, allowed: 8000, patientPaid: 0, patientResponsibility: 8000 },
+    service: null,
+    insurer: { insurancePaid: 0 },
+    plan: { inDeductibleIndividual: 2000, inOopMaxIndividual: 9000 },
+  }));
+  check("23 verdict insufficient (charge > deductible, rate unknowable)", r.verdict === "insufficient", r.verdict, "insufficient");
 }
 
 console.log(`\ncost-share-v2 engine fixtures: ${pass} passed, ${fails.length} failed`);

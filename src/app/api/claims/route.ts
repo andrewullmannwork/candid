@@ -39,7 +39,7 @@ import {
   resolveEffectiveClaimTotals,
   resolvePerLineInsuranceAdjusted,
 } from "@/lib/claims/effective-totals";
-import { buildAcaCoverageFallback } from "@/lib/audit/aca-coverage-fallback";
+import { buildAcaCoverageFallback, detectPreventiveMembership } from "@/lib/audit/aca-coverage-fallback";
 import {
   resolveLineCoverage,
   resolveSecondaryCoverage,
@@ -349,6 +349,29 @@ export async function GET(req: NextRequest) {
           csMemberSums.oop += Number(r.member_coinsurance ?? 0) + Number(r.member_copay ?? 0);
         }
       }
+      // W1 — preventive membership (plan-ACA-independent) + plan ACA status + claim-level
+      // insurer-$0 corroboration. Per-claim (mirrors the acaFallback above); inert when OFF.
+      const csPreventiveLines = costShareV2
+        ? await detectPreventiveMembership({
+            supabase,
+            userId: claim.user_id as string,
+            patientName: (claim.patient_name as string | null | undefined) ?? null,
+            lineItems: items.map((li) => ({
+              lineNumber: Number(li.line_number ?? 0),
+              procedureCode: (li.billing_code as string | null) ?? null,
+              procedureCodeType: (li.billing_code_type as string | null) ?? null,
+              serviceSlug: (li.service_slug as string | null) ?? null,
+            })),
+          })
+        : new Set<number>();
+      const csAcaStatus: "confirmed" | "unknown" | "non_aca" =
+        planMeta?.acaCompliant === true
+          ? "confirmed"
+          : planMeta?.acaCompliant === false
+            ? "non_aca"
+            : "unknown";
+      const csClaimInsurerPaidZero =
+        claim.total_insurance_paid != null && Number(claim.total_insurance_paid) === 0;
 
       let findingCount = 0;
       let potentialSavings = 0;
@@ -485,6 +508,11 @@ export async function GET(req: NextRequest) {
             networkLine: lineNetwork,
             networkClaim: coerceNetworkTier(claim.network_status),
             minRecovery: csGate.minRecovery,
+            preventive: {
+              isPreventive: csPreventiveLines.has(Number(item.line_number ?? 0)),
+              acaStatus: csAcaStatus,
+            },
+            claimInsurerPaidZero: csClaimInsurerPaidZero,
           });
           rec = cs;
           lineVerdict = cs.verdict;

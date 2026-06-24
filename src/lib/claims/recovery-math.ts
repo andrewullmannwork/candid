@@ -373,7 +373,8 @@ export interface CostShareAssumption {
     | "oop_met"
     | "deductible_applies"
     | "service_cost"
-    | "denial";
+    | "denial"
+    | "aca_preventive";
   /** the value we assumed, e.g. "not_met", "in_network", "subject". */
   assumed: string;
   /** dollar value behind it when known (e.g. the $7,050 deductible); null → banner shows "add …". */
@@ -421,6 +422,24 @@ export interface ComputeCostShareV2Args {
   networkClaim: NetworkTier | null;
   /** minimum recoverable $ to assert a dispute (flag-config-backed; default 1). */
   minRecovery?: number;
+  /**
+   * Cost-Share v2 (W1) — per-line preventive signal, resolved INDEPENDENT of the plan's
+   * is_aca_compliant flag (zero_cost_share_codes membership). Preventive care is deductible-
+   * exempt; `confirmed` ACA → free $0 (federal mandate, wins over a parsed copay row);
+   * `unknown` → conservative full-allowed but verdict forced `insufficient` + an `aca_preventive`
+   * assumption (ask, never full-allowed-`correct` on care that's often free); `non_aca` → not
+   * mandated free, falls through to the normal cost-share path.
+   */
+  preventive?: { isPreventive: boolean; acaStatus: "confirmed" | "unknown" | "non_aca" } | null;
+  /**
+   * Cost-Share v2 (W1) — true when the insurer paid $0 on the WHOLE claim
+   * (`claims.total_insurance_paid === 0`). This is the claim-level "you're genuinely
+   * pre-deductible" corroboration that lets a full-allowed deductible result be `correct`
+   * instead of `insufficient`, used when the per-line `insurer.insurancePaid` is NULL (the
+   * common header-only-EOB case — e.g. cf91a49e). A per-line insurer-$0, when present, is
+   * honored directly and takes precedence.
+   */
+  claimInsurerPaidZero?: boolean;
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -479,6 +498,11 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
   const acc = args.accumulator;
   const ov = args.overrides;
   const assumptions: CostShareAssumption[] = [];
+  // W1 preventive: deductible-exempt; ACA-confirmed → free, ACA-unknown → ask (never
+  // full-allowed-`correct`). `non_aca` is treated as a normal (non-preventive) service.
+  const prev = args.preventive;
+  const isPreventiveService = prev?.isPreventive === true && prev.acaStatus !== "non_aca";
+  const prevAca = prev?.acaStatus ?? "unknown";
 
   // ── 1. Network resolution (user override › line › claim › default in-network) ──
   const networkAssumed = !ov.userNetworkOverride && !args.networkLine && !args.networkClaim;
@@ -538,6 +562,7 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
   let shouldOwe: number;
   let deductibleConsumed = 0;
   let costShareUnknown = false;
+  let preventiveAcaUnknown = false;
 
   if (networkAssumed) {
     assumptions.push({ field: "network", assumed: "in_network", value: null, correctable: true, reason: "default" });
@@ -546,6 +571,29 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
   if (service?.covered === false) {
     phase = "not_covered";
     shouldOwe = allowed;
+  } else if (isPreventiveService) {
+    // Preventive (zero_cost_share_codes member) is deductible-exempt. ACA-confirmed → free $0
+    // (federal mandate; wins over a parsed copay). ACA-unknown → prefer a CONFIDENT plan
+    // cost-share if we have one (plan is the source of truth, §13.1); else conservative
+    // full-allowed + ask the ACA question (care that's often free is never full-allowed-`correct`).
+    phase = "copay_exempt";
+    if (prevAca === "confirmed") {
+      shouldOwe = 0;
+    } else {
+      const r = resolveServiceShare(allowed, copay, coinsurance, false);
+      shouldOwe = r.share;
+      if (r.unknown) {
+        preventiveAcaUnknown = true;
+        assumptions.push({
+          field: "aca_preventive",
+          assumed: "unknown",
+          value: null,
+          correctable: true,
+          reason: "aca_status_unknown",
+        });
+      }
+    }
+    if (remainingOop != null) shouldOwe = Math.min(shouldOwe, remainingOop);
   } else {
     // resolve deductible-applies (infer when the plan didn't say).
     let dedApplies = svcDeductibleApplies;
@@ -626,7 +674,7 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
   // allowed (never a fabricated $0). Drives §7b "add plan details".
   const serviceCostUnknown =
     service == null || (service.covered == null && service.copay == null && service.coinsurance == null);
-  if ((serviceCostUnknown || costShareUnknown) && phase !== "not_covered") {
+  if ((serviceCostUnknown || costShareUnknown) && phase !== "not_covered" && !isPreventiveService) {
     assumptions.push({ field: "service_cost", assumed: "unknown", value: null, correctable: true, reason: "no_plan_value" });
   }
 
@@ -666,18 +714,43 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
     }
   }
 
-  // ── 8. Verdict (recovery wins over not-covered, Q2; denial never "correct", Q4) ──
-  const noDefensibleBasis =
-    !hasInsurerBreakdown &&
-    acc == null &&
-    deductibleMax == null &&
-    num(insurer.insurancePaid) == null &&
-    (service == null || service.covered == null);
+  // ── 8. Verdict — honesty gate (§13.2): never "correct" off a guessed shouldOwe ──
+  // shouldOwe is GROUNDED only when it rests on known facts, not assumptions:
+  //  • a copay/coinsurance phase with a KNOWN rate (costShareUnknown=false), or
+  //  • oop-met $0 (accumulator-known), or
+  //  • a deductible phase we KNOW you're in — HARD met-status (accumulator/override), OR the
+  //    insurer paid $0 (proof you're pre-deductible) AND the charge fits entirely under the
+  //    deductible (pure-deductible, no coinsurance phase to guess).
+  // An ungrounded shouldOwe → `insufficient` ("we can't fully check"), NEVER `correct`. The
+  // conservative dollar math is unchanged (full-allowed), so no false dispute is fabricated;
+  // we only refuse to *label* a guess as correct — which invites the user to confirm and can
+  // surface a hidden refund. (This subsumes the old `noDefensibleBasis` short-circuit.)
+  // pre-deductible corroboration: a real per-line insurer-$0 (precise), or — when the per-line
+  // signal is absent (header-only EOB, the common case) — the insurer paid $0 on the whole claim.
+  const insurerPaidZero =
+    num(insurer.insurancePaid) === 0 ||
+    (num(insurer.insurancePaid) == null && args.claimInsurerPaidZero === true);
+  let shouldOweGrounded: boolean;
+  if (phase === "oop_met" || phase === "not_covered") {
+    shouldOweGrounded = true;
+  } else if (phase === "copay_exempt" || phase === "post_deductible") {
+    shouldOweGrounded = !costShareUnknown;
+  } else if (phase === "deductible_unmet" || phase === "straddle") {
+    shouldOweGrounded = dedMetKnown
+      ? !costShareUnknown
+      : insurerPaidZero && deductibleMax != null && allowed <= deductibleMax && !costShareUnknown;
+  } else {
+    shouldOweGrounded = false;
+  }
+
+  // recovery wins over not-covered (Q2); denial never "correct" (Q4); preventive-ACA-unknown
+  // always asks (care that's often free must not be rubber-stamped by the insurer-$0 signal).
   let verdict: CostShareVerdict;
   if (base.potentialRecovery >= minRec) verdict = "recovery";
   else if (denied) verdict = "insufficient";
   else if (service?.covered === false) verdict = "not_covered";
-  else if (noDefensibleBasis) verdict = "insufficient";
+  else if (preventiveAcaUnknown) verdict = "insufficient";
+  else if (!shouldOweGrounded) verdict = "insufficient";
   else if (assumptions.length > 0) verdict = "correct";
   else verdict = "confident";
 
@@ -704,6 +777,7 @@ export interface ClaimLineInput {
   service: ServiceCostShare | null;
   insurer: InsurerAdjudication;
   networkLine: NetworkTier | null;
+  preventive?: { isPreventive: boolean; acaStatus: "confirmed" | "unknown" | "non_aca" } | null;
 }
 
 export interface ComputeClaimCostShareV2Args {
@@ -714,6 +788,7 @@ export interface ComputeClaimCostShareV2Args {
   overrides: CostShareOverrides;
   networkClaim: NetworkTier | null;
   minRecovery?: number;
+  claimInsurerPaidZero?: boolean;
 }
 
 export interface ClaimCostShareV2Result {
@@ -748,6 +823,8 @@ export function computeClaimCostShareV2(args: ComputeClaimCostShareV2Args): Clai
       networkLine: line.networkLine,
       networkClaim: args.networkClaim,
       minRecovery: args.minRecovery,
+      preventive: line.preventive,
+      claimInsurerPaidZero: args.claimInsurerPaidZero,
     }),
   );
 

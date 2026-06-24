@@ -210,3 +210,67 @@ export async function buildAcaCoverageFallback(opts: {
 
   return result;
 }
+
+/**
+ * Cost-Share v2 (W1) — preventive-MEMBERSHIP detection, INDEPENDENT of the plan's
+ * is_aca_compliant flag. Preventive-ness is a property of the CODE (zero_cost_share_codes
+ * membership + demographic eligibility), not of the plan; the plan flag only governs whether
+ * the $0 mandate APPLIES. This sibling returns the set of line numbers whose billing code is a
+ * demographic-eligible zcs member, so the engine can ask the ACA question on a NULL-ACA plan
+ * (the §13.1 reframe). It deliberately does NOT synthesize coverage — that stays ACA-gated in
+ * buildAcaCoverageFallback above (no blast radius on the audit path).
+ */
+export async function detectPreventiveMembership(opts: {
+  supabase: SupabaseClient;
+  userId: string | null | undefined;
+  patientName: string | null | undefined;
+  lineItems: readonly AcaFallbackLineItem[];
+}): Promise<Set<number>> {
+  const preventiveLines = new Set<number>();
+  if (!opts.userId || opts.lineItems.length === 0) return preventiveLines;
+
+  const candidates = opts.lineItems.filter((li) => li.procedureCode);
+  if (candidates.length === 0) return preventiveLines;
+
+  const distinctCodes = Array.from(
+    new Set(
+      candidates
+        .map((c) => c.procedureCode)
+        .filter((code): code is string => Boolean(code)),
+    ),
+  );
+  const { data: zcsRowsRaw, error } = await opts.supabase
+    .from("zero_cost_share_codes")
+    .select("billing_code, billing_code_type, age_min, age_max, sex")
+    .in("billing_code", distinctCodes)
+    .is("retired_at", null);
+  if (error) {
+    console.warn("[detect-preventive-membership] zcs lookup failed", error);
+    return preventiveLines;
+  }
+  if (!zcsRowsRaw || zcsRowsRaw.length === 0) return preventiveLines;
+  const zcsRows = zcsRowsRaw as Pick<
+    ZcsLookupRow,
+    "billing_code" | "billing_code_type" | "age_min" | "age_max" | "sex"
+  >[];
+
+  const demographics = await fetchPatientDemographics(opts.userId, opts.patientName);
+
+  for (const cand of candidates) {
+    if (!cand.procedureCode) continue;
+    const codeType = cand.procedureCodeType ?? inferProcedureCodeType(cand.procedureCode);
+    if (!codeType || !CODE_TYPE_NAMESPACE_WHITELIST.has(codeType)) continue;
+    const matching = zcsRows.find(
+      (r) =>
+        r.billing_code === cand.procedureCode &&
+        r.billing_code_type === codeType &&
+        demographicEligible(
+          { age_min: r.age_min, age_max: r.age_max, sex: r.sex },
+          demographics,
+        ),
+    );
+    if (matching) preventiveLines.add(cand.lineNumber);
+  }
+
+  return preventiveLines;
+}

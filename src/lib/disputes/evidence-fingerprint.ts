@@ -163,6 +163,41 @@ export function computeCooldownUntil(sentAt: Date, days: number = 30): Date {
   return new Date(sentAt.getTime() + days * 24 * 60 * 60 * 1000);
 }
 
+// ── Cost-Share v2 (W4) — letter version history ────────────────────────────
+//
+// W4 makes dispute letters persistent + NEVER background-updated: a GET serves
+// the saved letter; regeneration happens ONLY on an explicit user refresh, and
+// that refresh PRESERVES the prior letter so a user can revert (§13.4). The
+// bounded history is stored under `dispute_outcomes.metadata.letterVersionHistory`
+// — consistent with the route's existing large-snapshot-in-metadata pattern
+// (`preBindCoverageSnapshot`), so no new column/table/migration.
+
+export interface LetterVersion {
+  /** the full prior letter body being superseded. */
+  content: string;
+  /** the evidence fingerprint that letter was built against (for provenance). */
+  fingerprint: string | null;
+  /** ISO timestamp when this version was superseded. */
+  savedAt: string;
+}
+
+/**
+ * Append a superseded letter onto the bounded version history (newest LAST),
+ * capping at `cap` by dropping the oldest. Pure — the caller persists the result
+ * into `metadata.letterVersionHistory`. A null/empty content is not stored (no
+ * point versioning an absent letter).
+ */
+export function appendLetterVersion(
+  history: LetterVersion[] | null | undefined,
+  entry: LetterVersion,
+  cap = 3,
+): LetterVersion[] {
+  const base = Array.isArray(history) ? history : [];
+  if (!entry.content) return base;
+  const next = [...base, entry];
+  return next.length > cap ? next.slice(next.length - cap) : next;
+}
+
 /**
  * Decision shape for the view endpoint: should we refresh the letter, show a
  * drift banner, or serve cached?

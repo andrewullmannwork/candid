@@ -45,7 +45,7 @@ import {
 import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { maybeReauditClaim } from "@/lib/audit/reaudit";
-import { buildAcaCoverageFallback } from "@/lib/audit/aca-coverage-fallback";
+import { buildAcaCoverageFallback, detectPreventiveMembership } from "@/lib/audit/aca-coverage-fallback";
 import {
   resolveLineCoverage,
   resolveSecondaryCoverage,
@@ -339,6 +339,13 @@ export async function GET(
   let csGate: CostShareGate = { minRecovery: 1 };
   let csPlanYear: number | null = null;
   const csMemberSums = { deductible: 0, oop: 0 };
+  // W1 — preventive (zero_cost_share_codes membership, plan-ACA-independent) + the plan's ACA
+  // status (the $0 mandate gate) + the claim-level insurer-$0 pre-deductible corroboration.
+  let csPreventiveLines = new Set<number>();
+  const csAcaStatus: "confirmed" | "unknown" | "non_aca" =
+    planAcaCompliant === true ? "confirmed" : planAcaCompliant === false ? "non_aca" : "unknown";
+  const csClaimInsurerPaidZero =
+    claim.total_insurance_paid != null && Number(claim.total_insurance_paid) === 0;
   if (costShareV2) {
     csGate = await loadCostShareGate(supabase);
     csPlanParams = await loadPlanCostShareParams(
@@ -376,6 +383,17 @@ export async function GET(
       csMemberSums.deductible += Number(r.member_applied_to_deductible ?? 0);
       csMemberSums.oop += Number(r.member_coinsurance ?? 0) + Number(r.member_copay ?? 0);
     }
+    csPreventiveLines = await detectPreventiveMembership({
+      supabase,
+      userId: claim.user_id as string,
+      patientName: (claim.patient_name as string | null | undefined) ?? null,
+      lineItems: (lineItems ?? []).map((li) => ({
+        lineNumber: Number(li.line_number ?? 0),
+        procedureCode: (li.billing_code as string | null) ?? null,
+        procedureCodeType: (li.billing_code_type as string | null) ?? null,
+        serviceSlug: (li.service_slug as string | null) ?? null,
+      })),
+    });
   }
 
   // Enrich line items with coverage status + recovery metrics
@@ -539,6 +557,11 @@ export async function GET(
         networkLine: lineNetwork,
         networkClaim: coerceNetworkTier(claim.network_status),
         minRecovery: csGate.minRecovery,
+        preventive: {
+          isPreventive: csPreventiveLines.has(Number(item.line_number ?? 0)),
+          acaStatus: csAcaStatus,
+        },
+        claimInsurerPaidZero: csClaimInsurerPaidZero,
       });
       recovery = cs;
       lineCostShareVerdict = cs.verdict;
