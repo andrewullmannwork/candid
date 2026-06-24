@@ -175,7 +175,13 @@ export interface PlanDocHaikuParseResult {
     | "regex_only"
     | "regex_plus_haiku_discovery"
     | "haiku_discovery_only"
-    | "preamble_only";
+    | "preamble_only"
+    // S215 cold-start regen — services extracted by the whole-text-primary path (small doc; one call
+    // over the full cleaned document so the model sees plan-level deductible/PA/place context).
+    | "whole_text_primary"
+    // S215 cold-start regen — services recovered via the whole-text OCR-collapse fallback
+    // (segmentation found no services section; extraction v2 re-ran over the full document).
+    | "whole_text_fallback";
 }
 
 /**
