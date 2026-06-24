@@ -300,6 +300,23 @@ function mk(o: {
   check("17 override applied (shouldOwe 50)", near(on.shouldOwe, 50), on.shouldOwe);
 }
 
+// 18 — data-reality guard: covered service, deductible MET, cost-share rate UNKNOWN
+//      on a NON-HDHP plan (deductible != oop_max) → conservative full allowed, NOT a
+//      fabricated $0 (which would be a false recovery). + service_cost assumption.
+{
+  const r = computeCostShareV2(mk({
+    line: { billed: 200, allowed: 200, patientPaid: 200, patientResponsibility: 200 },
+    service: { covered: true, copay: null, coinsurance: null, deductibleApplies: true },
+    plan: { inDeductibleIndividual: 1000, inOopMaxIndividual: 5000 },
+    overrides: { deductibleMet: true },
+    networkLine: "in_network",
+  }));
+  check("18 conservative shouldOwe 200 (not fabricated $0)", near(r.shouldOwe, 200), r.shouldOwe);
+  check("18 recovery 0 (no false recovery)", near(r.potentialRecovery, 0), r.potentialRecovery);
+  check("18 service_cost assumption", !!assumption(r, "service_cost"), r.assumptions);
+  check("18 not a recovery verdict", r.verdict !== "recovery", r.verdict);
+}
+
 console.log(`\ncost-share-v2 engine fixtures: ${pass} passed, ${fails.length} failed`);
 if (fails.length) {
   console.log(fails.join("\n"));

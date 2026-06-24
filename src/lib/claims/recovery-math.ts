@@ -416,15 +416,25 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 const num = (n: number | null | undefined): number | null =>
   n == null || Number.isNaN(n) ? null : n;
 
-/** Copay-or-coinsurance applied to the allowed amount. Covered-but-no-cost-share → $0 (plan pays 100%). */
-function serviceCostShare(
+/**
+ * Patient cost-share for the allowed amount in a post-deductible / copay-exempt
+ * phase. Returns {share, unknown}. unknown=true when NEITHER copay nor
+ * coinsurance is known AND there is no positive 100%-coverage evidence — the
+ * caller then defaults to the conservative FULL allowed, never a fabricated $0.
+ * (in_coinsurance is only ~38% populated in PROD, so "covered + null/null" is
+ * common and usually means "data missing", not "plan pays 100%".)
+ */
+function resolveServiceShare(
   allowed: number,
   copay: number | null,
   coinsurance: number | null,
-): number {
-  if (copay != null && copay > 0) return round2(Math.min(copay, allowed));
-  if (coinsurance != null && coinsurance > 0) return round2(allowed * coinsurance);
-  return 0;
+  isHdhpFull: boolean,
+): { share: number; unknown: boolean } {
+  if (copay != null && copay > 0) return { share: round2(Math.min(copay, allowed)), unknown: false };
+  if (coinsurance != null && coinsurance > 0) return { share: round2(allowed * coinsurance), unknown: false };
+  if (copay === 0 || coinsurance === 0) return { share: 0, unknown: false }; // explicit $0 / 0% = positive zero
+  if (isHdhpFull) return { share: 0, unknown: false }; // deductible==oop_max → no coinsurance phase, plan pays 100%
+  return { share: allowed, unknown: true }; // unknown rate → conservative full allowed
 }
 
 const EMPTY_INSURER: InsurerAdjudication = {
@@ -501,9 +511,13 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
   const remainingOop = accOopKnown ? Math.max(0, acc!.oopMax! - acc!.oopApplied!) : null;
 
   // ── 5. Phase machine → plan-derived shouldOwe ──
+  // HDHP-full = deductible == oop-max → no coinsurance phase → post-deductible is
+  // genuinely $0 (positive evidence), distinct from "we don't know the rate".
+  const isHdhpFull = deductibleMax != null && oopMax != null && deductibleMax === oopMax;
   let phase: CostSharePhase;
   let shouldOwe: number;
   let deductibleConsumed = 0;
+  let costShareUnknown = false;
 
   if (networkAssumed) {
     assumptions.push({ field: "network", assumed: "in_network", value: null, correctable: true, reason: "default" });
@@ -530,8 +544,12 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
       phase = "oop_met";
       shouldOwe = 0;
     } else if (dedApplies === false) {
+      // copay-exempt: copay/coinsurance regardless of the deductible (no HDHP-$0
+      // shortcut — it's exempt, not post-deductible).
       phase = "copay_exempt";
-      shouldOwe = serviceCostShare(allowed, copay, coinsurance);
+      const r = resolveServiceShare(allowed, copay, coinsurance, false);
+      shouldOwe = r.share;
+      costShareUnknown = costShareUnknown || r.unknown;
       if (remainingOop != null) shouldOwe = Math.min(shouldOwe, remainingOop);
     } else if (!dedMet) {
       // deductible-subject, not met → toward deductible.
@@ -545,10 +563,14 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
         });
       }
       if (remainingDeductible != null && remainingDeductible < allowed) {
-        // straddle: fill remaining deductible (100%), coinsurance on the rest, capped at remaining OOP.
+        // straddle: fill remaining deductible (100%), then coinsurance on the rest.
         phase = "straddle";
         const rest = allowed - remainingDeductible;
-        shouldOwe = round2(remainingDeductible + (coinsurance ?? 0) * rest);
+        let restShare: number;
+        if (coinsurance != null && coinsurance > 0) restShare = coinsurance * rest;
+        else if (coinsurance === 0 || isHdhpFull) restShare = 0; // explicit 0% / HDHP → post-deductible $0
+        else { restShare = rest; costShareUnknown = true; } // unknown rate → conservative full
+        shouldOwe = round2(remainingDeductible + restShare);
         deductibleConsumed = remainingDeductible;
         if (remainingOop != null) shouldOwe = Math.min(shouldOwe, remainingOop);
       } else {
@@ -557,9 +579,11 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
         deductibleConsumed = shouldOwe;
       }
     } else {
-      // deductible met, OOP not met → copay / coinsurance.
+      // deductible met, OOP not met → copay / coinsurance (HDHP-$0; else conservative).
       phase = "post_deductible";
-      shouldOwe = serviceCostShare(allowed, copay, coinsurance);
+      const r = resolveServiceShare(allowed, copay, coinsurance, isHdhpFull);
+      shouldOwe = r.share;
+      costShareUnknown = costShareUnknown || r.unknown;
       if (remainingOop != null) shouldOwe = Math.min(shouldOwe, remainingOop);
     }
 
@@ -577,10 +601,12 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
 
   shouldOwe = round2(Math.max(0, shouldOwe));
 
-  // service-cost disclosure: no per-service terms at all (drives §7b "add plan details").
+  // service-cost disclosure: no per-service terms, OR a phase needed a copay/
+  // coinsurance rate we don't have → shouldOwe defaulted to the conservative full
+  // allowed (never a fabricated $0). Drives §7b "add plan details".
   const serviceCostUnknown =
     service == null || (service.covered == null && service.copay == null && service.coinsurance == null);
-  if (serviceCostUnknown && phase !== "not_covered") {
+  if ((serviceCostUnknown || costShareUnknown) && phase !== "not_covered") {
     assumptions.push({ field: "service_cost", assumed: "unknown", value: null, correctable: true, reason: "no_plan_value" });
   }
 
