@@ -52,6 +52,16 @@ export interface GtService {
   /** In/out cost-share strings (auditability + future Phase-2 co-occurrence veto inputs). */
   inCostShare?: string | null;
   outCostShare?: string | null;
+  /** A2b Phase 2 — explicit Pattern-S tuple truth for a reconciled row (mixed umbrella = 2-member SET;
+   *  pure-surgeon / transplant = 1). When absent, the tuple truth comes from decode-map[correctSlug]. */
+  multiLabel?: ModifierTuple[];
+}
+
+/** Pattern-S modifier tuple (mirror of the resolver's ServiceModifierTuple) — A2b Phase 2. */
+export interface ModifierTuple {
+  slug: string;
+  placeOfService: string;
+  component: "facility" | "professional" | "global";
 }
 
 /** Resolver output for one GT service in a given phase (the FORWARD mapping). */
@@ -62,6 +72,11 @@ export interface ForwardMapEntry {
   confidence: number;
   source: ResolutionSource;
   needsReview: boolean;
+  /** A2b Phase 2 — Pattern-S modifiers (deterministic, description-derived; present when the resolver
+   *  ran with emitModifiers). place/component on a single line; multiLabel for the compound umbrella. */
+  placeOfService?: string;
+  component?: "facility" | "professional" | "global";
+  multiLabel?: ModifierTuple[];
   /**
    * S170 N-run majority: fraction of the N forward runs that agreed with the winning (canon'd) slug
    * for this gtId. 1.0 = unanimous; undefined on a legacy single-run snapshot. The de-noising signal.

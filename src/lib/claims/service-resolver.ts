@@ -57,6 +57,24 @@ export type ResolutionSource =
   | "haiku"
   | "none";
 
+/** Pattern-S service component (who bills): facility (UB-04 / TC), professional (CMS-1500 / 26), or global (no split). */
+export type ServiceComponent = "facility" | "professional" | "global";
+
+/** A Pattern-S identity tuple: pure-service slug + where (place_of_service) + who (component). */
+export interface ServiceModifierTuple {
+  slug: string;
+  placeOfService: string;
+  component: ServiceComponent;
+}
+
+/** deriveModifiers() output: the where/who modifiers for a line, + an optional multi-label SET for a
+ *  genuinely compound line (the inpatient physician/surgeon umbrella). */
+export interface DerivedModifiers {
+  placeOfService: string;
+  component: ServiceComponent;
+  multiLabel?: ServiceModifierTuple[];
+}
+
 export interface ServiceResolution {
   lineNumber?: number;
   slug: string | null;
@@ -65,6 +83,12 @@ export interface ServiceResolution {
   source: ResolutionSource;
   /** True when slug is null OR confidence < reviewConfidenceFloor. */
   needsReview: boolean;
+  /** Pattern-S modifiers (A2b Phase 2). Present ONLY when emitModifiers / thesaurus_phase1a_v1 is on
+   *  (flag OFF → undefined → byte-identical). Description-derived → deterministic (no Haiku). */
+  placeOfService?: string;
+  component?: ServiceComponent;
+  /** Multi-label SET for a compound line (inpatient physician/surgeon umbrella); undefined otherwise. */
+  multiLabel?: ServiceModifierTuple[];
 }
 
 export interface ResolverConfig {
@@ -587,6 +611,14 @@ export interface ResolveOpts {
    * flag-driven.
    */
   trustTieredCache?: boolean;
+  /**
+   * A2b Phase 2 — emit Pattern-S modifiers (place_of_service + component + multi-label) on each
+   * resolution. DECOUPLED from trustTieredCache so the calibration gate measures the new modifier
+   * dimension WITHOUT perturbing slug resolution (slug tiers untouched → slug-level byte-identical).
+   * Omitted (PROD) → falls back to thesaurus_phase1a_v1 (via trust.enabled) → OFF → undefined modifiers
+   * → byte-identical. The calibration harness passes true. Default (omitted) = flag-driven.
+   */
+  emitModifiers?: boolean;
 }
 
 /**
@@ -609,6 +641,8 @@ export async function resolveServices(
     opts.trustTieredCache !== undefined
       ? { enabled: opts.trustTieredCache, trustedSources: buildTrustedSourceSet() }
       : await loadTrustTiering(opts.supabase);
+  // A2b Phase 2: emit modifiers decoupled from trust (so the gate measures them without touching slugs).
+  const emitMods = opts.emitModifiers !== undefined ? opts.emitModifiers : trust.enabled;
   if (catalog.length === 0) {
     for (const l of lines) {
       results.set(l.lineNumber, {
@@ -729,6 +763,18 @@ export async function resolveServices(
     }
   }
 
+  // A2b Phase 2 — attach Pattern-S modifiers (deterministic, description-derived) when enabled.
+  // OFF → results untouched (byte-identical). One pass covering every resolution tier.
+  if (emitMods) {
+    for (const l of lines) {
+      const res = results.get(l.lineNumber);
+      if (!res) continue;
+      const m = deriveModifiers(l.description);
+      res.placeOfService = m.placeOfService;
+      res.component = m.component;
+      if (m.multiLabel) res.multiLabel = m.multiLabel;
+    }
+  }
   return results;
 }
 
@@ -748,6 +794,45 @@ function mkResolution(
     source,
     needsReview: slug == null || confidence < config.reviewConfidenceFloor,
   };
+}
+
+/**
+ * Derive Pattern-S modifiers (place_of_service + component, + a multi-label SET for the inpatient
+ * physician/surgeon umbrella) from a benefit/line DESCRIPTION. UNIVERSAL — grounded in the federal SBC
+ * template + CMS place-of-service / TC-26 component billing. INDEPENDENT of the calibration GT classifier
+ * (circularity firewall) and PURE (no DB/Haiku → deterministic across N runs). Defaults to (any, global):
+ * only explicit component-fee wording + a facility context move it, so generic office visits stay global.
+ */
+export function deriveModifiers(description: string): DerivedModifiers {
+  const d = (description || "").toLowerCase();
+  // place_of_service — only mig-147 CHECK values; LEAD subset (facility settings) + 'any' default.
+  const place =
+    /ambulatory surgery center|\basc\b|freestanding|surgery center/.test(d) ? "independent_facility"
+      : /\binpatient\b|hospital stay|hospital admission|hospital inpatient|hospital room|room and board/.test(d) ? "inpatient_facility"
+        : /\boutpatient\b/.test(d) ? "outpatient_facility"
+          : "any";
+  // component — default global; facility/professional ONLY on explicit component-fee language.
+  const component: ServiceComponent =
+    /facility fee|hospital room|room and board/.test(d) ? "facility"
+      : /(physician|surgeon|doctor)[^.]{0,40}\b(fee|fees|services|visit|visits)\b|surgeon fee/.test(d) ? "professional"
+        : "global";
+  // mixed inpatient physician/surgeon umbrella → multi-label SET (exclude mental-health + transplant).
+  const mixed =
+    place === "inpatient_facility" &&
+    /physician|doctor/.test(d) && /surgeon|surgical/.test(d) &&
+    !/mental|behavioral|psych|autism|substance|\bsud\b/.test(d) &&
+    !/transplant/.test(d);
+  if (mixed) {
+    return {
+      placeOfService: "inpatient_facility",
+      component: "professional",
+      multiLabel: [
+        { slug: "surgery", placeOfService: "inpatient_facility", component: "professional" },
+        { slug: "hospital_admission", placeOfService: "inpatient_facility", component: "professional" },
+      ],
+    };
+  }
+  return { placeOfService: place, component };
 }
 
 /** Single-line resolve (manual / reaudit / search fallback). */

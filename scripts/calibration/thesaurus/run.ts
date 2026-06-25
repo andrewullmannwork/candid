@@ -12,8 +12,10 @@
  * The before/after ledger is DIAGNOSTIC (two stochastic runs, noise-confounded) — reported, never fatal.
  */
 import { readFileSync, writeFileSync, existsSync } from "fs";
-import { resolve, join } from "path";
+import { resolve, join, dirname } from "path";
+import { fileURLToPath } from "url";
 import { buildScoreCard, validateSnapshot } from "./score";
+import { buildTupleScoreCard, tupleScoreCardMd, type DecodeMap } from "./score-tuple";
 import { loadGt } from "./gt-loader";
 import type { ForwardMapEntry, StoredCanonical, CohortSnapshot, B5Counts, ScoreCard, ConvergenceReport } from "./types";
 
@@ -135,6 +137,15 @@ async function main() {
     console.error("Refusing to report ledger/gate from a degenerate run. Exit 2.");
     process.exit(2);
   }
+
+  // A2b Phase 2 — additive TUPLE scorecard (the slug path above is untouched). Always emitted (diagnostic):
+  // place/component/multi-label on the tuple-bearing GT subset. decode-map ships with the scorer (this dir).
+  const decodeMap = readJson<DecodeMap>(join(dirname(fileURLToPath(import.meta.url)), "decode-map.json"));
+  const tupleCard = buildTupleScoreCard({ gt, forward, decodeMap, renameMap });
+  writeFileSync(join(dir, "tuple-scorecard.json"), JSON.stringify(tupleCard, null, 2));
+  const tupleMd = tupleScoreCardMd(tupleCard);
+  writeFileSync(join(dir, "tuple-scorecard.md"), tupleMd);
+  console.log(tupleMd);
 
   // S168 REFRAME (§7.6): the before/after ledger compares two stochastic Haiku runs (noise-confounded)
   // → DIAGNOSTIC only, NOT the hard gate. Report regressions; never exit-fail on them.

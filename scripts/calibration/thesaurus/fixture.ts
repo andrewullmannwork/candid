@@ -5,6 +5,8 @@
  */
 import { buildScoreCard, validateSnapshot, scoredResolvedFraction } from "./score";
 import type { GtService, ForwardMapEntry, StoredCanonical, CohortSnapshot, B5Counts } from "./types";
+import { deriveModifiers } from "@/lib/claims/service-resolver";
+import { buildTupleScoreCard, type DecodeMap } from "./score-tuple";
 
 let pass = 0, fail = 0;
 const approx = (a: number, b: number, t = 1e-6) => Math.abs(a - b) <= t;
@@ -145,6 +147,83 @@ const storedRen: StoredCanonical[] = [{ canonicalPlanId: "canR", slugs: ["hospit
 const cRen = buildScoreCard({ phaseLabel: "fixture-rename-stored", gtVersion: "fix-v1", gt: gtRen, forward: fwdRen, stored: storedRen, cohorts: [], baselineB5: {}, currentB5: {}, renameMap: { inpatient_facility: "hospital_admission" }, oldSlugs: new Set(["inpatient_facility"]) });
 console.log("RUN 5 — B1-stored rename-awareness (S209)");
 eq("rename-aware b1Stored = 1/2 (R#1 renamed-hit; R#2 genuinely absent)", cRen.b1Stored.recall, 1 / 2);
+
+// ── RUN 6 (S226 / A2b Phase 2): deriveModifiers — Pattern-S place/component + the inpatient
+// physician/surgeon multi-label umbrella. Tested on CANONICAL federal-SBC strings (independent of the GT
+// rows → circularity firewall) + negatives: office visits → global; MH/transplant → no umbrella. ──
+console.log("RUN 6 — deriveModifiers (A2b Phase 2 modifier emission)");
+const dm = (s: string) => deriveModifiers(s);
+const hasUmbrella = (s: string) => (dm(s).multiLabel ? 1 : 0);
+// clean single-tuple cases (federal template strings)
+eq("inpatient facility/room → place", dm("Facility fee (e.g., hospital room)").placeOfService, "inpatient_facility");
+eq("inpatient facility/room → component", dm("Facility fee (e.g., hospital room)").component, "facility");
+eq("ASC facility → place", dm("Facility fee (e.g., ambulatory surgery center)").placeOfService, "independent_facility");
+eq("ASC facility → component", dm("Facility fee (e.g., ambulatory surgery center)").component, "facility");
+eq("outpatient surgeon → place", dm("Physician/surgeon fees (outpatient)").placeOfService, "outpatient_facility");
+eq("outpatient surgeon → component", dm("Physician/surgeon fees (outpatient)").component, "professional");
+eq("outpatient surgeon → NOT umbrella", hasUmbrella("Physician/surgeon fees (outpatient)"), 0);
+eq("inpatient surgeon fee → component", dm("Hospital stay: Surgeon fee").component, "professional");
+eq("inpatient surgeon fee → place", dm("Hospital stay: Surgeon fee").placeOfService, "inpatient_facility");
+eq("inpatient surgeon fee → NOT umbrella (no physician)", hasUmbrella("Hospital stay: Surgeon fee"), 0);
+eq("inpatient physician visits → component", dm("Hospital stay: Physician Visits").component, "professional");
+eq("inpatient physician visits → NOT umbrella (no surgeon)", hasUmbrella("Hospital stay: Physician Visits"), 0);
+// the MIXED umbrella → multi-label SET {surgery·prof·inpt, hospital_admission·prof·inpt}
+const mix = dm("Physician/surgeon fees (inpatient)");
+eq("umbrella → multiLabel size 2", mix.multiLabel?.length ?? 0, 2);
+eq("umbrella → surgery member", mix.multiLabel?.some((m) => m.slug === "surgery" && m.component === "professional" && m.placeOfService === "inpatient_facility") ? 1 : 0, 1);
+eq("umbrella → hospital_admission member", mix.multiLabel?.some((m) => m.slug === "hospital_admission" && m.component === "professional" && m.placeOfService === "inpatient_facility") ? 1 : 0, 1);
+eq("umbrella alt phrasing (physician or surgeon services inpatient)", dm("Physician or surgeon services in an inpatient facility").multiLabel?.length ?? 0, 2);
+// negatives — generic office visits stay (any, global): no over-fire
+eq("primary care visit → global", dm("Primary care visit to treat an injury or illness").component, "global");
+eq("primary care visit → any", dm("Primary care visit to treat an injury or illness").placeOfService, "any");
+eq("specialist visit → global", dm("Specialist visit").component, "global");
+// negatives — MH + transplant must NOT become the surgery/hospital_admission umbrella (the Step-1 guards)
+eq("autism inpatient doctor/surgeon → NOT umbrella (MH guard)", hasUmbrella("Autism Spectrum Disorder Services — Inpatient Doctor/Surgeon Fee"), 0);
+eq("transplant phys/surgeon inpatient → NOT umbrella (transplant guard)", hasUmbrella("Transplant — Physician/surgeon inpatient services"), 0);
+
+// ── RUN 7 (S226 / A2b Phase 2): score-tuple.ts — full-tuple match, the modifiers|slug conditional,
+// the umbrella exact-set-match (mixed detection), under-detection, and canon-awareness. ──
+const mk = (id: string, correctSlug: string | null, extra: Partial<GtService> = {}): GtService =>
+  ({ id, docId: "T", insurer: "X", docType: "sbc", planYear: 2026, canonicalPlanId: null, serviceName: id, correctSlug, adjudicationStatus: "andrew", ...extra });
+const umbrella = [
+  { slug: "surgery", placeOfService: "inpatient_facility", component: "professional" as const },
+  { slug: "hospital_admission", placeOfService: "inpatient_facility", component: "professional" as const },
+];
+const gtTup: GtService[] = [
+  mk("T#1", "inpatient_facility"),                          // single → decode hospital_admission·facility·inpatient
+  mk("T#2", "outpatient_surgery_physician"),               // single → decode surgery·professional·outpatient
+  mk("T#3", "inpatient_physician", { multiLabel: umbrella }), // umbrella (set match)
+  mk("T#4", "inpatient_physician", { multiLabel: umbrella }), // umbrella (resolver under-detects)
+];
+const fwdTup: ForwardMapEntry[] = [
+  { gtId: "T#1", resolvedSlug: "hospital_admission", conceptId: null, confidence: 0.95, source: "signature_cache", needsReview: false, placeOfService: "inpatient_facility", component: "facility" },
+  { gtId: "T#2", resolvedSlug: "surgery", conceptId: null, confidence: 0.95, source: "signature_cache", needsReview: false, placeOfService: "outpatient_facility", component: "global" }, // wrong component
+  { gtId: "T#3", resolvedSlug: "hospital_admission", conceptId: null, confidence: 0.9, source: "signature_cache", needsReview: false, placeOfService: "inpatient_facility", component: "professional", multiLabel: umbrella },
+  { gtId: "T#4", resolvedSlug: "hospital_admission", conceptId: null, confidence: 0.9, source: "signature_cache", needsReview: false, placeOfService: "inpatient_facility", component: "professional" }, // no multiLabel → under-detect
+];
+const decodeTup: DecodeMap = {
+  inpatient_facility: { slug: "hospital_admission", placeOfService: "inpatient_facility", component: "facility" },
+  outpatient_surgery_physician: { slug: "surgery", placeOfService: "outpatient_facility", component: "professional" },
+};
+const ct = buildTupleScoreCard({ gt: gtTup, forward: fwdTup, decodeMap: decodeTup });
+console.log("RUN 7 — score-tuple.ts (A2b Phase 2 tuple scoring)");
+eq("tuple: singleTotal", ct.all.singleTotal, 2);
+eq("tuple: fullMatch (T#1 only; T#2 wrong component)", ct.all.fullMatch, 1);
+eq("tuple: componentMatch", ct.all.componentMatch, 1);
+eq("tuple: placeMatch (both)", ct.all.placeMatch, 2);
+eq("tuple: slugCorrect (both)", ct.all.slugCorrect, 2);
+eq("tuple: modifierCorrectGivenSlug (T#1)", ct.all.modifierCorrectGivenSlug, 1);
+eq("tuple: multiTotal", ct.all.multiTotal, 2);
+eq("tuple: setMatch (T#3; T#4 under-detect)", ct.all.setMatch, 1);
+eq("tuple: cluster == all (all 4 cluster slugs)", ct.cluster.singleTotal + ct.cluster.multiTotal, 4);
+eq("tuple: misses (T#2 component + T#4 under-detect)", ct.misses.length, 2);
+// canon-awareness: an un-canon'd resolver slug (inpatient_facility) must full-match via rename-map.
+const ctRen = buildTupleScoreCard({
+  gt: [mk("R#1", "inpatient_facility")],
+  forward: [{ gtId: "R#1", resolvedSlug: "inpatient_facility", conceptId: null, confidence: 0.9, source: "signature_cache", needsReview: false, placeOfService: "inpatient_facility", component: "facility" }],
+  decodeMap: decodeTup, renameMap: { inpatient_facility: "hospital_admission" },
+});
+eq("tuple canon: un-canon'd resolver slug full-matches", ctRen.all.fullMatch, 1);
 
 console.log(`\n${fail === 0 ? "✓ ALL PASS" : "✗ FAILURES"} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
