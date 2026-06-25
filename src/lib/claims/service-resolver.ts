@@ -76,6 +76,10 @@ export interface DerivedModifiers {
   /** A2b Phase 2 item 6: true when a NAMED preventive screening resolves to a non-preventive slug
    *  (e.g. bone-density/DEXA → advanced_imaging) — keep the slug + flag, never collapse to preventive_care. */
   isPreventiveEligible?: boolean;
+  /** A2b Phase 2 item 5: drug FORMULARY tier as a plan-local modifier ('tier_1'..'tier_12'; Hard Rule
+   *  #17 — the slug stays the descriptor). Present ONLY for a single-tier drug/pharmacy line; absent
+   *  otherwise (non-drug, network-tier, or multi-tier rows). */
+  planTierLabel?: string;
 }
 
 export interface ServiceResolution {
@@ -95,6 +99,9 @@ export interface ServiceResolution {
   /** A2b Phase 2 item 6: preventive-eligible flag on a named screening that resolves to a non-preventive
    *  slug (Hard Rule #17 / §1.5). Present ONLY when emitModifiers / thesaurus_phase1a_v1 is on. */
   isPreventiveEligible?: boolean;
+  /** A2b Phase 2 item 5: drug FORMULARY tier modifier ('tier_1'..'tier_12'; Hard Rule #17). Present
+   *  ONLY when emitModifiers / thesaurus_phase1a_v1 is on AND the line is a single-tier drug line. */
+  planTierLabel?: string;
 }
 
 export interface ResolverConfig {
@@ -780,6 +787,7 @@ export async function resolveServices(
       res.component = m.component;
       if (m.multiLabel) res.multiLabel = m.multiLabel;
       if (m.isPreventiveEligible) res.isPreventiveEligible = m.isPreventiveEligible;
+      if (m.planTierLabel) res.planTierLabel = m.planTierLabel;
     }
   }
   return results;
@@ -836,6 +844,12 @@ export function deriveModifiers(description: string): DerivedModifiers {
   // preventive_care (Hard Rule #17 / §1.5). Text-only, universal (USPSTF screening cue). flag-OFF → omitted.
   const prev: { isPreventiveEligible?: true } =
     /bone density|bone mineral density|\bdexa\b|osteoporosis screening/.test(d) ? { isPreventiveEligible: true } : {};
+  // item 5 — plan_tier_label: the drug FORMULARY tier as a plan-local modifier (Hard Rule #17 — the slug
+  // stays the descriptor). Emitted ONLY in a drug/pharmacy context (a "Tier N" on a hospital/provider line
+  // is a NETWORK tier, not a formulary tier) and ONLY when exactly one tier is named (a line spanning
+  // "Tier 1/2/4" or "Tier 2 and Tier 4" is deliberately tier-agnostic → omitted). Universal (federal-SBC +
+  // commercial pharmacy wording); text-only → deterministic; flag-OFF → omitted.
+  const tier: { planTierLabel?: string } = derivePlanTierLabel(d);
   // mixed inpatient physician/surgeon umbrella → multi-label SET (exclude mental-health + transplant).
   const mixed =
     place === "inpatient_facility" &&
@@ -851,9 +865,37 @@ export function deriveModifiers(description: string): DerivedModifiers {
         { slug: "hospital_admission", placeOfService: "inpatient_facility", component: "professional" },
       ],
       ...prev,
+      ...tier,
     };
   }
-  return { placeOfService: place, component, ...prev };
+  return { placeOfService: place, component, ...prev, ...tier };
+}
+
+/**
+ * Item 5 — extract the drug FORMULARY tier from a benefit/line description (lowercased). Returns
+ * `{ planTierLabel: 'tier_<n>' }` ONLY for an unambiguous single-tier DRUG line; `{}` otherwise. Two
+ * universal guards (A2b Phase 2, Andrew-ratified §8/D-C):
+ *   (1) drug-context — requires a drug/pharmacy/prescription cue, so a NETWORK/provider "Tier N" (e.g.
+ *       "Tier 1 hospital") is never mistaken for a formulary tier;
+ *   (2) single-tier — a line naming several tiers ("Tier 1/2/4", "Tier 2 and Tier 4") is deliberately
+ *       tier-agnostic (one cost-share across tiers) → omitted.
+ * The slug is untouched (the descriptor); this is a plan-local modifier only. Clamped to tier_1..tier_12
+ * (the mig-181 CHECK range).
+ */
+function derivePlanTierLabel(d: string): { planTierLabel?: string } {
+  const drugCtx =
+    /\bdrugs?\b|\brx\b|\bpharmacy\b|\bprescriptions?\b|\bformulary\b|\bmedications?\b|\banticancer\b|\bchemo\w*\b|\binsulin\b|\bcontracepti\w*\b|\bbiologic\w*\b|\binfusion\b/.test(d);
+  if (!drugCtx) return {};
+  // multi-tier → tier-agnostic: ≥2 "tier N" mentions, or a "tier N/M" / "tier N & M" / "tier N-M" run.
+  const tierMentions = (d.match(/\btiers?\s*\d/g) || []).length;
+  const multi = tierMentions >= 2 || /\btier\s*\d+\s*[/,&–-]\s*\d/.test(d);
+  if (multi) return {};
+  // (?!\d) not \b: a letter-suffixed sub-tier ("Tier 1a" / "Tier 1b") still reads tier_1, while a stray
+  // 3-digit run ("Tier 100…") is rejected (no real formulary tier exceeds the 1..12 CHECK range anyway).
+  const m = d.match(/\btiers?\s*(\d{1,2})(?!\d)/);
+  if (!m) return {};
+  const n = parseInt(m[1], 10);
+  return n >= 1 && n <= 12 ? { planTierLabel: `tier_${n}` } : {};
 }
 
 /** Single-line resolve (manual / reaudit / search fallback). */

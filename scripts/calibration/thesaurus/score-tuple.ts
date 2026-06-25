@@ -39,6 +39,10 @@ export interface TupleScoreCard {
   /** item 6 — is_preventive_eligible: recall on GT-true rows (a guard; the cue is shared) + corpus-wide
    *  over-fire (the NON-circular signal: did the flag fire where the GT says it shouldn't?). */
   preventive: { gtTrue: number; recall: number; overFire: number; overFireRows: { gtId: string; serviceName: string; slug: string }[] };
+  /** item 5 — plan_tier_label: recall = resolver emitted the SAME tier as GT (exact); wrongValue = emitted
+   *  a DIFFERENT tier; overFire = emitted a tier where GT has none (corpus-wide; the non-circular signal —
+   *  GT tier is derived independently of the resolver regex in phase2-reconcile + suffix-cross-checked). */
+  tier: { gtTotal: number; recall: number; wrongValue: number; overFire: number; overFireRows: { gtId: string; serviceName: string; got: string }[]; wrongRows: { gtId: string; serviceName: string; gt: string; got: string }[] };
 }
 
 const emptyBucket = (): TupleBucket => ({
@@ -64,7 +68,7 @@ export function buildTupleScoreCard(args: {
     return [{ slug: canon(f?.resolvedSlug), place: f?.placeOfService ?? "∅", component: f?.component ?? "∅" }];
   };
 
-  const card: TupleScoreCard = { all: emptyBucket(), andrew: emptyBucket(), cluster: emptyBucket(), clusterAndrew: emptyBucket(), misses: [], preventive: { gtTrue: 0, recall: 0, overFire: 0, overFireRows: [] } };
+  const card: TupleScoreCard = { all: emptyBucket(), andrew: emptyBucket(), cluster: emptyBucket(), clusterAndrew: emptyBucket(), misses: [], preventive: { gtTrue: 0, recall: 0, overFire: 0, overFireRows: [] }, tier: { gtTotal: 0, recall: 0, wrongValue: 0, overFire: 0, overFireRows: [], wrongRows: [] } };
   const target = (g: GtService, inCluster: boolean): TupleBucket[] => {
     const bs = [card.all];
     const a = g.adjudicationStatus === "andrew";
@@ -114,6 +118,18 @@ export function buildTupleScoreCard(args: {
       card.preventive.overFire += 1;
       if (card.preventive.overFireRows.length < 10) card.preventive.overFireRows.push({ gtId: g.id, serviceName: g.serviceName, slug: f?.resolvedSlug ?? "∅" });
     }
+    // item 5 — plan_tier_label (over ALL rows, like preventive): exact recall on GT-tier rows + over-fire.
+    const gtTier = g.planTierLabel;
+    const resTier = f?.planTierLabel;
+    if (gtTier) {
+      card.tier.gtTotal += 1;
+      if (resTier === gtTier) card.tier.recall += 1;
+      else if (resTier) { card.tier.wrongValue += 1; if (card.tier.wrongRows.length < 10) card.tier.wrongRows.push({ gtId: g.id, serviceName: g.serviceName, gt: gtTier, got: resTier }); }
+    }
+    if (resTier && !gtTier) {
+      card.tier.overFire += 1;
+      if (card.tier.overFireRows.length < 10) card.tier.overFireRows.push({ gtId: g.id, serviceName: g.serviceName, got: resTier });
+    }
   }
   return card;
 }
@@ -135,6 +151,8 @@ ${row("cluster · andrew", c.clusterAndrew)}
 > place/component = deterministic regression-guard on deriveModifiers + phrasing-robustness on the real corpus.
 
 **is_preventive_eligible (item 6):** recall ${c.preventive.recall}/${c.preventive.gtTrue} on GT-flagged rows (guard — cue shared with GT) · **over-fire ${c.preventive.overFire}** (NON-circular: flag fired where GT says not)${c.preventive.overFireRows.length ? " → " + c.preventive.overFireRows.map((r) => `${r.slug}:"${r.serviceName.slice(0, 32)}"`).join("; ") : ""}
+
+**plan_tier_label (item 5):** recall ${c.tier.recall}/${c.tier.gtTotal} exact on GT-tier rows · wrong-value ${c.tier.wrongValue} · **over-fire ${c.tier.overFire}** (NON-circular: tier fired where GT none)${c.tier.overFireRows.length ? " → " + c.tier.overFireRows.map((r) => `${r.got}:"${r.serviceName.slice(0, 32)}"`).join("; ") : ""}${c.tier.wrongRows.length ? "\n> tier wrong-value: " + c.tier.wrongRows.map((r) => `"${r.serviceName.slice(0, 28)}" got ${r.got} want ${r.gt}`).join("; ") : ""}
 
 ### tuple misses (first 25)
 ${c.misses.slice(0, 25).map((m) => `  - ${m.insurer} "${m.serviceName}"${m.multi ? " [multi]" : ""}: got \`${m.got}\` · want \`${m.gt}\``).join("\n") || "  _none_"}

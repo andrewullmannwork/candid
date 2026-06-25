@@ -204,6 +204,23 @@ eq("osteoporosis screening → preventive flag", dm("Osteoporosis screening").is
 eq("plain CT → NO preventive flag", dm("CT scan of the abdomen").isPreventiveEligible ? 1 : 0, 0);
 eq("osteoporosis treatment (not screening) → NO preventive flag", dm("Osteoporosis medication / treatment").isPreventiveEligible ? 1 : 0, 0);
 eq("facility fee → NO preventive flag", dm("Facility fee (e.g., hospital room)").isPreventiveEligible ? 1 : 0, 0);
+// ── item 5 (A2b Phase 2): plan_tier_label — drug-context + single-tier guards ──
+eq("Tier 4 specialty drug → tier_4", dm("Specialty drugs (Tier 4)").planTierLabel, "tier_4");
+eq("Tier 1 generic drug → tier_1", dm("Generic drugs (Tier 1) - retail / mail order").planTierLabel, "tier_1");
+eq("pharmacy items on Tier 2 → tier_2", dm("Outpatient pharmacy - Items on Tier 2 (most items)").planTierLabel, "tier_2");
+eq("retail prescription Tier 3 → tier_3", dm("Retail Prescription — Tier 3").planTierLabel, "tier_3");
+eq("contraceptives on Tier 1 → tier_1", dm("Hormonal contraceptives on Tier 1 (rings, patches, oral)").planTierLabel, "tier_1");
+eq("tier_12 boundary → tier_12", dm("Specialty drugs (Tier 12)").planTierLabel, "tier_12");
+eq("NETWORK tier (hospital, no drug ctx) → NO tier", dm("Tier 1 hospital (in-network facility)").planTierLabel ? 1 : 0, 0);
+eq("provider tier (specialist visit, no drug ctx) → NO tier", dm("Tier 2 specialist office visit").planTierLabel ? 1 : 0, 0);
+eq("multi-tier slash (Tier 1/2/4) → NO tier", dm("Fertility drugs on Tier 1/2/4 prescribed in connection with Fertility Services").planTierLabel ? 1 : 0, 0);
+eq("multi-tier 'and' (Tier 2 and Tier 4) → NO tier", dm("Drugs on Tier 2 and Tier 4 prescribed for sexual dysfunction disorders").planTierLabel ? 1 : 0, 0);
+eq("drug row, no tier stated → NO tier", dm("Generic drugs").planTierLabel ? 1 : 0, 0);
+eq("office visit (no tier, no drug ctx) → NO tier", dm("Primary care visit to treat an injury or illness").planTierLabel ? 1 : 0, 0);
+eq("tier_13 out of range → NO tier", dm("Drugs (Tier 13)").planTierLabel ? 1 : 0, 0);
+eq("letter sub-tier (Tier 1a) → tier_1", dm("Preferred generic drugs (Tier 1a)").planTierLabel, "tier_1");
+eq("letter sub-tier (Tier 1b) → tier_1", dm("Other generic drugs (Tier 1b)").planTierLabel, "tier_1");
+eq("3-digit junk (Tier 100) → NO tier", dm("Drugs (Tier 100)").planTierLabel ? 1 : 0, 0);
 
 // ── RUN 7 (S226 / A2b Phase 2): score-tuple.ts — full-tuple match, the modifiers|slug conditional,
 // the umbrella exact-set-match (mixed detection), under-detection, and canon-awareness. ──

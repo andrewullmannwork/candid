@@ -57,6 +57,10 @@ export interface GtService {
   multiLabel?: ModifierTuple[];
   /** A2b Phase 2 item 6 — GT truth: this line is a preventive-eligible screening (e.g. bone-density). */
   isPreventiveEligible?: boolean;
+  /** A2b Phase 2 item 5 — GT truth: drug FORMULARY tier as a plan-local modifier ('tier_1'..'tier_12';
+   *  Hard Rule #17). Derived from the serviceName TEXT (the resolver's basis) + cross-checked against the
+   *  baked-slug suffix in phase2-reconcile; absent when no single tier is stated. */
+  planTierLabel?: string;
 }
 
 /** Pattern-S modifier tuple (mirror of the resolver's ServiceModifierTuple) — A2b Phase 2. */
@@ -81,6 +85,8 @@ export interface ForwardMapEntry {
   multiLabel?: ModifierTuple[];
   /** A2b Phase 2 item 6 — resolver-emitted preventive-eligible flag (deterministic, description-derived). */
   isPreventiveEligible?: boolean;
+  /** A2b Phase 2 item 5 — resolver-emitted drug formulary tier (deterministic, description-derived). */
+  planTierLabel?: string;
   /**
    * S170 N-run majority: fraction of the N forward runs that agreed with the winning (canon'd) slug
    * for this gtId. 1.0 = unanimous; undefined on a legacy single-run snapshot. The de-noising signal.
