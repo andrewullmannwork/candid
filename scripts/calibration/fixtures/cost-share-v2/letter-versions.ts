@@ -11,6 +11,7 @@
 import {
   appendLetterVersion,
   computeEvidenceFingerprint,
+  isDisputeStale,
   type LetterVersion,
   type FingerprintInput,
   type CostShareBasis,
@@ -152,6 +153,18 @@ check("F3 identical basis deterministic", fp(withBasis(baseBasis)) === fp(withBa
 // F17 — coinsurance: sub-4dp float noise stable; a real change drifts
 { const b = cloneBasis(baseBasis); if (b.plan.params) b.plan.params.inCoinsuranceDefault = 0.2000000001; check("F17a coins float-noise stable", fp(withBasis(b)) === fp(withBasis(baseBasis))); }
 { const b = cloneBasis(baseBasis); if (b.plan.params) b.plan.params.inCoinsuranceDefault = 0.25; check("F17b coins real drift", fp(withBasis(b)) !== fp(withBasis(baseBasis))); }
+
+// ── isDisputeStale — the SHARED staleness rule (dispute card == letter page) ──
+// §17.4: the claim GET (the card) and the dispute GET (the letter) MUST agree on
+// "out of date". Locking the one rule both surfaces call guarantees no drift.
+const FP_X = "x".repeat(64);
+const FP_Y = "y".repeat(64);
+check("S1 drift → stale", isDisputeStale({ currentFingerprint: FP_X, storedFingerprint: FP_Y, sentAt: null }) === true);
+check("S2 fingerprints match → not stale", isDisputeStale({ currentFingerprint: FP_X, storedFingerprint: FP_X, sentAt: null }) === false);
+check("S3 sent → not stale even when drifted", isDisputeStale({ currentFingerprint: FP_X, storedFingerprint: FP_Y, sentAt: "2026-06-20T00:00:00Z" }) === false);
+check("S4 null current (claim unloadable) → not stale", isDisputeStale({ currentFingerprint: null, storedFingerprint: FP_Y, sentAt: null }) === false);
+check("S5 just-regenerated → not stale", isDisputeStale({ currentFingerprint: FP_X, storedFingerprint: FP_Y, sentAt: null, justRegenerated: true }) === false);
+check("S6 null stored (never fingerprinted) → stale", isDisputeStale({ currentFingerprint: FP_X, storedFingerprint: null, sentAt: null }) === true);
 
 console.log(`\ncost-share-v2 letter-version + fingerprint fixtures: ${pass} passed, ${fails.length} failed`);
 if (fails.length) {

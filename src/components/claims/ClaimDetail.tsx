@@ -173,7 +173,7 @@ interface PlanCoverageEntry {
 interface ClaimData {
   claim: Record<string, unknown>;
   lineItems: LineItem[];
-  disputes: Array<{ id: string; dispute_type: string; status: string; amount_disputed: number; amount_recovered: number }>;
+  disputes: Array<{ id: string; dispute_type: string; status: string; amount_disputed: number; amount_recovered: number; isStale?: boolean; chargeCount?: number }>;
   relatedClaims: Array<{ id: string; date_of_service: string; status: string; total_billed: number; provider_name: string | null }>;
   // S132 iter-6 Phase 1 — slugs present in user's plan_covered_services for
   // this claim's plan_id. Drives CategoryCorrectionModal filtering + best-
@@ -224,33 +224,6 @@ interface ClaimData {
     basis: string | null;
     excerpt: string | null;
   } | null;
-}
-
-interface DisputeDetail {
-  id: string;
-  disputeType: string;
-  status: string;
-  amountDisputed: number;
-  amountRecovered: number;
-  filedDate: string | null;
-  resolutionDate: string | null;
-  claimId: string | null;
-  letterContent: string | null;
-  evidencePackage: Record<string, unknown> | null;
-  // Cost-Share v2 (W4) — letter staleness signals; present only when the flag is
-  // ON (the disputes GET gates them). isStale → the evidence basis changed since
-  // the letter was drafted; letterVersionCount → prior versions kept on refresh.
-  isStale?: boolean;
-  letterVersionCount?: number;
-  lineItems: Array<{
-    id: string;
-    line_number: number;
-    description: string | null;
-    billing_code: string | null;
-    billed_amount: number | null;
-    insurance_paid: number | null;
-    patient_owes: number | null;
-  }>;
 }
 
 const COVERAGE_BADGE: Record<string, { label: string; className: string }> = {
@@ -2892,43 +2865,22 @@ function DisputeRow({
   recovery,
   hasCostShare,
 }: {
-  dispute: { id: string; dispute_type: string; status: string; amount_disputed: number; amount_recovered: number };
+  dispute: { id: string; dispute_type: string; status: string; amount_disputed: number; amount_recovered: number; isStale?: boolean; chargeCount?: number };
   provider: string;
   recovery: number;
   hasCostShare: boolean;
 }) {
-  const { user } = useAuth();
-  const [detail, setDetail] = useState<DisputeDetail | null>(null);
-
-  // Cost-Share v2 redesign — the card surfaces the "May need update" state + the
-  // linked-charge count WITHOUT a click, so fetch the dispute on mount. The heavy
-  // bill / letter / court detail now lives on the /disputes letter page ("Open
-  // dispute letter"), which also carries Refresh / Keep-as-is. Standard active-
-  // flag guard (StrictMode re-runs the effect; the second run repopulates).
-  useEffect(() => {
-    if (!user) return;
-    let active = true;
-    (async () => {
-      try {
-        const token = await user.firebaseUser.getIdToken();
-        const res = await fetch(`/api/disputes/${dispute.id}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (active && res.ok) setDetail(await res.json());
-      } catch (err) {
-        if (active) console.error("Failed to load dispute detail:", err);
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, [user, dispute.id]);
-
+  // Cost-Share v2 (§17.4) — the card surfaces the "May need update" state + the
+  // linked-charge count from props (the claim GET now folds `isStale` +
+  // `chargeCount` into `data.disputes`), so the pill renders INSTANTLY. This used
+  // to fire the heavy /api/disputes/[id] GET on mount (~4.5s) just for these two.
+  // The heavy bill / letter / court detail lives on the /disputes letter page
+  // ("Open dispute letter"), which also carries Refresh / Keep-as-is.
   const typeLabel = disputeTypeLabel(dispute.dispute_type);
   const statusLabel = DISPUTE_STATUS_LABEL[dispute.status] || dispute.status;
   const statusBadgeClass = DISPUTE_STATUS_BADGE[dispute.status] || "text-gray-700 bg-gray-100";
-  const isStale = !!detail?.isStale;
-  const chargeCount = detail?.lineItems?.length ?? null;
+  const isStale = !!dispute.isStale;
+  const chargeCount = dispute.chargeCount ?? null;
   const recovered = dispute.amount_recovered > 0;
   // Headline = the honest cost-share recovery when the engine ran for this bill;
   // else the stored amount_disputed (legacy / flag OFF). Display-only — the
@@ -2956,7 +2908,7 @@ function DisputeRow({
           </div>
           <p className="mt-1.5 truncate text-sm text-gray-500">
             {provider}
-            {chargeCount != null && ` · ${chargeCount} charge${chargeCount === 1 ? "" : "s"}`}
+            {chargeCount != null && chargeCount > 0 && ` · ${chargeCount} charge${chargeCount === 1 ? "" : "s"}`}
           </p>
         </div>
         <div className="shrink-0 text-right">

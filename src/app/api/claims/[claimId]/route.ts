@@ -45,6 +45,11 @@ import {
 } from "@/lib/claims/effective-totals";
 import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import {
+  loadFingerprintInputForClaim,
+  computeEvidenceFingerprint,
+  isDisputeStale,
+} from "@/lib/disputes/evidence-fingerprint";
 import { maybeReauditClaim } from "@/lib/audit/reaudit";
 import { buildAcaCoverageFallback, detectPreventiveMembership } from "@/lib/audit/aca-coverage-fallback";
 import {
@@ -825,8 +830,67 @@ export async function GET(
   // the owner's disputes on the owned claim).
   const { data: disputes } = await userScoped(supabase, user.id)
     .table("dispute_outcomes")
-    .select("id, dispute_type, status, amount_disputed, amount_recovered, filed_date, resolution_date")
+    .select(
+      // Cost-Share v2 (§17.4) — when the flag is ON, also pull the fields the
+      // dispute card needs to render `isStale` + `chargeCount` WITHOUT the heavy
+      // per-dispute GET (~4.5s). OFF → the original narrow shape (byte-identical).
+      costShareV2
+        ? "id, dispute_type, status, amount_disputed, amount_recovered, filed_date, resolution_date, evidence_fingerprint, sent_at, claim_line_item_id, metadata"
+        : "id, dispute_type, status, amount_disputed, amount_recovered, filed_date, resolution_date",
+    )
     .eq("claim_id", claimId);
+
+  // Cost-Share v2 (§17.4) — fold `isStale` + `chargeCount` into the claim GET so
+  // the redesigned dispute card renders them instantly, instead of each card firing
+  // the heavy /api/disputes/[id] GET on mount (~4.5s) just for these two fields.
+  // The claim-level evidence fingerprint is computed ONCE (shared across every
+  // dispute on this claim) via the CANONICAL loadFingerprintInputForClaim, so the
+  // card's staleness verdict matches the letter page's exactly (same shared
+  // isDisputeStale rule). The duplicate basis-load (~0.3-0.5s) folds into the §18
+  // single-load unification.
+  let enrichedDisputes: Array<Record<string, unknown>> = disputes ?? [];
+  if (costShareV2 && enrichedDisputes.length > 0) {
+    let currentFp: string | null = null;
+    try {
+      const fpInput = await loadFingerprintInputForClaim(supabase, claimId, user.id);
+      currentFp = fpInput ? computeEvidenceFingerprint(fpInput) : null;
+    } catch (err) {
+      // A fingerprint-load failure must NOT take down the whole claim page; degrade
+      // to not-stale (chargeCount needs no fingerprint, so it still renders).
+      console.error(
+        "[claims GET] cost-share staleness load failed; disputes render not-stale:",
+        err,
+      );
+      currentFp = null;
+    }
+    enrichedDisputes = enrichedDisputes.map((d) => {
+      const extraIds =
+        ((d.metadata as Record<string, unknown> | null)?.claimLineItemIds as
+          | string[]
+          | undefined) ?? [];
+      const chargeCount = new Set(
+        [d.claim_line_item_id, ...extraIds].filter(Boolean) as string[],
+      ).size;
+      const isStale = isDisputeStale({
+        currentFingerprint: currentFp,
+        storedFingerprint: (d.evidence_fingerprint as string | null) ?? null,
+        sentAt: (d.sent_at as string | null) ?? null,
+      });
+      // Drop the helper-only fields (fingerprint / sent_at / metadata / line id)
+      // from the response — the raw fingerprint never reaches the client.
+      return {
+        id: d.id,
+        dispute_type: d.dispute_type,
+        status: d.status,
+        amount_disputed: d.amount_disputed,
+        amount_recovered: d.amount_recovered,
+        filed_date: d.filed_date,
+        resolution_date: d.resolution_date,
+        isStale,
+        chargeCount,
+      };
+    });
+  }
 
   // Fetch related claims in same group. S139 (B4.2 multi-line) — lift
   // provider_name from claim metadata so BundleSuggestion + MiniBillRow can
@@ -880,7 +944,7 @@ export async function GET(
   return NextResponse.json({
     claim,
     lineItems: enrichedLineItems,
-    disputes: disputes || [],
+    disputes: enrichedDisputes,
     relatedClaims,
     recovery: claimRecovery,
     // Cost-Share v2 (D1) — bill-level verdict for the §5 banner; flag-gated

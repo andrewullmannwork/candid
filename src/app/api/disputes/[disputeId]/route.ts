@@ -36,6 +36,7 @@ import { isFeatureEnabled } from "@/lib/config/product-flags";
 import {
   computeEvidenceFingerprint,
   decideDriftAction,
+  isDisputeStale,
   loadFingerprintInputForClaim,
   appendLetterVersion,
   type DriftDecision,
@@ -634,13 +635,18 @@ export async function GET(
   // letter's evidence fingerprint no longer matches current evidence AND we served the cached
   // body (didn't just regenerate) on an unsent draft. `letterVersionCount` powers the
   // "prior versions" affordance. Sent letters keep using `driftDecision` (the cooldown banner).
-  const fingerprintDrift =
-    currentEvidenceFingerprint != null &&
-    (dispute.evidence_fingerprint as string | null) !== currentEvidenceFingerprint;
   // served-the-cached-body = regeneratedLetterContent is null (we didn't regenerate, or a
   // refresh failed and we fell back to the saved letter — either way it may be stale).
+  // §17.4 — the staleness rule is the SHARED isDisputeStale helper so this letter page
+  // and the dispute card (claim GET) can never disagree about "out of date".
   const isStale =
-    costShareV2 && regeneratedLetterContent == null && fingerprintDrift && sentAt == null;
+    costShareV2 &&
+    isDisputeStale({
+      currentFingerprint: currentEvidenceFingerprint,
+      storedFingerprint: (dispute.evidence_fingerprint as string | null) ?? null,
+      sentAt,
+      justRegenerated: regeneratedLetterContent != null,
+    });
   const letterVersionCount = Array.isArray(
     (dispute.metadata as Record<string, unknown> | null)?.letterVersionHistory,
   )

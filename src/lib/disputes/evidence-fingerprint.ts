@@ -481,6 +481,32 @@ export function computeEvidenceFingerprint(input: FingerprintInput): string {
 }
 
 /**
+ * Cost-Share v2 (W4 / §17.4) — the SINGLE staleness rule, shared by the claim GET
+ * (the dispute card on the bill page) and the dispute GET (the letter page) so the
+ * two surfaces can NEVER disagree about whether a dispute is out of date. A dispute
+ * is stale when its stored evidence fingerprint no longer matches the freshly-
+ * computed one, it hasn't been sent, and we didn't just regenerate its letter on
+ * this request.
+ *
+ * `currentFingerprint == null` (claim unloadable → no fingerprint) → NOT stale: we
+ * can't prove drift, so we never false-flag. `storedFingerprint == null` (never
+ * fingerprinted) WITH a real current fp → stale (over-flag-safe; matches the letter
+ * page). Callers apply the recovery_cost_share_v2 flag gate themselves (OFF → neither
+ * surface computes this).
+ */
+export function isDisputeStale(opts: {
+  currentFingerprint: string | null;
+  storedFingerprint: string | null;
+  sentAt: Date | string | null;
+  justRegenerated?: boolean;
+}): boolean {
+  const { currentFingerprint, storedFingerprint, sentAt, justRegenerated = false } = opts;
+  if (justRegenerated) return false;
+  if (currentFingerprint == null) return false;
+  return currentFingerprint !== storedFingerprint && sentAt == null;
+}
+
+/**
  * Compute cooldown_until value to write at Mark-as-Sent.
  * Defaults to 30 days per Q-M LOCK; configurable via flag in future.
  */
