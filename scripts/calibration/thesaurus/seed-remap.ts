@@ -20,13 +20,18 @@ import type { GtService, ForwardMapEntry, ConvergenceReport } from "./types";
 
 // Standard SBC benefit-row labels -> representative slug (Path A; Andrew-approved S171). General domain
 // vocabulary, NOT GT strings. `note` documents the SBC provenance for each.
+// S222 A2b — SHIP SET (trimmed after the circularity review, Andrew-approved). ONLY federal-SBC-template
+// labels: cross-carrier-standard vocabulary the resolver flips on → a seed here is independently justified
+// (fires on ANY carrier's doc), NOT circular. Carrier-specific EOC phrasings (autism, water, travel,
+// ostomy, ECT, TMS, ortho, low-vision, early-intervention, weight-loss, rehab-variant, BSC phys-services
+// variants, diagnostic-xray, telehealth) were DROPPED — seeding a GT string = circular self-grading +
+// insurer-specific (feedback_calibration_independence + feedback_universal_fixes_only). Those themes ride
+// the mig-178 enriched catalog + Haiku; the N=9 gate MEASURES them; residual misses → a UNIVERSAL prompt
+// rule (Phase 2), not a per-carrier seed. (Inpatient phys/surgeon supersession = a manual UPDATE in mig 179.)
 const SEED: { label: string; slug: string; note: string }[] = [
-  { label: "Rehabilitation services", slug: "pt_rehab", note: "SBC 'Rehabilitation services' row (bundled PT/OT/ST) → macro-tier representative" },
-  { label: "Hospice services", slug: "hospice_outpatient", note: "SBC 'Hospice services' row" },
-  { label: "Physician/surgeon fees (inpatient)", slug: "hospital_admission", note: "SBC hospital-stay 'Physician/surgeon fees' row, inpatient → rolls up to admission" },
-  // S171 fast-follow — the MH/SA combined-label flippy class the re-gate ledger surfaced (mental_health_outpatient ↔ substance_abuse_outpatient).
-  { label: "Outpatient services (mental/behavioral health, substance abuse)", slug: "mental_health_outpatient", note: "SBC MH/SA outpatient combined row → representative" },
-  { label: "Outpatient services (mental health, behavioral health, substance abuse)", slug: "mental_health_outpatient", note: "SBC MH/SA outpatient combined row (variant phrasing)" },
+  { label: "Facility fee (e.g., hospital room)", slug: "hospital_admission", note: "[STD] federal-SBC hospital-stay facility/room fee (38 hits; resolver flips)" },
+  { label: "Facility fee (e.g., ambulatory surgery center)", slug: "surgery", note: "[STD] federal-SBC outpatient-surgery facility fee (38 hits; resolver flips)" },
+  { label: "Physician/surgeon fees (outpatient)", slug: "surgery", note: "[STD] federal-SBC phys/surgeon fee, Model A (31 hits; resolver flips)" },
 ];
 
 const sig = (s: string) => normalizeDescriptionSignature(s, "");
@@ -69,8 +74,10 @@ function main() {
     // COLLISION: a SCORED entry whose correct answer is NOT this seed's slug but shares the signature →
     // the deterministic seed would REGRESS it. Must be 0 to ship the seed.
     const collisions = matched.filter((g) => isScored(g) && !okTarget(g));
-    // OVER-MAP: a NO_CONCEPT entry (should stay null) the seed would force-map → false positive. Must be 0.
-    const overMap = matched.filter((g) => !g.notFound && g.correctSlug === null);
+    // OVER-MAP: a GENUINE no-concept entry (should stay null) the seed would force-map → false positive. Must be 0.
+    // S222: exclude negative-pair nulls — those are within-doc DEDUP nulls (the service is scored on its partner
+    // row), NOT no-concepts; canonical's unique key dedups in prod, so a seed resolving the duplicate is benign.
+    const overMap = matched.filter((g) => !g.notFound && g.correctSlug === null && !g.isNegativePair);
     // FIX (B1): a scored entry, correct target, currently UNRESOLVED (null) → seed makes it a recall hit.
     const b1fix = matched.filter((g) => isScored(g) && okTarget(g) && now(g) === null);
     // FIX (B2): an ANDREW scored entry, correct target, currently resolving to a WRONG non-null slug → precision gain.
