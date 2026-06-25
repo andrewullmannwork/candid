@@ -4,7 +4,6 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import type { BillState } from "@/lib/claims/derive-bill-state";
-import { useSubscription } from "@/lib/subscription/use-subscription";
 import { Disclaimer } from "@/components/shared/Disclaimer";
 import { disputeUrlForResult } from "@/lib/disputes/url";
 import { CategoryCorrectionModal } from "@/components/claims/CategoryCorrectionModal";
@@ -2453,23 +2452,10 @@ export function ClaimDetail({
           </div>
         </div>
       ) : billState === "overcharge_drafted" ? (
-        <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-gray-200 bg-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="max-w-prose text-[13px] text-gray-500">
-            We drafted an <strong className="font-semibold text-gray-900">appeal letter</strong> for you. Review, edit anything, and send by certified mail.
-          </div>
-          <div className="sm:flex-shrink-0">
-            <BulkDisputeButton
-              claimId={claimId}
-              claim={claim}
-              primaryLineItems={primaryLineItems}
-              claimLevelFindings={visibleClaimLevelFindings}
-              showDismissed={showDismissed}
-              getAuthToken={getAuthToken}
-              onGenerated={(result) => router.push(disputeUrlForResult(result))}
-              existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
-            />
-          </div>
-        </div>
+        /* Cost-Share v2 redesign — removed the "We drafted an appeal letter"
+           footer; the Disputes card below is now the single drafted-dispute CTA
+           (one "Open dispute letter", no duplicate button). */
+        null
       ) : billState === "needs_review" ? (
         <>
           <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-gray-200 bg-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
@@ -2543,7 +2529,13 @@ export function ClaimDetail({
           <h3 className="text-sm font-semibold text-gray-900 mb-2">Disputes</h3>
           <div className="space-y-2">
             {data.disputes.map((d) => (
-              <DisputeRow key={d.id} dispute={d} />
+              <DisputeRow
+                key={d.id}
+                dispute={d}
+                provider={providerName}
+                recovery={billTotals.potentialRecovery}
+                hasCostShare={!!data.costShareBill}
+              />
             ))}
           </div>
           {/* T2.7 — bundle related bills into one consolidated dispute */}
@@ -2896,386 +2888,118 @@ function QualityMeasuresSection({ items }: { items: LineItem[] }) {
 
 function DisputeRow({
   dispute,
+  provider,
+  recovery,
+  hasCostShare,
 }: {
   dispute: { id: string; dispute_type: string; status: string; amount_disputed: number; amount_recovered: number };
+  provider: string;
+  recovery: number;
+  hasCostShare: boolean;
 }) {
   const { user } = useAuth();
-  const { isPro } = useSubscription();
-  const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<DisputeDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  // S71 hotfix #4 (Session 73) — Re-draft inline on the claim-detail dispute card.
-  // Same handler as /disputes page; allows users to re-draft without leaving the
-  // claim view. CF-20 re-parse-on-flag fires server-side; toast surfaces outcome.
-  const [redrafting, setRedrafting] = useState(false);
-  // S109 PR #2 — toast tracks kind so error cases (e.g., 3/24h rate limit
-  // 429) render amber instead of success-green emerald.
-  const [redraftToast, setRedraftToast] = useState<{ text: string; kind: "success" | "error" } | null>(null);
-  // Cost-Share v2 (W4) — user-initiated letter refresh (GET ?refresh=1 regenerates
-  // + versions the prior) + a session dismiss for "Send as-is".
-  const [refreshing, setRefreshing] = useState(false);
-  const [staleDismissed, setStaleDismissed] = useState(false);
 
+  // Cost-Share v2 redesign — the card surfaces the "May need update" state + the
+  // linked-charge count WITHOUT a click, so fetch the dispute on mount. The heavy
+  // bill / letter / court detail now lives on the /disputes letter page ("Open
+  // dispute letter"), which also carries Refresh / Keep-as-is. Standard active-
+  // flag guard (StrictMode re-runs the effect; the second run repopulates).
+  useEffect(() => {
+    if (!user) return;
+    let active = true;
+    (async () => {
+      try {
+        const token = await user.firebaseUser.getIdToken();
+        const res = await fetch(`/api/disputes/${dispute.id}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (active && res.ok) setDetail(await res.json());
+      } catch (err) {
+        if (active) console.error("Failed to load dispute detail:", err);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [user, dispute.id]);
+
+  const typeLabel = disputeTypeLabel(dispute.dispute_type);
   const statusLabel = DISPUTE_STATUS_LABEL[dispute.status] || dispute.status;
   const statusBadgeClass = DISPUTE_STATUS_BADGE[dispute.status] || "text-gray-700 bg-gray-100";
-  const typeLabel = disputeTypeLabel(dispute.dispute_type);
-
-  async function toggleOpen() {
-    if (open) {
-      setOpen(false);
-      return;
-    }
-    setOpen(true);
-    if (detail || detailLoading || !user) return;
-    setDetailLoading(true);
-    try {
-      const token = await user.firebaseUser.getIdToken();
-      const res = await fetch(`/api/disputes/${dispute.id}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        setDetail(await res.json());
-      }
-    } catch (err) {
-      console.error("Failed to load dispute detail:", err);
-    }
-    setDetailLoading(false);
-  }
-
-  async function handleRedraft() {
-    if (!user || redrafting) return;
-    setRedrafting(true);
-    setRedraftToast(null);
-    try {
-      const token = await user.firebaseUser.getIdToken();
-      const res = await fetch(`/api/disputes/${dispute.id}/redraft`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || `redraft failed (${res.status})`);
-      }
-      const data = await res.json();
-      const upgrades = data?.cf20?.upgrades ?? 0;
-      const targets = data?.cf20?.targets ?? 0;
-      setRedraftToast({
-        text: targets === 0
-          ? "Letter re-drafted with current plan + evidence."
-          : upgrades > 0
-            ? `Letter re-drafted — ${upgrades} of ${targets} citation${targets === 1 ? "" : "s"} upgraded.`
-            : `Letter re-drafted — ${targets} citation${targets === 1 ? "" : "s"} attempted; none upgraded this run.`,
-        kind: "success",
-      });
-      // Refetch the dispute detail to show the updated letter content.
-      const refetch = await fetch(`/api/disputes/${dispute.id}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (refetch.ok) setDetail(await refetch.json());
-    } catch (err) {
-      setRedraftToast({
-        text: err instanceof Error ? err.message : "Re-draft failed",
-        kind: "error",
-      });
-    } finally {
-      setRedrafting(false);
-      setTimeout(() => setRedraftToast(null), 6000);
-    }
-  }
-
-  async function handleRefreshLetter() {
-    if (!user || refreshing) return;
-    setRefreshing(true);
-    try {
-      const token = await user.firebaseUser.getIdToken();
-      // ?refresh=1 regenerates the letter server-side (versioning the prior) and
-      // returns fresh detail incl. the recomputed isStale.
-      const res = await fetch(`/api/disputes/${dispute.id}?refresh=1`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) setDetail(await res.json());
-    } catch (err) {
-      console.error("Refresh letter failed:", err);
-    } finally {
-      setRefreshing(false);
-    }
-  }
-
-  const hasLetter = !!detail?.letterContent;
-  const hasEvidence = !!detail?.evidencePackage;
-  const hasReachedLetterStage = dispute.status !== "flagged";
-  const hasReachedCourtStage =
-    dispute.status === "court_documentation_drafted" ||
-    dispute.status === "won" ||
-    dispute.status === "lost" ||
-    dispute.status === "settled" ||
-    dispute.status === "won_on_escalation" ||
-    dispute.status === "settled_on_escalation";
+  const isStale = !!detail?.isStale;
+  const chargeCount = detail?.lineItems?.length ?? null;
+  const recovered = dispute.amount_recovered > 0;
+  // Headline = the honest cost-share recovery when the engine ran for this bill;
+  // else the stored amount_disputed (legacy / flag OFF). Display-only — the
+  // stored amount_disputed is reconciled in the recovery-engine unification.
+  const headline = hasCostShare ? recovery : dispute.amount_disputed;
+  const fmt = (n: number) =>
+    n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   return (
-    <div className="rounded-xl border border-gray-100 bg-white overflow-hidden">
-      <button
-        onClick={toggleOpen}
-        className="w-full flex items-center justify-between px-3 py-3 text-left hover:bg-gray-50 transition-colors"
-      >
-        <div className="flex items-center gap-3">
-          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusBadgeClass}`}>
-            {statusLabel}
-          </span>
-          <div>
-            <p className="text-xs font-semibold text-gray-900">{typeLabel}</p>
-            <p className="text-[10px] text-gray-500">Click for details</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <div className="text-right">
-            <p className="text-xs font-bold">${dispute.amount_disputed.toLocaleString()}</p>
-            {dispute.amount_recovered > 0 && (
-              <p className="text-[10px] text-green-600">+${dispute.amount_recovered.toLocaleString()}</p>
-            )}
-          </div>
-          <svg
-            className={`w-4 h-4 text-gray-400 transition-transform ${open ? "rotate-180" : ""}`}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-          </svg>
-        </div>
-      </button>
-      {open && (
-        <div className="border-t border-gray-100 p-3 space-y-3 bg-gray-50/40">
-          {/* Cost-Share v2 (W4) — letter staleness. The evidence basis changed
-              since this letter was drafted (e.g. a cost-share correction moved the
-              recovery); offer a user-initiated refresh (versioned) or send as-is.
-              Only present when the flag is ON (backend gates isStale). */}
-          {detail?.isStale && !staleDismissed && (
-            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-              <p className="text-xs leading-relaxed text-amber-900">
-                This dispute may be out of date. Based on your current plan details, this charge now
-                looks correct — there may be nothing to dispute. We&apos;ve kept your draft; refresh
-                it to match your latest info, or send it as-is.
-              </p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={handleRefreshLetter}
-                  disabled={refreshing}
-                  className="rounded bg-amber-600 px-3 py-1 text-xs font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
-                >
-                  {refreshing ? "Refreshing…" : "Refresh letter"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setStaleDismissed(true)}
-                  className="rounded border border-amber-300 bg-white px-3 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-100"
-                >
-                  Send as-is
-                </button>
-              </div>
-            </div>
-          )}
-          {/* Bill being disputed */}
-          <div>
-            <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
-              Bill being disputed
-            </p>
-            {detailLoading && <p className="text-xs text-gray-400">Loading bill details...</p>}
-            {!detailLoading && detail && detail.lineItems.length === 0 && (
-              <p className="text-xs text-gray-400">No line items linked.</p>
-            )}
-            {!detailLoading && detail && detail.lineItems.length > 0 && (
-              <div className="space-y-1">
-                {detail.lineItems.map((li) => (
-                  <div key={li.id} className="flex items-center justify-between text-xs text-gray-700">
-                    <span className="truncate">
-                      {li.description || "Line item"}
-                      {li.billing_code && (
-                        <span className="ml-2 text-gray-400 font-mono">{li.billing_code}</span>
-                      )}
-                    </span>
-                    <span className="font-semibold ml-2">
-                      ${(li.billed_amount || 0).toLocaleString()}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Letter */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-                Dispute letter
-              </p>
-              {hasLetter && isPro && (
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleRedraft}
-                    disabled={redrafting}
-                    className="text-[10px] font-semibold text-blue-600 hover:text-blue-700 disabled:text-gray-400"
-                  >
-                    {redrafting ? "Re-drafting…" : "Re-draft"}
-                  </button>
-                  <span className="text-[10px] text-gray-300">·</span>
-                  <a
-                    href={`/disputes?dispute=${dispute.id}`}
-                    className="text-[10px] font-semibold text-blue-600 hover:text-blue-700"
-                  >
-                    View full letter →
-                  </a>
-                </div>
-              )}
-            </div>
-            {redraftToast && (
-              <div
-                className={`mb-1 rounded-md px-2 py-1 text-[10px] ${
-                  redraftToast.kind === "error"
-                    ? "bg-amber-50 text-amber-800"
-                    : "bg-emerald-50 text-emerald-800"
-                }`}
-              >
-                {redraftToast.text}
-              </div>
-            )}
-            {detailLoading ? (
-              // S109 PR #2 — show a loader during the async dispute-detail
-              // fetch so the LetterTeaser's "Legacy dispute" placeholder
-              // doesn't flash before letterContent populates. The teaser is
-              // legitimately shown only when loading completes AND letter
-              // content is confirmed absent (legacy pre-persistence row).
-              <div className="p-2 bg-white border border-gray-100 rounded-lg">
-                <div className="flex items-center justify-center py-6">
-                  <div
-                    className="h-4 w-4 animate-spin rounded-full border-2 border-blue-600 border-t-transparent"
-                    aria-label="Loading dispute letter"
-                  />
-                </div>
-              </div>
-            ) : hasLetter && isPro ? (
-              <pre className="p-2 bg-white border border-gray-100 rounded-lg text-[11px] text-gray-700 whitespace-pre-wrap font-sans line-clamp-4">
-                {detail!.letterContent}
-              </pre>
+    <div className="rounded-2xl border border-gray-200 bg-white p-5">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2.5">
+            {isStale ? (
+              <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-700">
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden />
+                May need update
+              </span>
             ) : (
-              <LetterTeaser
-                isPro={isPro}
-                hasReachedLetterStage={hasReachedLetterStage}
-                disputeId={dispute.id}
-              />
+              <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${statusBadgeClass}`}>
+                {statusLabel}
+              </span>
             )}
+            <p className="truncate text-base font-bold text-gray-900">{typeLabel}</p>
           </div>
-
-          {/* Court documents */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-                Court documentation
-              </p>
-              {hasEvidence && detail?.claimId && (
-                <a
-                  href={`/small-claims?claim=${detail.claimId}`}
-                  className="text-[10px] font-semibold text-blue-600 hover:text-blue-700"
-                >
-                  View evidence package →
-                </a>
-              )}
-            </div>
-            <p
-              className={`p-2 rounded-lg text-xs italic ${
-                hasReachedCourtStage && hasEvidence
-                  ? "bg-purple-50 text-purple-800 not-italic"
-                  : "bg-gray-100 text-gray-400"
-              }`}
-            >
-              {hasEvidence
-                ? "9-section court-ready evidence package prepared."
-                : hasReachedCourtStage
-                  ? "Evidence package reference available on the Small Claims page."
-                  : "Evidence not prepared yet."}
-            </p>
-          </div>
+          <p className="mt-1.5 truncate text-sm text-gray-500">
+            {provider}
+            {chargeCount != null && ` · ${chargeCount} charge${chargeCount === 1 ? "" : "s"}`}
+          </p>
         </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * Locked letter preview shown when the user can't see the real letter:
- * either because they're on the Free plan, or because this is a legacy
- * dispute that predates letter persistence (letter_content is NULL).
- *
- * Shows a blurred sample letter with an upgrade CTA overlayed so users
- * understand the value of Pro and have a clear path to unlock it.
- */
-function LetterTeaser({
-  isPro,
-  hasReachedLetterStage,
-  disputeId,
-}: {
-  isPro: boolean;
-  hasReachedLetterStage: boolean;
-  disputeId: string;
-}) {
-  const sampleLetter = `Aetna Member Services — Appeals
-PO Box 14463
-Lexington, KY 40512
-
-Re: Formal appeal of claim denial
-Member: Jane Sample · Member ID: W123456789
-Date of service: June 1, 2026 · Claim #AET-2026-0428
-
-To Whom It May Concern:
-
-I am appealing the denial of the above claim for an established office visit
-(CPT 99214) at Swedish Providence. My plan documents specify a $20 copay for
-this service when rendered in-network...`;
-
-  return (
-    <div className="relative rounded-lg border border-gray-100 overflow-hidden">
-      <pre
-        aria-hidden
-        className="pointer-events-none select-none p-2 bg-white text-[11px] text-gray-700 whitespace-pre-wrap font-sans filter blur-[3px] opacity-60 max-h-32 overflow-hidden"
-      >
-        {sampleLetter}
-      </pre>
-      <div className="absolute inset-0 flex items-center justify-center bg-white/50">
-        <div className="flex flex-col items-center gap-1.5">
-          {!isPro ? (
-            <>
-              <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-                🔒 Pro only
-              </span>
-              {/* Route to /disputes?dispute=<id>. That page already has the
-                  LockedOverlay billing interstitial (blurred sample letter +
-                  Subscribe button → Stripe Checkout). After subscription
-                  Stripe redirects back to the same URL, and /disputes picks
-                  up the dispute ID to render the real letter. */}
-              <a
-                href={`/disputes?dispute=${disputeId}`}
-                className="px-4 py-1.5 bg-blue-600 text-white text-xs font-semibold rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
-              >
-                Subscribe to view your dispute letter
-              </a>
-            </>
-          ) : hasReachedLetterStage ? (
-            <>
-              <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-                Legacy dispute
-              </span>
-              <p className="text-[11px] text-gray-600 text-center max-w-xs">
-                This letter predates text persistence. Regenerate it from the
-                bill&apos;s Draft Dispute Letter button to see the text here.
-              </p>
-            </>
-          ) : (
-            <p className="text-[11px] text-gray-500 italic">Letter not drafted yet.</p>
+        <div className="shrink-0 text-right">
+          <p className="text-2xl font-bold text-gray-900">${fmt(headline)}</p>
+          {recovered && (
+            <p className="text-xs text-green-600">+${fmt(dispute.amount_recovered)} recovered</p>
           )}
         </div>
       </div>
+
+      {/* Cost-Share v2 (W4) — staleness. The cohesive "may need update" banner
+          directs the user to the letter page, where Refresh / Keep-as-is live
+          (the card no longer carries the heavy inline detail). */}
+      {isStale && (
+        <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <svg
+            className="mt-0.5 h-4 w-4 shrink-0 text-amber-500"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+            <line x1="12" y1="9" x2="12" y2="13" />
+            <line x1="12" y1="17" x2="12.01" y2="17" />
+          </svg>
+          <p className="text-sm leading-relaxed text-amber-900">
+            Your plan details changed since this was drafted — this charge may now be correct.{" "}
+            <span className="font-semibold">Open the letter to refresh or keep it as-is.</span>
+          </p>
+        </div>
+      )}
+
+      <a
+        href={`/disputes?dispute=${dispute.id}`}
+        className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
+      >
+        Open dispute letter
+        <span aria-hidden>→</span>
+      </a>
     </div>
   );
 }
