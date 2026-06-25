@@ -202,6 +202,9 @@ export async function persistAuditResults(
         plan_year: resolvedPlanYear,
         source_document_id: documentId,
         date_of_service: parsedBill.serviceDate || null,
+        // Cost-share v2 (mig 174) — claim-level network tier (parser). Additive;
+        // user_network_override is set later by the assumption banner, not here.
+        network_status: parsedBill.network_status || null,
         total_billed: parsedBill.totals.totalBilled,
         total_allowed: parsedBill.totals.totalAllowed || null,
         total_insurance_paid: absOrNull(parsedBill.totals.totalInsurancePaid),
@@ -325,6 +328,16 @@ export async function persistAuditResults(
         // parser when "Paid [date] -$X" footer lines are present on the bill.
         // PR4: same sparse-drop semantics as insurance_paid / ins_adjusted.
         patient_paid_amount: dropPatientPaid ? null : absOrNull(item.patient_paid) ?? 0,
+        // Cost-share v2 (mig 174) — capture the insurer's per-line cost-share
+        // split + denial + network the parser already extracts (previously
+        // dropped). Additive; consumed only by recovery-math v2 when the flag is
+        // on. member_* are positive magnitudes (absOrNull); denied_amount keeps
+        // its sign (negative on adjustment-reversal lines per parser Rule #5).
+        member_applied_to_deductible: absOrNull(item.member_applied_to_deductible),
+        member_coinsurance: absOrNull(item.member_coinsurance),
+        member_copay: absOrNull(item.member_copay),
+        denied_amount: item.denied_amount ?? null,
+        network_status: item.network_status ?? null,
         plan_year: resolvedPlanYear,
         adjustment_reason_code: null,
         modifier_codes: item.modifier ? [item.modifier] : null,
@@ -367,6 +380,36 @@ export async function persistAuditResults(
         console.error("[claims-persist] Failed to insert line items:", lineError);
       } else if (insertedItems) {
         for (const item of insertedItems) lineItemIds.push(item.id);
+      }
+    }
+
+    // Cost-share v2 (mig 174) — persist the EOB accumulator snapshot (YTD
+    // deductible/OOP met-status by year x network x type x individual/family)
+    // the parser extracts + merges (mergeAccumulatorsByKey). Drives the
+    // deductible/OOP phase in recovery-math v2. Best-effort enrichment: a
+    // failure here must NOT fail the claim persist. confidence = bill OCR
+    // confidence (coarse) + source per Rule #8.
+    if (parsedBill.accumulators && parsedBill.accumulators.length > 0) {
+      const accRows = parsedBill.accumulators.map((acc) => ({
+        claim_id: claim.id,
+        benefit_year: acc.benefit_year,
+        network_tier: acc.network_tier,
+        accumulator_type: acc.accumulator_type,
+        is_individual: acc.is_individual,
+        deductible_applied: acc.deductible_applied ?? null,
+        deductible_max: acc.deductible_max ?? null,
+        oop_applied: acc.oop_applied ?? null,
+        oop_max: acc.oop_max ?? null,
+        copays_applied: acc.copays_applied ?? null,
+        coinsurance_applied: acc.coinsurance_applied ?? null,
+        source: "bill_parser",
+        confidence: parsedBill.confidence ?? null,
+      }));
+      const { error: accError } = await supabase
+        .from("claim_accumulators")
+        .insert(accRows);
+      if (accError) {
+        console.error("[claims-persist] Failed to insert claim_accumulators:", accError);
       }
     }
 

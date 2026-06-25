@@ -32,9 +32,12 @@ export const USER_OWNED_TABLES = [
   "support_tickets",
   "consent_events",
   "subscription_events",
+  "user_plan_cost_share_overrides", // Cost-Share v2 (mig 174), W3 route write
   // parent-join children (no user_id) — banned raw; use selectOwnedParentIds()
   "claim_line_items",
   "plan_covered_services",
+  "claim_accumulators", // Cost-Share v2 (mig 174) parent-join child; was added to the
+  // layer's PARENT_JOIN_TABLES (S217 Step-3) but missed here — registry-sync drift fix.
 ];
 
 /**

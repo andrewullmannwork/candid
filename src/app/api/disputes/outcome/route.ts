@@ -208,7 +208,11 @@ export async function POST(req: NextRequest) {
         const flywheelOn = await isFeatureEnabled(
           "s74_5_categorization_flywheel_v1",
         );
-        if (flywheelOn) {
+        // Cost-Share v2 (Finding 4) — also snapshot the sent-letter fingerprint
+        // under the cost-share flag so save matches the [disputeId] view's
+        // (flywheelOn || costShareV2) compare gate (symmetric if flywheel is off).
+        const costShareV2 = await isFeatureEnabled("recovery_cost_share_v2");
+        if (flywheelOn || costShareV2) {
           const sentAt = new Date();
           const cooldownUntil = computeCooldownUntil(sentAt, 30);
 

@@ -10,10 +10,36 @@ import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import {
   computeRecoveryV2,
+  computeCostShareV2,
+  isFamilyTier,
   resolveStillOutstanding,
   type PlanCoverageInput,
+  type PlanCostShareParams,
+  type CostShareOverrides,
+  type CostShareVerdict,
+  type RecoveryMetrics,
 } from "@/lib/claims/recovery-math";
-import { buildAcaCoverageFallback } from "@/lib/audit/aca-coverage-fallback";
+import {
+  buildServiceCostShare,
+  loadPlanCostShareParams,
+  mapRawAccumulator,
+  resolveAccumulatorForLine,
+  applyPreClaimAdjustment,
+  loadCostShareOverrides,
+  resolveOverridesForBill,
+  loadCostShareGate,
+  buildLineInsurer,
+  coerceNetworkTier,
+  coerceNetworkOverride,
+  EMPTY_PLAN_COST_SHARE_PARAMS,
+  type RawAccumulator,
+  type CostShareGate,
+} from "@/lib/claims/cost-share-loader";
+import {
+  resolveEffectiveClaimTotals,
+  resolvePerLineInsuranceAdjusted,
+} from "@/lib/claims/effective-totals";
+import { buildAcaCoverageFallback, detectPreventiveMembership } from "@/lib/audit/aca-coverage-fallback";
 import {
   resolveLineCoverage,
   resolveSecondaryCoverage,
@@ -185,6 +211,60 @@ export async function GET(req: NextRequest) {
     ? await loadSecondaryGate(supabase)
     : DEFAULT_SECONDARY_GATE;
 
+  // Cost-Share v2 (S214) — same server-side flag + engine as the detail GET.
+  // OFF short-circuits before any new loader → byte-identical. Context is loaded
+  // ONCE per request and BATCHED (never per-claim): plan params per distinct
+  // plan, plan-year overrides per distinct (plan, year), and ALL accumulators in
+  // a single selectOwnedChildren grouped by claim_id. ON adds ~(#plans +
+  // #plan-years + 1) queries, never +3×N.
+  const costShareV2 = await isFeatureEnabled("recovery_cost_share_v2");
+  const csGate: CostShareGate = costShareV2
+    ? await loadCostShareGate(supabase)
+    : { minRecovery: 1 };
+  const csPlanParamsByPlan = new Map<string, PlanCostShareParams | null>();
+  const csOverridesByPlanYear = new Map<string, CostShareOverrides>();
+  const csAccumulatorsByClaim = new Map<string, RawAccumulator[]>();
+  if (costShareV2) {
+    await Promise.all(
+      planIds.map(async (pid) => {
+        csPlanParamsByPlan.set(pid, await loadPlanCostShareParams(supabase, pid));
+      }),
+    );
+    // distinct (plan, year) → plan-year deductible/OOP overrides (the per-claim
+    // network override is folded in the loop, so cache with override=null).
+    const planYearPairs = new Map<string, { planId: string; year: number }>();
+    for (const c of claims || []) {
+      const pid = c.insurance_plan_id as string | null;
+      if (!pid || !c.date_of_service) continue;
+      const year = new Date(c.date_of_service as string).getUTCFullYear();
+      planYearPairs.set(`${pid}:${year}`, { planId: pid, year });
+    }
+    await Promise.all(
+      [...planYearPairs.entries()].map(async ([key, { planId, year }]) => {
+        csOverridesByPlanYear.set(
+          key,
+          await loadCostShareOverrides(supabase, user.id, planId, year, null),
+        );
+      }),
+    );
+    const allClaimIds = (claims || []).map((c) => c.id as string);
+    if (allClaimIds.length > 0) {
+      const accRows = await selectOwnedChildren(
+        supabase,
+        user.id,
+        "claim_accumulators",
+        allClaimIds,
+        "claim_id, benefit_year, network_tier, accumulator_type, is_individual, deductible_applied, deductible_max, oop_applied, oop_max",
+      );
+      for (const row of accRows) {
+        const cid = (row as Record<string, unknown>).claim_id as string;
+        const arr = csAccumulatorsByClaim.get(cid) ?? [];
+        arr.push(mapRawAccumulator(row));
+        csAccumulatorsByClaim.set(cid, arr);
+      }
+    }
+  }
+
   // For each claim, get line item summary + top findings + potential savings + recovery
   const claimsWithSummary = await Promise.all(
     (claims || []).map(async (claim) => {
@@ -197,7 +277,7 @@ export async function GET(req: NextRequest) {
         user.id,
         "claim_line_items",
         [claim.id as string],
-        "id, line_number, service_slug, billing_code, billing_code_type, metadata, billed_amount, patient_owes, insurance_paid, description, amount_still_outstanding, patient_paid_amount, insurance_adjusted_amount",
+        "id, line_number, service_slug, billing_code, billing_code_type, metadata, billed_amount, patient_owes, insurance_paid, description, amount_still_outstanding, patient_paid_amount, insurance_adjusted_amount, member_applied_to_deductible, member_coinsurance, member_copay, denied_amount, network_status",
       );
 
       const items = lineItems || [];
@@ -232,6 +312,66 @@ export async function GET(req: NextRequest) {
         })),
         existingCoverageBySlug: new Set(coverageMap?.keys() ?? []),
       });
+
+      // Cost-Share v2 — per-claim engine context, drawn from the batched caches
+      // (no per-claim queries). All inert when the flag is OFF.
+      const csPlanParams = costShareV2
+        ? csPlanParamsByPlan.get(claim.insurance_plan_id as string) ?? null
+        : null;
+      const csPlanYear =
+        costShareV2 && claim.date_of_service
+          ? new Date(claim.date_of_service as string).getUTCFullYear()
+          : null;
+      const csOverrides: CostShareOverrides | null = costShareV2
+        ? resolveOverridesForBill(
+            {
+              ...(csOverridesByPlanYear.get(`${claim.insurance_plan_id}:${csPlanYear}`) ?? {
+                deductibleMet: null,
+                deductibleMetAsOf: null,
+                oopMet: null,
+                oopMetAsOf: null,
+                userNetworkOverride: null,
+              }),
+              userNetworkOverride: coerceNetworkOverride(claim.user_network_override),
+            },
+            (claim.date_of_service as string | null) ?? null,
+          )
+        : null;
+      const csAccRows = costShareV2 ? csAccumulatorsByClaim.get(claim.id as string) ?? [] : [];
+      const csEffectiveTotals = costShareV2
+        ? resolveEffectiveClaimTotals({ claim, lineItems: items })
+        : null;
+      const csMemberSums = { deductible: 0, oop: 0 };
+      if (costShareV2) {
+        for (const it of items) {
+          const r = it as Record<string, unknown>;
+          csMemberSums.deductible += Number(r.member_applied_to_deductible ?? 0);
+          csMemberSums.oop += Number(r.member_coinsurance ?? 0) + Number(r.member_copay ?? 0);
+        }
+      }
+      // W1 — preventive membership (plan-ACA-independent) + plan ACA status + claim-level
+      // insurer-$0 corroboration. Per-claim (mirrors the acaFallback above); inert when OFF.
+      const csPreventiveLines = costShareV2
+        ? await detectPreventiveMembership({
+            supabase,
+            userId: claim.user_id as string,
+            patientName: (claim.patient_name as string | null | undefined) ?? null,
+            lineItems: items.map((li) => ({
+              lineNumber: Number(li.line_number ?? 0),
+              procedureCode: (li.billing_code as string | null) ?? null,
+              procedureCodeType: (li.billing_code_type as string | null) ?? null,
+              serviceSlug: (li.service_slug as string | null) ?? null,
+            })),
+          })
+        : new Set<number>();
+      const csAcaStatus: "confirmed" | "unknown" | "non_aca" =
+        planMeta?.acaCompliant === true
+          ? "confirmed"
+          : planMeta?.acaCompliant === false
+            ? "non_aca"
+            : "unknown";
+      const csClaimInsurerPaidZero =
+        claim.total_insurance_paid != null && Number(claim.total_insurance_paid) === 0;
 
       let findingCount = 0;
       let potentialSavings = 0;
@@ -319,16 +459,75 @@ export async function GET(req: NextRequest) {
           claimTotalBilled,
           claimStillOutstanding,
         });
-        const rec = computeRecoveryV2({
-          billed,
-          patientResponsibility,
-          patientPaid,
-          // S120 — apply coinsurance to ADJUSTED billed (post-writeoff), not
-          // gross billed. Without this, recovery math overstates patient share
-          // by the full insurer contractual writeoff.
-          insuranceAdjusted: Number(item.insurance_adjusted_amount ?? 0),
-          planCoverage: coverage,
-        });
+        // Cost-Share v2 — when ON, the plan-derived phase engine replaces the
+        // deductible-blind path (same as the detail GET). The result is a
+        // RecoveryMetrics superset so the totals below consume it unchanged.
+        // OFF = the exact computeRecoveryV2 call (byte-identical).
+        let rec: RecoveryMetrics;
+        let lineVerdict: CostShareVerdict | null = null;
+        if (costShareV2) {
+          const lineNetwork = coerceNetworkTier((item as Record<string, unknown>).network_status);
+          // Prorate the per-line writeoff exactly as the detail GET does, so the
+          // list verdict + recovery match the detail page (no list/detail drift).
+          const { value: lineInsAdj } = resolvePerLineInsuranceAdjusted({
+            lineBilled: billed,
+            lineInsuranceAdjusted:
+              item.insurance_adjusted_amount != null ? Number(item.insurance_adjusted_amount) : null,
+            claimTotalBilled,
+            effectiveClaimInsuranceAdjusted: csEffectiveTotals!,
+          });
+          const accumulator = applyPreClaimAdjustment(
+            resolveAccumulatorForLine(csAccRows, {
+              benefitYear: csPlanYear != null ? String(csPlanYear) : null,
+              networkTier: lineNetwork ?? "in_network",
+              accumulatorType: "medical",
+              isIndividual: !isFamilyTier(csPlanParams?.coverageTier ?? null),
+            }),
+            csMemberSums,
+          );
+          const cs = computeCostShareV2({
+            line: {
+              billed,
+              allowed: Math.max(0, billed - lineInsAdj),
+              insuranceAdjusted: lineInsAdj,
+              patientPaid,
+              patientResponsibility,
+            },
+            service: buildServiceCostShare(coverage),
+            insurer: buildLineInsurer(item as Record<string, unknown>),
+            plan: csPlanParams ?? EMPTY_PLAN_COST_SHARE_PARAMS,
+            accumulator,
+            overrides:
+              csOverrides ?? {
+                deductibleMet: null,
+                deductibleMetAsOf: null,
+                oopMet: null,
+                oopMetAsOf: null,
+                userNetworkOverride: null,
+              },
+            networkLine: lineNetwork,
+            networkClaim: coerceNetworkTier(claim.network_status),
+            minRecovery: csGate.minRecovery,
+            preventive: {
+              isPreventive: csPreventiveLines.has(Number(item.line_number ?? 0)),
+              acaStatus: csAcaStatus,
+            },
+            claimInsurerPaidZero: csClaimInsurerPaidZero,
+          });
+          rec = cs;
+          lineVerdict = cs.verdict;
+        } else {
+          rec = computeRecoveryV2({
+            billed,
+            patientResponsibility,
+            patientPaid,
+            // S120 — apply coinsurance to ADJUSTED billed (post-writeoff), not
+            // gross billed. Without this, recovery math overstates patient share
+            // by the full insurer contractual writeoff.
+            insuranceAdjusted: Number(item.insurance_adjusted_amount ?? 0),
+            planCoverage: coverage,
+          });
+        }
         claimPotentialRecovery += rec.potentialRecovery;
         claimAlreadyPaid += rec.alreadyPaid;
         claimShouldOwe += rec.shouldOwe;
@@ -343,7 +542,12 @@ export async function GET(req: NextRequest) {
         // still surfaces per-line via the gap-explanation panel; it just
         // doesn't bubble up to the bill-level "Needs review" badge once the
         // user has done everything they can do.
-        if (billed > 0 && paid === 0 && owed === 0 && !coverage) {
+        // Cost-Share v2 — when ON, a line the engine affirmatively cleared
+        // (verdict 'correct'/'confident', e.g. a deductible-phase bill) is no
+        // longer "needs review". A data-poor 'insufficient' line STILL counts —
+        // the user must add plan data. OFF (lineVerdict null) = today's behavior.
+        const csCleared = lineVerdict === "correct" || lineVerdict === "confident";
+        if (billed > 0 && paid === 0 && owed === 0 && !coverage && !csCleared) {
           reviewNeededCount++;
           reviewLineItems.push({
             id: item.id,

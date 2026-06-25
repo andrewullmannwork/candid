@@ -36,8 +36,11 @@ import { isFeatureEnabled } from "@/lib/config/product-flags";
 import {
   computeEvidenceFingerprint,
   decideDriftAction,
+  isDisputeStale,
   loadFingerprintInputForClaim,
+  appendLetterVersion,
   type DriftDecision,
+  type LetterVersion,
 } from "@/lib/disputes/evidence-fingerprint";
 
 async function getAuthUser(req: NextRequest) {
@@ -153,6 +156,12 @@ export async function GET(
   const flywheelOn = await isFeatureEnabled(
     "s74_5_categorization_flywheel_v1",
   );
+  // W4 (recovery_cost_share_v2) — letters are persistent + never background-updated. When ON,
+  // a GET serves the saved letter + an `isStale` flag; the body regenerates ONLY on an explicit
+  // user refresh (?refresh=1), which also versions the prior letter. OFF = legacy behavior.
+  const costShareV2 = await isFeatureEnabled("recovery_cost_share_v2");
+  const refreshRequested =
+    costShareV2 && req.nextUrl.searchParams.get("refresh") === "1";
   const sentAt = dispute.sent_at ? new Date(dispute.sent_at as string) : null;
   const cooldownUntil = dispute.cooldown_until
     ? new Date(dispute.cooldown_until as string)
@@ -186,8 +195,9 @@ export async function GET(
     if (dispute.claim_id) {
       // S74.5 D16 — compute current evidence fingerprint + drift decision
       // BEFORE deciding whether to regenerate the letter. Always logged for
-      // observability; only acted on when flag is ON.
-      if (flywheelOn) {
+      // observability; only acted on when flag is ON. W4 also needs the
+      // fingerprint to compute `isStale` for the persistent-letter banner.
+      if (flywheelOn || costShareV2) {
         const fpInput = await loadFingerprintInputForClaim(
           supabase,
           dispute.claim_id as string,
@@ -437,7 +447,8 @@ export async function GET(
       // Pre-S74.5 behavior (always regenerate) is preserved when sent_at
       // is null OR when flag is OFF (sentAt won't gate anything since we
       // only compute the drift decision when flag is on).
-      const skipRegenerateForSent = flywheelOn && sentAt != null;
+      // W4: sent letters stay immutable under EITHER the flywheel OR cost-share-v2 flag.
+      const skipRegenerateForSent = (flywheelOn || costShareV2) && sentAt != null;
 
       // For drafts: per Subplan §7.5, debounce regeneration when
       // last_refresh_at within 5 min. Pre-S74.5 always-regenerate behavior
@@ -447,7 +458,12 @@ export async function GET(
         sentAt == null &&
         driftDecision?.action === "serve_cached_within_debounce";
 
-      const shouldRegenerate = !skipRegenerateForSent && !skipRegenerateForDebounce;
+      // W4: when recovery_cost_share_v2 is ON, a GET (view) NEVER regenerates the body —
+      // it serves the saved letter. The body regenerates ONLY on an explicit user refresh
+      // (?refresh=1). OFF = the legacy always-regenerate-on-load (debounced) behavior.
+      const shouldRegenerate = costShareV2
+        ? refreshRequested && !skipRegenerateForSent
+        : !skipRegenerateForSent && !skipRegenerateForDebounce;
 
       // Always regenerate on load (unless guarded above). Templating is
       // cheap, and the letter must reflect the latest plan context,
@@ -491,12 +507,27 @@ export async function GET(
           const baseMetadataForRegen =
             (freshMetaRow?.metadata as Record<string, unknown> | null) ??
             ((dispute.metadata as Record<string, unknown> | null) ?? {});
+          // W4 — on an explicit user refresh, preserve the letter being superseded so the
+          // user can revert (§13.4). Bounded history in metadata (cap 3, drop-oldest);
+          // unchanged when OFF or for a non-refresh regenerate.
+          const letterVersionHistory =
+            costShareV2 && refreshRequested && dispute.letter_content
+              ? appendLetterVersion(
+                  baseMetadataForRegen.letterVersionHistory as LetterVersion[] | undefined,
+                  {
+                    content: dispute.letter_content as string,
+                    fingerprint: (dispute.evidence_fingerprint as string | null) ?? null,
+                    savedAt: new Date().toISOString(),
+                  },
+                )
+              : (baseMetadataForRegen.letterVersionHistory as LetterVersion[] | undefined);
           await userScoped(supabase, user.id)
             .table("dispute_outcomes")
             .update({
               letter_content: regeneratedLetterContent,
               metadata: {
                 ...baseMetadataForRegen,
+                ...(letterVersionHistory ? { letterVersionHistory } : {}),
                 planContextFingerprint: fingerprint,
                 planContextUpdatedAt: new Date().toISOString(),
                 // Block C2 item 4 — record which statutory backbone produced this
@@ -508,7 +539,7 @@ export async function GET(
               // successful regenerate. Cooldown_until is set only at
               // Mark-as-Sent time.
               evidence_fingerprint:
-                flywheelOn && currentEvidenceFingerprint
+                (flywheelOn || costShareV2) && currentEvidenceFingerprint
                   ? currentEvidenceFingerprint
                   : (dispute.evidence_fingerprint as string | null) ?? null,
               last_refresh_at: new Date().toISOString(),
@@ -600,9 +631,34 @@ export async function GET(
       : regeneratedLetterContent ?? dispute.letter_content;
   const letterContent = dataTrustHardStop ? null : resolvedLetterContent;
 
+  // W4 — persistent-letter staleness for the draft banner + Refresh CTA. Stale = the saved
+  // letter's evidence fingerprint no longer matches current evidence AND we served the cached
+  // body (didn't just regenerate) on an unsent draft. `letterVersionCount` powers the
+  // "prior versions" affordance. Sent letters keep using `driftDecision` (the cooldown banner).
+  // served-the-cached-body = regeneratedLetterContent is null (we didn't regenerate, or a
+  // refresh failed and we fell back to the saved letter — either way it may be stale).
+  // §17.4 — the staleness rule is the SHARED isDisputeStale helper so this letter page
+  // and the dispute card (claim GET) can never disagree about "out of date".
+  const isStale =
+    costShareV2 &&
+    isDisputeStale({
+      currentFingerprint: currentEvidenceFingerprint,
+      storedFingerprint: (dispute.evidence_fingerprint as string | null) ?? null,
+      sentAt,
+      justRegenerated: regeneratedLetterContent != null,
+    });
+  const letterVersionCount = Array.isArray(
+    (dispute.metadata as Record<string, unknown> | null)?.letterVersionHistory,
+  )
+    ? ((dispute.metadata as Record<string, unknown>).letterVersionHistory as unknown[]).length
+    : 0;
+
   return NextResponse.json({
     id: dispute.id,
     disputeType: dispute.dispute_type,
+    // W4 — persistent-letter signals, present ONLY when recovery_cost_share_v2 is ON (OFF =
+    // byte-identical response). The client shows the stale banner + Refresh CTA off `isStale`.
+    ...(costShareV2 ? { isStale, letterVersionCount } : {}),
     letterType: resolvedLetterType,
     status: dispute.status,
     amountDisputed: dispute.amount_disputed,

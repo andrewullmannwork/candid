@@ -4,7 +4,6 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import type { BillState } from "@/lib/claims/derive-bill-state";
-import { useSubscription } from "@/lib/subscription/use-subscription";
 import { Disclaimer } from "@/components/shared/Disclaimer";
 import { disputeUrlForResult } from "@/lib/disputes/url";
 import { CategoryCorrectionModal } from "@/components/claims/CategoryCorrectionModal";
@@ -17,6 +16,9 @@ import { BundleSuggestion } from "@/components/claims/BundleSuggestion";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useDisputeDraftOverlay } from "@/lib/loading/dispute-draft-overlay";
 import { DisputePlanChooser, type DisputePlanChooserPlan } from "@/components/disputes/DisputePlanChooser";
+import { CostShareBanner, type BannerAssumption, type CostShareVerdict, type CostShareOverrideRequest } from "@/components/claims/CostShareBanner";
+import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
+import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recovery-math";
 
 interface CodeIdentityState {
   identityId: string | null;
@@ -113,6 +115,14 @@ interface LineItem {
   // + desktop/mobile YOU PAID column. Falls back to raw insurance_paid.
   insurancePaidResolved?: number;
   codeIdentity?: CodeIdentityState | null;
+  // Cost-Share v2 (S214) — the engine's per-line verdict, attached by the claims
+  // API ONLY when recovery_cost_share_v2 is ON. Its PRESENCE switches the dispute
+  // synthesis below to verdict-driven (vs the legacy deductible-blind
+  // isMysteryGap/hasRecoveryStory). Absent/null → today's behavior.
+  costShareVerdict?: "confident" | "correct" | "recovery" | "not_covered" | "insufficient" | null;
+  // Cost-Share v2 (W2) — per-line assumptions behind the verdict (§5 banner
+  // chips). Same flag-gated presence as costShareVerdict.
+  costShareAssumptions?: CostShareAssumption[];
 }
 
 interface CatalogSlug {
@@ -163,12 +173,18 @@ interface PlanCoverageEntry {
 interface ClaimData {
   claim: Record<string, unknown>;
   lineItems: LineItem[];
-  disputes: Array<{ id: string; dispute_type: string; status: string; amount_disputed: number; amount_recovered: number }>;
+  disputes: Array<{ id: string; dispute_type: string; status: string; amount_disputed: number; amount_recovered: number; isStale?: boolean; chargeCount?: number }>;
   relatedClaims: Array<{ id: string; date_of_service: string; status: string; total_billed: number; provider_name: string | null }>;
   // S132 iter-6 Phase 1 — slugs present in user's plan_covered_services for
   // this claim's plan_id. Drives CategoryCorrectionModal filtering + best-
   // guess "Use this" gating. Empty array when no plan uploaded.
   userPlanCoverage?: PlanCoverageEntry[];
+  // Cost-Share v2 (W2/D1) — bill-level verdict for the §5 banner; flag-gated
+  // (absent when recovery_cost_share_v2 is OFF → today's UI).
+  costShareBill?: { verdict: CostShareVerdict };
+  // Cost-Share v2 (W3) — the user's resolved overrides (met-status + as-of dates
+  // + per-claim network), so the banner renders confirmed "you set this" chips.
+  costShareOverrides?: CostShareOverrides;
   recovery?: {
     billed: number;
     alreadyPaid: number;
@@ -208,28 +224,6 @@ interface ClaimData {
     basis: string | null;
     excerpt: string | null;
   } | null;
-}
-
-interface DisputeDetail {
-  id: string;
-  disputeType: string;
-  status: string;
-  amountDisputed: number;
-  amountRecovered: number;
-  filedDate: string | null;
-  resolutionDate: string | null;
-  claimId: string | null;
-  letterContent: string | null;
-  evidencePackage: Record<string, unknown> | null;
-  lineItems: Array<{
-    id: string;
-    line_number: number;
-    description: string | null;
-    billing_code: string | null;
-    billed_amount: number | null;
-    insurance_paid: number | null;
-    patient_owes: number | null;
-  }>;
 }
 
 const COVERAGE_BADGE: Record<string, { label: string; className: string }> = {
@@ -421,6 +415,8 @@ export function ClaimDetail({
   // not the category-correction dropdown. Re-picking the same catalog
   // wouldn't help if the user's plan data is missing the service.
   const [uploadPlanModalLineId, setUploadPlanModalLineId] = useState<string | null>(null);
+  // Cost-Share v2 (W3 §7b) — line whose manual "Add plan details" form is open.
+  const [addPlanDetailsLineId, setAddPlanDetailsLineId] = useState<string | null>(null);
   // G5 LOCK — bill-wide "Looks right?" prompt; localStorage-keyed per claim so
   // it never reappears once dismissed. Dismissal-only — never logs corroboration.
   const looksRightStorageKey = `claim-${claimId}-looks-right-dismissed`;
@@ -643,6 +639,53 @@ export function ClaimDetail({
     if (onClaimUpdated) await onClaimUpdated();
   }, [data, refetchClaim, onClaimUpdated]);
 
+  // Cost-Share v2 (W3) — post ONE assumption correction, then refetch so the
+  // engine recomputes live. Uses refetchClaim + onClaimUpdated (NOT
+  // handleCorrectionSubmitted — that fires the category-specific re-draft prompt;
+  // letter staleness is W4's job via the evidence fingerprint).
+  const [csOverridePending, setCsOverridePending] = useState<string | null>(null);
+  const [csOverrideError, setCsOverrideError] = useState<string | null>(null);
+  const submitCostShareOverride = useCallback(
+    async (body: CostShareOverrideRequest, pendingKey: string) => {
+      setCsOverridePending(pendingKey);
+      setCsOverrideError(null);
+      try {
+        const token = await getAuthToken();
+        if (!token) return;
+        const res = await fetch(`/api/claims/${claimId}/cost-share-override`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          setCsOverrideError(d.error || `Couldn't save your change (${res.status}).`);
+          return;
+        }
+        await refetchClaim();
+        if (onClaimUpdated) await onClaimUpdated();
+      } catch {
+        setCsOverrideError("Couldn't save your change. Please try again.");
+      } finally {
+        setCsOverridePending(null);
+      }
+    },
+    [claimId, getAuthToken, refetchClaim, onClaimUpdated],
+  );
+
+  // Cost-Share v2 — multi-charge bills start with their line rows collapsed so
+  // the bill isn't too busy (single-charge bills stay expanded). Runs once when
+  // the claim first loads; user toggles take over after.
+  const didInitCollapseRef = useRef(false);
+  useEffect(() => {
+    if (didInitCollapseRef.current || !data) return;
+    didInitCollapseRef.current = true;
+    const chargeCount = data.lineItems.filter((li) => (li.billed_amount ?? 0) > 0).length;
+    if (chargeCount > 1) {
+      setCollapsedRows(new Set(data.lineItems.map((li) => li.id)));
+    }
+  }, [data]);
+
   // S154 — confirm an estimate-tier secondary coverage match. Marks the line
   // user-confirmed (Pattern 1 #14 user-scoped) so the "Verify coverage"
   // affordance clears and the dispute pipeline may cite it as confirmed.
@@ -861,6 +904,25 @@ export function ClaimDetail({
   const humanizeSlug = (slug: string | null): string =>
     slug ? slugNameMap.get(slug) ?? slug : "";
 
+  // Cost-Share v2 (W2) — flatten per-line assumptions with the line context the
+  // §5 banner chips + W3 override calls need (lineId + service label/slug). Over
+  // primaryLineItems only — zero-charge reporting codes carry no cost-share stake
+  // (the engine resolves them `confident`/no-assumptions), so they never chip here.
+  const bannerAssumptions: BannerAssumption[] = primaryLineItems.flatMap((li) =>
+    (li.costShareAssumptions ?? []).map((a) => ({
+      ...a,
+      lineId: li.id,
+      serviceLabel: humanizeSlug(li.service_slug) || li.description || "this service",
+      serviceSlug: li.service_slug,
+    })),
+  );
+  // The line the banner's verdict-specific CTAs act on (matching line, else first).
+  const bannerTargetLineId = (() => {
+    const v = data.costShareBill?.verdict;
+    const match = v ? primaryLineItems.find((li) => li.costShareVerdict === v) : null;
+    return (match ?? primaryLineItems[0])?.id ?? null;
+  })();
+
   // §1.7 — claim-level findings live on claim.metadata.auditSummary.claimLevelFindings.
   // Same dismiss filter as line-level (showDismissed toggles visibility).
   const claimMetadata = (claim.metadata as Record<string, unknown> | null) ?? null;
@@ -996,6 +1058,10 @@ export function ClaimDetail({
         </div>
       </div>
 
+      {/* Cost-Share v2 — the §5 verdict + assumptions card renders BELOW the line
+          table (mockup placement; see after the table outer), replacing the
+          legacy CleanBody/ReviewBody when the flag is ON. */}
+
       {viewBillError && (
         <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
           <span>{viewBillError}</span>
@@ -1064,7 +1130,7 @@ export function ClaimDetail({
 
       {/* S74.5 D6 — Case C/D plan-doc nudge banner. Soft prompt for /claim
           per Q-C LOCK; HARD gate for dispute generation lives elsewhere. */}
-      {showCaseCDNudge && (
+      {showCaseCDNudge && !data.costShareBill && (
         <div className="mb-3 rounded-xl border border-amber-100 bg-amber-50 p-3">
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -1346,7 +1412,17 @@ export function ClaimDetail({
           const forgivenessComponent = item.recovery?.forgivenessComponent ?? Math.max(0, owedRecovery - refundComponent);
           const rawInsurancePaid = item.insurance_paid || 0;
           const hasGap = billed > 0 && rawInsurancePaid === 0 && owed === 0;
-          const gapRelevant = hasGap && item.coverageStatus !== "not_covered";
+          // Cost-Share v2 (S214) — when the engine ran (verdict present), the
+          // per-line gap panel is VERDICT-DRIVEN like the dispute synthesis:
+          // only a 'recovery' line is an actionable gap. A 'correct'/'confident'/
+          // 'insufficient'/'not_covered' line is NOT "unexplained" — the engine
+          // accounted for it (e.g. cf91a49e's deductible phase) — so suppress the
+          // "Unexplained $X charge" + "should have paid" panel. OFF (verdict
+          // absent) = today's raw-absence logic, verbatim.
+          const gapRelevant =
+            item.costShareVerdict != null
+              ? item.costShareVerdict === "recovery"
+              : hasGap && item.coverageStatus !== "not_covered";
 
           // S74.5 D6 — category pill state per Subplan §3 Layer C. Only
           // renders when flywheel flag ON. Click opens correction modal
@@ -1843,7 +1919,11 @@ export function ClaimDetail({
                   it always fires alongside this panel.
                   S139 — gated on !isMultiLine; multi-line bills use LineDrawer
                   above instead. */}
-              {!isMultiLine && isExpanded && gapRelevant && findings.length === 0 && (
+              {/* Cost-Share v2 — suppress the legacy "Unexplained $X charge" gap panel when
+                  the engine ran (costShareBill present): the §5 banner + financial breakdown +
+                  dispute UI carry the explanation, and this panel's "likely a denial" copy
+                  contradicts a computed cost-share recovery. OFF → today's behavior. */}
+              {!isMultiLine && isExpanded && gapRelevant && findings.length === 0 && !data.costShareBill && (
                 <div className="px-4 py-4 bg-white border-t border-gray-100 space-y-3">
                   {/* Header */}
                   <div>
@@ -2043,6 +2123,35 @@ export function ClaimDetail({
         })}
       </div>{/* /table outer (rounded-xl) */}
 
+      {/* Cost-Share v2 (W2+W3) — the §5 verdict + assumptions card. One per bill,
+          below the line table (mockup placement). Carries the verdict + Verified
+          stamp itself, so it replaces the legacy CleanBody/ReviewBody when the
+          flag is ON; OFF → absent → today's UI. */}
+      {data.costShareBill && (
+        <CostShareBanner
+          verdict={data.costShareBill.verdict}
+          assumptions={bannerAssumptions}
+          overrides={data.costShareOverrides ?? null}
+          recoverable={billTotals.potentialRecovery}
+          correctShare={billTotals.shouldOwe}
+          charged={billTotals.shouldOwe + billTotals.potentialRecovery}
+          fmtMoney={fmtMoney}
+          onOverride={submitCostShareOverride}
+          pendingKey={csOverridePending}
+          errorMsg={csOverrideError}
+          onShouldBeCovered={() => bannerTargetLineId && openCorrectionModal(bannerTargetLineId)}
+          onAddPlanDetails={() => {
+            const line = bannerTargetLineId
+              ? primaryLineItems.find((li) => li.id === bannerTargetLineId)
+              : null;
+            if (line?.service_slug) setAddPlanDetailsLineId(line.id);
+            else if (bannerTargetLineId) openCorrectionModal(bannerTargetLineId);
+          }}
+          onUploadEob={() => router.push("/upload?type=eob")}
+          onBack={onBack}
+        />
+      )}
+
       {/* B4.2 — Bill-level state body (FlaggedBody / ReviewBody / CleanBody)
           per design's bill-detail.jsx. Aggregates plan-vs-bill totals across
           all line items so the user sees the headline before scrolling into
@@ -2203,7 +2312,7 @@ export function ClaimDetail({
         </>
       )}
 
-      {billState === "needs_review" && (() => {
+      {billState === "needs_review" && !data.costShareBill && (() => {
         // Synthesize a "Specific blockers" list from line-item state so the
         // user sees what specifically needs their input. Mirrors design's
         // bill.reviewReasons[] array (which we don't store at bill level).
@@ -2269,7 +2378,7 @@ export function ClaimDetail({
         );
       })()}
 
-      {billState === "clean" && (
+      {billState === "clean" && !data.costShareBill && (
         <div className="mt-6 flex flex-col gap-4 rounded-2xl border border-emerald-300 bg-gradient-to-br from-emerald-50 to-green-50/40 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3.5">
             <div className="grid h-[42px] w-[42px] place-items-center rounded-xl bg-emerald-600 text-white">
@@ -2316,23 +2425,10 @@ export function ClaimDetail({
           </div>
         </div>
       ) : billState === "overcharge_drafted" ? (
-        <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-gray-200 bg-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="max-w-prose text-[13px] text-gray-500">
-            We drafted an <strong className="font-semibold text-gray-900">appeal letter</strong> for you. Review, edit anything, and send by certified mail.
-          </div>
-          <div className="sm:flex-shrink-0">
-            <BulkDisputeButton
-              claimId={claimId}
-              claim={claim}
-              primaryLineItems={primaryLineItems}
-              claimLevelFindings={visibleClaimLevelFindings}
-              showDismissed={showDismissed}
-              getAuthToken={getAuthToken}
-              onGenerated={(result) => router.push(disputeUrlForResult(result))}
-              existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
-            />
-          </div>
-        </div>
+        /* Cost-Share v2 redesign — removed the "We drafted an appeal letter"
+           footer; the Disputes card below is now the single drafted-dispute CTA
+           (one "Open dispute letter", no duplicate button). */
+        null
       ) : billState === "needs_review" ? (
         <>
           <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-gray-200 bg-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
@@ -2406,7 +2502,13 @@ export function ClaimDetail({
           <h3 className="text-sm font-semibold text-gray-900 mb-2">Disputes</h3>
           <div className="space-y-2">
             {data.disputes.map((d) => (
-              <DisputeRow key={d.id} dispute={d} />
+              <DisputeRow
+                key={d.id}
+                dispute={d}
+                provider={providerName}
+                recovery={billTotals.potentialRecovery}
+                hasCostShare={!!data.costShareBill}
+              />
             ))}
           </div>
           {/* T2.7 — bundle related bills into one consolidated dispute */}
@@ -2460,6 +2562,31 @@ export function ClaimDetail({
             description={uploadLineItem.description}
             billingCode={uploadLineItem.billing_code}
             onClose={() => setUploadPlanModalLineId(null)}
+          />
+        ) : null;
+      })()}
+
+      {/* Cost-Share v2 (W3 §7b) — manual "Add plan details" form. Opened from the
+          §5 banner for a line that already has a service identity (a null-slug
+          line routes to CategoryCorrectionModal first). */}
+      {(() => {
+        const line =
+          addPlanDetailsLineId != null
+            ? primaryLineItems.find((li) => li.id === addPlanDetailsLineId) ?? null
+            : null;
+        return line?.service_slug ? (
+          <AddPlanDetailsModal
+            open
+            claimId={claimId}
+            planId={(claim.insurance_plan_id as string | null) ?? null}
+            serviceSlug={line.service_slug}
+            serviceLabel={humanizeSlug(line.service_slug) || line.description || "this service"}
+            getAuthToken={getAuthToken}
+            onClose={() => setAddPlanDetailsLineId(null)}
+            onSaved={async () => {
+              await refetchClaim();
+              if (onClaimUpdated) await onClaimUpdated();
+            }}
           />
         ) : null;
       })()}
@@ -2734,334 +2861,97 @@ function QualityMeasuresSection({ items }: { items: LineItem[] }) {
 
 function DisputeRow({
   dispute,
+  provider,
+  recovery,
+  hasCostShare,
 }: {
-  dispute: { id: string; dispute_type: string; status: string; amount_disputed: number; amount_recovered: number };
+  dispute: { id: string; dispute_type: string; status: string; amount_disputed: number; amount_recovered: number; isStale?: boolean; chargeCount?: number };
+  provider: string;
+  recovery: number;
+  hasCostShare: boolean;
 }) {
-  const { user } = useAuth();
-  const { isPro } = useSubscription();
-  const [open, setOpen] = useState(false);
-  const [detail, setDetail] = useState<DisputeDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  // S71 hotfix #4 (Session 73) — Re-draft inline on the claim-detail dispute card.
-  // Same handler as /disputes page; allows users to re-draft without leaving the
-  // claim view. CF-20 re-parse-on-flag fires server-side; toast surfaces outcome.
-  const [redrafting, setRedrafting] = useState(false);
-  // S109 PR #2 — toast tracks kind so error cases (e.g., 3/24h rate limit
-  // 429) render amber instead of success-green emerald.
-  const [redraftToast, setRedraftToast] = useState<{ text: string; kind: "success" | "error" } | null>(null);
-
+  // Cost-Share v2 (§17.4) — the card surfaces the "May need update" state + the
+  // linked-charge count from props (the claim GET now folds `isStale` +
+  // `chargeCount` into `data.disputes`), so the pill renders INSTANTLY. This used
+  // to fire the heavy /api/disputes/[id] GET on mount (~4.5s) just for these two.
+  // The heavy bill / letter / court detail lives on the /disputes letter page
+  // ("Open dispute letter"), which also carries Refresh / Keep-as-is.
+  const typeLabel = disputeTypeLabel(dispute.dispute_type);
   const statusLabel = DISPUTE_STATUS_LABEL[dispute.status] || dispute.status;
   const statusBadgeClass = DISPUTE_STATUS_BADGE[dispute.status] || "text-gray-700 bg-gray-100";
-  const typeLabel = disputeTypeLabel(dispute.dispute_type);
-
-  async function toggleOpen() {
-    if (open) {
-      setOpen(false);
-      return;
-    }
-    setOpen(true);
-    if (detail || detailLoading || !user) return;
-    setDetailLoading(true);
-    try {
-      const token = await user.firebaseUser.getIdToken();
-      const res = await fetch(`/api/disputes/${dispute.id}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        setDetail(await res.json());
-      }
-    } catch (err) {
-      console.error("Failed to load dispute detail:", err);
-    }
-    setDetailLoading(false);
-  }
-
-  async function handleRedraft() {
-    if (!user || redrafting) return;
-    setRedrafting(true);
-    setRedraftToast(null);
-    try {
-      const token = await user.firebaseUser.getIdToken();
-      const res = await fetch(`/api/disputes/${dispute.id}/redraft`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || `redraft failed (${res.status})`);
-      }
-      const data = await res.json();
-      const upgrades = data?.cf20?.upgrades ?? 0;
-      const targets = data?.cf20?.targets ?? 0;
-      setRedraftToast({
-        text: targets === 0
-          ? "Letter re-drafted with current plan + evidence."
-          : upgrades > 0
-            ? `Letter re-drafted — ${upgrades} of ${targets} citation${targets === 1 ? "" : "s"} upgraded.`
-            : `Letter re-drafted — ${targets} citation${targets === 1 ? "" : "s"} attempted; none upgraded this run.`,
-        kind: "success",
-      });
-      // Refetch the dispute detail to show the updated letter content.
-      const refetch = await fetch(`/api/disputes/${dispute.id}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (refetch.ok) setDetail(await refetch.json());
-    } catch (err) {
-      setRedraftToast({
-        text: err instanceof Error ? err.message : "Re-draft failed",
-        kind: "error",
-      });
-    } finally {
-      setRedrafting(false);
-      setTimeout(() => setRedraftToast(null), 6000);
-    }
-  }
-
-  const hasLetter = !!detail?.letterContent;
-  const hasEvidence = !!detail?.evidencePackage;
-  const hasReachedLetterStage = dispute.status !== "flagged";
-  const hasReachedCourtStage =
-    dispute.status === "court_documentation_drafted" ||
-    dispute.status === "won" ||
-    dispute.status === "lost" ||
-    dispute.status === "settled" ||
-    dispute.status === "won_on_escalation" ||
-    dispute.status === "settled_on_escalation";
+  const isStale = !!dispute.isStale;
+  const chargeCount = dispute.chargeCount ?? null;
+  const recovered = dispute.amount_recovered > 0;
+  // Headline = the honest cost-share recovery when the engine ran for this bill;
+  // else the stored amount_disputed (legacy / flag OFF). Display-only — the
+  // stored amount_disputed is reconciled in the recovery-engine unification.
+  const headline = hasCostShare ? recovery : dispute.amount_disputed;
+  const fmt = (n: number) =>
+    n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   return (
-    <div className="rounded-xl border border-gray-100 bg-white overflow-hidden">
-      <button
-        onClick={toggleOpen}
-        className="w-full flex items-center justify-between px-3 py-3 text-left hover:bg-gray-50 transition-colors"
-      >
-        <div className="flex items-center gap-3">
-          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusBadgeClass}`}>
-            {statusLabel}
-          </span>
-          <div>
-            <p className="text-xs font-semibold text-gray-900">{typeLabel}</p>
-            <p className="text-[10px] text-gray-500">Click for details</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <div className="text-right">
-            <p className="text-xs font-bold">${dispute.amount_disputed.toLocaleString()}</p>
-            {dispute.amount_recovered > 0 && (
-              <p className="text-[10px] text-green-600">+${dispute.amount_recovered.toLocaleString()}</p>
-            )}
-          </div>
-          <svg
-            className={`w-4 h-4 text-gray-400 transition-transform ${open ? "rotate-180" : ""}`}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-          </svg>
-        </div>
-      </button>
-      {open && (
-        <div className="border-t border-gray-100 p-3 space-y-3 bg-gray-50/40">
-          {/* Bill being disputed */}
-          <div>
-            <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
-              Bill being disputed
-            </p>
-            {detailLoading && <p className="text-xs text-gray-400">Loading bill details...</p>}
-            {!detailLoading && detail && detail.lineItems.length === 0 && (
-              <p className="text-xs text-gray-400">No line items linked.</p>
-            )}
-            {!detailLoading && detail && detail.lineItems.length > 0 && (
-              <div className="space-y-1">
-                {detail.lineItems.map((li) => (
-                  <div key={li.id} className="flex items-center justify-between text-xs text-gray-700">
-                    <span className="truncate">
-                      {li.description || "Line item"}
-                      {li.billing_code && (
-                        <span className="ml-2 text-gray-400 font-mono">{li.billing_code}</span>
-                      )}
-                    </span>
-                    <span className="font-semibold ml-2">
-                      ${(li.billed_amount || 0).toLocaleString()}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Letter */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-                Dispute letter
-              </p>
-              {hasLetter && isPro && (
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleRedraft}
-                    disabled={redrafting}
-                    className="text-[10px] font-semibold text-blue-600 hover:text-blue-700 disabled:text-gray-400"
-                  >
-                    {redrafting ? "Re-drafting…" : "Re-draft"}
-                  </button>
-                  <span className="text-[10px] text-gray-300">·</span>
-                  <a
-                    href={`/disputes?dispute=${dispute.id}`}
-                    className="text-[10px] font-semibold text-blue-600 hover:text-blue-700"
-                  >
-                    View full letter →
-                  </a>
-                </div>
-              )}
-            </div>
-            {redraftToast && (
-              <div
-                className={`mb-1 rounded-md px-2 py-1 text-[10px] ${
-                  redraftToast.kind === "error"
-                    ? "bg-amber-50 text-amber-800"
-                    : "bg-emerald-50 text-emerald-800"
-                }`}
-              >
-                {redraftToast.text}
-              </div>
-            )}
-            {detailLoading ? (
-              // S109 PR #2 — show a loader during the async dispute-detail
-              // fetch so the LetterTeaser's "Legacy dispute" placeholder
-              // doesn't flash before letterContent populates. The teaser is
-              // legitimately shown only when loading completes AND letter
-              // content is confirmed absent (legacy pre-persistence row).
-              <div className="p-2 bg-white border border-gray-100 rounded-lg">
-                <div className="flex items-center justify-center py-6">
-                  <div
-                    className="h-4 w-4 animate-spin rounded-full border-2 border-blue-600 border-t-transparent"
-                    aria-label="Loading dispute letter"
-                  />
-                </div>
-              </div>
-            ) : hasLetter && isPro ? (
-              <pre className="p-2 bg-white border border-gray-100 rounded-lg text-[11px] text-gray-700 whitespace-pre-wrap font-sans line-clamp-4">
-                {detail!.letterContent}
-              </pre>
+    <div className="rounded-2xl border border-gray-200 bg-white p-5">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2.5">
+            {isStale ? (
+              <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-700">
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden />
+                May need update
+              </span>
             ) : (
-              <LetterTeaser
-                isPro={isPro}
-                hasReachedLetterStage={hasReachedLetterStage}
-                disputeId={dispute.id}
-              />
+              <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${statusBadgeClass}`}>
+                {statusLabel}
+              </span>
             )}
+            <p className="truncate text-base font-bold text-gray-900">{typeLabel}</p>
           </div>
-
-          {/* Court documents */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-                Court documentation
-              </p>
-              {hasEvidence && detail?.claimId && (
-                <a
-                  href={`/small-claims?claim=${detail.claimId}`}
-                  className="text-[10px] font-semibold text-blue-600 hover:text-blue-700"
-                >
-                  View evidence package →
-                </a>
-              )}
-            </div>
-            <p
-              className={`p-2 rounded-lg text-xs italic ${
-                hasReachedCourtStage && hasEvidence
-                  ? "bg-purple-50 text-purple-800 not-italic"
-                  : "bg-gray-100 text-gray-400"
-              }`}
-            >
-              {hasEvidence
-                ? "9-section court-ready evidence package prepared."
-                : hasReachedCourtStage
-                  ? "Evidence package reference available on the Small Claims page."
-                  : "Evidence not prepared yet."}
-            </p>
-          </div>
+          <p className="mt-1.5 truncate text-sm text-gray-500">
+            {provider}
+            {chargeCount != null && chargeCount > 0 && ` · ${chargeCount} charge${chargeCount === 1 ? "" : "s"}`}
+          </p>
         </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * Locked letter preview shown when the user can't see the real letter:
- * either because they're on the Free plan, or because this is a legacy
- * dispute that predates letter persistence (letter_content is NULL).
- *
- * Shows a blurred sample letter with an upgrade CTA overlayed so users
- * understand the value of Pro and have a clear path to unlock it.
- */
-function LetterTeaser({
-  isPro,
-  hasReachedLetterStage,
-  disputeId,
-}: {
-  isPro: boolean;
-  hasReachedLetterStage: boolean;
-  disputeId: string;
-}) {
-  const sampleLetter = `Aetna Member Services — Appeals
-PO Box 14463
-Lexington, KY 40512
-
-Re: Formal appeal of claim denial
-Member: Jane Sample · Member ID: W123456789
-Date of service: June 1, 2026 · Claim #AET-2026-0428
-
-To Whom It May Concern:
-
-I am appealing the denial of the above claim for an established office visit
-(CPT 99214) at Swedish Providence. My plan documents specify a $20 copay for
-this service when rendered in-network...`;
-
-  return (
-    <div className="relative rounded-lg border border-gray-100 overflow-hidden">
-      <pre
-        aria-hidden
-        className="pointer-events-none select-none p-2 bg-white text-[11px] text-gray-700 whitespace-pre-wrap font-sans filter blur-[3px] opacity-60 max-h-32 overflow-hidden"
-      >
-        {sampleLetter}
-      </pre>
-      <div className="absolute inset-0 flex items-center justify-center bg-white/50">
-        <div className="flex flex-col items-center gap-1.5">
-          {!isPro ? (
-            <>
-              <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-                🔒 Pro only
-              </span>
-              {/* Route to /disputes?dispute=<id>. That page already has the
-                  LockedOverlay billing interstitial (blurred sample letter +
-                  Subscribe button → Stripe Checkout). After subscription
-                  Stripe redirects back to the same URL, and /disputes picks
-                  up the dispute ID to render the real letter. */}
-              <a
-                href={`/disputes?dispute=${disputeId}`}
-                className="px-4 py-1.5 bg-blue-600 text-white text-xs font-semibold rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
-              >
-                Subscribe to view your dispute letter
-              </a>
-            </>
-          ) : hasReachedLetterStage ? (
-            <>
-              <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-                Legacy dispute
-              </span>
-              <p className="text-[11px] text-gray-600 text-center max-w-xs">
-                This letter predates text persistence. Regenerate it from the
-                bill&apos;s Draft Dispute Letter button to see the text here.
-              </p>
-            </>
-          ) : (
-            <p className="text-[11px] text-gray-500 italic">Letter not drafted yet.</p>
+        <div className="shrink-0 text-right">
+          <p className="text-2xl font-bold text-gray-900">${fmt(headline)}</p>
+          {recovered && (
+            <p className="text-xs text-green-600">+${fmt(dispute.amount_recovered)} recovered</p>
           )}
         </div>
       </div>
+
+      {/* Cost-Share v2 (W4) — staleness. The cohesive "may need update" banner
+          directs the user to the letter page, where Refresh / Keep-as-is live
+          (the card no longer carries the heavy inline detail). */}
+      {isStale && (
+        <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <svg
+            className="mt-0.5 h-4 w-4 shrink-0 text-amber-500"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+            <line x1="12" y1="9" x2="12" y2="13" />
+            <line x1="12" y1="17" x2="12.01" y2="17" />
+          </svg>
+          <p className="text-sm leading-relaxed text-amber-900">
+            Your plan details changed since this was drafted — this charge may now be correct.{" "}
+            <span className="font-semibold">Open the letter to refresh or keep it as-is.</span>
+          </p>
+        </div>
+      )}
+
+      <a
+        href={`/disputes?dispute=${dispute.id}`}
+        className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
+      >
+        Open dispute letter
+        <span aria-hidden>→</span>
+      </a>
     </div>
   );
 }
@@ -3497,8 +3387,18 @@ function BulkDisputeButton({
     const owed = li.patient_owes || 0;
     const refund = li.recovery?.refundComponent ?? 0;
     const forgiveness = li.recovery?.forgivenessComponent ?? 0;
-    const isMysteryGap = billed > 0 && ins === 0 && owed === 0;
-    const hasRecoveryStory = li.planCoverage != null && (refund >= 1 || forgiveness >= 1);
+    // Cost-Share v2 (S214) — when the engine ran (verdict present), the dispute
+    // synthesis is VERDICT-DRIVEN: only a 'recovery' verdict surfaces a finding,
+    // and it uses the engine's refund+forgiveness (the recovery-story branch
+    // below), never the deductible-blind gross-billed isMysteryGap amount. Every
+    // other verdict (correct/confident/not_covered/insufficient) is suppressed —
+    // the engine-fed recovery block already corrects the ~10 display surfaces.
+    // OFF (verdict absent) = today's deductible-blind logic, verbatim.
+    const onEngine = li.costShareVerdict != null;
+    const isMysteryGap = !onEngine && billed > 0 && ins === 0 && owed === 0;
+    const hasRecoveryStory = onEngine
+      ? li.costShareVerdict === "recovery"
+      : li.planCoverage != null && (refund >= 1 || forgiveness >= 1);
     if (!isMysteryGap && !hasRecoveryStory) continue;
 
     const syntheticId = `gap-${li.id}`;

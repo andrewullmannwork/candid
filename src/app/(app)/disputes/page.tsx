@@ -212,6 +212,13 @@ function DisputesContent() {
   // S74 — dispute lifecycle state for the Mark-as-Sent flow.
   const [disputeStatus, setDisputeStatus] = useState<string | null>(null);
   const [disputeFiledDate, setDisputeFiledDate] = useState<string | null>(null);
+  // Cost-Share v2 (W4 / Finding 4) — letter-page staleness. isStale gates the
+  // banner; collapsed = the user chose "Keep as-is" (banner → small re-openable
+  // "May need update" tag, never a permanent dismiss); refreshingLetter guards
+  // the regenerate.
+  const [isStale, setIsStale] = useState(false);
+  const [staleBannerCollapsed, setStaleBannerCollapsed] = useState(false);
+  const [refreshingLetter, setRefreshingLetter] = useState(false);
   // S109 PR #2 (Chunk B) — current same-plan-confirmation answer; drives
   // SamePlanConfirmBanner visibility and the letter's fallback-cite framing.
   const [userConfirmedSamePlan, setUserConfirmedSamePlan] = useState<
@@ -321,14 +328,22 @@ function DisputesContent() {
   }, [user]);
 
   // Fetch dispute + plan context + evidence (reused for refetch-on-focus).
-  const fetchDispute = useCallback(async (id: string) => {
+  const fetchDispute = useCallback(async (id: string, opts?: { refresh?: boolean }) => {
     if (!user) return;
     const token = await user.firebaseUser.getIdToken();
-    const res = await fetch(`/api/disputes/${id}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    // ?refresh=1 regenerates the letter server-side (versioning the prior) and
+    // returns the recomputed isStale (W4 / Finding 4). A plain load reads current.
+    const res = await fetch(
+      opts?.refresh ? `/api/disputes/${id}?refresh=1` : `/api/disputes/${id}`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
     if (!res.ok) return;
     const data = await res.json();
+    // Cost-Share v2 (W4) — staleness for the letter-page banner. A fresh
+    // navigation re-expands the banner; a refresh keeps the user's collapse
+    // state (the refreshed letter is no longer stale anyway).
+    setIsStale(data.isStale === true);
+    if (!opts?.refresh) setStaleBannerCollapsed(false);
     setPlanContext(data.planContext ?? null);
     setPlanChangeBanner(data.planChangeBanner ?? null);
     setEvidence(data.evidence ?? null);
@@ -600,6 +615,19 @@ function DisputesContent() {
   // S109 PR #2 — toast tracks kind so error cases (e.g., 3/24h rate limit
   // 429) render amber instead of success-green emerald.
   const [redraftToast, setRedraftToast] = useState<{ text: string; kind: "success" | "error" } | null>(null);
+  // Cost-Share v2 (W4) — user-initiated letter refresh (regenerate + version the
+  // prior via ?refresh=1; the regenerated letter is no longer stale).
+  const handleRefreshLetter = useCallback(async () => {
+    if (!user || !disputeId || refreshingLetter) return;
+    setRefreshingLetter(true);
+    try {
+      await fetchDispute(disputeId, { refresh: true });
+    } catch (err) {
+      console.error("Refresh letter failed:", err);
+    } finally {
+      setRefreshingLetter(false);
+    }
+  }, [user, disputeId, refreshingLetter, fetchDispute]);
   const handleRedraft = async () => {
     if (!user || !disputeId || redrafting) return;
     setRedrafting(true);
@@ -767,6 +795,49 @@ function DisputesContent() {
       onBandClick={v3DesignOn && strength ? () => setEvidenceModalOpen(true) : undefined}
     />
   );
+
+  // Cost-Share v2 (W4 / Finding 4) — letter-page staleness banner. The /claim
+  // card routes users here to act. Full banner = Refresh letter / Keep as-is;
+  // "Keep as-is" collapses to a small re-openable "May need update" tag so the
+  // warning is never fully hidden. Only present when the backend reports isStale
+  // (flag ON).
+  const staleBannerNode = isStale ? (
+    staleBannerCollapsed ? (
+      <button
+        type="button"
+        onClick={() => setStaleBannerCollapsed(false)}
+        className="inline-flex items-center gap-1 self-start rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-700 hover:bg-amber-200"
+      >
+        <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden />
+        May need update
+      </button>
+    ) : (
+      <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+        <p className="text-xs leading-relaxed text-amber-900">
+          Your plan details changed since this was drafted — based on your current plan details, this
+          charge may now be correct. We&apos;ve kept your draft; refresh it to match your latest info,
+          or keep it as-is.
+        </p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={handleRefreshLetter}
+            disabled={refreshingLetter}
+            className="rounded bg-amber-600 px-3 py-1 text-xs font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
+          >
+            {refreshingLetter ? "Refreshing…" : "Refresh letter"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setStaleBannerCollapsed(true)}
+            className="rounded border border-amber-300 bg-white px-3 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-100"
+          >
+            Keep as-is
+          </button>
+        </div>
+      </div>
+    )
+  ) : null;
 
   const recipientNode = (
     <DisputeRecipientCard
@@ -1438,6 +1509,7 @@ function DisputesContent() {
       {v3DesignOn ? (
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]">
           <div className="min-w-0 space-y-5">
+            {staleBannerNode}
             {dataTrustBannerNode}
             {heroNode}
             {recipientNode}
@@ -1461,6 +1533,7 @@ function DisputesContent() {
         </div>
       ) : (
         <>
+          {staleBannerNode}
           {heroNode}
           {recipientNode}
           {evidenceNode}
