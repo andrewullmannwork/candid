@@ -197,6 +197,13 @@ eq("bare ASC name → component GLOBAL (not facility — structural)", dm("Hospi
 eq("'at a Plan Facility' place-word → component global", dm("Hemodialysis and peritoneal dialysis treatment at a Plan Facility").component, "global");
 eq("physician services IN a facility → professional (guard)", dm("Physician services in an inpatient facility").component, "professional");
 eq("sterilization (ASC place annotation) → component global", dm("Sterilization procedures (outpatient/ambulatory surgical center)").component, "global");
+// ── item 6 (A2b Phase 2): is_preventive_eligible — named screening that resolves to a non-preventive slug ──
+eq("bone density DEXA → preventive flag", dm("Preventive - Bone density DEXA scans").isPreventiveEligible === true ? 1 : 0, 1);
+eq("bone density CT → preventive flag", dm("Bone density CT scans").isPreventiveEligible === true ? 1 : 0, 1);
+eq("osteoporosis screening → preventive flag", dm("Osteoporosis screening").isPreventiveEligible === true ? 1 : 0, 1);
+eq("plain CT → NO preventive flag", dm("CT scan of the abdomen").isPreventiveEligible ? 1 : 0, 0);
+eq("osteoporosis treatment (not screening) → NO preventive flag", dm("Osteoporosis medication / treatment").isPreventiveEligible ? 1 : 0, 0);
+eq("facility fee → NO preventive flag", dm("Facility fee (e.g., hospital room)").isPreventiveEligible ? 1 : 0, 0);
 
 // ── RUN 7 (S226 / A2b Phase 2): score-tuple.ts — full-tuple match, the modifiers|slug conditional,
 // the umbrella exact-set-match (mixed detection), under-detection, and canon-awareness. ──

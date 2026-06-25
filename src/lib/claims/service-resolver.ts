@@ -73,6 +73,9 @@ export interface DerivedModifiers {
   placeOfService: string;
   component: ServiceComponent;
   multiLabel?: ServiceModifierTuple[];
+  /** A2b Phase 2 item 6: true when a NAMED preventive screening resolves to a non-preventive slug
+   *  (e.g. bone-density/DEXA → advanced_imaging) — keep the slug + flag, never collapse to preventive_care. */
+  isPreventiveEligible?: boolean;
 }
 
 export interface ServiceResolution {
@@ -89,6 +92,9 @@ export interface ServiceResolution {
   component?: ServiceComponent;
   /** Multi-label SET for a compound line (inpatient physician/surgeon umbrella); undefined otherwise. */
   multiLabel?: ServiceModifierTuple[];
+  /** A2b Phase 2 item 6: preventive-eligible flag on a named screening that resolves to a non-preventive
+   *  slug (Hard Rule #17 / §1.5). Present ONLY when emitModifiers / thesaurus_phase1a_v1 is on. */
+  isPreventiveEligible?: boolean;
 }
 
 export interface ResolverConfig {
@@ -773,6 +779,7 @@ export async function resolveServices(
       res.placeOfService = m.placeOfService;
       res.component = m.component;
       if (m.multiLabel) res.multiLabel = m.multiLabel;
+      if (m.isPreventiveEligible) res.isPreventiveEligible = m.isPreventiveEligible;
     }
   }
   return results;
@@ -824,6 +831,11 @@ export function deriveModifiers(description: string): DerivedModifiers {
     /(physician|surgeon|doctor)[^.]{0,40}\b(fee|fees|services|visit|visits)\b|surgeon fee/.test(d) ? "professional"
       : /facility (?:fee|charge|services?|inpatient)|\(facility\)|hospital room|room and board/.test(d) ? "facility"
         : "global";
+  // is_preventive_eligible — a NAMED preventive screening that resolves to a non-preventive slug (e.g.
+  // bone-density / DEXA → advanced_imaging): keep the real slug + FLAG it preventive, never collapse to
+  // preventive_care (Hard Rule #17 / §1.5). Text-only, universal (USPSTF screening cue). flag-OFF → omitted.
+  const prev: { isPreventiveEligible?: true } =
+    /bone density|bone mineral density|\bdexa\b|osteoporosis screening/.test(d) ? { isPreventiveEligible: true } : {};
   // mixed inpatient physician/surgeon umbrella → multi-label SET (exclude mental-health + transplant).
   const mixed =
     place === "inpatient_facility" &&
@@ -838,9 +850,10 @@ export function deriveModifiers(description: string): DerivedModifiers {
         { slug: "surgery", placeOfService: "inpatient_facility", component: "professional" },
         { slug: "hospital_admission", placeOfService: "inpatient_facility", component: "professional" },
       ],
+      ...prev,
     };
   }
-  return { placeOfService: place, component };
+  return { placeOfService: place, component, ...prev };
 }
 
 /** Single-line resolve (manual / reaudit / search fallback). */

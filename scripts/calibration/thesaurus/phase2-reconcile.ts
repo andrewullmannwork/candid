@@ -23,7 +23,7 @@ import { join } from "path";
 type Tuple = { slug: string; placeOfService: string; component: "facility" | "professional" | "global" };
 type GtRow = {
   id: string; docType: string; adjudicationStatus: string; serviceName: string;
-  correctSlug: string | null; acceptableSlugs?: string[] | null; multiLabel?: Tuple[];
+  correctSlug: string | null; acceptableSlugs?: string[] | null; multiLabel?: Tuple[]; isPreventiveEligible?: boolean;
   [k: string]: unknown;
 };
 
@@ -45,13 +45,17 @@ const isInpatient = (s: string) => /inpatient|hospital stay|hospital admission|h
 const isPhysicianLine = (s: string) => /(physician|surgeon|doctor)[^.]{0,40}\b(fee|fees|services|visit|visits)\b|surgeon fee/.test(lc(s));
 const isOPD = (s: string) => /outpatient department of (?:a |the )?hospital|hospital outpatient|outpatient hospital|\bopd\b/.test(lc(s));
 const isASC = (s: string) => /ambulatory surg(?:ery|ical) center|\basc\b|freestanding|surg(?:ery|ical) center/.test(lc(s));
+const isBoneDensity = (s: string) => /bone density|bone mineral density|\bdexa\b|osteoporosis screening/.test(lc(s));
 
 const tup = (slug: string, component: Tuple["component"], place: string): Tuple => ({ slug, placeOfService: place, component });
 const MIXED: Tuple[] = [tup("surgery", "professional", "inpatient_facility"), tup("hospital_admission", "professional", "inpatient_facility")];
 
-type Action = { cat: string; correctSlug?: string | null; acceptable?: string[]; multiLabel?: Tuple[]; mutate: boolean };
+type Action = { cat: string; correctSlug?: string | null; acceptable?: string[]; multiLabel?: Tuple[]; isPreventiveEligible?: boolean; mutate: boolean };
 function decide(g: GtRow): Action | null {
   const name = g.serviceName || "";
+  // item 6: a NAMED bone-density / DEXA screening is preventive-eligible (GT flag truth; slug untouched —
+  // it stays advanced_imaging / preventive_care; the flag is what lets a non-preventive slug carry $0).
+  if (isBoneDensity(name)) return { cat: "preventive-bone-density", isPreventiveEligible: true, mutate: true };
   if (isTransplant(name)) {
     if (isTravel(name)) return { cat: "transplant→travel", correctSlug: "medical_travel", multiLabel: [tup("medical_travel", "global", "any")], mutate: true };
     if (hasFacility(name)) return { cat: "transplant·facility", correctSlug: "transplant", multiLabel: [tup("transplant", "facility", "inpatient_facility")], mutate: true };
@@ -92,6 +96,7 @@ for (const g of gt) {
     if (a.correctSlug !== undefined) g.correctSlug = a.correctSlug;
     if (a.acceptable) g.acceptableSlugs = a.acceptable;
     if (a.multiLabel) g.multiLabel = a.multiLabel;
+    if (a.isPreventiveEligible !== undefined) g.isPreventiveEligible = a.isPreventiveEligible;
     mutated++;
   } else if (a.mutate) mutated++;
 }

@@ -55,6 +55,8 @@ export interface GtService {
   /** A2b Phase 2 — explicit Pattern-S tuple truth for a reconciled row (mixed umbrella = 2-member SET;
    *  pure-surgeon / transplant = 1). When absent, the tuple truth comes from decode-map[correctSlug]. */
   multiLabel?: ModifierTuple[];
+  /** A2b Phase 2 item 6 — GT truth: this line is a preventive-eligible screening (e.g. bone-density). */
+  isPreventiveEligible?: boolean;
 }
 
 /** Pattern-S modifier tuple (mirror of the resolver's ServiceModifierTuple) — A2b Phase 2. */
@@ -77,6 +79,8 @@ export interface ForwardMapEntry {
   placeOfService?: string;
   component?: "facility" | "professional" | "global";
   multiLabel?: ModifierTuple[];
+  /** A2b Phase 2 item 6 — resolver-emitted preventive-eligible flag (deterministic, description-derived). */
+  isPreventiveEligible?: boolean;
   /**
    * S170 N-run majority: fraction of the N forward runs that agreed with the winning (canon'd) slug
    * for this gtId. 1.0 = unanimous; undefined on a legacy single-run snapshot. The de-noising signal.

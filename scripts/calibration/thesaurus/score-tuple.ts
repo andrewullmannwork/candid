@@ -36,6 +36,9 @@ export interface TupleBucket {
 export interface TupleScoreCard {
   all: TupleBucket; andrew: TupleBucket; cluster: TupleBucket; clusterAndrew: TupleBucket;
   misses: { gtId: string; serviceName: string; insurer: string; multi: boolean; gt: string; got: string }[];
+  /** item 6 — is_preventive_eligible: recall on GT-true rows (a guard; the cue is shared) + corpus-wide
+   *  over-fire (the NON-circular signal: did the flag fire where the GT says it shouldn't?). */
+  preventive: { gtTrue: number; recall: number; overFire: number; overFireRows: { gtId: string; serviceName: string; slug: string }[] };
 }
 
 const emptyBucket = (): TupleBucket => ({
@@ -61,7 +64,7 @@ export function buildTupleScoreCard(args: {
     return [{ slug: canon(f?.resolvedSlug), place: f?.placeOfService ?? "∅", component: f?.component ?? "∅" }];
   };
 
-  const card: TupleScoreCard = { all: emptyBucket(), andrew: emptyBucket(), cluster: emptyBucket(), clusterAndrew: emptyBucket(), misses: [] };
+  const card: TupleScoreCard = { all: emptyBucket(), andrew: emptyBucket(), cluster: emptyBucket(), clusterAndrew: emptyBucket(), misses: [], preventive: { gtTrue: 0, recall: 0, overFire: 0, overFireRows: [] } };
   const target = (g: GtService, inCluster: boolean): TupleBucket[] => {
     const bs = [card.all];
     const a = g.adjudicationStatus === "andrew";
@@ -100,6 +103,18 @@ export function buildTupleScoreCard(args: {
       if (!fullOk) card.misses.push({ gtId: g.id, serviceName: g.serviceName, insurer: g.insurer, multi: false, gt: key(T), got: overEmit ? setKey(got) : key(G) });
     }
   }
+  // item 6 — preventive-eligible flag (over ALL rows, not just the tuple cluster): recall on GT-true + over-fire.
+  for (const g of gt) {
+    if (g.notFound) continue;
+    const f = fwd.get(g.id);
+    const gtFlag = g.isPreventiveEligible === true;
+    const resFlag = f?.isPreventiveEligible === true;
+    if (gtFlag) { card.preventive.gtTrue += 1; if (resFlag) card.preventive.recall += 1; }
+    if (resFlag && !gtFlag) {
+      card.preventive.overFire += 1;
+      if (card.preventive.overFireRows.length < 10) card.preventive.overFireRows.push({ gtId: g.id, serviceName: g.serviceName, slug: f?.resolvedSlug ?? "∅" });
+    }
+  }
   return card;
 }
 
@@ -118,6 +133,8 @@ ${row("cluster · andrew", c.clusterAndrew)}
 
 > Non-circular signals: umbrella **set-match** (mixed detection) + slug B1/B2 (score.ts) + dropped-themes.
 > place/component = deterministic regression-guard on deriveModifiers + phrasing-robustness on the real corpus.
+
+**is_preventive_eligible (item 6):** recall ${c.preventive.recall}/${c.preventive.gtTrue} on GT-flagged rows (guard — cue shared with GT) · **over-fire ${c.preventive.overFire}** (NON-circular: flag fired where GT says not)${c.preventive.overFireRows.length ? " → " + c.preventive.overFireRows.map((r) => `${r.slug}:"${r.serviceName.slice(0, 32)}"`).join("; ") : ""}
 
 ### tuple misses (first 25)
 ${c.misses.slice(0, 25).map((m) => `  - ${m.insurer} "${m.serviceName}"${m.multi ? " [multi]" : ""}: got \`${m.got}\` · want \`${m.gt}\``).join("\n") || "  _none_"}

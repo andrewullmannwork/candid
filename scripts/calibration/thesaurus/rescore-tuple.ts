@@ -37,7 +37,7 @@ const forward: ForwardMapEntry[] = forwardRaw.map((f) => {
   const g = byId.get(f.gtId);
   if (!g) return f;
   const m = deriveModifiers(g.serviceName);
-  return { ...f, placeOfService: m.placeOfService, component: m.component, multiLabel: m.multiLabel };
+  return { ...f, placeOfService: m.placeOfService, component: m.component, multiLabel: m.multiLabel, isPreventiveEligible: m.isPreventiveEligible };
 });
 
 const card = buildTupleScoreCard({ gt, forward, decodeMap, renameMap });

@@ -122,7 +122,7 @@ async function main() {
     }
     return gt.map((g, i) => {
       const r = resMap.get(i);
-      return { gtId: g.id, resolvedSlug: r?.slug ?? null, conceptId: r?.conceptId ?? null, confidence: r?.confidence ?? 0, source: r?.source ?? "none", needsReview: r?.needsReview ?? true, placeOfService: r?.placeOfService, component: r?.component, multiLabel: r?.multiLabel };
+      return { gtId: g.id, resolvedSlug: r?.slug ?? null, conceptId: r?.conceptId ?? null, confidence: r?.confidence ?? 0, source: r?.source ?? "none", needsReview: r?.needsReview ?? true, placeOfService: r?.placeOfService, component: r?.component, multiLabel: r?.multiLabel, isPreventiveEligible: r?.isPreventiveEligible };
     });
   }
 
@@ -162,6 +162,7 @@ async function main() {
       placeOfService: perRun[0]?.placeOfService,
       component: perRun[0]?.component,
       multiLabel: perRun[0]?.multiLabel,
+      isPreventiveEligible: perRun[0]?.isPreventiveEligible,
     };
   });
   // ── output-validity gate (S170 hardening B): refuse to FREEZE a degenerate snapshot. `strict` already
