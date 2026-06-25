@@ -180,6 +180,23 @@ eq("specialist visit → global", dm("Specialist visit").component, "global");
 // negatives — MH + transplant must NOT become the surgery/hospital_admission umbrella (the Step-1 guards)
 eq("autism inpatient doctor/surgeon → NOT umbrella (MH guard)", hasUmbrella("Autism Spectrum Disorder Services — Inpatient Doctor/Surgeon Fee"), 0);
 eq("transplant phys/surgeon inpatient → NOT umbrella (transplant guard)", hasUmbrella("Transplant — Physician/surgeon inpatient services"), 0);
+// ── RUN 6b (A2b Phase 2 S228 / Andrew D1): facility component = the WORD "facility" as a billing label,
+// NOT a place-type name. ASC is a LOCATION (place), never a component cue. ──
+// Type-A POSITIVES — carrier text labels the facility component → read it (Option-1):
+eq("transplant facility → component (text-labeled)", dm("Transplant services — Special transplant facility inpatient services").component, "facility");
+eq("transplant facility → place inpatient", dm("Transplant services — Special transplant facility inpatient services").placeOfService, "inpatient_facility");
+eq("transplant facility → NOT umbrella (transplant guard)", hasUmbrella("Transplant services — Special transplant facility inpatient services"), 0);
+eq("delivery facility services → component", dm("Childbirth/delivery facility services").component, "facility");
+eq("ER (facility) tag → component", dm("Emergency room services (facility)").component, "facility");
+// D3 — hospital OPD is a DISTINCT place from a freestanding ASC (both real, different cost-share):
+eq("OPD facility fee → place outpatient (not independent)", dm("Facility fee — Outpatient Department of a Hospital: surgery").placeOfService, "outpatient_facility");
+eq("OPD facility fee → component facility", dm("Facility fee — Outpatient Department of a Hospital: surgery").component, "facility");
+// D1 KEY NEGATIVES — a place-name is NOT a component; facility-by-structure defers to Option-3:
+eq("bare ASC name → place independent", dm("Hospital Services — Ambulatory Surgical Center").placeOfService, "independent_facility");
+eq("bare ASC name → component GLOBAL (not facility — structural)", dm("Hospital Services — Ambulatory Surgical Center").component, "global");
+eq("'at a Plan Facility' place-word → component global", dm("Hemodialysis and peritoneal dialysis treatment at a Plan Facility").component, "global");
+eq("physician services IN a facility → professional (guard)", dm("Physician services in an inpatient facility").component, "professional");
+eq("sterilization (ASC place annotation) → component global", dm("Sterilization procedures (outpatient/ambulatory surgical center)").component, "global");
 
 // ── RUN 7 (S226 / A2b Phase 2): score-tuple.ts — full-tuple match, the modifiers|slug conditional,
 // the umbrella exact-set-match (mixed detection), under-detection, and canon-awareness. ──

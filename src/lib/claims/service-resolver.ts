@@ -806,15 +806,23 @@ function mkResolution(
 export function deriveModifiers(description: string): DerivedModifiers {
   const d = (description || "").toLowerCase();
   // place_of_service — only mig-147 CHECK values; LEAD subset (facility settings) + 'any' default.
+  // An ASC / surgical center / freestanding center is a LOCATION (independent_facility), NOT a component
+  // signal (A2b Phase 2, Andrew D1): a bare ASC place-name's facility-ness is a plan-STRUCTURE property
+  // (does a companion surgeon line exist?) → that's Option-3/assembly, never inferred from this line's text.
   const place =
-    /ambulatory surgery center|\basc\b|freestanding|surgery center/.test(d) ? "independent_facility"
+    /ambulatory surg(?:ery|ical) center|\basc\b|freestanding|surg(?:ery|ical) center/.test(d) ? "independent_facility"
       : /\binpatient\b|hospital stay|hospital admission|hospital inpatient|hospital room|room and board/.test(d) ? "inpatient_facility"
         : /\boutpatient\b/.test(d) ? "outpatient_facility"
           : "any";
-  // component — default global; facility/professional ONLY on explicit component-fee language.
+  // component — professional FIRST (the NOT-facility guard: a physician/surgeon fee line delivered IN a
+  // facility is the PROFESSIONAL component, not facility), THEN facility ONLY when the line uses the WORD
+  // "facility" as a billing label (facility fee/charge/services, "...facility inpatient services", the
+  // "(facility)" tag) or an explicit room charge — NEVER on a place-type name (ASC, "— Outpatient
+  // Facility" as a setting suffix, "at a Plan Facility"). Else global. (A2b Phase 2, Andrew D1: a
+  // place-name ≠ a component; a facility line that's facility only by plan structure is Option-3.)
   const component: ServiceComponent =
-    /facility fee|hospital room|room and board/.test(d) ? "facility"
-      : /(physician|surgeon|doctor)[^.]{0,40}\b(fee|fees|services|visit|visits)\b|surgeon fee/.test(d) ? "professional"
+    /(physician|surgeon|doctor)[^.]{0,40}\b(fee|fees|services|visit|visits)\b|surgeon fee/.test(d) ? "professional"
+      : /facility (?:fee|charge|services?|inpatient)|\(facility\)|hospital room|room and board/.test(d) ? "facility"
         : "global";
   // mixed inpatient physician/surgeon umbrella → multi-label SET (exclude mental-health + transplant).
   const mixed =

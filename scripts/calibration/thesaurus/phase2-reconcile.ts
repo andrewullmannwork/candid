@@ -42,6 +42,9 @@ const hasFacility = (s: string) => /facility/.test(lc(s));
 const hasSurgeon = (s: string) => /surgeon|surgical/.test(lc(s));
 const hasPhysician = (s: string) => /physician|doctor|hospitalist|attending/.test(lc(s));
 const isInpatient = (s: string) => /inpatient|hospital stay|hospital admission|hospital inpatient/.test(lc(s));
+const isPhysicianLine = (s: string) => /(physician|surgeon|doctor)[^.]{0,40}\b(fee|fees|services|visit|visits)\b|surgeon fee/.test(lc(s));
+const isOPD = (s: string) => /outpatient department of (?:a |the )?hospital|hospital outpatient|outpatient hospital|\bopd\b/.test(lc(s));
+const isASC = (s: string) => /ambulatory surg(?:ery|ical) center|\basc\b|freestanding|surg(?:ery|ical) center/.test(lc(s));
 
 const tup = (slug: string, component: Tuple["component"], place: string): Tuple => ({ slug, placeOfService: place, component });
 const MIXED: Tuple[] = [tup("surgery", "professional", "inpatient_facility"), tup("hospital_admission", "professional", "inpatient_facility")];
@@ -54,6 +57,19 @@ function decide(g: GtRow): Action | null {
     if (hasFacility(name)) return { cat: "transplant·facility", correctSlug: "transplant", multiLabel: [tup("transplant", "facility", "inpatient_facility")], mutate: true };
     if (hasPhysician(name) || hasSurgeon(name)) return { cat: "transplant·professional", correctSlug: "transplant", multiLabel: [tup("transplant", "professional", "inpatient_facility")], mutate: true };
     return { cat: "transplant·global", correctSlug: "transplant", multiLabel: [tup("transplant", "global", "any")], mutate: true };
+  }
+  // BUCKET-A + D3 (S228, Andrew-ratified) — outpatient-surgery rows keyed to the FACILITY decode-slug:
+  if (g.correctSlug === "outpatient_surgery_facility") {
+    // BUCKET-A: a PHYSICIAN-component line mis-keyed as facility → re-key to the physician decode-slug.
+    // score.ts canons BOTH decode-keys (outpatient_surgery_facility / _physician) → "surgery", so slug
+    // B1/B2 are byte-unchanged; only the tuple decode (component/place) flips facility→professional.
+    if (isPhysicianLine(name) && !isASC(name))
+      return { cat: "bucketA-outpt-physician", correctSlug: "outpatient_surgery_physician", mutate: true };
+    // D3: a hospital OUTPATIENT-DEPARTMENT surgery line ≠ a freestanding ASC (different CMS POS + cost-
+    // share). The decode maps the slug uniformly to independent_facility; override place→outpatient_facility
+    // per-row via multiLabel (correctSlug untouched → slug-level unchanged; component stays facility).
+    if (isOPD(name) && !isASC(name))
+      return { cat: "D3-opd→outpatient_facility", multiLabel: [tup("surgery", "facility", "outpatient_facility")], mutate: true };
   }
   if (!isInpatient(name) || isFacilityFee(name)) return null;
   if (!hasSurgeon(name) && !hasPhysician(name)) return null;
