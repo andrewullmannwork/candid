@@ -10,6 +10,7 @@ import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import {
   computeRecoveryV2,
   computeCostShareV2,
+  rollupCostShareVerdict,
   isFamilyTier,
   resolveStillOutstanding,
   type PlanCoverageInput,
@@ -799,6 +800,27 @@ export async function GET(
     };
   }
 
+  // Cost-Share v2 (D1) — bill-level verdict for the §5 assumptions banner
+  // ("one banner per bill"). Rolled up from the per-line verdicts through the
+  // SAME shared precedence helper computeClaimCostShareV2 uses, so the bill
+  // headline can never drift from the engine. Attached ONLY when the flag is ON
+  // (absent → today's verdict-blind UI). The banner reads recovery $ from the
+  // `recovery` field above, so the verdict is the only new field needed.
+  const costShareBill = costShareV2
+    ? (() => {
+        const verdicts = enrichedLineItems
+          .map(
+            (li) =>
+              (li as { costShareVerdict?: CostShareVerdict | null })
+                .costShareVerdict,
+          )
+          .filter((v): v is CostShareVerdict => v != null);
+        return verdicts.length > 0
+          ? { verdict: rollupCostShareVerdict(verdicts) }
+          : null;
+      })()
+    : null;
+
   // Fetch linked disputes (userScoped adds `.eq("user_id")`; +DiD — these are
   // the owner's disputes on the owned claim).
   const { data: disputes } = await userScoped(supabase, user.id)
@@ -861,6 +883,14 @@ export async function GET(
     disputes: disputes || [],
     relatedClaims,
     recovery: claimRecovery,
+    // Cost-Share v2 (D1) — bill-level verdict for the §5 banner; flag-gated
+    // (absent when OFF → byte-identical to today).
+    ...(costShareBill ? { costShareBill } : {}),
+    // Cost-Share v2 (W3) — the user's resolved cost-share overrides (deductible/
+    // OOP met-status + as-of dates + per-claim network override), so the §5
+    // banner can render the confirmed "you set this · Undo" chips + the correct
+    // toggle direction. Flag-gated; the route already resolved csOverrides above.
+    ...(costShareV2 && csOverrides ? { costShareOverrides: csOverrides } : {}),
     // S140 — surface effective claim totals + per-field provenance so the
     // frontend FlaggedBody can read claim-header values directly (vs the
     // sum-of-nulls bug that produced $0 displays for Dec 12-style bills).

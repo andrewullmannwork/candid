@@ -17,6 +17,9 @@ import { BundleSuggestion } from "@/components/claims/BundleSuggestion";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useDisputeDraftOverlay } from "@/lib/loading/dispute-draft-overlay";
 import { DisputePlanChooser, type DisputePlanChooserPlan } from "@/components/disputes/DisputePlanChooser";
+import { CostShareBanner, type BannerAssumption, type CostShareVerdict, type CostShareOverrideRequest } from "@/components/claims/CostShareBanner";
+import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
+import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recovery-math";
 
 interface CodeIdentityState {
   identityId: string | null;
@@ -118,6 +121,9 @@ interface LineItem {
   // synthesis below to verdict-driven (vs the legacy deductible-blind
   // isMysteryGap/hasRecoveryStory). Absent/null → today's behavior.
   costShareVerdict?: "confident" | "correct" | "recovery" | "not_covered" | "insufficient" | null;
+  // Cost-Share v2 (W2) — per-line assumptions behind the verdict (§5 banner
+  // chips). Same flag-gated presence as costShareVerdict.
+  costShareAssumptions?: CostShareAssumption[];
 }
 
 interface CatalogSlug {
@@ -174,6 +180,12 @@ interface ClaimData {
   // this claim's plan_id. Drives CategoryCorrectionModal filtering + best-
   // guess "Use this" gating. Empty array when no plan uploaded.
   userPlanCoverage?: PlanCoverageEntry[];
+  // Cost-Share v2 (W2/D1) — bill-level verdict for the §5 banner; flag-gated
+  // (absent when recovery_cost_share_v2 is OFF → today's UI).
+  costShareBill?: { verdict: CostShareVerdict };
+  // Cost-Share v2 (W3) — the user's resolved overrides (met-status + as-of dates
+  // + per-claim network), so the banner renders confirmed "you set this" chips.
+  costShareOverrides?: CostShareOverrides;
   recovery?: {
     billed: number;
     alreadyPaid: number;
@@ -226,6 +238,11 @@ interface DisputeDetail {
   claimId: string | null;
   letterContent: string | null;
   evidencePackage: Record<string, unknown> | null;
+  // Cost-Share v2 (W4) — letter staleness signals; present only when the flag is
+  // ON (the disputes GET gates them). isStale → the evidence basis changed since
+  // the letter was drafted; letterVersionCount → prior versions kept on refresh.
+  isStale?: boolean;
+  letterVersionCount?: number;
   lineItems: Array<{
     id: string;
     line_number: number;
@@ -426,6 +443,8 @@ export function ClaimDetail({
   // not the category-correction dropdown. Re-picking the same catalog
   // wouldn't help if the user's plan data is missing the service.
   const [uploadPlanModalLineId, setUploadPlanModalLineId] = useState<string | null>(null);
+  // Cost-Share v2 (W3 §7b) — line whose manual "Add plan details" form is open.
+  const [addPlanDetailsLineId, setAddPlanDetailsLineId] = useState<string | null>(null);
   // G5 LOCK — bill-wide "Looks right?" prompt; localStorage-keyed per claim so
   // it never reappears once dismissed. Dismissal-only — never logs corroboration.
   const looksRightStorageKey = `claim-${claimId}-looks-right-dismissed`;
@@ -648,6 +667,53 @@ export function ClaimDetail({
     if (onClaimUpdated) await onClaimUpdated();
   }, [data, refetchClaim, onClaimUpdated]);
 
+  // Cost-Share v2 (W3) — post ONE assumption correction, then refetch so the
+  // engine recomputes live. Uses refetchClaim + onClaimUpdated (NOT
+  // handleCorrectionSubmitted — that fires the category-specific re-draft prompt;
+  // letter staleness is W4's job via the evidence fingerprint).
+  const [csOverridePending, setCsOverridePending] = useState<string | null>(null);
+  const [csOverrideError, setCsOverrideError] = useState<string | null>(null);
+  const submitCostShareOverride = useCallback(
+    async (body: CostShareOverrideRequest, pendingKey: string) => {
+      setCsOverridePending(pendingKey);
+      setCsOverrideError(null);
+      try {
+        const token = await getAuthToken();
+        if (!token) return;
+        const res = await fetch(`/api/claims/${claimId}/cost-share-override`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          setCsOverrideError(d.error || `Couldn't save your change (${res.status}).`);
+          return;
+        }
+        await refetchClaim();
+        if (onClaimUpdated) await onClaimUpdated();
+      } catch {
+        setCsOverrideError("Couldn't save your change. Please try again.");
+      } finally {
+        setCsOverridePending(null);
+      }
+    },
+    [claimId, getAuthToken, refetchClaim, onClaimUpdated],
+  );
+
+  // Cost-Share v2 — multi-charge bills start with their line rows collapsed so
+  // the bill isn't too busy (single-charge bills stay expanded). Runs once when
+  // the claim first loads; user toggles take over after.
+  const didInitCollapseRef = useRef(false);
+  useEffect(() => {
+    if (didInitCollapseRef.current || !data) return;
+    didInitCollapseRef.current = true;
+    const chargeCount = data.lineItems.filter((li) => (li.billed_amount ?? 0) > 0).length;
+    if (chargeCount > 1) {
+      setCollapsedRows(new Set(data.lineItems.map((li) => li.id)));
+    }
+  }, [data]);
+
   // S154 — confirm an estimate-tier secondary coverage match. Marks the line
   // user-confirmed (Pattern 1 #14 user-scoped) so the "Verify coverage"
   // affordance clears and the dispute pipeline may cite it as confirmed.
@@ -866,6 +932,23 @@ export function ClaimDetail({
   const humanizeSlug = (slug: string | null): string =>
     slug ? slugNameMap.get(slug) ?? slug : "";
 
+  // Cost-Share v2 (W2) — flatten per-line assumptions with the line context the
+  // §5 banner chips + W3 override calls need (lineId + service label/slug).
+  const bannerAssumptions: BannerAssumption[] = data.lineItems.flatMap((li) =>
+    (li.costShareAssumptions ?? []).map((a) => ({
+      ...a,
+      lineId: li.id,
+      serviceLabel: humanizeSlug(li.service_slug) || li.description || "this service",
+      serviceSlug: li.service_slug,
+    })),
+  );
+  // The line the banner's verdict-specific CTAs act on (matching line, else first).
+  const bannerTargetLineId = (() => {
+    const v = data.costShareBill?.verdict;
+    const match = v ? primaryLineItems.find((li) => li.costShareVerdict === v) : null;
+    return (match ?? primaryLineItems[0])?.id ?? null;
+  })();
+
   // §1.7 — claim-level findings live on claim.metadata.auditSummary.claimLevelFindings.
   // Same dismiss filter as line-level (showDismissed toggles visibility).
   const claimMetadata = (claim.metadata as Record<string, unknown> | null) ?? null;
@@ -1001,6 +1084,10 @@ export function ClaimDetail({
         </div>
       </div>
 
+      {/* Cost-Share v2 — the §5 verdict + assumptions card renders BELOW the line
+          table (mockup placement; see after the table outer), replacing the
+          legacy CleanBody/ReviewBody when the flag is ON. */}
+
       {viewBillError && (
         <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
           <span>{viewBillError}</span>
@@ -1069,7 +1156,7 @@ export function ClaimDetail({
 
       {/* S74.5 D6 — Case C/D plan-doc nudge banner. Soft prompt for /claim
           per Q-C LOCK; HARD gate for dispute generation lives elsewhere. */}
-      {showCaseCDNudge && (
+      {showCaseCDNudge && !data.costShareBill && (
         <div className="mb-3 rounded-xl border border-amber-100 bg-amber-50 p-3">
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -2058,6 +2145,35 @@ export function ClaimDetail({
         })}
       </div>{/* /table outer (rounded-xl) */}
 
+      {/* Cost-Share v2 (W2+W3) — the §5 verdict + assumptions card. One per bill,
+          below the line table (mockup placement). Carries the verdict + Verified
+          stamp itself, so it replaces the legacy CleanBody/ReviewBody when the
+          flag is ON; OFF → absent → today's UI. */}
+      {data.costShareBill && (
+        <CostShareBanner
+          verdict={data.costShareBill.verdict}
+          assumptions={bannerAssumptions}
+          overrides={data.costShareOverrides ?? null}
+          recoverable={billTotals.potentialRecovery}
+          correctShare={billTotals.shouldOwe}
+          charged={billTotals.shouldOwe + billTotals.potentialRecovery}
+          fmtMoney={fmtMoney}
+          onOverride={submitCostShareOverride}
+          pendingKey={csOverridePending}
+          errorMsg={csOverrideError}
+          onShouldBeCovered={() => bannerTargetLineId && openCorrectionModal(bannerTargetLineId)}
+          onAddPlanDetails={() => {
+            const line = bannerTargetLineId
+              ? primaryLineItems.find((li) => li.id === bannerTargetLineId)
+              : null;
+            if (line?.service_slug) setAddPlanDetailsLineId(line.id);
+            else if (bannerTargetLineId) openCorrectionModal(bannerTargetLineId);
+          }}
+          onUploadEob={() => router.push("/upload?type=eob")}
+          onBack={onBack}
+        />
+      )}
+
       {/* B4.2 — Bill-level state body (FlaggedBody / ReviewBody / CleanBody)
           per design's bill-detail.jsx. Aggregates plan-vs-bill totals across
           all line items so the user sees the headline before scrolling into
@@ -2218,7 +2334,7 @@ export function ClaimDetail({
         </>
       )}
 
-      {billState === "needs_review" && (() => {
+      {billState === "needs_review" && !data.costShareBill && (() => {
         // Synthesize a "Specific blockers" list from line-item state so the
         // user sees what specifically needs their input. Mirrors design's
         // bill.reviewReasons[] array (which we don't store at bill level).
@@ -2284,7 +2400,7 @@ export function ClaimDetail({
         );
       })()}
 
-      {billState === "clean" && (
+      {billState === "clean" && !data.costShareBill && (
         <div className="mt-6 flex flex-col gap-4 rounded-2xl border border-emerald-300 bg-gradient-to-br from-emerald-50 to-green-50/40 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3.5">
             <div className="grid h-[42px] w-[42px] place-items-center rounded-xl bg-emerald-600 text-white">
@@ -2475,6 +2591,31 @@ export function ClaimDetail({
             description={uploadLineItem.description}
             billingCode={uploadLineItem.billing_code}
             onClose={() => setUploadPlanModalLineId(null)}
+          />
+        ) : null;
+      })()}
+
+      {/* Cost-Share v2 (W3 §7b) — manual "Add plan details" form. Opened from the
+          §5 banner for a line that already has a service identity (a null-slug
+          line routes to CategoryCorrectionModal first). */}
+      {(() => {
+        const line =
+          addPlanDetailsLineId != null
+            ? primaryLineItems.find((li) => li.id === addPlanDetailsLineId) ?? null
+            : null;
+        return line?.service_slug ? (
+          <AddPlanDetailsModal
+            open
+            claimId={claimId}
+            planId={(claim.insurance_plan_id as string | null) ?? null}
+            serviceSlug={line.service_slug}
+            serviceLabel={humanizeSlug(line.service_slug) || line.description || "this service"}
+            getAuthToken={getAuthToken}
+            onClose={() => setAddPlanDetailsLineId(null)}
+            onSaved={async () => {
+              await refetchClaim();
+              if (onClaimUpdated) await onClaimUpdated();
+            }}
           />
         ) : null;
       })()}
@@ -2764,6 +2905,10 @@ function DisputeRow({
   // S109 PR #2 — toast tracks kind so error cases (e.g., 3/24h rate limit
   // 429) render amber instead of success-green emerald.
   const [redraftToast, setRedraftToast] = useState<{ text: string; kind: "success" | "error" } | null>(null);
+  // Cost-Share v2 (W4) — user-initiated letter refresh (GET ?refresh=1 regenerates
+  // + versions the prior) + a session dismiss for "Send as-is".
+  const [refreshing, setRefreshing] = useState(false);
+  const [staleDismissed, setStaleDismissed] = useState(false);
 
   const statusLabel = DISPUTE_STATUS_LABEL[dispute.status] || dispute.status;
   const statusBadgeClass = DISPUTE_STATUS_BADGE[dispute.status] || "text-gray-700 bg-gray-100";
@@ -2832,6 +2977,24 @@ function DisputeRow({
     }
   }
 
+  async function handleRefreshLetter() {
+    if (!user || refreshing) return;
+    setRefreshing(true);
+    try {
+      const token = await user.firebaseUser.getIdToken();
+      // ?refresh=1 regenerates the letter server-side (versioning the prior) and
+      // returns fresh detail incl. the recomputed isStale.
+      const res = await fetch(`/api/disputes/${dispute.id}?refresh=1`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) setDetail(await res.json());
+    } catch (err) {
+      console.error("Refresh letter failed:", err);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   const hasLetter = !!detail?.letterContent;
   const hasEvidence = !!detail?.evidencePackage;
   const hasReachedLetterStage = dispute.status !== "flagged";
@@ -2877,6 +3040,36 @@ function DisputeRow({
       </button>
       {open && (
         <div className="border-t border-gray-100 p-3 space-y-3 bg-gray-50/40">
+          {/* Cost-Share v2 (W4) — letter staleness. The evidence basis changed
+              since this letter was drafted (e.g. a cost-share correction moved the
+              recovery); offer a user-initiated refresh (versioned) or send as-is.
+              Only present when the flag is ON (backend gates isStale). */}
+          {detail?.isStale && !staleDismissed && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <p className="text-xs leading-relaxed text-amber-900">
+                This dispute may be out of date. Based on your current plan details, this charge now
+                looks correct — there may be nothing to dispute. We&apos;ve kept your draft; refresh
+                it to match your latest info, or send it as-is.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handleRefreshLetter}
+                  disabled={refreshing}
+                  className="rounded bg-amber-600 px-3 py-1 text-xs font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
+                >
+                  {refreshing ? "Refreshing…" : "Refresh letter"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStaleDismissed(true)}
+                  className="rounded border border-amber-300 bg-white px-3 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-100"
+                >
+                  Send as-is
+                </button>
+              </div>
+            </div>
+          )}
           {/* Bill being disputed */}
           <div>
             <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">

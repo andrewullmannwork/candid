@@ -10,6 +10,7 @@
 import {
   computeCostShareV2,
   computeClaimCostShareV2,
+  rollupCostShareVerdict,
   computeRecoveryV2,
   computeShouldOwe,
   type ComputeCostShareV2Args,
@@ -284,6 +285,18 @@ function mk(o: {
   check("15 line B checks out", res.lines[1].verdict === "correct" || res.lines[1].verdict === "confident", res.lines[1].verdict);
   check("15 bill verdict = recovery (rollup)", res.verdict === "recovery", res.verdict, "recovery");
   check("15 total recovery $80", near(res.totalPotentialRecovery, 80), res.totalPotentialRecovery);
+}
+
+// 15b — DIRECT: the shared bill-verdict precedence helper (W2a/D1). Now used by
+//       BOTH the engine wrapper AND the claims route's costShareBill emit (→ the
+//       §5 banner headline), so lock every tier — the two callers can't drift.
+{
+  check("15b any recovery wins", rollupCostShareVerdict(["confident", "correct", "not_covered", "insufficient", "recovery"]) === "recovery", undefined, "recovery");
+  check("15b insufficient over not_covered/correct", rollupCostShareVerdict(["correct", "not_covered", "insufficient"]) === "insufficient", undefined, "insufficient");
+  check("15b not_covered over correct/confident", rollupCostShareVerdict(["confident", "correct", "not_covered"]) === "not_covered", undefined, "not_covered");
+  check("15b correct over confident", rollupCostShareVerdict(["confident", "correct"]) === "correct", undefined, "correct");
+  check("15b all confident → confident", rollupCostShareVerdict(["confident", "confident"]) === "confident", undefined, "confident");
+  check("15b empty → confident", rollupCostShareVerdict([]) === "confident", undefined, "confident");
 }
 
 // 16 — Q1 guard: insurer assigned more than plan-derived, but NO hard met-status data

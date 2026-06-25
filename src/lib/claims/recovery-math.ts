@@ -811,6 +811,28 @@ export interface ClaimCostShareV2Result {
  * it is a deferred refinement gated on pinning accumulator pre/post-claim
  * semantics (the engine's `deductibleConsumed` output is the hook for it).
  */
+/**
+ * Cost-Share v2 — bill-level verdict precedence (§5 "one banner per bill").
+ * Single source of truth: both computeClaimCostShareV2 and the claims route's
+ * per-line emit roll up through THIS, so the bill headline can never drift from
+ * the engine. Precedence: any recovery → any insufficient → any not_covered →
+ * any correct → else confident.
+ */
+export function rollupCostShareVerdict(
+  verdicts: CostShareVerdict[],
+): CostShareVerdict {
+  const has = (v: CostShareVerdict) => verdicts.includes(v);
+  return has("recovery")
+    ? "recovery"
+    : has("insufficient")
+      ? "insufficient"
+      : has("not_covered")
+        ? "not_covered"
+        : has("correct")
+          ? "correct"
+          : "confident";
+}
+
 export function computeClaimCostShareV2(args: ComputeClaimCostShareV2Args): ClaimCostShareV2Result {
   const results = args.lines.map((line) =>
     computeCostShareV2({
@@ -828,16 +850,7 @@ export function computeClaimCostShareV2(args: ComputeClaimCostShareV2Args): Clai
     }),
   );
 
-  const has = (v: CostShareVerdict) => results.some((r) => r.verdict === v);
-  const verdict: CostShareVerdict = has("recovery")
-    ? "recovery"
-    : has("insufficient")
-      ? "insufficient"
-      : has("not_covered")
-        ? "not_covered"
-        : has("correct")
-          ? "correct"
-          : "confident";
+  const verdict = rollupCostShareVerdict(results.map((r) => r.verdict));
 
   return {
     lines: results,
