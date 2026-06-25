@@ -1,0 +1,34 @@
+<LETTER_DATE>
+
+Sample Medical Center
+Billing Department
+123 Care St
+Anytown, CA 90000
+
+Re: Request for Itemized Bill — Date of Service: March 15, 2024
+Patient: Jordan Sample
+
+To Whom It May Concern:
+
+I am writing to request a complete itemized bill for services rendered on March 15, 2024. I am exercising my right under federal and state law to receive a detailed breakdown of all charges.
+
+Please include the following information for each line item:
+
+1. Date of service
+2. CPT/HCPCS procedure code
+3. Description of the service or supply
+4. Quantity
+5. Billed amount
+6. Insurance-allowed amount (if applicable)
+7. Insurance payment (if applicable)
+8. Patient responsibility
+9. Any adjustments or write-offs applied
+
+Please send the itemized bill to the address above within 30 days of receipt of this request. If there are any questions, please contact me at your earliest convenience.
+
+Sincerely,
+
+Jordan Sample
+
+---
+DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis tool. Candid is not a law firm, does not provide legal advice, and does not act as your legal representative. The information above is based on anonymized, aggregated community data and publicly available rates, and may not reflect your specific contractual rates or coverage.
