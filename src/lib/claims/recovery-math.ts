@@ -306,7 +306,8 @@ export type CostSharePhase =
   | "deductible_unmet"
   | "post_deductible"
   | "straddle"
-  | "conservative_unknown";
+  | "conservative_unknown"
+  | "no_charge";
 
 /** Per-service plan terms (extends PlanCoverageInput with deductible-applies + OON variants). */
 export interface ServiceCostShare {
@@ -519,6 +520,35 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
     num(args.line.allowed) ??
     Math.max(0, args.line.billed - insuranceAdjusted - providerAdjusted);
 
+  // ── No-charge guard ────────────────────────────────────────────────────────
+  // A $0-billed line is not a charge: nothing can be overcharged, so there is no
+  // cost-share question to answer. Resolve it trivially (confident, owe $0) so a
+  // zero-charge reporting code (CPT Category II, zero-charge HCPCS) never drags
+  // the bill-level verdict to `insufficient`. Keyed on the BILLED amount ONLY — a
+  // real charge the insurer zero-paid (e.g. pre-deductible HDHP, cf91a49e $221)
+  // is billed > 0 and flows through the phase machine unchanged.
+  if (args.line.billed <= 0) {
+    return {
+      ...computeRecoveryV2({
+        billed: args.line.billed,
+        patientResponsibility: args.line.patientResponsibility,
+        patientPaid: args.line.patientPaid,
+        insuranceAdjusted,
+        providerAdjusted,
+        planCoverage: null,
+        shouldOweOverride: 0,
+      }),
+      shouldOwe: 0,
+      verdict: "confident",
+      tier: "tier2_rederive",
+      phase: "no_charge",
+      networkUsed,
+      insurerDiscrepancy: null,
+      assumptions: [],
+      deductibleConsumed: 0,
+    };
+  }
+
   // ── 3. Param selection by network × individual/family ──
   const isFamily = isFamilyTier(plan.coverageTier);
   const pick = (indIn: number | null, famIn: number | null, indOut: number | null, famOut: number | null) => {
@@ -672,8 +702,16 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
   // service-cost disclosure: no per-service terms, OR a phase needed a copay/
   // coinsurance rate we don't have → shouldOwe defaulted to the conservative full
   // allowed (never a fabricated $0). Drives §7b "add plan details".
+  // Service-cost gap (§5 D1): we can't determine THIS service's share when there's no usable
+  // rate — no copay AND no coinsurance, where `copay`/`coinsurance` are the RESOLVED values
+  // (the plan-default coinsurance is already folded into `coinsurance` above, so plans that
+  // carry a default don't false-fire). A row that says "covered" but carries no cost-share
+  // VALUE (a low-confidence SBC parse that captured coverage but missed e.g. a deductible-
+  // exempt copay) still counts as unknown — so the bill offers "Add plan details" instead of
+  // silently owing the full allowed and hiding a recovery. Not-covered is a KNOWN share (owe
+  // full) → excluded. Backstop only; the root cure is richer plan-doc extraction (cold-start).
   const serviceCostUnknown =
-    service == null || (service.covered == null && service.copay == null && service.coinsurance == null);
+    service == null || (service.covered !== false && copay == null && coinsurance == null);
   if ((serviceCostUnknown || costShareUnknown) && phase !== "not_covered" && !isPreventiveService) {
     assumptions.push({ field: "service_cost", assumed: "unknown", value: null, correctable: true, reason: "no_plan_value" });
   }

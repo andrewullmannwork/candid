@@ -933,8 +933,10 @@ export function ClaimDetail({
     slug ? slugNameMap.get(slug) ?? slug : "";
 
   // Cost-Share v2 (W2) — flatten per-line assumptions with the line context the
-  // §5 banner chips + W3 override calls need (lineId + service label/slug).
-  const bannerAssumptions: BannerAssumption[] = data.lineItems.flatMap((li) =>
+  // §5 banner chips + W3 override calls need (lineId + service label/slug). Over
+  // primaryLineItems only — zero-charge reporting codes carry no cost-share stake
+  // (the engine resolves them `confident`/no-assumptions), so they never chip here.
+  const bannerAssumptions: BannerAssumption[] = primaryLineItems.flatMap((li) =>
     (li.costShareAssumptions ?? []).map((a) => ({
       ...a,
       lineId: li.id,
@@ -1945,7 +1947,11 @@ export function ClaimDetail({
                   it always fires alongside this panel.
                   S139 — gated on !isMultiLine; multi-line bills use LineDrawer
                   above instead. */}
-              {!isMultiLine && isExpanded && gapRelevant && findings.length === 0 && (
+              {/* Cost-Share v2 — suppress the legacy "Unexplained $X charge" gap panel when
+                  the engine ran (costShareBill present): the §5 banner + financial breakdown +
+                  dispute UI carry the explanation, and this panel's "likely a denial" copy
+                  contradicts a computed cost-share recovery. OFF → today's behavior. */}
+              {!isMultiLine && isExpanded && gapRelevant && findings.length === 0 && !data.costShareBill && (
                 <div className="px-4 py-4 bg-white border-t border-gray-100 space-y-3">
                   {/* Header */}
                   <div>

@@ -100,6 +100,60 @@ function mk(o: {
   check("1 networkUsed in_network", r.networkUsed === "in_network", r.networkUsed);
 }
 
+// 1b — NO-CHARGE GUARD (S223): a $0-billed reporting code (CPT Category II, zero-charge
+//      HCPCS) is not a charge → resolve trivially `confident` ($0), NEVER `insufficient`,
+//      so it can't drag the bill-level verdict down. Even with NO coverage row (which would
+//      otherwise → `insufficient`). Keyed on BILLED, distinct from scenario 1's insurer-$0.
+{
+  const r = computeCostShareV2(mk({
+    line: { billed: 0, allowed: 0, patientPaid: 0, patientResponsibility: 0 },
+    service: null,
+    plan: { inDeductibleIndividual: 5800, inOopMaxIndividual: 8850 },
+  }));
+  check("1b $0-billed verdict confident", r.verdict === "confident", r.verdict, "confident");
+  check("1b $0-billed shouldOwe 0", near(r.shouldOwe, 0), r.shouldOwe);
+  check("1b $0-billed no assumptions", r.assumptions.length === 0, r.assumptions);
+  check("1b $0-billed phase no_charge", r.phase === "no_charge", r.phase);
+  check("1b $0-billed recovery 0", near(r.potentialRecovery, 0), r.potentialRecovery);
+}
+
+// 1c — BOUNDARY: the guard fires ONLY on $0 billed. A real charge (billed>0) with no coverage
+//      and no insurer-$0 corroboration is still `insufficient` — never silently `confident`.
+{
+  const r = computeCostShareV2(mk({
+    line: { billed: 150, allowed: 150, patientPaid: 150, patientResponsibility: 150 },
+    service: null,
+    plan: { inDeductibleIndividual: 5800, inOopMaxIndividual: 8850 },
+  }));
+  check("1c billed>0 no-coverage stays insufficient", r.verdict === "insufficient", r.verdict, "insufficient");
+}
+
+// 1d — COVERED-BUT-UNPRICED backstop (S223): a low-confidence row that says covered=true but
+//      carries NO copay/coinsurance value still surfaces the service_cost gap (§5 D1 "Add plan
+//      details") instead of silently owing full + hiding a recovery. Verdict stays `correct`
+//      (insurer-$0 grounded) — the gap drives the chip, not the verdict. (The cf91a49e shape:
+//      SBC got covered+dedApplies but missed a deductible-exempt copay.)
+{
+  const r = computeCostShareV2(mk({
+    line: { billed: 221, allowed: 163.27, patientPaid: 163.27, patientResponsibility: 163.27 },
+    service: { covered: true, copay: null, coinsurance: null, deductibleApplies: true },
+    claimInsurerPaidZero: true,
+    plan: { inDeductibleIndividual: 7050, inOopMaxIndividual: 7050 },
+  }));
+  check("1d covered-unpriced verdict correct", r.verdict === "correct", r.verdict, "correct");
+  check("1d covered-unpriced has service_cost gap", !!assumption(r, "service_cost"), r.assumptions);
+}
+
+// 1e — BOUNDARY: a plan DEFAULT coinsurance is a usable rate → NO false service_cost gap.
+{
+  const r = computeCostShareV2(mk({
+    line: { billed: 200, allowed: 200, patientPaid: 80, patientResponsibility: 80 },
+    service: { covered: true, copay: null, coinsurance: null, deductibleApplies: false },
+    plan: { inCoinsuranceDefault: 0.2, inDeductibleIndividual: 1000, inOopMaxIndividual: 5000 },
+  }));
+  check("1e plan-default-coins no false gap", !assumption(r, "service_cost"), r.assumptions);
+}
+
 // 2 — same bill, deductible MET (corrected) → HDHP pays 100% → recover $163.
 {
   const r = computeCostShareV2(mk({
