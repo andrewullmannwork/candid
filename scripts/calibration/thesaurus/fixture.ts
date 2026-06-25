@@ -130,5 +130,21 @@ eq("healthy snapshot (c1) → valid", validateSnapshot(c1, gt).valid ? 1 : 0, 1)
 eq("degenerate scored-resolved fraction = 0", scoredResolvedFraction(gt, degenerateFwd).fraction, 0);
 eq("healthy scored-resolved fraction = 7/8", scoredResolvedFraction(gt, baseFwd).fraction, 7 / 8);
 
+// ── RUN 5 (S209): B1-stored rename-awareness. An OLD-vocab oracle slug whose merged_into_id identity is
+// present in stored is a HIT (parity with B1-forward/B2). Raw `.has(correctSlug)` would mark it MISSING
+// (the ~15pp understatement the after-372 oracle exposed). Also proves a genuinely-absent slug stays a miss.
+const gtRen: GtService[] = [
+  { id: "R#1", docId: "R", insurer: "BCBS", docType: "sbc", planYear: 2026, canonicalPlanId: "canR", serviceName: "Inpatient hospital", correctSlug: "inpatient_facility", adjudicationStatus: "andrew" },
+  { id: "R#2", docId: "R", insurer: "BCBS", docType: "sbc", planYear: 2026, canonicalPlanId: "canR", serviceName: "Acupuncture", correctSlug: "acupuncture", adjudicationStatus: "andrew" },
+];
+const fwdRen: ForwardMapEntry[] = [
+  { gtId: "R#1", resolvedSlug: "hospital_admission", conceptId: null, confidence: 0.9, source: "haiku", needsReview: false },
+  { gtId: "R#2", resolvedSlug: "acupuncture", conceptId: null, confidence: 0.9, source: "haiku", needsReview: false },
+];
+const storedRen: StoredCanonical[] = [{ canonicalPlanId: "canR", slugs: ["hospital_admission"] }]; // has the renamed identity; lacks acupuncture
+const cRen = buildScoreCard({ phaseLabel: "fixture-rename-stored", gtVersion: "fix-v1", gt: gtRen, forward: fwdRen, stored: storedRen, cohorts: [], baselineB5: {}, currentB5: {}, renameMap: { inpatient_facility: "hospital_admission" }, oldSlugs: new Set(["inpatient_facility"]) });
+console.log("RUN 5 — B1-stored rename-awareness (S209)");
+eq("rename-aware b1Stored = 1/2 (R#1 renamed-hit; R#2 genuinely absent)", cRen.b1Stored.recall, 1 / 2);
+
 console.log(`\n${fail === 0 ? "✓ ALL PASS" : "✗ FAILURES"} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

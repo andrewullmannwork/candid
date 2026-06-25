@@ -96,11 +96,16 @@ export function buildScoreCard(args: {
   const b1Forward = { ...rb(f1h, f1d), byDocType: f1Doc, byInsurer: f1Ins };
 
   // ── B1-stored (current canonical coverage; moves at Phase-5 backfill) ──
+  // S209: rename/acceptable-aware (parity with B1-forward/B2). Was a raw `.has(correctSlug)`, which
+  // counted an OLD-vocab oracle slug as a MISS even when its merged_into_id identity IS present in
+  // stored (e.g. oracle `inpatient_facility` vs stored `hospital_admission`) — understating stored
+  // coverage by ~15pp on the after-372 oracle. okSlug() canonicalizes both sides + honors acceptableSlugs.
   let s1h = 0, s1d = 0;
   for (const g of gt) {
     if (!isScored(g) || !g.canonicalPlanId) continue;
     s1d += 1;
-    if (storedBy.get(g.canonicalPlanId)?.has(g.correctSlug as string)) s1h += 1;
+    const set = storedBy.get(g.canonicalPlanId);
+    if (set && [...set].some((x) => okSlug(canon(x), g))) s1h += 1;
   }
   const b1Stored = rb(s1h, s1d);
 
