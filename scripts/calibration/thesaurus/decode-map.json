@@ -1,0 +1,6 @@
+{
+  "inpatient_facility":           { "slug": "hospital_admission", "component": "facility",     "placeOfService": "inpatient_facility" },
+  "inpatient_physician":          { "slug": "hospital_admission", "component": "professional", "placeOfService": "inpatient_facility" },
+  "outpatient_surgery_facility":  { "slug": "surgery",            "component": "facility",     "placeOfService": "independent_facility" },
+  "outpatient_surgery_physician": { "slug": "surgery",            "component": "professional", "placeOfService": "outpatient_facility" }
+}

@@ -205,10 +205,10 @@ const SERVICE_NAME_MAP: Record<string, { slug: string; place: string }[]> = {
   "primary care physician": [{ slug: "pcp_visit", place: "pcp_office" }],
   "physician's services": [{ slug: "pcp_visit", place: "pcp_office" }],
   "office visit": [{ slug: "pcp_visit", place: "pcp_office" }],
-  "primary care physician virtual office visit": [{ slug: "telehealth", place: "virtual" }],
+  "primary care physician virtual office visit": [{ slug: "pcp_visit", place: "virtual" }],
   "specialty care physician's office visit": [{ slug: "specialist_visit", place: "specialist_office" }],
   "specialty care physician's office": [{ slug: "specialist_visit", place: "specialist_office" }],
-  "specialty care physician virtual office visit": [{ slug: "telehealth_specialist", place: "virtual" }],
+  "specialty care physician virtual office visit": [{ slug: "specialist_visit", place: "virtual" }],
   "consultant and referral physician's services": [{ slug: "specialist_visit", place: "specialist_office" }],
   "second opinion": [{ slug: "second_opinion", place: "specialist_office" }],
   "annual physical": [{ slug: "annual_physical", place: "pcp_office" }],
@@ -352,7 +352,7 @@ const SERVICE_NAME_MAP: Record<string, { slug: string; place: string }[]> = {
   "medical pharmaceuticals": [{ slug: "medical_pharmaceuticals", place: "any" }],
   "other medical pharmaceuticals": [{ slug: "medical_pharmaceuticals", place: "any" }],
   "cigna pathwell specialty": [{ slug: "specialty_rx", place: "any" }],
-  "dedicated virtual": [{ slug: "telehealth", place: "virtual" }],
+  "dedicated virtual": [{ slug: "pcp_visit", place: "virtual" }],
   // ── Additional mappings for Cigna format ───────────────────────────────
   "spinal manipulation": [{ slug: "chiropractic", place: "specialist_office" }],
   "subluxation": [{ slug: "chiropractic", place: "specialist_office" }],
@@ -386,13 +386,13 @@ const SERVICE_NAME_MAP: Record<string, { slug: string; place: string }[]> = {
   "infusion therapy": [{ slug: "infusion_therapy", place: "outpatient_facility" }],
   "chemotherapy": [{ slug: "chemotherapy", place: "outpatient_facility" }],
   "radiation therapy": [{ slug: "radiation_therapy", place: "outpatient_facility" }],
-  // ── Telehealth ──────────────────────────────────────────────────────────
-  "telehealth": [{ slug: "telehealth", place: "virtual" }],
-  "virtual visit": [{ slug: "telehealth", place: "virtual" }],
-  "telemedicine": [{ slug: "telehealth", place: "virtual" }],
-  "mdlive urgent care": [{ slug: "telehealth", place: "virtual" }],
-  "mdlive primary care": [{ slug: "telehealth", place: "virtual" }],
-  "mdlive specialty care": [{ slug: "telehealth_specialist", place: "virtual" }],
+  // ── Telehealth (item 4, mig 183) — emit base slug + place=virtual ────────
+  "telehealth": [{ slug: "pcp_visit", place: "virtual" }],
+  "virtual visit": [{ slug: "pcp_visit", place: "virtual" }],
+  "telemedicine": [{ slug: "pcp_visit", place: "virtual" }],
+  "mdlive urgent care": [{ slug: "urgent_care", place: "virtual" }],
+  "mdlive primary care": [{ slug: "pcp_visit", place: "virtual" }],
+  "mdlive specialty care": [{ slug: "specialist_visit", place: "virtual" }],
   "mdlive behavioral": [{ slug: "mental_health_outpatient", place: "virtual" }],
 };
 

@@ -57,6 +57,31 @@ export type ResolutionSource =
   | "haiku"
   | "none";
 
+/** Pattern-S service component (who bills): facility (UB-04 / TC), professional (CMS-1500 / 26), or global (no split). */
+export type ServiceComponent = "facility" | "professional" | "global";
+
+/** A Pattern-S identity tuple: pure-service slug + where (place_of_service) + who (component). */
+export interface ServiceModifierTuple {
+  slug: string;
+  placeOfService: string;
+  component: ServiceComponent;
+}
+
+/** deriveModifiers() output: the where/who modifiers for a line, + an optional multi-label SET for a
+ *  genuinely compound line (the inpatient physician/surgeon umbrella). */
+export interface DerivedModifiers {
+  placeOfService: string;
+  component: ServiceComponent;
+  multiLabel?: ServiceModifierTuple[];
+  /** A2b Phase 2 item 6: true when a NAMED preventive screening resolves to a non-preventive slug
+   *  (e.g. bone-density/DEXA → advanced_imaging) — keep the slug + flag, never collapse to preventive_care. */
+  isPreventiveEligible?: boolean;
+  /** A2b Phase 2 item 5: drug FORMULARY tier as a plan-local modifier ('tier_1'..'tier_12'; Hard Rule
+   *  #17 — the slug stays the descriptor). Present ONLY for a single-tier drug/pharmacy line; absent
+   *  otherwise (non-drug, network-tier, or multi-tier rows). */
+  planTierLabel?: string;
+}
+
 export interface ServiceResolution {
   lineNumber?: number;
   slug: string | null;
@@ -65,6 +90,18 @@ export interface ServiceResolution {
   source: ResolutionSource;
   /** True when slug is null OR confidence < reviewConfidenceFloor. */
   needsReview: boolean;
+  /** Pattern-S modifiers (A2b Phase 2). Present ONLY when emitModifiers / thesaurus_phase1a_v1 is on
+   *  (flag OFF → undefined → byte-identical). Description-derived → deterministic (no Haiku). */
+  placeOfService?: string;
+  component?: ServiceComponent;
+  /** Multi-label SET for a compound line (inpatient physician/surgeon umbrella); undefined otherwise. */
+  multiLabel?: ServiceModifierTuple[];
+  /** A2b Phase 2 item 6: preventive-eligible flag on a named screening that resolves to a non-preventive
+   *  slug (Hard Rule #17 / §1.5). Present ONLY when emitModifiers / thesaurus_phase1a_v1 is on. */
+  isPreventiveEligible?: boolean;
+  /** A2b Phase 2 item 5: drug FORMULARY tier modifier ('tier_1'..'tier_12'; Hard Rule #17). Present
+   *  ONLY when emitModifiers / thesaurus_phase1a_v1 is on AND the line is a single-tier drug line. */
+  planTierLabel?: string;
 }
 
 export interface ResolverConfig {
@@ -298,9 +335,12 @@ The catalog below lists each slug with its human name, category, and description
 - "WELLNESS VISIT" / "ANNUAL WELLNESS EXAM" → preventive_care (a wellness/annual exam is preventive care, NOT a problem-focused pcp_visit)
 - "MRI BRAIN W/O CONTRAST" → advanced_imaging
 - "VENIPUNCTURE BLOOD DRAW" → a lab slug
+- "TELADOC HEALTH CONSULTATION" / "VIRTUAL VISIT" / "TELEHEALTH CONSULT" → pcp_visit (general/primary virtual care — telehealth is a PLACE, not a service)
+- "MDLIVE SPECIALTY CARE" → specialist_visit · "TELADOC MENTAL HEALTH" / "VIRTUAL THERAPY" → mental_health_outpatient (behavioral-health telehealth, NEVER specialist_visit)
 
 Rules:
 - Pick exactly ONE slug per line, chosen VERBATIM from the catalog. Never invent a slug.
+- Telehealth / virtual / online / scheduled-telephone / e-visits and named virtual vendors (Teladoc, MDLive, Doctor on Demand, Amwell) are a DELIVERY CHANNEL, not a distinct service — map to the underlying service: pcp_visit (primary/general), specialist_visit (medical specialist), or mental_health_outpatient (behavioral health). There is NO telehealth_* slug.
 - confidence ∈ [0,1]: ≥0.9 exact concept; 0.7-0.89 strong; 0.5-0.69 plausible; <0.5 weak.
 - If no catalog entry is a reasonable match (best < 0.5), return slug=null for that line.
 
@@ -587,6 +627,14 @@ export interface ResolveOpts {
    * flag-driven.
    */
   trustTieredCache?: boolean;
+  /**
+   * A2b Phase 2 — emit Pattern-S modifiers (place_of_service + component + multi-label) on each
+   * resolution. DECOUPLED from trustTieredCache so the calibration gate measures the new modifier
+   * dimension WITHOUT perturbing slug resolution (slug tiers untouched → slug-level byte-identical).
+   * Omitted (PROD) → falls back to thesaurus_phase1a_v1 (via trust.enabled) → OFF → undefined modifiers
+   * → byte-identical. The calibration harness passes true. Default (omitted) = flag-driven.
+   */
+  emitModifiers?: boolean;
 }
 
 /**
@@ -609,6 +657,8 @@ export async function resolveServices(
     opts.trustTieredCache !== undefined
       ? { enabled: opts.trustTieredCache, trustedSources: buildTrustedSourceSet() }
       : await loadTrustTiering(opts.supabase);
+  // A2b Phase 2: emit modifiers decoupled from trust (so the gate measures them without touching slugs).
+  const emitMods = opts.emitModifiers !== undefined ? opts.emitModifiers : trust.enabled;
   if (catalog.length === 0) {
     for (const l of lines) {
       results.set(l.lineNumber, {
@@ -729,6 +779,20 @@ export async function resolveServices(
     }
   }
 
+  // A2b Phase 2 — attach Pattern-S modifiers (deterministic, description-derived) when enabled.
+  // OFF → results untouched (byte-identical). One pass covering every resolution tier.
+  if (emitMods) {
+    for (const l of lines) {
+      const res = results.get(l.lineNumber);
+      if (!res) continue;
+      const m = deriveModifiers(l.description);
+      res.placeOfService = m.placeOfService;
+      res.component = m.component;
+      if (m.multiLabel) res.multiLabel = m.multiLabel;
+      if (m.isPreventiveEligible) res.isPreventiveEligible = m.isPreventiveEligible;
+      if (m.planTierLabel) res.planTierLabel = m.planTierLabel;
+    }
+  }
   return results;
 }
 
@@ -748,6 +812,116 @@ function mkResolution(
     source,
     needsReview: slug == null || confidence < config.reviewConfidenceFloor,
   };
+}
+
+/**
+ * Derive Pattern-S modifiers (place_of_service + component, + a multi-label SET for the inpatient
+ * physician/surgeon umbrella) from a benefit/line DESCRIPTION. UNIVERSAL — grounded in the federal SBC
+ * template + CMS place-of-service / TC-26 component billing. INDEPENDENT of the calibration GT classifier
+ * (circularity firewall) and PURE (no DB/Haiku → deterministic across N runs). Defaults to (any, global):
+ * only explicit component-fee wording + a facility context move it, so generic office visits stay global.
+ */
+export function deriveModifiers(description: string): DerivedModifiers {
+  const d = (description || "").toLowerCase();
+  // place_of_service — only mig-147 CHECK values; LEAD subset (facility settings) + 'any' default.
+  // An ASC / surgical center / freestanding center is a LOCATION (independent_facility), NOT a component
+  // signal (A2b Phase 2, Andrew D1): a bare ASC place-name's facility-ness is a plan-STRUCTURE property
+  // (does a companion surgeon line exist?) → that's Option-3/assembly, never inferred from this line's text.
+  const place =
+    /ambulatory surg(?:ery|ical) center|\basc\b|freestanding|surg(?:ery|ical) center/.test(d) ? "independent_facility"
+      : /\binpatient\b|hospital stay|hospital admission|hospital inpatient|hospital room|room and board/.test(d) ? "inpatient_facility"
+        // item 4 — telehealth BEFORE outpatient ("virtual outpatient therapy" is virtual). Detection is
+        // GENERIC delivery-mode language ONLY — telehealth/telemedicine, virtual visit/care/consult, video
+        // visit, scheduled-telephone / telephone visit (Decision 1: audio-only is virtual), online/e-visit.
+        // Brand names (Teladoc, MDLive, ...) are deliberately NOT here (Decision 2): they're a commercial
+        // lexicon, not universal language, so they live in the brand-aware layers (Haiku prompt +
+        // SERVICE_NAME_MAP). NO bare "virtual" → "virtual colonoscopy" (a CT procedure) stays non-virtual.
+        : /\btelehealth\b|telemedicine|virtual (?:visit|care|office visit|consult)|\bvideo visit|interactive video|scheduled telephone|\btelephone visits?\b|\bonline visits?\b|\be-?visits?\b/.test(d) ? "virtual"
+          : /\boutpatient\b/.test(d) ? "outpatient_facility"
+            : "any";
+  // component — professional FIRST (the NOT-facility guard: a physician/surgeon fee line delivered IN a
+  // facility is the PROFESSIONAL component, not facility), THEN facility ONLY when the line uses the WORD
+  // "facility" as a billing label (facility fee/charge/services, "...facility inpatient services", the
+  // "(facility)" tag) or an explicit room charge — NEVER on a place-type name (ASC, "— Outpatient
+  // Facility" as a setting suffix, "at a Plan Facility"). Else global. (A2b Phase 2, Andrew D1: a
+  // place-name ≠ a component; a facility line that's facility only by plan structure is Option-3.)
+  // item 4 — §8: a telehealth visit is ONE cost-share (global), NEVER split into
+  // professional/facility components. Override before the general component logic so
+  // "virtual physician visit" text doesn't mis-fire the professional cue.
+  const component: ServiceComponent =
+    place === "virtual" ? "global"
+      : /(physician|surgeon|doctor)[^.]{0,40}\b(fee|fees|services|visit|visits)\b|surgeon fee/.test(d) ? "professional"
+        : /facility (?:fee|charge|services?|inpatient)|\(facility\)|hospital room|room and board/.test(d) ? "facility"
+          : "global";
+  // is_preventive_eligible — a NAMED preventive screening that resolves to a non-preventive slug (e.g.
+  // bone-density / DEXA → advanced_imaging): keep the real slug + FLAG it preventive, never collapse to
+  // preventive_care (Hard Rule #17 / §1.5). Text-only, universal (USPSTF screening cue). flag-OFF → omitted.
+  const prev: { isPreventiveEligible?: true } =
+    /bone density|bone mineral density|\bdexa\b|osteoporosis screening/.test(d) ? { isPreventiveEligible: true } : {};
+  // item 5 — plan_tier_label: the drug FORMULARY tier as a plan-local modifier (Hard Rule #17 — the slug
+  // stays the descriptor). Emitted ONLY in a drug/pharmacy context (a "Tier N" on a hospital/provider line
+  // is a NETWORK tier, not a formulary tier) and ONLY when exactly one tier is named (a line spanning
+  // "Tier 1/2/4" or "Tier 2 and Tier 4" is deliberately tier-agnostic → omitted). Universal (federal-SBC +
+  // commercial pharmacy wording); text-only → deterministic; flag-OFF → omitted.
+  const tier: { planTierLabel?: string } = derivePlanTierLabel(d);
+  // item 7 — compound oncology-OPD bundle (federal-SBC: "...treatment of illness or injury, radiation
+  // therapy, chemotherapy, and necessary supplies"): ONE cost-share over several distinct services → emit
+  // the SET (D4 multi-label), not a single slug. Trigger = radiation + chemotherapy named together (precise
+  // "chemotherapy" dodges "IV therapy (non-chemo)"); specialist_visit added when an illness/injury visit is
+  // also bundled. place from the line (OPD → outpatient_facility); component global (one shared cost-share).
+  if (/radiation/.test(d) && /chemotherapy/.test(d)) {
+    const set: ServiceModifierTuple[] = [];
+    if (/illness|injury|treatment|visit|office/.test(d)) set.push({ slug: "specialist_visit", placeOfService: place, component: "global" });
+    set.push({ slug: "chemotherapy_rx", placeOfService: place, component: "global" });
+    set.push({ slug: "radiation_therapy", placeOfService: place, component: "global" });
+    return { placeOfService: place, component: "global", multiLabel: set, ...prev, ...tier };
+  }
+  // mixed inpatient physician/surgeon umbrella → multi-label SET (exclude mental-health + transplant).
+  const mixed =
+    place === "inpatient_facility" &&
+    /physician|doctor/.test(d) && /surgeon|surgical/.test(d) &&
+    !/mental|behavioral|psych|autism|substance|\bsud\b/.test(d) &&
+    !/transplant/.test(d);
+  if (mixed) {
+    return {
+      placeOfService: "inpatient_facility",
+      component: "professional",
+      multiLabel: [
+        { slug: "surgery", placeOfService: "inpatient_facility", component: "professional" },
+        { slug: "hospital_admission", placeOfService: "inpatient_facility", component: "professional" },
+      ],
+      ...prev,
+      ...tier,
+    };
+  }
+  return { placeOfService: place, component, ...prev, ...tier };
+}
+
+/**
+ * Item 5 — extract the drug FORMULARY tier from a benefit/line description (lowercased). Returns
+ * `{ planTierLabel: 'tier_<n>' }` ONLY for an unambiguous single-tier DRUG line; `{}` otherwise. Two
+ * universal guards (A2b Phase 2, Andrew-ratified §8/D-C):
+ *   (1) drug-context — requires a drug/pharmacy/prescription cue, so a NETWORK/provider "Tier N" (e.g.
+ *       "Tier 1 hospital") is never mistaken for a formulary tier;
+ *   (2) single-tier — a line naming several tiers ("Tier 1/2/4", "Tier 2 and Tier 4") is deliberately
+ *       tier-agnostic (one cost-share across tiers) → omitted.
+ * The slug is untouched (the descriptor); this is a plan-local modifier only. Clamped to tier_1..tier_12
+ * (the mig-181 CHECK range).
+ */
+function derivePlanTierLabel(d: string): { planTierLabel?: string } {
+  const drugCtx =
+    /\bdrugs?\b|\brx\b|\bpharmacy\b|\bprescriptions?\b|\bformulary\b|\bmedications?\b|\banticancer\b|\bchemo\w*\b|\binsulin\b|\bcontracepti\w*\b|\bbiologic\w*\b|\binfusion\b/.test(d);
+  if (!drugCtx) return {};
+  // multi-tier → tier-agnostic: ≥2 "tier N" mentions, or a "tier N/M" / "tier N & M" / "tier N-M" run.
+  const tierMentions = (d.match(/\btiers?\s*\d/g) || []).length;
+  const multi = tierMentions >= 2 || /\btier\s*\d+\s*[/,&–-]\s*\d/.test(d);
+  if (multi) return {};
+  // (?!\d) not \b: a letter-suffixed sub-tier ("Tier 1a" / "Tier 1b") still reads tier_1, while a stray
+  // 3-digit run ("Tier 100…") is rejected (no real formulary tier exceeds the 1..12 CHECK range anyway).
+  const m = d.match(/\btiers?\s*(\d{1,2})(?!\d)/);
+  if (!m) return {};
+  const n = parseInt(m[1], 10);
+  return n >= 1 && n <= 12 ? { planTierLabel: `tier_${n}` } : {};
 }
 
 /** Single-line resolve (manual / reaudit / search fallback). */

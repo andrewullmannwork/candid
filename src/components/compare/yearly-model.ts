@@ -82,7 +82,6 @@ export const USAGE_BASKETS: Record<UsageLevel, BasketItem[]> = {
 export const REFERENCE_PRICES: Record<string, number> = {
   pcp_visit: 150,
   specialist_visit: 300,
-  telehealth_pcp: 60,
   annual_physical: 250,
   preventive_care: 250,
   immunizations: 100,

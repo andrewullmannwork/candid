@@ -114,13 +114,15 @@ async function main() {
     for (let i = 0; i < lines.length; i += CHUNK) {
       // strict:true (S170 hardening C, wired in B): a Haiku-tier failure (error / spend-cap pause) RE-THROWS
       // instead of degrading the calibration to all-null. A degraded resolution must never masquerade as a result.
-      const m = await resolveServices(lines.slice(i, i + CHUNK), { supabase, userId: CALIB_USER_ID, config: cfg, catalog, skipWriteback: true, strict: true });
+      // A2b Phase 2: emitModifiers measures place/component/multi-label WITHOUT trustTieredCache → slug tiers
+      // untouched → slug-level byte-identical. Modifiers are description-derived (deterministic, no Haiku).
+      const m = await resolveServices(lines.slice(i, i + CHUNK), { supabase, userId: CALIB_USER_ID, config: cfg, catalog, skipWriteback: true, strict: true, emitModifiers: true });
       for (const [k, v] of m) resMap.set(k, v);
       console.log(`  run ${runIdx + 1}/${N}: resolved ${Math.min(i + CHUNK, lines.length)}/${lines.length}`);
     }
     return gt.map((g, i) => {
       const r = resMap.get(i);
-      return { gtId: g.id, resolvedSlug: r?.slug ?? null, conceptId: r?.conceptId ?? null, confidence: r?.confidence ?? 0, source: r?.source ?? "none", needsReview: r?.needsReview ?? true };
+      return { gtId: g.id, resolvedSlug: r?.slug ?? null, conceptId: r?.conceptId ?? null, confidence: r?.confidence ?? 0, source: r?.source ?? "none", needsReview: r?.needsReview ?? true, placeOfService: r?.placeOfService, component: r?.component, multiLabel: r?.multiLabel, isPreventiveEligible: r?.isPreventiveEligible, planTierLabel: r?.planTierLabel };
     });
   }
 
@@ -156,6 +158,12 @@ async function main() {
       source: win.rep.source,
       needsReview: win.rep.needsReview,
       agreement: win.count / N,
+      // A2b Phase 2: modifiers are description-derived → identical across all N runs → take from any (perRun[0]).
+      placeOfService: perRun[0]?.placeOfService,
+      component: perRun[0]?.component,
+      multiLabel: perRun[0]?.multiLabel,
+      isPreventiveEligible: perRun[0]?.isPreventiveEligible,
+      planTierLabel: perRun[0]?.planTierLabel,
     };
   });
   // ── output-validity gate (S170 hardening B): refuse to FREEZE a degenerate snapshot. `strict` already

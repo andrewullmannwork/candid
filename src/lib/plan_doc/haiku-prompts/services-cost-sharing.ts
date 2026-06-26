@@ -265,7 +265,8 @@ If you genuinely cannot find ANY contiguous verbatim span containing useful info
 
 ### CANONICAL SERVICE SLUG VOCABULARY (68 slugs)
 
-**office_visit (5)**: pcp_visit, specialist_visit, home_health, telehealth_pcp, telehealth_specialist
+**office_visit (3)**: pcp_visit, specialist_visit, home_health
+> Telehealth / virtual / online / scheduled-telephone visits, e-visits, and named virtual vendors (Teladoc, MDLive, Doctor on Demand, Amwell, etc.) are a PLACE, not a separate service. Emit the BASE service slug + \`placeOfService: virtual\`: \`pcp_visit\` (primary/general care), \`specialist_visit\` (medical specialist), or \`mental_health_outpatient\` (behavioral-health / therapy / psychiatry telehealth — NEVER specialist_visit). Do NOT emit telehealth_pcp or telehealth_specialist (deprecated).
 
 **preventive (13)**: preventive_care, immunizations, annual_physical, cancer_screening, adult_dental_care, childrens_dental_checkup, childrens_eye_exam, childrens_glasses, routine_eye_care_adult, weight_loss_programs, vision_exam, vision_hardware, dental_orthodontic
 

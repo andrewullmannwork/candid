@@ -220,6 +220,8 @@ export async function POST(request: NextRequest) {
           // Reverse slug map: service slug → catalog benefit educational content.
           // S94 B1: keys use canonical 68-slug vocabulary; legacy slug aliases retained
           // defensively for any pre-S94 data still rendering.
+          // item 4 (mig 183): composite "slug:virtual" keys route telehealth place
+          // variants to "telehealth-primary" instead of the default catalog entry.
           const SLUG_TO_CATALOG: Record<string, string> = {
             // canonical (post-S94)
             pcp_visit: "annual-physical",
@@ -232,12 +234,19 @@ export async function POST(request: NextRequest) {
             speech_therapy: "speech-therapy",
             chiropractic: "chiro-visits",
             acupuncture: "acupuncture",
-            telehealth_pcp: "telehealth-primary",
-            telehealth_specialist: "telehealth-primary",
             specialist_visit: "cancer-screenings",
             cancer_screening: "cancer-screenings",
             prenatal_visit: "prenatal-care",
             durable_medical_equipment: "breast-pump",
+            // place-aware composite keys (slug:place_of_service) — checked before slug-only fallback
+            "pcp_visit:virtual": "telehealth-primary",
+            "specialist_visit:virtual": "telehealth-primary",
+            // deprecated-slug aliases (mig 183): the user-covered-services path filters these out via
+            // merged_into_id IS NULL (line ~121), but the canonical gap-fill path reads
+            // canonical_plan_services.service_slug directly (NOT merged-filtered), so a stale canonical
+            // row with a telehealth_* slug still reaches this lookup → keep the aliases live.
+            telehealth_pcp: "telehealth-primary",
+            telehealth_specialist: "telehealth-primary",
             // legacy aliases (pre-S94 data; safe to remove once S94 backfill complete)
             physical_therapy: "physical-therapy",
             occupational_therapy: "occupational-therapy",
@@ -277,8 +286,13 @@ export async function POST(request: NextRequest) {
             const name = cleanDescription(rawName);
             const category = s.service_catalog?.category || "other";
 
-            // Find catalog educational content if available
-            const catalogId = SLUG_TO_CATALOG[slug];
+            // Find catalog educational content if available.
+            // Composite key (slug:place_of_service) checked first so virtual
+            // pcp_visit/specialist_visit resolve to "telehealth-primary" not
+            // "annual-physical"/"cancer-screenings" (item 4, mig 183).
+            const catalogId =
+              (s.place_of_service === "virtual" ? SLUG_TO_CATALOG[`${slug}:virtual`] : undefined)
+              ?? SLUG_TO_CATALOG[slug];
             const catalogBenefit = catalogId ? catalogBenefitMap.get(catalogId) : undefined;
 
             const isNotCovered = s.covered === false;
@@ -404,7 +418,14 @@ export async function POST(request: NextRequest) {
                 // the same SLUG_TO_CATALOG + catalogBenefitMap that the user-row
                 // branch (line ~280) uses, so behavior is symmetric across both
                 // benefit sources.
-                const gapCatalogId = cs.service_slug ? SLUG_TO_CATALOG[cs.service_slug] : undefined;
+                // item 4 (mig 183): composite key first, symmetric with the user-row path
+                // (line ~281) — a virtual pcp_visit/specialist_visit canonical row resolves to
+                // "telehealth-primary", not "annual-physical"/"cancer-screenings".
+                const gapCatalogId =
+                  (cs.place_of_service === "virtual" && cs.service_slug
+                    ? SLUG_TO_CATALOG[`${cs.service_slug}:virtual`]
+                    : undefined)
+                  ?? (cs.service_slug ? SLUG_TO_CATALOG[cs.service_slug] : undefined);
                 const gapCatalogBenefit = gapCatalogId ? catalogBenefitMap.get(gapCatalogId) : undefined;
                 return {
                 // S99 B5: canonical_plan_services entries should be canonical
