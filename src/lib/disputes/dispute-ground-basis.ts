@@ -143,11 +143,14 @@ async function loadClaimBasisBundle(
   gate: CostShareClaimCtx["gate"],
 ): Promise<ClaimBasisBundle | null> {
   // B9 — scope every read to the authenticated user (foreign claimId → null).
+  // select("*") matches the detail route (claims/[claimId]/route.ts:114) — its column
+  // set is the source of truth for resolveEffectiveClaimTotals + patient_name (which is
+  // NOT a claims column today → undefined → null, same as the detail route; future-proof
+  // if added). An explicit column list risks selecting a non-existent column (PostgREST errors
+  // the whole query → claim null → silently dropped).
   const { data: claim } = await userScoped(supabase, userId)
     .table("claims")
-    .select(
-      "id, insurance_plan_id, date_of_service, network_status, user_network_override, total_billed, total_insurance_paid, total_insurance_adjusted, total_patient_paid, total_patient_responsibility, amount_still_outstanding, patient_name",
-    )
+    .select("*")
     .eq("id", claimId)
     .maybeSingle();
   if (!claim) return null;

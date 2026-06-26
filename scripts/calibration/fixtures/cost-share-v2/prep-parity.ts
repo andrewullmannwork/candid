@@ -266,10 +266,13 @@ for (const { name, raw } of rows) {
     const inline = inlineRoutePrep(raw, prep, ctx, strategy);
     // full bundle (prep + v2 engine) — the dispute path + costShareV2-ON card branch.
     eq(`${name} [${strategy}]`, resolveLineCostShare(raw, prep, ctx, strategy), inline);
-    // prep-only (no engine) — what the OFF card branch + display consume. Must equal
-    // the same inline minus `result`.
-    const { result: _drop, ...inlinePrepOnly } = inline;
-    eq(`${name} [${strategy}] prep-only`, resolveLinePrep(raw, prep, strategy), inlinePrepOnly);
+    // prep-only (no engine) — what the OFF card branch + display consume. Compare to the
+    // same inline minus `result` (JSON.stringify omits the undefined-valued key).
+    eq(
+      `${name} [${strategy}] prep-only`,
+      resolveLinePrep(raw, prep, strategy),
+      { ...inline, result: undefined },
+    );
   }
 }
 
