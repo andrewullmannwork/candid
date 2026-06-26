@@ -4,6 +4,7 @@
 import type { AuditFinding, ParsedBill, DisputeLetterType } from "../billing/types";
 import type { PlanContext, ProviderContact, AppealsAddress } from "./plan-context";
 import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
+import { groundFindingsForEvidence, type GroundFinding } from "./dispute-grounds";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 
 interface LetterTemplate {
@@ -66,6 +67,15 @@ interface TemplateParams {
    * byte-identically. Threaded from the generators (the flag they already load).
    */
   v3DesignOn?: boolean;
+  /**
+   * §18 incr-3 (dispute_grounds_v1) — when true, the 3 provider templates
+   * (overcharge / balance_billing / duplicate) source their finding-detail block +
+   * total from the resolved EVIDENCE (groundFindingsForEvidence) instead of the
+   * AuditReport `findings` param, which is nulled on the rerender path (the $0.00
+   * bug). Default false → byte-identical (renders from `findings`). A SEPARATE flag
+   * from v3DesignOn — NOT folded into the enforceDataTrustGate overload.
+   */
+  disputeGroundsOn?: boolean;
   /**
    * Block C2 (item 1) — the name the user adopted when attesting
    * (dispute.metadata.attestingAsName), defaulting to the account name. Flows into
@@ -925,16 +935,22 @@ const overchargeTemplate: LetterTemplate = {
     gateUnverified,
     bill,
     v3DesignOn,
+    disputeGroundsOn,
     attestingName,
   }) => {
-    const findingDetails = findings
+    // §18 incr-3 — source the finding block from EVIDENCE when the flag is ON (rerender-safe;
+    // kills the $0.00 bug). OFF or no-evidence → the AuditReport findings (byte-identical;
+    // f.description ?? "" is a no-op there — AuditFinding.description is a required string).
+    const effectiveFindings: Array<AuditFinding | GroundFinding> =
+      disputeGroundsOn && evidence ? groundFindingsForEvidence(evidence) : findings;
+    const findingDetails = effectiveFindings
       .map(
         (f, i) =>
-          `${i + 1}. ${f.title}\n   Billed amount: ${formatCurrency(f.billedAmount)}${f.benchmarkAmount ? `\n   Medicare national average: ${formatCurrency(f.benchmarkAmount)}` : ""}\n   Estimated overcharge: ${formatCurrency(f.estimatedOvercharge)}\n   ${f.description}`
+          `${i + 1}. ${f.title}\n   Billed amount: ${formatCurrency(f.billedAmount)}${f.benchmarkAmount ? `\n   Medicare national average: ${formatCurrency(f.benchmarkAmount)}` : ""}\n   Estimated overcharge: ${formatCurrency(f.estimatedOvercharge)}\n   ${f.description ?? ""}`
       )
       .join("\n\n");
 
-    const totalOvercharge = findings.reduce(
+    const totalOvercharge = effectiveFindings.reduce(
       (sum, f) => sum + f.estimatedOvercharge,
       0
     );
@@ -1211,6 +1227,7 @@ const balanceBillingTemplate: LetterTemplate = {
     gateUnverified,
     bill,
     v3DesignOn,
+    disputeGroundsOn,
     attestingName,
   }) => {
     const evidenceBlock = renderEvidenceBlock(
@@ -1221,14 +1238,17 @@ const balanceBillingTemplate: LetterTemplate = {
       attestingName ?? patientName,
       v3DesignOn ?? false,
     );
-    const findingDetails = findings
+    // §18 incr-3 — finding block from EVIDENCE when ON (rerender-safe); OFF → byte-identical.
+    const effectiveFindings: Array<AuditFinding | GroundFinding> =
+      disputeGroundsOn && evidence ? groundFindingsForEvidence(evidence) : findings;
+    const findingDetails = effectiveFindings
       .map(
         (f, i) =>
-          `${i + 1}. ${f.title}\n   ${f.description}`
+          `${i + 1}. ${f.title}\n   ${f.description ?? ""}`
       )
       .join("\n\n");
 
-    const totalExcess = findings.reduce(
+    const totalExcess = effectiveFindings.reduce(
       (sum, f) => sum + f.estimatedOvercharge,
       0
     );
@@ -1305,6 +1325,7 @@ const duplicateChargeTemplate: LetterTemplate = {
     planContext,
     evidence,
     gateUnverified,
+    disputeGroundsOn,
     bill,
   }) => {
     const evidenceBlock = renderEvidenceBlock(
@@ -1313,14 +1334,17 @@ const duplicateChargeTemplate: LetterTemplate = {
       "Line items flagged as duplicates",
       gateUnverified ?? false,
     );
-    const findingDetails = findings
+    // §18 incr-3 — finding block from EVIDENCE when ON (rerender-safe); OFF → byte-identical.
+    const effectiveFindings: Array<AuditFinding | GroundFinding> =
+      disputeGroundsOn && evidence ? groundFindingsForEvidence(evidence) : findings;
+    const findingDetails = effectiveFindings
       .map(
         (f, i) =>
-          `${i + 1}. ${f.title}\n   ${f.description}`
+          `${i + 1}. ${f.title}\n   ${f.description ?? ""}`
       )
       .join("\n\n");
 
-    const totalDuplicate = findings.reduce(
+    const totalDuplicate = effectiveFindings.reduce(
       (sum, f) => sum + f.estimatedOvercharge,
       0
     );

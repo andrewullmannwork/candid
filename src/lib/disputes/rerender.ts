@@ -48,6 +48,12 @@ export async function rerenderDisputeLetter(
   // (passed to template.body below). OFF → legacy letter, byte-identical.
   const v3DesignOn = await isFeatureEnabled("dispute_letter_v3_design");
 
+  // §18 incr-3 — when ON, the 3 provider templates source their finding block from
+  // `evidence` (passed below) instead of the AuditReport findings, which this path sets to
+  // [] → the $0.00 refresh bug. OFF → byte-identical (renders findings: []). THIS is the
+  // path the bug lives on: rerender re-derives the body with no findings.
+  const disputeGroundsOn = await isFeatureEnabled("dispute_grounds_v1");
+
   // Block A — data-trust HARD STOP (flag-gated). Symmetric with
   // generateDisputeLetter: a header-reconciliation failure suppresses
   // regeneration so the [disputeId] GET serves no letter (it surfaces the
@@ -120,6 +126,7 @@ export async function rerenderDisputeLetter(
     evidence,
     gateUnverified,
     v3DesignOn,
+    disputeGroundsOn,
     attestingName: params.attestingName,
   });
 

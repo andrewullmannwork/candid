@@ -308,6 +308,10 @@ export async function POST(req: NextRequest) {
       // in feature_flag_rules; otherwise global).
       const { isFeatureEnabled: isFlagEnabled } = await import("@/lib/config/product-flags");
       const gateUnverified = await isFlagEnabled("consumer_read_filter_v1");
+      // §18 incr-3 — when ON, the 3 provider templates source their finding block from
+      // EVIDENCE (rerender-safe). Generate already passes real findings; this keeps generate
+      // and rerender on the SAME source so they can't diverge ($0.00 bug). OFF → byte-identical.
+      const disputeGroundsOn = await isFlagEnabled("dispute_grounds_v1");
 
       const letter = generateDisputeLetter(auditReport, findingIds, letterType, {
         planEvidence,
@@ -315,6 +319,7 @@ export async function POST(req: NextRequest) {
         evidence,
         gateUnverified,
         enforceDataTrustGate: v3DesignOn,
+        disputeGroundsOn,
       });
 
       // Defense-in-depth: generateDisputeLetter returns null when the data-trust

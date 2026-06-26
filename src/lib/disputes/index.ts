@@ -77,6 +77,14 @@ export interface GenerateDisputeLetterOptions {
    * is a shield). See plans/dispute_letter_overhaul.md §1a.
    */
   enforceDataTrustGate?: boolean;
+  /**
+   * §18 incr-3 (dispute_grounds_v1) — when true, the 3 provider templates source
+   * their finding block from the resolved EVIDENCE (rerender-safe) instead of the
+   * AuditReport `findings`, killing the $0.00 refresh bug. Caller passes the
+   * dispute_grounds_v1 flag state. Default false → byte-identical. A SEPARATE flag
+   * from enforceDataTrustGate/v3DesignOn (not folded into that overload).
+   */
+  disputeGroundsOn?: boolean;
 }
 
 export function generateDisputeLetter(
@@ -96,7 +104,8 @@ export function generateDisputeLetter(
   const options: GenerateDisputeLetterOptions = Array.isArray(optionsOrPlanEvidence)
     ? { planEvidence: optionsOrPlanEvidence }
     : (optionsOrPlanEvidence ?? {});
-  const { planEvidence, planContext, evidence, gateUnverified, enforceDataTrustGate } = options;
+  const { planEvidence, planContext, evidence, gateUnverified, enforceDataTrustGate, disputeGroundsOn } =
+    options;
 
   // Block A — data-trust HARD STOP. A bill that failed header reconciliation has
   // numbers we don't trust enough to cite, so we suppress generation and let the
@@ -130,6 +139,7 @@ export function generateDisputeLetter(
     // Block C2 item 4 — the caller passes the dispute_letter_v3_design flag as
     // enforceDataTrustGate; it is the same flag that switches on the request tree.
     v3DesignOn: enforceDataTrustGate ?? false,
+    disputeGroundsOn: disputeGroundsOn ?? false,
   });
 
   // Recipient: insurance appeals use insurer + appeals address when available;

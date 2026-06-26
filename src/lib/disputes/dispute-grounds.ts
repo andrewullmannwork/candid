@@ -198,6 +198,32 @@ export function buildDisputeGrounds(evidence: DisputeEvidence | null): BuildGrou
 }
 
 /**
+ * §18 incr-3 — the render-ready findings for the 3 provider templates' (overcharge /
+ * balance_billing / duplicate) detail block, sourced from the resolved EVIDENCE (which BOTH
+ * generate AND rerender pass to template.body) rather than the AuditReport `findings` (nulled
+ * on the rerender path → the $0.00 bug). Each line's auditFindings appear ONCE, with
+ * `billedAmount` from the LINE (the finding-level billedAmount is not persisted). Per §18.9
+ * Call A the letter argues EVERY ground on the disputed charges, so this returns all findings
+ * on the dispute's (evidence-scoped) lines — not a finding-id subset (those ids regenerate on
+ * each re-parse → never stable across a refresh; the root cause of the $0.00 bug). Empty when
+ * evidence is null → callers fall back to the AuditReport findings (generate-path parity).
+ *
+ * Iterates LINES (not buildDisputeGrounds' grounds): a finding can ride multiple grounds
+ * (e.g. a no-`findingType` coverage_contradiction ground carries the whole line) → flat-
+ * mapping grounds would double-count. Per-line `buildGroundFindings` emits each finding once.
+ */
+export function groundFindingsForEvidence(evidence: DisputeEvidence | null): GroundFinding[] {
+  if (!evidence) return [];
+  const out: GroundFinding[] = [];
+  for (const claim of evidence.claims) {
+    for (const line of claim.lineItemEvidence) {
+      out.push(...buildGroundFindings(line));
+    }
+  }
+  return out;
+}
+
+/**
  * §18.5 / Call A — the de-overlapped, exposure-capped TOTAL recovery (drives `amount_disputed`
  * at Stage 4). PER LINE: sum the line's ground dollars, then CAP at the patient's real wrongful
  * loss = `max(patientPaid, patientOwes) − shouldOwe`. `service_not_rendered` resets `shouldOwe→0`
