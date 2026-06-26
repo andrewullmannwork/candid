@@ -46,6 +46,11 @@ const isPhysicianLine = (s: string) => /(physician|surgeon|doctor)[^.]{0,40}\b(f
 const isOPD = (s: string) => /outpatient department of (?:a |the )?hospital|hospital outpatient|outpatient hospital|\bopd\b/.test(lc(s));
 const isASC = (s: string) => /ambulatory surg(?:ery|ical) center|\basc\b|freestanding|surg(?:ery|ical) center/.test(lc(s));
 const isBoneDensity = (s: string) => /bone density|bone mineral density|\bdexa\b|osteoporosis screening/.test(lc(s));
+// item 4 (S231) — generic telehealth delivery-mode cue. IDENTICAL to deriveModifiers' virtual regex
+// (brand-free, Decision 2): a row whose NAME carries a generic cue is something the deterministic resolver
+// CAN detect → made tuple-bearing. Brand-only rows (Teladoc, no generic cue) lack a cue → slug-only (their
+// place=virtual is a parse-layer responsibility, validated at flag-ON E2E, not the deterministic gate).
+const VIRTUAL_CUE = /\btelehealth\b|telemedicine|virtual (?:visit|care|office visit|consult)|\bvideo visit|interactive video|scheduled telephone|\btelephone visits?\b|\bonline visits?\b|\be-?visits?\b/;
 
 // item 5 (S230, Andrew-approved) — drug FORMULARY tier (plan_tier_label) + baked-slug cleanup.
 // The catalog already merged the baked _tierN/_90day slugs → clean descriptors (mig 148) and the live
@@ -97,6 +102,23 @@ const MIXED: Tuple[] = [tup("surgery", "professional", "inpatient_facility"), tu
 type Action = { cat: string; correctSlug?: string | null; acceptable?: string[]; multiLabel?: Tuple[]; isPreventiveEligible?: boolean; planTierLabel?: string; note?: string; mutate: boolean };
 function decide(g: GtRow): Action | null {
   const name = g.serviceName || "";
+  // item 4 (S231, mig 183) — telehealth deprecation. The two deprecated slugs are re-keyed to the BASE
+  // service slug (TRUSTING the prior adjudication: telehealth_pcp→pcp_visit, telehealth_specialist→
+  // specialist_visit), EXCEPT a behavioral-health telehealth row → mental_health_outpatient (NEVER
+  // specialist_visit — a MH service is not a medical specialist; this is the latent auto-error the blanket
+  // rename would perpetuate). "telehealth" itself becomes a place=virtual + component=global modifier
+  // (§8: ONE cost-share, never split). A row with a GENERIC delivery-mode cue is made TUPLE-BEARING
+  // (single-tuple multiLabel @ virtual/global → deriveModifiers can deterministically detect it). A
+  // BRAND-only row (Teladoc — no generic cue) is slug-only: deriveModifiers is brand-free (Decision 2),
+  // so its place=virtual is validated at the parse layer (flag-ON E2E), not this deterministic gate.
+  if (g.correctSlug === "telehealth_pcp" || g.correctSlug === "telehealth_specialist") {
+    const base = isMH(name)
+      ? "mental_health_outpatient"
+      : g.correctSlug === "telehealth_specialist" ? "specialist_visit" : "pcp_visit";
+    if (VIRTUAL_CUE.test(lc(name)))
+      return { cat: "telehealth→virtual (tuple-bearing)", correctSlug: base, multiLabel: [tup(base, "global", "virtual")], note: `${g.correctSlug} → ${base} @ virtual/global`, mutate: true };
+    return { cat: "telehealth→base (brand-only; slug-only; place=virtual @ parse-layer)", correctSlug: base, note: `${g.correctSlug} → ${base} (brand-only)`, mutate: true };
+  }
   // item 6: a NAMED bone-density / DEXA screening is preventive-eligible (GT flag truth; slug untouched —
   // it stays advanced_imaging / preventive_care; the flag is what lets a non-preventive slug carry $0).
   if (isBoneDensity(name)) return { cat: "preventive-bone-density", isPreventiveEligible: true, mutate: true };

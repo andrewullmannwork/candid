@@ -827,18 +827,29 @@ export function deriveModifiers(description: string): DerivedModifiers {
   const place =
     /ambulatory surg(?:ery|ical) center|\basc\b|freestanding|surg(?:ery|ical) center/.test(d) ? "independent_facility"
       : /\binpatient\b|hospital stay|hospital admission|hospital inpatient|hospital room|room and board/.test(d) ? "inpatient_facility"
-        : /\boutpatient\b/.test(d) ? "outpatient_facility"
-          : "any";
+        // item 4 — telehealth BEFORE outpatient ("virtual outpatient therapy" is virtual). Detection is
+        // GENERIC delivery-mode language ONLY — telehealth/telemedicine, virtual visit/care/consult, video
+        // visit, scheduled-telephone / telephone visit (Decision 1: audio-only is virtual), online/e-visit.
+        // Brand names (Teladoc, MDLive, ...) are deliberately NOT here (Decision 2): they're a commercial
+        // lexicon, not universal language, so they live in the brand-aware layers (Haiku prompt +
+        // SERVICE_NAME_MAP). NO bare "virtual" → "virtual colonoscopy" (a CT procedure) stays non-virtual.
+        : /\btelehealth\b|telemedicine|virtual (?:visit|care|office visit|consult)|\bvideo visit|interactive video|scheduled telephone|\btelephone visits?\b|\bonline visits?\b|\be-?visits?\b/.test(d) ? "virtual"
+          : /\boutpatient\b/.test(d) ? "outpatient_facility"
+            : "any";
   // component — professional FIRST (the NOT-facility guard: a physician/surgeon fee line delivered IN a
   // facility is the PROFESSIONAL component, not facility), THEN facility ONLY when the line uses the WORD
   // "facility" as a billing label (facility fee/charge/services, "...facility inpatient services", the
   // "(facility)" tag) or an explicit room charge — NEVER on a place-type name (ASC, "— Outpatient
   // Facility" as a setting suffix, "at a Plan Facility"). Else global. (A2b Phase 2, Andrew D1: a
   // place-name ≠ a component; a facility line that's facility only by plan structure is Option-3.)
+  // item 4 — §8: a telehealth visit is ONE cost-share (global), NEVER split into
+  // professional/facility components. Override before the general component logic so
+  // "virtual physician visit" text doesn't mis-fire the professional cue.
   const component: ServiceComponent =
-    /(physician|surgeon|doctor)[^.]{0,40}\b(fee|fees|services|visit|visits)\b|surgeon fee/.test(d) ? "professional"
-      : /facility (?:fee|charge|services?|inpatient)|\(facility\)|hospital room|room and board/.test(d) ? "facility"
-        : "global";
+    place === "virtual" ? "global"
+      : /(physician|surgeon|doctor)[^.]{0,40}\b(fee|fees|services|visit|visits)\b|surgeon fee/.test(d) ? "professional"
+        : /facility (?:fee|charge|services?|inpatient)|\(facility\)|hospital room|room and board/.test(d) ? "facility"
+          : "global";
   // is_preventive_eligible — a NAMED preventive screening that resolves to a non-preventive slug (e.g.
   // bone-density / DEXA → advanced_imaging): keep the real slug + FLAG it preventive, never collapse to
   // preventive_care (Hard Rule #17 / §1.5). Text-only, universal (USPSTF screening cue). flag-OFF → omitted.

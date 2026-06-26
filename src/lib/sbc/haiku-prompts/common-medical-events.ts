@@ -21,8 +21,8 @@ import type { SBCHaikuService, SBCPatternP8Provenance, SBCSectionResult } from "
 // 68-slug canonical vocabulary from S94 B1 for consistency during the sunset
 // window. Source of truth: plans/s94_unified_parser_meet_or_beat.md.
 const STANDARD_SLUGS = [
-  // office_visit (5)
-  "pcp_visit", "specialist_visit", "home_health", "telehealth_pcp", "telehealth_specialist",
+  // office_visit (3) — telehealth_pcp/telehealth_specialist deprecated via mig 183; emit pcp_visit/specialist_visit + place=virtual
+  "pcp_visit", "specialist_visit", "home_health",
   // preventive (13)
   "preventive_care", "immunizations", "annual_physical", "cancer_screening",
   "adult_dental_care", "childrens_dental_checkup", "childrens_eye_exam",

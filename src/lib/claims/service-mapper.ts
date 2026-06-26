@@ -31,7 +31,7 @@ export interface ServiceMapping {
 
 // All slugs from service_catalog (migration 010). Haiku picks from this list only.
 const SERVICE_SLUGS = [
-  "pcp_visit", "specialist_visit", "telehealth_pcp", "telehealth_specialist",
+  "pcp_visit", "specialist_visit",
   "convenience_care_clinic", "second_opinion",
   "preventive_care", "annual_physical", "immunizations", "cancer_screening",
   "well_child_visit", "womens_sterilization",
