@@ -335,9 +335,12 @@ The catalog below lists each slug with its human name, category, and description
 - "WELLNESS VISIT" / "ANNUAL WELLNESS EXAM" → preventive_care (a wellness/annual exam is preventive care, NOT a problem-focused pcp_visit)
 - "MRI BRAIN W/O CONTRAST" → advanced_imaging
 - "VENIPUNCTURE BLOOD DRAW" → a lab slug
+- "TELADOC HEALTH CONSULTATION" / "VIRTUAL VISIT" / "TELEHEALTH CONSULT" → pcp_visit (general/primary virtual care — telehealth is a PLACE, not a service)
+- "MDLIVE SPECIALTY CARE" → specialist_visit · "TELADOC MENTAL HEALTH" / "VIRTUAL THERAPY" → mental_health_outpatient (behavioral-health telehealth, NEVER specialist_visit)
 
 Rules:
 - Pick exactly ONE slug per line, chosen VERBATIM from the catalog. Never invent a slug.
+- Telehealth / virtual / online / scheduled-telephone / e-visits and named virtual vendors (Teladoc, MDLive, Doctor on Demand, Amwell) are a DELIVERY CHANNEL, not a distinct service — map to the underlying service: pcp_visit (primary/general), specialist_visit (medical specialist), or mental_health_outpatient (behavioral health). There is NO telehealth_* slug.
 - confidence ∈ [0,1]: ≥0.9 exact concept; 0.7-0.89 strong; 0.5-0.69 plausible; <0.5 weak.
 - If no catalog entry is a reasonable match (best < 0.5), return slug=null for that line.
 
