@@ -16,6 +16,8 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { config } from "dotenv";
 config({ path: "/Users/andrewullmann/Desktop/candid/.env.local" });
 import { processPlanDocumentData } from "@/lib/plan/process-plan";
+import { decorateFieldFromEntry, isCitationGrade, extractPatternP8FromEntry } from "@/lib/parser/consumer-read";
+import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 
 const sb = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -50,6 +52,45 @@ async function listStampedCells(userId: string): Promise<StampCell[]> {
     if (sources.size) out.push({ serviceId: (r as any).service_id, pos: (r as any).place_of_service, sources: [...sources] });
   }
   return out;
+}
+
+// Pull the full FieldProvenanceEntry of the first persisted cell carrying resolution_source, so the
+// read-gate can be exercised on REAL data (not a fixture). Returns the column + entry, or null.
+async function findStampedEntry(userId: string): Promise<{ column: string; entry: FieldProvenanceEntry } | null> {
+  const { data: plans } = await sb.from("insurance_plans").select("id").eq("user_id", userId);
+  const planIds = (plans ?? []).map((p: { id: string }) => p.id);
+  if (!planIds.length) return null;
+  const { data: rows } = await sb.from("plan_covered_services").select("field_provenance").in("insurance_plan_id", planIds);
+  for (const r of rows ?? []) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fp = (r as any).field_provenance as Record<string, FieldProvenanceEntry> | null;
+    if (!fp) continue;
+    for (const col of Object.keys(fp)) {
+      if (fp[col]?.resolution_source) return { column: col, entry: fp[col] };
+    }
+  }
+  return null;
+}
+
+// The full write→READ proof: run a real persisted stamped cell through the actual A3 gate.
+async function verifyReadGate(userId: string): Promise<void> {
+  const stamped = await findStampedEntry(userId);
+  if (!stamped) { console.log("\n(read-gate) no stamped cell found to verify"); return; }
+  const { column, entry } = stamped;
+  console.log(`\n--- read-gate on the persisted stamped cell (column=${column}, resolution_source=${entry.resolution_source}) ---`);
+  const ctx = { sourceCount: 1, source: entry.source, multiSourceThreshold: 3 };
+  const gated = decorateFieldFromEntry(entry.value ?? 0, entry, { ...ctx, identityGateOn: true });
+  const ungated = decorateFieldFromEntry(entry.value ?? 0, entry, { ...ctx, identityGateOn: false });
+  const quoteSuppressed = isCitationGrade(extractPatternP8FromEntry(entry), { identityInferred: true }) === false;
+  const capOk = gated.state === "estimate";
+  console.log(`  gate OFF → state=${ungated.state} (today's coverage-axis read)`);
+  console.log(`  gate ON  → state=${gated.state} (expect estimate)  ${capOk ? "PASS" : "FAIL"}`);
+  console.log(`  isCitationGrade(identityInferred) === false (quote suppressed)  ${quoteSuppressed ? "PASS" : "FAIL"}`);
+  console.log(
+    capOk && quoteSuppressed
+      ? `\n✅ READ-GATE PROVEN on real persisted data: synonym-inferred cell caps to estimate + quote suppressed.`
+      : `\n❌ READ-GATE FAILED on real persisted data.`,
+  );
 }
 
 async function main() {
@@ -109,11 +150,12 @@ async function main() {
   for (const c of after.slice(0, 25)) {
     console.log(`  service_id=${c.serviceId} pos=${c.pos ?? "-"} resolution_source=${JSON.stringify(c.sources)}`);
   }
-  console.log(
-    after.length > before.length
-      ? `\n✅ SEAM PROVEN E2E: synonym cache-win cells persisted resolution_source to plan_covered_services.`
-      : `\n⚠ INCONCLUSIVE: no new stamps. Check the "[process-plan] thesaurus routing: N cache-win(s)" line above — if N=0, this SBC produced no cache-wins (try another doc).`,
-  );
+  if (after.length > before.length) {
+    console.log(`\n✅ SEAM PROVEN E2E: synonym cache-win cells persisted resolution_source to plan_covered_services.`);
+    await verifyReadGate(docRow.user_id);
+  } else {
+    console.log(`\n⚠ INCONCLUSIVE: no new stamps. Check the "[process-plan] thesaurus routing: N cache-win(s)" line above — if N=0, this SBC produced no cache-wins (try another doc).`);
+  }
 }
 
 main().then(() => process.exit(0)).catch((e) => { console.error("FATAL", e); process.exit(1); });

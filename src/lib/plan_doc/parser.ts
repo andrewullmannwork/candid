@@ -377,6 +377,10 @@ export interface ParsePlanDocInput {
    *  undefined → read the live flag. Gates BOTH the codified-learnings prompt supplement AND the
    *  whole-text OCR-collapse fallback. */
   extractionV2?: boolean;
+  /** A3 (S235) — override for `thesaurus_phase1a_v1` at the PROMPT leg (gates rawLabel emission,
+   *  the synonym cache's input). undefined → read the live flag (byte-identical). Set by the in-vivo
+   *  smoke so the whole synonym path runs flag-ON without flipping global PROD. */
+  thesaurusPhase1a?: boolean;
 }
 
 export async function parsePlanDocumentHaiku(
@@ -394,6 +398,10 @@ export async function parsePlanDocumentHaiku(
   // independence; else the live flag). Threaded to the services prompt supplement AND the
   // whole-text fallback so both gates stay in lockstep. OFF → byte-identical to the pre-v2 pipeline.
   const extractionV2Enabled = input.extractionV2 ?? (await isFeatureEnabled("plan_doc_extraction_v2"));
+  // A3 (S235): resolve the thesaurus-phase1a override for the PROMPT leg (rawLabel emission). The
+  // routing leg resolves the same flag in process-plan; threading it here keeps both legs in
+  // lockstep so the in-vivo smoke drives the whole synonym path. undefined → live flag → byte-identical.
+  const thesaurusPhase1aEnabled = input.thesaurusPhase1a ?? (await isFeatureEnabled("thesaurus_phase1a_v1"));
   const wholeTextMaxInputTokens = await readFeatureFlagConfig(
     "plan_doc_extraction_v2",
     "whole_text_max_input_tokens",
@@ -434,7 +442,7 @@ export async function parsePlanDocumentHaiku(
     range: { start: number; end: number },
     em: ExtractionMethod,
     hint: PlanDocSectionHint,
-  ) => extractServicesCostSharing(text, range, em, hint, layout, undefined, extractionV2Enabled);
+  ) => extractServicesCostSharing(text, range, em, hint, layout, thesaurusPhase1aEnabled, extractionV2Enabled);
 
   // Step 1: Section segmentation (regex first, on cleaned text)
   let sectionRanges: SectionRanges = segmentPlanDocSections(workingText);

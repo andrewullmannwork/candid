@@ -317,6 +317,10 @@ export async function processPlanDocumentData(
       const planDocResult = await parsePlanDocumentWithMeta(ocrText, {
         documentId: doc.id,
         extractionMethod: "pdftotext",
+        // A3 (S235): drive the PROMPT leg (rawLabel emission) from the SAME override as the routing
+        // leg (~line 335) so the in-vivo smoke runs the whole synonym path flag-ON without flipping
+        // global PROD. PROD callers don't pass thesaurusRoutingOverride → the prompt reads the live flag.
+        thesaurusPhase1a: options?.thesaurusRoutingOverride,
       });
       parseResult = planDocResult.legacy;
       planDocHaikuResult = planDocResult.haiku;
