@@ -82,6 +82,12 @@ export async function POST(request: NextRequest) {
         // Surface 1 detail + the top-level eocReader aggregate) — byte-identical to today.
         const eocReaderOn = await isFeatureEnabled("eoc_reader_resolution_v1");
 
+        // A3 (cite-grade gate): when ON, a synonym-inferred cell (field_provenance.resolution_source
+        // set + unconfirmed) caps to `estimate` and is referenced-not-quoted via decorateFieldFromEntry.
+        // Also conditions the cold-start section relabel below. OFF → byte-identical; dormant until
+        // thesaurus_phase1a_v1 stamps cells.
+        const citeGradeGateOn = await isFeatureEnabled("cite_grade_gate_v1");
+
         // Local helpers — keep route.ts self-contained for the Task 4-B atomic shape.
         // Future Tasks 4-D + 4-E may extract to a shared util when 3+ call sites need them.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -102,6 +108,7 @@ export async function POST(request: NextRequest) {
             sourceCount,
             source,
             multiSourceThreshold: decoration.multiSourceThreshold,
+            identityGateOn: citeGradeGateOn,
           });
         }
 
@@ -452,7 +459,15 @@ export async function POST(request: NextRequest) {
                   planTypes: [userPlan.plan_type || ""],
                 },
                 categoryLabel: "other",
-                relevanceNote: "Coverage details from other plan members",
+                // A3 (cite-grade gate): the cold-start seed IS the plan's own official SBC (admin
+                // cold-start), so the prior "other plan members" label is the same over-claim the old
+                // "Community" badge was. Relabel ONLY for the official seed (source='admin_attested');
+                // user-derived/community canonical rows keep the neutral label (precision-first — never
+                // call community data "official"). Flag-gated → OFF = byte-identical.
+                relevanceNote:
+                  citeGradeGateOn && cs.source === "admin_attested"
+                    ? "Coverage details from your plan's official Summary of Benefits"
+                    : "Coverage details from other plan members",
                 relevanceScore: 70,
                 isRecommended: cs.covered !== false,
                 costSharing: {

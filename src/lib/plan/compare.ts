@@ -73,10 +73,15 @@ export interface CompareBenefit {
   inferred?: CompareCoverageInference | null;
 }
 
-/** S161 (#1/#3) — how a synthesized compare benefit's coverage was inferred. */
+/** S161 (#1/#3) — how a synthesized compare benefit's coverage was inferred.
+ *  A3 (cite-grade gate): `synonym_cache` generalizes this to the IDENTITY axis — the row is real
+ *  and enumerated, but its slug was assigned by an unconfirmed synonym cache-win (resolution_source
+ *  set). The display already badges `inferred` as `estimate` and drops it from competitive verdicts
+ *  (`attachBestForTags`), giving /compare parity with the /plan min() cap with no new FE work. */
 export interface CompareCoverageInference {
-  source: "secondary_match" | "aca_preventive";
-  /** Covered sibling slug coverage was borrowed from; null for the ACA $0 floor. */
+  source: "secondary_match" | "aca_preventive" | "synonym_cache";
+  /** Covered sibling slug coverage was borrowed from (secondary_match); the remapped slug itself
+   *  (synonym_cache); null for the ACA $0 floor. */
   matchedSlug: string | null;
 }
 
@@ -143,6 +148,21 @@ function getProv(row: any, key: string): FieldProvenanceEntry | undefined {
   return entry as FieldProvenanceEntry | undefined;
 }
 
+/** A3 (cite-grade gate): true iff this row's identity was assigned by an unconfirmed synonym
+ *  cache-win (resolution_source on its coverage cells, identity_confirmed not yet set) and the
+ *  flag is ON. The whole row shares one resolution_source (its slug was remapped), so the primary
+ *  coverage cell is representative. Drives the `inferred: synonym_cache` marker → estimate badge +
+ *  verdict-exclusion, parity with the /plan min() cap. */
+function isSynonymInferred(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  row: any,
+  decoration: DecorationContext | null,
+): boolean {
+  if (!decoration?.citeGradeGateOn) return false;
+  const entry = getProv(row, "in_copay") ?? getProv(row, "in_coinsurance");
+  return entry?.resolution_source != null && entry?.identity_confirmed !== true;
+}
+
 function maybeDecorate<T>(
   value: T,
   entry: FieldProvenanceEntry | undefined,
@@ -155,6 +175,7 @@ function maybeDecorate<T>(
     sourceCount,
     source,
     multiSourceThreshold: decoration.multiSourceThreshold,
+    identityGateOn: decoration.citeGradeGateOn,
   });
 }
 
@@ -288,6 +309,10 @@ export async function resolveCanonicalPlan(opts: {
       // structured copay/coinsurance/deductible fields exclusively.
       return {
         serviceSlug: slug,
+        // A3: synonym-inferred identity → estimate + drop from verdicts (parity with the /plan cap).
+        inferred: isSynonymInferred(s, decoration)
+          ? { source: "synonym_cache" as const, matchedSlug: slug }
+          : null,
         category: categoryBySlug.get(slug) ?? "other",
         title: titleCase(slug),
         costInNetworkDescription: describeCost({
@@ -488,6 +513,10 @@ export async function resolveUserPlan(opts: {
     const isNotCovered = s.covered === false;
     return {
       serviceSlug: slug,
+      // A3: synonym-inferred identity → estimate + drop from verdicts (parity with the /plan cap).
+      inferred: isSynonymInferred(s, decoration)
+        ? { source: "synonym_cache" as const, matchedSlug: slug }
+        : null,
       category: s.service_catalog?.category || "other",
       title: rawName,
       costInNetworkDescription: describeCost({

@@ -26,6 +26,11 @@ export interface ParsePlanDocumentOptions {
   /** S215 cold-start regen — override for `plan_doc_extraction_v2` (calibration independence).
    *  PROD callers leave it undefined → the parser reads the live flag. */
   extractionV2?: boolean;
+  /** A3 (S235) — override for `thesaurus_phase1a_v1` at the PROMPT leg (rawLabel emission). The
+   *  routing leg is overridden in process-plan; this completes the 2nd leg so the A3 in-vivo smoke
+   *  can drive the WHOLE synonym path flag-ON without flipping global PROD. PROD callers leave it
+   *  undefined → the prompt reads the live flag (byte-identical). */
+  thesaurusPhase1a?: boolean;
 }
 
 /**
@@ -57,6 +62,7 @@ export async function parsePlanDocument(
       chunkConcurrency:
         opts?.chunkConcurrency ?? (await readFeatureFlagConfig("plan_doc_parser_v2", "chunk_concurrency", 1)),
       extractionV2: opts?.extractionV2,
+      thesaurusPhase1a: opts?.thesaurusPhase1a,
     });
     return toLegacyPlanDocResult(haikuResult);
   }
@@ -85,6 +91,7 @@ export async function parsePlanDocumentWithMeta(
       chunkConcurrency:
         opts?.chunkConcurrency ?? (await readFeatureFlagConfig("plan_doc_parser_v2", "chunk_concurrency", 1)),
       extractionV2: opts?.extractionV2,
+      thesaurusPhase1a: opts?.thesaurusPhase1a,
     });
     return { legacy: toLegacyPlanDocResult(haiku), haiku };
   }

@@ -82,6 +82,10 @@ export interface SBCParsedService {
   // aware at the corroboration/coverage boundary (T4).
   rawLabel?: string | null;
   component?: string | null;
+  // A3 (cite-grade gate): set by thesaurus-routing when the synonym cache OVERRODE the
+  // extractor slug (a cache-win, flag ON) — records the resolving cache tier so the coverage
+  // row's field_provenance can mark the identity inferred. Absent = direct extraction / rename.
+  identityResolution?: { source: string };
 }
 
 /**

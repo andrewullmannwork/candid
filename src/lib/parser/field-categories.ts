@@ -253,6 +253,20 @@ export interface FieldProvenanceEntry {
   // Written by buildProvenanceEntry single-writer alongside the column. Optional for
   // back-compat (pre-S205 rows; claim_line_items callers that don't pass it).
   value?: unknown;
+  // A3 (cite-grade gate): set ONLY when the synonym cache OVERRODE the extractor's slug
+  // (a cache-win in thesaurus-routing, flag `thesaurus_phase1a_v1` ON) — records the resolving
+  // cache tier ("signature_cache" | "code_cache"). Absent = direct extraction or a dead→live
+  // rename (identity certain). The A3 read-layer gate maps presence → "referenced until
+  // confirmed" even with a verified excerpt (identity axis ≠ value/coverage axis).
+  resolution_source?: string;
+  // A3 (cite-grade gate) — the confirm-release switch. Co-located with `resolution_source` so a
+  // SINGLE write to this cell lifts suppression on EVERY surface that loads field_provenance
+  // (/plan badge, /compare, dispute-letter quote) at once — no per-surface plumbing. The A3
+  // read-layer gate is `identity_inferred = resolution_source != null && identity_confirmed !== true`:
+  // the user confirming the synonym match (ServiceVerificationGateCard, D3 fast-follow) writes
+  // `identity_confirmed: true` here → the badge un-caps and the citation un-suppresses. A3 ships
+  // the READ; the confirm button ships the WRITE. Additive JSONB (no schema mig).
+  identity_confirmed?: boolean;
 }
 
 /**
@@ -291,6 +305,7 @@ export function buildProvenanceEntry(
   },
   searchedSections?: string[],
   value?: unknown,
+  resolutionSource?: string,
 ): FieldProvenanceEntry | null {
   const category = lookupCategory(table, column);
   if (!category) return null;
@@ -302,6 +317,7 @@ export function buildProvenanceEntry(
   };
   if (haikuConfidence !== undefined) entry.haiku_confidence = haikuConfidence;
   if (value !== undefined && value !== null) entry.value = value;
+  if (resolutionSource !== undefined) entry.resolution_source = resolutionSource;
 
   if (patternP8) {
     if (patternP8.sourceExcerpt !== undefined) entry.source_excerpt = patternP8.sourceExcerpt;

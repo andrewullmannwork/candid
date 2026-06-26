@@ -214,7 +214,7 @@ export async function processPlanDocumentData(
   ocrText: string,
   documentId: string,
   classification: { classifiedType: string; confidence: number; mismatch: boolean },
-  options?: { skipCanonical?: boolean }
+  options?: { skipCanonical?: boolean; thesaurusRoutingOverride?: boolean }
 ): Promise<ProcessPlanResult> {
   try {
     const isFullPlanDoc = classification.classifiedType === "plan_document"
@@ -317,6 +317,10 @@ export async function processPlanDocumentData(
       const planDocResult = await parsePlanDocumentWithMeta(ocrText, {
         documentId: doc.id,
         extractionMethod: "pdftotext",
+        // A3 (S235): drive the PROMPT leg (rawLabel emission) from the SAME override as the routing
+        // leg (~line 335) so the in-vivo smoke runs the whole synonym path flag-ON without flipping
+        // global PROD. PROD callers don't pass thesaurusRoutingOverride → the prompt reads the live flag.
+        thesaurusPhase1a: options?.thesaurusRoutingOverride,
       });
       parseResult = planDocResult.legacy;
       planDocHaikuResult = planDocResult.haiku;
@@ -328,10 +332,12 @@ export async function processPlanDocumentData(
       // Pure correctness, no exposure risk → NOT flag-gated (S175). The trustworthy
       // signature-cache OVERRIDE (synonym routing) stays gated by `thesaurus_phase1a_v1`
       // (synonym-inferred coverage is exposure-held for Phase 2/6).
-      const cacheRoutingOn = await isFeatureEnabled(
-        "thesaurus_phase1a_v1",
-        userForFlagCheck?.email ?? undefined,
-      );
+      // A3: routing-time override (internal; lets the stamp/E2E smoke run synonym routing
+      // flag-ON WITHOUT flipping the global flag in PROD). Defaults to the global flag, so
+      // every real caller (none pass the override) is byte-identical.
+      const cacheRoutingOn =
+        options?.thesaurusRoutingOverride ??
+        (await isFeatureEnabled("thesaurus_phase1a_v1", userForFlagCheck?.email ?? undefined));
       if (planDocResult.haiku && planDocResult.legacy.services.length > 0) {
         const haikuResult = planDocResult.haiku;
         const routed = await routePlanDocServices({
@@ -1312,6 +1318,9 @@ export async function processPlanDocumentData(
                   haikuService,
                   "doc_extraction",
                   haikuResult?.dispatchedSections,
+                  // A3: identity stamp rides `s` (the routed legacy object); thread it so the
+                  // cell's provenance records a synonym-cache OVERRIDE. undefined on direct/rename.
+                  s.identityResolution?.source,
                 ),
               }
             : planDocService
@@ -1320,6 +1329,7 @@ export async function processPlanDocumentData(
                     planDocService,
                     "doc_extraction",
                     planDocHaikuResult?.dispatchedSections,
+                    s.identityResolution?.source,
                   ),
                 }
               : {}),

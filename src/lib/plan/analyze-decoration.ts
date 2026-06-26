@@ -41,6 +41,13 @@ export interface DecorationContext {
    *  cannot drift from actual user count under concurrent writes (transactional trigger).
    *  Defaults to 1 when userPlan has no canonical_plan_id (self-source rendering only). */
   canonicalSourceCount: number;
+  /** A3 (cite-grade gate): `cite_grade_gate_v1` state, read once per request. Threaded into
+   *  `decorateFieldFromEntry` (caps synonym-inferred cells to `estimate`) and read by /compare to
+   *  set the `inferred: synonym_cache` marker. Only meaningful while decorating (this whole context
+   *  is null when consumer_read_filter_v1 is OFF — no decoration → nothing to cap). Optional so
+   *  informational-only fallback constructors (auto-reparse) default to dormant; loadDecorationContext
+   *  (the user-facing path) always sets the real flag value. */
+  citeGradeGateOn?: boolean;
 }
 
 /**
@@ -66,6 +73,10 @@ export async function loadDecorationContext(
     3,
   );
 
+  // A3 (cite-grade gate): read once here so every decorate call site (analyze + compare) shares
+  // one truth. OFF → identity axis dormant → byte-identical to today's decoration.
+  const citeGradeGateOn = await isFeatureEnabled("cite_grade_gate_v1", userEmail ?? undefined);
+
   let canonicalSourceCount = 1;
   if (userPlan?.canonical_plan_id) {
     const { data: canonicalPlan } = await supabase
@@ -76,7 +87,7 @@ export async function loadDecorationContext(
     canonicalSourceCount = canonicalPlan?.verification_count ?? 1;
   }
 
-  return { multiSourceThreshold, canonicalSourceCount };
+  return { multiSourceThreshold, canonicalSourceCount, citeGradeGateOn };
 }
 
 /**

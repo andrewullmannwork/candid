@@ -130,6 +130,7 @@ export type DisplayStateReason =
   // estimate (S119 B1.3a v5 — inferred values; outline-amber visual; no direct source data)
   | "inferred_from_similar_plans"         // v5: inferred from a similar plan (same insurer/state/network) — not direct extraction
   | "cohort_estimate"                     // v5: inferred from cohort averages or cross-plan extrapolation — weaker than public_data
+  | "inferred_synonym_identity"           // A3: identity inferred by a synonym cache-win (resolution_source set, unconfirmed). The min() identity axis caps display at estimate AND suppresses verbatim citation, even with a verified coverage excerpt — the excerpt backs the value under the ORIGINAL label, not the remapped concept. Clears on user confirm (identity_confirmed).
   // user_verified (caller explicitly entered/confirmed)
   | "user_correction"                     // User typed value via /api/plan/field inline-edit
   | "card_scan"                           // Extracted from a user's insurance card scan (member ID, group #, plan name)
@@ -166,9 +167,21 @@ export function corroborationThreshold(source: string, configuredDefault: number
  *   - source_excerpt_verified === 'verified' (parser confirmed verbatim match in doc)
  *   - source_section_verified === true (excerpt found within Haiku-claimed section)
  *   - source_section_hint does NOT end with '_DO_NOT_EXTRACT' (not boilerplate)
+ *
+ * A3 (cite-grade gate): `opts.identityInferred` is the identity axis of the §4.1 min().
+ * When true (a synonym cache-win, unconfirmed; `cite_grade_gate_v1` ON), the value's
+ * coverage excerpt is genuine but it backs the ORIGINAL label, not the remapped concept —
+ * so it is referenced, NOT verbatim-cited. Returns false even with a verified excerpt.
+ * Default (omitted/false) = today's behavior, byte-identical. Callers that hold the
+ * FieldProvenanceEntry compute this as `resolution_source != null && identity_confirmed !== true`
+ * (gated on the flag); see `decorateFieldFromEntry` (badge) + evidence-resolver (citation).
  */
-export function isCitationGrade(provenance: PatternP8Provenance | null | undefined): boolean {
+export function isCitationGrade(
+  provenance: PatternP8Provenance | null | undefined,
+  opts?: { identityInferred?: boolean },
+): boolean {
   if (!provenance) return false;
+  if (opts?.identityInferred) return false;
   if (provenance.source_excerpt_verified !== "verified") return false;
   if (!provenance.source_section_verified) return false;
   if (provenance.source_section_hint.endsWith("_DO_NOT_EXTRACT")) return false;
@@ -191,6 +204,11 @@ export interface DisplayStateInput {
    *  feature_flags.pattern1_corroboration_threshold per Q-P4-3 LOCK and passes
    *  here. Self/trusted sources ignore this value (threshold = 0 for them). */
   multiSourceThreshold: number;
+  /** A3 (cite-grade gate) — identity axis of the §4.1 min(). True iff this cell's identity was
+   *  inferred by an unconfirmed synonym cache-win (`cite_grade_gate_v1` ON). Caps the displayed
+   *  state at `estimate` AND routes through `inferred_synonym_identity`. Default false →
+   *  byte-identical. Derived by callers from `resolution_source != null && identity_confirmed !== true`. */
+  identityInferred?: boolean;
 }
 
 export interface DisplayStateResult {
@@ -212,6 +230,22 @@ export interface DisplayStateResult {
  *                                provenance) — page-level error banner fires.
  */
 export function getDisplayState(input: DisplayStateInput): DisplayStateResult {
+  // A3 (cite-grade gate): the §4.1 min() over two independent axes.
+  // `resolveCoverageDisplayState` computes the COVERAGE axis (cite-grade / source /
+  // corroboration); this wrapper applies the IDENTITY axis. When the identity is an
+  // unconfirmed synonym-remap (`input.identityInferred`, flag ON), the cell is capped to
+  // `estimate` (floor of the visible ordinal) regardless of coverage strength — a confident $20
+  // under a shaky identity must read `estimate`, never verified. Hidden (boilerplate /
+  // parser-failure) is preserved. Flag OFF → identityInferred false → coverage axis unchanged
+  // (byte-identical).
+  const coverage = resolveCoverageDisplayState(input);
+  if (input.identityInferred && coverage.state !== "hidden") {
+    return { state: "estimate", reason: "inferred_synonym_identity" };
+  }
+  return coverage;
+}
+
+function resolveCoverageDisplayState(input: DisplayStateInput): DisplayStateResult {
   const { provenance, confidence, sourceCount, source, multiSourceThreshold } = input;
 
   // Tier 0: boilerplate trumps everything.
@@ -486,18 +520,29 @@ export function decorateFieldFromEntry<T>(
     multiSourceThreshold: number;
     /** Override confidence when entry is null (e.g., premium fields without P-8). Default 0.5. */
     fallbackConfidence?: number;
+    /** A3 (cite-grade gate): pass `cite_grade_gate_v1` here. When ON, a cell whose entry carries
+     *  an unconfirmed `resolution_source` (synonym cache-win) is treated as identity-inferred →
+     *  capped to `estimate`. Omitted/false → today's behavior (byte-identical). */
+    identityGateOn?: boolean;
   },
 ): DecoratedValue<T> {
   const provenance = extractPatternP8FromEntry(entry);
   const confidence = entry?.confidence ?? context.fallbackConfidence ?? 0.5;
   // CF-19a: per-field entry source takes precedence over caller's row-level source.
   const effectiveSource = entry?.source ?? context.source;
+  // A3: identity axis — inferred iff the synonym cache overrode the slug (resolution_source set)
+  // and the user has not yet confirmed the match. The flag gates the whole behavior.
+  const identityInferred =
+    !!context.identityGateOn &&
+    entry?.resolution_source != null &&
+    entry?.identity_confirmed !== true;
   const decorated = decorateForDisplay(value, {
     provenance,
     confidence,
     sourceCount: context.sourceCount,
     source: effectiveSource,
     multiSourceThreshold: context.multiSourceThreshold,
+    identityInferred,
   });
   // Phase 4.0.5: carry section-coverage count to UI for VerifyAffordance shape decision.
   if (entry?.searched_sections !== undefined) {
@@ -574,6 +619,8 @@ export const DISPLAY_STATE_TOOLTIP_EN: Record<DisplayStateReason, string> = {
     "Estimate — inferred from similar plans (same insurer / state / network). Upload your plan document for the real number.",
   cohort_estimate:
     "Estimate — inferred from cohort averages or cross-plan extrapolation. Upload your plan document for the real number.",
+  inferred_synonym_identity:
+    "Estimate — we matched this line to a known service by name, but haven't confirmed it's an exact match. Confirm the match to use it as a verbatim citation.",
 
   // User Verified — green border, white fill: caller explicitly typed/confirmed
   user_correction:

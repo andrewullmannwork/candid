@@ -64,7 +64,8 @@ const extractorSlugs = [
   "extractor6", // 6: signature_cache hit returns a dead slug -> canonicalized
   "same7", //     7: cache hit equal to extractor -> not a win, not a change
 ];
-const legacyServices = extractorSlugs.map((s) => ({ serviceSlug: s }));
+const legacyServices: Array<{ serviceSlug: string; identityResolution?: { source: string } }> =
+  extractorSlugs.map((s) => ({ serviceSlug: s }));
 const haikuServices = extractorSlugs.map((s) => ({ serviceSlug: s }));
 
 const mk = (slug: string | null, source: ResolutionSource) => ({ slug, source });
@@ -98,6 +99,17 @@ for (let i = 0; i < expected.length; i++) {
 check("total === 8", result.total === 8);
 check("cacheWins === 3 (0,1,6; not 7)", result.cacheWins === 3);
 check("slugChanged === 4 (0,1,5,6)", result.slugChanged === 4);
+
+// ── A3: identity stamp on cache-WINS only ──────────────────────────────────────
+// The synonym cache OVERRODE the extractor on 0 (signature), 1 (code), 6 (signature,
+// dead→live). Those carry identityResolution.source. Non-wins do NOT: 2 (trigram, weak),
+// 3 (haiku, weak), 4 (none), 5 (rename-only, no cache), 7 (concordant — cache === extractor).
+check("service[0] identity stamp = signature_cache", legacyServices[0].identityResolution?.source === "signature_cache");
+check("service[1] identity stamp = code_cache", legacyServices[1].identityResolution?.source === "code_cache");
+check("service[6] identity stamp = signature_cache (dead→live)", legacyServices[6].identityResolution?.source === "signature_cache");
+for (const i of [2, 3, 4, 5, 7]) {
+  check(`service[${i}] NOT stamped (identity certain)`, legacyServices[i].identityResolution === undefined);
+}
 
 // ── empty input is a safe no-op ────────────────────────────────────────────────
 const empty = applyThesaurusRouting({

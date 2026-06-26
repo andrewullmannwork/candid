@@ -81,7 +81,7 @@ export interface ThesaurusRoutingResult {
  * the input arrays in place.
  */
 export function applyThesaurusRouting(args: {
-  legacyServices: Array<Pick<SBCParsedService, "serviceSlug">>;
+  legacyServices: Array<Pick<SBCParsedService, "serviceSlug" | "identityResolution">>;
   haikuServices: Array<Pick<PlanDocService, "serviceSlug">>;
   resolutions: ReadonlyMap<number, Pick<ServiceResolution, "slug" | "source">>;
   renameMap: ReadonlyMap<string, string>;
@@ -96,7 +96,14 @@ export function applyThesaurusRouting(args: {
     const cacheSlug = res && res.slug && WINNING_SOURCES.has(res.source) ? res.slug : null;
     const chosen = cacheSlug ?? extractorSlug;
     const finalSlug = canonicalizeSlug(chosen, renameMap);
-    if (cacheSlug !== null && cacheSlug !== extractorSlug) cacheWins++;
+    if (cacheSlug !== null && cacheSlug !== extractorSlug) {
+      cacheWins++;
+      // A3: the cache OVERRODE the extractor → record the inferred identity's resolving tier on
+      // the legacy object (flows to the persisted row `s` via deduped → confident, read in
+      // process-plan's coverage-write + threaded into field_provenance). Cache-wins only — a
+      // rename (dead→live) or a concordant cache hit (cacheSlug === extractor) is NOT inferred.
+      if (res) legacyServices[i].identityResolution = { source: res.source };
+    }
     if (finalSlug !== extractorSlug) slugChanged++;
     legacyServices[i].serviceSlug = finalSlug;
     haikuServices[i].serviceSlug = finalSlug;
