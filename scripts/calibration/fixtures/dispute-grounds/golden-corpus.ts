@@ -24,6 +24,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { LETTER_TEMPLATES } from "../../../../src/lib/disputes/templates";
 import { generateNegotiationLetter } from "../../../../src/lib/disputes/negotiation-template";
 import type { AuditFinding, ParsedBill, DisputeLetterType } from "../../../../src/lib/billing/types";
+import type { DisputeEvidence, LineItemEvidence, ClaimEvidence } from "../../../../src/lib/disputes/evidence-resolver";
 
 const GOLDEN_DIR = resolve(__dirname, "golden");
 mkdirSync(GOLDEN_DIR, { recursive: true });
@@ -140,6 +141,101 @@ function renderRerender(type: DisputeLetterType, bill: ParsedBill): string {
   });
 }
 
+// ── §18 incr-3b — ON variant (dispute_grounds_v1). The OFF helpers above pass evidence:null
+//    + the `findings` param; these pass disputeGroundsOn + a synthetic DisputeEvidence whose
+//    line auditFindings mirror the same findings, so the 3 provider templates source their
+//    finding block from groundFindingsForEvidence (rerender-safe). billedAmount lives on the
+//    LINE (GroundFinding reads it there), matching the OFF finding's billedAmount. ───────────
+function evidenceLine(f: AuditFinding, lineItemId: string): LineItemEvidence {
+  return {
+    lineItemId,
+    billingCode: { value: "99213", type: "CPT" },
+    serviceSlug: "office_visit",
+    serviceName: "Office visit",
+    billedAmount: f.billedAmount,
+    insurancePaid: null,
+    patientOwes: null,
+    patientPaid: null,
+    planBenefit: null,
+    expectedPatientCost: null,
+    actualPatientCost: null,
+    discrepancyAmount: null,
+    discrepancyReason: null,
+    communityOutcome: null,
+    siblingCodes: null,
+    pricingBenchmark: null,
+    auditFindings: [
+      {
+        type: f.type,
+        severity: f.severity,
+        title: f.title,
+        description: f.description,
+        estimatedOvercharge: f.estimatedOvercharge,
+        benchmarkAmount: f.benchmarkAmount ?? null,
+        benchmarkSource: f.benchmarkSource ?? null,
+      },
+    ],
+    auditRan: true,
+    peerCodes: null,
+    disputeType: "other",
+    citeGradeTier: "header",
+    dollarAtStake: f.estimatedOvercharge,
+    serviceNotRenderedAttested: false,
+    secondaryCoverageVerify: null,
+  };
+}
+function makeEvidence(findings: AuditFinding[]): DisputeEvidence {
+  const claim = {
+    claimId: "claim-1",
+    dateOfService: SERVICE_DATE,
+    providerName: "Sample Medical Center",
+    totalBilled: 500,
+    planYear: 2024,
+    lineItemEvidence: findings.map((f, i) => evidenceLine(f, `li-${i + 1}`)),
+    effectiveTotals: {} as unknown as ClaimEvidence["effectiveTotals"],
+    dataTrust: { headerReconciliationFailed: false, signViolation: false },
+  } satisfies ClaimEvidence;
+  return {
+    claims: [claim],
+    totals: { claimCount: 1, lineItemCount: findings.length, totalBilled: 500, totalDiscrepancy: 0 },
+    planEvidence: null,
+    networkEvidence: null,
+    communityEvidence: null,
+    legalBasis: [],
+    gaps: [],
+    dataTrust: { headerReconciliationFailed: false, signViolation: false },
+  };
+}
+function renderGenerateON(type: DisputeLetterType, bill: ParsedBill, findings: AuditFinding[], evidence: DisputeEvidence): string {
+  return LETTER_TEMPLATES[type].body({
+    patientName: bill.patient.name,
+    providerName: bill.provider.name,
+    serviceDate: bill.serviceDate,
+    findings,
+    bill,
+    planContext: null,
+    evidence,
+    gateUnverified: GATE,
+    v3DesignOn: V3,
+    disputeGroundsOn: true,
+  });
+}
+function renderRerenderON(type: DisputeLetterType, bill: ParsedBill, evidence: DisputeEvidence): string {
+  return LETTER_TEMPLATES[type].body({
+    patientName: bill.patient.name,
+    providerName: bill.provider.name,
+    serviceDate: bill.serviceDate,
+    findings: [], // ← the rerender path. On the ON path it is IGNORED (sourced from evidence).
+    bill,
+    planContext: null,
+    evidence,
+    gateUnverified: GATE,
+    v3DesignOn: V3,
+    disputeGroundsOn: true,
+    attestingName: bill.patient.name,
+  });
+}
+
 // ── Scenarios ────────────────────────────────────────────────────────────────
 const bill = makeBill();
 
@@ -160,11 +256,25 @@ for (const { type, findings } of ZERO_BUG_TYPES) {
   // generate path: real total present, findings detail present
   check(`${type} generate shows real total $${expectedTotal.toFixed(2)}`, gen.includes(`$${expectedTotal.toFixed(2)}`));
   check(`${type} generate lists the finding`, gen.includes(findings[0].title));
-  // rerender path (findings:[]): the $0.00 BUG — total zeroed, finding detail gone.
-  // These two assertions ENCODE the current bug; Stage 2 INTENTIONALLY flips them.
-  check(`${type} rerender ZEROS the total ($0.00) [bug present pre-Stage-2]`, rer.includes("$0.00"));
-  check(`${type} rerender DROPS the finding detail [bug present pre-Stage-2]`, !rer.includes(findings[0].title));
-  check(`${type} generate≠rerender (bug makes them diverge)`, normalize(gen) !== normalize(rer));
+  // rerender path (findings:[], flag OFF): the $0.00 BUG persists — total zeroed, detail gone.
+  // The fix is FLAG-GATED, so these do NOT flip: OFF stays byte-identical (they pin OFF parity);
+  // the grounds-ON block below proves the fix (rerender keeps the real total + detail).
+  check(`${type} rerender ZEROS the total ($0.00) [flag OFF — byte-identical legacy]`, rer.includes("$0.00"));
+  check(`${type} rerender DROPS the finding detail [flag OFF — byte-identical legacy]`, !rer.includes(findings[0].title));
+  check(`${type} generate≠rerender [flag OFF — the bug diverges them]`, normalize(gen) !== normalize(rer));
+
+  // §18 incr-3b — ON variant (dispute_grounds_v1 + evidence): the FIX. Both generate AND
+  // rerender source the finding block from `evidence`, so they can't diverge and the rerender
+  // keeps the real total/detail. Snapshots captured as new goldens for review.
+  const evidence = makeEvidence(findings);
+  const genON = renderGenerateON(type, bill, findings, evidence);
+  const rerON = renderRerenderON(type, bill, evidence);
+  snapshot(`${type}.generate.grounds-on`, genON);
+  snapshot(`${type}.rerender.grounds-on`, rerON);
+  check(`${type} [grounds ON] rerender keeps the real total $${expectedTotal.toFixed(2)} (bug FIXED)`, rerON.includes(`$${expectedTotal.toFixed(2)}`));
+  check(`${type} [grounds ON] rerender lists the finding (bug FIXED)`, rerON.includes(findings[0].title));
+  check(`${type} [grounds ON] rerender has NO $0.00`, !rerON.includes("$0.00"));
+  check(`${type} [grounds ON] generate == rerender (one evidence source → no divergence)`, normalize(genON) === normalize(rerON));
 }
 
 // insurance_appeal — the SAFE template (reads `evidence`, not `findings`). With evidence:null
