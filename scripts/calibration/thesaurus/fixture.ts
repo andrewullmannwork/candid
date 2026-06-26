@@ -221,6 +221,17 @@ eq("tier_13 out of range → NO tier", dm("Drugs (Tier 13)").planTierLabel ? 1 :
 eq("letter sub-tier (Tier 1a) → tier_1", dm("Preferred generic drugs (Tier 1a)").planTierLabel, "tier_1");
 eq("letter sub-tier (Tier 1b) → tier_1", dm("Other generic drugs (Tier 1b)").planTierLabel, "tier_1");
 eq("3-digit junk (Tier 100) → NO tier", dm("Drugs (Tier 100)").planTierLabel ? 1 : 0, 0);
+// ── item 7 (A2b Phase 2): compound oncology-OPD bundle → 3-member multiLabel set ──
+const cmp = dm("Outpatient Department of a Hospital: treatment of illness or injury, radiation therapy, chemotherapy, and necessary supplies");
+eq("compound onco → 3-member multiLabel", cmp.multiLabel?.length ?? 0, 3);
+eq("compound onco → has radiation_therapy", cmp.multiLabel?.some((t) => t.slug === "radiation_therapy") ? 1 : 0, 1);
+eq("compound onco → has chemotherapy_rx", cmp.multiLabel?.some((t) => t.slug === "chemotherapy_rx") ? 1 : 0, 1);
+eq("compound onco → has specialist_visit", cmp.multiLabel?.some((t) => t.slug === "specialist_visit") ? 1 : 0, 1);
+eq("compound onco → place outpatient_facility", cmp.multiLabel?.[0]?.placeOfService, "outpatient_facility");
+eq("compound onco → component global", cmp.multiLabel?.[0]?.component, "global");
+eq("standalone radiation (no chemo) → NOT compound", dm("Radiation therapy").multiLabel?.length ?? 0, 0);
+eq("chemo-only → NOT compound", dm("Oral chemotherapy drugs").multiLabel?.length ?? 0, 0);
+eq("radiation + IV non-chemo → NO false compound (precise chemotherapy match)", dm("Radiation and IV therapy (non-chemo)").multiLabel?.length ?? 0, 0);
 
 // ── RUN 7 (S226 / A2b Phase 2): score-tuple.ts — full-tuple match, the modifiers|slug conditional,
 // the umbrella exact-set-match (mixed detection), under-detection, and canon-awareness. ──

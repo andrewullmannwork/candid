@@ -100,6 +100,18 @@ function decide(g: GtRow): Action | null {
   // item 6: a NAMED bone-density / DEXA screening is preventive-eligible (GT flag truth; slug untouched —
   // it stays advanced_imaging / preventive_care; the flag is what lets a non-preventive slug carry $0).
   if (isBoneDensity(name)) return { cat: "preventive-bone-density", isPreventiveEligible: true, mutate: true };
+  // item 7 — compound oncology-OPD bundle (radiation + chemotherapy in one cost-share) → multiLabel SET,
+  // mirroring the resolver's compound emission. correctSlug stays null (no single primary; the resolver
+  // already returns null here, so no over-map). Standalone "Radiation therapy" rows → radiation_therapy
+  // are QUEUED for the phase-end N=9 (the slug is brand-new → the frozen forward can't map them yet).
+  if (/radiation/.test(lc(name)) && /chemotherapy/.test(lc(name))) {
+    const place = /outpatient/.test(lc(name)) ? "outpatient_facility" : "any";
+    const set: Tuple[] = [];
+    if (/illness|injury|treatment|visit|office/.test(lc(name))) set.push(tup("specialist_visit", "global", place));
+    set.push(tup("chemotherapy_rx", "global", place));
+    set.push(tup("radiation_therapy", "global", place));
+    return { cat: "compound-onco-opd", multiLabel: set, note: `null → multiLabel[${set.map((t) => t.slug).join(",")}] @ ${place}`, mutate: true };
+  }
   // item 5 — drug FORMULARY tier + baked-slug cleanup. A drug row (baked descriptor slug OR a drug-context
   // text tier) is mutually exclusive with the surgery/transplant logic below, so handle + return here.
   {

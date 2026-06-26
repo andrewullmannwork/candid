@@ -850,6 +850,18 @@ export function deriveModifiers(description: string): DerivedModifiers {
   // "Tier 1/2/4" or "Tier 2 and Tier 4" is deliberately tier-agnostic → omitted). Universal (federal-SBC +
   // commercial pharmacy wording); text-only → deterministic; flag-OFF → omitted.
   const tier: { planTierLabel?: string } = derivePlanTierLabel(d);
+  // item 7 — compound oncology-OPD bundle (federal-SBC: "...treatment of illness or injury, radiation
+  // therapy, chemotherapy, and necessary supplies"): ONE cost-share over several distinct services → emit
+  // the SET (D4 multi-label), not a single slug. Trigger = radiation + chemotherapy named together (precise
+  // "chemotherapy" dodges "IV therapy (non-chemo)"); specialist_visit added when an illness/injury visit is
+  // also bundled. place from the line (OPD → outpatient_facility); component global (one shared cost-share).
+  if (/radiation/.test(d) && /chemotherapy/.test(d)) {
+    const set: ServiceModifierTuple[] = [];
+    if (/illness|injury|treatment|visit|office/.test(d)) set.push({ slug: "specialist_visit", placeOfService: place, component: "global" });
+    set.push({ slug: "chemotherapy_rx", placeOfService: place, component: "global" });
+    set.push({ slug: "radiation_therapy", placeOfService: place, component: "global" });
+    return { placeOfService: place, component: "global", multiLabel: set, ...prev, ...tier };
+  }
   // mixed inpatient physician/surgeon umbrella → multi-label SET (exclude mental-health + transplant).
   const mixed =
     place === "inpatient_facility" &&
