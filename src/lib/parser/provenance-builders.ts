@@ -65,6 +65,7 @@ export function buildPlanCoveredServiceProvenance(
   service: SBCHaikuService,
   source: SourceProvenance = "doc_extraction",
   searchedSections?: string[],
+  resolutionSource?: string,
 ): Record<string, FieldProvenanceEntry> {
   const patternP8 = adaptPatternP8(service.patternP8);
   const haikuConfidence = service.haikuConfidence;
@@ -111,6 +112,7 @@ export function buildPlanCoveredServiceProvenance(
       column === "in_coinsurance" || column === "out_coinsurance"
         ? normalizeCoinsuranceForStorage(value as number | null)
         : value,
+      resolutionSource,
     );
     if (entry) provenance[column] = entry;
   }
@@ -285,6 +287,7 @@ export function buildPlanDocServiceProvenance(
   service: PlanDocService,
   source: SourceProvenance = "doc_extraction",
   searchedSections?: string[],
+  resolutionSource?: string,
 ): Record<string, FieldProvenanceEntry> {
   const patternP8 = adaptPatternP8(service.patternP8);
   const haikuConfidence = service.haikuConfidence;
@@ -330,6 +333,7 @@ export function buildPlanDocServiceProvenance(
       column === "in_coinsurance" || column === "out_coinsurance"
         ? normalizeCoinsuranceForStorage(value as number | null)
         : value,
+      resolutionSource,
     );
     if (entry) provenance[column] = entry;
   }
