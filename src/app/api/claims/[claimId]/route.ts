@@ -9,9 +9,7 @@ import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import {
   computeRecoveryV2,
-  computeCostShareV2,
   rollupCostShareVerdict,
-  isFamilyTier,
   resolveStillOutstanding,
   type PlanCoverageInput,
   type PlanCostShareParams,
@@ -22,21 +20,20 @@ import {
   type InsurerDiscrepancy,
 } from "@/lib/claims/recovery-math";
 import {
-  buildServiceCostShare,
   loadPlanCostShareParams,
   mapRawAccumulator,
-  resolveAccumulatorForLine,
-  applyPreClaimAdjustment,
   loadCostShareOverrides,
   resolveOverridesForBill,
   loadCostShareGate,
-  buildLineInsurer,
   coerceNetworkTier,
   coerceNetworkOverride,
-  EMPTY_PLAN_COST_SHARE_PARAMS,
   type RawAccumulator,
   type CostShareGate,
 } from "@/lib/claims/cost-share-loader";
+import {
+  resolveCostShareForLine,
+  type CostShareClaimCtx,
+} from "@/lib/claims/resolve-cost-share";
 import {
   resolveEffectiveClaimTotals,
   resolvePerLinePatientPaid,
@@ -402,6 +399,24 @@ export async function GET(
     });
   }
 
+  // §18.9 — assemble the shared cost-share engine context ONCE per claim (the
+  // per-line accumulator-resolve + computeCostShareV2 call now live in
+  // resolveCostShareForLine, parity-locked vs the prior inline assembly). Inert
+  // when costShareV2 is OFF (csCtx is only read in the ON branch below).
+  const csCtx: CostShareClaimCtx = {
+    planParams: csPlanParams,
+    overrides: csOverrides,
+    accRows: csAccumulatorRows,
+    memberSums: csMemberSums,
+    preventiveLines: csPreventiveLines,
+    acaStatus: csAcaStatus,
+    claimInsurerPaidZero: csClaimInsurerPaidZero,
+    gate: csGate,
+    networkClaim: coerceNetworkTier(claim.network_status),
+    coverageTier: csPlanParams?.coverageTier ?? null,
+    planYear: csPlanYear,
+  };
+
   // Enrich line items with coverage status + recovery metrics
   const enrichedLineItems = (lineItems || []).map((item) => {
     // S135 — 4-state ACA matrix via shared helper. Plan wins on match; ACA wins
@@ -524,51 +539,24 @@ export async function GET(
     let lineCostShareAssumptions: CostShareAssumption[] | null = null;
     let lineInsurerDiscrepancy: InsurerDiscrepancy | null = null;
     if (costShareV2) {
-      const lineNetwork = coerceNetworkTier(
-        (item as Record<string, unknown>).network_status,
-      );
-      const accumulator = applyPreClaimAdjustment(
-        resolveAccumulatorForLine(csAccumulatorRows, {
-          benefitYear: csPlanYear != null ? String(csPlanYear) : null,
-          networkTier: lineNetwork ?? "in_network",
-          accumulatorType: "medical",
-          isIndividual: !isFamilyTier(csPlanParams?.coverageTier ?? null),
-        }),
-        csMemberSums,
-      );
-      const cs = computeCostShareV2({
-        line: {
+      // §18.9 — shared resolution layer (parity-locked vs the prior inline assembly,
+      // scripts/calibration/fixtures/cost-share-v2/resolve-parity.ts). allowed is the
+      // header-prorated value (adjustedBilled — the real allowed, e.g. cf91a49e
+      // $163.27, not the sparse $0 raw line); divergent prep stays at the call site.
+      const cs = resolveCostShareForLine(
+        {
+          lineNumber: Number(item.line_number ?? 0),
           billed,
-          // Header-prorated allowed (post-writeoff). The displayed shouldOwe
-          // needs the real allowed (e.g. cf91a49e $163.27, not the sparse $0
-          // raw line value); lineInsuranceAdjusted is the route's prorated
-          // writeoff (S140 fix-pass H1).
           allowed: adjustedBilled,
           insuranceAdjusted: lineInsuranceAdjusted,
           patientPaid,
           patientResponsibility,
+          coverage,
+          networkStatus: (item as Record<string, unknown>).network_status as string | null,
+          raw: item as Record<string, unknown>,
         },
-        service: buildServiceCostShare(coverage),
-        insurer: buildLineInsurer(item as Record<string, unknown>),
-        plan: csPlanParams ?? EMPTY_PLAN_COST_SHARE_PARAMS,
-        accumulator,
-        overrides:
-          csOverrides ?? {
-            deductibleMet: null,
-            deductibleMetAsOf: null,
-            oopMet: null,
-            oopMetAsOf: null,
-            userNetworkOverride: null,
-          },
-        networkLine: lineNetwork,
-        networkClaim: coerceNetworkTier(claim.network_status),
-        minRecovery: csGate.minRecovery,
-        preventive: {
-          isPreventive: csPreventiveLines.has(Number(item.line_number ?? 0)),
-          acaStatus: csAcaStatus,
-        },
-        claimInsurerPaidZero: csClaimInsurerPaidZero,
-      });
+        csCtx,
+      );
       recovery = cs;
       lineCostShareVerdict = cs.verdict;
       lineCostShareAssumptions = cs.assumptions;

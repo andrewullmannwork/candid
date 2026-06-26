@@ -10,8 +10,6 @@ import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import {
   computeRecoveryV2,
-  computeCostShareV2,
-  isFamilyTier,
   resolveStillOutstanding,
   type PlanCoverageInput,
   type PlanCostShareParams,
@@ -20,21 +18,20 @@ import {
   type RecoveryMetrics,
 } from "@/lib/claims/recovery-math";
 import {
-  buildServiceCostShare,
   loadPlanCostShareParams,
   mapRawAccumulator,
-  resolveAccumulatorForLine,
-  applyPreClaimAdjustment,
   loadCostShareOverrides,
   resolveOverridesForBill,
   loadCostShareGate,
-  buildLineInsurer,
   coerceNetworkTier,
   coerceNetworkOverride,
-  EMPTY_PLAN_COST_SHARE_PARAMS,
   type RawAccumulator,
   type CostShareGate,
 } from "@/lib/claims/cost-share-loader";
+import {
+  resolveCostShareForLine,
+  type CostShareClaimCtx,
+} from "@/lib/claims/resolve-cost-share";
 import {
   resolveEffectiveClaimTotals,
   resolvePerLineInsuranceAdjusted,
@@ -373,6 +370,24 @@ export async function GET(req: NextRequest) {
       const csClaimInsurerPaidZero =
         claim.total_insurance_paid != null && Number(claim.total_insurance_paid) === 0;
 
+      // §18.9 — assemble the shared cost-share engine context ONCE per claim; the
+      // per-line accumulator-resolve + computeCostShareV2 call now live in
+      // resolveCostShareForLine (parity-locked vs the prior inline assembly). The
+      // values are inert when costShareV2 is OFF (csCtx is only read in the ON branch).
+      const csCtx: CostShareClaimCtx = {
+        planParams: csPlanParams,
+        overrides: csOverrides,
+        accRows: csAccRows,
+        memberSums: csMemberSums,
+        preventiveLines: csPreventiveLines,
+        acaStatus: csAcaStatus,
+        claimInsurerPaidZero: csClaimInsurerPaidZero,
+        gate: csGate,
+        networkClaim: coerceNetworkTier(claim.network_status),
+        coverageTier: csPlanParams?.coverageTier ?? null,
+        planYear: csPlanYear,
+      };
+
       let findingCount = 0;
       let potentialSavings = 0;
       let reviewNeededCount = 0;
@@ -466,7 +481,6 @@ export async function GET(req: NextRequest) {
         let rec: RecoveryMetrics;
         let lineVerdict: CostShareVerdict | null = null;
         if (costShareV2) {
-          const lineNetwork = coerceNetworkTier((item as Record<string, unknown>).network_status);
           // Prorate the per-line writeoff exactly as the detail GET does, so the
           // list verdict + recovery match the detail page (no list/detail drift).
           const { value: lineInsAdj } = resolvePerLineInsuranceAdjusted({
@@ -476,44 +490,23 @@ export async function GET(req: NextRequest) {
             claimTotalBilled,
             effectiveClaimInsuranceAdjusted: csEffectiveTotals!,
           });
-          const accumulator = applyPreClaimAdjustment(
-            resolveAccumulatorForLine(csAccRows, {
-              benefitYear: csPlanYear != null ? String(csPlanYear) : null,
-              networkTier: lineNetwork ?? "in_network",
-              accumulatorType: "medical",
-              isIndividual: !isFamilyTier(csPlanParams?.coverageTier ?? null),
-            }),
-            csMemberSums,
-          );
-          const cs = computeCostShareV2({
-            line: {
+          // §18.9 — shared resolution layer (parity-locked vs the prior inline assembly,
+          // scripts/calibration/fixtures/cost-share-v2/resolve-parity.ts). Divergent prep
+          // (allowed/insuranceAdjusted/patientResponsibility/coverage) stays here.
+          const cs = resolveCostShareForLine(
+            {
+              lineNumber: Number(item.line_number ?? 0),
               billed,
               allowed: Math.max(0, billed - lineInsAdj),
               insuranceAdjusted: lineInsAdj,
               patientPaid,
               patientResponsibility,
+              coverage,
+              networkStatus: (item as Record<string, unknown>).network_status as string | null,
+              raw: item as Record<string, unknown>,
             },
-            service: buildServiceCostShare(coverage),
-            insurer: buildLineInsurer(item as Record<string, unknown>),
-            plan: csPlanParams ?? EMPTY_PLAN_COST_SHARE_PARAMS,
-            accumulator,
-            overrides:
-              csOverrides ?? {
-                deductibleMet: null,
-                deductibleMetAsOf: null,
-                oopMet: null,
-                oopMetAsOf: null,
-                userNetworkOverride: null,
-              },
-            networkLine: lineNetwork,
-            networkClaim: coerceNetworkTier(claim.network_status),
-            minRecovery: csGate.minRecovery,
-            preventive: {
-              isPreventive: csPreventiveLines.has(Number(item.line_number ?? 0)),
-              acaStatus: csAcaStatus,
-            },
-            claimInsurerPaidZero: csClaimInsurerPaidZero,
-          });
+            csCtx,
+          );
           rec = cs;
           lineVerdict = cs.verdict;
         } else {
