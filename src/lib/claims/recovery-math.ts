@@ -574,14 +574,25 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
     : service?.deductibleApplies;
 
   // ── 4. Met-status (hard data = accumulator or user override; else conservative not-met) ──
+  // A plan with a $0 deductible has nothing to meet → the deductible is trivially MET
+  // (KNOWN, not assumed). Without this, a $0-deductible plan with no accumulator falls to
+  // the conservative "not met" path and charges the FULL allowed toward a non-existent
+  // deductible (e.g. a 10%-coinsurance service billed at full allowed instead of 10%).
+  // `deductibleMax` is null when unparsed (pick() returns the null individual figure), so
+  // `=== 0` matches only a genuinely-zero deductible, never "unknown".
+  const planDeductibleZero = deductibleMax === 0;
   const accDedKnown = num(acc?.deductibleApplied) != null && num(acc?.deductibleMax) != null;
   const accOopKnown = num(acc?.oopApplied) != null && num(acc?.oopMax) != null;
-  const dedMetKnown = ov.deductibleMet != null || accDedKnown;
+  const dedMetKnown = ov.deductibleMet != null || accDedKnown || planDeductibleZero;
   const oopMetKnown = ov.oopMet != null || accOopKnown;
   const dedMet =
-    ov.deductibleMet === true || (accDedKnown && acc!.deductibleApplied! >= acc!.deductibleMax!);
+    ov.deductibleMet === true || (accDedKnown && acc!.deductibleApplied! >= acc!.deductibleMax!) || planDeductibleZero;
   const oopMet = ov.oopMet === true || (accOopKnown && acc!.oopApplied! >= acc!.oopMax!);
-  const remainingDeductible = accDedKnown ? Math.max(0, acc!.deductibleMax! - acc!.deductibleApplied!) : null;
+  const remainingDeductible = accDedKnown
+    ? Math.max(0, acc!.deductibleMax! - acc!.deductibleApplied!)
+    : planDeductibleZero
+      ? 0
+      : null;
   const remainingOop = accOopKnown ? Math.max(0, acc!.oopMax! - acc!.oopApplied!) : null;
 
   // ── 5. Phase machine → plan-derived shouldOwe ──

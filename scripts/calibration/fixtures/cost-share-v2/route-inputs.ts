@@ -166,6 +166,37 @@ const NO_OVERRIDES = {
   check("R5 copay shouldOwe $20", near(cs.shouldOwe, 20), cs.shouldOwe, 20);
 }
 
+// ── R6 — ZERO-deductible plan: a coinsurance service must apply coinsurance, NOT charge
+// the full allowed toward a non-existent deductible (the Cigna-PPO bug — e23817b6 L2).
+// deductibleMax=0 → deductible trivially met → post_deductible phase. No accumulator. ──
+{
+  const item = {
+    member_applied_to_deductible: null, member_coinsurance: null, member_copay: null,
+    denied_amount: null, insurance_paid: 0, patient_owes: 0, network_status: null,
+  };
+  const plan: PlanCostShareParams = {
+    ...EMPTY_PLAN_COST_SHARE_PARAMS,
+    inDeductibleIndividual: 0, // $0 deductible (genuinely zero, not unparsed/null)
+    inOopMaxIndividual: 3000,
+    coverageTier: "individual",
+  };
+  const cs = computeCostShareV2({
+    line: { billed: 89, allowed: 41.1, insuranceAdjusted: 47.9, patientPaid: 0, patientResponsibility: 0 },
+    service: buildServiceCostShare({ covered: true, copay: null, coinsurance: 0.1, deductibleApplies: null }),
+    insurer: buildLineInsurer(item),
+    plan,
+    accumulator: null,
+    overrides: { ...NO_OVERRIDES },
+    networkLine: coerceNetworkTier(item.network_status),
+    networkClaim: null,
+    minRecovery: 1,
+  });
+  check("R6 zero-ded coinsurance shouldOwe = 10% allowed $4.11", near(cs.shouldOwe, 4.11), cs.shouldOwe, 4.11);
+  check("R6 zero-ded phase post_deductible (NOT deductible_unmet)", cs.phase === "post_deductible", cs.phase, "post_deductible");
+  // $0 deductible is KNOWN-met → no deductible_met assumption surfaced.
+  check("R6 zero-ded no deductible_met assumption", !cs.assumptions.some((a) => a.field === "deductible_met"), cs.assumptions.map((a) => a.field));
+}
+
 if (fails.length) {
   console.error(`\ncost-share-v2 route-input fixtures: ${pass} passed, ${fails.length} failed`);
   for (const f of fails) console.error("  " + f);
