@@ -203,10 +203,11 @@ export interface ClaimCostSharePrep {
   effectiveTotals: EffectiveClaimTotals;
 }
 
-/** The resolved per-line bundle — the engine result + every intermediate the
- *  card routes render (coverage attribution, prorated money + provenance). */
-export interface ResolvedLineCostShare {
-  result: CostShareV2Result;
+/** The resolved per-line PREP — coverage attribution + prorated money + provenance,
+ *  WITHOUT the engine result. Shared by both card-route branches (the v2 engine when
+ *  recovery_cost_share_v2 is ON, the legacy computeRecoveryV2 when OFF) + the display
+ *  fields — so the prep is computed once regardless of which engine runs. */
+export interface ResolvedLinePrep {
   coverage: PlanCoverageInput | null;
   coverageSource: string | null;
   secondaryMatchedSlug: string | null;
@@ -221,17 +222,24 @@ export interface ResolvedLineCostShare {
   patientResponsibilitySource: "per_line" | "header_prorated";
 }
 
+/** The prep bundle + the v2 engine result (what the dispute path + the costShareV2-ON
+ *  card branch use). */
+export interface ResolvedLineCostShare extends ResolvedLinePrep {
+  result: CostShareV2Result;
+}
+
 /**
- * Resolve ONE raw claim_line_items row → its full cost-share bundle, reproducing
- * the inline prep the list + detail routes ran (byte-identical given the same
- * inputs + strategy). `raw` is the snake_case DB row.
+ * Resolve ONE raw claim_line_items row → its cost-share PREP (no engine), reproducing
+ * the inline prep the list + detail routes ran (byte-identical given the same inputs +
+ * strategy). `raw` is the snake_case DB row. The caller runs the engine it wants
+ * (resolveCostShareForLine when costShareV2 ON; computeRecoveryV2 when OFF) — or uses
+ * `resolveLineCostShare` for the prep + v2 engine in one call.
  */
-export function resolveLineCostShare(
+export function resolveLinePrep(
   raw: Record<string, unknown>,
   prep: ClaimCostSharePrep,
-  ctx: CostShareClaimCtx,
   strategy: CostSharePrepStrategy,
-): ResolvedLineCostShare {
+): ResolvedLinePrep {
   const slug = (raw.service_slug as string | null) ?? null;
   const billed = Number(raw.billed_amount || 0);
   const lineNumber = Number(raw.line_number ?? 0);
@@ -342,24 +350,7 @@ export function resolveLineCostShare(
   const patientResponsibilitySource: "per_line" | "header_prorated" =
     raw.patient_owes != null ? "per_line" : "header_prorated";
 
-  // ── engine (the incr-1 shared assembly) ──
-  const result = resolveCostShareForLine(
-    {
-      lineNumber,
-      billed,
-      allowed,
-      insuranceAdjusted,
-      patientPaid,
-      patientResponsibility,
-      coverage,
-      networkStatus: (raw.network_status as string | null) ?? null,
-      raw,
-    },
-    ctx,
-  );
-
   return {
-    result,
     coverage,
     coverageSource,
     secondaryMatchedSlug,
@@ -373,4 +364,33 @@ export function resolveLineCostShare(
     patientResponsibility,
     patientResponsibilitySource,
   };
+}
+
+/**
+ * Resolve ONE raw row → prep + the v2 engine result (resolveLinePrep +
+ * resolveCostShareForLine). The dispute path + the costShareV2-ON card branch use this;
+ * the OFF branch uses resolveLinePrep + computeRecoveryV2 directly (no wasted v2 call).
+ */
+export function resolveLineCostShare(
+  raw: Record<string, unknown>,
+  prep: ClaimCostSharePrep,
+  ctx: CostShareClaimCtx,
+  strategy: CostSharePrepStrategy,
+): ResolvedLineCostShare {
+  const p = resolveLinePrep(raw, prep, strategy);
+  const result = resolveCostShareForLine(
+    {
+      lineNumber: Number(raw.line_number ?? 0),
+      billed: Number(raw.billed_amount || 0),
+      allowed: p.allowed,
+      insuranceAdjusted: p.insuranceAdjusted,
+      patientPaid: p.patientPaid,
+      patientResponsibility: p.patientResponsibility,
+      coverage: p.coverage,
+      networkStatus: (raw.network_status as string | null) ?? null,
+      raw,
+    },
+    ctx,
+  );
+  return { result, ...p };
 }

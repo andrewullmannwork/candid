@@ -18,6 +18,7 @@
  */
 import {
   resolveLineCostShare,
+  resolveLinePrep,
   resolveCostShareForLine,
   type ClaimCostSharePrep,
   type CostShareClaimCtx,
@@ -262,11 +263,13 @@ const rows: Array<{ name: string; raw: Record<string, unknown> }> = [
 // ── Parity: recipe == inline route copy, BOTH strategies, every row. ──
 for (const { name, raw } of rows) {
   for (const strategy of ["detail", "list"] as CostSharePrepStrategy[]) {
-    eq(
-      `${name} [${strategy}]`,
-      resolveLineCostShare(raw, prep, ctx, strategy),
-      inlineRoutePrep(raw, prep, ctx, strategy),
-    );
+    const inline = inlineRoutePrep(raw, prep, ctx, strategy);
+    // full bundle (prep + v2 engine) — the dispute path + costShareV2-ON card branch.
+    eq(`${name} [${strategy}]`, resolveLineCostShare(raw, prep, ctx, strategy), inline);
+    // prep-only (no engine) — what the OFF card branch + display consume. Must equal
+    // the same inline minus `result`.
+    const { result: _drop, ...inlinePrepOnly } = inline;
+    eq(`${name} [${strategy}] prep-only`, resolveLinePrep(raw, prep, strategy), inlinePrepOnly);
   }
 }
 

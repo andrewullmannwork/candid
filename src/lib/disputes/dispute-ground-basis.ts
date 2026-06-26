@@ -40,13 +40,13 @@ import {
   coerceNetworkOverride,
 } from "../claims/cost-share-loader";
 import { resolveEffectiveClaimTotals } from "../claims/effective-totals";
-import { normalizeCoinsuranceForStorage } from "../billing/coinsurance";
 import {
   buildAcaCoverageFallback,
   detectPreventiveMembership,
 } from "../audit/aca-coverage-fallback";
 import {
   loadSecondaryGate,
+  loadPlanCoverageMeta,
   DEFAULT_SECONDARY_GATE,
   type CoveredSlugMeta,
   type BillSlugMeta,
@@ -165,32 +165,19 @@ async function loadClaimBasisBundle(
   }));
   const patientName = (claim.patient_name as string | null | undefined) ?? null;
 
-  // ── coverageMap + coveredMeta — DETAIL route's LEAN construction (verbatim
-  //    from claims/[claimId]/route.ts:224-263), so the letter matches that card. ──
-  const coverageMap = new Map<string, PlanCoverageInput & { source?: string | null }>();
-  const coveredMeta: CoveredSlugMeta[] = [];
-  if (planId) {
-    const coveredServices = await selectOwnedChildren(
-      supabase,
-      userId,
-      "plan_covered_services",
-      [planId],
-      "covered, in_copay, in_coinsurance, source, service_catalog!inner(slug, category)",
-    );
-    for (const svc of coveredServices ?? []) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const sc = svc.service_catalog as any;
-      const slug = sc?.slug as string | undefined;
-      if (!slug) continue;
-      const coverage = {
-        covered: svc.covered as boolean | null,
-        copay: svc.in_copay as number | null,
-        coinsurance: normalizeCoinsuranceForStorage(svc.in_coinsurance as number | null),
-      };
-      coverageMap.set(slug, { ...coverage, source: svc.source as string | null });
-      coveredMeta.push({ slug, category: (sc?.category as string | null) ?? null, coverage });
-    }
-  }
+  // ── coverage (RICH) via the canonical loader the list page already uses (Path 2).
+  //    Uses the plan's explicit in_deductible_applies (96.8% populated) + OON terms,
+  //    which the detail route's prior LEAN inline build dropped (→ a guess that diverged
+  //    from the explicit value ~45% of the time). planId comes from an owned claim (the
+  //    claim read above is user-scoped), so loadPlanCoverageMeta reads only this user's
+  //    plan's coverage. Gives coverageMap + coveredMeta + acaCompliant in one call. ──
+  const planMeta = planId
+    ? (await loadPlanCoverageMeta(supabase, [planId])).get(planId)
+    : undefined;
+  const coverageMap: Map<string, PlanCoverageInput & { source?: string | null }> =
+    planMeta?.coverageMap ?? new Map();
+  const coveredMeta: CoveredSlugMeta[] = planMeta?.coveredMeta ?? [];
+  const planAcaCompliant: boolean | null = planMeta?.acaCompliant ?? null;
 
   // ── billSlugMeta (category + ACA-preventive eligibility) for the secondary match. ──
   const billSlugMeta = new Map<string, BillSlugMeta>();
@@ -208,16 +195,6 @@ async function loadClaimBasisBundle(
         isPreventiveEligible: Boolean(r.is_preventive_eligible),
       });
     }
-  }
-
-  let planAcaCompliant: boolean | null = null;
-  if (planId) {
-    const { data: planRow } = await userScoped(supabase, userId)
-      .table("insurance_plans")
-      .select("is_aca_compliant")
-      .eq("id", planId)
-      .maybeSingle();
-    planAcaCompliant = (planRow?.is_aca_compliant as boolean | null) ?? null;
   }
 
   const acaFallback = await buildAcaCoverageFallback({
