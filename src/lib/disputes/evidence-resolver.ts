@@ -250,6 +250,11 @@ export interface LineItemEvidence {
     type: string;
     severity: string;
     title: string;
+    /** §18 Stage 1 — the persisted finding description (persist.ts:278). Surfaced so the
+     *  grounds builder can reproduce the letter's finding-detail block on the rerender path
+     *  (the finding-level billedAmount is NOT persisted → the builder sources it from the
+     *  line's billedAmount). Optional + additive → existing constructors/consumers ignore it. */
+    description?: string | null;
     estimatedOvercharge: number;
     benchmarkAmount: number | null;
     benchmarkSource: string | null;
@@ -1985,6 +1990,9 @@ function extractAuditFindings(metadata: Record<string, unknown> | undefined): Li
       type: String(f.type ?? "finding"),
       severity: String(f.severity ?? "medium"),
       title: String(f.title ?? "Audit finding"),
+      // §18 Stage 1 (Gap 1) — surface the persisted description so the grounds builder
+      // reproduces the letter's finding-detail block on the rerender path. Additive.
+      description: f.description != null ? String(f.description) : null,
       estimatedOvercharge: Number(f.estimatedOvercharge ?? 0),
       benchmarkAmount: f.benchmarkAmount != null ? Number(f.benchmarkAmount) : null,
       benchmarkSource: f.benchmarkSource != null ? String(f.benchmarkSource) : null,

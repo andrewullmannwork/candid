@@ -40,10 +40,15 @@ function check(name: string, cond: boolean, got?: unknown) {
 // The letter body opens with formatDate(new Date()) = today (templates.ts:966 etc.).
 // Replicate formatDate(today) exactly (templates.ts:888) and normalize it out so snapshots
 // are deterministic across days. The fixture serviceDate is a different (fixed) date → no collision.
-const TODAY = new Date(new Date().toISOString()).toLocaleDateString("en-US", {
-  year: "numeric", month: "long", day: "numeric", timeZone: "UTC",
-});
-const normalize = (body: string): string => body.split(TODAY).join("<LETTER_DATE>");
+// Most templates open with formatDate(today) (UTC, templates.ts:888); the negotiation
+// template uses LOCAL time (negotiation-template.ts:33). Normalize BOTH formats so
+// snapshots are deterministic across templates AND the UTC/local day boundary. The fixture
+// serviceDate ("March 15, 2024") is a different, fixed date → never collides.
+const DATE_OPTS = { year: "numeric", month: "long", day: "numeric" } as const;
+const TODAY_UTC = new Date(new Date().toISOString()).toLocaleDateString("en-US", { ...DATE_OPTS, timeZone: "UTC" });
+const TODAY_LOCAL = new Date().toLocaleDateString("en-US", DATE_OPTS);
+const normalize = (body: string): string =>
+  body.split(TODAY_UTC).join("<LETTER_DATE>").split(TODAY_LOCAL).join("<LETTER_DATE>");
 
 function snapshot(name: string, body: string) {
   const file = resolve(GOLDEN_DIR, `${name}.txt`);
