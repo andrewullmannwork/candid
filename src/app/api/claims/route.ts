@@ -10,8 +10,6 @@ import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import {
   computeRecoveryV2,
-  resolveStillOutstanding,
-  type PlanCoverageInput,
   type PlanCostShareParams,
   type CostShareOverrides,
   type CostShareVerdict,
@@ -30,16 +28,15 @@ import {
 } from "@/lib/claims/cost-share-loader";
 import {
   resolveCostShareForLine,
+  resolveLinePrep,
   type CostShareClaimCtx,
+  type ClaimCostSharePrep,
 } from "@/lib/claims/resolve-cost-share";
 import {
   resolveEffectiveClaimTotals,
-  resolvePerLineInsuranceAdjusted,
 } from "@/lib/claims/effective-totals";
 import { buildAcaCoverageFallback, detectPreventiveMembership } from "@/lib/audit/aca-coverage-fallback";
 import {
-  resolveLineCoverage,
-  resolveSecondaryCoverage,
   loadPlanCoverageMeta,
   loadBillSlugMeta,
   loadSecondaryGate,
@@ -335,9 +332,11 @@ export async function GET(req: NextRequest) {
           )
         : null;
       const csAccRows = costShareV2 ? csAccumulatorsByClaim.get(claim.id as string) ?? [] : [];
-      const csEffectiveTotals = costShareV2
-        ? resolveEffectiveClaimTotals({ claim, lineItems: items })
-        : null;
+      // §18.10 list-swap — effectiveTotals is now UNCONDITIONAL (was costShareV2-gated):
+      // resolveLinePrep (below) always header-prorates insuranceAdjusted from it, so it
+      // cannot be null. Mirrors the detail route. Output-neutral when the flag is OFF —
+      // that branch ignores lp.insuranceAdjusted (uses the raw per-line value).
+      const csEffectiveTotals = resolveEffectiveClaimTotals({ claim, lineItems: items });
       const csMemberSums = { deductible: 0, oop: 0 };
       if (costShareV2) {
         for (const it of items) {
@@ -388,6 +387,24 @@ export async function GET(req: NextRequest) {
         planYear: csPlanYear,
       };
 
+      // §18.10 list-swap — per-line PREP inputs (coverage + secondary + ACA-fallback +
+      // proration context), assembled once per claim, fed to resolveLinePrep per line.
+      // Mirrors the detail route; the per-line prep is byte-identical to the prior inline
+      // given the same inputs (scripts/calibration/fixtures/cost-share-v2/prep-parity.ts,
+      // strategy "list"). coverageMap is RICH (loadPlanCoverageMeta, line 183).
+      const csPrepInputs: ClaimCostSharePrep = {
+        coverageMap: coverageMap ?? new Map(),
+        coveredMeta: planMeta?.coveredMeta ?? [],
+        billSlugMeta,
+        planAcaCompliant: planMeta?.acaCompliant ?? null,
+        secondaryGate,
+        secondaryEnabled: secondaryV2,
+        acaFallback,
+        claimTotalBilled,
+        claimStillOutstanding,
+        effectiveTotals: csEffectiveTotals,
+      };
+
       let findingCount = 0;
       let potentialSavings = 0;
       let reviewNeededCount = 0;
@@ -428,52 +445,16 @@ export async function GET(req: NextRequest) {
         const billed = Number(item.billed_amount || 0);
         const paid = Number(item.insurance_paid || 0);
         const owed = Number(item.patient_owes || 0);
-        // F-1 / mig 092 — patient_paid_amount column drives refund/forgiveness
-        // split. Defaults to 0 on legacy rows.
-        const patientPaid = Number(item.patient_paid_amount ?? 0);
-
-        // F-1 — recovery uses patient_responsibility (= patient_owes) directly
-        // rather than the legacy `stillOutstanding` heuristic. patient_owes is
-        // the total assigned share; patient_paid_amount is how much the user
-        // has paid OOP. Refund/forgiveness split derives from those two.
-        // S135 — coverage resolved via the 4-state ACA matrix helper. ACA wins
-        // on conflict for math + bill state; plan wins on match. ACA-only when
-        // plan missing slug. Symmetric with detail endpoint.
-        let rawPlanCoverage: PlanCoverageInput | null =
-          (item.service_slug && coverageMap?.get(item.service_slug)) || null;
-        // S154 — secondary (category) match when the exact slug has no plan row,
-        // mirroring the DETAIL GET so list/dashboard agree with the detail page.
-        // BOTH `confident` and `estimate` results count as covered here (per
-        // Andrew: never regress an identified service to "needs review"); the
-        // estimate's Verify affordance + dispute demotion live on the detail
-        // surface, keyed off coverageSource/confidence.
-        if (secondaryV2 && !rawPlanCoverage && item.service_slug) {
-          const meta = billSlugMeta.get(item.service_slug as string);
-          if (meta) {
-            const sec = resolveSecondaryCoverage(
-              item.service_slug as string,
-              meta,
-              planMeta?.coveredMeta ?? [],
-              planMeta?.acaCompliant ?? null,
-              secondaryGate,
-            );
-            if (sec) rawPlanCoverage = sec.coverage;
-          }
-        }
-        const acaCoverage: PlanCoverageInput | null =
-          acaFallback.byLineNumber.get(Number(item.line_number ?? 0)) || null;
-        const { coverage } = resolveLineCoverage(
-          rawPlanCoverage,
-          acaCoverage,
-          acaFallback.planMeta,
-        );
-        const patientResponsibility = owed || resolveStillOutstanding({
-          lineBilled: billed,
-          lineStillOutstanding: item.amount_still_outstanding != null ? Number(item.amount_still_outstanding) : null,
-          linePatientOwes: owed,
-          claimTotalBilled,
-          claimStillOutstanding,
-        });
+        // §18.10 list-swap — per-line cost-share PREP via the shared recipe (coverage:
+        // exact slug → secondary → ACA fallback; writeoff proration + allowed; patientPaid +
+        // patientResponsibility). Byte-identical to the prior inline given the same inputs
+        // (scripts/calibration/fixtures/cost-share-v2/prep-parity.ts, strategy "list"). One
+        // shared prep across the list + detail + dispute paths so they can't drift on how a
+        // line resolves. coverageMap is RICH (loadPlanCoverageMeta).
+        const lp = resolveLinePrep(item as Record<string, unknown>, csPrepInputs, "list");
+        const coverage = lp.coverage;
+        const patientPaid = lp.patientPaid;
+        const patientResponsibility = lp.patientResponsibility;
         // Cost-Share v2 — when ON, the plan-derived phase engine replaces the
         // deductible-blind path (same as the detail GET). The result is a
         // RecoveryMetrics superset so the totals below consume it unchanged.
@@ -481,24 +462,14 @@ export async function GET(req: NextRequest) {
         let rec: RecoveryMetrics;
         let lineVerdict: CostShareVerdict | null = null;
         if (costShareV2) {
-          // Prorate the per-line writeoff exactly as the detail GET does, so the
-          // list verdict + recovery match the detail page (no list/detail drift).
-          const { value: lineInsAdj } = resolvePerLineInsuranceAdjusted({
-            lineBilled: billed,
-            lineInsuranceAdjusted:
-              item.insurance_adjusted_amount != null ? Number(item.insurance_adjusted_amount) : null,
-            claimTotalBilled,
-            effectiveClaimInsuranceAdjusted: csEffectiveTotals!,
-          });
-          // §18.9 — shared resolution layer (parity-locked vs the prior inline assembly,
-          // scripts/calibration/fixtures/cost-share-v2/resolve-parity.ts). Divergent prep
-          // (allowed/insuranceAdjusted/patientResponsibility/coverage) stays here.
+          // §18.9 — shared resolution layer; route-inputs.ts locks these engine inputs.
+          // allowed + insuranceAdjusted are the recipe's header-prorated values.
           const cs = resolveCostShareForLine(
             {
               lineNumber: Number(item.line_number ?? 0),
               billed,
-              allowed: Math.max(0, billed - lineInsAdj),
-              insuranceAdjusted: lineInsAdj,
+              allowed: lp.allowed,
+              insuranceAdjusted: lp.insuranceAdjusted,
               patientPaid,
               patientResponsibility,
               coverage,
@@ -510,13 +481,16 @@ export async function GET(req: NextRequest) {
           rec = cs;
           lineVerdict = cs.verdict;
         } else {
+          // Rollback path (recovery_cost_share_v2 OFF). insuranceAdjusted stays the RAW
+          // per-line value — NOT lp.insuranceAdjusted (header-prorated) — so this branch is
+          // byte-identical to what it rolls back TO (pre-swap list-OFF behavior). Proof: all
+          // 5 computeRecoveryV2 inputs are byte-identical — patientResponsibility/patientPaid/
+          // coverage are prep-parity-proven; billed + this raw literal are untouched. (S120:
+          // computeRecoveryV2 applies coinsurance to billed − insuranceAdjusted internally.)
           rec = computeRecoveryV2({
             billed,
             patientResponsibility,
             patientPaid,
-            // S120 — apply coinsurance to ADJUSTED billed (post-writeoff), not
-            // gross billed. Without this, recovery math overstates patient share
-            // by the full insurer contractual writeoff.
             insuranceAdjusted: Number(item.insurance_adjusted_amount ?? 0),
             planCoverage: coverage,
           });
