@@ -259,6 +259,14 @@ export interface FieldProvenanceEntry {
   // rename (identity certain). The A3 read-layer gate maps presence → "referenced until
   // confirmed" even with a verified excerpt (identity axis ≠ value/coverage axis).
   resolution_source?: string;
+  // A3 (cite-grade gate) — the confirm-release switch. Co-located with `resolution_source` so a
+  // SINGLE write to this cell lifts suppression on EVERY surface that loads field_provenance
+  // (/plan badge, /compare, dispute-letter quote) at once — no per-surface plumbing. The A3
+  // read-layer gate is `identity_inferred = resolution_source != null && identity_confirmed !== true`:
+  // the user confirming the synonym match (ServiceVerificationGateCard, D3 fast-follow) writes
+  // `identity_confirmed: true` here → the badge un-caps and the citation un-suppresses. A3 ships
+  // the READ; the confirm button ships the WRITE. Additive JSONB (no schema mig).
+  identity_confirmed?: boolean;
 }
 
 /**

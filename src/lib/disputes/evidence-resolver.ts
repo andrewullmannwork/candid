@@ -1253,6 +1253,12 @@ async function loadCoverage(
   const byServiceSlug = new Map<string, PlanBenefitDetail>();
   if (!insurancePlanId) return byServiceSlug;
 
+  // A3 (cite-grade gate): when ON, a row whose identity was inferred by an unconfirmed synonym
+  // cache-win (field_provenance.{field}.resolution_source set) is referenced, NOT verbatim-cited —
+  // the excerpt backs the ORIGINAL label, not the remapped concept. The loop below nulls the
+  // excerpt for such rows so the dispute-letter blockquote can't render. Flag OFF → no-op.
+  const citeGradeGateOn = await isFeatureEnabled("cite_grade_gate_v1");
+
   // S72 commit 4: pre-load canonical_haiku_extractions cite-grade citations for this
   // plan's canonical. Used as fallback in the loop below when user's own row's
   // Pattern P-8 field_provenance lacks excerpt (smart-skip case post-CF-40 v3).
@@ -1341,7 +1347,12 @@ async function loadCoverage(
     const primaryField = r.in_copay !== null ? "in_copay" : "in_coinsurance";
     const p8Entry = r.field_provenance?.[primaryField];
     const p8 = extractPatternP8FromEntry(p8Entry);
-    const userRowCiteGrade = isCitationGrade(p8);
+    // A3: identity axis — unconfirmed synonym cache-win → referenced, not cited.
+    const identityInferred =
+      citeGradeGateOn &&
+      p8Entry?.resolution_source != null &&
+      p8Entry?.identity_confirmed !== true;
+    const userRowCiteGrade = isCitationGrade(p8, { identityInferred });
 
     // S72 commit 4: when user's own row lacks cite-grade Pattern P-8 excerpt,
     // fall back to canonical_haiku_extractions (cite-grade citations from any prior
@@ -1352,12 +1363,18 @@ async function loadCoverage(
       ? canonicalCiteGradeBySlug.get(cat.slug) ?? null
       : null;
 
-    const preferredExcerpt =
-      p8?.source_excerpt ?? canonicalFallback?.sourceExcerpt ?? r.sbc_excerpt ?? null;
-    const sbcExcerptVerified = userRowCiteGrade || canonicalFallback !== null;
+    // A3: inferred identity → no verbatim citation. Null the excerpt (also keyed on the uncertain
+    // remapped slug for the canonical fallback) so the letter references but never quotes; clears
+    // when the user confirms the match (identity_confirmed → identityInferred false).
+    const preferredExcerpt = identityInferred
+      ? null
+      : p8?.source_excerpt ?? canonicalFallback?.sourceExcerpt ?? r.sbc_excerpt ?? null;
+    const sbcExcerptVerified = !identityInferred && (userRowCiteGrade || canonicalFallback !== null);
     // S74 Pillar 2 — track the excerpt's provenance for the canonical-fallback
     // transparency disclosure in EvidenceBlock.
-    const citationSource: PlanBenefitDetail["citationSource"] = userRowCiteGrade
+    const citationSource: PlanBenefitDetail["citationSource"] = identityInferred
+      ? null
+      : userRowCiteGrade
       ? "user_doc"
       : canonicalFallback !== null
       ? "canonical_fallback"
@@ -1412,6 +1429,11 @@ async function loadCoverageFromCanonical(
   sourceYear: number | null,
 ): Promise<Map<string, PlanBenefitDetail>> {
   const byServiceSlug = new Map<string, PlanBenefitDetail>();
+
+  // A3 (cite-grade gate): symmetric with loadCoverage — an inferred-identity canonical row is
+  // referenced, not verbatim-cited (its excerpt is keyed on the uncertain remapped slug). Dormant
+  // pre-Group-B (today's canonical seed carries no resolution_source); forward-correct. Flag OFF → no-op.
+  const citeGradeGateOn = await isFeatureEnabled("cite_grade_gate_v1");
 
   // Pre-load cite-grade excerpts from canonical_haiku_extractions for this
   // canonical. Same query as loadCoverage's fallback path — only verified +
@@ -1493,14 +1515,23 @@ async function loadCoverageFromCanonical(
     const primaryField = r.in_copay !== null ? "in_copay" : "in_coinsurance";
     const p8Entry = r.field_provenance?.[primaryField];
     const p8 = extractPatternP8FromEntry(p8Entry);
-    const userRowCiteGrade = isCitationGrade(p8);
+    // A3: identity axis — unconfirmed synonym cache-win → referenced, not cited.
+    const identityInferred =
+      citeGradeGateOn &&
+      p8Entry?.resolution_source != null &&
+      p8Entry?.identity_confirmed !== true;
+    const userRowCiteGrade = isCitationGrade(p8, { identityInferred });
 
     const canonicalCiteGrade = canonicalCiteGradeBySlug.get(cat.slug) ?? null;
 
-    const preferredExcerpt =
-      p8?.source_excerpt ?? canonicalCiteGrade?.sourceExcerpt ?? null;
-    const sbcExcerptVerified = userRowCiteGrade || canonicalCiteGrade !== null;
-    const citationSource: PlanBenefitDetail["citationSource"] = userRowCiteGrade
+    // A3: inferred identity → null the excerpt so the letter references but never quotes.
+    const preferredExcerpt = identityInferred
+      ? null
+      : p8?.source_excerpt ?? canonicalCiteGrade?.sourceExcerpt ?? null;
+    const sbcExcerptVerified = !identityInferred && (userRowCiteGrade || canonicalCiteGrade !== null);
+    const citationSource: PlanBenefitDetail["citationSource"] = identityInferred
+      ? null
+      : userRowCiteGrade
       ? "user_doc"
       : canonicalCiteGrade !== null
       ? "canonical_fallback"
