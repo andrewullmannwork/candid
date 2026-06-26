@@ -30,14 +30,13 @@ interface StampCell {
   sources: string[];
 }
 
-async function listStampedCells(userId: string): Promise<StampCell[]> {
-  const { data: plans } = await sb.from("insurance_plans").select("id").eq("user_id", userId);
-  const planIds = (plans ?? []).map((p: { id: string }) => p.id);
-  if (!planIds.length) return [];
+async function listStampedCells(planId: string): Promise<StampCell[]> {
+  // Scope to the parse's OWN plan — NOT a user-wide scan. A heavy-test account can hold 1000+
+  // plans, and an unscoped `.in(...)` silently caps at PostgREST's 1000-row default → false 0.
   const { data: rows } = await sb
     .from("plan_covered_services")
     .select("service_id, place_of_service, field_provenance")
-    .in("insurance_plan_id", planIds);
+    .eq("insurance_plan_id", planId);
   const out: StampCell[] = [];
   for (const r of rows ?? []) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -56,11 +55,8 @@ async function listStampedCells(userId: string): Promise<StampCell[]> {
 
 // Pull the full FieldProvenanceEntry of the first persisted cell carrying resolution_source, so the
 // read-gate can be exercised on REAL data (not a fixture). Returns the column + entry, or null.
-async function findStampedEntry(userId: string): Promise<{ column: string; entry: FieldProvenanceEntry } | null> {
-  const { data: plans } = await sb.from("insurance_plans").select("id").eq("user_id", userId);
-  const planIds = (plans ?? []).map((p: { id: string }) => p.id);
-  if (!planIds.length) return null;
-  const { data: rows } = await sb.from("plan_covered_services").select("field_provenance").in("insurance_plan_id", planIds);
+async function findStampedEntry(planId: string): Promise<{ column: string; entry: FieldProvenanceEntry } | null> {
+  const { data: rows } = await sb.from("plan_covered_services").select("field_provenance").eq("insurance_plan_id", planId);
   for (const r of rows ?? []) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fp = (r as any).field_provenance as Record<string, FieldProvenanceEntry> | null;
@@ -73,8 +69,8 @@ async function findStampedEntry(userId: string): Promise<{ column: string; entry
 }
 
 // The full write→READ proof: run a real persisted stamped cell through the actual A3 gate.
-async function verifyReadGate(userId: string): Promise<void> {
-  const stamped = await findStampedEntry(userId);
+async function verifyReadGate(planId: string): Promise<void> {
+  const stamped = await findStampedEntry(planId);
   if (!stamped) { console.log("\n(read-gate) no stamped cell found to verify"); return; }
   const { column, entry } = stamped;
   console.log(`\n--- read-gate on the persisted stamped cell (column=${column}, resolution_source=${entry.resolution_source}) ---`);
@@ -123,10 +119,7 @@ async function main() {
   }
   console.log(`\nDoc ${docRow.id} (${docRow.file_name}) · user ${docRow.user_id} · type ${docRow.classified_type} · OCR ${docRow.processing_ocr_text.length} chars\n`);
 
-  const before = await listStampedCells(docRow.user_id);
-  console.log(`BEFORE: ${before.length} cell(s) with resolution_source`);
-
-  console.log(`\n--- re-parsing with thesaurusRoutingOverride=true (skipCanonical, user-scoped) ---`);
+  console.log(`\n--- re-parsing with thesaurusRoutingOverride=true (drives BOTH legs; skipCanonical, user-scoped) ---`);
   const result = await processPlanDocumentData(
     sb,
     { id: docRow.id, user_id: docRow.user_id, file_name: docRow.file_name },
@@ -143,18 +136,22 @@ async function main() {
     },
     { skipCanonical: true, thesaurusRoutingOverride: true },
   );
-  console.log(`--- parse done: success=${result.success}${result.error ? ` error=${result.error}` : ""} ---\n`);
+  console.log(`--- parse done: success=${result.success} plan=${result.planId ?? "?"}${result.error ? ` error=${result.error}` : ""} ---\n`);
+  if (!result.planId) { console.error("no planId on result — cannot scope the stamp check"); process.exit(1); }
 
-  const after = await listStampedCells(docRow.user_id);
-  console.log(`AFTER: ${after.length} cell(s) with resolution_source (delta +${after.length - before.length})`);
+  // Scope the stamp check to the parse's OWN plan (this run created/updated it). On a fresh plan any
+  // stamped cell is a delta by construction — no user-wide BEFORE/AFTER scan (which a 1000+-plan
+  // test account silently truncates).
+  const after = await listStampedCells(result.planId);
+  console.log(`AFTER: ${after.length} cell(s) with resolution_source on plan ${result.planId}`);
   for (const c of after.slice(0, 25)) {
     console.log(`  service_id=${c.serviceId} pos=${c.pos ?? "-"} resolution_source=${JSON.stringify(c.sources)}`);
   }
-  if (after.length > before.length) {
+  if (after.length > 0) {
     console.log(`\n✅ SEAM PROVEN E2E: synonym cache-win cells persisted resolution_source to plan_covered_services.`);
-    await verifyReadGate(docRow.user_id);
+    await verifyReadGate(result.planId);
   } else {
-    console.log(`\n⚠ INCONCLUSIVE: no new stamps. Check the "[process-plan] thesaurus routing: N cache-win(s)" line above — if N=0, this SBC produced no cache-wins (try another doc).`);
+    console.log(`\n⚠ INCONCLUSIVE: no stamps. Check the "[process-plan] thesaurus routing: N cache-win(s)" line above — if N=0, this SBC produced no cache-wins (try another doc).`);
   }
 }
 
