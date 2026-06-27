@@ -1245,6 +1245,144 @@ function emptyEvidence(
   };
 }
 
+// ============================================================================
+// R1a (S240) — shared coverage-read helpers, extracted from loadCoverage +
+// loadCoverageFromCanonical (they were ~90% identical). Parity-gated in
+// scripts/calibration/fixtures/cost-share-v2/coverage-loader-parity.ts.
+// ============================================================================
+
+/** One coverage row in the shape buildPlanBenefitFromRow consumes. `sbc_excerpt` /
+ *  `sbc_page` are user-table (plan_covered_services) only — pass null for canonical. */
+export interface CoverageRowForBenefit {
+  covered: boolean | null;
+  in_copay: number | null;
+  in_coinsurance: number | null;
+  source: string | null;
+  confidence: number | null;
+  sbc_excerpt: string | null;
+  sbc_page: number | null;
+  field_provenance: Record<string, FieldProvenanceEntry> | null;
+  slug: string;
+  name: string;
+}
+
+/** Pre-loaded, per-plan cite-grade context shared across every row of one load. */
+export interface CiteGradeContext {
+  citeGradeGateOn: boolean;
+  canonicalCiteGradeBySlug: Map<string, { sourceExcerpt: string; sourceSectionHint: string }>;
+  coverageCanonicalMap: Map<string, string>;
+}
+
+/** Table-specific knobs — the only things the two loaders differed on per row. */
+export interface PlanBenefitRowOpts {
+  sourceTag: PlanBenefitDetail["sourcedFrom"];
+  sourceYear: number | null;
+  sourceDefault: string;
+  buildCitation: (name: string, sbcPage: number | null) => string;
+}
+
+/**
+ * The shared per-row cite-grade mapper: the A3 identity axis + the P-8 → canonical-
+ * haiku → legacy-sbc excerpt cascade + alias keying. PURE. Returns null when the row
+ * falls below the confidence floor (the prior loops' `continue`). Both loaders fetch
+ * rows for their table and call this; byte-identical to the prior inline loops
+ * (coverage-loader-parity.ts).
+ */
+export function buildPlanBenefitFromRow(
+  row: CoverageRowForBenefit,
+  ctx: CiteGradeContext,
+  opts: PlanBenefitRowOpts,
+): { canonicalSlug: string; detail: PlanBenefitDetail } | null {
+  const confidence = row.confidence ?? 0.5;
+  if (confidence < MIN_PLAN_BENEFIT_CONFIDENCE) return null;
+
+  // Pattern P-8 cite-grade for the row's primary cost field (in_copay when present, else in_coinsurance).
+  const primaryField = row.in_copay !== null ? "in_copay" : "in_coinsurance";
+  const p8Entry = row.field_provenance?.[primaryField];
+  const p8 = extractPatternP8FromEntry(p8Entry);
+  // A3: identity axis — unconfirmed synonym cache-win → referenced, not cited.
+  const identityInferred =
+    ctx.citeGradeGateOn &&
+    p8Entry?.resolution_source != null &&
+    p8Entry?.identity_confirmed !== true;
+  const userRowCiteGrade = isCitationGrade(p8, { identityInferred });
+  // Fall back to canonical_haiku_extractions when the row lacks its own cite-grade P-8.
+  const canonicalFallback = !userRowCiteGrade
+    ? ctx.canonicalCiteGradeBySlug.get(row.slug) ?? null
+    : null;
+  // A3: inferred identity → null the excerpt so the letter references but never quotes.
+  const preferredExcerpt = identityInferred
+    ? null
+    : p8?.source_excerpt ?? canonicalFallback?.sourceExcerpt ?? row.sbc_excerpt ?? null;
+  const sbcExcerptVerified = !identityInferred && (userRowCiteGrade || canonicalFallback !== null);
+  const citationSource: PlanBenefitDetail["citationSource"] = identityInferred
+    ? null
+    : userRowCiteGrade
+    ? "user_doc"
+    : canonicalFallback !== null
+    ? "canonical_fallback"
+    : row.sbc_excerpt
+    ? "legacy_sbc_excerpt"
+    : null;
+
+  // S99 B5 — key by canonical sibling (identity when no aliases exist).
+  const canonicalSlug = ctx.coverageCanonicalMap.get(row.slug) ?? row.slug;
+  return {
+    canonicalSlug,
+    detail: {
+      covered: row.covered !== false,
+      copay: row.in_copay,
+      coinsurance: row.in_coinsurance,
+      source: row.source ?? opts.sourceDefault,
+      confidence,
+      citation: opts.buildCitation(row.name, row.sbc_page),
+      sbcExcerpt: preferredExcerpt,
+      sbcPage: row.sbc_page ?? null,
+      sbcExcerptVerified,
+      citationSource,
+      sourcedFrom: opts.sourceTag,
+      sourcedFromYear: opts.sourceYear,
+    },
+  };
+}
+
+/**
+ * Pre-load cite-grade excerpts from canonical_haiku_extractions for a canonical plan
+ * (verified + section-verified only = cite-grade per Pattern P-8). Most-recent wins.
+ * Shared by both loaders (was duplicated verbatim). Empty map when no canonical id.
+ */
+async function loadCanonicalCiteGradeBySlug(
+  supabase: SupabaseClient,
+  canonicalPlanId: string | null,
+): Promise<Map<string, { sourceExcerpt: string; sourceSectionHint: string }>> {
+  const out = new Map<string, { sourceExcerpt: string; sourceSectionHint: string }>();
+  if (!canonicalPlanId) return out;
+  const { data: extractions } = await supabase
+    .from("canonical_haiku_extractions")
+    .select("service_slug, source_excerpt, source_section_hint, created_at")
+    .eq("canonical_plan_id", canonicalPlanId)
+    .eq("field_name", "services_cost_sharing_row")
+    .eq("source_excerpt_verified", "verified")
+    .eq("source_section_verified", true)
+    .order("created_at", { ascending: false });
+  if (extractions) {
+    for (const ext of extractions as Array<{
+      service_slug: string | null;
+      source_excerpt: string | null;
+      source_section_hint: string | null;
+    }>) {
+      if (!ext.service_slug || !ext.source_excerpt) continue;
+      if (!out.has(ext.service_slug)) {
+        out.set(ext.service_slug, {
+          sourceExcerpt: ext.source_excerpt,
+          sourceSectionHint: ext.source_section_hint ?? "",
+        });
+      }
+    }
+  }
+  return out;
+}
+
 async function loadCoverage(
   supabase: SupabaseClient,
   insurancePlanId: string | null,
@@ -1276,30 +1414,7 @@ async function loadCoverage(
     .maybeSingle();
   const canonicalPlanId = (planRow?.canonical_plan_id as string | null | undefined) ?? null;
 
-  const canonicalCiteGradeBySlug = new Map<string, { sourceExcerpt: string; sourceSectionHint: string }>();
-  if (canonicalPlanId) {
-    const { data: extractions } = await supabase
-      .from("canonical_haiku_extractions")
-      .select("service_slug, source_excerpt, source_section_hint, created_at")
-      .eq("canonical_plan_id", canonicalPlanId)
-      .eq("field_name", "services_cost_sharing_row")
-      .eq("source_excerpt_verified", "verified")
-      .eq("source_section_verified", true)
-      .order("created_at", { ascending: false });
-
-    if (extractions) {
-      for (const ext of extractions as Array<{ service_slug: string | null; source_excerpt: string | null; source_section_hint: string | null }>) {
-        if (!ext.service_slug || !ext.source_excerpt) continue;
-        // Most-recent wins (DESC ordering above + first-set semantics).
-        if (!canonicalCiteGradeBySlug.has(ext.service_slug)) {
-          canonicalCiteGradeBySlug.set(ext.service_slug, {
-            sourceExcerpt: ext.source_excerpt,
-            sourceSectionHint: ext.source_section_hint ?? "",
-          });
-        }
-      }
-    }
-  }
+  const canonicalCiteGradeBySlug = await loadCanonicalCiteGradeBySlug(supabase, canonicalPlanId);
 
   // plan_covered_services rows; service_catalog.slug is the natural join key.
   // sbc_excerpt/sbc_page exist after migration 050 (Phase 4.5).
@@ -1329,6 +1444,7 @@ async function loadCoverage(
       ? await resolveCanonicalSlugs(rawSlugsForCanonical, supabase)
       : new Map<string, string>();
 
+  const citeCtx: CiteGradeContext = { citeGradeGateOn, canonicalCiteGradeBySlug, coverageCanonicalMap };
   for (const r of rows as unknown as Array<{
     covered: boolean | null;
     in_copay: number | null;
@@ -1342,67 +1458,28 @@ async function loadCoverage(
   }>) {
     const cat = Array.isArray(r.service_catalog) ? r.service_catalog[0] : r.service_catalog;
     if (!cat?.slug) continue;
-    const confidence = r.confidence ?? 0.5;
-    if (confidence < MIN_PLAN_BENEFIT_CONFIDENCE) continue;
-
-    // Phase 4 Task 4-E: derive Pattern P-8 cite-grade verification for the row's
-    // primary cost field. Per Q-DR-4E-1 LOCK = (B), the gating field is in_copay
-    // when copay is non-null; in_coinsurance otherwise. When P-8 verbatim is
-    // available, prefer it over the legacy sbc_excerpt column.
-    const primaryField = r.in_copay !== null ? "in_copay" : "in_coinsurance";
-    const p8Entry = r.field_provenance?.[primaryField];
-    const p8 = extractPatternP8FromEntry(p8Entry);
-    // A3: identity axis — unconfirmed synonym cache-win → referenced, not cited.
-    const identityInferred =
-      citeGradeGateOn &&
-      p8Entry?.resolution_source != null &&
-      p8Entry?.identity_confirmed !== true;
-    const userRowCiteGrade = isCitationGrade(p8, { identityInferred });
-
-    // S72 commit 4: when user's own row lacks cite-grade Pattern P-8 excerpt,
-    // fall back to canonical_haiku_extractions (cite-grade citations from any prior
-    // cite-grade Haiku run on the same canonical+service). Closes CF-20 cite-grade
-    // gap for smart-skipped users (post-CF-40 v3 dependency). Canonical fallback
-    // is cite-grade by query construction (only verified+section_verified rows).
-    const canonicalFallback = !userRowCiteGrade
-      ? canonicalCiteGradeBySlug.get(cat.slug) ?? null
-      : null;
-
-    // A3: inferred identity → no verbatim citation. Null the excerpt (also keyed on the uncertain
-    // remapped slug for the canonical fallback) so the letter references but never quotes; clears
-    // when the user confirms the match (identity_confirmed → identityInferred false).
-    const preferredExcerpt = identityInferred
-      ? null
-      : p8?.source_excerpt ?? canonicalFallback?.sourceExcerpt ?? r.sbc_excerpt ?? null;
-    const sbcExcerptVerified = !identityInferred && (userRowCiteGrade || canonicalFallback !== null);
-    // S74 Pillar 2 — track the excerpt's provenance for the canonical-fallback
-    // transparency disclosure in EvidenceBlock.
-    const citationSource: PlanBenefitDetail["citationSource"] = identityInferred
-      ? null
-      : userRowCiteGrade
-      ? "user_doc"
-      : canonicalFallback !== null
-      ? "canonical_fallback"
-      : r.sbc_excerpt
-      ? "legacy_sbc_excerpt"
-      : null;
-
-    // S99 B5 — key by canonical sibling (identity when no aliases exist).
-    const canonicalSlug = coverageCanonicalMap.get(cat.slug) ?? cat.slug;
-    byServiceSlug.set(canonicalSlug, {
-      covered: r.covered !== false,
-      copay: r.in_copay,
-      coinsurance: r.in_coinsurance,
-      source: r.source ?? "unknown",
-      confidence,
-      citation: `Plan SBC${r.sbc_page ? `, page ${r.sbc_page}` : ""} — ${cat.name}`,
-      sbcExcerpt: preferredExcerpt,
-      sbcPage: r.sbc_page ?? null,
-      sbcExcerptVerified,
-      citationSource,
-      sourcedFrom: sourceTag,
-      sourcedFromYear: sourceYear,
-    });
+    const built = buildPlanBenefitFromRow(
+      {
+        covered: r.covered,
+        in_copay: r.in_copay,
+        in_coinsurance: r.in_coinsurance,
+        source: r.source,
+        confidence: r.confidence,
+        sbc_excerpt: r.sbc_excerpt,
+        sbc_page: r.sbc_page,
+        field_provenance: r.field_provenance,
+        slug: cat.slug,
+        name: cat.name,
+      },
+      citeCtx,
+      {
+        sourceTag,
+        sourceYear,
+        sourceDefault: "unknown",
+        buildCitation: (name, page) => `Plan SBC${page ? `, page ${page}` : ""} — ${name}`,
+      },
+    );
+    if (built) byServiceSlug.set(built.canonicalSlug, built.detail);
   }
 
   return byServiceSlug;
@@ -1440,37 +1517,8 @@ async function loadCoverageFromCanonical(
   // pre-Group-B (today's canonical seed carries no resolution_source); forward-correct. Flag OFF → no-op.
   const citeGradeGateOn = await isFeatureEnabled("cite_grade_gate_v1");
 
-  // Pre-load cite-grade excerpts from canonical_haiku_extractions for this
-  // canonical. Same query as loadCoverage's fallback path — only verified +
-  // section-verified rows are cite-grade per Pattern P-8.
-  const canonicalCiteGradeBySlug = new Map<
-    string,
-    { sourceExcerpt: string; sourceSectionHint: string }
-  >();
-  const { data: extractions } = await supabase
-    .from("canonical_haiku_extractions")
-    .select("service_slug, source_excerpt, source_section_hint, created_at")
-    .eq("canonical_plan_id", canonicalPlanId)
-    .eq("field_name", "services_cost_sharing_row")
-    .eq("source_excerpt_verified", "verified")
-    .eq("source_section_verified", true)
-    .order("created_at", { ascending: false });
-
-  if (extractions) {
-    for (const ext of extractions as Array<{
-      service_slug: string | null;
-      source_excerpt: string | null;
-      source_section_hint: string | null;
-    }>) {
-      if (!ext.service_slug || !ext.source_excerpt) continue;
-      if (!canonicalCiteGradeBySlug.has(ext.service_slug)) {
-        canonicalCiteGradeBySlug.set(ext.service_slug, {
-          sourceExcerpt: ext.source_excerpt,
-          sourceSectionHint: ext.source_section_hint ?? "",
-        });
-      }
-    }
-  }
+  // Pre-load cite-grade excerpts from canonical_haiku_extractions for this canonical.
+  const canonicalCiteGradeBySlug = await loadCanonicalCiteGradeBySlug(supabase, canonicalPlanId);
 
   // Fetch canonical_plan_services rows for this canonical with service_catalog
   // join for display name. Schema per src/lib/plan/compare.ts:209+ — copay /
@@ -1498,6 +1546,7 @@ async function loadCoverageFromCanonical(
       ? await resolveCanonicalSlugs(rawSlugsForCanonical, supabase)
       : new Map<string, string>();
 
+  const citeCtx: CiteGradeContext = { citeGradeGateOn, canonicalCiteGradeBySlug, coverageCanonicalMap };
   for (const r of rows as unknown as Array<{
     covered: boolean | null;
     in_copay: number | null;
@@ -1509,54 +1558,30 @@ async function loadCoverageFromCanonical(
   }>) {
     const cat = Array.isArray(r.service_catalog) ? r.service_catalog[0] : r.service_catalog;
     if (!cat?.slug) continue;
-    const confidence = r.confidence ?? 0.5;
-    if (confidence < MIN_PLAN_BENEFIT_CONFIDENCE) continue;
-
-    // Pattern P-8 cite-grade for canonical path: rely on
-    // canonical_haiku_extractions excerpt (admin-attested or community-
-    // verified cite-grade). canonical_plan_services rows may have their own
-    // field_provenance with admin_attested sources; treat those as verified
-    // structurally (Pattern 1 #4) but excerpt comes from haiku-extractions.
-    const primaryField = r.in_copay !== null ? "in_copay" : "in_coinsurance";
-    const p8Entry = r.field_provenance?.[primaryField];
-    const p8 = extractPatternP8FromEntry(p8Entry);
-    // A3: identity axis — unconfirmed synonym cache-win → referenced, not cited.
-    const identityInferred =
-      citeGradeGateOn &&
-      p8Entry?.resolution_source != null &&
-      p8Entry?.identity_confirmed !== true;
-    const userRowCiteGrade = isCitationGrade(p8, { identityInferred });
-
-    const canonicalCiteGrade = canonicalCiteGradeBySlug.get(cat.slug) ?? null;
-
-    // A3: inferred identity → null the excerpt so the letter references but never quotes.
-    const preferredExcerpt = identityInferred
-      ? null
-      : p8?.source_excerpt ?? canonicalCiteGrade?.sourceExcerpt ?? null;
-    const sbcExcerptVerified = !identityInferred && (userRowCiteGrade || canonicalCiteGrade !== null);
-    const citationSource: PlanBenefitDetail["citationSource"] = identityInferred
-      ? null
-      : userRowCiteGrade
-      ? "user_doc"
-      : canonicalCiteGrade !== null
-      ? "canonical_fallback"
-      : null;
-
-    const canonicalSlug = coverageCanonicalMap.get(cat.slug) ?? cat.slug;
-    byServiceSlug.set(canonicalSlug, {
-      covered: r.covered !== false,
-      copay: r.in_copay,
-      coinsurance: r.in_coinsurance,
-      source: r.source ?? "canonical",
-      confidence,
-      citation: `Summary of Benefits and Coverage — ${cat.name}`,
-      sbcExcerpt: preferredExcerpt,
-      sbcPage: null,
-      sbcExcerptVerified,
-      citationSource,
-      sourcedFrom: sourceTag,
-      sourcedFromYear: sourceYear,
-    });
+    // canonical_plan_services has no sbc_excerpt / sbc_page columns → pass null (the
+    // cascade degrades to the canonical-haiku excerpt, and the legacy branch never fires).
+    const built = buildPlanBenefitFromRow(
+      {
+        covered: r.covered,
+        in_copay: r.in_copay,
+        in_coinsurance: r.in_coinsurance,
+        source: r.source,
+        confidence: r.confidence,
+        sbc_excerpt: null,
+        sbc_page: null,
+        field_provenance: r.field_provenance,
+        slug: cat.slug,
+        name: cat.name,
+      },
+      citeCtx,
+      {
+        sourceTag,
+        sourceYear,
+        sourceDefault: "canonical",
+        buildCitation: (name) => `Summary of Benefits and Coverage — ${name}`,
+      },
+    );
+    if (built) byServiceSlug.set(built.canonicalSlug, built.detail);
   }
 
   return byServiceSlug;
