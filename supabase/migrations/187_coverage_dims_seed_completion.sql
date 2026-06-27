@@ -1,4 +1,5 @@
--- Migration 186: Coverage-dims seed completion (Group B / S241). ADDITIVE + REVERSIBLE.
+-- Migration 187: Coverage-dims seed completion (Group B / S241). ADDITIVE + REVERSIBLE.
+-- (Renumbered 186->187 at S242: PR #214 claimed 186_dispute_pin_explicit_override_repair on main.)
 --
 -- WHY
 --   The cold-start regen seeds per-service coverage through the production pipeline
@@ -14,6 +15,10 @@
 --        stamped RAW while the column was decimal-normalized (value<>column), and it carried
 --        NO source_excerpt / Pattern-P8 block / resolution_source -> seed coverage was
 --        corroboration-blind AND "referenced, not citable" (fails the A3 cite-grade gate).
+--        NOTE: this is a WRITE-PATH fix only. Pre-existing RAW coinsurance provenance values already in
+--        canonical (~3% of sampled coins entries carry value>1, e.g. 40 not 0.4 — S213's backfill reports
+--        but does not correct them) are normalized by the cold-start regen re-promotion through this fixed
+--        RPC + the step-3 §14 normalization backfill (the "0 value<>column" gate), NOT by this migration.
 --
 -- WHAT
 --   1. plan_covered_services: ADD requires_referral BOOLEAN + visit_limit INTEGER (nullable).
@@ -30,12 +35,17 @@
 --   The 10-arg callers stay valid (named-arg .rpc(); p_provenance_meta defaults NULL = byte-identical
 --   provenance to mig 169 EXCEPT the coinsurance value-normalize, which only ever CORRECTS a percent).
 --
--- ROLLBACK (reversible): re-apply mig 169's apply_promotion_event (10-arg) via DROP+CREATE, then
---   ALTER TABLE plan_covered_services DROP COLUMN visit_limit, DROP COLUMN requires_referral.
---   No data loss (additive; the cold-start regen re-seeds).
+-- ROLLBACK (reversible): (1) catalog-drop EVERY apply_promotion_event overload (the SAME DO-block used
+--   below) so the new 11-arg is removed — re-applying mig 169 alone would NOT drop it and would leave a
+--   {10-arg, 11-arg} ambiguity for 10-arg callers; (2) re-create mig 169's 10-arg body; (3) ALTER TABLE
+--   plan_covered_services DROP COLUMN visit_limit, DROP COLUMN requires_referral. No data loss (additive;
+--   the cold-start regen re-seeds).
 --
--- DEPLOY: additive — nothing passes p_provenance_meta or reads the new columns until the Group B PR
---   ships its TS. Apply anytime (no deploy-order constraint).
+-- DEPLOY (ORDER MATTERS): apply this migration BEFORE the Group B code deploys. The persist path writes
+--   plan_covered_services.requires_referral/visit_limit as STATIC INSERT columns (process-plan.ts ~1302),
+--   so deploying that code while the columns are absent breaks every parse/persist. The new RPC arg
+--   p_provenance_meta defaults NULL, so applying EARLY is byte-identical for the live 10-arg callers.
+--   Net order: apply mig -> then merge/deploy code. NEVER deploy the code first.
 
 BEGIN;
 
@@ -45,14 +55,33 @@ ALTER TABLE plan_covered_services
   ADD COLUMN IF NOT EXISTS visit_limit       INTEGER;
 
 COMMENT ON COLUMN plan_covered_services.requires_referral IS
-  'coverage_dims_v1 (mig 186): per-service PCP-referral gate (true/false/null=unknown). Parallel to '
+  'coverage_dims_v1 (mig 187): per-service PCP-referral gate (true/false/null=unknown). Parallel to '
   'prior_auth_required; NEVER inferred from prior-auth/admission/visit-limit. Mirrors canonical_plan_services.requires_referral.';
 COMMENT ON COLUMN plan_covered_services.visit_limit IS
-  'coverage_dims_v1 (mig 186): per-service visit/day COUNT cap (integer). Distinct from the dollar '
+  'coverage_dims_v1 (mig 187): per-service visit/day COUNT cap (integer). Distinct from the dollar '
   'annual_limit_value. Mirrors canonical_plan_services.visit_limit.';
 
 -- ── 2. apply_promotion_event — DROP + CREATE (new p_provenance_meta arg + new typed-col arms + §14 fixes) ──
-DROP FUNCTION IF EXISTS apply_promotion_event(UUID, TEXT, TEXT, JSONB, JSONB, TEXT, UUID, TEXT, TEXT, TEXT);
+-- Drop EVERY existing overload BY CATALOG, not by a guessed signature. History accumulated orphans:
+--   mig 068 created the 7-arg (uuid,text,text,jsonb,jsonb,text,uuid) and it was NEVER dropped; mig 111/129
+--   added/replaced the 8-arg; mig 148 dropped the 8-arg + created the 10-arg; mig 157/169 replaced the
+--   10-arg. So PROD likely holds {7-arg, 10-arg} (+ any Studio-applied phantom). Enumerating signatures
+--   would miss the orphan/phantoms and leave an ambiguity landmine — a bare-7-arg-shaped call would match
+--   BOTH the stale 7-arg AND the all-defaulted 11-arg below ("could not choose best candidate function"),
+--   and the 7-arg body writes pre-alignment legacy columns. A catalog-drop guarantees EXACTLY ONE function
+--   after CREATE and makes this migration idempotent on re-apply. (Run the VERIFY step 0 before+after.)
+DO $$
+DECLARE r RECORD;
+BEGIN
+  FOR r IN
+    SELECT oid::regprocedure AS sig
+    FROM pg_proc
+    WHERE proname = 'apply_promotion_event'
+      AND pronamespace = 'public'::regnamespace
+  LOOP
+    EXECUTE 'DROP FUNCTION ' || r.sig::text;
+  END LOOP;
+END $$;
 
 CREATE FUNCTION apply_promotion_event(
   p_canonical_plan_id UUID,
@@ -262,11 +291,15 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION apply_promotion_event(UUID, TEXT, TEXT, JSONB, JSONB, TEXT, UUID, TEXT, TEXT, TEXT, JSONB) FROM PUBLIC;
+-- Supabase ALTER DEFAULT PRIVILEGES auto-grants EXECUTE on EVERY new public function to anon +
+-- authenticated DIRECTLY (not via PUBLIC), so the DROP+CREATE above re-grants them. REVOKE FROM PUBLIC
+-- ALONE IS INSUFFICIENT — the direct anon/authenticated grants must be revoked too to restore the
+-- Pattern 1 #14 function-grant defense (service_role-only; mig 068 intent). postgres (owner) keeps EXECUTE.
+REVOKE ALL ON FUNCTION apply_promotion_event(UUID, TEXT, TEXT, JSONB, JSONB, TEXT, UUID, TEXT, TEXT, TEXT, JSONB) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION apply_promotion_event(UUID, TEXT, TEXT, JSONB, JSONB, TEXT, UUID, TEXT, TEXT, TEXT, JSONB) TO service_role;
 
 COMMENT ON FUNCTION apply_promotion_event(UUID, TEXT, TEXT, JSONB, JSONB, TEXT, UUID, TEXT, TEXT, TEXT, JSONB) IS
-  'Group B (mig 186): canonical promotion writer, cell-aware (4-col). Per-service arm writes the ALIGNED '
+  'Group B (mig 187): canonical promotion writer, cell-aware (4-col). Per-service arm writes the ALIGNED '
   'in_*/covered/prior_auth_required/annual_limit + NEW out_*/requires_referral/visit_limit columns keyed by '
   'p_field_name. §14: a single v_stored_value (coinsurance normalized to [0,1]) feeds BOTH the column and '
   'field_provenance.value; p_provenance_meta carries the verified source_excerpt + Pattern-P8 5-key block + '
@@ -276,7 +309,12 @@ COMMENT ON FUNCTION apply_promotion_event(UUID, TEXT, TEXT, JSONB, JSONB, TEXT, 
 COMMIT;
 
 -- ─────────────────────────────────────────────────────────────────────────────────────────────
--- VERIFY (read-only; Supabase Studio can falsely report success on a partial run — run after apply):
+-- VERIFY (read-only; Supabase Studio can falsely report success on a partial run):
+--   0) OVERLOAD SET — run BEFORE apply (may show the stale 7-arg + the active 10-arg) AND AFTER apply
+--      (MUST be EXACTLY ONE row = the 11-arg ...,text,text,text,jsonb). This proves the catalog-drop
+--      collapsed every prior overload and left no ambiguity landmine:
+-- SELECT oid::regprocedure FROM pg_proc
+--   WHERE proname='apply_promotion_event' AND pronamespace='public'::regnamespace ORDER BY 1;
 --   1) new user-table columns present (expect requires_referral=boolean, visit_limit=integer):
 -- SELECT column_name, data_type FROM information_schema.columns
 --   WHERE table_name='plan_covered_services' AND column_name IN ('requires_referral','visit_limit') ORDER BY column_name;
@@ -286,7 +324,7 @@ COMMIT;
 -- SELECT pg_get_functiondef('apply_promotion_event(uuid,text,text,jsonb,jsonb,text,uuid,text,text,text,jsonb)'::regprocedure) LIKE '%requires_referral = CASE WHEN p_field_name=''requires_referral''%' AS referral_arm,
 --        pg_get_functiondef('apply_promotion_event(uuid,text,text,jsonb,jsonb,text,uuid,text,text,text,jsonb)'::regprocedure) LIKE '%out_coinsurance = CASE WHEN p_field_name=''out_coinsurance''%' AS out_coins_arm,
 --        pg_get_functiondef('apply_promotion_event(uuid,text,text,jsonb,jsonb,text,uuid,text,text,text,jsonb)'::regprocedure) LIKE '%visit_limit = CASE WHEN p_field_name=''visit_limit''%' AS visit_arm;
---   4) grant present (expect service_role):
+--   4) grant locked down (expect ONLY postgres + service_role — anon/authenticated MUST be ABSENT):
 -- SELECT grantee FROM information_schema.routine_privileges
 --   WHERE routine_name='apply_promotion_event' AND privilege_type='EXECUTE' ORDER BY grantee;
 -- ─────────────────────────────────────────────────────────────────────────────────────────────
