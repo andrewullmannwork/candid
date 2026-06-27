@@ -27,6 +27,7 @@
 import {
   resolveCoverageForLine,
   isInsurerDenied,
+  detectCoverageContradiction,
   type CoverageStanceInput,
   type InsurerAdjudicationInput,
 } from "../../../../src/lib/claims/coverage-decision";
@@ -71,6 +72,7 @@ eq(
   {
     planStance: "covered",
     insurerAdjudication: null,
+    derivedStatus: "unevaluated",
     conditions: { priorAuthRequired: null, referralRequired: null, visitLimit: null, annualLimit: null },
     provenance: { planStance: { covered: true }, insurerAdjudication: null },
   },
@@ -81,6 +83,7 @@ eq(
   {
     planStance: "not_covered",
     insurerAdjudication: "denied",
+    derivedStatus: "consistent_denial",
     conditions: { priorAuthRequired: null, referralRequired: null, visitLimit: null, annualLimit: null },
     provenance: { planStance: { covered: false }, insurerAdjudication: { deniedAmount: 150, insurancePaid: 0 } },
   },
@@ -91,6 +94,7 @@ eq(
   {
     planStance: "unknown",
     insurerAdjudication: "partial",
+    derivedStatus: "indeterminate",
     conditions: { priorAuthRequired: null, referralRequired: null, visitLimit: null, annualLimit: null },
     provenance: { planStance: { covered: null }, insurerAdjudication: { deniedAmount: 150, insurancePaid: 50 } },
   },
@@ -173,6 +177,38 @@ function mk(service: ServiceCostShare | null, insurer?: Partial<InsurerAdjudicat
   ok("D3 denied>0 pushes denial assumption", denied.assumptions.some((a) => a.field === "denial"), denied.assumptions);
   const notDenied = computeCostShareV2(mk({ covered: true, copay: 20, coinsurance: null, deductibleApplies: null }, { deniedAmount: null }));
   ok("D3 denied=null pushes NO denial assumption", !notDenied.assumptions.some((a) => a.field === "denial"), notDenied.assumptions);
+}
+
+// ── PART E — R3 step 4: derivedStatus + detectCoverageContradiction + the surface ────────────
+// Truth table (the combined headline). Authored from the design; the "none" guard = covered_owed.
+const ds = (covered: boolean | null, insurer: InsurerAdjudicationInput | null) =>
+  resolveCoverageForLine({ covered }, insurer).derivedStatus;
+ok("E covered+denied → contradiction", ds(true, { deniedAmount: 150, insurancePaid: 0 }) === "contradiction", ds(true, { deniedAmount: 150, insurancePaid: 0 }));
+ok("E covered+partial → contradiction", ds(true, { deniedAmount: 150, insurancePaid: 50 }) === "contradiction", ds(true, { deniedAmount: 150, insurancePaid: 50 }));
+ok("E covered+paid → covered_paid", ds(true, { deniedAmount: 0, insurancePaid: 100 }) === "covered_paid", ds(true, { deniedAmount: 0, insurancePaid: 100 }));
+ok("E covered+none → covered_owed (GUARD: NOT contradiction)", ds(true, { deniedAmount: 0, insurancePaid: 0 }) === "covered_owed", ds(true, { deniedAmount: 0, insurancePaid: 0 }));
+ok("E not_covered+denied → consistent_denial", ds(false, { deniedAmount: 150, insurancePaid: 0 }) === "consistent_denial", ds(false, { deniedAmount: 150, insurancePaid: 0 }));
+ok("E not_covered+none → consistent_denial", ds(false, { deniedAmount: 0, insurancePaid: 0 }) === "consistent_denial", ds(false, { deniedAmount: 0, insurancePaid: 0 }));
+ok("E not_covered+paid → anomalous_payment", ds(false, { deniedAmount: 0, insurancePaid: 100 }) === "anomalous_payment", ds(false, { deniedAmount: 0, insurancePaid: 100 }));
+ok("E covered+null insurer → unevaluated", ds(true, null) === "unevaluated", ds(true, null));
+ok("E unknown plan+denied → indeterminate", ds(null, { deniedAmount: 150, insurancePaid: 0 }) === "indeterminate", ds(null, { deniedAmount: 150, insurancePaid: 0 }));
+
+// detectCoverageContradiction — true ONLY for covered + denied/partial; the guard excludes "none".
+const dc = (covered: boolean | null, insurer: InsurerAdjudicationInput | null) =>
+  detectCoverageContradiction(resolveCoverageForLine({ covered }, insurer));
+ok("E detect covered+denied → true", dc(true, { deniedAmount: 150, insurancePaid: 0 }) === true);
+ok("E detect covered+none → false (deductible GUARD)", dc(true, { deniedAmount: 0, insurancePaid: 0 }) === false);
+ok("E detect covered+paid → false", dc(true, { deniedAmount: 0, insurancePaid: 100 }) === false);
+ok("E detect not_covered+denied → false (consistent denial, not a contradiction)", dc(false, { deniedAmount: 150, insurancePaid: 0 }) === false);
+ok("E detect covered+null insurer → false (unevaluated)", dc(true, null) === false);
+
+// SURFACE — computeCostShareV2 exposes the engine's OWN coverageDecision (the recovery-math:514
+// value), not a re-derivation: it deep-equals resolveCoverageForLine(service, insurer) on the same inputs.
+{
+  const args = mk({ covered: true, copay: 20, coinsurance: null, deductibleApplies: null }, { deniedAmount: 150 });
+  const r = computeCostShareV2(args);
+  eq("E surface == resolveCoverageForLine(service, insurer)", r.coverageDecision, resolveCoverageForLine(args.service, args.insurer));
+  ok("E surface derivedStatus == contradiction (covered+denied)", r.coverageDecision.derivedStatus === "contradiction", r.coverageDecision.derivedStatus);
 }
 
 // ── Report ───────────────────────────────────────────────────────────────────

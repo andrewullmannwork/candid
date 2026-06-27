@@ -33,7 +33,7 @@
  * and should NOT be used in recovery math. Use patient_paid instead.
  */
 
-import { resolveCoverageForLine, isInsurerDenied } from "./coverage-decision";
+import { resolveCoverageForLine, isInsurerDenied, type CoverageDecision } from "./coverage-decision";
 
 export interface PlanCoverageInput {
   covered: boolean | null;
@@ -414,6 +414,13 @@ export interface CostShareV2Result extends RecoveryMetrics {
   shouldOweGrounded: boolean;
   /** amount of `allowed` that went toward the deductible on this line (for cross-line threading). */
   deductibleConsumed: number;
+  /**
+   * R3 step 4 — the shared coverage decision (planStance × insurerAdjudication × derivedStatus)
+   * this result was computed against, SURFACED (the engine already computed it internally) for the
+   * dispute route layer + the POST-R3 classifier collapse. Additive; the card reads
+   * shouldOwe/verdict/phase, not this → byte-identical.
+   */
+  coverageDecision: CoverageDecision;
 }
 
 export interface ComputeCostShareV2Args {
@@ -564,6 +571,7 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
       assumptions: [],
       shouldOweGrounded: true,
       deductibleConsumed: 0,
+      coverageDecision,
     };
   }
 
@@ -833,6 +841,7 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
     assumptions,
     shouldOweGrounded,
     deductibleConsumed: round2(deductibleConsumed),
+    coverageDecision,
   };
 }
 

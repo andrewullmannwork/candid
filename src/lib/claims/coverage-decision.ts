@@ -61,10 +61,29 @@ export interface CoverageConditions {
   annualLimit: number | null;
 }
 
+/**
+ * The combined planStance × insurerAdjudication headline (R3 step 4 — the R2 carry-forward
+ * deferred from R2, where the letter row-mapper had no insurer axis to merge). `contradiction` =
+ * planStance "covered" AND the insurer denied/underpaid — the bread-and-butter dispute.
+ * `covered_owed` is the GUARD's safe state: covered + "none" (fully applied to the deductible /
+ * pending) is legitimately owed, NOT a contradiction. `unevaluated` = no insurer axis supplied
+ * (the letter row-mapper, by construction); `indeterminate` = planStance unknown.
+ */
+export type DerivedCoverageStatus =
+  | "contradiction"
+  | "covered_paid"
+  | "covered_owed"
+  | "consistent_denial"
+  | "anomalous_payment"
+  | "unevaluated"
+  | "indeterminate";
+
 export interface CoverageDecision {
   planStance: PlanStance;
   /** null = not evaluated (no adjudication input); see InsurerAdjudicationStatus. */
   insurerAdjudication: InsurerAdjudicationStatus | null;
+  /** the combined headline (R3 step 4); derived from the two axes above. See DerivedCoverageStatus. */
+  derivedStatus: DerivedCoverageStatus;
   conditions: CoverageConditions;
   /** the raw inputs each axis was derived from (per-axis provenance). */
   provenance: {
@@ -79,6 +98,26 @@ export interface CoverageDecision {
  * byte-identical to the card's prior `(num(insurer.deniedAmount) ?? 0) > 0`.
  */
 const fin = (n: number | null | undefined): number => (n == null || Number.isNaN(n) ? 0 : n);
+
+/**
+ * Combine the two axes into the headline (R3 step 4). Null insurer axis → "unevaluated" (the
+ * letter row-mapper). The GUARD lives here: covered + "none" → "covered_owed" (deductible /
+ * pending, legitimately owed), NEVER "contradiction" — only an actual denial (denied/partial) on
+ * a covered line is a contradiction. Never reads paid/denied alone (see the type doc above).
+ */
+function deriveStatus(
+  planStance: PlanStance,
+  insurerAdjudication: InsurerAdjudicationStatus | null,
+): DerivedCoverageStatus {
+  if (insurerAdjudication === null) return "unevaluated";
+  if (planStance === "unknown") return "indeterminate";
+  if (planStance === "covered") {
+    if (insurerAdjudication === "denied" || insurerAdjudication === "partial") return "contradiction";
+    return insurerAdjudication === "paid" ? "covered_paid" : "covered_owed"; // none → owed (the guard)
+  }
+  // not_covered
+  return insurerAdjudication === "paid" ? "anomalous_payment" : "consistent_denial"; // denied/partial/none
+}
 
 /**
  * The pure shared coverage decision. R2-core signature is 2-arg; the per-`line`
@@ -111,6 +150,7 @@ export function resolveCoverageForLine(
   return {
     planStance,
     insurerAdjudication,
+    derivedStatus: deriveStatus(planStance, insurerAdjudication),
     conditions: {
       priorAuthRequired: coverage?.priorAuthRequired ?? null,
       referralRequired: coverage?.referralRequired ?? null,
@@ -137,4 +177,14 @@ export function resolveCoverageForLine(
  */
 export function isInsurerDenied(decision: CoverageDecision): boolean {
   return decision.insurerAdjudication === "denied" || decision.insurerAdjudication === "partial";
+}
+
+/**
+ * The bread-and-butter dispute: the plan COVERS the service AND the insurer denied/underpaid it.
+ * Equivalent to `derivedStatus === "contradiction"`. The "none" guard is STRUCTURAL — a covered
+ * line fully applied to the deductible reads "none" (legitimately owed) and is never flagged.
+ * Net-new in R3 step 4; the live consumer is the POST-R3 classifier collapse (none today).
+ */
+export function detectCoverageContradiction(decision: CoverageDecision): boolean {
+  return decision.derivedStatus === "contradiction";
 }
