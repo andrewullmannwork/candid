@@ -201,6 +201,77 @@ count or dollar cap). Rare but real — do not silently drop it.
 \`priorAuthRequired: true\` AND put the exact phrase in \`coverageConditions\` (so it can be shown as
 conditional). If the document is SILENT for a service → \`priorAuthRequired: null\` (never infer false).`;
 
+// Coverage-dimensions supplement (coverage_dims_v1). Appended ONLY when the flag is ON, so
+// OFF = byte-identical Haiku output (no extraction drift on the live path). Adds two
+// per-service dimensions the canonical seed + dispute letters consume but the parser did not
+// previously capture: `referralRequired` (a per-service access gate, parallel to priorAuthRequired)
+// and `visitLimit` (a VISIT/DAY COUNT cap, kept DISTINCT from a dollar annualLimitValue).
+const COVERAGE_DIMS_SUPPLEMENT = `
+
+## ADDITIONAL FIELDS — REFERRAL + VISIT LIMITS (emit these on EVERY service object)
+
+In ADDITION to all fields above, add TWO fields to each service:
+
+- **referralRequired**: boolean | null — does THIS service require a referral (from a primary-care
+  "gatekeeper") before the plan covers it? Decide in this PRIORITY order:
+    1. EXPLICIT per-service text wins: "referral required" / "requires a referral" / "PCP referral
+       needed" → true; "no referral required" / "self-referral" / "direct access" → false.
+    2. The plan-level "Do you need a referral to see a specialist?" answer:
+         YES → specialist-type medical services (specialist_visit, specialist-ordered imaging/therapy,
+               specialist mental-health) = true;
+         NO  → ALL medical services = false (no referral gate anywhere in this plan).
+    3. CATEGORICALLY un-gated services are false even when unstated — pcp_visit, preventive_care,
+       immunizations, annual_physical, er_visit, urgent_care. You never need a referral for primary /
+       own-PCP care, federally-protected preventive care, or emergencies → emit false.
+    4. PHARMACY (any *_rx_* slug) → false. Drugs are PRESCRIBED, not referred — a referral never gates a
+       drug. (Drug access is gated by prior authorization / step therapy / formulary tier, which you
+       capture in priorAuthRequired / stepTherapyRequired, NOT here.) So referralRequired is categorically
+       false for drugs, UNLESS the document EXPLICITLY states a referral for that drug (then true).
+    5. Any OTHER medical service with no explicit callout and no applicable plan-level answer → null.
+       Do not guess.
+  Put any conditional wording in coverageConditions.
+
+- **visitLimit**: integer | null — a per-service VISIT or DAY COUNT cap (a COUNT, never a dollar amount):
+    "20 visits per year", "limited to 12 visits", "30 visit maximum", "up to 60 days per admission",
+    "100 days per year" → visitLimit = the COUNT (20, 12, 30, 60, 100).
+    A DOLLAR cap ("$1,000 per year", "$500 benefit maximum", "up to $150") is NOT a visitLimit →
+    leave visitLimit null and record the dollar cap in annualLimitValue (per rule L7).
+    null → no visit/day-count limit stated for this service.
+  Keep the verbatim cap text in annualLimit (string) as before — visitLimit is the parsed COUNT only.
+
+Example: { "serviceSlug": "pt_rehab", "referralRequired": true, "visitLimit": 20,
+           "annualLimit": "20 visits/year", "annualLimitValue": null, ... }
+
+## MULTI-TIER NETWORK COLUMNS — map in/out correctly (correctness for tiered plans)
+
+Some plans list MORE THAN TWO network-tier columns under "What You Will Pay" — headers like
+"Tier 1 Provider / Tier 2 Provider / Tier 3 Provider" or "Network | Out-of-Network". Identify the tiers
+from the COLUMN HEADERS — do NOT count cost values (one column can hold several, e.g. "$5 copay first 2
+visits, then $25 copay, $15 virtual" is ONE column, resolved by the standard-line rule above, NOT three
+tiers). Then:
+  - in* (inCopay / inCoinsurance / inDeductibleApplies) = the FIRST / best-network column ("Tier 1",
+    "pay the least", "preferred", or "Network").
+  - out* (outCopay / outCoinsurance / outDeductibleApplies) = the LAST / worst column (highest tier,
+    "pay the most", or "Out-of-Network"). Example: "Tier 1: 30% / Tier 2: 40% / Tier 3: 60%" →
+    inCoinsurance=30 and outCoinsurance=60 — NOT 40.
+  - Any MIDDLE tier (e.g. Tier 2) cannot fit the two in/out fields — record it VERBATIM in
+    coverageConditions (e.g. "Tier 2 provider: 40% coinsurance"); never let it become the in or out value.
+
+## DO NOT CHANGE OTHER FIELDS (referralRequired + visitLimit are ADDITIVE — orthogonality)
+
+These two are the ONLY new outputs. Extract every OTHER field EXACTLY as you would WITHOUT this section:
+- **priorAuthRequired**: keep its own rule unchanged (true/false only when the document states prior
+  auth for the service; null when silent). Do NOT let the referral reasoning above make you emit or
+  flip priorAuthRequired — referral and prior authorization are SEPARATE gates.
+- **inDeductibleApplies / outDeductibleApplies**: unchanged — do not re-read or re-decide these because
+  of this section.
+- **inCoinsurance / outCoinsurance / copays**: read them by your normal rules PLUS the multi-tier column
+  rule above (which only clarifies which COLUMN is in vs out on tiered plans); the referral/visit
+  reasoning must not otherwise shift them.
+The ONLY intended interactions: (a) a per-visit/day COUNT you would previously have put in annualLimitValue
+now goes to visitLimit instead (dollar caps stay in annualLimitValue); (b) on multi-tier plans, in*/out*
+map to the first/last network column per the rule above. Nothing else moves.`;
+
 // S93 Stage 5a — supplements load from `parser_prompt_versions` (mig 102) at
 // parse time with a 5-min in-process cache. The compile-time consts above are
 // fallbacks when no active DB row exists (initial state pre-tuning) or when DB
@@ -210,6 +281,7 @@ async function buildInstructions(
   layout: PlanDocLayout | undefined,
   thesaurusEnabled: boolean,
   extractionV2Enabled: boolean,
+  coverageDimsEnabled: boolean,
 ): Promise<string> {
   let prompt = BASE_INSTRUCTIONS;
   if (layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant") {
@@ -234,6 +306,11 @@ async function buildInstructions(
   // OFF → byte-identical to the pre-v2 prompt.
   if (extractionV2Enabled) {
     prompt += EXTRACTION_V2_SUPPLEMENT;
+  }
+  // Coverage-dimensions (coverage_dims_v1): per-service referral + distinct visit/day-count cap.
+  // OFF → byte-identical (these two fields are simply never requested).
+  if (coverageDimsEnabled) {
+    prompt += COVERAGE_DIMS_SUPPLEMENT;
   }
   return prompt;
 }
@@ -452,6 +529,8 @@ interface RawService {
   annualLimitValue?: number | null;
   priorAuthRequired?: boolean | null;
   penaltyNoPrecert?: number | null;
+  referralRequired?: boolean | null;
+  visitLimit?: number | null;
   covered?: boolean;
   coverageConditions?: string | null;
   supplyLimitDays?: number | null;
@@ -504,12 +583,23 @@ export async function extractServicesCostSharing(
   // (parser.ts) and pass it down so the prompt-supplement gate and the whole-text fallback gate stay
   // in lockstep; undefined → read the live flag (OFF → byte-identical).
   extractionV2Override?: boolean,
+  // Test/dry-run override for `coverage_dims_v1` (per-service referral + visit/day-count cap).
+  // PROD leaves it undefined → reads the live flag (OFF → byte-identical). The §13 oracle harness
+  // passes `true` to measure flag-ON without depending on DB flag state (calibration independence).
+  coverageDimsOverride?: boolean,
 ): Promise<PlanDocSectionResult<{ services: PlanDocService[] }>> {
   const thesaurusEnabled =
     thesaurusPhase1aOverride ?? (await isFeatureEnabled("thesaurus_phase1a_v1"));
   const extractionV2Enabled =
     extractionV2Override ?? (await isFeatureEnabled("plan_doc_extraction_v2"));
-  const systemPrompt = await buildInstructions(layout, thesaurusEnabled, extractionV2Enabled);
+  const coverageDimsEnabled =
+    coverageDimsOverride ?? (await isFeatureEnabled("coverage_dims_v1"));
+  const systemPrompt = await buildInstructions(
+    layout,
+    thesaurusEnabled,
+    extractionV2Enabled,
+    coverageDimsEnabled,
+  );
   const result = await callHaikuWithCache<RawResponse>({
     systemPrompt: HAIKU_CACHE_PAD + systemPrompt,
     userContent: sectionText,
@@ -552,6 +642,18 @@ export async function extractServicesCostSharing(
         annualLimitValue: typeof raw.annualLimitValue === "number" ? raw.annualLimitValue : null,
         priorAuthRequired: typeof raw.priorAuthRequired === "boolean" ? raw.priorAuthRequired : null,
         penaltyNoPrecert: typeof raw.penaltyNoPrecert === "number" ? raw.penaltyNoPrecert : null,
+        // coverage_dims_v1: populated ONLY when ON; OFF → undefined (Haiku wasn't asked for them
+        // → struct is byte-identical to pre-flag). Mirrors the rawLabel/component gating below.
+        referralRequired: coverageDimsEnabled
+          ? typeof raw.referralRequired === "boolean"
+            ? raw.referralRequired
+            : null
+          : undefined,
+        visitLimit: coverageDimsEnabled
+          ? typeof raw.visitLimit === "number"
+            ? raw.visitLimit
+            : null
+          : undefined,
         covered: raw.covered !== false,
         coverageConditions: typeof raw.coverageConditions === "string" ? raw.coverageConditions : null,
         supplyLimitDays: typeof raw.supplyLimitDays === "number" ? raw.supplyLimitDays : null,
