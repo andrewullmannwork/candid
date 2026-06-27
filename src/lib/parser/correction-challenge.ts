@@ -353,7 +353,9 @@ export async function recordChallengeObservation(
       row.proposed_value,
       sources,
       "correction-challenge-resolution",
-      row.proposed_by_user_id,
+      // Challenge resolution: no document excerpt (proposer's challenge, excerpt null) → admin_attested (N1).
+      { cite: false, reason: "admin_attested" },
+      { actorUserId: row.proposed_by_user_id },
     );
     if (promoteError) {
       // Don't fail the observation; log error but state machine has progressed
@@ -461,7 +463,9 @@ export async function adminResolveChallenge(
       row.proposed_value,
       sources,
       "admin-ui",
-      input.adminUserId,
+      // Admin-accept challenge: no document excerpt → admin_attested (N1).
+      { cite: false, reason: "admin_attested" },
+      { actorUserId: input.adminUserId },
     );
     if (promoteError) {
       console.error(

@@ -101,8 +101,49 @@ const noRawUserTableFrom = {
   },
 };
 
+/**
+ * candid-security/no-direct-promotion-rpc — bans a direct `.rpc("apply_promotion_event")` call outside
+ * the promotion-event.ts wrapper. apply_promotion_event is the canonical coverage writer; routing every
+ * call through applyPromotionEvent() makes the REQUIRED CitePolicy (cite-grade provenance) un-bypassable
+ * as the team scales (N1, mig 187 §14). AST-precise (won't match strings/comments).
+ */
+const noDirectPromotionRpc = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "Ban direct .rpc('apply_promotion_event') outside promotion-event.ts (N1: force the typed CitePolicy wrapper).",
+    },
+    schema: [],
+    messages: {
+      banned:
+        'Direct .rpc("apply_promotion_event") is banned — call applyPromotionEvent() from @/lib/parser/promotion-event so the required CitePolicy (cite-grade provenance) cannot be bypassed (N1, mig 187 §14).',
+    },
+  },
+  create(context) {
+    return {
+      CallExpression(node) {
+        const callee = node.callee;
+        if (
+          callee.type === "MemberExpression" &&
+          callee.property.type === "Identifier" &&
+          callee.property.name === "rpc" &&
+          node.arguments.length >= 1 &&
+          node.arguments[0].type === "Literal" &&
+          node.arguments[0].value === "apply_promotion_event"
+        ) {
+          context.report({ node, messageId: "banned" });
+        }
+      },
+    };
+  },
+};
+
 const candidSecurityPlugin = {
-  rules: { "no-raw-user-table-from": noRawUserTableFrom },
+  rules: {
+    "no-raw-user-table-from": noRawUserTableFrom,
+    "no-direct-promotion-rpc": noDirectPromotionRpc,
+  },
 };
 
 const eslintConfig = defineConfig([
@@ -216,6 +257,17 @@ const eslintConfig = defineConfig([
     ],
     plugins: { "candid-security": candidSecurityPlugin },
     rules: { "candid-security/no-raw-user-table-from": "error" },
+  },
+  // ── N1 (mig 187 §14): force the typed CitePolicy wrapper for canonical promotions ──────────
+  // apply_promotion_event writes canonical coverage; the wrapper applyPromotionEvent() makes the
+  // cite-grade provenance decision REQUIRED at compile time. Banning the raw RPC call everywhere in
+  // src/** except the wrapper makes that contract un-bypassable as the team scales. (Fixtures/tests
+  // that exercise the RPC directly live under scripts/** and are outside this glob.)
+  {
+    files: ["src/**/*.ts"],
+    ignores: ["src/lib/parser/promotion-event.ts"],
+    plugins: { "candid-security": candidSecurityPlugin },
+    rules: { "candid-security/no-direct-promotion-rpc": "error" },
   },
 ]);
 

@@ -31,7 +31,7 @@
 
 import type { createServerClient } from "@/lib/supabase/server";
 import { evaluateCorroboration, type CorroboratorExcerpt } from "./corroboration-evaluator";
-import { applyPromotionEvent, type FireSource } from "./promotion-event";
+import { applyPromotionEvent, type FireSource, type CitePolicy } from "./promotion-event";
 import {
   checkAndUpdatePendingChallenges,
   type PendingChallengeUpdate,
@@ -379,6 +379,19 @@ async function readAdminPlanIdentityValue(
   return null;
 }
 
+/**
+ * N1 — derive the citation policy for a service-cell promotion. Plan-identity (slug null) is never a
+ * coverage citation; a service field cites its source excerpt when one exists, else records no_excerpt.
+ * (The cold-start seed path enriches this to the full P-8 block once readAdminPerServiceValue reads it.)
+ */
+function citePolicyForServiceCell(serviceSlug: string | null, excerpts: CorroboratorExcerpt[]): CitePolicy {
+  if (serviceSlug === null) return { cite: false, reason: "plan_identity" };
+  const excerpt = excerpts[0]?.excerpt?.trim();
+  return excerpt
+    ? { cite: true, meta: { sourceExcerpt: excerpt } }
+    : { cite: false, reason: "no_excerpt" };
+}
+
 export async function commitUploadAndEvaluateCorroboration(
   supabase: SupabaseClient,
   input: CommitAndEvaluateInput,
@@ -490,13 +503,16 @@ export async function commitUploadAndEvaluateCorroboration(
         attestValue,
         attestExcerpts,
         input.fireSource,
-        input.actorUserId,
-        "admin_override",
-        // S205: promote to the candidate's CELL so a multi-cell service doesn't collapse every
-        // cell's value onto the default 'any'/'global' canonical row. No-op for single-cell
-        // (candidate cell IS 'any'/'global'); ignored by mig-148 for plan-identity (slug null).
-        placeOfService ?? "any",
-        component ?? "global",
+        citePolicyForServiceCell(writeSlug, attestExcerpts),
+        {
+          actorUserId: input.actorUserId,
+          forceEventType: "admin_override",
+          // S205: promote to the candidate's CELL so a multi-cell service doesn't collapse every
+          // cell's value onto the default 'any'/'global' canonical row. No-op for single-cell
+          // (candidate cell IS 'any'/'global'); ignored by mig-148 for plan-identity (slug null).
+          placeOfService: placeOfService ?? "any",
+          component: component ?? "global",
+        },
       );
       if (applyError || !eventId) {
         const message = applyError?.message ?? "apply returned no event_id";
@@ -519,12 +535,14 @@ export async function commitUploadAndEvaluateCorroboration(
         decision.corroborated_value,
         decision.corroborator_excerpts,
         input.fireSource,
-        input.actorUserId,
-        null, // forceEventType
-        // S205: promote to the candidate's CELL (no-op for single-cell 'any'/'global'; plan-identity
-        // passes 'any' which mig-148 ignores for the canonical_plans branch).
-        placeOfService ?? "any",
-        component ?? "global",
+        citePolicyForServiceCell(writeSlug, decision.corroborator_excerpts),
+        {
+          actorUserId: input.actorUserId,
+          // S205: promote to the candidate's CELL (no-op for single-cell 'any'/'global'; plan-identity
+          // passes 'any' which mig-148 ignores for the canonical_plans branch).
+          placeOfService: placeOfService ?? "any",
+          component: component ?? "global",
+        },
       );
       if (applyError || !eventId) {
         const message = applyError?.message ?? "apply returned no event_id";
@@ -544,12 +562,14 @@ export async function commitUploadAndEvaluateCorroboration(
         decision.corroborated_value,
         decision.corroborator_excerpts,
         input.fireSource,
-        input.actorUserId,
-        null, // forceEventType
-        // S205: promote to the candidate's CELL (no-op for single-cell 'any'/'global'; plan-identity
-        // passes 'any' which mig-148 ignores for the canonical_plans branch).
-        placeOfService ?? "any",
-        component ?? "global",
+        citePolicyForServiceCell(writeSlug, decision.corroborator_excerpts),
+        {
+          actorUserId: input.actorUserId,
+          // S205: promote to the candidate's CELL (no-op for single-cell 'any'/'global'; plan-identity
+          // passes 'any' which mig-148 ignores for the canonical_plans branch).
+          placeOfService: placeOfService ?? "any",
+          component: component ?? "global",
+        },
       );
       if (applyError || !eventId) {
         const message = applyError?.message ?? "apply returned no event_id";
