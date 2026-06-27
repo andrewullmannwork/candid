@@ -129,6 +129,9 @@ export async function rerenderDisputeLetter(
   // letter applies the gating; when flag flips OFF, letter goes back to
   // legacy unconditional rendering. Symmetric with /api/disputes/generate.
   const gateUnverified = await isFeatureEnabled("consumer_read_filter_v1");
+  // dispute_noplan_coverage_request_v1 — symmetric with generate; reframe the coverage ask
+  // to a plan-document + adjudication request when no plan is on file. OFF → byte-identical.
+  const noPlanCoverageRequestOn = await isFeatureEnabled("dispute_noplan_coverage_request_v1");
 
   // §18 incr-4 — the per-line deductible-aware letter dollars (== the card recovery), gated on
   // the flag. A user-triggered redraft re-resolves the basis FRESH, so any cost-share overrides
@@ -154,6 +157,7 @@ export async function rerenderDisputeLetter(
     disputeGroundsOn,
     attestingName: params.attestingName,
     letterRecovery,
+    noPlanCoverageRequestOn,
   });
 
   return {

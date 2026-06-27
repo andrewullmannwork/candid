@@ -95,6 +95,13 @@ export interface GenerateDisputeLetterOptions {
    * the deductible-blind discrepancyAmount).
    */
   disputeGroundBasis?: Map<string, CostShareV2Result>;
+  /**
+   * dispute_noplan_coverage_request_v1 — when true, the coverage ask is reframed to a
+   * plan-document + line-by-line-adjudication REQUEST when no plan is on file to cite,
+   * instead of asserting coverage we can't back (Evidence Disclosure Rule). Caller passes
+   * the flag state. Default false → byte-identical.
+   */
+  noPlanCoverageRequestOn?: boolean;
 }
 
 export function generateDisputeLetter(
@@ -114,7 +121,7 @@ export function generateDisputeLetter(
   const options: GenerateDisputeLetterOptions = Array.isArray(optionsOrPlanEvidence)
     ? { planEvidence: optionsOrPlanEvidence }
     : (optionsOrPlanEvidence ?? {});
-  const { planEvidence, planContext, evidence, gateUnverified, enforceDataTrustGate, disputeGroundsOn, disputeGroundBasis } =
+  const { planEvidence, planContext, evidence, gateUnverified, enforceDataTrustGate, disputeGroundsOn, disputeGroundBasis, noPlanCoverageRequestOn } =
     options;
 
   // §18 incr-4 — the per-line deductible-aware letter dollars (== the card recovery), used by
@@ -160,6 +167,7 @@ export function generateDisputeLetter(
     v3DesignOn: enforceDataTrustGate ?? false,
     disputeGroundsOn: disputeGroundsOn ?? false,
     letterRecovery,
+    noPlanCoverageRequestOn: noPlanCoverageRequestOn ?? false,
   });
 
   // Recipient: insurance appeals use insurer + appeals address when available;

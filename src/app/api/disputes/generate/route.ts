@@ -314,6 +314,9 @@ export async function POST(req: NextRequest) {
       // EVIDENCE (rerender-safe). Generate already passes real findings; this keeps generate
       // and rerender on the SAME source so they can't diverge ($0.00 bug). OFF → byte-identical.
       const disputeGroundsOn = await isFlagEnabled("dispute_grounds_v1");
+      // dispute_noplan_coverage_request_v1 — reframe the coverage ask to a plan-document +
+      // adjudication REQUEST when no plan is on file (no unbacked coverage assertion). OFF → byte-identical.
+      const noPlanCoverageRequestOn = await isFlagEnabled("dispute_noplan_coverage_request_v1");
 
       // §18 incr-4 — load the per-line deductible-aware basis (gated) so the request block sources
       // refund/write-off from the engine (== the card recovery), not the deductible-blind
@@ -332,6 +335,7 @@ export async function POST(req: NextRequest) {
         enforceDataTrustGate: v3DesignOn,
         disputeGroundsOn,
         disputeGroundBasis,
+        noPlanCoverageRequestOn,
       });
 
       // Defense-in-depth: generateDisputeLetter returns null when the data-trust

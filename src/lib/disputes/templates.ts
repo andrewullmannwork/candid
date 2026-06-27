@@ -92,6 +92,12 @@ interface TemplateParams {
    * was loaded → byte-identical legacy (discrepancyAmount) rendering.
    */
   letterRecovery?: Map<string, LineRecovery>;
+  /**
+   * dispute_noplan_coverage_request_v1 — when ON, buildRequestSection reframes the
+   * coverage ask (when no plan is on file to cite) and the insurer breakdown request.
+   * Default false → byte-identical (asserting coverage copy + provider-shaped tail).
+   */
+  noPlanCoverageRequestOn?: boolean;
 }
 
 // ============================================================================
@@ -420,13 +426,14 @@ function capFirst(s: string): string {
   return s.length > 0 ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 }
 
-function buildRequestSection(params: {
+export function buildRequestSection(params: {
   evidence: DisputeEvidence | null | undefined;
   planContext: PlanContext | null | undefined;
   recipient: "insurer" | "provider";
   letterRecovery?: Map<string, LineRecovery>;
+  noPlanCoverageRequestOn?: boolean;
 }): string {
-  const { evidence, planContext, recipient, letterRecovery } = params;
+  const { evidence, planContext, recipient, letterRecovery, noPlanCoverageRequestOn } = params;
   if (!evidence) return "";
   const allLines = evidence.claims.flatMap((c) => c.lineItemEvidence);
   if (allLines.length === 0) return "";
@@ -525,15 +532,28 @@ function buildRequestSection(params: {
     asks.push(`${capFirst(verb)}${remedy.length ? `, and ${joinClauses(remedy)}` : ""}.`);
   }
 
-  // 3) coverage_contradiction (+ any covered line not otherwise asked) — insurer.
-  if (b.coverage.length > 0 && isInsurer) {
+  // 3) coverage_contradiction (+ any covered line not otherwise asked).
+  if (b.coverage.length > 0) {
     const many = b.coverage.length > 1;
-    asks.push(
-      `Cover ${many ? "these services" : "this service"} under the plan terms cited above, reprocess the claim, and pay the provider the plan-allowed ${many ? "amounts" : "amount"} so that I am not balance-billed; for any continued denial, issue a written determination identifying the specific plan provision relied upon.`,
-    );
-  } else if (b.coverage.length > 0 && !isInsurer) {
-    // Provider can't decide coverage — ask them to bill only per the EOB.
-    asks.push(`Correct my bill to reflect only my cost-sharing under my plan's coverage of ${b.coverage.length > 1 ? "these services" : "this service"}, as determined by my insurer.`);
+    // dispute_noplan_coverage_request_v1 — when NO coverage line has a citable plan
+    // (no planBenefit), do not assert coverage we can't back (Evidence Disclosure Rule).
+    // Instead compel the insurer to justify the denial + produce the plan document +
+    // line-by-line adjudication, and ask the provider to hold collections pending it.
+    const noPlanToCite = !!noPlanCoverageRequestOn && !b.coverage.some((li) => li.planBenefit);
+    if (isInsurer) {
+      asks.push(
+        noPlanToCite
+          ? `State, in writing, the specific plan provision and any clinical criteria on which this denial rests, and produce the governing plan document — the Summary Plan Description or Evidence of Coverage — together with the line-by-line adjudication of the claim. I am entitled to a full and fair review of this denial; furnish these records so it can be reviewed against the plan's actual terms, and reprocess the claim if those terms require payment.`
+          : `Cover ${many ? "these services" : "this service"} under the plan terms cited above, reprocess the claim, and pay the provider the plan-allowed ${many ? "amounts" : "amount"} so that I am not balance-billed; for any continued denial, issue a written determination identifying the specific plan provision relied upon.`,
+      );
+    } else {
+      // Provider can't decide coverage — bill only per the EOB, or hold pending it.
+      asks.push(
+        noPlanToCite
+          ? `Until my insurer issues its coverage determination, place any collection activity on this balance on hold and do not report it to a credit bureau. Once the insurer determines how the claim should have been processed, rebill me for only the patient cost-share its determination establishes.`
+          : `Correct my bill to reflect only my cost-sharing under my plan's coverage of ${b.coverage.length > 1 ? "these services" : "this service"}, as determined by my insurer.`,
+      );
+    }
   }
 
   // 4) balance_billing — limit to in-network; NSA only when detected upstream.
@@ -566,10 +586,16 @@ function buildRequestSection(params: {
     );
   }
 
-  // Tail — itemized statement when no per-line EOB breakdown is on file.
+  // Tail — the missing per-line breakdown. dispute_noplan_coverage_request_v1: request the
+  // RIGHT breakdown per recipient — the insurer's claim adjudication (EOB) vs the provider's
+  // itemized charges. OFF → the provider-shaped ask for both recipients (byte-identical).
   const hasPerLineBreakdown = allLines.some((li) => li.insurancePaid != null && li.patientOwes != null);
   if (!hasPerLineBreakdown) {
-    asks.push(`Provide a complete itemized statement of all charges, including CPT/HCPCS codes, dates of service, and amounts.`);
+    asks.push(
+      noPlanCoverageRequestOn && isInsurer
+        ? `Provide the claim's line-by-line adjudication — the explanation of benefits showing how each charge was processed, the amount allowed, and the reason for any denial.`
+        : `Provide a complete itemized statement of all charges, including CPT/HCPCS codes, dates of service, and amounts.`,
+    );
   }
 
   // Assemble: numbered relief + deadline + recipient-appropriate consequence.
@@ -974,6 +1000,7 @@ const overchargeTemplate: LetterTemplate = {
     disputeGroundsOn,
     attestingName,
     letterRecovery,
+    noPlanCoverageRequestOn,
   }) => {
     // §18 incr-3 — source the finding block from EVIDENCE when the flag is ON (rerender-safe;
     // kills the $0.00 bug). OFF or no-evidence → the AuditReport findings (byte-identical;
@@ -1007,7 +1034,7 @@ const overchargeTemplate: LetterTemplate = {
     // Block C2 item 4 — v3 replaces the fixed "I am requesting 1/2/3" list with
     // the conditional request tree (provider voice). OFF → byte-identical.
     const requestBlock = (v3DesignOn ?? false)
-      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery })
+      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, noPlanCoverageRequestOn })
       : `I am requesting the following:
 
 1. A detailed, itemized bill showing all charges, procedure codes (CPT/HCPCS), and quantities.
@@ -1128,6 +1155,7 @@ const insuranceAppealTemplate: LetterTemplate = {
     v3DesignOn,
     attestingName,
     letterRecovery,
+    noPlanCoverageRequestOn,
   }) => {
     // S111 smoke #3/#4 — insurer precedence:
     //   1. planContext.insurer (resolved in plan-context.ts preferring
@@ -1218,7 +1246,7 @@ const insuranceAppealTemplate: LetterTemplate = {
       ? ` The specific relief I am requesting is set out below, following the supporting detail.`
       : ` I am requesting a full review of this denial, including:\n\n1. The specific reason for denial, including the applicable plan provision or exclusion\n2. The clinical criteria used to determine medical necessity\n3. Instructions for requesting an external review if this internal appeal is denied`;
     const reliefSection = v3
-      ? buildRequestSection({ evidence, planContext, recipient: "insurer", letterRecovery })
+      ? buildRequestSection({ evidence, planContext, recipient: "insurer", letterRecovery, noPlanCoverageRequestOn })
       : `${closingArgument ? `${closingArgument}\n\n` : ""}${escalationParagraph}`;
 
     return `${formatDate(new Date().toISOString())}
@@ -1268,6 +1296,7 @@ const balanceBillingTemplate: LetterTemplate = {
     disputeGroundsOn,
     attestingName,
     letterRecovery,
+    noPlanCoverageRequestOn,
   }) => {
     const evidenceBlock = renderEvidenceBlock(
       evidence,
@@ -1298,7 +1327,7 @@ const balanceBillingTemplate: LetterTemplate = {
     // Block C2 item 4 — v3 replaces the fixed "I am requesting 1/2/3" list with
     // the conditional request tree (provider voice). OFF → byte-identical.
     const requestBlock = (v3DesignOn ?? false)
-      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery })
+      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, noPlanCoverageRequestOn })
       : `I am requesting:
 
 1. An immediate review of these charges
