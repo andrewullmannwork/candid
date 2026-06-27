@@ -222,21 +222,44 @@ export async function POST(req: NextRequest) {
       .update({ is_active: true })
       .eq("id", doc.linked_insurance_plan_id);
 
+    // Repoint the profile to the newly-activated plan FIRST, in its own
+    // error-checked statement. This MUST NOT be silently lost: if it fails, the
+    // /plan analyze read (which keys off profiles.active_insurance_plan_id) keeps
+    // rendering the old plan even though insurance_plans.is_active already moved.
+    // (A prior bug bundled this repoint with phantom copay columns into one
+    // update that the DB rejected wholesale, stranding the pointer.) Async/
+    // finalize path → log loudly rather than 500.
+    const { error: repointErr } = await supabase
+      .from("profiles")
+      .update({ active_insurance_plan_id: doc.linked_insurance_plan_id })
+      .eq("user_id", doc.user_id);
+    if (repointErr) {
+      console.error(
+        `[documents/status activate_plan] profile repoint FAILED for user ${doc.user_id} → plan ${doc.linked_insurance_plan_id}:`,
+        repointErr.message,
+      );
+    }
+
     // Clear stale plan-specific fields from profile (preserves personal info: name, DOB, phone, etc.)
-    // New plan's extracted values will backfill via process-plan or next card scan
-    await supabase
+    // New plan's extracted values will backfill via process-plan or next card scan.
+    const { error: clearErr } = await supabase
       .from("profiles")
       .update({
-        active_insurance_plan_id: doc.linked_insurance_plan_id,
         // Clear all cost/plan fields — stale data from old plan (personal info preserved)
         insurer: null, plan_name: null, plan_type: null, state: null,
         group_number: null, member_id: null,
         deductible_individual: null, oop_max_individual: null,
         copay_primary: null, copay_specialist: null, copay_er: null,
-        copay_urgent_care: null, copay_rx: null, coinsurance_pct: null,
+        coinsurance_pct: null,
         matched_plan_id: null, plan_source: null,
       })
       .eq("user_id", doc.user_id);
+    if (clearErr) {
+      console.error(
+        `[documents/status activate_plan] profile stale-field clear FAILED for user ${doc.user_id}:`,
+        clearErr.message,
+      );
+    }
 
     // Backfill profile with new plan's data so profile stays in sync
     const { data: newPlan } = await supabase
