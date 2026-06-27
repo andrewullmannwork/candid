@@ -159,18 +159,13 @@ export async function POST(
     const v = (dispute.metadata as Record<string, unknown> | null)?.serviceAttestedLineIds;
     return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
   })();
-  // Step 1: resolve plan context + initial evidence pass.
-  // dispute_plan_pinning_v1 — honor the dispute's pin so a re-draft never
-  // silently rebuilds the letter on a different plan than it's pinned to.
-  const planPinningEnabled = await isFeatureEnabled(
-    "dispute_plan_pinning_v1",
-    user.email ?? undefined,
-  );
+  // Step 1: resolve plan context + initial evidence pass. A re-draft resolves
+  // with the dispute's explicit user override (or the claim's live DOS-correct
+  // plan), so it never silently rebuilds on a wrong plan.
   const planContext = await resolvePlanContext(supabase, {
     userId: user.id,
     claimId: dispute.claim_id,
     canonicalPlanIdForBillYear,
-    planPinningEnabled,
     pinnedInsurancePlanId: (dispute.insurance_plan_id as string | null) ?? null,
   });
   let evidence = await resolveEvidence(supabase, {

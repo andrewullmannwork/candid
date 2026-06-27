@@ -130,8 +130,7 @@ export async function POST(
         userId: user.id,
         claimId: dispute.claim_id as string,
         canonicalPlanIdForBillYear: prevCanonicalPlanIdForBillYear,
-        planPinningEnabled,
-        // The "before" reflects the CURRENT pin (before we change it below).
+        // The "before" reflects the CURRENT override (before we change it below).
         pinnedInsurancePlanId: (dispute.insurance_plan_id as string | null) ?? null,
       });
       const extraLineItemIds =

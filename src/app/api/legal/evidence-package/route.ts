@@ -19,7 +19,6 @@ import { loadServerSubscription } from "@/lib/subscription/server";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { assertOwnership } from "@/lib/security/assert-ownership";
 import { userScoped } from "@/lib/security/user-scoped";
-import { isFeatureEnabled } from "@/lib/config/product-flags";
 
 export async function GET(req: NextRequest) {
   // B9-1 — Firebase bearer token → users row via the canonical helper. Returns
@@ -80,16 +79,11 @@ export async function GET(req: NextRequest) {
     pinnedInsurancePlanId = (dispute.insurance_plan_id as string | null) ?? null;
   }
 
-  // dispute_plan_pinning_v1 — honor the dispute's pin so the legal package cites
-  // the pinned plan (global-eval; flag is global).
-  const planPinningEnabled = await isFeatureEnabled("dispute_plan_pinning_v1");
-
   const pkg = await compileEvidencePackage(supabase, {
     claimId,
     userId: user.id,
     disputeId,
     letterContent,
-    planPinningEnabled,
     pinnedInsurancePlanId,
   });
 

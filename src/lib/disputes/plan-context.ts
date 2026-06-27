@@ -212,20 +212,14 @@ export async function resolvePlanContext(
      */
     insurerAddressOverride?: InsurerAddressOverride | null;
     /**
-     * dispute_plan_pinning_v1 (Phase 1) — when true, resolution honors the
-     * explicit pin FIRST and disambiguates the fallback by date-of-service
-     * (coverage window) BEFORE plan_year, aligning with plan-year-resolver.
-     * When false/undefined, the original year-first behavior is used UNCHANGED
-     * (flag-OFF = byte-identical). Callers set this from
-     * isFeatureEnabled("dispute_plan_pinning_v1", userEmail).
-     */
-    planPinningEnabled?: boolean;
-    /**
-     * dispute_plan_pinning_v1 (Phase 1) — the dispute's pinned insurance_plans
-     * id (the plan it was written against). Honored as Tier-1 (user_exact) when
-     * `planPinningEnabled` and the pinned plan still exists for the user. Read
-     * by the caller from dispute_outcomes.insurance_plan_id (or, at draft, from
-     * claims.insurance_plan_id). Null/undefined → no pin → DOS-window fallback.
+     * The dispute's EXPLICIT user override — the insurance_plans id the user
+     * deliberately chose for THIS dispute via the chooser / re-bind / upload
+     * flow (read by the caller from dispute_outcomes.insurance_plan_id). It is
+     * written ONLY by explicit user action — never auto-seeded — so when present
+     * it wins unconditionally over the claim-anchored plan (product spec #3:
+     * "if the user signals a different plan, use that"). Null/undefined →
+     * resolution defaults to the claim's DOS-correct plan
+     * (claims.insurance_plan_id) per the precedence in the resolver body.
      */
     pinnedInsurancePlanId?: string | null;
   }
@@ -281,58 +275,71 @@ export async function resolvePlanContext(
   // created_at (already pre-sorted DESC by the query above).
   const yearMatch = yearMatches.find((p) => p.is_active) ?? yearMatches[0] ?? null;
 
-  let resolvedPlan: typeof plans[number] | null;
-  if (params.planPinningEnabled === true) {
-    // dispute_plan_pinning_v1 (R4) — precedence: explicit pin (the plan the
-    // dispute was written against) → DOS coverage-window → plan_year. The pin
-    // is authoritative, so changing the active plan never silently re-resolves
-    // the dispute; the window step disambiguates multi-plan years by service
-    // date instead of "currently active" (aligns with plan-year-resolver).
-    // Effective pin: an explicit dispute pin (view / redraft / re-bind) wins;
-    // at draft (no explicit pin yet) default to the claim's DOS-correct plan.
-    const effectivePin = params.pinnedInsurancePlanId ?? claimPinnedPlanId;
-    let pinnedMatch = effectivePin
-      ? plans.find((p) => p.id === effectivePin) ?? null
+  // ---- Plan resolution (claim-anchored; the default — no longer flag-gated) --
+  // Precedence directly implements the product spec for "which plan was this
+  // claim under?":
+  //   1. EXPLICIT user override for this dispute (chooser / re-bind / upload) —
+  //      a deliberate selection, so it wins unconditionally (#3).
+  //   2. The claim's DOS-correct plan (claims.insurance_plan_id, resolved at
+  //      claim creation) WHEN it genuinely matches the claim period — "the plan
+  //      on file at the time the claim occurred" (#1). Read live (not a frozen
+  //      copy), so correcting the claim's plan flows through with no staleness.
+  //   3. Otherwise any coverage-window match, then any plan-year match.
+  //   4. None → fallbackPlan (active) + missingForYear, which drives the
+  //      "same plan in {year}?" upload/confirm prompt (#2 / #4).
+  const inWindow = (p: typeof plans[number]): boolean =>
+    !!(p.coverage_period_start &&
+       p.coverage_period_end &&
+       dateOfService &&
+       dateOfService >= p.coverage_period_start &&
+       dateOfService <= p.coverage_period_end);
+
+  const windowMatches = dateOfService ? plans.filter(inWindow) : [];
+  const windowMatch =
+    windowMatches.find((p) => p.is_active) ?? windowMatches[0] ?? null;
+
+  // 1. Explicit user override. dispute_outcomes.insurance_plan_id is written
+  //    ONLY by explicit user choice (the legacy auto-seed + lazy backfill were
+  //    removed, and a migration nulled pre-existing auto-pins), so a non-null
+  //    value here is always a deliberate selection and wins outright. Direct-
+  //    fetch covers the >1000-plan accounts where it fell outside the bulk cap.
+  let explicitOverridePlan: typeof plans[number] | null =
+    params.pinnedInsurancePlanId
+      ? plans.find((p) => p.id === params.pinnedInsurancePlanId) ?? null
       : null;
-    // The pin is authoritative: if it exists for the user but fell OUTSIDE the
-    // bulk fetch above (PostgREST caps that unbounded query at 1000 rows, which
-    // only bites accounts with >1000 plans), fetch it directly by id so the pin
-    // is honored regardless of plan count. Runs ONLY on the bulk-miss — normal
-    // accounts already have the pin in `plans`, so this is never reached.
-    if (effectivePin && !pinnedMatch) {
-      const { data: pinnedRow } = await supabase
-        .from("insurance_plans")
-        .select(
-          "id, plan_name, plan_year, insurer_name, plan_type, canonical_plan_id, coverage_period_start, coverage_period_end, created_at, is_active",
-        )
-        .eq("id", effectivePin)
-        .eq("user_id", userId)
-        .maybeSingle();
-      if (pinnedRow) pinnedMatch = pinnedRow as typeof plans[number];
-    }
-    const windowMatches = dateOfService
-      ? plans.filter((p) =>
-          !!(p.coverage_period_start &&
-             p.coverage_period_end &&
-             dateOfService &&
-             dateOfService >= p.coverage_period_start &&
-             dateOfService <= p.coverage_period_end))
-      : [];
-    const windowMatch =
-      windowMatches.find((p) => p.is_active) ?? windowMatches[0] ?? null;
-    resolvedPlan = pinnedMatch ?? windowMatch ?? yearMatch ?? null;
-  } else {
-    // Flag OFF — VERBATIM original year-first behavior (untouched).
-    const windowMatches = !yearMatch && dateOfService
-      ? plans.filter((p) =>
-          p.coverage_period_start &&
-          p.coverage_period_end &&
-          dateOfService! >= p.coverage_period_start &&
-          dateOfService! <= p.coverage_period_end)
-      : [];
-    const windowMatch = windowMatches.find((p) => p.is_active) ?? windowMatches[0] ?? null;
-    resolvedPlan = yearMatch ?? windowMatch ?? null;
+  if (params.pinnedInsurancePlanId && !explicitOverridePlan) {
+    const { data: pinnedRow } = await supabase
+      .from("insurance_plans")
+      .select(
+        "id, plan_name, plan_year, insurer_name, plan_type, canonical_plan_id, coverage_period_start, coverage_period_end, created_at, is_active",
+      )
+      .eq("id", params.pinnedInsurancePlanId)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (pinnedRow) explicitOverridePlan = pinnedRow as typeof plans[number];
   }
+
+  // 2. Claim-anchored plan — only when it's a real match for the claim period.
+  //    Guards the Tier-3 active-fallback case in plan-year-resolver (claim
+  //    linked to the current active plan because no plan existed for the bill
+  //    year): that must surface the prompt, not silently cite a wrong-year plan.
+  //    A valid anchor is by definition also a window/year match — this step just
+  //    makes the CLAIM's plan win the tiebreak over other same-year duplicate
+  //    rows (instead of created_at / is_active ordering).
+  const claimAnchorPlan = claimPinnedPlanId
+    ? plans.find((p) => p.id === claimPinnedPlanId) ?? null
+    : null;
+  const claimAnchorValid =
+    !!claimAnchorPlan &&
+    ((planYear != null && claimAnchorPlan.plan_year === planYear) ||
+      inWindow(claimAnchorPlan));
+
+  const resolvedPlan: typeof plans[number] | null =
+    explicitOverridePlan ??
+    (claimAnchorValid ? claimAnchorPlan : null) ??
+    windowMatch ??
+    yearMatch ??
+    null;
 
   // Fallback plan = any plan on file when no year/window match, so the
   // resolver can still surface *something* useful (e.g., user's 2026 plan
@@ -381,15 +388,50 @@ export async function resolvePlanContext(
   const preferredInsurerName =
     boundCanonicalPlan?.insurerName ?? activeFor?.insurer_name ?? null;
   let insurer = await resolveInsurer(supabase, preferredInsurerName);
-  if (!insurer && activeFor?.plan_name) {
+
+  // Carrier-hint recovery is ONLY for plans whose insurer_name captured a
+  // benefits sponsor/administrator (a PEO or TPA) instead of the underlying
+  // carrier — e.g. insurer_name "Sequoia One PEO, LLC" with the real carrier
+  // hidden in plan_name ("Open Access Plus" → Cigna). It must NOT override a
+  // plan whose insurer_name is already a real insurer: "Health Net of CA" must
+  // never be silently redirected to "Centene" just because plan_name mentions
+  // "Ambetter". The recipient is the insurer the USER's selected plan names.
+  if (
+    !insurer &&
+    activeFor?.plan_name &&
+    looksLikeBenefitsAdministrator(preferredInsurerName)
+  ) {
     const carrierHint = inferCarrierFromPlanName(activeFor.plan_name);
     if (carrierHint) {
-      console.log("[plan-context] trying plan_name-derived carrier hint:", {
+      console.log("[plan-context] insurer_name looks like a PEO/TPA; trying plan_name carrier hint:", {
+        insurerName: preferredInsurerName,
         planName: activeFor.plan_name,
         hint: carrierHint,
       });
       insurer = await resolveInsurer(supabase, carrierHint);
     }
+  }
+
+  // Recipient identity = the user's selected plan's insurer. When the catalog
+  // has no row for it (so no appeals address on file), still address the letter
+  // to that insurer BY NAME — display-only, no address — instead of leaving the
+  // recipient null (which falls through to the provider in the recipient block)
+  // or fuzzy-matching an unrelated insurer. The missing address is surfaced
+  // separately via the `insurer_address_missing` gap (keyed off appealsAddress,
+  // not the insurer object) and the user can supply it through the per-dispute
+  // address override. This is what guarantees a letter for "Health Net of CA"
+  // is addressed to Health Net of CA, never to a stranger like "22 Health".
+  if (!insurer && preferredInsurerName) {
+    insurer = {
+      id: "",
+      name: preferredInsurerName,
+      appealsAddress: null,
+      appealsPhone: null,
+      appealsSource: null,
+      appealsLastConfirmedAt: null,
+      appealsVerificationCount: 0,
+      needsConfirmation: true,
+    };
   }
 
   // Block C2.2 (S152) — overlay the user's per-dispute insurer appeals address
@@ -739,7 +781,10 @@ function extractProviderContact(metadata: unknown): ProviderContact | null {
   return { name, address, phone, npi, source, addressFields, confirmedAt };
 }
 
-async function resolveInsurer(
+// Exported for the plan-resolution verification harness (no test framework in
+// this repo); callers should go through resolvePlanContext, which adds the
+// plan-name carrier hint + display-only synthesis around this catalog lookup.
+export async function resolveInsurer(
   supabase: SupabaseClient,
   insurerName: string | null,
 ): Promise<InsurerContext | null> {
@@ -766,18 +811,45 @@ async function resolveInsurer(
   }
 
   if (!row) {
-    // Last resort: broad ilike. Try the head word first (e.g. "Aetna" from
-    // "Aetna Life Insurance Company") before the full string, which often
-    // has too many qualifiers to match a short catalog name.
-    const headWord = insurerName.split(/\s+/)[0];
-    const { data: byFuzzy } = await supabase
-      .from("insurer_catalog")
-      .select("id, name, appeals_address_line_1, appeals_address_line_2, appeals_city, appeals_state, appeals_postal_code, appeals_phone, appeals_source, appeals_last_confirmed_at, appeals_verification_count")
-      .or(`name.ilike.%${insurerName}%,name.ilike.%${headWord}%`)
-      .limit(1)
-      .maybeSingle();
-    row = byFuzzy;
-    if (row) matchStage = "fuzzy";
+    // Last resort: a TIGHT, anchored token-prefix match. We only accept a
+    // catalog row whose normalized name is a contiguous *leading* token-prefix
+    // of the input insurer name — e.g. catalog "Cigna" recovers from the
+    // verbose plan-supplied "Cigna Health and Life Insurance Co.".
+    //
+    // This replaces the old `.or(name.ilike.%input%, name.ilike.%headWord%)
+    // .limit(1)` fallback, which blew up on generic first tokens: input
+    // "Health Net of CA" → `%Health%` matched 86 unrelated rows and `.limit(1)`
+    // returned an arbitrary one ("22 Health"). Anchoring on the first token
+    // makes that impossible — "22 Health" begins with "22", not "Health", so it
+    // can never match "Health Net of CA". When nothing is a true prefix we
+    // abstain (return null) and the caller addresses the letter to the plan's
+    // own insurer_name rather than a stranger.
+    const inputTokens = normalizeInsurerName(insurerName).split(" ").filter(Boolean);
+    const firstToken = inputTokens[0] ?? "";
+    // Guard against ILIKE wildcard injection from user-supplied names: only
+    // probe when the first token is plain alphanumerics.
+    if (inputTokens.length > 0 && /^[a-z0-9]+$/.test(firstToken)) {
+      const { data: candidates } = await supabase
+        .from("insurer_catalog")
+        .select("id, name, appeals_address_line_1, appeals_address_line_2, appeals_city, appeals_state, appeals_postal_code, appeals_phone, appeals_source, appeals_last_confirmed_at, appeals_verification_count")
+        .ilike("name", `${firstToken}%`); // name must BEGIN with the input's first token
+      const prefixMatches = (candidates ?? [])
+        .map((c) => ({ c, toks: normalizeInsurerName(c.name).split(" ").filter(Boolean) }))
+        .filter(({ toks }) =>
+          toks.length > 0 &&
+          toks.length <= inputTokens.length &&
+          toks.every((t, i) => t === inputTokens[i]),
+        )
+        // Most specific (longest) prefix wins; reject ties as ambiguous.
+        .sort((a, b) => b.toks.length - a.toks.length);
+      const unambiguous =
+        prefixMatches.length === 1 ||
+        (prefixMatches.length > 1 && prefixMatches[0].toks.length > prefixMatches[1].toks.length);
+      if (unambiguous) {
+        row = prefixMatches[0].c;
+        matchStage = "fuzzy";
+      }
+    }
   }
 
   if (!row) {
@@ -845,6 +917,20 @@ export function inferCarrierFromPlanName(planName: string): string | null {
     if (match.test(planName)) return carrier;
   }
   return null;
+}
+
+/**
+ * A plan's insurer_name sometimes captures the benefits sponsor/administrator
+ * (a PEO, TPA, or third-party benefit administrator) rather than the underlying
+ * carrier. ONLY in that case should the letter recipient fall back to a
+ * plan_name-derived carrier hint (inferCarrierFromPlanName). For a real insurer
+ * name like "Health Net of CA" we trust the user's selected plan and never
+ * redirect to a guessed carrier. Kept deliberately narrow — these tokens do not
+ * appear in any real carrier's display name.
+ */
+export function looksLikeBenefitsAdministrator(name: string | null): boolean {
+  if (!name) return false;
+  return /\b(peo|tpa)\b|third[-\s]?party admin|benefits? admin(?:istrator)?s?/i.test(name);
 }
 
 export function normalizeInsurerName(name: string): string {
