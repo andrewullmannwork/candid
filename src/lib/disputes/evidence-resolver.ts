@@ -40,6 +40,7 @@ import {
   loadPlanCoverageMeta,
   loadBillSlugMeta,
   loadSecondaryGate,
+  loadCoverageRows,
   type SecondaryCoverage,
 } from "@/lib/audit/coverage-loader";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
@@ -1383,7 +1384,7 @@ async function loadCanonicalCiteGradeBySlug(
   return out;
 }
 
-async function loadCoverage(
+export async function loadCoverage(
   supabase: SupabaseClient,
   insurancePlanId: string | null,
   sourceTag: PlanBenefitDetail["sourcedFrom"] = "user_exact",
@@ -1421,12 +1422,7 @@ async function loadCoverage(
   // field_provenance JSONB exists after migration 056 (Phase 3 — per-field P-8 storage).
   // Use optional chaining / default-null to stay compatible with rows that predate
   // either migration.
-  const { data: rows } = await supabase
-    .from("plan_covered_services")
-    .select(
-      "covered, in_copay, in_coinsurance, source, confidence, sbc_excerpt, sbc_page, field_provenance, service_catalog!inner(slug, name)",
-    )
-    .eq("insurance_plan_id", insurancePlanId);
+  const { data: rows } = await loadCoverageRows(supabase, [insurancePlanId], { citeGrade: true });
 
   if (!rows) return byServiceSlug;
 
@@ -1504,7 +1500,7 @@ async function loadCoverage(
  * "Per {insurer} {planName} {year} SBC (community-verified)" framing in
  * both cases.
  */
-async function loadCoverageFromCanonical(
+export async function loadCoverageFromCanonical(
   supabase: SupabaseClient,
   canonicalPlanId: string,
   sourceTag: PlanBenefitDetail["sourcedFrom"],

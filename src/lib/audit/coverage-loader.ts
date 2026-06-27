@@ -423,17 +423,50 @@ export function planCoverageFromRow(row: Record<string, unknown>): PlanCoverageI
   };
 }
 
+// ============================================================================
+// R1b (S240) — the shared user-scope coverage READ (plan_covered_services).
+// ONE SELECT definition so future coverage columns (referral, visit_limit, …)
+// land in a single place for all 3 user-scope adapters (audit / card / letter).
+// `citeGrade` adds the dispute-letter columns; omitted for the parse-time audit
+// path (no extra cost). Canonical scope reads differently (no service_catalog FK,
+// smaller schema) — see loadCanonicalCoverageMeta / loadCoverageFromCanonical.
+// ============================================================================
+const COVERAGE_BASE_SELECT =
+  "insurance_plan_id, covered, in_copay, in_coinsurance, in_deductible_applies, out_copay, out_coinsurance, out_deductible_applies, oon_paid_at_in_network, source, service_catalog!inner(slug, category, name)";
+const COVERAGE_CITEGRADE_SELECT = "confidence, sbc_excerpt, sbc_page, field_provenance";
+
+/** The user-scope coverage SELECT — base, plus the dispute-letter cite-grade columns when asked. */
+export function coverageSelect(citeGrade: boolean): string {
+  return citeGrade ? `${COVERAGE_BASE_SELECT}, ${COVERAGE_CITEGRADE_SELECT}` : COVERAGE_BASE_SELECT;
+}
+
+/**
+ * Shared user-scope coverage row fetch (plan_covered_services), batched over plan ids.
+ * Returns the raw Supabase response so each adapter keeps its own error handling + row
+ * mapping (planCoverageFromRow for card/audit; buildPlanBenefitFromRow for the letter).
+ * Extra columns beyond a given adapter's needs are ignored by its mapper (byte-identical).
+ */
+export async function loadCoverageRows(
+  supabase: SupabaseClient,
+  insurancePlanIds: string[],
+  opts: { citeGrade: boolean },
+): Promise<{ data: Record<string, unknown>[] | null; error: unknown }> {
+  // A runtime-string .select() loses PostgREST's row-type inference (→ GenericStringError);
+  // cast to the loose row shape each adapter already maps from (planCoverageFromRow /
+  // buildPlanBenefitFromRow read named fields; extras are ignored).
+  const { data, error } = await supabase
+    .from("plan_covered_services")
+    .select(coverageSelect(opts.citeGrade))
+    .in("insurance_plan_id", insurancePlanIds);
+  return { data: (data as unknown as Record<string, unknown>[] | null) ?? null, error };
+}
+
 export async function loadCoverageMapForPlan(
   supabase: SupabaseClient,
   insurancePlanId: string | null | undefined,
 ): Promise<PlanCoverageMap | null> {
   if (!insurancePlanId) return null;
-  const { data, error } = await supabase
-    .from("plan_covered_services")
-    .select(
-      "covered, in_copay, in_coinsurance, in_deductible_applies, out_copay, out_coinsurance, out_deductible_applies, oon_paid_at_in_network, service_catalog!inner(slug)",
-    )
-    .eq("insurance_plan_id", insurancePlanId);
+  const { data, error } = await loadCoverageRows(supabase, [insurancePlanId], { citeGrade: false });
   if (error) {
     console.warn("[coverage-loader] failed to load coverage for plan", insurancePlanId, error);
     return null;
@@ -487,12 +520,7 @@ export async function loadPlanCoverageMeta(
     out.set(id, { coverageMap: new Map(), coveredMeta: [], acaCompliant: null });
   }
 
-  const { data: covered, error } = await supabase
-    .from("plan_covered_services")
-    .select(
-      "insurance_plan_id, covered, in_copay, in_coinsurance, in_deductible_applies, out_copay, out_coinsurance, out_deductible_applies, oon_paid_at_in_network, source, service_catalog!inner(slug, category)",
-    )
-    .in("insurance_plan_id", ids);
+  const { data: covered, error } = await loadCoverageRows(supabase, ids, { citeGrade: false });
   if (error) {
     console.warn("[coverage-loader] loadPlanCoverageMeta covered load failed", error);
   } else {
