@@ -16,6 +16,7 @@ import {
 } from "../../../../src/lib/disputes/evidence-resolver";
 import { extractPatternP8FromEntry, isCitationGrade } from "../../../../src/lib/parser/consumer-read";
 import { normalizeCoinsuranceForStorage } from "../../../../src/lib/billing/coinsurance";
+import { resolveCoverageForLine } from "../../../../src/lib/claims/coverage-decision";
 
 const MIN_PLAN_BENEFIT_CONFIDENCE = 0.5;
 
@@ -62,6 +63,10 @@ function inlineBuild(
     ? "legacy_sbc_excerpt"
     : null;
   const canonicalSlug = ctx.coverageCanonicalMap.get(row.slug) ?? row.slug;
+  // R2 (S242) — buildPlanBenefitFromRow now derives `covered` from this shared decision
+  // and carries it on the detail; the spec mirrors it. `covered` below stays the prior
+  // inline `row.covered !== false`, so this also re-proves the R2 covered projection.
+  const coverageDecision = resolveCoverageForLine({ covered: row.covered }, null);
   return {
     canonicalSlug,
     detail: {
@@ -77,6 +82,7 @@ function inlineBuild(
       citationSource,
       sourcedFrom: opts.sourceTag,
       sourcedFromYear: opts.sourceYear,
+      coverageDecision,
     },
   };
 }

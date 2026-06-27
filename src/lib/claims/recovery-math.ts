@@ -33,6 +33,8 @@
  * and should NOT be used in recovery math. Use patient_paid instead.
  */
 
+import { resolveCoverageForLine, isInsurerDenied } from "./coverage-decision";
+
 export interface PlanCoverageInput {
   covered: boolean | null;
   /** Per-visit fixed dollar amount the patient owes. Caps at allowed amount. */
@@ -505,6 +507,11 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
   const minRec = args.minRecovery ?? 1;
   const service = args.service;
   const insurer = args.insurer ?? EMPTY_INSURER;
+  // R2 (S242) — the ONE shared coverage decision for this line. The card reads its
+  // planStance (phase/verdict) and insurer-denied projection from here instead of
+  // re-deriving `service.covered` / `deniedAmount` inline; byte-identical (see
+  // coverage-decision-parity.ts). planStance and insurerAdjudication stay separate.
+  const coverageDecision = resolveCoverageForLine(service, insurer);
   const plan = args.plan;
   const acc = args.accumulator;
   const ov = args.overrides;
@@ -620,7 +627,7 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
     assumptions.push({ field: "network", assumed: "in_network", value: null, correctable: true, reason: "default" });
   }
 
-  if (service?.covered === false) {
+  if (coverageDecision.planStance === "not_covered") {
     phase = "not_covered";
     shouldOwe = allowed;
   } else if (isPreventiveService) {
@@ -733,13 +740,14 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
   // silently owing the full allowed and hiding a recovery. Not-covered is a KNOWN share (owe
   // full) → excluded. Backstop only; the root cure is richer plan-doc extraction (cold-start).
   const serviceCostUnknown =
-    service == null || (service.covered !== false && copay == null && coinsurance == null);
+    service == null ||
+    (coverageDecision.planStance !== "not_covered" && copay == null && coinsurance == null);
   if ((serviceCostUnknown || costShareUnknown) && phase !== "not_covered" && !isPreventiveService) {
     assumptions.push({ field: "service_cost", assumed: "unknown", value: null, correctable: true, reason: "no_plan_value" });
   }
 
   // denial: never rubber-stamped as owed (Decision 3 / Q4) — surfaced as appealable.
-  const denied = (num(insurer.deniedAmount) ?? 0) > 0;
+  const denied = isInsurerDenied(coverageDecision);
   if (denied) {
     assumptions.push({ field: "denial", assumed: "denied", value: insurer.deniedAmount, correctable: true, reason: "insurer_denied" });
   }
@@ -808,7 +816,7 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
   let verdict: CostShareVerdict;
   if (base.potentialRecovery >= minRec) verdict = "recovery";
   else if (denied) verdict = "insufficient";
-  else if (service?.covered === false) verdict = "not_covered";
+  else if (coverageDecision.planStance === "not_covered") verdict = "not_covered";
   else if (preventiveAcaUnknown) verdict = "insufficient";
   else if (!shouldOweGrounded) verdict = "insufficient";
   else if (assumptions.length > 0) verdict = "correct";

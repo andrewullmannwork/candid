@@ -28,6 +28,7 @@ import {
   resolveEffectiveClaimTotals,
   type EffectiveClaimTotals,
 } from "@/lib/claims/effective-totals";
+import { resolveCoverageForLine, type CoverageDecision } from "@/lib/claims/coverage-decision";
 import {
   classifyDisputeType,
   deriveCiteGradeTier,
@@ -64,6 +65,9 @@ function secondaryCostShareLabel(cov: { copay: number | null; coinsurance: numbe
  * user-confirmed coverage. `secondaryMatchedSlug` records the borrowed sibling.
  */
 function buildSecondaryPlanBenefit(sec: SecondaryCoverage, planYear: number | null): PlanBenefitDetail {
+  // R2 (S242) — a verified secondary (category) match IS covered by definition;
+  // carry the shared decision so the route layer reads planStance uniformly.
+  const coverageDecision = resolveCoverageForLine({ covered: true }, null);
   return {
     covered: true,
     copay: sec.coverage.copay,
@@ -78,6 +82,7 @@ function buildSecondaryPlanBenefit(sec: SecondaryCoverage, planYear: number | nu
     sourcedFrom: "user_exact",
     sourcedFromYear: planYear,
     secondaryMatchedSlug: sec.matchedSlug,
+    coverageDecision,
   };
 }
 
@@ -177,6 +182,17 @@ export interface PlanBenefitDetail {
    * for direct exact-slug matches.
    */
   secondaryMatchedSlug?: string | null;
+  /**
+   * R2 (S242) — the shared CoverageDecision this benefit's coverage stance was
+   * derived from (additive). The `covered` boolean above is now its LEGACY
+   * PROJECTION (`planStance !== "not_covered"`). Carries planStance forward so the
+   * route layer (R3) can detect `coverage_contradiction` (plan covered + insurer
+   * denied) without re-deriving it. The insurer axis is null here — the row-mapper
+   * has no claim line in scope; it merges where the adjudication lives. Optional:
+   * only the two letter loaders (`buildPlanBenefitFromRow` /
+   * `buildSecondaryPlanBenefit`) populate it today.
+   */
+  coverageDecision?: CoverageDecision;
 }
 
 export interface LineItemEvidence {
@@ -1328,10 +1344,13 @@ export function buildPlanBenefitFromRow(
 
   // S99 B5 — key by canonical sibling (identity when no aliases exist).
   const canonicalSlug = ctx.coverageCanonicalMap.get(row.slug) ?? row.slug;
+  // R2 (S242) — the shared coverage decision for this row; planStance feeds the
+  // legacy `covered` projection below and is carried forward on the detail.
+  const coverageDecision = resolveCoverageForLine({ covered: row.covered }, null);
   return {
     canonicalSlug,
     detail: {
-      covered: row.covered !== false,
+      covered: coverageDecision.planStance !== "not_covered",
       copay: row.in_copay,
       // R1c (S240) — normalize to decimal [0,1] at load (same as planCoverageFromRow on the
       // card path) so PlanBenefitDetail.coinsurance is a consistent decimal contract. The
@@ -1346,6 +1365,7 @@ export function buildPlanBenefitFromRow(
       citationSource,
       sourcedFrom: opts.sourceTag,
       sourcedFromYear: opts.sourceYear,
+      coverageDecision,
     },
   };
 }
