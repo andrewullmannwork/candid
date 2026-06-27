@@ -1,29 +1,36 @@
 /**
- * §18 Stage 1 — the DisputeGround model + builder (the unified grounds taxonomy).
+ * §18 — the DisputeGround model + per-line ground derivation + the deductible-aware letter
+ * recovery (the runtime side of the unified grounds taxonomy).
  *
  * A `DisputeGround` is ONE structured argument the dispute letter makes. The model
  * WRAPS `LineItemEvidence` (the resolver's rich per-line output) rather than flattening
  * it, so it inherits the plan-benefit citation, the expected/actual/discrepancy math,
  * `patientPaid`, the corroboration signals, and the attestation flag for free.
  *
- * STAGE 1 IS ADDITIVE: nothing calls `buildDisputeGrounds` yet (generate/rerender are
- * untouched) → the golden corpus stays byte-identical. The builder + cap are unit-tested
- * in isolation. Stage 2 points generate+rerender at the builder (kills the $0.00 bug by
- * sourcing findings from `evidence`, not the rerender-nulled `report.findings`). Stage 4
- * plumbs `shouldOwe` so the exposure cap binds (until then it is inert — graceful).
+ * The per-ground TAXONOMY METADATA (render order, scorer class, request bucket, source
+ * findings, recovery scope) is the single source of truth in [[dispute-ground-catalog]]
+ * (`DISPUTE_GROUND_CATALOG`). This file holds the `DisputeGroundType` union + the runtime
+ * `groundsForLine` / `resolveLetterRecovery` (live behind `dispute_grounds_v1`) +
+ * `computeCappedRecovery`. Each ground maps to a scorer `DisputeTypeClass` via the catalog's
+ * `scoringClass` (the two taxonomies are NOT identical — `duplicate`/`unbundling`/
+ * `unallocated_balance` have no class of their own; `coverage_corroboration`/`other` have no ground).
  *
- * `DisputeGroundType` is a SUPERSET of the strength scorer's `DisputeTypeClass`, adding the
- * audit-only detectors Correction 2 keeps (`duplicate`/`unbundling`/`unallocated_balance`).
- * It is DECOUPLED from `classifyDisputeType` so Stage 1 changes ZERO live behavior (strength
- * scoring untouched). The exact ground-derivation is golden-validated against rendering at
- * Stage 3; this is the Stage-1 decomposition. The Stage-3 ask rendering must carry the
- * contracted-rate demand (balance_billing / coverage_contradiction) and the itemized-statement
- * request (with specificity) per [[dispute_process]] §19 — both IN-letter, Andrew-approved copy.
+ * R3 step 1 REMOVED the never-wired `buildDisputeGrounds` aggregator + its private
+ * `TYPE_ORDER`/`TIER_RANK`/`strongerTier` (dead scaffolding — zero `src/` callers; it MISLED the
+ * D3 design, §5.5). The LIVE letter path is `classifyDisputeType` → `li.disputeType` →
+ * `buildRequestSection`; the recovery path is `groundsForLine` → `resolveLetterRecovery`
+ * (flag-gated). The classifier collapse (`classifyDisputeType` ↔ `groundsForLine` reconcile) is a
+ * separately-gated step AFTER this byte-identical seed. See [[unified_dispute_claim_engine_plan]] §2 R3.
  */
 import type { CiteGradeTier } from "./strength-scoring";
 import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
 import type { CostShareV2Result, CostShareAssumption } from "../claims/recovery-math";
 
+/**
+ * The dispute-ground taxonomy keys. Per-ground metadata (render order, scorer class, request
+ * bucket, source findings, recovery scope) is the single source of truth in
+ * [[dispute-ground-catalog]] (`DISPUTE_GROUND_CATALOG`).
+ */
 export type DisputeGroundType =
   | "service_not_rendered" // attested not received → the whole charge is the pool
   | "balance_billing" // charged above the protected / allowed (contracted) rate
@@ -60,31 +67,6 @@ export interface DisputeGround {
    *  exposure-capped TOTAL that drives `amount_disputed` is `computeCappedRecovery`. */
   dollarAtStake: number;
   citeGradeTier: CiteGradeTier; // the ground's strongest spine
-}
-
-export interface BuildGroundsResult {
-  grounds: DisputeGround[];
-  /** Grounds indexed by line — for the per-LINE rendering that preserves byte-exactness
-   *  at Stage 3 (the letter iterates lines, each line iterates its grounds). */
-  byLine: Map<string, DisputeGround[]>;
-}
-
-// Strength order for deterministic rendering + argument priority (strongest first).
-const TYPE_ORDER: DisputeGroundType[] = [
-  "service_not_rendered",
-  "balance_billing",
-  "duplicate",
-  "unbundling",
-  "coverage_contradiction",
-  "cost_share_misapplication",
-  "benchmark",
-  "unallocated_balance",
-  "coding_peer",
-];
-
-const TIER_RANK: Record<CiteGradeTier, number> = { verbatim: 3, statute: 2, header: 1 };
-function strongerTier(a: CiteGradeTier, b: CiteGradeTier): CiteGradeTier {
-  return TIER_RANK[a] >= TIER_RANK[b] ? a : b;
 }
 
 function findingDollar(line: LineItemEvidence, findingType: string): number {
@@ -155,50 +137,6 @@ export function groundsForLine(line: LineItemEvidence, claimId: string): Dispute
 }
 
 /**
- * Build the dispute-level grounds from the resolved evidence. Pure; no DB, no behavior change.
- * Groups per-line grounds into one ground per (claim, type), strength-ordered, and returns the
- * grounds-by-line index for per-line rendering.
- */
-export function buildDisputeGrounds(evidence: DisputeEvidence | null): BuildGroundsResult {
-  if (!evidence) return { grounds: [], byLine: new Map() };
-
-  const byKey = new Map<string, DisputeGround>();
-  const byLine = new Map<string, DisputeGround[]>();
-
-  for (const claim of evidence.claims) {
-    for (const line of claim.lineItemEvidence) {
-      const lineGrounds = groundsForLine(line, claim.claimId);
-      if (lineGrounds.length === 0) continue;
-      const resolvedForLine: DisputeGround[] = [];
-      for (const g of lineGrounds) {
-        const key = `${claim.claimId}::${g.type}`;
-        const existing = byKey.get(key);
-        if (existing) {
-          existing.lineItemIds.push(...g.lineItemIds);
-          existing.lines.push(...g.lines);
-          existing.findings.push(...g.findings);
-          existing.dollarAtStake = Math.round((existing.dollarAtStake + g.dollarAtStake) * 100) / 100;
-          existing.citeGradeTier = strongerTier(existing.citeGradeTier, g.citeGradeTier);
-          resolvedForLine.push(existing);
-        } else {
-          byKey.set(key, g);
-          resolvedForLine.push(g);
-        }
-      }
-      byLine.set(line.lineItemId, resolvedForLine);
-    }
-  }
-
-  const grounds = Array.from(byKey.values()).sort(
-    (a, b) =>
-      TYPE_ORDER.indexOf(a.type) - TYPE_ORDER.indexOf(b.type) ||
-      b.dollarAtStake - a.dollarAtStake ||
-      a.claimId.localeCompare(b.claimId),
-  );
-  return { grounds, byLine };
-}
-
-/**
  * §18 incr-3 — the render-ready findings for the 3 provider templates' (overcharge /
  * balance_billing / duplicate) detail block, sourced from the resolved EVIDENCE (which BOTH
  * generate AND rerender pass to template.body) rather than the AuditReport `findings` (nulled
@@ -247,8 +185,13 @@ function capLineRaw(
  * §18.5 / Call A — the de-overlapped, exposure-capped TOTAL recovery. PER LINE: sum the line's
  * ground dollars, then CAP at `max(patientPaid, patientOwes) − shouldOwe`. `service_not_rendered`
  * resets `shouldOwe→0` (the whole charge is recoverable). `shouldOwe` is OPTIONAL — absent (Stages
- * 1–3) → the cap is INERT. Kept for the number-map path + the builder fixture; the live letter
- * dollars come from resolveLetterRecovery (which shares capLineRaw).
+ * 1–3) → the cap is INERT. The live letter dollars come from resolveLetterRecovery (which shares
+ * capLineRaw).
+ *
+ * R3 step 1 (§5.5): currently NO `src/` caller — `amount_disputed` is driven by
+ * `resolveLetterRecovery.total`, not this. RETAINED (not removed) pending the R3 step-5
+ * multi-charge claim-total model, which will either build on this number-map path or supersede it.
+ * Exercised by the builder fixture (C1–C4).
  */
 export function computeCappedRecovery(
   evidence: DisputeEvidence | null,

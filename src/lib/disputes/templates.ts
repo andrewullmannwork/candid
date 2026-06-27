@@ -5,6 +5,7 @@ import type { AuditFinding, ParsedBill, DisputeLetterType } from "../billing/typ
 import type { PlanContext, ProviderContact, AppealsAddress } from "./plan-context";
 import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
 import { groundFindingsForEvidence, type GroundFinding, type LineRecovery } from "./dispute-grounds";
+import type { RequestBucket } from "./dispute-ground-catalog";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 
 interface LetterTemplate {
@@ -458,7 +459,7 @@ export function buildRequestSection(params: {
     }, 0);
 
   // One ask per line, priority-bucketed (guard: no double-asks).
-  const b: Record<"attested" | "costShare" | "coverage" | "balanceBilling" | "coding", LineItemEvidence[]> = {
+  const b: Record<RequestBucket, LineItemEvidence[]> = {
     attested: [], costShare: [], coverage: [], balanceBilling: [], coding: [],
   };
   for (const li of allLines) {

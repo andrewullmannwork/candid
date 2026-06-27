@@ -1,13 +1,13 @@
 /**
- * §18 Stage 1 — DisputeGround builder unit fixtures (PII-free synthetic).
+ * §18 — DisputeGround per-line derivation + exposure-cap unit fixtures (PII-free synthetic).
  * Locks: per-line ground derivation (primary + additive non-contradictory secondaries),
- * the service_not_rendered whole-charge pool, clean → [], dispute-level grouping +
- * strength ordering, the grounds-by-line index, the Gap-1 description/billedAmount on
+ * the service_not_rendered whole-charge pool, clean → [], the Gap-1 description/billedAmount on
  * GroundFinding, and the §18.5/Call-A exposure cap (inert without shouldOwe; binds with it).
+ * (R3 step 1 removed the dead `buildDisputeGrounds` aggregator + its G7–G9 tests; the grounds
+ * taxonomy SoT is now `DISPUTE_GROUND_CATALOG`, pinned by catalog-projection-parity.)
  * Run: npx tsx scripts/calibration/fixtures/dispute-grounds/builder.ts
  */
 import {
-  buildDisputeGrounds,
   groundsForLine,
   computeCappedRecovery,
   type DisputeGroundType,
@@ -137,32 +137,6 @@ function makeEvidence(lines: LineItemEvidence[], claimId = "claim-1"): DisputeEv
   const f = g[0].findings[0];
   check("G6 finding description surfaced", f.description === "Charged above the in-network allowed amount.", f.description);
   check("G6 finding billedAmount from line", near(f.billedAmount, 300), f.billedAmount);
-}
-
-// G7 — buildDisputeGrounds groups per (claim,type) + strength-orders the whole set.
-{
-  const lineA = makeLine({ lineItemId: "li-A", auditFindings: [finding({ type: "overcharge", estimatedOvercharge: 90 })] }); // → benchmark
-  const lineB = makeLine({ lineItemId: "li-B", auditFindings: [finding({ type: "balance_billing", estimatedOvercharge: 150 })] });
-  const { grounds, byLine } = buildDisputeGrounds(makeEvidence([lineA, lineB]));
-  check("G7 two grounds, balance before benchmark", types(grounds).join() === "balance_billing,benchmark", types(grounds));
-  check("G7 byLine indexes li-A → benchmark", byLine.get("li-A")?.[0].type === "benchmark", byLine.get("li-A")?.map((x) => x.type));
-  check("G7 byLine indexes li-B → balance_billing", byLine.get("li-B")?.[0].type === "balance_billing");
-}
-
-// G8 — same type across TWO lines on one claim → ONE merged ground (lineItemIds + dollar sum).
-{
-  const l1 = makeLine({ lineItemId: "li-1", auditFindings: [finding({ type: "duplicate", estimatedOvercharge: 60 })] });
-  const l2 = makeLine({ lineItemId: "li-2", auditFindings: [finding({ type: "duplicate", estimatedOvercharge: 40 })] });
-  const { grounds } = buildDisputeGrounds(makeEvidence([l1, l2]));
-  check("G8 one merged duplicate ground", grounds.length === 1 && grounds[0].type === "duplicate", types(grounds));
-  check("G8 merged lineItemIds", grounds[0].lineItemIds.join() === "li-1,li-2", grounds[0]?.lineItemIds);
-  check("G8 merged dollar 100", near(grounds[0].dollarAtStake, 100), grounds[0]?.dollarAtStake);
-}
-
-// G9 — null evidence → empty.
-{
-  const r = buildDisputeGrounds(null);
-  check("G9 null evidence → []", r.grounds.length === 0 && r.byLine.size === 0);
 }
 
 // ── §18.5 / Call A — the exposure cap ────────────────────────────────────────

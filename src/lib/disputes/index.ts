@@ -12,21 +12,18 @@ import type { PlanBenefitEvidence } from "./templates";
 import type { PlanContext } from "./plan-context";
 import type { DisputeEvidence } from "./evidence-resolver";
 import { resolveLetterRecovery } from "./dispute-grounds";
+import { deriveFindingToLetter } from "./dispute-ground-catalog";
 import type { CostShareV2Result } from "../claims/recovery-math";
 import { randomUUID } from "crypto";
 
 export type { PlanBenefitEvidence };
 
-// Map finding types to appropriate letter types
-const FINDING_TO_LETTER: Partial<Record<FindingType, DisputeLetterType>> = {
-  overcharge: "overcharge",
-  duplicate: "duplicate_charge",
-  unbundling: "overcharge",
-  upcoding: "overcharge",
-  balance_billing: "balance_billing",
-  missing_adjustment: "overcharge",
-  stale_claim: "overcharge",
-};
+// Map finding types to appropriate letter types — PROJECTED from DISPUTE_GROUND_CATALOG (the
+// single source of truth). Byte-identical to the prior hardcoded map at the consumer below
+// (`FINDING_TO_LETTER[findings[0].type] || "overcharge"`): findings raised by no ground
+// (upcoding/stale_claim/uncategorized) are absent here and fall to that default. Pinned by the
+// catalog-projection-parity fixture across all FindingType.
+const FINDING_TO_LETTER: Partial<Record<FindingType, DisputeLetterType>> = deriveFindingToLetter();
 
 /**
  * Who the finished letter is addressed to — the single source of truth shared by
