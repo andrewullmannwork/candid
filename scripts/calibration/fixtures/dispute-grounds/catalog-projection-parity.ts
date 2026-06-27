@@ -134,13 +134,29 @@ const ALL_GROUNDS = Object.keys(EXPECTED_CLASS) as DisputeGroundType[];
   }
 }
 
-// ── P4 — scoringClass / requestBucket / scope deep-equal the oracle. ──────────
+// ── P4 — scoringClass / requestBucket / scope deep-equal the oracle + obligationElements are
+//         well-formed (R3 step 3 seeded them; the deep per-element × per-recipient voice matrix
+//         lives in obligation-registry-parity, not here). ──────────
+const VALID_PREDICATES = new Set(["nsa_applicable", "contract_exists", "statute_verified", "rate_known"]);
+const VALID_VOICE_MET = new Set(["demand", "raise", "request"]);
+const VALID_VOICE_NOT = new Set(["omit", "fall_to_facts"]);
 for (const g of ALL_GROUNDS) {
   const spec = DISPUTE_GROUND_CATALOG[g];
   check(`P4 ${g} scoringClass == ${EXPECTED_CLASS[g]}`, spec.scoringClass === EXPECTED_CLASS[g], spec.scoringClass);
   check(`P4 ${g} requestBucket == ${EXPECTED_BUCKET[g]}`, spec.requestBucket === EXPECTED_BUCKET[g], spec.requestBucket);
   check(`P4 ${g} scope == ${EXPECTED_SCOPE[g]}`, spec.scope === EXPECTED_SCOPE[g], spec.scope);
-  check(`P4 ${g} obligationElements seeded []`, spec.obligationElements.length === 0);
+  check(
+    `P4 ${g} obligationElements well-formed`,
+    spec.obligationElements.every(
+      (oe) =>
+        (oe.party === "insurer" || oe.party === "provider") &&
+        (oe.condition === null || VALID_PREDICATES.has(oe.condition)) &&
+        VALID_VOICE_MET.has(oe.voiceIfMet) &&
+        VALID_VOICE_NOT.has(oe.voiceIfNot) &&
+        oe.element.length > 0 &&
+        oe.authority.length > 0,
+    ),
+  );
 }
 
 // ── P5 — scoringClass LIVE-TIE: classifyDisputeType returns the catalog's class for a line

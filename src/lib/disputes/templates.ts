@@ -6,6 +6,7 @@ import type { PlanContext, ProviderContact, AppealsAddress } from "./plan-contex
 import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
 import { groundFindingsForEvidence, type GroundFinding, type LineRecovery } from "./dispute-grounds";
 import type { RequestBucket } from "./dispute-ground-catalog";
+import { buildObligationContext, renderObligationClauses } from "./obligation-render";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 
 interface LetterTemplate {
@@ -433,8 +434,12 @@ export function buildRequestSection(params: {
   recipient: "insurer" | "provider";
   letterRecovery?: Map<string, LineRecovery>;
   noPlanCoverageRequestOn?: boolean;
+  // dispute_grounds_v1 — the obligation-registry demand master-switch (R3 step 3). OFF → the
+  // safe voice (fall_to_facts / omit) → byte-identical. Even ON, a demand fires only when a
+  // predicate is met (all unknown today). Threaded from the render fns' disputeGroundsOn.
+  demandsEnabled?: boolean;
 }): string {
-  const { evidence, planContext, recipient, letterRecovery, noPlanCoverageRequestOn } = params;
+  const { evidence, planContext, recipient, letterRecovery, noPlanCoverageRequestOn, demandsEnabled } = params;
   if (!evidence) return "";
   const allLines = evidence.claims.flatMap((c) => c.lineItemEvidence);
   if (allLines.length === 0) return "";
@@ -557,7 +562,10 @@ export function buildRequestSection(params: {
     }
   }
 
-  // 4) balance_billing — limit to in-network; NSA only when detected upstream.
+  // 4) balance_billing — limit to in-network (the core relief) + the obligation clauses (NSA,
+  // contracted-rate) from the registry, voiced per recipient (R3 step 3). Today every predicate
+  // is unknown → fall_to_facts (the verbatim "apply any applicable NSA" clause) / omit → the
+  // composed string is byte-identical; demands light up at the dispute_grounds_v1 flip + data.
   if (b.balanceBilling.length > 0) {
     const many = b.balanceBilling.length > 1;
     // §18 incr-4: the deductible-aware write-off (== the card recovery) on assertable lines;
@@ -567,8 +575,15 @@ export function buildRequestSection(params: {
     const over = letterRecovery
       ? sumAssertable(b.balanceBilling, letterRecovery, "writeOff")
       : sumOf(b.balanceBilling, (li) => li.discrepancyAmount);
+    const obClauses = renderObligationClauses(
+      "balance_billing",
+      recipient,
+      buildObligationContext(),
+      demandsEnabled ?? false,
+    );
+    const obText = obClauses.length > 0 ? ` and ${obClauses.join(" and ")}` : "";
     asks.push(
-      `Limit my responsibility for ${many ? "these services" : "this service"} to my in-network cost-sharing and apply any applicable No Surprises Act protections${over > 0 ? `; write off the ${formatCurrency(over)} billed above it` : ""}.`,
+      `Limit my responsibility for ${many ? "these services" : "this service"} to my in-network cost-sharing${obText}${over > 0 ? `; write off the ${formatCurrency(over)} billed above it` : ""}.`,
     );
   }
 
@@ -1035,7 +1050,7 @@ const overchargeTemplate: LetterTemplate = {
     // Block C2 item 4 — v3 replaces the fixed "I am requesting 1/2/3" list with
     // the conditional request tree (provider voice). OFF → byte-identical.
     const requestBlock = (v3DesignOn ?? false)
-      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, noPlanCoverageRequestOn })
+      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, noPlanCoverageRequestOn, demandsEnabled: disputeGroundsOn ?? false })
       : `I am requesting the following:
 
 1. A detailed, itemized bill showing all charges, procedure codes (CPT/HCPCS), and quantities.
@@ -1154,6 +1169,7 @@ const insuranceAppealTemplate: LetterTemplate = {
     evidence,
     gateUnverified,
     v3DesignOn,
+    disputeGroundsOn,
     attestingName,
     letterRecovery,
     noPlanCoverageRequestOn,
@@ -1247,7 +1263,7 @@ const insuranceAppealTemplate: LetterTemplate = {
       ? ` The specific relief I am requesting is set out below, following the supporting detail.`
       : ` I am requesting a full review of this denial, including:\n\n1. The specific reason for denial, including the applicable plan provision or exclusion\n2. The clinical criteria used to determine medical necessity\n3. Instructions for requesting an external review if this internal appeal is denied`;
     const reliefSection = v3
-      ? buildRequestSection({ evidence, planContext, recipient: "insurer", letterRecovery, noPlanCoverageRequestOn })
+      ? buildRequestSection({ evidence, planContext, recipient: "insurer", letterRecovery, noPlanCoverageRequestOn, demandsEnabled: disputeGroundsOn ?? false })
       : `${closingArgument ? `${closingArgument}\n\n` : ""}${escalationParagraph}`;
 
     return `${formatDate(new Date().toISOString())}
@@ -1328,7 +1344,7 @@ const balanceBillingTemplate: LetterTemplate = {
     // Block C2 item 4 — v3 replaces the fixed "I am requesting 1/2/3" list with
     // the conditional request tree (provider voice). OFF → byte-identical.
     const requestBlock = (v3DesignOn ?? false)
-      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, noPlanCoverageRequestOn })
+      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, noPlanCoverageRequestOn, demandsEnabled: disputeGroundsOn ?? false })
       : `I am requesting:
 
 1. An immediate review of these charges
