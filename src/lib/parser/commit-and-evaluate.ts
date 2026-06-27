@@ -31,7 +31,7 @@
 
 import type { createServerClient } from "@/lib/supabase/server";
 import { evaluateCorroboration, type CorroboratorExcerpt } from "./corroboration-evaluator";
-import { applyPromotionEvent, type FireSource, type CitePolicy } from "./promotion-event";
+import { applyPromotionEvent, type FireSource, type CitePolicy, type ProvenanceMeta } from "./promotion-event";
 import {
   checkAndUpdatePendingChallenges,
   type PendingChallengeUpdate,
@@ -198,7 +198,7 @@ export async function expandPerServiceCandidates(
 
   const { data: rows } = await supabase
     .from("plan_covered_services")
-    .select("service_id, place_of_service, component, in_copay, in_coinsurance, in_deductible_applies, covered, prior_auth_required, out_copay, out_coinsurance, out_deductible_applies")
+    .select("service_id, place_of_service, component, in_copay, in_coinsurance, in_deductible_applies, covered, prior_auth_required, out_copay, out_coinsurance, out_deductible_applies, requires_referral, visit_limit, annual_limit_value")
     .eq("insurance_plan_id", plan.id);
   if (!rows || rows.length === 0) return existing;
 
@@ -227,6 +227,8 @@ export async function expandPerServiceCandidates(
     "out_copay",
     "out_coinsurance",
     "out_deductible_applies",
+    "requires_referral",
+    "visit_limit",
   ];
 
   // S205: dedup + emit per CELL (a plan_covered_services row IS one (place_of_service,
@@ -251,8 +253,41 @@ export async function expandPerServiceCandidates(
       seen.add(key);
       added.push({ serviceSlug: slug, fieldName: column as string, placeOfService, component });
     }
+    // annual_limit: the candidate fieldName is 'annual_limit' but the source column is annual_limit_value
+    // (a NUMBER; mig 187 / S241). Emit it mapped so readAdminPerServiceValue + the RPC arm see 'annual_limit'.
+    const annual = (row as Record<string, unknown>).annual_limit_value;
+    if (annual !== undefined && annual !== null) {
+      const key = `${slug}::annual_limit::${placeOfService ?? ""}::${component ?? ""}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        added.push({ serviceSlug: slug, fieldName: "annual_limit", placeOfService, component });
+      }
+    }
   }
   return added.length > 0 ? [...existing, ...added] : existing;
+}
+
+/**
+ * G2 — lift the FULL Pattern-P8 cite-grade block out of a field_provenance entry (not just source_excerpt),
+ * so cold-start admin-attested promotions carry every key the A3 gate reads. Returns undefined when there
+ * is no usable excerpt (a value with no excerpt is not cite-grade).
+ */
+function metaFromProvenanceEntry(entry: Record<string, unknown>): ProvenanceMeta | undefined {
+  const excerpt = typeof entry.source_excerpt === "string" ? entry.source_excerpt : undefined;
+  if (!excerpt?.trim()) return undefined;
+  return {
+    sourceExcerpt: excerpt,
+    sourceExcerptVerified:
+      typeof entry.source_excerpt_verified === "boolean" ? entry.source_excerpt_verified : undefined,
+    sourceExcerptExtractionMethod:
+      typeof entry.source_excerpt_extraction_method === "string" ? entry.source_excerpt_extraction_method : undefined,
+    sourceSectionHint:
+      typeof entry.source_section_hint === "string" ? entry.source_section_hint : undefined,
+    sourceSectionVerified:
+      typeof entry.source_section_verified === "boolean" ? entry.source_section_verified : undefined,
+    resolutionSource:
+      typeof entry.resolution_source === "string" ? entry.resolution_source : undefined,
+  };
 }
 
 async function readAdminPerServiceValue(
@@ -261,7 +296,7 @@ async function readAdminPerServiceValue(
   canonicalPlanId: string,
   serviceSlug: string,
   fieldName: string,
-): Promise<{ value: unknown; excerpts: CorroboratorExcerpt[] } | null> {
+): Promise<{ value: unknown; excerpts: CorroboratorExcerpt[]; meta?: ProvenanceMeta } | null> {
   // Find actor's most recent insurance_plans row linked to this canonical
   const { data: plan } = await supabase
     .from("insurance_plans")
@@ -281,48 +316,61 @@ async function readAdminPerServiceValue(
     .maybeSingle();
   if (!svc?.id) return null;
 
-  // Find the plan_covered_services row(s) for this (plan, service)
+  // Find the plan_covered_services row for this (plan, service). Reads the full coverage column set +
+  // annual_limit_value (source for the 'annual_limit' candidate) + field_provenance (the P-8 block).
   const { data: rows } = await supabase
     .from("plan_covered_services")
-    .select("id, field_provenance, in_copay, in_coinsurance, in_deductible_applies, covered, prior_auth_required")
+    .select("id, field_provenance, in_copay, in_coinsurance, in_deductible_applies, covered, prior_auth_required, out_copay, out_coinsurance, out_deductible_applies, requires_referral, visit_limit, annual_limit_value")
     .eq("insurance_plan_id", plan.id)
     .eq("service_id", svc.id)
     .limit(1);
   const row = rows?.[0];
   if (!row) return null;
 
-  // Try field_provenance first (with prefix variants); fall back to direct column read
-  const fp = (row.field_provenance ?? null) as Record<
-    string,
-    { value?: unknown; source_excerpt?: string } | undefined
-  > | null;
+  // annual_limit: candidate fieldName is 'annual_limit'; its source column + provenance key are
+  // annual_limit_value (a NUMBER; mig 187 / S241). Other fields use the in_/unprefixed alias variants.
+  const provenanceKeys =
+    fieldName === "annual_limit"
+      ? ["annual_limit_value", "annual_limit"]
+      : fieldName.startsWith("in_")
+        ? [fieldName, fieldName.slice(3)]
+        : [fieldName, `in_${fieldName}`];
+
+  // Try field_provenance first (carries the value AND the full Pattern-P8 block); fall back to the typed
+  // column. G2: read the FULL block (metaFromProvenanceEntry), not just source_excerpt.
+  const fp = (row.field_provenance ?? null) as Record<string, Record<string, unknown> | undefined> | null;
   if (fp) {
-    const variants = fieldName.startsWith("in_")
-      ? [fieldName, fieldName.slice(3)]
-      : [fieldName, `in_${fieldName}`];
-    for (const key of variants) {
+    for (const key of provenanceKeys) {
       const entry = fp[key];
       if (entry && entry.value !== undefined && entry.value !== null) {
         return {
           value: entry.value,
           excerpts: [{
             user_id_hash: actorUserId,
-            excerpt: entry.source_excerpt ?? null,
+            excerpt: typeof entry.source_excerpt === "string" ? entry.source_excerpt : null,
             document_ref: row.id as string,
             recorded_at: new Date().toISOString(),
           }],
+          meta: metaFromProvenanceEntry(entry),
         };
       }
     }
   }
 
-  // Direct column fallback — keyed by the ALIGNED fieldName (candidates emit aligned names; F.0 Phase 2).
+  // Direct column fallback — keyed by the ALIGNED fieldName (+ annual_limit's special source column).
+  // A column-only value has no excerpt → no meta (not cite-grade).
   const colMap: Record<string, unknown> = {
     in_copay: row.in_copay,
     in_coinsurance: row.in_coinsurance,
     in_deductible_applies: row.in_deductible_applies,
     covered: row.covered,
     prior_auth_required: row.prior_auth_required,
+    out_copay: row.out_copay,
+    out_coinsurance: row.out_coinsurance,
+    out_deductible_applies: row.out_deductible_applies,
+    requires_referral: row.requires_referral,
+    visit_limit: row.visit_limit,
+    annual_limit: row.annual_limit_value,
   };
   const direct = colMap[fieldName];
   if (direct !== undefined && direct !== null) {
@@ -384,8 +432,14 @@ async function readAdminPlanIdentityValue(
  * coverage citation; a service field cites its source excerpt when one exists, else records no_excerpt.
  * (The cold-start seed path enriches this to the full P-8 block once readAdminPerServiceValue reads it.)
  */
-function citePolicyForServiceCell(serviceSlug: string | null, excerpts: CorroboratorExcerpt[]): CitePolicy {
+function citePolicyForServiceCell(
+  serviceSlug: string | null,
+  excerpts: CorroboratorExcerpt[],
+  meta?: ProvenanceMeta,
+): CitePolicy {
   if (serviceSlug === null) return { cite: false, reason: "plan_identity" };
+  // Prefer the full P-8 block (readAdminPerServiceValue, cold-start seed) over the bare excerpt (organic).
+  if (meta && meta.sourceExcerpt?.trim()) return { cite: true, meta };
   const excerpt = excerpts[0]?.excerpt?.trim();
   return excerpt
     ? { cite: true, meta: { sourceExcerpt: excerpt } }
@@ -481,13 +535,21 @@ export async function commitUploadAndEvaluateCorroboration(
     if (actorIsAdmin) {
       let attestValue = decision.corroborated_value;
       let attestExcerpts = decision.corroborator_excerpts;
+      let attestMeta: ProvenanceMeta | undefined;
       if (attestValue === null || attestValue === undefined) {
-        const direct = serviceSlug === null
-          ? await readAdminPlanIdentityValue(supabase, input.actorUserId!, input.canonicalPlanId, fieldName)
-          : await readAdminPerServiceValue(supabase, input.actorUserId!, input.canonicalPlanId, serviceSlug, fieldName);
-        if (direct) {
-          attestValue = direct.value;
-          attestExcerpts = direct.excerpts;
+        if (serviceSlug === null) {
+          const direct = await readAdminPlanIdentityValue(supabase, input.actorUserId!, input.canonicalPlanId, fieldName);
+          if (direct) {
+            attestValue = direct.value;
+            attestExcerpts = direct.excerpts;
+          }
+        } else {
+          const direct = await readAdminPerServiceValue(supabase, input.actorUserId!, input.canonicalPlanId, serviceSlug, fieldName);
+          if (direct) {
+            attestValue = direct.value;
+            attestExcerpts = direct.excerpts;
+            attestMeta = direct.meta; // G2: the full P-8 block → cite-grade admin promotion
+          }
         }
       }
       if (attestValue === null || attestValue === undefined) {
@@ -503,7 +565,7 @@ export async function commitUploadAndEvaluateCorroboration(
         attestValue,
         attestExcerpts,
         input.fireSource,
-        citePolicyForServiceCell(writeSlug, attestExcerpts),
+        citePolicyForServiceCell(writeSlug, attestExcerpts, attestMeta),
         {
           actorUserId: input.actorUserId,
           forceEventType: "admin_override",
