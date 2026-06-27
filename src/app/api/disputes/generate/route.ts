@@ -76,13 +76,6 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // dispute_plan_pinning_v1 — when ON, the dispute is pinned to its
-      // DOS-correct plan and resolution honors that pin across active-plan
-      // changes. Global-eval here (userEmail is a firebase_uid in this route);
-      // the view + lazy-backfill paths do per-user eval, and the backfill
-      // covers any draft created while a users-targeted flag reads OFF here.
-      const planPinningEnabled = await isFeatureEnabled("dispute_plan_pinning_v1");
-
       // Phase 1: resolve plan context — insurer name + appeals address from
       // the user's plan matching the bill's date of service.
       let planContext = null;
@@ -91,13 +84,11 @@ export async function POST(req: NextRequest) {
           userId: auditReport.userId,
           claimId: body.claimId ?? null,
           dateOfService: auditReport.parsedBill.serviceDate ?? null,
-          planPinningEnabled,
-          // dispute_plan_pinning_v1 (Phase 2) — honor the user's confirm/override
-          // choice from the #2 chooser as the pin. The chosen id arrives in the
-          // request body; resolvePlanContext validates ownership via its
-          // user-scoped lookups and falls back to the claim's DOS-correct plan
-          // when absent, so the non-chooser path stays byte-identical.
-          pinnedInsurancePlanId: planPinningEnabled ? (insurancePlanId ?? null) : null,
+          // Explicit user override only — the chosen id from the #2 "which plan
+          // were you on?" chooser (request body). Absent → the resolver defaults
+          // to the claim's DOS-correct plan. resolvePlanContext validates
+          // ownership via its user-scoped lookups.
+          pinnedInsurancePlanId: insurancePlanId ?? null,
         });
       } catch (err) {
         console.error("[disputes] plan-context resolve failed (non-fatal):", err);
@@ -375,9 +366,11 @@ export async function POST(req: NextRequest) {
           amountDisputed: totalDisputed,
           letterContent: letter.body,
           citationSource,
-          // dispute_plan_pinning_v1 — pin to the resolved DOS-correct plan (what
-          // the letter was built on). Undefined when OFF (column stays null).
-          insurancePlanId: planPinningEnabled ? (planContext?.plan?.id ?? null) : undefined,
+          // The dispute pin is an EXPLICIT user override ONLY — the chooser pick
+          // (request body), never the auto-resolved plan. Absent → null, so the
+          // dispute reads the claim's live DOS-correct plan on every view (no
+          // frozen copy to go stale). Written only here + /repin.
+          insurancePlanId: insurancePlanId ?? null,
         });
         disputeId = result?.disputeId || null;
         deduplicated = result?.deduplicated ?? false;

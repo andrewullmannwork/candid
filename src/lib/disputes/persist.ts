@@ -28,12 +28,13 @@ export interface PersistDisputeInput {
    */
   citationSource?: "per_line_sum" | "claim_header";
   /**
-   * dispute_plan_pinning_v1 — the plan this dispute is written against (the
-   * resolved DOS-correct plan id). Persisted to dispute_outcomes.insurance_plan_id
-   * so resolution honors it across active-plan changes. Set by the caller only
-   * when the flag is ON; null/undefined leaves the column null (flag-OFF =
-   * today). Applied on INSERT only — a dedup re-draft keeps the existing pin
-   * (which a re-bind/lazy-backfill owns), never silently overwriting it.
+   * The dispute's EXPLICIT user override — the insurance_plans id the user
+   * deliberately chose for this dispute via the "which plan were you on?"
+   * chooser (passed from /generate). Persisted to
+   * dispute_outcomes.insurance_plan_id; the resolver honors a non-null value
+   * above the claim's DOS-correct plan. Written ONLY on explicit user choice —
+   * never auto-seeded from the resolved plan. Applied on INSERT only — a dedup
+   * re-draft keeps the existing value, never silently overwriting it.
    */
   insurancePlanId?: string | null;
 }

@@ -23,7 +23,6 @@ import {
   type PlanSearchModalMode,
 } from "@/components/disputes/PlanSearchModal";
 import { DisputePlanChooser, type DisputePlanChooserPlan } from "@/components/disputes/DisputePlanChooser";
-import { PlanChangeBanner } from "@/components/disputes/PlanChangeBanner";
 import { DownloadWarningModal } from "@/components/disputes/DownloadWarningModal";
 import { EvidenceGaps } from "@/components/disputes/EvidenceGaps";
 import { InsurerAddressCorrectionModal } from "@/components/disputes/InsurerAddressCorrectionModal";
@@ -294,14 +293,6 @@ function DisputesContent() {
   const [rebindOpen, setRebindOpen] = useState(false);
   const [rebindPlans, setRebindPlans] = useState<DisputePlanChooserPlan[]>([]);
   const [rebindBusy, setRebindBusy] = useState(false);
-  const [planChangeBanner, setPlanChangeBanner] = useState<{
-    previousPlanName: string | null;
-    newPlanName: string | null;
-    newPlanId: string;
-    changedAt: string;
-    serviceDate: string | null;
-    recommend: "keep" | "rebuild" | null;
-  } | null>(null);
   useEffect(() => {
     let cancelled = false;
     fetch("/api/feature-flags/dispute_plan_pinning_v1")
@@ -345,7 +336,6 @@ function DisputesContent() {
     setIsStale(data.isStale === true);
     if (!opts?.refresh) setStaleBannerCollapsed(false);
     setPlanContext(data.planContext ?? null);
-    setPlanChangeBanner(data.planChangeBanner ?? null);
     setEvidence(data.evidence ?? null);
     setNameMismatch(data.patientNameMismatch ?? null);
     setGateUnverified(!!data.gateUnverified);
@@ -1379,47 +1369,6 @@ function DisputesContent() {
         />
       )}
 
-      {/* dispute_plan_pinning_v1 (Phase 3) — view-time plan-change banner (#1).
-          Surfaced by the GET only when the user switched away from this dispute's
-          pinned plan after drafting + the new plan changes the numbers. Keep =
-          dismiss (persists); Rebuild = re-pin to the active plan (Phase 4 path),
-          which then shows the CoverageDiffPanel verdict. */}
-      {planPinningEnabled && planChangeBanner && disputeId && (
-        <PlanChangeBanner
-          previousPlanName={planChangeBanner.previousPlanName}
-          newPlanName={planChangeBanner.newPlanName}
-          changedAt={planChangeBanner.changedAt}
-          serviceDate={planChangeBanner.serviceDate}
-          recommend={planChangeBanner.recommend}
-          onKeep={async () => {
-            if (!user) return;
-            // Keep = no plan change, nothing rebuilds. Hide instantly + persist the
-            // dismissal in the background; no fetchDispute (a ~6s regenerate) to dismiss.
-            const changedAt = planChangeBanner.changedAt;
-            setPlanChangeBanner(null);
-            const token = await user.firebaseUser.getIdToken();
-            await fetch(`/api/disputes/${disputeId}/dismiss-plan-change-banner`, {
-              method: "POST",
-              headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-              body: JSON.stringify({ changedAt }),
-            }).catch(() => { /* best-effort; banner re-evaluates next load */ });
-          }}
-          onUpdate={async () => {
-            if (!user) return;
-            // Rebuild changes the plan → re-pin + reload so the letter rebuilds and
-            // the CoverageDiffPanel verdict appears. Hide the banner immediately.
-            const newPlanId = planChangeBanner.newPlanId;
-            setPlanChangeBanner(null);
-            const token = await user.firebaseUser.getIdToken();
-            await fetch(`/api/disputes/${disputeId}/repin`, {
-              method: "POST",
-              headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-              body: JSON.stringify({ insurancePlanId: newPlanId }),
-            });
-            await fetchDispute(disputeId);
-          }}
-        />
-      )}
 
       {/* dispute_plan_pinning_v1 (Phase 4) — re-bind the dispute to a different
           one of the user's own plans. Draft-only; flag-gated; pin wins over a

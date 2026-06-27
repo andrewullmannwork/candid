@@ -127,14 +127,12 @@ export async function GET(
         : [];
     })();
     try {
-      // dispute_plan_pinning_v1 — honor the dispute's pin so the downloaded
-      // Case File renders the same plan as the on-screen letter.
-      const planPinningEnabled = await isFeatureEnabled("dispute_plan_pinning_v1");
+      // Case File resolves the same plan as the on-screen letter — the dispute's
+      // explicit user override, else the claim's live DOS-correct plan.
       planContext = await resolvePlanContext(supabase, {
         userId: authedUser.id,
         claimId: dispute.claim_id,
         canonicalPlanIdForBillYear,
-        planPinningEnabled,
         pinnedInsurancePlanId: (dispute.insurance_plan_id as string | null) ?? null,
       });
       evidence = await resolveEvidence(supabase, {
