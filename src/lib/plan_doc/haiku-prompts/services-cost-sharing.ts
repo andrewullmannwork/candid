@@ -212,23 +212,29 @@ const COVERAGE_DIMS_SUPPLEMENT = `
 
 In ADDITION to all fields above, add TWO fields to each service:
 
-- **referralRequired**: boolean | null — does THIS service require a referral (from a primary-care
-  "gatekeeper") before the plan covers it? Decide in this PRIORITY order:
-    1. EXPLICIT per-service text wins: "referral required" / "requires a referral" / "PCP referral
-       needed" → true; "no referral required" / "self-referral" / "direct access" → false.
-    2. The plan-level "Do you need a referral to see a specialist?" answer:
-         YES → specialist-type medical services (specialist_visit, specialist-ordered imaging/therapy,
-               specialist mental-health) = true;
-         NO  → ALL medical services = false (no referral gate anywhere in this plan).
-    3. CATEGORICALLY un-gated services are false even when unstated — pcp_visit, preventive_care,
-       immunizations, annual_physical, er_visit, urgent_care. You never need a referral for primary /
-       own-PCP care, federally-protected preventive care, or emergencies → emit false.
-    4. PHARMACY (any *_rx_* slug) → false. Drugs are PRESCRIBED, not referred — a referral never gates a
-       drug. (Drug access is gated by prior authorization / step therapy / formulary tier, which you
-       capture in priorAuthRequired / stepTherapyRequired, NOT here.) So referralRequired is categorically
-       false for drugs, UNLESS the document EXPLICITLY states a referral for that drug (then true).
-    5. Any OTHER medical service with no explicit callout and no applicable plan-level answer → null.
-       Do not guess.
+- **referralRequired**: boolean | null. A referral = a primary-care gatekeeper's authorization to SEE A
+  SPECIALIST. It is NOT prior authorization, NOT admission/precertification approval, and NOT a visit
+  limit — NEVER infer referralRequired from prior-auth, admission, or visit-cap language (those are
+  separate gates you capture in priorAuthRequired / coverageConditions). Decide in this PRIORITY order
+  (first match wins; STOP at the first that applies):
+    1. EXPLICIT per-service text — must appear VERBATIM in THIS service's OWN row/section: "referral
+       required" / "requires a referral" / "PCP referral needed" → true; "no referral" / "self-referral"
+       / "direct access" → false. Do NOT borrow another service's wording or a plan-wide statement here.
+    2. CATEGORICALLY never-referred → false even when unstated: pcp_visit, preventive_care, immunizations,
+       annual_physical, er_visit, urgent_care (own-PCP / federally-protected preventive / emergency care
+       never needs a referral).
+    3. PHARMACY (any *_rx_* slug) → false (drugs are PRESCRIBED, not referred; their gate is prior
+       authorization / step therapy / formulary tier, captured in priorAuthRequired / stepTherapyRequired).
+    4. PLAN-LEVEL "Do you need a referral to see a specialist?" answer — apply ONLY to services not already
+       decided by rules 1-3:
+         NO  → false for EVERY remaining service, NO exceptions, regardless of service type. If the plan
+               says "No" / "you can see a specialist without a referral", you MUST NOT emit true for
+               therapy, specialist, inpatient, or ANY service.
+         YES → true for the specialist_visit slug ONLY. For EVERY other remaining service (imaging, labs, therapy,
+               mental health, inpatient, surgery, DME, hospice, skilled nursing, home health, maternity,
+               etc.) → null. A plan-level "yes, referral to see a specialist" does NOT tell you whether
+               THOSE services need a referral — do not guess.
+    5. No explicit per-service text and no usable plan-level answer → null. Do not guess.
   Put any conditional wording in coverageConditions.
 
 - **visitLimit**: integer | null — a per-service VISIT or DAY COUNT cap (a COUNT, never a dollar amount):
@@ -569,6 +575,48 @@ function normalizeComponent(v: unknown): "facility" | "professional" | "global" 
  * chunk's services array is concatenated + slug-deduped by the combine layer. Fixes
  * Kaiser-style 102+ services token-truncation (Haiku's 8K output budget cap).
  */
+// coverage_dims_v1 (Option C, S241): referral is DERIVED in code, not guessed per-service by the LLM
+// (the LLM per-service call over-extracted on broad-language plans + was stochastically unstable). A
+// referral gates SEEING A SPECIALIST — never prior-auth / admission / visit-limits.
+const CATEGORICAL_NO_REFERRAL = new Set([
+  "pcp_visit", "preventive_care", "immunizations", "annual_physical", "er_visit", "urgent_care",
+]);
+
+/**
+ * Derive the plan-level "Do you need a referral to see a specialist?" answer from the document text
+ * (deterministic; calibration-independent — raw text scan, not a model call). The SBC "Important
+ * Questions" field. Returns null when the document doesn't state it (-> per-service referral = null).
+ */
+function derivePlanReferralPolicy(text: string): "yes" | "no" | null {
+  const lc = text.toLowerCase().replace(/\s+/g, " ");
+  const m = lc.match(/do (?:you|i) need a referral to see a\s+specialist\s*\?\s*(yes|no)\b/);
+  if (m) return m[1] === "yes" ? "yes" : "no";
+  // Distinctive answer phrases (robust to the bare Yes/No being OCR-split from the question).
+  if (/see the specialist you choose without a referral|(?:do not|don'?t|does not|doesn'?t) (?:need|require) a referral|no referral (?:is )?(?:required|needed)/.test(lc)) return "no";
+  if (/only if you have a referral|must have a referral|referral (?:is )?required|need a referral before you/.test(lc)) return "yes";
+  return null;
+}
+
+/**
+ * Derive a service's referralRequired DETERMINISTICALLY. Priority: explicit per-service text >
+ * categorical-never-referred > pharmacy > plan-level answer (NO => false for all; YES => true for
+ * specialist_visit ONLY, else null) > null. Replaces the unreliable LLM per-service guess (S241).
+ */
+function deriveReferralRequired(
+  policy: "yes" | "no" | null,
+  slug: string,
+  textFields: unknown[],
+): boolean | null {
+  const svc = textFields.filter((x): x is string => typeof x === "string").join(" ").toLowerCase();
+  if (/no referral (?:is )?(?:required|needed)|self[- ]referral|direct access|(?:do not|don'?t|does not|doesn'?t) (?:need|require) a referral/.test(svc)) return false;
+  if (/referral (?:is )?required|requires? a referral|referral needed|needs? a referral|pcp referral/.test(svc)) return true;
+  if (CATEGORICAL_NO_REFERRAL.has(slug)) return false;
+  if (slug.includes("_rx")) return false; // drugs are prescribed, not referred
+  if (policy === "no") return false;
+  if (policy === "yes") return slug === "specialist_visit" ? true : null;
+  return null;
+}
+
 export async function extractServicesCostSharing(
   sectionText: string,
   sectionRange: { start: number; end: number },
@@ -609,6 +657,9 @@ export async function extractServicesCostSharing(
         : "services_cost_sharing",
   });
 
+  // coverage_dims_v1 (Option C): plan-level referral answer derived ONCE from the document text;
+  // each service's referralRequired is then a deterministic function of (policy × slug × explicit text).
+  const referralPolicy = coverageDimsEnabled ? derivePlanReferralPolicy(sectionText) : null;
   const services: PlanDocService[] = (result.data.services ?? [])
     .map((raw): PlanDocService | null => {
       const slug = typeof raw.serviceSlug === "string" ? raw.serviceSlug.trim() : null;
@@ -644,10 +695,11 @@ export async function extractServicesCostSharing(
         penaltyNoPrecert: typeof raw.penaltyNoPrecert === "number" ? raw.penaltyNoPrecert : null,
         // coverage_dims_v1: populated ONLY when ON; OFF → undefined (Haiku wasn't asked for them
         // → struct is byte-identical to pre-flag). Mirrors the rawLabel/component gating below.
+        // Option C (S241): code-derived, not raw.referralRequired (LLM no longer decides referral).
         referralRequired: coverageDimsEnabled
-          ? typeof raw.referralRequired === "boolean"
-            ? raw.referralRequired
-            : null
+          ? deriveReferralRequired(referralPolicy, slug, [
+              raw.coverageConditions, raw.source_excerpt, raw.inCostDescription, raw.notes,
+            ])
           : undefined,
         visitLimit: coverageDimsEnabled
           ? typeof raw.visitLimit === "number"
