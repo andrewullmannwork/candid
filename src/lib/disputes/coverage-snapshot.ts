@@ -31,6 +31,7 @@
 
 import type { DisputeEvidence } from "./evidence-resolver";
 import type { PlanContext } from "./plan-context";
+import { normalizeCoinsuranceDecimal } from "@/lib/billing/coinsurance";
 
 export type CoverageSource =
   | "user_exact"
@@ -236,9 +237,13 @@ export function diffCoverageSnapshots(
       if (!beforeHadCoverage && afterHasCoverage) change = "coverage_added";
       else if (beforeHadCoverage && !afterHasCoverage) change = "coverage_removed";
       else {
+        // R1c (S240) — compare coinsurance in normalized decimal form so a stored pre-R1c
+        // raw value (e.g. 20) and a post-R1c decimal (0.20) don't read as a change → no
+        // spurious "plan details changed" staleness on existing disputes after the merge.
+        const coNorm = (x: number | null) => (x == null ? null : normalizeCoinsuranceDecimal(x));
         const changed =
           b.copay !== a.copay ||
-          b.coinsurance !== a.coinsurance ||
+          coNorm(b.coinsurance) !== coNorm(a.coinsurance) ||
           b.covered !== a.covered;
         change = changed ? "updated" : "unchanged";
       }

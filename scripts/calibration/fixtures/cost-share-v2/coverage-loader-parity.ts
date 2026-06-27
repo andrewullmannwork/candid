@@ -15,6 +15,7 @@ import {
   type PlanBenefitRowOpts,
 } from "../../../../src/lib/disputes/evidence-resolver";
 import { extractPatternP8FromEntry, isCitationGrade } from "../../../../src/lib/parser/consumer-read";
+import { normalizeCoinsuranceForStorage } from "../../../../src/lib/billing/coinsurance";
 
 const MIN_PLAN_BENEFIT_CONFIDENCE = 0.5;
 
@@ -66,7 +67,7 @@ function inlineBuild(
     detail: {
       covered: row.covered !== false,
       copay: row.in_copay,
-      coinsurance: row.in_coinsurance,
+      coinsurance: normalizeCoinsuranceForStorage(row.in_coinsurance),
       source: row.source ?? opts.sourceDefault,
       confidence,
       citation: opts.buildCitation(row.name, row.sbc_page),
@@ -166,6 +167,20 @@ parity("C9 covered false",
 parity("C10 user source null → unknown",
   { covered: true, in_copay: 20, in_coinsurance: null, source: null, confidence: 0.9, sbc_excerpt: null, sbc_page: null, field_provenance: null, slug: "pcp_visit", name: "Primary care visit" },
   ctxOff(), USER_OPTS);
+
+// R1c — coinsurance normalized to decimal [0,1] at load (drifted percent → decimal; decimal preserved).
+{
+  const pct = buildPlanBenefitFromRow(
+    { covered: true, in_copay: null, in_coinsurance: 20, source: "doc_extraction", confidence: 0.9, sbc_excerpt: null, sbc_page: null, field_provenance: null, slug: "imaging", name: "Imaging" },
+    ctxOff(), USER_OPTS,
+  );
+  eq("R1c percent 20 → 0.20", pct?.detail.coinsurance, 0.2);
+  const dec = buildPlanBenefitFromRow(
+    { covered: true, in_copay: null, in_coinsurance: 0.3, source: "doc_extraction", confidence: 0.9, sbc_excerpt: null, sbc_page: null, field_provenance: null, slug: "imaging", name: "Imaging" },
+    ctxOff(), USER_OPTS,
+  );
+  eq("R1c decimal 0.3 → 0.3", dec?.detail.coinsurance, 0.3);
+}
 
 if (fails.length) {
   console.error(`\ncoverage-loader-parity: ${pass} passed, ${fails.length} failed`);

@@ -23,7 +23,7 @@ import { extractPatternP8FromEntry, isCitationGrade } from "@/lib/parser/consume
 import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import { findPeerCodesForSlug } from "./peer-code-engine";
 import { resolveCanonicalSlugs } from "@/lib/parser/canonical-resolution";
-import { normalizeCoinsurancePct, normalizeCoinsuranceDecimal } from "@/lib/billing/coinsurance";
+import { normalizeCoinsurancePct, normalizeCoinsuranceDecimal, normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 import {
   resolveEffectiveClaimTotals,
   type EffectiveClaimTotals,
@@ -1333,7 +1333,10 @@ export function buildPlanBenefitFromRow(
     detail: {
       covered: row.covered !== false,
       copay: row.in_copay,
-      coinsurance: row.in_coinsurance,
+      // R1c (S240) — normalize to decimal [0,1] at load (same as planCoverageFromRow on the
+      // card path) so PlanBenefitDetail.coinsurance is a consistent decimal contract. The
+      // display/dollar/fingerprint consumers already re-normalize idempotently → render-neutral.
+      coinsurance: normalizeCoinsuranceForStorage(row.in_coinsurance),
       source: row.source ?? opts.sourceDefault,
       confidence,
       citation: opts.buildCitation(row.name, row.sbc_page),
