@@ -1516,46 +1516,47 @@ export async function loadCoverageFromCanonical(
   // Pre-load cite-grade excerpts from canonical_haiku_extractions for this canonical.
   const canonicalCiteGradeBySlug = await loadCanonicalCiteGradeBySlug(supabase, canonicalPlanId);
 
-  // Fetch canonical_plan_services rows for this canonical with service_catalog
-  // join for display name. Schema per src/lib/plan/compare.ts:209+ — copay /
-  // coinsurance / deductible_applies + OON mirrors + is_covered + field_provenance.
+  // R1b-canon (S240) — canonical_plan_services has NO service_catalog FK, so the prior
+  // `service_catalog!inner(slug, name)` embedded join ERRORED → rows null → this returned an
+  // EMPTY coverage map (the canonical-archive letter path was silently broken since S110).
+  // Fix: read the rows, then resolve display names via a separate service_catalog lookup —
+  // the working pattern loadCanonicalCoverageMeta uses. Behavior change: empty → real coverage.
   const { data: rows } = await supabase
     .from("canonical_plan_services")
-    .select(
-      "covered, in_copay, in_coinsurance, source, confidence, field_provenance, service_catalog!inner(slug, name)",
-    )
+    .select("service_slug, covered, in_copay, in_coinsurance, source, confidence, field_provenance")
     .eq("canonical_plan_id", canonicalPlanId);
 
   if (!rows) return byServiceSlug;
 
-  // Pre-resolve canonical sibling for every raw slug emitted by this
-  // canonical's coverage rows — preserves the S99 B5 alias normalization
-  // even though post-S95 reset this is identity (no aliases).
-  const rawSlugsForCanonical: string[] = [];
-  for (const r of rows) {
-    const cat = (r as { service_catalog: { slug?: string } | { slug?: string }[] }).service_catalog;
-    const slug = Array.isArray(cat) ? cat[0]?.slug : cat?.slug;
-    if (slug) rawSlugsForCanonical.push(slug);
-  }
-  const coverageCanonicalMap =
-    rawSlugsForCanonical.length > 0
-      ? await resolveCanonicalSlugs(rawSlugsForCanonical, supabase)
-      : new Map<string, string>();
-
-  const citeCtx: CiteGradeContext = { citeGradeGateOn, canonicalCiteGradeBySlug, coverageCanonicalMap };
-  for (const r of rows as unknown as Array<{
+  const canonRows = rows as unknown as Array<{
+    service_slug: string | null;
     covered: boolean | null;
     in_copay: number | null;
     in_coinsurance: number | null;
     source: string | null;
     confidence: number | null;
     field_provenance: Record<string, FieldProvenanceEntry> | null;
-    service_catalog: { slug: string; name: string } | Array<{ slug: string; name: string }>;
-  }>) {
-    const cat = Array.isArray(r.service_catalog) ? r.service_catalog[0] : r.service_catalog;
-    if (!cat?.slug) continue;
-    // canonical_plan_services has no sbc_excerpt / sbc_page columns → pass null (the
-    // cascade degrades to the canonical-haiku excerpt, and the legacy branch never fires).
+  }>;
+
+  // Display names for the slugs (no FK → separate lookup; mirrors loadCanonicalCoverageMeta).
+  const slugList = Array.from(new Set(canonRows.map((r) => r.service_slug).filter(Boolean) as string[]));
+  const nameBySlug = new Map<string, string>();
+  if (slugList.length > 0) {
+    const { data: catalog } = await supabase.from("service_catalog").select("slug, name").in("slug", slugList);
+    for (const c of catalog ?? []) nameBySlug.set(c.slug as string, (c.name as string | null) ?? (c.slug as string));
+  }
+
+  // Pre-resolve canonical sibling for alias normalization (identity when no aliases exist).
+  const coverageCanonicalMap =
+    slugList.length > 0
+      ? await resolveCanonicalSlugs(slugList, supabase)
+      : new Map<string, string>();
+
+  const citeCtx: CiteGradeContext = { citeGradeGateOn, canonicalCiteGradeBySlug, coverageCanonicalMap };
+  for (const r of canonRows) {
+    if (!r.service_slug) continue;
+    // canonical_plan_services has no sbc_excerpt / sbc_page columns → pass null (the cascade
+    // degrades to the canonical-haiku excerpt, and the legacy branch never fires).
     const built = buildPlanBenefitFromRow(
       {
         covered: r.covered,
@@ -1566,8 +1567,8 @@ export async function loadCoverageFromCanonical(
         sbc_excerpt: null,
         sbc_page: null,
         field_provenance: r.field_provenance,
-        slug: cat.slug,
-        name: cat.name,
+        slug: r.service_slug,
+        name: nameBySlug.get(r.service_slug) ?? r.service_slug,
       },
       citeCtx,
       {
