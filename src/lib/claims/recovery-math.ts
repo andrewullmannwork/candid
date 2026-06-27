@@ -400,6 +400,16 @@ export interface CostShareV2Result extends RecoveryMetrics {
   networkUsed: NetworkTier;
   insurerDiscrepancy: InsurerDiscrepancy | null;
   assumptions: CostShareAssumption[];
+  /**
+   * §18 incr-4 — whether `shouldOwe` rests on KNOWN facts (hard met-status data, a
+   * known cost-share rate, or the insurer-$0 pure-deductible proof) vs a load-bearing
+   * GUESS. This is the engine's own honesty gate (the verdict already trusts it at the
+   * `!shouldOweGrounded → "insufficient"` branch). Exposed so the dispute letter can
+   * OMIT the precise deductible-aware dollar when it would rest on an assumption
+   * (§18.10.D / Evidence Disclosure Rule). NOT the whole gate — a `network` assumption
+   * can still mask an OON line while this is true; see `isPreciseDollarAssertable`.
+   */
+  shouldOweGrounded: boolean;
   /** amount of `allowed` that went toward the deductible on this line (for cross-line threading). */
   deductibleConsumed: number;
 }
@@ -545,6 +555,7 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
       networkUsed,
       insurerDiscrepancy: null,
       assumptions: [],
+      shouldOweGrounded: true,
       deductibleConsumed: 0,
     };
   }
@@ -812,6 +823,7 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
     networkUsed,
     insurerDiscrepancy,
     assumptions,
+    shouldOweGrounded,
     deductibleConsumed: round2(deductibleConsumed),
   };
 }

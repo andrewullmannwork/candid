@@ -256,7 +256,7 @@ export async function POST(
     const v = (dispute.metadata as Record<string, unknown> | null)?.attestingAsName;
     return typeof v === "string" && v.trim() ? v.trim() : undefined;
   })();
-  const newBody = await rerenderDisputeLetter(supabase, {
+  const rerendered = await rerenderDisputeLetter(supabase, {
     disputeId: dispute.id,
     userId: user.id,
     letterType: letterTypeForRender,
@@ -267,30 +267,38 @@ export async function POST(
     attestingName: attestingAsName,
   });
 
-  if (!newBody) {
+  if (!rerendered) {
     return NextResponse.json(
       { error: "Letter regeneration failed" },
       { status: 500 },
     );
   }
+  const newBody = rerendered.body;
 
   // Step 4: persist updated letter content + extend redraft history.
   const newTimestamp = new Date().toISOString();
+  const updatePayload: Record<string, unknown> = {
+    letter_content: newBody,
+    metadata: {
+      ...(dispute.metadata ?? {}),
+      lastRedraftAt: newTimestamp,
+      lastRedraftCf20: { targets: cf20TargetCount, upgrades: cf20UpgradeCount },
+      // S109 PR #2 — rolling 24h redraft history for rate limit. Capped at
+      // REDRAFT_LIMIT (3) entries to keep metadata bounded; older live entries
+      // already pruned above before the limit check.
+      redraftHistory: [newTimestamp, ...liveHistory].slice(0, REDRAFT_LIMIT),
+    },
+    updated_at: newTimestamp,
+  };
+  // §18 incr-4 Call B — once the user supplies the missing inputs and rebuilds, FLOAT the
+  // headline to the rebuilt deductible-aware recovery so the list card + emails match the
+  // stronger letter. Unsent only — a sent dispute's amount stays frozen.
+  if (rerendered.recovery && dispute.sent_at == null) {
+    updatePayload.amount_disputed = rerendered.recovery.total;
+  }
   await userScoped(supabase, user.id)
     .table("dispute_outcomes")
-    .update({
-      letter_content: newBody,
-      metadata: {
-        ...(dispute.metadata ?? {}),
-        lastRedraftAt: newTimestamp,
-        lastRedraftCf20: { targets: cf20TargetCount, upgrades: cf20UpgradeCount },
-        // S109 PR #2 — rolling 24h redraft history for rate limit. Capped at
-        // REDRAFT_LIMIT (3) entries to keep metadata bounded; older live entries
-        // already pruned above before the limit check.
-        redraftHistory: [newTimestamp, ...liveHistory].slice(0, REDRAFT_LIMIT),
-      },
-      updated_at: newTimestamp,
-    })
+    .update(updatePayload)
     .eq("id", dispute.id);
 
   return NextResponse.json({
@@ -298,6 +306,10 @@ export async function POST(
     letterContent: newBody,
     letterType: letterTypeForRender,
     cf20: { targets: cf20TargetCount, upgrades: cf20UpgradeCount },
+    // §18.10.D — which user-fixable inputs (if any) would strengthen the letter further.
+    strengthenLetter: rerendered.recovery
+      ? { weakened: rerendered.recovery.weakened, fields: rerendered.recovery.strengthenableFields }
+      : null,
     planContext: planContext
       ? {
           plan: planContext.plan,

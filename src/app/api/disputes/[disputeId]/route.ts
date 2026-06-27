@@ -152,6 +152,9 @@ export async function GET(
   // a GET serves the saved letter + an `isStale` flag; the body regenerates ONLY on an explicit
   // user refresh (?refresh=1), which also versions the prior letter. OFF = legacy behavior.
   const costShareV2 = await isFeatureEnabled("recovery_cost_share_v2");
+  // §18.10.D — read on the GET so the "confirm to strengthen" prompt can be computed on a
+  // PLAIN load (not only on regenerate); with costShareV2 ON a plain GET never regenerates.
+  const disputeGroundsOn = await isFeatureEnabled("dispute_grounds_v1");
   const refreshRequested =
     costShareV2 && req.nextUrl.searchParams.get("refresh") === "1";
   const sentAt = dispute.sent_at ? new Date(dispute.sent_at as string) : null;
@@ -172,6 +175,9 @@ export async function GET(
   let planContext = null;
   let evidence = null;
   let regeneratedLetterContent: string | null = null;
+  // §18.10.D — which user-fixable inputs (deductible/oop/network) would strengthen the
+  // letter, surfaced so the page can show the "confirm to strengthen + rebuild" prompt.
+  let strengthenLetter: { weakened: boolean; fields: Array<"deductible" | "oop" | "network"> } | null = null;
   try {
     if (dispute.claim_id) {
       // S74.5 D16 — compute current evidence fingerprint + drift decision
@@ -369,7 +375,7 @@ export async function GET(
       const fingerprint = buildFingerprint(planContext, evidence);
       if (shouldRegenerate) {
         const { rerenderDisputeLetter } = await import("@/lib/disputes/rerender");
-        regeneratedLetterContent = await rerenderDisputeLetter(supabase, {
+        const rerendered = await rerenderDisputeLetter(supabase, {
           disputeId: dispute.id,
           userId: user.id,
           letterType: resolvedLetterType,
@@ -379,6 +385,13 @@ export async function GET(
           evidence,
           attestingName: attestingAsName ?? undefined,
         });
+        regeneratedLetterContent = rerendered?.body ?? null;
+        if (rerendered?.recovery) {
+          strengthenLetter = {
+            weakened: rerendered.recovery.weakened,
+            fields: rerendered.recovery.strengthenableFields,
+          };
+        }
         if (regeneratedLetterContent) {
           console.log("[disputes/[disputeId]] regenerated letter body", {
             disputeId: dispute.id,
@@ -416,6 +429,11 @@ export async function GET(
             .table("dispute_outcomes")
             .update({
               letter_content: regeneratedLetterContent,
+              // §18 incr-4 Call B — keep the headline in lockstep with the regenerated
+              // deductible-aware body (unsent only; a sent dispute's amount stays frozen).
+              ...(rerendered?.recovery && dispute.sent_at == null
+                ? { amount_disputed: rerendered.recovery.total }
+                : {}),
               metadata: {
                 ...baseMetadataForRegen,
                 ...(letterVersionHistory ? { letterVersionHistory } : {}),
@@ -444,6 +462,19 @@ export async function GET(
             claimId: dispute.claim_id,
           });
         }
+      } else if (disputeGroundsOn && !skipRegenerateForSent && evidence && dispute.claim_id) {
+        // §18.10.D — plain load (costShareV2 ON → the block above did NOT regenerate): compute
+        // the strengthen signal so the prompt shows whenever the CURRENT letter omits a precise
+        // dollar. Unsent only (a sent letter is frozen → no rebuild). Mirrors generate's signal.
+        const { loadDisputeGroundBasis } = await import("@/lib/disputes/dispute-ground-basis");
+        const { resolveLetterRecovery } = await import("@/lib/disputes/dispute-grounds");
+        const rec = resolveLetterRecovery(
+          evidence,
+          await loadDisputeGroundBasis(supabase, user.id, [dispute.claim_id as string]),
+        );
+        strengthenLetter = rec.weakened
+          ? { weakened: rec.weakened, fields: rec.strengthenableFields }
+          : null;
       }
     }
   } catch (err) {
@@ -546,6 +577,9 @@ export async function GET(
 
   return NextResponse.json({
     id: dispute.id,
+    // §18.10.D — non-null only when the deductible-aware letter omitted a precise dollar;
+    // `fields` tells the page which cost-share inputs to prompt for (then Rebuild).
+    strengthenLetter,
     disputeType: dispute.dispute_type,
     // W4 — persistent-letter signals, present ONLY when recovery_cost_share_v2 is ON (OFF =
     // byte-identical response). The client shows the stale banner + Refresh CTA off `isStale`.

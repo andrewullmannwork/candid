@@ -37,6 +37,14 @@ export interface PersistDisputeInput {
    * re-draft keeps the existing value, never silently overwriting it.
    */
   insurancePlanId?: string | null;
+  /**
+   * §18 incr-4 Call B (dispute_grounds_v1) — when true, `amountDisputed` is the
+   * DEDUCTIBLE-AWARE capped recovery, so a dedup re-draft FLOATS the headline to it
+   * (retires the only-increase max-merge — the deterministic engine eliminates the
+   * re-parse noise the merge protected against) for UNSENT disputes, and FREEZES it
+   * once sent (`sent_at != null`). Undefined/false → the legacy max-merge (byte-identical).
+   */
+  floatAmountDisputed?: boolean;
 }
 
 /**
@@ -107,7 +115,7 @@ export async function persistDisputeLetter(
     if (primaryLineItemId) {
       const { data: existing, error: selectError } = await supabase
         .from("dispute_outcomes")
-        .select("id, amount_disputed")
+        .select("id, amount_disputed, sent_at")
         .eq("user_id", input.userId)
         .eq("claim_line_item_id", primaryLineItemId)
         .eq("dispute_type", disputeType)
@@ -119,7 +127,15 @@ export async function persistDisputeLetter(
       if (selectError) {
         console.error("[disputes-persist] Dedup lookup failed (falling through to insert):", selectError);
       } else if (existing) {
-        const mergedAmount = Math.max(Number(existing.amount_disputed) || 0, input.amountDisputed);
+        // §18 incr-4 Call B — float to the deductible-aware amount for UNSENT disputes (frozen
+        // at send: a sent dispute keeps its headline); legacy only-increase max-merge when the
+        // caller didn't opt in (flag OFF → byte-identical).
+        const existingAmount = Number(existing.amount_disputed) || 0;
+        const mergedAmount = input.floatAmountDisputed
+          ? existing.sent_at != null
+            ? existingAmount
+            : input.amountDisputed
+          : Math.max(existingAmount, input.amountDisputed);
         const { error: updateError } = await supabase
           .from("dispute_outcomes")
           .update({

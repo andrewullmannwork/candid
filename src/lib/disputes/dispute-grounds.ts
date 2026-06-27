@@ -22,6 +22,7 @@
  */
 import type { CiteGradeTier } from "./strength-scoring";
 import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
+import type { CostShareV2Result, CostShareAssumption } from "../claims/recovery-math";
 
 export type DisputeGroundType =
   | "service_not_rendered" // attested not received → the whole charge is the pool
@@ -224,11 +225,30 @@ export function groundFindingsForEvidence(evidence: DisputeEvidence | null): Gro
 }
 
 /**
- * §18.5 / Call A — the de-overlapped, exposure-capped TOTAL recovery (drives `amount_disputed`
- * at Stage 4). PER LINE: sum the line's ground dollars, then CAP at the patient's real wrongful
- * loss = `max(patientPaid, patientOwes) − shouldOwe`. `service_not_rendered` resets `shouldOwe→0`
- * (the whole charge is recoverable). `shouldOwe` is OPTIONAL — when absent (Stages 1–3, before the
- * basis-resolution layer is plumbed) the cap is INERT and the raw sum passes through unchanged.
+ * §18.5 / Call A — the per-line cap, SHARED by computeCappedRecovery (the total, number-map)
+ * and resolveLetterRecovery (the per-line letter dollars, rich-map) so there is exactly ONE
+ * cap implementation (the regression-sensitive crux — no drift). Caps the raw ground sum at
+ * the patient's real wrongful loss = `max(patientPaid, patientOwes) − shouldOwe`. `shouldOwe`
+ * is null only when no basis is supplied (flag OFF / Stages 1–3) → INERT, raw passes through.
+ */
+function capLineRaw(
+  line: LineItemEvidence,
+  rawSum: number,
+  shouldOwe: number | null,
+): { capped: number; capBound: boolean } {
+  if (shouldOwe == null) return { capped: rawSum, capBound: false };
+  const exposure = Math.max(line.patientPaid ?? 0, line.patientOwes ?? 0);
+  const cap = Math.max(0, exposure - shouldOwe);
+  const capped = Math.min(rawSum, cap);
+  return { capped, capBound: capped < rawSum - 0.005 };
+}
+
+/**
+ * §18.5 / Call A — the de-overlapped, exposure-capped TOTAL recovery. PER LINE: sum the line's
+ * ground dollars, then CAP at `max(patientPaid, patientOwes) − shouldOwe`. `service_not_rendered`
+ * resets `shouldOwe→0` (the whole charge is recoverable). `shouldOwe` is OPTIONAL — absent (Stages
+ * 1–3) → the cap is INERT. Kept for the number-map path + the builder fixture; the live letter
+ * dollars come from resolveLetterRecovery (which shares capLineRaw).
  */
 export function computeCappedRecovery(
   evidence: DisputeEvidence | null,
@@ -245,16 +265,166 @@ export function computeCappedRecovery(
       const rawSum = grounds.reduce((s, g) => s + g.dollarAtStake, 0);
       const notRendered = grounds.some((g) => g.type === "service_not_rendered");
       const shouldOwe = notRendered ? 0 : shouldOwePerLine?.get(line.lineItemId) ?? null;
-      if (shouldOwe == null) {
-        total += rawSum; // cap inert (Stages 1–3)
-        continue;
-      }
-      const exposure = Math.max(line.patientPaid ?? 0, line.patientOwes ?? 0);
-      const cap = Math.max(0, exposure - shouldOwe);
-      const capped = Math.min(rawSum, cap);
-      if (capped < rawSum - 0.005) capBoundLineIds.push(line.lineItemId);
+      const { capped, capBound } = capLineRaw(line, rawSum, shouldOwe);
+      if (capBound) capBoundLineIds.push(line.lineItemId);
       total += capped;
     }
   }
   return { total: Math.round(total * 100) / 100, capBoundLineIds };
+}
+
+/**
+ * §18.10.A/D + the OON-rate gate — whether the letter may ASSERT this line's precise
+ * deductible-aware dollar, or must OMIT it (fall to the insurer-reprocess demand + prompt
+ * the user to confirm). Assertable only when `shouldOwe` rests on KNOWN facts:
+ *  • `shouldOweGrounded` — the engine's own honesty gate (hard met-status data, a known
+ *    cost-share rate, or insurer-$0 pure-deductible proof). Covers deductible/OOP/rate incl.
+ *    the OON-RATE-MISSING case (no OON rate → costShareUnknown → not grounded). §18.10.D.
+ *  • no `network` assumption — an ASSUMED-in-network line could secretly be OON (in-network
+ *    params understate shouldOwe → over-claim). The OON conservative gate, data-driven (clears
+ *    when claim/flywheel supplies network — §18.10.F). NOT caught by shouldOweGrounded.
+ *  • no `denial` / `aca_preventive` / `deductible_applies` — the three guesses the engine
+ *    pushes that DON'T flip shouldOweGrounded yet still make the dollar a guess (the verdict
+ *    downgrades them, but `verdict==="recovery"` fires first on a disputed line).
+ * `deductible_met` / `oop_met` / `service_cost` are deliberately NOT excluded — shouldOweGrounded
+ * already handles them, and excluding them would wrongly omit the legit insurer-$0 pure-deductible
+ * recovery + the OOP-met conservative floor (which never over-claims).
+ *
+ * NOTE (§18.10.F next-session): "case B" (assert off the insurer's adjudicated cheapest rate
+ * without a hard accumulator) lands by making MORE lines `shouldOweGrounded` in the engine — an
+ * additive grounding source, NOT a change to this predicate. Until then case-B lines omit + prompt.
+ */
+const BLOCKING_ASSUMPTION_FIELDS: ReadonlySet<CostShareAssumption["field"]> = new Set([
+  "network",
+  "denial",
+  "aca_preventive",
+  "deductible_applies",
+]);
+export function isPreciseDollarAssertable(result: CostShareV2Result): boolean {
+  return (
+    result.shouldOweGrounded &&
+    !result.assumptions.some((a) => BLOCKING_ASSUMPTION_FIELDS.has(a.field))
+  );
+}
+
+/**
+ * §18.10.D — assumption fields that block the precise dollar but the user CAN'T toggle away
+ * (missing cost-share rate, an inferred deductible-applies, an insurer denial, an unknown ACA-
+ * preventive status). When a non-assertable line carries one of these, confirming deductible /
+ * OOP / network would NOT make it assertable → the strengthen prompt must NOT offer those fields
+ * (it would over-promise a dollar it can't deliver — the cf91a49e rate-starved case). That gap is
+ * the "add plan details" / cold-start lane, not this prompt. (network is NOT here — it IS
+ * user-fixable; the user confirms in/out-of-network.)
+ */
+const PROMPT_BLOCKING_FIELDS: ReadonlySet<CostShareAssumption["field"]> = new Set([
+  "service_cost",
+  "deductible_applies",
+  "denial",
+  "aca_preventive",
+]);
+
+/** §18 incr-4 — the per-line deductible-aware letter dollars (one row per disputed line). */
+export interface LineRecovery {
+  lineItemId: string;
+  /** deductible-aware correct share (0 for an attested not-rendered line). */
+  shouldOwe: number;
+  /** Call A: min(Σ grounds' dollarAtStake, max(patientPaid, patientOwes) − shouldOwe). */
+  capped: number;
+  /** refund portion of `capped` — patient already PAID above shouldOwe. */
+  refund: number;
+  /** write-off portion of `capped` — still BILLED above shouldOwe. */
+  writeOff: number;
+  /** §18.10.D — may the letter assert this precise dollar, or omit + prompt. */
+  assertable: boolean;
+}
+
+/**
+ * §18 incr-4 — resolve the per-line DEDUCTIBLE-AWARE letter dollars, keyed by lineItemId.
+ * buildRequestSection sources the cost-share + balance-billing refund/write-off from here
+ * (not the deductible-BLIND `discrepancyAmount`) so the letter dollar == the card recovery
+ * (both from computeCostShareV2). `total` sums ASSERTABLE lines only (an omitted line must not
+ * inflate `amount_disputed` — Call B); it bumps automatically on redraft once the user confirms.
+ *
+ * `basis` is loadDisputeGroundBasis's rich result map (keyed by claim_line_items.id =
+ * LineItemEvidence.lineItemId). Only reached when dispute_grounds_v1 is ON; the OFF path never
+ * calls this (buildRequestSection falls back to discrepancyAmount → byte-identical). A
+ * service_not_rendered line is always assertable (attestation IS the basis; shouldOwe 0).
+ */
+export function resolveLetterRecovery(
+  evidence: DisputeEvidence | null,
+  basis: Map<string, CostShareV2Result>,
+): {
+  byLine: Map<string, LineRecovery>;
+  total: number;
+  capBoundLineIds: string[];
+  /** §18.10.D — a precise dollar was OMITTED on ≥1 line because it rested on a guess. */
+  weakened: boolean;
+  /** the USER-FIXABLE inputs that, once confirmed, would strengthen the letter on rebuild
+   *  (the §18.10.D prompt; reuses the existing cost-share-override controls). */
+  strengthenableFields: Array<"deductible" | "oop" | "network">;
+} {
+  const byLine = new Map<string, LineRecovery>();
+  const capBoundLineIds: string[] = [];
+  const strengthenable = new Set<"deductible" | "oop" | "network">();
+  let weakened = false;
+  let total = 0;
+  if (!evidence) return { byLine, total: 0, capBoundLineIds, weakened, strengthenableFields: [] };
+
+  for (const claim of evidence.claims) {
+    for (const line of claim.lineItemEvidence) {
+      const grounds = groundsForLine(line, claim.claimId);
+      if (grounds.length === 0) continue;
+      const rawSum = grounds.reduce((s, g) => s + g.dollarAtStake, 0);
+      const notRendered = grounds.some((g) => g.type === "service_not_rendered");
+      const result = basis.get(line.lineItemId) ?? null;
+      const shouldOwe = notRendered ? 0 : result?.shouldOwe ?? null;
+      const { capped, capBound } = capLineRaw(line, rawSum, shouldOwe);
+      if (capBound) capBoundLineIds.push(line.lineItemId);
+
+      // Attestation IS the basis for a not-rendered line; otherwise the precise dollar is
+      // assertable only when the engine result is grounded + assumption-free (§18.10.D).
+      const assertable = notRendered ? true : result ? isPreciseDollarAssertable(result) : false;
+      if (assertable) total += capped;
+      else if (result) {
+        // §18.10.D — this line omitted its precise dollar. Offer the USER-FIXABLE inputs
+        // (deductible/OOP/network) ONLY when confirming them would actually unlock the dollar.
+        // If the line is ALSO blocked by plan data we can't toggle (missing rate, etc.), it stays
+        // non-assertable regardless → don't over-promise (the cf91a49e rate-starved case); that
+        // gap is the "add plan details" / cold-start lane.
+        weakened = true;
+        const blockedByPlanData = result.assumptions.some((a) => PROMPT_BLOCKING_FIELDS.has(a.field));
+        if (!blockedByPlanData) {
+          for (const a of result.assumptions) {
+            if (a.field === "deductible_met") strengthenable.add("deductible");
+            else if (a.field === "oop_met") strengthenable.add("oop");
+            else if (a.field === "network") strengthenable.add("network");
+          }
+        }
+      }
+
+      const refundable = Math.max(0, (line.patientPaid ?? 0) - (shouldOwe ?? 0));
+      const refund = Math.min(capped, refundable);
+      const writeOff = Math.max(0, capped - refund);
+
+      byLine.set(line.lineItemId, {
+        lineItemId: line.lineItemId,
+        shouldOwe: round2(shouldOwe ?? 0),
+        capped: round2(capped),
+        refund: round2(refund),
+        writeOff: round2(writeOff),
+        assertable,
+      });
+    }
+  }
+  return {
+    byLine,
+    total: round2(total),
+    capBoundLineIds,
+    weakened,
+    strengthenableFields: Array.from(strengthenable),
+  };
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
 }

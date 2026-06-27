@@ -11,6 +11,8 @@ import { LETTER_TEMPLATES } from "./templates";
 import type { PlanBenefitEvidence } from "./templates";
 import type { PlanContext } from "./plan-context";
 import type { DisputeEvidence } from "./evidence-resolver";
+import { resolveLetterRecovery } from "./dispute-grounds";
+import type { CostShareV2Result } from "../claims/recovery-math";
 import { randomUUID } from "crypto";
 
 export type { PlanBenefitEvidence };
@@ -85,6 +87,14 @@ export interface GenerateDisputeLetterOptions {
    * from enforceDataTrustGate/v3DesignOn (not folded into that overload).
    */
   disputeGroundsOn?: boolean;
+  /**
+   * §18 incr-4 — the rich per-line cost-share basis (loadDisputeGroundBasis's
+   * Map<lineItemId, CostShareV2Result>), loaded by the route when dispute_grounds_v1 is
+   * ON. Resolved here into the per-line deductible-aware letter dollars (resolveLetterRecovery)
+   * and threaded to the templates. Absent → byte-identical (the request block falls back to
+   * the deductible-blind discrepancyAmount).
+   */
+  disputeGroundBasis?: Map<string, CostShareV2Result>;
 }
 
 export function generateDisputeLetter(
@@ -104,8 +114,17 @@ export function generateDisputeLetter(
   const options: GenerateDisputeLetterOptions = Array.isArray(optionsOrPlanEvidence)
     ? { planEvidence: optionsOrPlanEvidence }
     : (optionsOrPlanEvidence ?? {});
-  const { planEvidence, planContext, evidence, gateUnverified, enforceDataTrustGate, disputeGroundsOn } =
+  const { planEvidence, planContext, evidence, gateUnverified, enforceDataTrustGate, disputeGroundsOn, disputeGroundBasis } =
     options;
+
+  // §18 incr-4 — the per-line deductible-aware letter dollars (== the card recovery), used by
+  // the request block to source refund/write-off from the engine, not the deductible-blind
+  // discrepancyAmount. Only when the flag is ON AND a basis was loaded → otherwise undefined
+  // (the templates fall back to discrepancyAmount → byte-identical).
+  const letterRecovery =
+    disputeGroundsOn && evidence && disputeGroundBasis
+      ? resolveLetterRecovery(evidence, disputeGroundBasis).byLine
+      : undefined;
 
   // Block A — data-trust HARD STOP. A bill that failed header reconciliation has
   // numbers we don't trust enough to cite, so we suppress generation and let the
@@ -140,6 +159,7 @@ export function generateDisputeLetter(
     // enforceDataTrustGate; it is the same flag that switches on the request tree.
     v3DesignOn: enforceDataTrustGate ?? false,
     disputeGroundsOn: disputeGroundsOn ?? false,
+    letterRecovery,
   });
 
   // Recipient: insurance appeals use insurer + appeals address when available;

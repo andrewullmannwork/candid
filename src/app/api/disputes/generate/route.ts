@@ -7,6 +7,8 @@ import { generateDisputeLetter, generateItemizedBillRequest, letterRecipientKind
 import type { PlanBenefitEvidence } from "@/lib/disputes";
 import { resolvePlanContext } from "@/lib/disputes/plan-context";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
+import { loadDisputeGroundBasis } from "@/lib/disputes/dispute-ground-basis";
+import { resolveLetterRecovery } from "@/lib/disputes/dispute-grounds";
 import {
   computeDisputeStrength,
   loadStrengthConfig,
@@ -313,6 +315,15 @@ export async function POST(req: NextRequest) {
       // and rerender on the SAME source so they can't diverge ($0.00 bug). OFF → byte-identical.
       const disputeGroundsOn = await isFlagEnabled("dispute_grounds_v1");
 
+      // §18 incr-4 — load the per-line deductible-aware basis (gated) so the request block sources
+      // refund/write-off from the engine (== the card recovery), not the deductible-blind
+      // discrepancyAmount. OFF / no claim → undefined → byte-identical. loadDisputeGroundBasis is
+      // itself a no-op (empty map) when recovery_cost_share_v2 is OFF.
+      const disputeGroundBasis =
+        disputeGroundsOn && body.claimId
+          ? await loadDisputeGroundBasis(supabase, auditReport.userId, [body.claimId as string])
+          : undefined;
+
       const letter = generateDisputeLetter(auditReport, findingIds, letterType, {
         planEvidence,
         planContext,
@@ -320,6 +331,7 @@ export async function POST(req: NextRequest) {
         gateUnverified,
         enforceDataTrustGate: v3DesignOn,
         disputeGroundsOn,
+        disputeGroundBasis,
       });
 
       // Defense-in-depth: generateDisputeLetter returns null when the data-trust
@@ -339,6 +351,9 @@ export async function POST(req: NextRequest) {
       // Persist dispute to database (feature-flagged)
       let disputeId: string | null = null;
       let deduplicated = false;
+      // §18.10.D — the "confirm to strengthen" signal, surfaced in the response (hoisted out
+      // of the persist try so it reaches the return below).
+      let strengthenLetter: { weakened: boolean; fields: Array<"deductible" | "oop" | "network"> } | null = null;
       try {
         const { isFeatureEnabled } = await import("@/lib/config/product-flags");
         const disputeTrackingEnabled = await isFeatureEnabled("dispute_tracking");
@@ -346,6 +361,20 @@ export async function POST(req: NextRequest) {
 
         const selectedFindings = auditReport.findings.filter((f) => findingIds.includes(f.id));
         const totalDisputed = selectedFindings.reduce((sum, f) => sum + f.estimatedOvercharge, 0);
+
+        // §18 incr-4 Call B — when the flag is ON, the headline `amount_disputed` is the
+        // DEDUCTIBLE-AWARE capped recovery (assertable lines only — == the letter body + the
+        // card), NOT the deductible-blind `estimatedOvercharge` sum. Keeps the list card +
+        // follow-up emails consistent with the letter. `floatAmountDisputed` retires the
+        // only-increase max-merge for this path (frozen at send). OFF → totalDisputed, max-merge.
+        const deductibleAware = !!(disputeGroundsOn && disputeGroundBasis && evidence);
+        const letterRecoveryResult = deductibleAware
+          ? resolveLetterRecovery(evidence!, disputeGroundBasis!)
+          : null;
+        const amountDisputed = letterRecoveryResult ? letterRecoveryResult.total : totalDisputed;
+        strengthenLetter = letterRecoveryResult
+          ? { weakened: letterRecoveryResult.weakened, fields: letterRecoveryResult.strengthenableFields }
+          : null;
 
         // S140 telemetry — derive citation_source from the resolved evidence.
         // 'claim_header' if ANY claim's aggregates fell back to header (the
@@ -368,7 +397,8 @@ export async function POST(req: NextRequest) {
           claimId: body.claimId || undefined,
           claimLineItemIds: body.claimLineItemIds || undefined,
           letterType: letterType || "overcharge",
-          amountDisputed: totalDisputed,
+          amountDisputed,
+          floatAmountDisputed: deductibleAware,
           letterContent: letter.body,
           citationSource,
           // The dispute pin is an EXPLICIT user override ONLY — the chooser pick
@@ -435,6 +465,9 @@ export async function POST(req: NextRequest) {
         // Block A — additive; null when computation failed (non-fatal) or no
         // evidence resolved. Consumed by the Block C v3 UI; ignored by today's.
         strength,
+        // §18.10.D — non-null only when the deductible-aware letter omitted a precise dollar
+        // (which user-fixable inputs to prompt for, then Rebuild). Null on the OFF path.
+        strengthenLetter,
         missingPlanForYear: planContext?.missingForYear ?? null,
       });
     }

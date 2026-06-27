@@ -4,7 +4,7 @@
 import type { AuditFinding, ParsedBill, DisputeLetterType } from "../billing/types";
 import type { PlanContext, ProviderContact, AppealsAddress } from "./plan-context";
 import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
-import { groundFindingsForEvidence, type GroundFinding } from "./dispute-grounds";
+import { groundFindingsForEvidence, type GroundFinding, type LineRecovery } from "./dispute-grounds";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 
 interface LetterTemplate {
@@ -83,6 +83,15 @@ interface TemplateParams {
    * patientName when absent.
    */
   attestingName?: string;
+  /**
+   * §18 incr-4 (dispute_grounds_v1) — the per-line DEDUCTIBLE-AWARE recovery dollars
+   * (resolveLetterRecovery, keyed by lineItemId). When present, buildRequestSection
+   * sources the cost-share + balance-billing refund/write-off from here (== the card
+   * recovery) instead of the deductible-BLIND `discrepancyAmount`, and OMITS the precise
+   * dollar on non-assertable lines (§18.10.D). Undefined when the flag is OFF or no basis
+   * was loaded → byte-identical legacy (discrepancyAmount) rendering.
+   */
+  letterRecovery?: Map<string, LineRecovery>;
 }
 
 // ============================================================================
@@ -415,8 +424,9 @@ function buildRequestSection(params: {
   evidence: DisputeEvidence | null | undefined;
   planContext: PlanContext | null | undefined;
   recipient: "insurer" | "provider";
+  letterRecovery?: Map<string, LineRecovery>;
 }): string {
-  const { evidence, planContext, recipient } = params;
+  const { evidence, planContext, recipient, letterRecovery } = params;
   if (!evidence) return "";
   const allLines = evidence.claims.flatMap((c) => c.lineItemEvidence);
   if (allLines.length === 0) return "";
@@ -427,6 +437,18 @@ function buildRequestSection(params: {
     li.billingCode ? `${li.serviceName} (${li.billingCode.type} ${li.billingCode.value})` : li.serviceName;
   const sumOf = (arr: LineItemEvidence[], pick: (li: LineItemEvidence) => number | null | undefined): number =>
     arr.reduce((s, li) => s + Math.max(0, pick(li) ?? 0), 0);
+  // §18 incr-4 — sum a deductible-aware recovery field over ONLY the assertable lines
+  // (§18.10.D: a line whose precise dollar isn't backed contributes $0 → the remedy clause
+  // drops and the demand stands alone). Used only when `letterRecovery` is present (flag ON).
+  const sumAssertable = (
+    arr: LineItemEvidence[],
+    rec: Map<string, LineRecovery>,
+    field: "refund" | "writeOff" | "capped",
+  ): number =>
+    arr.reduce((s, li) => {
+      const r = rec.get(li.lineItemId);
+      return r && r.assertable ? s + r[field] : s;
+    }, 0);
 
   // One ask per line, priority-bucketed (guard: no double-asks).
   const b: Record<"attested" | "costShare" | "coverage" | "balanceBilling" | "coding", LineItemEvidence[]> = {
@@ -481,11 +503,19 @@ function buildRequestSection(params: {
   // 2) cost_share_misapplication — only with a real, computed overage.
   if (b.costShare.length > 0) {
     const many = b.costShare.length > 1;
-    const refund = b.costShare.reduce((s, li) => s + Math.min(li.discrepancyAmount ?? 0, li.patientPaid ?? 0), 0);
-    const writeOff = b.costShare.reduce((s, li) => {
-      const over = li.discrepancyAmount ?? 0;
-      return s + Math.max(0, over - Math.min(over, li.patientPaid ?? 0));
-    }, 0);
+    // §18 incr-4: source refund/write-off from the DEDUCTIBLE-AWARE per-line recovery
+    // (== the card recovery) when available, counting only assertable lines (§18.10.D
+    // omit). Legacy deductible-BLIND discrepancyAmount path when the map is absent (flag
+    // OFF) → byte-identical.
+    const refund = letterRecovery
+      ? sumAssertable(b.costShare, letterRecovery, "refund")
+      : b.costShare.reduce((s, li) => s + Math.min(li.discrepancyAmount ?? 0, li.patientPaid ?? 0), 0);
+    const writeOff = letterRecovery
+      ? sumAssertable(b.costShare, letterRecovery, "writeOff")
+      : b.costShare.reduce((s, li) => {
+          const over = li.discrepancyAmount ?? 0;
+          return s + Math.max(0, over - Math.min(over, li.patientPaid ?? 0));
+        }, 0);
     const verb = isInsurer
       ? `reprocess the affected ${many ? "charges" : "charge"} applying the cost-sharing my plan specifies (cited above)`
       : `correct my bill to the cost-sharing my plan specifies (cited above)`;
@@ -509,7 +539,13 @@ function buildRequestSection(params: {
   // 4) balance_billing — limit to in-network; NSA only when detected upstream.
   if (b.balanceBilling.length > 0) {
     const many = b.balanceBilling.length > 1;
-    const over = sumOf(b.balanceBilling, (li) => li.discrepancyAmount);
+    // §18 incr-4: the deductible-aware write-off (== the card recovery) on assertable lines;
+    // legacy deductible-blind discrepancyAmount when the map is absent. (Refund-of-a-paid
+    // balance bill stays an incr-5 letter-co-review enrichment; this preserves the "write off"
+    // copy.)
+    const over = letterRecovery
+      ? sumAssertable(b.balanceBilling, letterRecovery, "writeOff")
+      : sumOf(b.balanceBilling, (li) => li.discrepancyAmount);
     asks.push(
       `Limit my responsibility for ${many ? "these services" : "this service"} to my in-network cost-sharing and apply any applicable No Surprises Act protections${over > 0 ? `; write off the ${formatCurrency(over)} billed above it` : ""}.`,
     );
@@ -937,6 +973,7 @@ const overchargeTemplate: LetterTemplate = {
     v3DesignOn,
     disputeGroundsOn,
     attestingName,
+    letterRecovery,
   }) => {
     // §18 incr-3 — source the finding block from EVIDENCE when the flag is ON (rerender-safe;
     // kills the $0.00 bug). OFF or no-evidence → the AuditReport findings (byte-identical;
@@ -970,7 +1007,7 @@ const overchargeTemplate: LetterTemplate = {
     // Block C2 item 4 — v3 replaces the fixed "I am requesting 1/2/3" list with
     // the conditional request tree (provider voice). OFF → byte-identical.
     const requestBlock = (v3DesignOn ?? false)
-      ? buildRequestSection({ evidence, planContext, recipient: "provider" })
+      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery })
       : `I am requesting the following:
 
 1. A detailed, itemized bill showing all charges, procedure codes (CPT/HCPCS), and quantities.
@@ -1090,6 +1127,7 @@ const insuranceAppealTemplate: LetterTemplate = {
     gateUnverified,
     v3DesignOn,
     attestingName,
+    letterRecovery,
   }) => {
     // S111 smoke #3/#4 — insurer precedence:
     //   1. planContext.insurer (resolved in plan-context.ts preferring
@@ -1180,7 +1218,7 @@ const insuranceAppealTemplate: LetterTemplate = {
       ? ` The specific relief I am requesting is set out below, following the supporting detail.`
       : ` I am requesting a full review of this denial, including:\n\n1. The specific reason for denial, including the applicable plan provision or exclusion\n2. The clinical criteria used to determine medical necessity\n3. Instructions for requesting an external review if this internal appeal is denied`;
     const reliefSection = v3
-      ? buildRequestSection({ evidence, planContext, recipient: "insurer" })
+      ? buildRequestSection({ evidence, planContext, recipient: "insurer", letterRecovery })
       : `${closingArgument ? `${closingArgument}\n\n` : ""}${escalationParagraph}`;
 
     return `${formatDate(new Date().toISOString())}
@@ -1229,6 +1267,7 @@ const balanceBillingTemplate: LetterTemplate = {
     v3DesignOn,
     disputeGroundsOn,
     attestingName,
+    letterRecovery,
   }) => {
     const evidenceBlock = renderEvidenceBlock(
       evidence,
@@ -1259,7 +1298,7 @@ const balanceBillingTemplate: LetterTemplate = {
     // Block C2 item 4 — v3 replaces the fixed "I am requesting 1/2/3" list with
     // the conditional request tree (provider voice). OFF → byte-identical.
     const requestBlock = (v3DesignOn ?? false)
-      ? buildRequestSection({ evidence, planContext, recipient: "provider" })
+      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery })
       : `I am requesting:
 
 1. An immediate review of these charges
