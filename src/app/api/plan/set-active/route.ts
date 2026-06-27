@@ -118,17 +118,25 @@ export async function POST(req: NextRequest) {
 
   // Single-active-plan guard: deactivate ALL the user's active rows first
   // (mirrors /api/profile force_plan_switch + extraction-dedup).
-  await userScoped(supabase, userRow.id)
+  const { error: deactivateErr } = await userScoped(supabase, userRow.id)
     .table("insurance_plans")
     .update({ is_active: false })
     .eq("is_active", true);
+  if (deactivateErr) {
+    console.error("[/api/plan/set-active] deactivate failed:", deactivateErr.message);
+    return NextResponse.json({ error: "Could not set plan" }, { status: 500 });
+  }
 
   let activePlanId: string;
   if (existing?.id) {
-    await userScoped(supabase, userRow.id)
+    const { error: reactivateErr } = await userScoped(supabase, userRow.id)
       .table("insurance_plans")
       .update({ ...identity, is_active: true })
       .eq("id", existing.id);
+    if (reactivateErr) {
+      console.error("[/api/plan/set-active] reactivate failed:", reactivateErr.message);
+      return NextResponse.json({ error: "Could not set plan" }, { status: 500 });
+    }
     activePlanId = existing.id as string;
   } else {
     const { data: inserted, error: insertErr } = await userScoped(supabase, userRow.id)
@@ -148,7 +156,7 @@ export async function POST(req: NextRequest) {
   // (via canonical_plan_id), so the profile's old per-plan cost fields must be
   // cleared. matched_plan_id is cleared so the prior plan_catalog match can't
   // shadow the new canonical plan in analyze Priority 1.
-  await userScoped(supabase, userRow.id)
+  const { error: profileErr } = await userScoped(supabase, userRow.id)
     .table("profiles")
     .update({
       active_insurance_plan_id: activePlanId,
@@ -165,10 +173,12 @@ export async function POST(req: NextRequest) {
       copay_primary: null,
       copay_specialist: null,
       copay_er: null,
-      copay_urgent_care: null,
-      copay_rx: null,
       coinsurance_pct: null,
     });
+  if (profileErr) {
+    console.error("[/api/plan/set-active] profile repoint failed:", profileErr.message);
+    return NextResponse.json({ error: "Could not set plan" }, { status: 500 });
+  }
 
   return NextResponse.json({ success: true, insurancePlanId: activePlanId });
 }

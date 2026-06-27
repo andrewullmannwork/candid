@@ -397,7 +397,7 @@ export async function POST(req: NextRequest) {
         // Clear the reference so the code below creates a new plan
         existingProfile.active_insurance_plan_id = null;
         // Clear stale profile plan fields (all cost/plan fields; personal info preserved)
-        await userScoped(supabase, user.id)
+        const { error: clearErr } = await userScoped(supabase, user.id)
           .table("profiles")
           .update({
             active_insurance_plan_id: null,
@@ -405,9 +405,12 @@ export async function POST(req: NextRequest) {
             group_number: null, member_id: null,
             deductible_individual: null, oop_max_individual: null,
             copay_primary: null, copay_specialist: null, copay_er: null,
-            copay_urgent_care: null, copay_rx: null, coinsurance_pct: null,
+            coinsurance_pct: null,
             matched_plan_id: null, plan_source: null,
           });
+        if (clearErr) {
+          console.error("[profile] force_plan_switch profile clear failed:", clearErr.message);
+        }
       }
 
       {
