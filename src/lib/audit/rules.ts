@@ -12,7 +12,7 @@ import type { PlanCoverageInput } from "../claims/recovery-math";
 import { computeShouldOwe } from "../claims/recovery-math";
 import { randomUUID } from "crypto";
 
-type AuditRule = (
+export type AuditRule = (
   bill: ParsedBill,
   benchmarks: Map<string, CMSPPLRate>,
   planCoverage: PlanCoverageMap | null,
@@ -77,7 +77,7 @@ function shouldOweForLine(
 
 const OVERCHARGE_THRESHOLD = 2.0; // Flag if billed > 2x Medicare rate
 
-const checkOvercharges: AuditRule = (bill, benchmarks) => {
+export const checkOvercharges: AuditRule = (bill, benchmarks) => {
   const findings: AuditFinding[] = [];
 
   for (const item of bill.lineItems) {
@@ -118,7 +118,7 @@ const checkOvercharges: AuditRule = (bill, benchmarks) => {
 // RULE 2: Duplicate Line Item Detection
 // ============================================================================
 
-const checkDuplicates: AuditRule = (bill) => {
+export const checkDuplicates: AuditRule = (bill) => {
   const findings: AuditFinding[] = [];
   const seen = new Map<string, BillLineItem[]>();
 
@@ -157,7 +157,7 @@ const checkDuplicates: AuditRule = (bill) => {
 // RULE 3: Balance Billing Detection
 // ============================================================================
 
-const checkBalanceBilling: AuditRule = (bill) => {
+export const checkBalanceBilling: AuditRule = (bill) => {
   const findings: AuditFinding[] = [];
 
   for (const item of bill.lineItems) {
@@ -210,7 +210,7 @@ const UNBUNDLING_PAIRS: Array<[string, string, string]> = [
   ["80053", "84443", "CMP does not include TSH — but check if TSH was actually ordered separately"],
 ];
 
-const checkUnbundling: AuditRule = (bill) => {
+export const checkUnbundling: AuditRule = (bill) => {
   const findings: AuditFinding[] = [];
   const codeSet = new Set(bill.lineItems.map((i) => i.procedureCode));
   const codeToItem = new Map(
@@ -266,7 +266,7 @@ const checkUnbundling: AuditRule = (bill) => {
 // user-recovery target (patient_responsibility − should_owe per plan), not
 // the contractual writeoff amount. Copy frames the dispute in user terms:
 // "You shouldn't owe more than $X for [service]; dispute the extra $Y."
-const checkMissingAdjustments: AuditRule = (bill, _benchmarks, planCoverage, acaFallback) => {
+export const checkMissingAdjustments: AuditRule = (bill, _benchmarks, planCoverage, acaFallback) => {
   const findings: AuditFinding[] = [];
 
   for (const item of bill.lineItems) {
@@ -338,13 +338,7 @@ const checkMissingAdjustments: AuditRule = (bill, _benchmarks, planCoverage, aca
 };
 
 // ============================================================================
-// ALL RULES
+// The 5 sync rules above are unified with the async checks in the ordered
+// DETECTOR_REGISTRY (detector-registry.ts); the old `ALL_RULES` array + the
+// hand-wired runAudit sequence were absorbed into it (R3 step 2).
 // ============================================================================
-
-export const ALL_RULES: AuditRule[] = [
-  checkOvercharges,
-  checkDuplicates,
-  checkBalanceBilling,
-  checkUnbundling,
-  checkMissingAdjustments,
-];

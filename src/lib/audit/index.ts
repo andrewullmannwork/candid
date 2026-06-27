@@ -2,11 +2,7 @@
 
 import type { AuditReport, ParsedBill, AuditFinding } from "../billing/types";
 import { lookupCMSRatesBatch } from "../cms/ppl";
-import { ALL_RULES } from "./rules";
-import { runZeroCostShareCheck } from "./zero-cost-share";
-import { runClaimHeaderArithmeticCheck } from "./claim-header-arithmetic";
-import { runInsuranceUnderpaymentCheck } from "./insurance-underpayment";
-import { runDescriptionMatchCheck } from "./description-service-match";
+import { DETECTOR_REGISTRY } from "./detector-registry";
 import { isFeatureEnabled } from "../config/product-flags";
 import type { AcaFallbackLineCoverageMap, PlanCoverageMap } from "./coverage-loader";
 import { createServerClient } from "../supabase/server";
@@ -59,56 +55,22 @@ export async function runAudit(
 
   const benchmarks = await lookupCMSRatesBatch(codes);
 
-  // Step 2: Run all audit rules
+  // Step 2: Run the detector pipeline — the ORDERED registry unifying the former sync ALL_RULES
+  // loop + the hand-wired async checks (detector-registry.ts). Each detector sees the findings
+  // accumulated by EARLIER detectors via `priorFindings`, so cross-detector ordering deps are
+  // first-class: insurance_underpayment (F-14) skips lines zero_cost_share (D13) already fired on
+  // (== the old hand-built d13FiredLineNumbers Set). Order + the dep are asserted at module load.
   const allFindings: AuditFinding[] = [];
-
-  for (const rule of ALL_RULES) {
-    const findings = rule(bill, benchmarks, planCoverage, acaFallback);
+  for (const detector of DETECTOR_REGISTRY) {
+    const findings = await detector.run({
+      bill,
+      benchmarks,
+      planCoverage,
+      acaFallback,
+      priorFindings: allFindings,
+    });
     allFindings.push(...findings);
   }
-
-  // Step 2b: S74.5 D13 — Zero-cost-share registry check (ACA preventive + ACIP
-  // vaccine). Runs BEFORE plan-coverage check semantically; fires only when
-  // s74_5_categorization_flywheel_v1 flag is ON. S135 PR-2 — planCoverage
-  // threaded so D13 can pick the right copy variant (Likely $0 vs Federal
-  // mandate overrides plan) per the rules in zero-cost-share.ts.
-  const zeroCostFindings = await runZeroCostShareCheck(bill, planCoverage);
-  allFindings.push(...zeroCostFindings);
-
-  // Step 2c: S74.5 D15 — Claim-header arithmetic check. Catches unallocated
-  // balance between header total and itemized lines. Gated on same flag.
-  const headerFindings = await runClaimHeaderArithmeticCheck(bill);
-  allFindings.push(...headerFindings);
-
-  // Step 2d: F-14 — Insurance under-payment check. Fires when the insurer
-  // paid $0 (or near-$0) on a service the plan covers, AND the patient is
-  // carrying the burden. Catches Andrew's Bill 1 pattern (Nicole paid $292.41
-  // OOP on a covered service the insurer never processed). Recovery target
-  // is the user-recovery delta (patient_responsibility − should_owe), not the
-  // contractual writeoff. Address dispute to the INSURER, not the provider.
-  // S135 PR-2 — skip lines where D13 already fired so users don't see duplicate
-  // findings with the same recovery dollar amount on ACA-preventive codes.
-  const d13FiredLineNumbers = new Set<number>(
-    zeroCostFindings.flatMap((f) =>
-      Array.isArray(f.lineItems) ? f.lineItems : [],
-    ),
-  );
-  const underpayFindings = runInsuranceUnderpaymentCheck(
-    bill,
-    planCoverage,
-    acaFallback,
-    d13FiredLineNumbers,
-  );
-  allFindings.push(...underpayFindings);
-
-  // Step 2e: S74.6 D4 — Description → service_catalog Haiku similarity match.
-  // For uncategorized lines (no slug yet), fires either
-  // `code_uncategorized_description_match` (confident provisional slug ≥0.85)
-  // or `uncategorized_service` (soft "review or correct"). Gated on
-  // s74_5_categorization_flywheel_v1 flag. Per-user-day budget cap inherited
-  // from S74.5 (haiku_budget_tracking + reserve_haiku_budget RPC).
-  const descMatchFindings = await runDescriptionMatchCheck(bill);
-  allFindings.push(...descMatchFindings);
 
   // S94 B4 Fix #4 — NaN guard. Drop findings whose displayed dollar
   // values are non-finite (NaN / Infinity). Pre-fix, NaN could leak in

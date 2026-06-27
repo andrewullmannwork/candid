@@ -9,7 +9,7 @@
  *     durability.
  *   - Reconstructs a ParsedBill from the persisted claim + claim_line_items
  *     and dispatches runAudit() so D13 zero-cost-share + D15 claim-header
- *     arithmetic + the existing ALL_RULES re-fire.
+ *     arithmetic + the full ordered DETECTOR_REGISTRY re-fire.
  *   - Writes refreshed findings back to claim_line_items.metadata.auditFindings
  *     and claim.metadata.auditSummary, clears the stale flag, and records the
  *     re-audit event in throttle state.
