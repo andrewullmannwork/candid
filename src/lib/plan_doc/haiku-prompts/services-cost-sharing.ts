@@ -577,7 +577,7 @@ const CATEGORICAL_NO_REFERRAL = new Set([
  * (deterministic; calibration-independent — raw text scan, not a model call). The SBC "Important
  * Questions" field. Returns null when the document doesn't state it (-> per-service referral = null).
  */
-function derivePlanReferralPolicy(text: string): "yes" | "no" | null {
+export function derivePlanReferralPolicy(text: string): "yes" | "no" | null {
   const lc = text.toLowerCase().replace(/\s+/g, " ");
   const m = lc.match(/do (?:you|i) need a referral to see a\s+specialist\s*\?\s*(yes|no)\b/);
   if (m) return m[1] === "yes" ? "yes" : "no";
@@ -621,18 +621,41 @@ export function explicitReferralSignal(svc: string): boolean | null {
 }
 
 /**
- * Derive a service's referralRequired DETERMINISTICALLY. Priority: explicit per-service text >
- * categorical-never-referred > pharmacy > plan-level answer (NO => false for all; YES => true for
- * specialist_visit ONLY, else null) > null. Replaces the unreliable LLM per-service guess (S241).
+ * Fix A grounding (S250): an explicit per-service referral signal is trustworthy only when the OCR
+ * actually carries referral wording NEAR this service's source anchor — mirrors verifyVisitLimit's
+ * anchor-proximity. Kills the failure mode where the LLM copies a plan-level "Referral required" note
+ * into a silent service's coverageConditions (an ungrounded true the per-service matcher would fire on).
+ * Deterministic; no model call. Lenient when the anchor can't be located in the section (same fallback
+ * verifyVisitLimit uses — a missing anchor never silently drops a genuine signal).
  */
-function deriveReferralRequired(
+export function verifyReferralGrounding(anchorExcerpt: string, sectionText: string): boolean {
+  const hayLc = sectionText.replace(/\s+/g, " ").toLowerCase();
+  const anchor = anchorExcerpt.replace(/\s+/g, " ").toLowerCase().slice(0, 50);
+  const aIdx = anchor ? hayLc.indexOf(anchor) : -1;
+  for (const m of hayLc.matchAll(/\breferral\b|\bdirect\s+access\b/gi)) {
+    if (aIdx < 0 || Math.abs((m.index ?? 0) - aIdx) <= 400) return true;
+  }
+  return false;
+}
+
+/**
+ * Derive a service's referralRequired DETERMINISTICALLY. Priority: GROUNDED explicit per-service text >
+ * categorical-never-referred > pharmacy > plan-level answer (NO => false for all; YES => true for
+ * specialist_visit ONLY, else null) > null. Replaces the unreliable LLM per-service guess (S241); the
+ * grounding gate (Fix A, S250) keeps an LLM-copied plan-level note from forging a per-service signal.
+ */
+export function deriveReferralRequired(
   policy: "yes" | "no" | null,
   slug: string,
   textFields: unknown[],
+  anchorExcerpt: string,
+  sectionText: string,
 ): boolean | null {
   const svc = textFields.filter((x): x is string => typeof x === "string").join(" ").toLowerCase();
+  // Only a referral signal grounded in the OCR near this service's anchor may decide; an ungrounded
+  // copy falls through to the categorical / pharmacy / plan-level rules (→ conservative null on a YES plan).
   const explicit = explicitReferralSignal(svc);
-  if (explicit !== null) return explicit;
+  if (explicit !== null && verifyReferralGrounding(anchorExcerpt, sectionText)) return explicit;
   if (CATEGORICAL_NO_REFERRAL.has(slug)) return false;
   if (slug.includes("_rx")) return false; // drugs are prescribed, not referred
   if (policy === "no") return false;
@@ -782,7 +805,7 @@ export async function extractServicesCostSharing(
         referralRequired: coverageDimsEnabled
           ? deriveReferralRequired(referralPolicy, slug, [
               raw.coverageConditions, raw.source_excerpt, raw.inCostDescription, raw.notes,
-            ])
+            ], sourceExcerpt, sectionText)
           : undefined,
         visitLimit: coverageDimsEnabled
           ? (typeof raw.visitLimit === "number" && visitExcerpt ? raw.visitLimit : null)

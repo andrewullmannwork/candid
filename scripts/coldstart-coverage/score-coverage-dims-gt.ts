@@ -26,6 +26,14 @@ const raw: Raw = JSON.parse(readFileSync(join(OUT_DIR, "raw.json"), "utf8"));
 const gt: GtRow[] = JSON.parse(readFileSync(GT, "utf8"));
 const docKey = (pid: string) => Object.keys(raw).find((k) => k.slice(0, 8) === pid);
 const numEq = (a: number | null | undefined, b: number | null) => (a ?? null) === (b ?? null);
+// "$0 cost-share" equivalence (S250): a "No charge"/$0 service is the SAME reality whether the 0 lands
+// in copay vs coinsurance (the other field left null). Collapses that field-assignment ambiguity ONLY
+// when BOTH the parser AND the GT independently confirm $0 — so it can never mask a real cost (a nonzero
+// truth copay/coins → false → normal comparison applies). Two-null (document silent) is NOT a $0.
+const isZeroCostShare = (copay: number | null | undefined, coins: number | null | undefined) => {
+  const cp = copay ?? null, co = coins ?? null;
+  return (cp === 0 && (co === 0 || co === null)) || (co === 0 && (cp === 0 || cp === null));
+};
 
 // ---- (1) copay/coins accuracy vs truth, per arm ----
 function scoreArm(arm: "OFF" | "ON") {
@@ -37,7 +45,8 @@ function scoreArm(arm: "OFF" | "ON") {
     const svc = svcs.find((s) => s.serviceSlug === g.v1_slug);
     if (!svc) { unmatched++; continue; }
     matched++;
-    const cOK = numEq(svc.inCopay, g.truth_copay), coOK = numEq(svc.inCoinsurance, g.truth_coins);
+    const zeroMatch = isZeroCostShare(svc.inCopay, svc.inCoinsurance) && isZeroCostShare(g.truth_copay, g.truth_coins);
+    const cOK = zeroMatch || numEq(svc.inCopay, g.truth_copay), coOK = zeroMatch || numEq(svc.inCoinsurance, g.truth_coins);
     if (cOK) copayOK++; else if (arm === "ON") miss.push(`  copay ${g.plan_id} ${g.v1_slug}: got ${svc.inCopay} want ${g.truth_copay}`);
     if (coOK) coinsOK++; else if (arm === "ON") miss.push(`  coins ${g.plan_id} ${g.v1_slug}: got ${svc.inCoinsurance} want ${g.truth_coins}`);
   }
