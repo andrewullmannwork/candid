@@ -80,19 +80,54 @@ const aud = (over: Partial<Aud> = {}): Aud => ({
   ...over,
 });
 
+// R3 step 5.3 — the clamp reads effectiveTotals (patientPaid / patientResponsibility). In PROD these
+// are always populated by resolveEvidence; the synthetic fixture computes a faithful default (paid =
+// Σ line paid; responsibility = Σ line owes + actionable unallocated) so the clamp has real bases.
+// A case can override (e.g. an under-extracted header) to exercise a binding clamp.
+function effTotals(
+  lines: LineItemEvidence[],
+  claimFindings: ClaimLevelFindingMeta[],
+  over: Partial<ClaimEvidence["effectiveTotals"]> = {},
+): ClaimEvidence["effectiveTotals"] {
+  const patientPaid = lines.reduce((s, l) => s + (l.patientPaid ?? 0), 0);
+  const owes = lines.reduce((s, l) => s + (l.patientOwes ?? 0), 0);
+  const unalloc = claimFindings
+    .filter((f) => f.type === "unallocated_balance" && f.actionable && !f.dismissed)
+    .reduce((s, f) => s + Math.max(0, f.estimatedOvercharge), 0);
+  return {
+    patientPaid,
+    insurancePaid: 0,
+    insuranceAdjusted: 0,
+    patientResponsibility: owes + unalloc,
+    provenance: {
+      patientPaidSource: "claim_header",
+      insurancePaidSource: "claim_header",
+      insuranceAdjustedSource: "claim_header",
+      patientResponsibilitySource: "claim_header",
+    },
+    ...over,
+  };
+}
+
 function makeEvidence(
-  opts: { lines?: LineItemEvidence[]; claimFindings?: ClaimLevelFindingMeta[] } = {},
+  opts: {
+    lines?: LineItemEvidence[];
+    claimFindings?: ClaimLevelFindingMeta[];
+    effectiveTotals?: Partial<ClaimEvidence["effectiveTotals"]>;
+  } = {},
 ): DisputeEvidence {
+  const lines = opts.lines ?? [];
+  const claimFindings = opts.claimFindings ?? [];
   const claim = {
     claimId: "claim-1",
     dateOfService: "2024-03-15",
     providerName: "Sample Medical Center",
     totalBilled: 500,
     planYear: 2024,
-    lineItemEvidence: opts.lines ?? [],
-    effectiveTotals: {} as unknown as ClaimEvidence["effectiveTotals"],
+    lineItemEvidence: lines,
+    effectiveTotals: effTotals(lines, claimFindings, opts.effectiveTotals),
     dataTrust: { headerReconciliationFailed: false, signViolation: false },
-    claimFindings: opts.claimFindings ?? [],
+    claimFindings,
   } satisfies ClaimEvidence;
   return {
     claims: [claim],
@@ -125,13 +160,16 @@ const notRenderedLine = makeLine({
 });
 
 // ── 5.1 CLAIM tier ───────────────────────────────────────────────────────────
-// CL1 — an unallocated claim finding is recorded as a DISJOINT claim recovery; total stays line-only.
+// CL1 — R3 step 5.3: an unallocated claim finding is FOLDED into the headline (line 420 refund +
+//       claim 146 write-off = 566), and still recorded as a disjoint claim recovery.
 {
   const r = resolveLetterRecovery(
     makeEvidence({ lines: [notRenderedLine], claimFindings: [claimFinding()] }),
     EMPTY_BASIS,
   );
-  check("CL1 total = line tier only (420); claim NOT folded into headline", near(r.total, 420), r.total);
+  check("CL1 total = line 420 + claim 146 folded = 566", near(r.total, 566), r.total);
+  check("CL1 total === totalRefund + totalWriteOff", near(r.total, r.totalRefund + r.totalWriteOff), { total: r.total, refund: r.totalRefund, writeOff: r.totalWriteOff });
+  check("CL1 refund 420 (paid not-rendered line) + writeOff 146 (unallocated)", near(r.totalRefund, 420) && near(r.totalWriteOff, 146), { refund: r.totalRefund, writeOff: r.totalWriteOff });
   check("CL1 one claim recovery recorded", r.claimRecoveries.length === 1, r.claimRecoveries.length);
   check(
     "CL1 claim recovery = unallocated $146 (forgiveness: writeOff 146, refund 0)",
@@ -265,6 +303,71 @@ const notRenderedLine = makeLine({
   findings[0].lineItems.sort(); // simulate deduplicateFindings' in-place mutation
   check("D1 removedLineNumbers UNCHANGED after lineItems.sort() (sort-immune)", findings[0]?.removedLineNumbers?.join() === "2", findings[0]?.removedLineNumbers);
   check("D1 lineItems WAS reordered by sort → [2,5] (confirms the hazard is real)", findings[0].lineItems.join() === "2,5", findings[0].lineItems);
+}
+
+// ── 5.3 FOLD + TWO-POOL CLAMP (per claim) ─────────────────────────────────────
+// F1 — full fold: one assertable line (not-rendered refund 100) + a 2-line duplicate set (write-off
+//      80, counted once) + an unallocated claim finding (write-off 50) → total = 100 + 80 + 50 = 230.
+{
+  const lineA = makeLine({ lineItemId: "f1-nr", serviceNotRenderedAttested: true, billedAmount: 100, patientPaid: 100, patientOwes: 0 });
+  const dSurv = makeLine({ lineItemId: "f1-d0", billedAmount: 80, patientPaid: 0, patientOwes: 80, auditFindings: [aud({ findingId: "FD", removed: false, estimatedOvercharge: 80 })] });
+  const dCopy = makeLine({ lineItemId: "f1-d1", billedAmount: 80, patientPaid: 0, patientOwes: 80, auditFindings: [aud({ findingId: "FD", removed: true, estimatedOvercharge: 80 })] });
+  const r = resolveLetterRecovery(makeEvidence({ lines: [lineA, dSurv, dCopy], claimFindings: [claimFinding({ estimatedOvercharge: 50 })] }), EMPTY_BASIS);
+  check("F1 line+set+claim folded: total = 100 + 80 + 50 = 230", near(r.total, 230), r.total);
+  check("F1 refund 100 (line), writeOff 130 (set 80 + claim 50)", near(r.totalRefund, 100) && near(r.totalWriteOff, 130), { refund: r.totalRefund, writeOff: r.totalWriteOff });
+  check("F1 total === totalRefund + totalWriteOff", near(r.total, r.totalRefund + r.totalWriteOff), r.total);
+  check("F1 one set + one claim recovery", r.setRecoveries.length === 1 && r.claimRecoveries.length === 1, { sets: r.setRecoveries.length, claims: r.claimRecoveries.length });
+}
+
+// F2 — refund clamp binds: line refund 500, but the claim header under-reports patient-paid as 300
+//      (Decision 3: trust the cite-grade header value → conservative). total clamps 500 → 300.
+{
+  const line = makeLine({ lineItemId: "f2-nr", serviceNotRenderedAttested: true, billedAmount: 500, patientPaid: 500, patientOwes: 0 });
+  const r = resolveLetterRecovery(makeEvidence({ lines: [line], effectiveTotals: { patientPaid: 300 } }), EMPTY_BASIS);
+  check("F2 refund clamp: 500 → 300 (header patient-paid cap)", near(r.total, 300) && near(r.totalRefund, 300), { total: r.total, refund: r.totalRefund });
+}
+
+// F3 — Risk E: the header under-reports patient-responsibility (0), but the line still owes 400. The
+//      write-off cap = max(header 0, Σ line owes 400) = 400 → the legit write-off is NOT clipped (a
+//      naive header-only cap would have wrongly clipped it to 0).
+{
+  const line = makeLine({ lineItemId: "f3-nr", serviceNotRenderedAttested: true, billedAmount: 400, patientPaid: 0, patientOwes: 400 });
+  const r = resolveLetterRecovery(makeEvidence({ lines: [line], effectiveTotals: { patientResponsibility: 0 } }), EMPTY_BASIS);
+  check("F3 write-off NOT clipped by under-extracted header (max(0, Σowes 400) = 400)", near(r.total, 400) && near(r.totalWriteOff, 400), { total: r.total, writeOff: r.totalWriteOff });
+}
+
+// F4 — per-claim clamp (Decision 2): a 2-claim dispute (roadmap). Claim 1's refund over-reads vs its
+//      OWN header (clamped 700→500); claim 2 has headroom. PER-CLAIM → 500 + 100 = 600. A dispute-wide
+//      clamp would WRONGLY let claim 1 borrow claim 2's headroom (→ 800). Proves no cross-claim leak.
+{
+  const c1Line = makeLine({ lineItemId: "c1-nr", serviceNotRenderedAttested: true, billedAmount: 700, patientPaid: 700, patientOwes: 0 });
+  const c2Line = makeLine({ lineItemId: "c2-nr", serviceNotRenderedAttested: true, billedAmount: 100, patientPaid: 100, patientOwes: 0 });
+  const mkClaim = (id: string, line: LineItemEvidence, paidCap: number): ClaimEvidence => ({
+    claimId: id, dateOfService: "2024-03-15", providerName: "P", totalBilled: line.billedAmount, planYear: 2024,
+    lineItemEvidence: [line],
+    effectiveTotals: effTotals([line], [], { patientPaid: paidCap }),
+    dataTrust: { headerReconciliationFailed: false, signViolation: false },
+    claimFindings: [],
+  });
+  const ev: DisputeEvidence = {
+    claims: [mkClaim("claim-1", c1Line, 500), mkClaim("claim-2", c2Line, 400)],
+    totals: { claimCount: 2, lineItemCount: 2, totalBilled: 800, totalDiscrepancy: 0 },
+    planEvidence: null, networkEvidence: null, communityEvidence: null, legalBasis: [], gaps: [],
+    dataTrust: { headerReconciliationFailed: false, signViolation: false },
+  };
+  const r = resolveLetterRecovery(ev, EMPTY_BASIS);
+  check("F4 per-claim clamp: claim1 700→500 + claim2 100 = 600 (NOT dispute-wide 800)", near(r.total, 600), r.total);
+  check("F4 total === totalRefund + totalWriteOff", near(r.total, r.totalRefund + r.totalWriteOff), { total: r.total, refund: r.totalRefund, writeOff: r.totalWriteOff });
+}
+
+// F5 — Part 1a: a DISMISSED line-level duplicate is excluded from BOTH the set tier and the total
+//      (it stays in metadata as dismissed:true; the recovery tiers skip it).
+{
+  const surv = makeLine({ lineItemId: "f5-d0", billedAmount: 90, patientPaid: 0, patientOwes: 90, auditFindings: [aud({ findingId: "FX", removed: false, estimatedOvercharge: 90, dismissed: true })] });
+  const copy = makeLine({ lineItemId: "f5-d1", billedAmount: 90, patientPaid: 0, patientOwes: 90, auditFindings: [aud({ findingId: "FX", removed: true, estimatedOvercharge: 90, dismissed: true })] });
+  const r = resolveLetterRecovery(makeEvidence({ lines: [surv, copy] }), EMPTY_BASIS);
+  check("F5 dismissed line duplicate → no set recovery", r.setRecoveries.length === 0, r.setRecoveries.length);
+  check("F5 dismissed line duplicate → not folded into total (0)", near(r.total, 0), r.total);
 }
 
 console.log(`\nmulti-charge-golden fixtures: ${pass} passed, ${fails.length} failed`);

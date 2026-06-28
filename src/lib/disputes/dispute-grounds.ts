@@ -73,13 +73,13 @@ export interface DisputeGround {
 
 function findingDollar(line: LineItemEvidence, findingType: string): number {
   return (line.auditFindings ?? [])
-    .filter((f) => f.type === findingType)
+    .filter((f) => f.type === findingType && !f.dismissed)
     .reduce((s, f) => s + Math.max(0, f.estimatedOvercharge), 0);
 }
 
 function buildGroundFindings(line: LineItemEvidence, findingType?: string): GroundFinding[] {
   return (line.auditFindings ?? [])
-    .filter((f) => !findingType || f.type === findingType)
+    .filter((f) => (!findingType || f.type === findingType) && !f.dismissed)
     .map((f) => ({
       type: f.type,
       title: f.title,
@@ -99,7 +99,7 @@ function buildGroundFindings(line: LineItemEvidence, findingType?: string): Grou
  */
 export function groundsForLine(line: LineItemEvidence, claimId: string): DisputeGround[] {
   const out: DisputeGround[] = [];
-  const findingTypes = new Set((line.auditFindings ?? []).map((f) => f.type));
+  const findingTypes = new Set((line.auditFindings ?? []).filter((f) => !f.dismissed).map((f) => f.type));
   const mk = (type: DisputeGroundType, dollar: number, findingType?: string): DisputeGround => ({
     type,
     claimId,
@@ -357,6 +357,12 @@ export function resolveLetterRecovery(
 ): {
   byLine: Map<string, LineRecovery>;
   total: number;
+  /** R3 step 5.3 — refund pool: Σ over claims of min(Σ refund, claim patientPaid). total =
+   *  totalRefund + totalWriteOff (±1¢ from independent rounding of half-cent coinsurance splits). */
+  totalRefund: number;
+  /** R3 step 5.3 — write-off pool: Σ over claims of min(Σ writeOff, max(claim patientResponsibility,
+   *  Σ line patientOwes)). The max() admits the unallocated pool + dodges an under-extracted header. */
+  totalWriteOff: number;
   capBoundLineIds: string[];
   /** §18.10.D — a precise dollar was OMITTED on ≥1 line because it rested on a guess. */
   weakened: boolean;
@@ -373,14 +379,33 @@ export function resolveLetterRecovery(
   const capBoundLineIds: string[] = [];
   const strengthenable = new Set<"deductible" | "oop" | "network">();
   let weakened = false;
-  let total = 0;
-  if (!evidence) return { byLine, total: 0, capBoundLineIds, weakened, strengthenableFields: [], claimRecoveries: [], setRecoveries: [] };
+  if (!evidence)
+    return { byLine, total: 0, totalRefund: 0, totalWriteOff: 0, capBoundLineIds, weakened, strengthenableFields: [], claimRecoveries: [], setRecoveries: [] };
+
+  // R3 step 5.3 — per-claim clamp pools. The two-pool clamp (refund ≤ claim patientPaid; writeOff ≤
+  // max(claim patientResponsibility, Σ line patientOwes)) is computed PER CLAIM so a multi-claim
+  // dispute (one dispute spanning several visits — roadmap) cannot let one claim's over-read borrow
+  // another claim's headroom. For today's single-claim disputes with no set/claim findings + no
+  // binding clamp, total reduces to round2(Σ assertable capped) → byte-identical. `lineOwes` sums ALL
+  // the claim's lines (incl. removed copies — the set tier's write-off comes from them).
+  type ClaimPool = { refundRaw: number; writeOffRaw: number; paidCap: number; respHeader: number; lineOwes: number };
+  const pools = new Map<string, ClaimPool>();
+  for (const claim of evidence.claims) {
+    pools.set(claim.claimId, {
+      refundRaw: 0,
+      writeOffRaw: 0,
+      paidCap: claim.effectiveTotals.patientPaid,
+      respHeader: claim.effectiveTotals.patientResponsibility,
+      lineOwes: claim.lineItemEvidence.reduce((s, l) => s + Math.max(0, l.patientOwes ?? 0), 0),
+    });
+  }
 
   // R3 step 5.2 — SET tier pre-pass. Group LINE_SET-scope findings (duplicate / unbundling) by
   // findingId across the claim. A finding on ≥2 lines is a genuine multi-line set → its dollars are
   // counted ONCE (the SET tier) and its removed copies drop from the line tier. A set-scope finding
   // on a SINGLE line stays in the line tier (byte-identical — nothing to remove / de-duplicate).
   type SetAgg = {
+    claimId: string;
     groundType: DisputeGroundType;
     title: string;
     overcharge: number;
@@ -393,12 +418,12 @@ export function resolveLetterRecovery(
     for (const line of claim.lineItemEvidence) {
       lineById.set(line.lineItemId, line);
       for (const f of line.auditFindings ?? []) {
-        if (!f.findingId) continue;
+        if (!f.findingId || f.dismissed) continue; // R3 step 5.3 — skip user-dismissed findings
         const ground = FINDING_TO_GROUND.get(f.type as FindingType);
         if (!ground || DISPUTE_GROUND_CATALOG[ground].scope !== "line_set") continue;
         let agg = setAgg.get(f.findingId);
         if (!agg) {
-          agg = { groundType: ground, title: f.title, overcharge: 0, lineIds: new Set(), removedLineIds: new Set() };
+          agg = { claimId: claim.claimId, groundType: ground, title: f.title, overcharge: 0, lineIds: new Set(), removedLineIds: new Set() };
           setAgg.set(f.findingId, agg);
         }
         agg.lineIds.add(line.lineItemId);
@@ -420,6 +445,7 @@ export function resolveLetterRecovery(
   }
 
   for (const claim of evidence.claims) {
+    const pool = pools.get(claim.claimId);
     for (const line of claim.lineItemEvidence) {
       if (removedLineIds.has(line.lineItemId)) continue; // removed copy — removal dominates (line tier)
       const result = basis.get(line.lineItemId) ?? null;
@@ -435,8 +461,18 @@ export function resolveLetterRecovery(
       // Attestation IS the basis for a not-rendered line; otherwise the precise dollar is
       // assertable only when the engine result is grounded + assumption-free (§18.10.D).
       const assertable = notRendered ? true : result ? isPreciseDollarAssertable(result) : false;
-      if (assertable) total += capped;
-      else if (result) {
+
+      const refundable = Math.max(0, (line.patientPaid ?? 0) - (shouldOwe ?? 0));
+      const refund = Math.min(capped, refundable);
+      const writeOff = Math.max(0, capped - refund);
+
+      if (assertable) {
+        // R3 step 5.3 — refund + writeOff === capped → the pool sum equals the former `total += capped`.
+        if (pool) {
+          pool.refundRaw += refund;
+          pool.writeOffRaw += writeOff;
+        }
+      } else if (result) {
         // §18.10.D — this line omitted its precise dollar. Offer the USER-FIXABLE inputs
         // (deductible/OOP/network) ONLY when confirming them would actually unlock the dollar.
         // If the line is ALSO blocked by plan data we can't toggle (missing rate, etc.), it stays
@@ -452,10 +488,6 @@ export function resolveLetterRecovery(
           }
         }
       }
-
-      const refundable = Math.max(0, (line.patientPaid ?? 0) - (shouldOwe ?? 0));
-      const refund = Math.min(capped, refundable);
-      const writeOff = Math.max(0, capped - refund);
 
       byLine.set(line.lineItemId, {
         lineItemId: line.lineItemId,
@@ -484,19 +516,26 @@ export function resolveLetterRecovery(
         ? removed
         : Array.from(a.lineIds).map((id) => lineById.get(id)).filter((l): l is LineItemEvidence => !!l);
     const exposure = exposureLines.reduce((s, l) => s + Math.max(l.patientPaid ?? 0, l.patientOwes ?? 0), 0);
-    const recovery = round2(Math.min(a.overcharge, exposure));
-    if (recovery <= 0) continue;
+    const recoveryRaw = Math.min(a.overcharge, exposure);
+    if (recoveryRaw <= 0) continue;
     const paid = exposureLines.reduce((s, l) => s + (l.patientPaid ?? 0), 0);
-    const refund = round2(Math.min(recovery, paid));
+    const refundRaw = Math.min(recoveryRaw, paid);
+    const writeOffRaw = recoveryRaw - refundRaw;
+    // R3 step 5.3 — fold (raw) into the set's OWN claim pool; round for the recorded SetRecovery.
+    const setPool = pools.get(a.claimId);
+    if (setPool) {
+      setPool.refundRaw += refundRaw;
+      setPool.writeOffRaw += writeOffRaw;
+    }
     setRecoveries.push({
       type: a.groundType,
       findingId,
       title: a.title,
       memberLineItemIds: Array.from(a.lineIds),
       removedLineItemIds: Array.from(a.removedLineIds),
-      recovery,
-      refund,
-      writeOff: round2(recovery - refund),
+      recovery: round2(recoveryRaw),
+      refund: round2(refundRaw),
+      writeOff: round2(writeOffRaw),
     });
   }
 
@@ -511,22 +550,35 @@ export function resolveLetterRecovery(
       if (f.dismissed || !f.actionable) continue;
       const ground = FINDING_TO_GROUND.get(f.type);
       if (!ground || DISPUTE_GROUND_CATALOG[ground].scope !== "claim") continue;
-      const recovery = Math.max(0, round2(f.estimatedOvercharge));
-      if (recovery <= 0) continue;
+      const recoveryRaw = Math.max(0, f.estimatedOvercharge);
+      if (recoveryRaw <= 0) continue;
+      // R3 step 5.3 — unallocated is billed (not shown paid) → the claim's write-off pool.
+      const claimPool = pools.get(claim.claimId);
+      if (claimPool) claimPool.writeOffRaw += recoveryRaw;
       claimRecoveries.push({
         type: ground,
         findingId: f.id,
         title: f.title,
-        recovery,
+        recovery: round2(recoveryRaw),
         refund: 0,
-        writeOff: recovery,
+        writeOff: round2(recoveryRaw),
       });
     }
   }
 
+  // R3 step 5.3 — fold + two-pool clamp (per claim), then sum. total = totalRefund + totalWriteOff.
+  let totalRefundRaw = 0;
+  let totalWriteOffRaw = 0;
+  for (const p of pools.values()) {
+    totalRefundRaw += Math.min(p.refundRaw, p.paidCap);
+    totalWriteOffRaw += Math.min(p.writeOffRaw, Math.max(p.respHeader, p.lineOwes));
+  }
+
   return {
     byLine,
-    total: round2(total),
+    total: round2(totalRefundRaw + totalWriteOffRaw),
+    totalRefund: round2(totalRefundRaw),
+    totalWriteOff: round2(totalWriteOffRaw),
     capBoundLineIds,
     weakened,
     strengthenableFields: Array.from(strengthenable),

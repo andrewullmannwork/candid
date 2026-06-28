@@ -280,6 +280,10 @@ export interface LineItemEvidence {
      *  groups by findingId across the claim's lines + drops removed copies. Optional/additive. */
     findingId?: string;
     removed?: boolean;
+    /** R3 step 5.3 — the persisted dismiss flag. Surfaced additively so the flag-gated recovery
+     *  tiers (groundsForLine / SET pre-pass) + the detail block skip a user-dismissed finding; the
+     *  OFF path never reads it → byte-identical. The CLAIM tier already filters f.dismissed. */
+    dismissed?: boolean;
   }> | null;
   /**
    * Block C2.2 (S152) — true when an audit has actually RUN on this line (the
@@ -2060,6 +2064,9 @@ function extractAuditFindings(metadata: Record<string, unknown> | undefined): Li
       // R3 step 5.2 — surface the finding id + removal flag for the SET tier (dispute recovery).
       findingId: f.id != null ? String(f.id) : undefined,
       removed: f.removed === true,
+      // R3 step 5.3 — surface the dismiss flag so the flag-gated recovery tiers + detail block skip
+      // a user-dismissed finding (the CLAIM tier already filters it on claimFindings).
+      dismissed: f.dismissed === true,
     }));
   return findings.length > 0 ? findings : null;
 }
