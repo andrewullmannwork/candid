@@ -18,7 +18,7 @@
 import { config } from "dotenv";
 config({ path: "/Users/andrewullmann/Desktop/candid/.env.local" });
 
-import { readFileSync, readdirSync, writeFileSync, mkdirSync } from "fs";
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, statSync } from "fs";
 import { join } from "path";
 import { extractServicesCostSharing } from "@/lib/plan_doc/haiku-prompts/services-cost-sharing";
 import { detectLayout } from "@/lib/plan_doc/layout-detector";
@@ -79,9 +79,28 @@ async function pool<T, R>(items: T[], fn: (t: T) => Promise<R>, conc: number): P
   return out;
 }
 
+// Per-call retry with backoff — a single dropped Anthropic connection (bytesRead:0) used to crash the
+// whole run via the un-guarded pool above. Retries transient failures; rethrows only after N tries.
+async function withRetry<T>(fn: () => Promise<T>, tries = 4): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    try { return await fn(); }
+    catch (e) { lastErr = e; await new Promise((r) => setTimeout(r, 600 * (attempt + 1))); }
+  }
+  throw lastErr;
+}
+
 (async () => {
   mkdirSync(OUT_DIR, { recursive: true });
-  const files = readdirSync(OCR_DIR).filter((f) => f.endsWith(".txt")).slice(0, LIMIT);
+  const MAX_OCR_BYTES = parseInt(process.env.MAX_OCR_KB || "120", 10) * 1024;
+  const files = readdirSync(OCR_DIR)
+    .filter((f) => f.endsWith(".txt"))
+    .filter((f) => {
+      const sz = statSync(join(OCR_DIR, f)).size;
+      if (sz > MAX_OCR_BYTES) { console.error(`  skip oversized ${f.slice(0, 8)} (${(sz / 1024).toFixed(0)}KB — whole-OCR harness can't; the chunked prod parser handles it)`); return false; }
+      return true;
+    })
+    .slice(0, LIMIT);
   console.log(`Corpus: ${files.length} plans · N=${N}/arm · conc=${CONC} · OCR=${OCR_DIR}`);
 
   // Build the run list: each plan × {OFF×N, ON×N}.
@@ -95,10 +114,18 @@ async function pool<T, R>(items: T[], fn: (t: T) => Promise<R>, conc: number): P
   }
 
   const t0 = Date.now();
+  let skips = 0;
   const results = await pool(jobs, async (j) => {
-    const svcs = await extract(j.ocr, j.arm === "ON");
-    return { docId: j.docId, arm: j.arm, run: j.run, svcs };
+    try {
+      const svcs = await withRetry(() => extract(j.ocr, j.arm === "ON"));
+      return { docId: j.docId, arm: j.arm, run: j.run, svcs };
+    } catch (e) {
+      skips++;
+      console.error(`  SKIP ${j.docId.slice(0, 8)} ${j.arm}#${j.run}: ${(e as Error)?.message?.slice(0, 70)}`);
+      return { docId: j.docId, arm: j.arm, run: j.run, svcs: [] as PlanDocService[] };
+    }
   }, CONC);
+  if (skips) console.error(`\n⚠ ${skips} job(s) skipped after retries (persistent failure — likely oversized OCR request).`);
   console.log(`Extraction done in ${((Date.now() - t0) / 1000).toFixed(0)}s (${jobs.length} calls)`);
 
   // Index results: docId -> arm -> run -> svcs
