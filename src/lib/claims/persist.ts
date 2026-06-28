@@ -280,6 +280,10 @@ export async function persistAuditResults(
               // user-friendly explanation (e.g., F-14's insurer-vs-plan
               // narrative).
               actionable: f.actionable,
+              // R3 step 5.2 — true when THIS line is a removed copy of a removal-type set finding
+              // (duplicate redundant copy / unbundling bundled-away charge). Drives removal-dominates
+              // in the dispute recovery's SET tier. Absent on old rows → graceful fallback.
+              removed: (f.removedLineNumbers ?? []).includes(item.lineNumber),
             })),
           }
         : {};

@@ -233,6 +233,9 @@ export async function POST(
             estimatedOvercharge: f.estimatedOvercharge,
             title: f.title,
             actionable: f.actionable,
+            // R3 step 5.2 — removal-dominates flag for the dispute recovery's SET tier (see
+            // claims/persist.ts). Mirrors the upload-time write so re-audited claims stay correct.
+            removed: (f.removedLineNumbers ?? []).includes(li.line_number as number),
           })),
           auditRerunAt: new Date().toISOString(),
         },

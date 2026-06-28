@@ -276,6 +276,10 @@ export interface LineItemEvidence {
     estimatedOvercharge: number;
     benchmarkAmount: number | null;
     benchmarkSource: string | null;
+    /** R3 step 5.2 — the persisted finding id (claims/persist.ts) + the removal flag. The SET tier
+     *  groups by findingId across the claim's lines + drops removed copies. Optional/additive. */
+    findingId?: string;
+    removed?: boolean;
   }> | null;
   /**
    * Block C2.2 (S152) — true when an audit has actually RUN on this line (the
@@ -2053,6 +2057,9 @@ function extractAuditFindings(metadata: Record<string, unknown> | undefined): Li
       estimatedOvercharge: Number(f.estimatedOvercharge ?? 0),
       benchmarkAmount: f.benchmarkAmount != null ? Number(f.benchmarkAmount) : null,
       benchmarkSource: f.benchmarkSource != null ? String(f.benchmarkSource) : null,
+      // R3 step 5.2 — surface the finding id + removal flag for the SET tier (dispute recovery).
+      findingId: f.id != null ? String(f.id) : undefined,
+      removed: f.removed === true,
     }));
   return findings.length > 0 ? findings : null;
 }

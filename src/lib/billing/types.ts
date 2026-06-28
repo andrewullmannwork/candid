@@ -211,6 +211,11 @@ export interface AuditFinding {
   type: FindingType;
   severity: FindingSeverity;
   lineItems: number[]; // lineNumber references
+  /** R3 step 5.2 — for a removal-type set finding (duplicate / unbundling), the member line
+   *  numbers to REMOVE (duplicate: the redundant copies; unbundling: the smaller/bundled-away
+   *  charge). Surviving member(s) = lineItems − removedLineNumbers. Concrete array, emitted at
+   *  detection time → immune to deduplicateFindings' in-place lineItems.sort(). */
+  removedLineNumbers?: number[];
   title: string; // e.g., "Potential overcharge on lab work"
   description: string; // Plain-English explanation
   estimatedOvercharge: number; // Dollar amount

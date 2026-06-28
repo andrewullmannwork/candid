@@ -200,6 +200,7 @@ export function computeLineRecovery(
   line: LineItemEvidence,
   claimId: string,
   shouldOwe: number | null,
+  excludeTypes?: ReadonlySet<DisputeGroundType>,
 ): {
   grounds: DisputeGround[];
   rawSum: number;
@@ -209,7 +210,10 @@ export function computeLineRecovery(
   capped: number;
   capBound: boolean;
 } {
-  const grounds = groundsForLine(line, claimId);
+  // R3 step 5.2 — drop grounds whose finding is handled by the SET tier (a participating multi-line
+  // duplicate/unbundling): removal dominates reprice on the line, and the set recovery is counted
+  // once elsewhere. `excludeTypes` is empty for single-line / line-scope grounds → byte-identical.
+  const grounds = groundsForLine(line, claimId).filter((g) => !excludeTypes?.has(g.type));
   const rawSum = grounds.reduce((s, g) => s + g.dollarAtStake, 0);
   const notRendered = grounds.some((g) => g.type === "service_not_rendered");
   const effectiveShouldOwe = notRendered ? 0 : shouldOwe;
@@ -301,6 +305,28 @@ export interface ClaimRecovery {
 }
 
 /**
+ * R3 step 5.2 — a LINE_SET-scope recovery (duplicate / unbundling) for a genuine MULTI-LINE set.
+ * The set's dollars are counted ONCE here (not per member line); the removed copies are dropped from
+ * the line tier (removal dominates). Recorded by resolveLetterRecovery; folded into the totals + the
+ * letter at step 5.3.
+ */
+export interface SetRecovery {
+  type: DisputeGroundType;
+  findingId: string;
+  title: string;
+  /** every line the set finding spans. */
+  memberLineItemIds: string[];
+  /** the copies that should be removed (duplicate: redundant copies; unbundling: bundled-away). */
+  removedLineItemIds: string[];
+  /** the set's recovery, counted ONCE, capped at the removed copies' exposure. */
+  recovery: number;
+  /** removed copies already PAID. */
+  refund: number;
+  /** removed copies still BILLED → forgiveness. */
+  writeOff: number;
+}
+
+/**
  * Reverse the catalog's `fromFindings` → the ground each finding maps into (used for CLAIM-scope
  * routing in resolveLetterRecovery). Line-scope routing stays in `groundsForLine` until the
  * post-R3 classifier collapse. Built once at module load.
@@ -340,21 +366,68 @@ export function resolveLetterRecovery(
   /** R3 step 5.1 — CLAIM-scope recoveries (disjoint pool; unallocated_balance). Recorded here;
    *  folded into the headline total + the letter at step 5.3. */
   claimRecoveries: ClaimRecovery[];
+  /** R3 step 5.2 — LINE_SET-scope recoveries (multi-line duplicate / unbundling, counted once). */
+  setRecoveries: SetRecovery[];
 } {
   const byLine = new Map<string, LineRecovery>();
   const capBoundLineIds: string[] = [];
   const strengthenable = new Set<"deductible" | "oop" | "network">();
   let weakened = false;
   let total = 0;
-  if (!evidence) return { byLine, total: 0, capBoundLineIds, weakened, strengthenableFields: [], claimRecoveries: [] };
+  if (!evidence) return { byLine, total: 0, capBoundLineIds, weakened, strengthenableFields: [], claimRecoveries: [], setRecoveries: [] };
+
+  // R3 step 5.2 — SET tier pre-pass. Group LINE_SET-scope findings (duplicate / unbundling) by
+  // findingId across the claim. A finding on ≥2 lines is a genuine multi-line set → its dollars are
+  // counted ONCE (the SET tier) and its removed copies drop from the line tier. A set-scope finding
+  // on a SINGLE line stays in the line tier (byte-identical — nothing to remove / de-duplicate).
+  type SetAgg = {
+    groundType: DisputeGroundType;
+    title: string;
+    overcharge: number;
+    lineIds: Set<string>;
+    removedLineIds: Set<string>;
+  };
+  const setAgg = new Map<string, SetAgg>();
+  const lineById = new Map<string, LineItemEvidence>();
+  for (const claim of evidence.claims) {
+    for (const line of claim.lineItemEvidence) {
+      lineById.set(line.lineItemId, line);
+      for (const f of line.auditFindings ?? []) {
+        if (!f.findingId) continue;
+        const ground = FINDING_TO_GROUND.get(f.type as FindingType);
+        if (!ground || DISPUTE_GROUND_CATALOG[ground].scope !== "line_set") continue;
+        let agg = setAgg.get(f.findingId);
+        if (!agg) {
+          agg = { groundType: ground, title: f.title, overcharge: 0, lineIds: new Set(), removedLineIds: new Set() };
+          setAgg.set(f.findingId, agg);
+        }
+        agg.lineIds.add(line.lineItemId);
+        agg.overcharge = Math.max(agg.overcharge, f.estimatedOvercharge);
+        if (f.removed) agg.removedLineIds.add(line.lineItemId);
+      }
+    }
+  }
+  const participatingSets = Array.from(setAgg.entries()).filter(([, a]) => a.lineIds.size >= 2);
+  const removedLineIds = new Set<string>();
+  const excludeTypesByLine = new Map<string, Set<DisputeGroundType>>();
+  for (const [, a] of participatingSets) {
+    for (const id of a.removedLineIds) removedLineIds.add(id);
+    for (const id of a.lineIds) {
+      const s = excludeTypesByLine.get(id) ?? new Set<DisputeGroundType>();
+      s.add(a.groundType);
+      excludeTypesByLine.set(id, s);
+    }
+  }
 
   for (const claim of evidence.claims) {
     for (const line of claim.lineItemEvidence) {
+      if (removedLineIds.has(line.lineItemId)) continue; // removed copy — removal dominates (line tier)
       const result = basis.get(line.lineItemId) ?? null;
       const { grounds, notRendered, shouldOwe, capped, capBound } = computeLineRecovery(
         line,
         claim.claimId,
         result?.shouldOwe ?? null,
+        excludeTypesByLine.get(line.lineItemId),
       );
       if (grounds.length === 0) continue;
       if (capBound) capBoundLineIds.push(line.lineItemId);
@@ -395,6 +468,38 @@ export function resolveLetterRecovery(
     }
   }
 
+  // R3 step 5.2 — SET tier: each participating multi-line set (duplicate / unbundling) contributes
+  // its recovery ONCE (the redundant / bundled-away copies), capped at the removed copies' exposure,
+  // split refund (copies already paid) vs writeOff (copies still billed). Recorded here; folded into
+  // the totals + the letter at step 5.3 (headline-inert now → golden-48 byte-identical).
+  const setRecoveries: SetRecovery[] = [];
+  for (const [findingId, a] of participatingSets) {
+    const removed = Array.from(a.removedLineIds)
+      .map((id) => lineById.get(id))
+      .filter((l): l is LineItemEvidence => !!l);
+    // No removed copies marked (old data pre-5.2): de-dup still applies (count once); fall back to
+    // the whole set for the exposure basis since we can't yet tell survivor from copy.
+    const exposureLines =
+      removed.length > 0
+        ? removed
+        : Array.from(a.lineIds).map((id) => lineById.get(id)).filter((l): l is LineItemEvidence => !!l);
+    const exposure = exposureLines.reduce((s, l) => s + Math.max(l.patientPaid ?? 0, l.patientOwes ?? 0), 0);
+    const recovery = round2(Math.min(a.overcharge, exposure));
+    if (recovery <= 0) continue;
+    const paid = exposureLines.reduce((s, l) => s + (l.patientPaid ?? 0), 0);
+    const refund = round2(Math.min(recovery, paid));
+    setRecoveries.push({
+      type: a.groundType,
+      findingId,
+      title: a.title,
+      memberLineItemIds: Array.from(a.lineIds),
+      removedLineItemIds: Array.from(a.removedLineIds),
+      recovery,
+      refund,
+      writeOff: round2(recovery - refund),
+    });
+  }
+
   // R3 step 5.1 — CLAIM tier: claim-header findings (unallocated_balance) form a pool DISJOINT
   // from the line pool (dollars on no line) → recorded here, SUMMED into the totals + argued in
   // the letter at step 5.3 (NOT folded into `total` yet → this step is headline-inert; golden-48
@@ -426,6 +531,7 @@ export function resolveLetterRecovery(
     weakened,
     strengthenableFields: Array.from(strengthenable),
     claimRecoveries,
+    setRecoveries,
   };
 }
 

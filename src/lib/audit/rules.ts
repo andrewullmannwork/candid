@@ -139,6 +139,9 @@ export const checkDuplicates: AuditRule = (bill) => {
         type: "duplicate",
         severity: totalOvercharge > 500 ? "high" : "medium",
         lineItems: items.map((i) => i.lineNumber),
+        // The redundant copies (all but the first occurrence) are what gets removed; the first
+        // copy survives and keeps its own grounds. Concrete (not a late slice of lineItems).
+        removedLineNumbers: items.slice(1).map((i) => i.lineNumber),
         title: `Possible duplicate charge for ${items[0].category}`,
         description: `The same procedure code (${items[0].procedureCode}) appears ${items.length} times on ${items[0].serviceDate}. Unless multiple distinct procedures were performed, this may be a duplicate charge totaling $${totalOvercharge.toFixed(2)}.`,
         estimatedOvercharge: totalOvercharge,
@@ -234,6 +237,10 @@ export const checkUnbundling: AuditRule = (bill) => {
           type: "unbundling",
           severity: smallerAmount > 200 ? "high" : "medium",
           lineItems: [item1.lineNumber, item2.lineNumber],
+          // The smaller / bundled-away charge is the one removed; the larger (comprehensive) survives.
+          removedLineNumbers: [
+            (item1.billedAmount <= item2.billedAmount ? item1 : item2).lineNumber,
+          ],
           title: "Possible unbundling — services should be billed together",
           description: `${reason}. Codes ${code1} and ${code2} were both billed on ${item1.serviceDate}. If these should be bundled, the separate charge of $${smallerAmount.toFixed(2)} may be an overcharge.`,
           estimatedOvercharge: smallerAmount,
