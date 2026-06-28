@@ -125,10 +125,13 @@ export function generateDisputeLetter(
   // the request block to source refund/write-off from the engine, not the deductible-blind
   // discrepancyAmount. Only when the flag is ON AND a basis was loaded → otherwise undefined
   // (the templates fall back to discrepancyAmount → byte-identical).
-  const letterRecovery =
+  // R3 step 5.3 — the FULL recovery (byLine + set/claim tiers + clampBound) drives the multi-charge
+  // letter asks; the OFF / no-basis path leaves it undefined → byte-identical.
+  const recovery =
     disputeGroundsOn && evidence && disputeGroundBasis
-      ? resolveLetterRecovery(evidence, disputeGroundBasis).byLine
+      ? resolveLetterRecovery(evidence, disputeGroundBasis)
       : undefined;
+  const letterRecovery = recovery?.byLine;
 
   // Block A — data-trust HARD STOP. A bill that failed header reconciliation has
   // numbers we don't trust enough to cite, so we suppress generation and let the
@@ -164,6 +167,7 @@ export function generateDisputeLetter(
     v3DesignOn: enforceDataTrustGate ?? false,
     disputeGroundsOn: disputeGroundsOn ?? false,
     letterRecovery,
+    recovery,
     noPlanCoverageRequestOn: noPlanCoverageRequestOn ?? false,
   });
 

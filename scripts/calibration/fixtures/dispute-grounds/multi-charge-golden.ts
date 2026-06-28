@@ -8,6 +8,7 @@
  * Run: npx tsx scripts/calibration/fixtures/dispute-grounds/multi-charge-golden.ts
  */
 import { resolveLetterRecovery } from "../../../../src/lib/disputes/dispute-grounds";
+import { buildRequestSection } from "../../../../src/lib/disputes/templates";
 import { checkDuplicates } from "../../../../src/lib/audit/rules";
 import type {
   DisputeEvidence,
@@ -368,6 +369,55 @@ const notRenderedLine = makeLine({
   const r = resolveLetterRecovery(makeEvidence({ lines: [surv, copy] }), EMPTY_BASIS);
   check("F5 dismissed line duplicate → no set recovery", r.setRecoveries.length === 0, r.setRecoveries.length);
   check("F5 dismissed line duplicate → not folded into total (0)", near(r.total, 0), r.total);
+}
+
+// ── 5.3 Part 3: letter coherence (buildRequestSection argues the set/claim grounds) ───────────
+function letterFor(ev: DisputeEvidence, recipient: "insurer" | "provider"): string {
+  const rec = resolveLetterRecovery(ev, EMPTY_BASIS);
+  return buildRequestSection({ evidence: ev, planContext: null, recipient, letterRecovery: rec.byLine, recovery: rec, demandsEnabled: false });
+}
+
+// L1 — a patient-owed 2-line duplicate: the provider letter argues the removal ONCE (the removed
+//      copy is dropped from the reprice buckets; removal dominates).
+{
+  const survivor = makeLine({ lineItemId: "L1-d0", billedAmount: 200, patientPaid: 0, patientOwes: 200, auditFindings: [aud({ findingId: "L1F", removed: false, estimatedOvercharge: 200 })] });
+  const copy = makeLine({ lineItemId: "L1-d1", billedAmount: 200, patientPaid: 0, patientOwes: 200, auditFindings: [aud({ findingId: "L1F", removed: true, estimatedOvercharge: 200 })] });
+  const prov = letterFor(makeEvidence({ lines: [survivor, copy] }), "provider");
+  check("L1 provider letter argues the duplicate removal", /remove the duplicate charge for/i.test(prov), prov);
+  check("L1 provider letter names the $200 write-off exactly once (no double-count)", (prov.match(/\$200\.00/g) ?? []).length === 1, prov);
+}
+
+// L2 — a $0-patient insurer-PAID duplicate: insurer letter raises the hedged review; the provider
+//      letter does NOT argue it (no patient exposure).
+{
+  const survivor = makeLine({ lineItemId: "L2-d0", billedAmount: 150, patientPaid: 0, patientOwes: 0, insurancePaid: 150, auditFindings: [aud({ findingId: "L2F", removed: false, estimatedOvercharge: 150 })] });
+  const copy = makeLine({ lineItemId: "L2-d1", billedAmount: 150, patientPaid: 0, patientOwes: 0, insurancePaid: 150, auditFindings: [aud({ findingId: "L2F", removed: true, estimatedOvercharge: 150 })] });
+  const ev = makeEvidence({ lines: [survivor, copy] });
+  check("L2 insurer letter raises the insurer-paid-duplicate review", /was paid more than once/i.test(letterFor(ev, "insurer")), letterFor(ev, "insurer"));
+  check("L2 provider letter does NOT argue the $0 duplicate", !/duplicate charge/i.test(letterFor(ev, "provider")), letterFor(ev, "provider"));
+}
+
+// L3 — an unallocated claim finding: provider letter asks to itemize the gap.
+{
+  const prov = letterFor(makeEvidence({ lines: [notRenderedLine], claimFindings: [claimFinding()] }), "provider");
+  check("L3 provider letter asks to itemize the $146 unallocated gap", /itemize the \$146\.00 by which the bill total exceeds/i.test(prov), prov);
+}
+
+// L5 — a clamp-bound claim drops precise dollars: the not-rendered ask renders WITHOUT a refund $.
+{
+  const line = makeLine({ lineItemId: "L5-nr", serviceNotRenderedAttested: true, billedAmount: 500, patientPaid: 500, patientOwes: 0 });
+  const ev = makeEvidence({ lines: [line], effectiveTotals: { patientPaid: 300 } });
+  check("L5 the claim is clamp-bound", resolveLetterRecovery(ev, EMPTY_BASIS).clampBoundClaimIds.length === 1, resolveLetterRecovery(ev, EMPTY_BASIS).clampBoundClaimIds);
+  check("L5 clamp-bound: the ask renders without a precise refund $", !/refund the \$/i.test(letterFor(ev, "provider")), letterFor(ev, "provider"));
+}
+
+// L6 — a not-rendered survivor of a duplicate: the whole-charge not-rendered ask subsumes the removal
+//      ask (no separate duplicate ask).
+{
+  const survivor = makeLine({ lineItemId: "L6-d0", serviceNotRenderedAttested: true, billedAmount: 90, patientPaid: 0, patientOwes: 90, auditFindings: [aud({ findingId: "L6F", removed: false, estimatedOvercharge: 90 })] });
+  const copy = makeLine({ lineItemId: "L6-d1", billedAmount: 90, patientPaid: 0, patientOwes: 90, auditFindings: [aud({ findingId: "L6F", removed: true, estimatedOvercharge: 90 })] });
+  const prov = letterFor(makeEvidence({ lines: [survivor, copy] }), "provider");
+  check("L6 not-rendered survivor → no separate duplicate removal ask", !/duplicate charge/i.test(prov), prov);
 }
 
 console.log(`\nmulti-charge-golden fixtures: ${pass} passed, ${fails.length} failed`);

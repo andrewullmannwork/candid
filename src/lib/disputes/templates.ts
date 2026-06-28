@@ -4,7 +4,7 @@
 import type { AuditFinding, ParsedBill, DisputeLetterType } from "../billing/types";
 import type { PlanContext, ProviderContact, AppealsAddress } from "./plan-context";
 import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
-import { groundFindingsForEvidence, type GroundFinding, type LineRecovery } from "./dispute-grounds";
+import { groundFindingsForEvidence, type GroundFinding, type LineRecovery, type LetterRecoveryResult } from "./dispute-grounds";
 import type { RequestBucket } from "./dispute-ground-catalog";
 import { buildObligationContext, renderObligationClauses } from "./obligation-render";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
@@ -94,6 +94,9 @@ interface TemplateParams {
    * was loaded → byte-identical legacy (discrepancyAmount) rendering.
    */
   letterRecovery?: Map<string, LineRecovery>;
+  /** R3 step 5.3 — the full recovery result (set/claim tiers + clampBound) for the multi-charge
+   *  asks + graceful degradation. Optional/additive → absent (OFF) means byte-identical. */
+  recovery?: LetterRecoveryResult;
   /**
    * dispute_noplan_coverage_request_v1 — when ON, buildRequestSection reframes the
    * coverage ask (when no plan is on file to cite) and the insurer breakdown request.
@@ -433,13 +436,15 @@ export function buildRequestSection(params: {
   planContext: PlanContext | null | undefined;
   recipient: "insurer" | "provider";
   letterRecovery?: Map<string, LineRecovery>;
+  /** R3 step 5.3 — set/claim tiers + clampBound for the multi-charge asks + degradation. */
+  recovery?: LetterRecoveryResult;
   noPlanCoverageRequestOn?: boolean;
   // dispute_grounds_v1 — the obligation-registry demand master-switch (R3 step 3). OFF → the
   // safe voice (fall_to_facts / omit) → byte-identical. Even ON, a demand fires only when a
   // predicate is met (all unknown today). Threaded from the render fns' disputeGroundsOn.
   demandsEnabled?: boolean;
 }): string {
-  const { evidence, planContext, recipient, letterRecovery, noPlanCoverageRequestOn, demandsEnabled } = params;
+  const { evidence, planContext, recipient, letterRecovery, recovery, noPlanCoverageRequestOn, demandsEnabled } = params;
   if (!evidence) return "";
   const allLines = evidence.claims.flatMap((c) => c.lineItemEvidence);
   if (allLines.length === 0) return "";
@@ -450,6 +455,27 @@ export function buildRequestSection(params: {
     li.billingCode ? `${li.serviceName} (${li.billingCode.type} ${li.billingCode.value})` : li.serviceName;
   const sumOf = (arr: LineItemEvidence[], pick: (li: LineItemEvidence) => number | null | undefined): number =>
     arr.reduce((s, li) => s + Math.max(0, pick(li) ?? 0), 0);
+
+  // R3 step 5.3 — multi-charge derivations from the full recovery (all no-ops when `recovery` is
+  // absent → OFF byte-identical). `removedIds` drops a duplicate's removed copy from the reprice
+  // buckets (removal dominates); `clampBound`/`lineIsClampBound` drive graceful degradation — a
+  // clamp-bound claim's precise dollars drop from the asks so the demand stands alone (§18.10.D).
+  const setRecoveries = recovery?.setRecoveries ?? [];
+  const claimRecoveries = recovery?.claimRecoveries ?? [];
+  const removedIds = new Set(setRecoveries.flatMap((s) => s.removedLineItemIds));
+  const clampBound = new Set(recovery?.clampBoundClaimIds ?? []);
+  const claimIdByLine = new Map<string, string>();
+  const lineById = new Map<string, LineItemEvidence>();
+  const dateByLine = new Map<string, string | null>();
+  for (const c of evidence.claims) {
+    for (const li of c.lineItemEvidence) {
+      claimIdByLine.set(li.lineItemId, c.claimId);
+      lineById.set(li.lineItemId, li);
+      dateByLine.set(li.lineItemId, c.dateOfService);
+    }
+  }
+  const lineIsClampBound = (li: LineItemEvidence): boolean => clampBound.has(claimIdByLine.get(li.lineItemId) ?? "");
+
   // §18 incr-4 — sum a deductible-aware recovery field over ONLY the assertable lines
   // (§18.10.D: a line whose precise dollar isn't backed contributes $0 → the remedy clause
   // drops and the demand stands alone). Used only when `letterRecovery` is present (flag ON).
@@ -460,7 +486,8 @@ export function buildRequestSection(params: {
   ): number =>
     arr.reduce((s, li) => {
       const r = rec.get(li.lineItemId);
-      return r && r.assertable ? s + r[field] : s;
+      // R3 step 5.3 — a clamp-bound claim's precise dollar drops (graceful degradation).
+      return r && r.assertable && !lineIsClampBound(li) ? s + r[field] : s;
     }, 0);
 
   // One ask per line, priority-bucketed (guard: no double-asks).
@@ -468,6 +495,9 @@ export function buildRequestSection(params: {
     attested: [], costShare: [], coverage: [], balanceBilling: [], coding: [],
   };
   for (const li of allLines) {
+    // R3 step 5.3 — a removed duplicate copy is argued by the set tier (removal dominates); never
+    // re-bucket it for a reprice/coverage ask (would double-count + argue "reprice" on a removed line).
+    if (removedIds.has(li.lineItemId)) continue;
     // Skip lines with no money at stake (e.g. $0 quality-measure codes).
     if ((li.billedAmount || 0) === 0 && !li.patientOwes && !li.patientPaid) continue;
     if (li.serviceNotRenderedAttested) { b.attested.push(li); continue; }
@@ -485,10 +515,12 @@ export function buildRequestSection(params: {
     const names = joinClauses(b.attested.map(label));
     const many = b.attested.length > 1;
     const it = many ? "them" : "it";
-    const billed = sumOf(b.attested, (li) => li.billedAmount);
-    const refund = sumOf(b.attested, (li) => li.patientPaid);
-    const forgive = sumOf(b.attested, (li) => li.patientOwes);
-    const insPaid = isInsurer ? sumOf(b.attested, (li) => li.insurancePaid) : 0;
+    // R3 step 5.3 — drop precise dollars for clamp-bound claims (the ask still renders, sans amounts).
+    const dollarLines = b.attested.filter((li) => !lineIsClampBound(li));
+    const billed = sumOf(dollarLines, (li) => li.billedAmount);
+    const refund = sumOf(dollarLines, (li) => li.patientPaid);
+    const forgive = sumOf(dollarLines, (li) => li.patientOwes);
+    const insPaid = isInsurer ? sumOf(dollarLines, (li) => li.insurancePaid) : 0;
     const clauses: string[] = [];
     if (isInsurer) {
       clauses.push(
@@ -591,6 +623,48 @@ export function buildRequestSection(params: {
   if (b.coding.length > 0) {
     const peer = b.coding[0].peerCodes?.[0]?.code;
     if (peer) asks.push(`Verify whether ${peer} more accurately reflects the service provided, and reprocess accordingly.`);
+  }
+
+  // 6) R3 step 5.3 — SET tier (duplicate / unbundling). The removed copy was dropped from the buckets
+  // above (removal dominates); here the set is argued ONCE. Provider letter → remove/refund the
+  // redundant charge (patient-exposed). Insurer letter → a hedged review of an insurer-PAID duplicate
+  // the patient has no exposure to (Decision 2, counsel-tightened — a notice, not a demand). A set
+  // whose service is also attested not-rendered is skipped (that whole-charge ask subsumes it). Precise
+  // dollars drop for a clamp-bound claim (the ask stands without a number).
+  for (const set of setRecoveries) {
+    const members = set.memberLineItemIds.map((id) => lineById.get(id)).filter((l): l is LineItemEvidence => !!l);
+    if (members.some((l) => l.serviceNotRenderedAttested)) continue;
+    const ref = members[0];
+    if (!ref) continue;
+    const svc = label(ref);
+    const bound = clampBound.has(set.claimId);
+    const dup = set.type === "duplicate";
+    if (set.recovery > 0 && !isInsurer) {
+      const refund = bound ? 0 : set.refund;
+      const writeOff = bound ? 0 : set.writeOff;
+      const what = dup
+        ? `the duplicate charge for ${svc}, which appears on my bill more than once`
+        : `the unbundled charge for ${svc}, which should be billed under a single code`;
+      const remedy: string[] = [];
+      if (refund > 0) remedy.push(`refund the ${formatCurrency(refund)} I paid`);
+      if (writeOff > 0) remedy.push(`write off the ${formatCurrency(writeOff)} still billed`);
+      asks.push(`${capFirst(`remove ${what}`)}${remedy.length ? `, and ${joinClauses(remedy)}` : ""}.`);
+    } else if (set.recovery <= 0 && isInsurer && dup) {
+      const d = dateByLine.get(ref.lineItemId);
+      const dateStr = d ? formatDate(d) : null;
+      asks.push(`Review whether ${svc}${dateStr ? ` on ${dateStr}` : ""} was paid more than once and, if so, correct my claim record so my deductible and out-of-pocket totals reflect a single charge.`);
+    }
+  }
+
+  // 7) R3 step 5.3 — CLAIM tier (unallocated balance): the bill total exceeds the sum of the listed
+  // charges. Provider letter → itemize the gap. Precise dollar drops for a clamp-bound claim.
+  if (!isInsurer && claimRecoveries.length > 0) {
+    const unalloc = claimRecoveries.filter((c) => !clampBound.has(c.claimId)).reduce((s, c) => s + c.writeOff, 0);
+    asks.push(
+      unalloc > 0
+        ? `Itemize the ${formatCurrency(unalloc)} by which the bill total exceeds the sum of the listed charges, and confirm I owe only the itemized amounts.`
+        : `Itemize any balance by which the bill total exceeds the sum of the listed charges, and confirm I owe only the itemized amounts.`,
+    );
   }
 
   // Fallback — never emit an empty request block.
@@ -1016,6 +1090,7 @@ const overchargeTemplate: LetterTemplate = {
     disputeGroundsOn,
     attestingName,
     letterRecovery,
+    recovery,
     noPlanCoverageRequestOn,
   }) => {
     // §18 incr-3 — source the finding block from EVIDENCE when the flag is ON (rerender-safe;
@@ -1050,7 +1125,7 @@ const overchargeTemplate: LetterTemplate = {
     // Block C2 item 4 — v3 replaces the fixed "I am requesting 1/2/3" list with
     // the conditional request tree (provider voice). OFF → byte-identical.
     const requestBlock = (v3DesignOn ?? false)
-      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, noPlanCoverageRequestOn, demandsEnabled: disputeGroundsOn ?? false })
+      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, demandsEnabled: disputeGroundsOn ?? false })
       : `I am requesting the following:
 
 1. A detailed, itemized bill showing all charges, procedure codes (CPT/HCPCS), and quantities.
@@ -1172,6 +1247,7 @@ const insuranceAppealTemplate: LetterTemplate = {
     disputeGroundsOn,
     attestingName,
     letterRecovery,
+    recovery,
     noPlanCoverageRequestOn,
   }) => {
     // S111 smoke #3/#4 — insurer precedence:
@@ -1263,7 +1339,7 @@ const insuranceAppealTemplate: LetterTemplate = {
       ? ` The specific relief I am requesting is set out below, following the supporting detail.`
       : ` I am requesting a full review of this denial, including:\n\n1. The specific reason for denial, including the applicable plan provision or exclusion\n2. The clinical criteria used to determine medical necessity\n3. Instructions for requesting an external review if this internal appeal is denied`;
     const reliefSection = v3
-      ? buildRequestSection({ evidence, planContext, recipient: "insurer", letterRecovery, noPlanCoverageRequestOn, demandsEnabled: disputeGroundsOn ?? false })
+      ? buildRequestSection({ evidence, planContext, recipient: "insurer", letterRecovery, recovery, noPlanCoverageRequestOn, demandsEnabled: disputeGroundsOn ?? false })
       : `${closingArgument ? `${closingArgument}\n\n` : ""}${escalationParagraph}`;
 
     return `${formatDate(new Date().toISOString())}
@@ -1313,6 +1389,7 @@ const balanceBillingTemplate: LetterTemplate = {
     disputeGroundsOn,
     attestingName,
     letterRecovery,
+    recovery,
     noPlanCoverageRequestOn,
   }) => {
     const evidenceBlock = renderEvidenceBlock(
@@ -1344,7 +1421,7 @@ const balanceBillingTemplate: LetterTemplate = {
     // Block C2 item 4 — v3 replaces the fixed "I am requesting 1/2/3" list with
     // the conditional request tree (provider voice). OFF → byte-identical.
     const requestBlock = (v3DesignOn ?? false)
-      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, noPlanCoverageRequestOn, demandsEnabled: disputeGroundsOn ?? false })
+      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, demandsEnabled: disputeGroundsOn ?? false })
       : `I am requesting:
 
 1. An immediate review of these charges

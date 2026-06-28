@@ -157,6 +157,7 @@ export async function rerenderDisputeLetter(
     disputeGroundsOn,
     attestingName: params.attestingName,
     letterRecovery,
+    recovery: recovery ?? undefined,
     noPlanCoverageRequestOn,
   });
 

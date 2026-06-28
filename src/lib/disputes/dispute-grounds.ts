@@ -293,6 +293,8 @@ export interface LineRecovery {
  * at step 5.3.
  */
 export interface ClaimRecovery {
+  /** R3 step 5.3 — the claim this finding belongs to (per-claim clampBound suppression). */
+  claimId: string;
   type: DisputeGroundType;
   findingId: string;
   title: string;
@@ -311,6 +313,8 @@ export interface ClaimRecovery {
  * letter at step 5.3.
  */
 export interface SetRecovery {
+  /** R3 step 5.3 — the claim this set belongs to (per-claim clampBound suppression in the letter). */
+  claimId: string;
   type: DisputeGroundType;
   findingId: string;
   title: string;
@@ -374,13 +378,17 @@ export function resolveLetterRecovery(
   claimRecoveries: ClaimRecovery[];
   /** R3 step 5.2 — LINE_SET-scope recoveries (multi-line duplicate / unbundling, counted once). */
   setRecoveries: SetRecovery[];
+  /** R3 step 5.3 — claims whose two-pool clamp BOUND (clamped < raw). The letter drops precise
+   *  per-bucket dollars for these claims + asks conservatively (§18.10.D path); amount_disputed
+   *  stays the clamped value. Empty in the common (no-bind) case. */
+  clampBoundClaimIds: string[];
 } {
   const byLine = new Map<string, LineRecovery>();
   const capBoundLineIds: string[] = [];
   const strengthenable = new Set<"deductible" | "oop" | "network">();
   let weakened = false;
   if (!evidence)
-    return { byLine, total: 0, totalRefund: 0, totalWriteOff: 0, capBoundLineIds, weakened, strengthenableFields: [], claimRecoveries: [], setRecoveries: [] };
+    return { byLine, total: 0, totalRefund: 0, totalWriteOff: 0, capBoundLineIds, weakened, strengthenableFields: [], claimRecoveries: [], setRecoveries: [], clampBoundClaimIds: [] };
 
   // R3 step 5.3 — per-claim clamp pools. The two-pool clamp (refund ≤ claim patientPaid; writeOff ≤
   // max(claim patientResponsibility, Σ line patientOwes)) is computed PER CLAIM so a multi-claim
@@ -517,10 +525,13 @@ export function resolveLetterRecovery(
         : Array.from(a.lineIds).map((id) => lineById.get(id)).filter((l): l is LineItemEvidence => !!l);
     const exposure = exposureLines.reduce((s, l) => s + Math.max(l.patientPaid ?? 0, l.patientOwes ?? 0), 0);
     const recoveryRaw = Math.min(a.overcharge, exposure);
-    if (recoveryRaw <= 0) continue;
+    const insurerPaid = exposureLines.reduce((s, l) => s + (l.insurancePaid ?? 0), 0);
+    // R3 step 5.3 — keep a $0-patient-exposure set when the INSURER paid the duplicate (the letter
+    // raises an insurer-recoup review, $0 to the pools); drop only a truly-empty set.
+    if (recoveryRaw <= 0 && insurerPaid <= 0) continue;
     const paid = exposureLines.reduce((s, l) => s + (l.patientPaid ?? 0), 0);
-    const refundRaw = Math.min(recoveryRaw, paid);
-    const writeOffRaw = recoveryRaw - refundRaw;
+    const refundRaw = Math.max(0, Math.min(recoveryRaw, paid));
+    const writeOffRaw = Math.max(0, recoveryRaw - refundRaw);
     // R3 step 5.3 — fold (raw) into the set's OWN claim pool; round for the recorded SetRecovery.
     const setPool = pools.get(a.claimId);
     if (setPool) {
@@ -528,6 +539,7 @@ export function resolveLetterRecovery(
       setPool.writeOffRaw += writeOffRaw;
     }
     setRecoveries.push({
+      claimId: a.claimId,
       type: a.groundType,
       findingId,
       title: a.title,
@@ -556,6 +568,7 @@ export function resolveLetterRecovery(
       const claimPool = pools.get(claim.claimId);
       if (claimPool) claimPool.writeOffRaw += recoveryRaw;
       claimRecoveries.push({
+        claimId: claim.claimId,
         type: ground,
         findingId: f.id,
         title: f.title,
@@ -567,11 +580,19 @@ export function resolveLetterRecovery(
   }
 
   // R3 step 5.3 — fold + two-pool clamp (per claim), then sum. total = totalRefund + totalWriteOff.
+  // A claim whose clamp BINDS (clamped < raw) is recorded so the letter degrades gracefully (drops
+  // precise per-bucket dollars, asks conservatively); amount_disputed still uses the clamped value.
+  const clampBoundClaimIds: string[] = [];
   let totalRefundRaw = 0;
   let totalWriteOffRaw = 0;
-  for (const p of pools.values()) {
-    totalRefundRaw += Math.min(p.refundRaw, p.paidCap);
-    totalWriteOffRaw += Math.min(p.writeOffRaw, Math.max(p.respHeader, p.lineOwes));
+  for (const [claimId, p] of pools) {
+    const clampedRefund = Math.min(p.refundRaw, p.paidCap);
+    const clampedWriteOff = Math.min(p.writeOffRaw, Math.max(p.respHeader, p.lineOwes));
+    if (clampedRefund < p.refundRaw - 0.005 || clampedWriteOff < p.writeOffRaw - 0.005) {
+      clampBoundClaimIds.push(claimId);
+    }
+    totalRefundRaw += clampedRefund;
+    totalWriteOffRaw += clampedWriteOff;
   }
 
   return {
@@ -584,9 +605,14 @@ export function resolveLetterRecovery(
     strengthenableFields: Array.from(strengthenable),
     claimRecoveries,
     setRecoveries,
+    clampBoundClaimIds,
   };
 }
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
+
+/** R3 step 5.3 — the full recovery result (byLine + fold/clamp pools + set/claim tiers + clampBound).
+ *  buildRequestSection consumes it to argue the set/claim grounds + degrade on a bound clamp. */
+export type LetterRecoveryResult = ReturnType<typeof resolveLetterRecovery>;
