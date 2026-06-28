@@ -21,6 +21,7 @@ import {
   updateOwnedChildren,
 } from "@/lib/security/user-scoped";
 import { runAudit } from "@/lib/audit";
+import { refreshClaimLevelFindings } from "@/lib/audit/reaudit";
 import type { ParsedBill } from "@/lib/billing/types";
 
 async function getAuthUser(req: NextRequest) {
@@ -245,6 +246,27 @@ export async function POST(
     claim.id as string,
     lineItemUpdates,
   );
+
+  // R3 step 5.1 — also refresh claim.metadata.auditSummary.claimLevelFindings (claim-header
+  // findings like unallocated_balance). The dispute recovery's CLAIM tier reads these; without
+  // this they go stale after a dispute re-audit. Same helper + dismissal-preservation as the
+  // GET-path reaudit (refreshClaimLevelFindings) so the two persist paths cannot drift.
+  const priorClaimLevel =
+    (claimMetadata.auditSummary as
+      | { claimLevelFindings?: Array<{ type?: string; estimatedOvercharge?: number; dismissed?: boolean; dismissed_at?: string; dismissed_reason?: string; dismissed_note?: string | null }> }
+      | undefined)?.claimLevelFindings ?? [];
+  await userScoped(supabase, user.id)
+    .table("claims")
+    .update({
+      metadata: {
+        ...claimMetadata,
+        auditSummary: {
+          ...report.summary,
+          claimLevelFindings: refreshClaimLevelFindings(report.summary.claimLevelFindings, priorClaimLevel),
+        },
+      },
+    })
+    .eq("id", claim.id as string);
 
   console.log("[disputes/rerun-audit] complete", {
     disputeId: dispute.id,

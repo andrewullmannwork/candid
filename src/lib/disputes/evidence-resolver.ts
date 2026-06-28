@@ -24,6 +24,7 @@ import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import { findPeerCodesForSlug } from "./peer-code-engine";
 import { resolveCanonicalSlugs } from "@/lib/parser/canonical-resolution";
 import { normalizeCoinsurancePct, normalizeCoinsuranceDecimal, normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
+import type { ClaimLevelFindingMeta } from "@/lib/billing/types";
 import {
   resolveEffectiveClaimTotals,
   type EffectiveClaimTotals,
@@ -354,6 +355,13 @@ export interface ClaimEvidence {
     headerReconciliationFailed: boolean;
     signViolation: boolean;
   };
+  /**
+   * R3 step 5.1 — claim-header findings (lineItems=[], e.g. `unallocated_balance`) persisted at
+   * claim.metadata.auditSummary.claimLevelFindings. Surfaced RAW (incl. dismissed) so the dispute
+   * recovery's CLAIM tier (resolveLetterRecovery) applies the !dismissed/actionable/scope policy.
+   * Optional/additive: absent on synthetic evidence → the claim tier is simply empty.
+   */
+  claimFindings?: ClaimLevelFindingMeta[];
 }
 
 export interface PlanEvidenceDetail {
@@ -717,6 +725,10 @@ export async function resolveEvidence(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         signViolation: (c.metadata as any)?.bill_parser_sign_violation === true,
       },
+      // R3 step 5.1 — claim-header findings for the dispute recovery's claim tier (raw; the
+      // recovery applies the !dismissed/actionable + catalog-scope policy).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      claimFindings: ((c.metadata as any)?.auditSummary?.claimLevelFindings as ClaimLevelFindingMeta[] | undefined) ?? [],
     });
   }
 

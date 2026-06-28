@@ -25,6 +25,8 @@
 import type { CiteGradeTier } from "./strength-scoring";
 import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
 import type { CostShareV2Result, CostShareAssumption } from "../claims/recovery-math";
+import type { FindingType } from "../billing/types";
+import { DISPUTE_GROUND_CATALOG } from "./dispute-ground-catalog";
 
 /**
  * The dispute-ground taxonomy keys. Per-ground metadata (render order, scorer class, request
@@ -281,6 +283,37 @@ export interface LineRecovery {
 }
 
 /**
+ * R3 step 5.1 — a CLAIM-scope recovery (a disjoint pool): a claim-header finding (today only
+ * `unallocated_balance`) whose dollars belong to NO single line. SUMMED with the line pool, never
+ * de-overlapped. Recorded by resolveLetterRecovery; folded into the totals + argued in the letter
+ * at step 5.3.
+ */
+export interface ClaimRecovery {
+  type: DisputeGroundType;
+  findingId: string;
+  title: string;
+  /** the claim-scope dollar (e.g. the unallocated amount). */
+  recovery: number;
+  /** patient already PAID it (0 for unallocated — an un-itemized charge, not a payment). */
+  refund: number;
+  /** patient still CHARGED it → forgiveness (= recovery for unallocated). */
+  writeOff: number;
+}
+
+/**
+ * Reverse the catalog's `fromFindings` → the ground each finding maps into (used for CLAIM-scope
+ * routing in resolveLetterRecovery). Line-scope routing stays in `groundsForLine` until the
+ * post-R3 classifier collapse. Built once at module load.
+ */
+const FINDING_TO_GROUND: ReadonlyMap<FindingType, DisputeGroundType> = (() => {
+  const m = new Map<FindingType, DisputeGroundType>();
+  for (const [ground, spec] of Object.entries(DISPUTE_GROUND_CATALOG)) {
+    for (const f of spec.fromFindings) m.set(f, ground as DisputeGroundType);
+  }
+  return m;
+})();
+
+/**
  * §18 incr-4 — resolve the per-line DEDUCTIBLE-AWARE letter dollars, keyed by lineItemId.
  * buildRequestSection sources the cost-share + balance-billing refund/write-off from here
  * (not the deductible-BLIND `discrepancyAmount`) so the letter dollar == the card recovery
@@ -304,13 +337,16 @@ export function resolveLetterRecovery(
   /** the USER-FIXABLE inputs that, once confirmed, would strengthen the letter on rebuild
    *  (the §18.10.D prompt; reuses the existing cost-share-override controls). */
   strengthenableFields: Array<"deductible" | "oop" | "network">;
+  /** R3 step 5.1 — CLAIM-scope recoveries (disjoint pool; unallocated_balance). Recorded here;
+   *  folded into the headline total + the letter at step 5.3. */
+  claimRecoveries: ClaimRecovery[];
 } {
   const byLine = new Map<string, LineRecovery>();
   const capBoundLineIds: string[] = [];
   const strengthenable = new Set<"deductible" | "oop" | "network">();
   let weakened = false;
   let total = 0;
-  if (!evidence) return { byLine, total: 0, capBoundLineIds, weakened, strengthenableFields: [] };
+  if (!evidence) return { byLine, total: 0, capBoundLineIds, weakened, strengthenableFields: [], claimRecoveries: [] };
 
   for (const claim of evidence.claims) {
     for (const line of claim.lineItemEvidence) {
@@ -358,12 +394,38 @@ export function resolveLetterRecovery(
       });
     }
   }
+
+  // R3 step 5.1 — CLAIM tier: claim-header findings (unallocated_balance) form a pool DISJOINT
+  // from the line pool (dollars on no line) → recorded here, SUMMED into the totals + argued in
+  // the letter at step 5.3 (NOT folded into `total` yet → this step is headline-inert; golden-48
+  // has no claim findings so it stays byte-identical). Routed via the catalog scope, not a
+  // hardcoded finding name.
+  const claimRecoveries: ClaimRecovery[] = [];
+  for (const claim of evidence.claims) {
+    for (const f of claim.claimFindings ?? []) {
+      if (f.dismissed || !f.actionable) continue;
+      const ground = FINDING_TO_GROUND.get(f.type);
+      if (!ground || DISPUTE_GROUND_CATALOG[ground].scope !== "claim") continue;
+      const recovery = Math.max(0, round2(f.estimatedOvercharge));
+      if (recovery <= 0) continue;
+      claimRecoveries.push({
+        type: ground,
+        findingId: f.id,
+        title: f.title,
+        recovery,
+        refund: 0,
+        writeOff: recovery,
+      });
+    }
+  }
+
   return {
     byLine,
     total: round2(total),
     capBoundLineIds,
     weakened,
     strengthenableFields: Array.from(strengthenable),
+    claimRecoveries,
   };
 }
 
