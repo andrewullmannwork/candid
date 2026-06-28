@@ -9,10 +9,10 @@
  */
 import {
   groundsForLine,
-  computeCappedRecovery,
+  computeLineRecovery,
   type DisputeGroundType,
 } from "../../../../src/lib/disputes/dispute-grounds";
-import type { DisputeEvidence, LineItemEvidence, ClaimEvidence } from "../../../../src/lib/disputes/evidence-resolver";
+import type { LineItemEvidence } from "../../../../src/lib/disputes/evidence-resolver";
 
 let pass = 0;
 const fails: string[] = [];
@@ -67,29 +67,6 @@ function makeLine(over: Partial<LineItemEvidence> = {}): LineItemEvidence {
 // A truthy plan benefit; the builder only reads truthiness + line.discrepancyAmount.
 const PLAN_BENEFIT = {} as unknown as LineItemEvidence["planBenefit"];
 
-function makeEvidence(lines: LineItemEvidence[], claimId = "claim-1"): DisputeEvidence {
-  const claim = {
-    claimId,
-    dateOfService: "2024-03-15",
-    providerName: "Sample Medical Center",
-    totalBilled: 500,
-    planYear: 2024,
-    lineItemEvidence: lines,
-    effectiveTotals: {} as unknown as ClaimEvidence["effectiveTotals"],
-    dataTrust: { headerReconciliationFailed: false, signViolation: false },
-  } satisfies ClaimEvidence;
-  return {
-    claims: [claim],
-    totals: { claimCount: 1, lineItemCount: lines.length, totalBilled: 500, totalDiscrepancy: 0 },
-    planEvidence: null,
-    networkEvidence: null,
-    communityEvidence: null,
-    legalBasis: [],
-    gaps: [],
-    dataTrust: { headerReconciliationFailed: false, signViolation: false },
-  };
-}
-
 // G1 — a clean line (no findings, no plan benefit, not attested) → no grounds.
 {
   const g = groundsForLine(makeLine(), "claim-1");
@@ -143,34 +120,34 @@ function makeEvidence(lines: LineItemEvidence[], claimId = "claim-1"): DisputeEv
 // C1 — INERT without shouldOwe: the raw sum passes through (Stages 1–3 behavior).
 {
   const line = makeLine({ patientPaid: 260, patientOwes: 0, auditFindings: [finding({ type: "balance_billing", estimatedOvercharge: 200 })], planBenefit: PLAN_BENEFIT, discrepancyAmount: 230 });
-  const { total } = computeCappedRecovery(makeEvidence([line])); // no shouldOwe map
-  check("C1 cap inert → raw sum 430", near(total, 430), total);
+  const { capped } = computeLineRecovery(line, "claim-1", null); // no shouldOwe → cap inert
+  check("C1 cap inert → raw sum 430", near(capped, 430), capped);
 }
 
 // C2 — ADDITIVE (distinct wrongs): balance 150 + cost-share 80 = 230; exposure 260, shouldOwe 30
 //      → cap 230; sum 230 ≤ cap → full 230, cap does NOT bind.
 {
   const line = makeLine({ lineItemId: "li-1", patientPaid: 0, patientOwes: 260, auditFindings: [finding({ type: "balance_billing", estimatedOvercharge: 150 })], planBenefit: PLAN_BENEFIT, discrepancyAmount: 80 });
-  const { total, capBoundLineIds } = computeCappedRecovery(makeEvidence([line]), new Map([["li-1", 30]]));
-  check("C2 additive → 230 recovered", near(total, 230), total);
-  check("C2 cap does not bind (distinct wrongs)", capBoundLineIds.length === 0, capBoundLineIds);
+  const { capped, capBound } = computeLineRecovery(line, "claim-1", 30);
+  check("C2 additive → 230 recovered", near(capped, 230), capped);
+  check("C2 cap does not bind (distinct wrongs)", !capBound, capBound);
 }
 
 // C3 — OVERLAP (same dollars, two angles): balance 200 + cost-share 230 = 430; exposure 260,
 //      shouldOwe 30 → cap 230. Pure sum (430) would over-claim; capped to 230, cap BINDS.
 {
   const line = makeLine({ lineItemId: "li-1", patientPaid: 260, patientOwes: 0, auditFindings: [finding({ type: "balance_billing", estimatedOvercharge: 200 })], planBenefit: PLAN_BENEFIT, discrepancyAmount: 230 });
-  const { total, capBoundLineIds } = computeCappedRecovery(makeEvidence([line]), new Map([["li-1", 30]]));
-  check("C3 overlap capped at exposure 230", near(total, 230), total);
-  check("C3 cap BINDS", capBoundLineIds.join() === "li-1", capBoundLineIds);
+  const { capped, capBound } = computeLineRecovery(line, "claim-1", 30);
+  check("C3 overlap capped at exposure 230", near(capped, 230), capped);
+  check("C3 cap BINDS", capBound, capBound);
 }
 
 // C4 — service_not_rendered resets shouldOwe→0 → cap = whole exposure (no spurious capping).
 {
   const line = makeLine({ lineItemId: "li-1", serviceNotRenderedAttested: true, billedAmount: 420, patientPaid: 420, patientOwes: 0 });
-  const { total, capBoundLineIds } = computeCappedRecovery(makeEvidence([line]), new Map([["li-1", 999]]));
-  check("C4 not-rendered → whole charge 420 (shouldOwe ignored)", near(total, 420), total);
-  check("C4 cap does not bind", capBoundLineIds.length === 0, capBoundLineIds);
+  const { capped, capBound } = computeLineRecovery(line, "claim-1", 999); // not-rendered resets shouldOwe→0
+  check("C4 not-rendered → whole charge 420 (shouldOwe ignored)", near(capped, 420), capped);
+  check("C4 cap does not bind", !capBound, capBound);
 }
 
 console.log(`\ndispute-grounds builder fixtures: ${pass} passed, ${fails.length} failed`);

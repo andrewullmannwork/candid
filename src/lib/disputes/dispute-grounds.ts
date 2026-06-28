@@ -10,8 +10,8 @@
  * The per-ground TAXONOMY METADATA (render order, scorer class, request bucket, source
  * findings, recovery scope) is the single source of truth in [[dispute-ground-catalog]]
  * (`DISPUTE_GROUND_CATALOG`). This file holds the `DisputeGroundType` union + the runtime
- * `groundsForLine` / `resolveLetterRecovery` (live behind `dispute_grounds_v1`) +
- * `computeCappedRecovery`. Each ground maps to a scorer `DisputeTypeClass` via the catalog's
+ * `groundsForLine` / `resolveLetterRecovery` (live behind `dispute_grounds_v1`) + the shared
+ * per-line cap core `computeLineRecovery`. Each ground maps to a scorer `DisputeTypeClass` via the catalog's
  * `scoringClass` (the two taxonomies are NOT identical — `duplicate`/`unbundling`/
  * `unallocated_balance` have no class of their own; `coverage_corroboration`/`other` have no ground).
  *
@@ -63,8 +63,8 @@ export interface DisputeGround {
   lineItemIds: string[];
   lines: LineItemEvidence[]; // wrapped, not flattened
   findings: GroundFinding[];
-  /** The ground's RAW recovery (sum of its lines' contributions). The de-overlapped,
-   *  exposure-capped TOTAL that drives `amount_disputed` is `computeCappedRecovery`. */
+  /** The ground's RAW recovery (sum of its lines' contributions). The exposure-capped TOTAL
+   *  that drives `amount_disputed` is `resolveLetterRecovery.total` (via `computeLineRecovery`). */
   dollarAtStake: number;
   citeGradeTier: CiteGradeTier; // the ground's strongest spine
 }
@@ -163,11 +163,11 @@ export function groundFindingsForEvidence(evidence: DisputeEvidence | null): Gro
 }
 
 /**
- * §18.5 / Call A — the per-line cap, SHARED by computeCappedRecovery (the total, number-map)
- * and resolveLetterRecovery (the per-line letter dollars, rich-map) so there is exactly ONE
- * cap implementation (the regression-sensitive crux — no drift). Caps the raw ground sum at
- * the patient's real wrongful loss = `max(patientPaid, patientOwes) − shouldOwe`. `shouldOwe`
- * is null only when no basis is supplied (flag OFF / Stages 1–3) → INERT, raw passes through.
+ * §18.5 / Call A — the per-line cap, used by the shared `computeLineRecovery` core (and thus by
+ * `resolveLetterRecovery`) so there is exactly ONE cap implementation (the regression-sensitive
+ * crux — no drift). Caps the raw ground sum at the patient's real wrongful loss =
+ * `max(patientPaid, patientOwes) − shouldOwe`. `shouldOwe` is null only when no basis is
+ * supplied (flag OFF / Stages 1–3) → INERT, raw passes through.
  */
 function capLineRaw(
   line: LineItemEvidence,
@@ -182,38 +182,37 @@ function capLineRaw(
 }
 
 /**
- * §18.5 / Call A — the de-overlapped, exposure-capped TOTAL recovery. PER LINE: sum the line's
- * ground dollars, then CAP at `max(patientPaid, patientOwes) − shouldOwe`. `service_not_rendered`
- * resets `shouldOwe→0` (the whole charge is recoverable). `shouldOwe` is OPTIONAL — absent (Stages
- * 1–3) → the cap is INERT. The live letter dollars come from resolveLetterRecovery (which shares
- * capLineRaw).
+ * §18.5 / Call A — the shared per-line recovery core (R3 step 5, refactor-first). Derives the
+ * line's grounds, sums their raw dollars, then CAPS at the line's real exposure
+ * `max(patientPaid, patientOwes) − shouldOwe`. `service_not_rendered` resets `shouldOwe→0` (the
+ * whole charge is recoverable). `shouldOwe` null (flag OFF / no basis) → the cap is INERT, the raw
+ * sum passes through. This is the LINE tier's per-line unit; `resolveLetterRecovery` calls it so
+ * there is exactly ONE cap implementation (no drift). The set / claim tiers (R3 step 5.1/5.2)
+ * aggregate over disjoint pools alongside it.
  *
- * R3 step 1 (§5.5): currently NO `src/` caller — `amount_disputed` is driven by
- * `resolveLetterRecovery.total`, not this. RETAINED (not removed) pending the R3 step-5
- * multi-charge claim-total model, which will either build on this number-map path or supersede it.
- * Exercised by the builder fixture (C1–C4).
+ * Supersedes the former `computeCappedRecovery` number-map twin (removed R3 step 5.0 — no `src/`
+ * caller; `amount_disputed` is driven by `resolveLetterRecovery.total`). Exercised by the builder
+ * fixture (C1–C4).
  */
-export function computeCappedRecovery(
-  evidence: DisputeEvidence | null,
-  shouldOwePerLine?: Map<string, number | null>,
-): { total: number; capBoundLineIds: string[] } {
-  if (!evidence) return { total: 0, capBoundLineIds: [] };
-  let total = 0;
-  const capBoundLineIds: string[] = [];
-
-  for (const claim of evidence.claims) {
-    for (const line of claim.lineItemEvidence) {
-      const grounds = groundsForLine(line, claim.claimId);
-      if (grounds.length === 0) continue;
-      const rawSum = grounds.reduce((s, g) => s + g.dollarAtStake, 0);
-      const notRendered = grounds.some((g) => g.type === "service_not_rendered");
-      const shouldOwe = notRendered ? 0 : shouldOwePerLine?.get(line.lineItemId) ?? null;
-      const { capped, capBound } = capLineRaw(line, rawSum, shouldOwe);
-      if (capBound) capBoundLineIds.push(line.lineItemId);
-      total += capped;
-    }
-  }
-  return { total: Math.round(total * 100) / 100, capBoundLineIds };
+export function computeLineRecovery(
+  line: LineItemEvidence,
+  claimId: string,
+  shouldOwe: number | null,
+): {
+  grounds: DisputeGround[];
+  rawSum: number;
+  notRendered: boolean;
+  /** the effective shouldOwe applied to the cap (0 for an attested not-rendered line). */
+  shouldOwe: number | null;
+  capped: number;
+  capBound: boolean;
+} {
+  const grounds = groundsForLine(line, claimId);
+  const rawSum = grounds.reduce((s, g) => s + g.dollarAtStake, 0);
+  const notRendered = grounds.some((g) => g.type === "service_not_rendered");
+  const effectiveShouldOwe = notRendered ? 0 : shouldOwe;
+  const { capped, capBound } = capLineRaw(line, rawSum, effectiveShouldOwe);
+  return { grounds, rawSum, notRendered, shouldOwe: effectiveShouldOwe, capped, capBound };
 }
 
 /**
@@ -315,13 +314,13 @@ export function resolveLetterRecovery(
 
   for (const claim of evidence.claims) {
     for (const line of claim.lineItemEvidence) {
-      const grounds = groundsForLine(line, claim.claimId);
-      if (grounds.length === 0) continue;
-      const rawSum = grounds.reduce((s, g) => s + g.dollarAtStake, 0);
-      const notRendered = grounds.some((g) => g.type === "service_not_rendered");
       const result = basis.get(line.lineItemId) ?? null;
-      const shouldOwe = notRendered ? 0 : result?.shouldOwe ?? null;
-      const { capped, capBound } = capLineRaw(line, rawSum, shouldOwe);
+      const { grounds, notRendered, shouldOwe, capped, capBound } = computeLineRecovery(
+        line,
+        claim.claimId,
+        result?.shouldOwe ?? null,
+      );
+      if (grounds.length === 0) continue;
       if (capBound) capBoundLineIds.push(line.lineItemId);
 
       // Attestation IS the basis for a not-rendered line; otherwise the precise dollar is

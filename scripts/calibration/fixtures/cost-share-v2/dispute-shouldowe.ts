@@ -9,7 +9,7 @@
  *
  * Asserts the two crux behaviors increment 2 introduces:
  *   1. the id bridge + multi-claim merge (recipe keys per lineNumber; this keys per
- *      claim_line_items.id, what computeCappedRecovery consumes), and
+ *      claim_line_items.id, what resolveLetterRecovery consumes), and
  *   2. conservative-when-blind carries through — a no-coverage line resolves to
  *      shouldOwe = full allowed (a NUMBER, so the cap binds to ~$0), never absent
  *      (absent = the deductible-blind raw-sum revert this arc kills).
@@ -18,7 +18,6 @@
  */
 import {
   resolveDisputeShouldOwe,
-  shouldOwePerLine,
   type ClaimBasisBundle,
 } from "../../../../src/lib/disputes/dispute-ground-basis";
 import {
@@ -144,13 +143,6 @@ check("D2 A1 copay shouldOwe $20", near(resolved.get("A1")!.shouldOwe, 20), reso
 check("D3 A2 blind shouldOwe = full allowed $163.27 (conservative, NUMBER not absent)", near(resolved.get("A2")!.shouldOwe, 163.27), resolved.get("A2")?.shouldOwe);
 check("D3 A2 blind recovery $0", near(resolved.get("A2")!.potentialRecovery, 0), resolved.get("A2")?.potentialRecovery);
 check("D4 B1 aca-preventive shouldOwe $0", near(resolved.get("B1")!.shouldOwe, 0), resolved.get("B1")?.shouldOwe);
-
-// ── adapter to the bare-number map computeCappedRecovery consumes ──
-const bare = shouldOwePerLine(resolved);
-check("D5 shouldOwePerLine adapter keeps every id", bare.size === 3, bare.size);
-check("D5 adapter A1 == 20", near(bare.get("A1")!, 20), bare.get("A1"));
-check("D5 adapter A2 == 163.27", near(bare.get("A2")!, 163.27), bare.get("A2"));
-check("D5 adapter B1 == 0", near(bare.get("B1")!, 0), bare.get("B1"));
 
 if (fails.length) {
   console.error(`\ncost-share-v2 dispute-shouldowe: ${pass} passed, ${fails.length} failed`);

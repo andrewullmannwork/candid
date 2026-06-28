@@ -150,7 +150,7 @@ export function resolveCostShareForLine(
 
 /**
  * Resolve every line of a claim → a `lineNumber → CostShareV2Result` map. The dispute path
- * (increment 2) maps each line's `shouldOwe` to its `lineItemId` for `computeCappedRecovery`.
+ * (increment 2) maps each line's `shouldOwe` to its `lineItemId` for `resolveLetterRecovery`.
  */
 export function resolveCostShareForLines(
   lines: CostShareLineInput[],

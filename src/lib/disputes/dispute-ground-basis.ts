@@ -3,7 +3,7 @@
  * for a dispute's claims, computed through the SAME shared recipe the card detail
  * route uses (resolveLineCostShare, strategy "detail") so the dispute letter's
  * dollar matches the card the user sees (the §18 "card recovery == letter ask"
- * guarantee). Feeds computeCappedRecovery (increment 4) — `shouldOwe` bounds the
+ * guarantee). Feeds resolveLetterRecovery (increment 4) — `shouldOwe` bounds the
  * cap; the rich CostShareV2Result also carries verdict + assumptions for §18.10.D
  * (omit-the-precise-dollar-when-unconfirmed, increment 5).
  *
@@ -14,7 +14,7 @@
  *
  * ADDITIVE / DORMANT this increment: nothing wires this into generate/rerender yet
  * (increment 4 does, behind dispute_grounds_v1). Returns an EMPTY map when
- * recovery_cost_share_v2 is OFF → computeCappedRecovery stays inert (today's
+ * recovery_cost_share_v2 is OFF → resolveLetterRecovery stays inert (today's
  * behavior). Conservative-when-blind is the ENGINE's job (recovery-math.ts:279):
  * a line with no plan/coverage data resolves to shouldOwe = full allowed → the cap
  * binds to ~$0, NOT the deductible-blind raw sum. So every resolvable line carries
@@ -71,7 +71,7 @@ export interface ClaimBasisBundle {
 
 /**
  * PURE core — resolve loaded claim bundles → `lineItemId → CostShareV2Result`.
- * Keys by `claim_line_items.id` (what computeCappedRecovery + LineItemEvidence use;
+ * Keys by `claim_line_items.id` (what resolveLetterRecovery + LineItemEvidence use;
  * the recipe keys per lineNumber internally — this is the id bridge). Merges across
  * every claim in the dispute (ids are globally unique). No DB, no flags.
  */
@@ -89,20 +89,13 @@ export function resolveDisputeShouldOwe(
   return out;
 }
 
-/** Adapter to the bare `lineItemId → shouldOwe` map computeCappedRecovery consumes. */
-export function shouldOwePerLine(
-  resolved: Map<string, CostShareV2Result>,
-): Map<string, number> {
-  return new Map(Array.from(resolved, ([id, r]) => [id, r.shouldOwe]));
-}
-
 const LINE_COLUMNS =
   "id, line_number, service_slug, billed_amount, insurance_adjusted_amount, insurance_paid, patient_paid_amount, patient_owes, amount_still_outstanding, member_applied_to_deductible, member_coinsurance, member_copay, denied_amount, network_status, billing_code, billing_code_type";
 
 /**
  * Load + resolve the deductible-aware shouldOwe for every line of the dispute's
- * claims. Returns the rich result map (keyed by lineItemId); use `shouldOwePerLine`
- * for the bare-number map computeCappedRecovery wants.
+ * claims. Returns the rich result map (keyed by lineItemId) that `resolveLetterRecovery`
+ * consumes (behind `dispute_grounds_v1`).
  */
 export async function loadDisputeGroundBasis(
   supabase: SupabaseClient,
@@ -110,7 +103,7 @@ export async function loadDisputeGroundBasis(
   claimIds: string[],
 ): Promise<Map<string, CostShareV2Result>> {
   // Precondition: the deductible-aware engine is the recovery_cost_share_v2 path.
-  // OFF → empty map → computeCappedRecovery inert (today's deductible-blind behavior).
+  // OFF → empty map → resolveLetterRecovery inert (today's deductible-blind behavior).
   if (!(await isFeatureEnabled("recovery_cost_share_v2"))) return new Map();
 
   const secondaryEnabled = await isFeatureEnabled("secondary_coverage_v2");
