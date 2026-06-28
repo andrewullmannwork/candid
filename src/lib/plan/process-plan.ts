@@ -1297,6 +1297,10 @@ export async function processPlanDocumentData(
           oon_paid_at_in_network: s.oonPaidAtInNetwork,
           annual_limit: s.annualLimit, annual_limit_value: s.annualLimitValue,
           prior_auth_required: s.priorAuthRequired, penalty_no_precert: s.penaltyNoPrecert,
+          // coverage_dims_v1 (mig 186): per-service referral (code-derived) + visit/day-count cap.
+          // Sourced from the parser object (same as the field_provenance below), not the routed `s`.
+          requires_referral: (haikuService ?? planDocService)?.referralRequired ?? null,
+          visit_limit: (haikuService ?? planDocService)?.visitLimit ?? null,
           covered: s.covered, coverage_conditions: s.coverageConditions,
           supply_limit_days: s.supplyLimitDays, home_delivery_copay: s.homeDeliveryCopay,
           step_therapy_required: s.stepTherapyRequired, notes: s.notes,
@@ -1516,7 +1520,7 @@ export async function processPlanDocumentData(
 
         const { data: canonicalServices } = await supabase
           .from("canonical_plan_services")
-          .select("service_slug, in_copay, in_coinsurance, in_deductible_applies, covered, prior_auth_required, confidence, field_provenance")
+          .select("service_slug, place_of_service, component, in_copay, in_coinsurance, in_deductible_applies, covered, prior_auth_required, out_copay, out_coinsurance, out_deductible_applies, annual_limit, requires_referral, visit_limit, coverage_rules, confidence, field_provenance")
           .eq("canonical_plan_id", canonicalPlanId)
           .gte("confidence", inheritanceMinConfidence);
 
@@ -1548,13 +1552,23 @@ export async function processPlanDocumentData(
                 const { error: inhErr } = await applyPlanCoverageCell(supabase, {
                   insurance_plan_id: targetPlanId,
                   service_id: svc.id,
-                  place_of_service: "any",
-                  component: "global",
+                  // mig 186 (S241): inherit the REAL cell + ALL dims (lossless §16-C) — not a copay-only
+                  // 'any'/'global' subset — so a selected/inherited canonical plan is upload-equivalent
+                  // (claims/benefits/disputes-ready), and multi-cell services no longer collapse.
+                  place_of_service: cs.place_of_service ?? "any",
+                  component: cs.component ?? "global",
                   in_copay: cs.in_copay,
                   in_coinsurance: normalizeCoinsuranceForStorage(cs.in_coinsurance),
                   in_deductible_applies: cs.in_deductible_applies,
                   covered: cs.covered,
                   prior_auth_required: cs.prior_auth_required,
+                  out_copay: cs.out_copay ?? null,
+                  out_coinsurance: normalizeCoinsuranceForStorage(cs.out_coinsurance),
+                  out_deductible_applies: cs.out_deductible_applies ?? null,
+                  annual_limit_value: cs.annual_limit ?? null,
+                  requires_referral: cs.requires_referral ?? null,
+                  visit_limit: cs.visit_limit ?? null,
+                  coverage_rules: cs.coverage_rules ?? {},
                   confidence: Math.min(cs.confidence, 0.8), // Inherited data slightly lower confidence
                   source: "canonical_inherited" as const,
                   // Phase 3.2.1 — preserve Pattern P-8 cite chain across inheritance.

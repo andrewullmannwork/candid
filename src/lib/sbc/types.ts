@@ -62,6 +62,14 @@ export interface SBCParsedService {
   annualLimitValue: number | null;
   priorAuthRequired: boolean | null;
   penaltyNoPrecert: number | null;
+  // coverage_dims_v1 — per-service access gate + a distinct visit/day-count cap.
+  // OPTIONAL because emitted ONLY when `coverage_dims_v1` is ON (OFF → undefined,
+  // byte-identical to pre-flag output). `referralRequired` mirrors `priorAuthRequired`
+  // (an access gate); `visitLimit` is a VISIT/DAY COUNT cap, distinct from
+  // `annualLimitValue` (which holds a DOLLAR cap). canonical_plan_services already
+  // has the matching `requires_referral` + `visit_limit` columns.
+  referralRequired?: boolean | null;
+  visitLimit?: number | null;
   covered: boolean;
   coverageConditions: string | null;
   supplyLimitDays: number | null;

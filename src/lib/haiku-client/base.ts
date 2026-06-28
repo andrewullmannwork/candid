@@ -299,12 +299,16 @@ export async function callHaikuWithCache<T>(opts: {
     },
   ];
 
-  let response = await client.messages.create({ model: HAIKU_MODEL, max_tokens: maxTokens, temperature: 0, messages });
+  // Stream instead of a blocking create(): a long non-streaming generation holds the connection idle,
+  // and a ~60s NAT/proxy idle-timeout drops it (confirmed S247 — non-stream dies at exactly 60s with
+  // bytesRead:0, the same stream runs to 88s). .finalMessage() yields the identical Message (content +
+  // stop_reason + usage); behavior-identical, it just keeps the socket active during generation.
+  let response = await client.messages.stream({ model: HAIKU_MODEL, max_tokens: maxTokens, temperature: 0, messages }).finalMessage();
 
   // Truncation detection + retry at HAIKU_MAX_OUTPUT
   if (response.stop_reason === "max_tokens" && maxTokens < HAIKU_MAX_OUTPUT) {
     warnings.push(`haiku_truncation_retry:${opts.sectionLabel}`);
-    response = await client.messages.create({ model: HAIKU_MODEL, max_tokens: HAIKU_MAX_OUTPUT, temperature: 0, messages });
+    response = await client.messages.stream({ model: HAIKU_MODEL, max_tokens: HAIKU_MAX_OUTPUT, temperature: 0, messages }).finalMessage();
     if (response.stop_reason === "max_tokens") {
       warnings.push(`haiku_truncation_at_max:${opts.sectionLabel}`);
     }
@@ -317,7 +321,7 @@ export async function callHaikuWithCache<T>(opts: {
   } catch {
     // Phase 3.1B reliability fix: stochastic JSON retry-once
     warnings.push(`haiku_json_retry:${opts.sectionLabel}`);
-    response = await client.messages.create({ model: HAIKU_MODEL, max_tokens: HAIKU_MAX_OUTPUT, temperature: 0, messages });
+    response = await client.messages.stream({ model: HAIKU_MODEL, max_tokens: HAIKU_MAX_OUTPUT, temperature: 0, messages }).finalMessage();
     const retryText = response.content[0]?.type === "text" ? response.content[0].text : "";
     try {
       data = parseHaikuJSON(retryText) as T;

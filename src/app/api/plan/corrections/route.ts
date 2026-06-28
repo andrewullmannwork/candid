@@ -299,10 +299,15 @@ export async function POST(req: NextRequest) {
         promotedValue,
         sources,
         "admin-ui",
-        internalUser.id,
-        "admin_override",
-        targetPos ?? "any",
-        targetComponent ?? "global",
+        // Admin benefit correction: authoritative, but the note is not a verbatim document quote → not
+        // cite-grade. Recorded as admin_attested (N1).
+        { cite: false, reason: "admin_attested" },
+        {
+          actorUserId: internalUser.id,
+          forceEventType: "admin_override",
+          placeOfService: targetPos ?? "any",
+          component: targetComponent ?? "global",
+        },
       );
       if (applyError || !eventId) {
         console.error("[corrections] Apply error:", applyError);

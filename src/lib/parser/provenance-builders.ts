@@ -93,6 +93,8 @@ export function buildPlanCoveredServiceProvenance(
     ["supply_limit_days", service.supplyLimitDays],
     ["home_delivery_copay", service.homeDeliveryCopay],
     ["step_therapy_required", service.stepTherapyRequired],
+    ["requires_referral", service.referralRequired],
+    ["visit_limit", service.visitLimit],
     ["notes", service.notes],
   ];
 
@@ -314,6 +316,8 @@ export function buildPlanDocServiceProvenance(
     ["supply_limit_days", service.supplyLimitDays],
     ["home_delivery_copay", service.homeDeliveryCopay],
     ["step_therapy_required", service.stepTherapyRequired],
+    ["requires_referral", service.referralRequired],
+    ["visit_limit", service.visitLimit],
     ["notes", service.notes],
   ];
 

@@ -381,6 +381,10 @@ export interface ParsePlanDocInput {
    *  the synonym cache's input). undefined → read the live flag (byte-identical). Set by the in-vivo
    *  smoke so the whole synonym path runs flag-ON without flipping global PROD. */
   thesaurusPhase1a?: boolean;
+  /** coverage_dims_v1 — override for the per-service referral + visit/day-count-cap prompt fields.
+   *  undefined → read the live flag (OFF → byte-identical). Set by the §13 oracle harness to measure
+   *  flag-ON without flipping global PROD. */
+  coverageDims?: boolean;
 }
 
 export async function parsePlanDocumentHaiku(
@@ -402,6 +406,9 @@ export async function parsePlanDocumentHaiku(
   // routing leg resolves the same flag in process-plan; threading it here keeps both legs in
   // lockstep so the in-vivo smoke drives the whole synonym path. undefined → live flag → byte-identical.
   const thesaurusPhase1aEnabled = input.thesaurusPhase1a ?? (await isFeatureEnabled("thesaurus_phase1a_v1"));
+  // coverage_dims_v1: resolve ONCE here (no per-chunk read / no mid-parse flip) and thread to the
+  // services prompt. OFF → byte-identical (the two extra fields are never requested).
+  const coverageDimsEnabled = input.coverageDims ?? (await isFeatureEnabled("coverage_dims_v1"));
   const wholeTextMaxInputTokens = await readFeatureFlagConfig(
     "plan_doc_extraction_v2",
     "whole_text_max_input_tokens",
@@ -442,7 +449,7 @@ export async function parsePlanDocumentHaiku(
     range: { start: number; end: number },
     em: ExtractionMethod,
     hint: PlanDocSectionHint,
-  ) => extractServicesCostSharing(text, range, em, hint, layout, thesaurusPhase1aEnabled, extractionV2Enabled);
+  ) => extractServicesCostSharing(text, range, em, hint, layout, thesaurusPhase1aEnabled, extractionV2Enabled, coverageDimsEnabled);
 
   // Step 1: Section segmentation (regex first, on cleaned text)
   let sectionRanges: SectionRanges = segmentPlanDocSections(workingText);

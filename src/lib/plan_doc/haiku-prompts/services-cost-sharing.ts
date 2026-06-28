@@ -201,6 +201,71 @@ count or dollar cap). Rare but real — do not silently drop it.
 \`priorAuthRequired: true\` AND put the exact phrase in \`coverageConditions\` (so it can be shown as
 conditional). If the document is SILENT for a service → \`priorAuthRequired: null\` (never infer false).`;
 
+// Coverage-dimensions supplement (coverage_dims_v1). Appended ONLY when the flag is ON, so
+// OFF = byte-identical Haiku output (no extraction drift on the live path). Adds the `visitLimit`
+// dimension (a VISIT/DAY COUNT cap, kept DISTINCT from a dollar annualLimitValue) + the multi-tier
+// network-column rule, and CAPTURES per-service referral wording verbatim into coverageConditions.
+// `referralRequired` is NOT decided by the LLM here — Option C (S241) derives it in code
+// (deriveReferralRequired) from that verbatim text; the LLM's per-service referral guess was
+// unreliable and is discarded.
+const COVERAGE_DIMS_SUPPLEMENT = `
+
+## ADDITIONAL FIELD — VISIT LIMITS (emit on EVERY service object)
+
+In ADDITION to all fields above, add ONE field to each service:
+
+- **visitLimit**: integer | null — a per-service VISIT or DAY COUNT cap (a COUNT, never a dollar amount):
+    "20 visits per year", "limited to 12 visits", "30 visit maximum", "up to 60 days per admission",
+    "100 days per year" → visitLimit = the COUNT (20, 12, 30, 60, 100).
+    A DOLLAR cap ("$1,000 per year", "$500 benefit maximum", "up to $150") is NOT a visitLimit →
+    leave visitLimit null and record the dollar cap in annualLimitValue (per rule L7).
+    null → no visit/day-count limit stated for this service.
+  ALWAYS copy the verbatim cap text into annualLimit (string) — e.g. "limited to 20 visits/year".
+  visitLimit is the parsed COUNT; annualLimit is its VERBATIM SOURCE. A visitLimit with no verbatim cap
+  text in annualLimit is dropped downstream, so never emit one without its exact wording.
+
+## CAPTURE REFERRAL WORDING (verbatim only — do NOT decide a referral field)
+
+Do NOT emit a referralRequired field. But if a service's OWN row/section contains referral wording —
+"referral required" / "referral may be required" / "requires a referral" / "no referral" /
+"self-referral" / "direct access" — copy that phrase VERBATIM into coverageConditions (alongside any
+other conditions). The canonical seed derives the referral gate from this verbatim text in code; your
+job is only to PRESERVE the wording, not to judge it. This adds no new output field and changes no cost field.
+
+Example: { "serviceSlug": "pt_rehab", "visitLimit": 20, "annualLimit": "limited to 20 visits/year",
+           "annualLimitValue": null, "coverageConditions": "Referral may be required.", ... }
+
+## MULTI-TIER NETWORK COLUMNS — map in/out correctly (correctness for tiered plans)
+
+Some plans list MORE THAN TWO network-tier columns under "What You Will Pay" — headers like
+"Tier 1 Provider / Tier 2 Provider / Tier 3 Provider" or "Network | Out-of-Network". Identify the tiers
+from the COLUMN HEADERS — do NOT count cost values (one column can hold several, e.g. "$5 copay first 2
+visits, then $25 copay, $15 virtual" is ONE column, resolved by the standard-line rule above, NOT three
+tiers). Then:
+  - in* (inCopay / inCoinsurance / inDeductibleApplies) = the FIRST / best-network column ("Tier 1",
+    "pay the least", "preferred", or "Network").
+  - out* (outCopay / outCoinsurance / outDeductibleApplies) = the LAST / worst column (highest tier,
+    "pay the most", or "Out-of-Network"). Example: "Tier 1: 30% / Tier 2: 40% / Tier 3: 60%" →
+    inCoinsurance=30 and outCoinsurance=60 — NOT 40.
+  - Any MIDDLE tier (e.g. Tier 2) cannot fit the two in/out fields — record it VERBATIM in
+    coverageConditions (e.g. "Tier 2 provider: 40% coinsurance"); never let it become the in or out value.
+
+## DO NOT CHANGE OTHER FIELDS (visitLimit is the only new output — orthogonality)
+
+visitLimit is the ONLY new output field. Extract every OTHER field EXACTLY as you would WITHOUT this section:
+- **priorAuthRequired**: keep its own rule unchanged (true/false only when the document states prior
+  auth for the service; null when silent). This section does not change it — prior authorization and
+  referral are SEPARATE gates, and capturing referral wording must not make you emit or flip priorAuthRequired.
+- **inDeductibleApplies / outDeductibleApplies**: unchanged — do not re-read or re-decide these because
+  of this section.
+- **inCoinsurance / outCoinsurance / copays**: read them by your normal rules PLUS the multi-tier column
+  rule above (which only clarifies which COLUMN is in vs out on tiered plans); the visit-limit and
+  referral-capture steps must not otherwise shift them.
+The ONLY intended interactions: (a) a per-visit/day COUNT you would previously have put in annualLimitValue
+now goes to visitLimit instead (dollar caps stay in annualLimitValue); (b) referral wording is copied
+verbatim into coverageConditions; (c) on multi-tier plans, in*/out* map to the first/last network column
+per the rule above. Nothing else moves.`;
+
 // S93 Stage 5a — supplements load from `parser_prompt_versions` (mig 102) at
 // parse time with a 5-min in-process cache. The compile-time consts above are
 // fallbacks when no active DB row exists (initial state pre-tuning) or when DB
@@ -210,6 +275,7 @@ async function buildInstructions(
   layout: PlanDocLayout | undefined,
   thesaurusEnabled: boolean,
   extractionV2Enabled: boolean,
+  coverageDimsEnabled: boolean,
 ): Promise<string> {
   let prompt = BASE_INSTRUCTIONS;
   if (layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant") {
@@ -234,6 +300,12 @@ async function buildInstructions(
   // OFF → byte-identical to the pre-v2 prompt.
   if (extractionV2Enabled) {
     prompt += EXTRACTION_V2_SUPPLEMENT;
+  }
+  // Coverage-dimensions (coverage_dims_v1): the distinct visit/day-count cap + multi-tier column rule,
+  // plus verbatim capture of referral wording (referral is code-derived, not LLM-decided — Option C).
+  // OFF → byte-identical (visitLimit is never requested; no referral-capture instruction is appended).
+  if (coverageDimsEnabled) {
+    prompt += COVERAGE_DIMS_SUPPLEMENT;
   }
   return prompt;
 }
@@ -452,6 +524,9 @@ interface RawService {
   annualLimitValue?: number | null;
   priorAuthRequired?: boolean | null;
   penaltyNoPrecert?: number | null;
+  // NB: no `referralRequired` here — the LLM is told (coverage_dims supplement) NOT to decide referral;
+  // it only captures the wording verbatim into coverageConditions, and deriveReferralRequired decides.
+  visitLimit?: number | null;
   covered?: boolean;
   coverageConditions?: string | null;
   supplyLimitDays?: number | null;
@@ -490,6 +565,152 @@ function normalizeComponent(v: unknown): "facility" | "professional" | "global" 
  * chunk's services array is concatenated + slug-deduped by the combine layer. Fixes
  * Kaiser-style 102+ services token-truncation (Haiku's 8K output budget cap).
  */
+// coverage_dims_v1 (Option C, S241): referral is DERIVED in code, not guessed per-service by the LLM
+// (the LLM per-service call over-extracted on broad-language plans + was stochastically unstable). A
+// referral gates SEEING A SPECIALIST — never prior-auth / admission / visit-limits.
+const CATEGORICAL_NO_REFERRAL = new Set([
+  "pcp_visit", "preventive_care", "immunizations", "annual_physical", "er_visit", "urgent_care",
+]);
+
+/**
+ * Derive the plan-level "Do you need a referral to see a specialist?" answer from the document text
+ * (deterministic; calibration-independent — raw text scan, not a model call). The SBC "Important
+ * Questions" field. Returns null when the document doesn't state it (-> per-service referral = null).
+ */
+export function derivePlanReferralPolicy(text: string): "yes" | "no" | null {
+  const lc = text.toLowerCase().replace(/\s+/g, " ");
+  const m = lc.match(/do (?:you|i) need a referral to see a\s+specialist\s*\?\s*(yes|no)\b/);
+  if (m) return m[1] === "yes" ? "yes" : "no";
+  // Distinctive answer phrases (robust to the bare Yes/No being OCR-split from the question).
+  if (/see the specialist you choose without a referral|(?:do not|don'?t|does not|doesn'?t) (?:need|require) a referral|no referral (?:is )?(?:required|needed)/.test(lc)) return "no";
+  if (/only if you have a referral|must have a referral|referral (?:is )?required|need a referral before you/.test(lc)) return "yes";
+  return null;
+}
+
+// Requirement synonyms + an optional modal/aux run ("is/may/might/could/will/be"), shared by the
+// per-service referral matcher so "referral may be required" reads the same as "referral required".
+const REFERRAL_REQ = "(?:required|needed|necessary|mandatory)";
+const REFERRAL_MODAL = "(?:\\s+(?:is|are|may|might|could|will|shall|be)){0,4}";
+const RE_REFERRAL_NEG = new RegExp(`\\breferral\\b${REFERRAL_MODAL}\\s+(?:not|never)\\s+(?:be\\s+)?${REFERRAL_REQ}\\b`);
+const RE_REFERRAL_WAIVED = /\breferral\b[^.]{0,25}\bwaived\b/;
+const RE_REFERRAL_POS = new RegExp(`\\breferral\\b${REFERRAL_MODAL}\\s+${REFERRAL_REQ}\\b`);
+
+/**
+ * Classify an EXPLICIT per-service referral signal from the service's own verbatim text.
+ * NEGATION is tested FIRST, so "referral may NOT be required" / "referral waived" can never fall
+ * through to true. The positive branch accepts the conditional modal ("referral may be required") —
+ * the verbatim conditional rides along in coverageConditions for display. Returns null when the text
+ * is silent on referral (→ falls back to the categorical / pharmacy / plan-level rules below).
+ */
+export function explicitReferralSignal(svc: string): boolean | null {
+  if (!/\breferral\b|\bdirect access\b/.test(svc)) return null;
+  if (
+    /\b(?:no|without(?:\s+a)?|self[-\s]?)\s*referral\b/.test(svc) ||
+    /\bdirect\s+access\b/.test(svc) ||
+    RE_REFERRAL_NEG.test(svc) ||
+    RE_REFERRAL_WAIVED.test(svc) ||
+    /\b(?:do|does)(?:\s+not|n['’]?t)\s+(?:need|require)\s+(?:a\s+)?referral\b/.test(svc)
+  ) return false;
+  if (
+    RE_REFERRAL_POS.test(svc) ||
+    /\brequires?\s+a\s+referral\b/.test(svc) ||
+    /\bneeds?\s+a\s+referral\b/.test(svc) ||
+    /\bpcp\s+referral\b/.test(svc)
+  ) return true;
+  return null;
+}
+
+/**
+ * Fix A grounding (S250): an explicit per-service referral signal is trustworthy only when the OCR
+ * actually carries referral wording NEAR this service's source anchor — mirrors verifyVisitLimit's
+ * anchor-proximity. Kills the failure mode where the LLM copies a plan-level "Referral required" note
+ * into a silent service's coverageConditions (an ungrounded true the per-service matcher would fire on).
+ * Deterministic; no model call. Lenient when the anchor can't be located in the section (same fallback
+ * verifyVisitLimit uses — a missing anchor never silently drops a genuine signal).
+ */
+export function verifyReferralGrounding(anchorExcerpt: string, sectionText: string): boolean {
+  const hayLc = sectionText.replace(/\s+/g, " ").toLowerCase();
+  const anchor = anchorExcerpt.replace(/\s+/g, " ").toLowerCase().slice(0, 50);
+  const aIdx = anchor ? hayLc.indexOf(anchor) : -1;
+  for (const m of hayLc.matchAll(/\breferral\b|\bdirect\s+access\b/gi)) {
+    if (aIdx < 0 || Math.abs((m.index ?? 0) - aIdx) <= 400) return true;
+  }
+  return false;
+}
+
+/**
+ * Derive a service's referralRequired DETERMINISTICALLY. Priority: GROUNDED explicit per-service text >
+ * categorical-never-referred > pharmacy > plan-level answer (NO => false for all; YES => true for
+ * specialist_visit ONLY, else null) > null. Replaces the unreliable LLM per-service guess (S241); the
+ * grounding gate (Fix A, S250) keeps an LLM-copied plan-level note from forging a per-service signal.
+ */
+export function deriveReferralRequired(
+  policy: "yes" | "no" | null,
+  slug: string,
+  textFields: unknown[],
+  anchorExcerpt: string,
+  sectionText: string,
+): boolean | null {
+  const svc = textFields.filter((x): x is string => typeof x === "string").join(" ").toLowerCase();
+  // Only a referral signal grounded in the OCR near this service's anchor may decide; an ungrounded
+  // copy falls through to the categorical / pharmacy / plan-level rules (→ conservative null on a YES plan).
+  const explicit = explicitReferralSignal(svc);
+  if (explicit !== null && verifyReferralGrounding(anchorExcerpt, sectionText)) return explicit;
+  if (CATEGORICAL_NO_REFERRAL.has(slug)) return false;
+  if (slug.includes("_rx")) return false; // drugs are prescribed, not referred
+  if (policy === "no") return false;
+  if (policy === "yes") return slug === "specialist_visit" ? true : null;
+  return null;
+}
+
+// Verify an extracted visitLimit against the service's own source text: the count must appear with a
+// visit/day UNIT in a LIMIT CONTEXT, near the service's source anchor. Returns the verbatim cap excerpt
+// (cite-grade, §14 #5) when grounded, else null — dropping a "readmitted within 60 days" window mis-read
+// as a cap, and counts that aren't in the document at all. Deterministic; no model call.
+const VISIT_UNIT = "(?:visit|day|treatment|session|trip|night|exam|screening)s?";
+const VISIT_CUE =
+  "(?:limited to|up to|maximum|max\\b|\\blimit\\b|combined|allowance|per (?:year|member|benefit|visit|calendar)|/\\s*(?:year|visit)|benefit period|calendar year)";
+const VISIT_NUM_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"];
+// A count may be a digit or (for small caps) its word form — "One visit per year" grounds visitLimit=1.
+function visitCountAlt(n: number): string {
+  const alts = [String(n)];
+  if (n < VISIT_NUM_WORDS.length) alts.push(VISIT_NUM_WORDS[n]);
+  if (n === 1) alts.push("once");
+  if (n === 2) alts.push("twice");
+  return `(?:${alts.join("|")})`;
+}
+
+export function verifyVisitLimit(
+  count: number,
+  capText: string | null,
+  anchorExcerpt: string,
+  sectionText: string,
+): string | null {
+  if (!Number.isInteger(count) || count <= 0) return null;
+  const hay = sectionText.replace(/\s+/g, " ");
+  const hayLc = hay.toLowerCase();
+  // count (digit or word) tied to a visit/day unit, tolerating up to 2 NON-cost words between
+  // ("30 rehab visits") — excluding copay/coinsurance/deductible/per so "$35 Copay per Visit" (a rate,
+  // not a count) can never masquerade as "35 visits".
+  const filler = "(?:[\\s-]+(?!(?:copay|coinsurance|deductible|per)\\b)\\w+){0,2}";
+  const countUnit = `\\b${visitCountAlt(count)}\\b${filler}[\\s-]*${VISIT_UNIT}`;
+  // (1) LLM-cited: count+unit present in the captured cap text AND that text is verbatim-in-source —
+  // trust it (the §14 cite-grade self-citation; robust to OCR scatter + adjectives + word-numbers).
+  if (capText) {
+    const cap = capText.replace(/\s+/g, " ").trim();
+    if (cap && new RegExp(countUnit, "i").test(cap) && hayLc.includes(cap.toLowerCase().slice(0, 40))) return cap;
+  }
+  // (2) uncited (blank annualLimit): count+unit within a LIMIT context near the service — this is where
+  // a "readmitted within 60 days" window and counts absent from the document get dropped.
+  const re = new RegExp(`(?:${VISIT_CUE}[^.]{0,30}${countUnit}|${countUnit}[^.]{0,30}${VISIT_CUE})`, "gi");
+  const anchor = anchorExcerpt.replace(/\s+/g, " ").toLowerCase().slice(0, 50);
+  const aIdx = anchor ? hayLc.indexOf(anchor) : -1;
+  for (const m of hay.matchAll(re)) {
+    if (aIdx < 0 || Math.abs((m.index ?? 0) - aIdx) <= 400) return hay.slice(m.index, (m.index ?? 0) + 90).trim();
+  }
+  return null;
+}
+
 export async function extractServicesCostSharing(
   sectionText: string,
   sectionRange: { start: number; end: number },
@@ -504,12 +725,23 @@ export async function extractServicesCostSharing(
   // (parser.ts) and pass it down so the prompt-supplement gate and the whole-text fallback gate stay
   // in lockstep; undefined → read the live flag (OFF → byte-identical).
   extractionV2Override?: boolean,
+  // Test/dry-run override for `coverage_dims_v1` (per-service referral + visit/day-count cap).
+  // PROD leaves it undefined → reads the live flag (OFF → byte-identical). The §13 oracle harness
+  // passes `true` to measure flag-ON without depending on DB flag state (calibration independence).
+  coverageDimsOverride?: boolean,
 ): Promise<PlanDocSectionResult<{ services: PlanDocService[] }>> {
   const thesaurusEnabled =
     thesaurusPhase1aOverride ?? (await isFeatureEnabled("thesaurus_phase1a_v1"));
   const extractionV2Enabled =
     extractionV2Override ?? (await isFeatureEnabled("plan_doc_extraction_v2"));
-  const systemPrompt = await buildInstructions(layout, thesaurusEnabled, extractionV2Enabled);
+  const coverageDimsEnabled =
+    coverageDimsOverride ?? (await isFeatureEnabled("coverage_dims_v1"));
+  const systemPrompt = await buildInstructions(
+    layout,
+    thesaurusEnabled,
+    extractionV2Enabled,
+    coverageDimsEnabled,
+  );
   const result = await callHaikuWithCache<RawResponse>({
     systemPrompt: HAIKU_CACHE_PAD + systemPrompt,
     userContent: sectionText,
@@ -519,6 +751,9 @@ export async function extractServicesCostSharing(
         : "services_cost_sharing",
   });
 
+  // coverage_dims_v1 (Option C): plan-level referral answer derived ONCE from the document text;
+  // each service's referralRequired is then a deterministic function of (policy × slug × explicit text).
+  const referralPolicy = coverageDimsEnabled ? derivePlanReferralPolicy(sectionText) : null;
   const services: PlanDocService[] = (result.data.services ?? [])
     .map((raw): PlanDocService | null => {
       const slug = typeof raw.serviceSlug === "string" ? raw.serviceSlug.trim() : null;
@@ -535,6 +770,18 @@ export async function extractServicesCostSharing(
         typeof raw.source_row_index === "number" && Number.isFinite(raw.source_row_index)
           ? Math.max(0, Math.floor(raw.source_row_index))
           : null;
+      // coverage_dims_v1: verify the LLM's visitLimit against the source (count+unit in a LIMIT context
+      // near this service) — unverified counts are hallucinations/misextractions and get dropped; the
+      // located verbatim cap becomes the cite-grade excerpt (§14 #5) + backfills a blank annualLimit.
+      const baseAnnual = typeof raw.annualLimit === "string" ? raw.annualLimit : null;
+      const visitExcerpt =
+        coverageDimsEnabled && typeof raw.visitLimit === "number"
+          ? verifyVisitLimit(raw.visitLimit, baseAnnual, sourceExcerpt, sectionText)
+          : null;
+      const annualLimit =
+        coverageDimsEnabled && visitExcerpt && (!baseAnnual || !baseAnnual.trim())
+          ? visitExcerpt
+          : baseAnnual;
       return {
         serviceSlug: slug,
         placeOfService: typeof raw.placeOfService === "string" ? raw.placeOfService : "",
@@ -548,10 +795,21 @@ export async function extractServicesCostSharing(
         outDeductibleApplies: typeof raw.outDeductibleApplies === "boolean" ? raw.outDeductibleApplies : null,
         outCostDescription: typeof raw.outCostDescription === "string" ? raw.outCostDescription : "",
         oonPaidAtInNetwork: raw.oonPaidAtInNetwork === true,
-        annualLimit: typeof raw.annualLimit === "string" ? raw.annualLimit : null,
+        annualLimit,
         annualLimitValue: typeof raw.annualLimitValue === "number" ? raw.annualLimitValue : null,
         priorAuthRequired: typeof raw.priorAuthRequired === "boolean" ? raw.priorAuthRequired : null,
         penaltyNoPrecert: typeof raw.penaltyNoPrecert === "number" ? raw.penaltyNoPrecert : null,
+        // coverage_dims_v1: populated ONLY when ON; OFF → undefined (Haiku wasn't asked for them
+        // → struct is byte-identical to pre-flag). Mirrors the rawLabel/component gating below.
+        // Option C (S241): code-derived, not raw.referralRequired (LLM no longer decides referral).
+        referralRequired: coverageDimsEnabled
+          ? deriveReferralRequired(referralPolicy, slug, [
+              raw.coverageConditions, raw.source_excerpt, raw.inCostDescription, raw.notes,
+            ], sourceExcerpt, sectionText)
+          : undefined,
+        visitLimit: coverageDimsEnabled
+          ? (typeof raw.visitLimit === "number" && visitExcerpt ? raw.visitLimit : null)
+          : undefined,
         covered: raw.covered !== false,
         coverageConditions: typeof raw.coverageConditions === "string" ? raw.coverageConditions : null,
         supplyLimitDays: typeof raw.supplyLimitDays === "number" ? raw.supplyLimitDays : null,

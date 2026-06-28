@@ -616,7 +616,7 @@ async function mergeServicesIntoCanonical(
   // Fetch user's covered services
   const { data: userServices } = await supabase
     .from("plan_covered_services")
-    .select("service_id, concept_id, in_copay, in_coinsurance, in_deductible_applies, covered, prior_auth_required, annual_limit_value, confidence, source, place_of_service")
+    .select("service_id, concept_id, place_of_service, component, in_copay, in_coinsurance, in_deductible_applies, covered, prior_auth_required, out_copay, out_coinsurance, out_deductible_applies, annual_limit_value, requires_referral, visit_limit, confidence, source")
     .eq("insurance_plan_id", insurancePlanId);
 
   if (!userServices || userServices.length === 0) return;
@@ -639,17 +639,26 @@ async function mergeServicesIntoCanonical(
       canonical_plan_id: canonicalPlanId,
       concept_id: s.concept_id || null,
       service_slug: idToSlug.get(s.service_id)!,
+      // mig 186 (S241): cell-accurate read-through. Carry the user-side (place_of_service, component) so
+      // this merge-created row targets the SAME 4-col cell apply_promotion_event writes (no 'any'/'global'
+      // orphan duplicates); and read requires_referral / visit_limit / out_* THROUGH — never hardcode
+      // false/null — so the row-create agrees with the RPC promotion that follows.
+      place_of_service: s.place_of_service ?? "any",
+      component: s.component ?? "global",
       // F.0 Phase 2 (mig 169): write the ALIGNED canonical columns (in_/covered/prior_auth_required);
       // the symmetric align_mirror_cps_row trigger mirrors them to the legacy columns.
       in_copay: s.in_copay,
       in_coinsurance: normalizeCoinsuranceForStorage(s.in_coinsurance),
       covered: s.covered !== false,
       prior_auth_required: s.prior_auth_required || false,
-      requires_referral: false,
+      requires_referral: s.requires_referral ?? null,
       in_deductible_applies: s.in_deductible_applies !== false,
+      out_copay: s.out_copay ?? null,
+      out_coinsurance: normalizeCoinsuranceForStorage(s.out_coinsurance),
+      out_deductible_applies: s.out_deductible_applies ?? null,
       // CF-63 RC-2 (S128): nullish coalescing preserves $0 annual limits.
       annual_limit: s.annual_limit_value ?? null,
-      visit_limit: null,
+      visit_limit: s.visit_limit ?? null,
       coverage_rules: {},
       confidence: s.confidence || 0.5,
       source: s.source || "user_upload",
@@ -658,10 +667,10 @@ async function mergeServicesIntoCanonical(
   if (canonicalInserts.length > 0) {
     const { error } = await supabase
       .from("canonical_plan_services")
-      // S167 Thesaurus (mig 147): the unique key is now 4-col
-      // (canonical_plan_id, service_slug, place_of_service, component). These inserts omit
-      // place_of_service/component → they take the column DEFAULTs ('any'/'global'); user-side
-      // pos/component threading lands in Phase 1 (plan_covered_services has no component column yet).
+      // S167 Thesaurus (mig 147): the unique key is 4-col
+      // (canonical_plan_id, service_slug, place_of_service, component). mig 186 (S241): these inserts now
+      // carry the user-side place_of_service/component (above) instead of collapsing to the 'any'/'global'
+      // DEFAULTs, so they align with the apply_promotion_event cells (no orphan rows).
       .upsert(canonicalInserts, { onConflict: "canonical_plan_id,service_slug,place_of_service,component" });
 
     if (error) {
