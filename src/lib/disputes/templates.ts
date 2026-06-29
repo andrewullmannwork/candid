@@ -509,6 +509,9 @@ export function buildRequestSection(params: {
   }
 
   const asks: string[] = [];
+  // Item A — set when the no-plan coverage hold (below) already requested a collections hold, so
+  // the standing collections-hold doesn't render twice.
+  let collectionsHoldRequested = false;
 
   // 1) service_not_rendered (attested) — strongest; leads.
   if (b.attested.length > 0) {
@@ -586,11 +589,16 @@ export function buildRequestSection(params: {
       );
     } else {
       // Provider can't decide coverage — bill only per the EOB, or hold pending it.
-      asks.push(
-        noPlanToCite
-          ? `Until my insurer issues its coverage determination, place any collection activity on this balance on hold and do not report it to a credit bureau. Once the insurer determines how the claim should have been processed, rebill me for only the patient cost-share its determination establishes.`
-          : `Correct my bill to reflect only my cost-sharing under my plan's coverage of ${b.coverage.length > 1 ? "these services" : "this service"}, as determined by my insurer.`,
-      );
+      if (noPlanToCite) {
+        asks.push(
+          `Until my insurer issues its coverage determination, place any collection activity on this balance on hold and do not report it to a credit bureau. Once the insurer determines how the claim should have been processed, rebill me for only the patient cost-share its determination establishes.`,
+        );
+        collectionsHoldRequested = true; // dedup: the standing collections-hold (Item A) won't double up
+      } else {
+        asks.push(
+          `Correct my bill to reflect only my cost-sharing under my plan's coverage of ${b.coverage.length > 1 ? "these services" : "this service"}, as determined by my insurer.`,
+        );
+      }
     }
   }
 
@@ -686,24 +694,41 @@ export function buildRequestSection(params: {
     );
   }
 
-  // Fallback — never emit an empty request block.
+  // Fallback — never emit an empty request block. (Substantive asks only; the housekeeping asks
+  // below — collections-hold + the itemized/adjudication request — append after, so a letter with
+  // only housekeeping still carries the fallback's substantive ask.)
   if (asks.length === 0) {
     asks.push(
       isInsurer
         ? `Review the charges identified above and issue a written determination identifying the specific plan provision relied upon for any denial.`
-        : `Review the charges identified above and provide a corrected, itemized bill.`,
+        : `Review the charges identified above and provide a corrected bill.`,
     );
   }
 
-  // Tail — the missing per-line breakdown. dispute_noplan_coverage_request_v1: request the
-  // RIGHT breakdown per recipient — the insurer's claim adjudication (EOB) vs the provider's
-  // itemized charges. OFF → the provider-shaped ask for both recipients (byte-identical).
-  const hasPerLineBreakdown = allLines.some((li) => li.insurancePaid != null && li.patientOwes != null);
-  if (!hasPerLineBreakdown) {
+  // R3 step 5.4 Phase 3 (Item A) — standing collections-hold. A provider letter asks to pause
+  // collection activity + credit reporting on any outstanding balance (`patientOwes > 0`) while the
+  // dispute is pending. Skipped when the no-plan coverage hold above already requested it (dedup via
+  // collectionsHoldRequested). Unconditional (not demand-gated) → protects the patient the moment
+  // the letter ships.
+  if (!isInsurer && !collectionsHoldRequested && allLines.some((li) => (li.patientOwes ?? 0) > 0)) {
     asks.push(
-      noPlanCoverageRequestOn && isInsurer
-        ? `Provide the claim's line-by-line adjudication — the explanation of benefits showing how each charge was processed, the amount allowed, and the reason for any denial.`
-        : `Provide a complete itemized statement of all charges, including CPT/HCPCS codes, dates of service, and amounts.`,
+      `I dispute these charges. While this dispute is unresolved, place any collection activity for this balance on hold and do not report it to a credit bureau. If it has already been reported, report it as disputed.`,
+    );
+  }
+
+  // Tail — the supporting document each recipient owes (Item A). PROVIDER: always request a fully
+  // itemized statement — the provider's charge detail, a distinct artifact from an insurer EOB, and we
+  // have no signal for whether the patient already holds one, so always ask. INSURER: request the EOB /
+  // line-by-line adjudication (its artifact) when we lack the per-line breakdown — never an "itemized
+  // statement of charges" it does not hold (A1′ routing fix; replaces the prior flag-gated branch).
+  const hasPerLineBreakdown = allLines.some((li) => li.insurancePaid != null && li.patientOwes != null);
+  if (!isInsurer) {
+    asks.push(
+      `Provide a fully itemized statement for this account. For each charge, list the billing code (CPT, HCPCS, revenue code, or NDC), the date of service, the units or quantity, and the amount billed, so I can confirm the charges match the care I received.`,
+    );
+  } else if (!hasPerLineBreakdown) {
+    asks.push(
+      `Provide the claim's line-by-line adjudication — the explanation of benefits showing how each charge was processed, the amount allowed, and the reason for any denial.`,
     );
   }
 

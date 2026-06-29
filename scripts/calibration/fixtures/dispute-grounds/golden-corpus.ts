@@ -21,7 +21,7 @@
  */
 import { resolve } from "path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { LETTER_TEMPLATES } from "../../../../src/lib/disputes/templates";
+import { LETTER_TEMPLATES, buildRequestSection } from "../../../../src/lib/disputes/templates";
 import { generateNegotiationLetter } from "../../../../src/lib/disputes/negotiation-template";
 import type { AuditFinding, ParsedBill, DisputeLetterType } from "../../../../src/lib/billing/types";
 import type { DisputeEvidence, LineItemEvidence, ClaimEvidence } from "../../../../src/lib/disputes/evidence-resolver";
@@ -351,6 +351,49 @@ for (const { type, findings } of ZERO_BUG_TYPES) {
   // ON — the fix: dismissed skipped, active kept.
   check("1c ON SKIPS the dismissed audit flag", !dismOn.includes("Candid audit flag (DISMISSED-FLAG)"), dismOn);
   check("1c ON keeps the active (non-dismissed) audit flag", dismOn.includes("Candid audit flag (ACTIVE-FLAG)"));
+}
+
+// ── R3 step 5.4 Phase 3 (Item A) — itemized routing + collections-hold. The OFF golden variants
+//    pass evidence:null, so buildRequestSection is never exercised there; these drills feed the
+//    real conditions A2/A1′ need (an outstanding balance; an insurer letter with evidence) so the
+//    new behavior is PROVEN, not assumed. ─────────────────────────────────────────────────────
+{
+  const evFrom = (lines: LineItemEvidence[]): DisputeEvidence => ({
+    claims: [{
+      claimId: "claim-a", dateOfService: SERVICE_DATE, providerName: "Sample Medical Center",
+      totalBilled: 500, planYear: 2024, lineItemEvidence: lines,
+      effectiveTotals: {} as unknown as ClaimEvidence["effectiveTotals"],
+      dataTrust: { headerReconciliationFailed: false, signViolation: false },
+    } satisfies ClaimEvidence],
+    totals: { claimCount: 1, lineItemCount: lines.length, totalBilled: 500, totalDiscrepancy: 0 },
+    planEvidence: null, networkEvidence: null, communityEvidence: null, legalBasis: [], gaps: [],
+    dataTrust: { headerReconciliationFailed: false, signViolation: false },
+  });
+  const HOLD = "place any collection activity for this balance on hold";
+  const ITEMIZED = "Provide a fully itemized statement for this account";
+  const EOB = "line-by-line adjudication";
+
+  // A2 — provider letter + outstanding balance (patientOwes>0) → standing collections-hold present.
+  const provOwes = renderGenerateON("overcharge", bill, [makeFinding()],
+    evFrom([{ ...evidenceLine(makeFinding(), "li-owes"), patientOwes: 120 }]));
+  check("A2 provider + owes>0 renders the collections-hold", provOwes.includes(HOLD), provOwes);
+  check("A2 collections-hold establishes disputed status", provOwes.includes("I dispute these charges"));
+  // A2 — provider letter, balance already paid (owes==0) → NO collections-hold.
+  const provPaid = renderGenerateON("overcharge", bill, [makeFinding()],
+    evFrom([{ ...evidenceLine(makeFinding(), "li-paid"), patientOwes: 0, patientPaid: 100 }]));
+  check("A2 provider + owes==0 OMITS the collections-hold", !provPaid.includes(HOLD));
+  // A1 — provider letter always requests the itemized statement.
+  check("A1 provider requests the itemized statement", provOwes.includes(ITEMIZED));
+  // A1′ — insurer recipient → EOB/adjudication ask, NOT an itemized statement, no collections-hold.
+  // Tests buildRequestSection directly: insurance_appeal's full body needs an effectiveTotals.provenance
+  // orthogonal to the tail routing under test; the insurer wiring is the call site at templates.ts ~1397.
+  const insReq = buildRequestSection({
+    evidence: evFrom([evidenceLine(makeFinding(), "li-ins")]), planContext: null,
+    recipient: "insurer", demandsEnabled: true,
+  });
+  check("A1′ insurer asks for the EOB / line-by-line adjudication", insReq.includes(EOB), insReq);
+  check("A1′ insurer does NOT request an itemized statement (provider artifact)", !insReq.includes(ITEMIZED));
+  check("A1′ insurer does NOT render the collections-hold", !insReq.includes(HOLD));
 }
 
 // ── Report (house style) ─────────────────────────────────────────────────────
