@@ -1541,6 +1541,10 @@ const duplicateChargeTemplate: LetterTemplate = {
     evidence,
     gateUnverified,
     disputeGroundsOn,
+    v3DesignOn,
+    letterRecovery,
+    recovery,
+    noPlanCoverageRequestOn,
     bill,
   }) => {
     const evidenceBlock = renderEvidenceBlock(
@@ -1569,6 +1573,23 @@ const duplicateChargeTemplate: LetterTemplate = {
     const recipientBlock = buildProviderRecipientBlock(providerName, planContext?.providerContact, bill);
     const patientRefBlock = buildPatientReferenceBlock(patientName, undefined, planContext?.providerContact, bill);
 
+    // R3 step 5.4 Phase 3 (Item A.2) — route the relief through the shared composer (v3), exactly
+    // as overcharge/balance_billing do, so duplicate-led provider letters get the set-tier duplicate
+    // asks + itemized + collections-hold instead of a generic fixed list. The legacy list is the
+    // v3-OFF fallback (deprecated; prod runs v3 ON). buildRequestSection emits its own RELIEF
+    // REQUESTED header + 30-day deadline + consequence. Gate on `evidence`: with none (a degraded
+    // path / the evidence:null fixture variant) fall to the legacy list — duplicate has no separate
+    // closing line, so an empty relief would read abruptly (unlike overcharge, which has one).
+    const requestBlock = ((v3DesignOn ?? false) && evidence)
+      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, demandsEnabled: disputeGroundsOn ?? false })
+      : `I am requesting:
+
+1. A detailed review of each charge listed above
+2. Removal of any confirmed duplicate charges
+3. A corrected bill reflecting the appropriate total
+
+Please provide a written response within 30 days of receipt of this letter.`;
+
     return `${formatDate(new Date().toISOString())}
 
 ${recipientBlock}
@@ -1586,13 +1607,7 @@ ${findingDetails}
 
 The total amount of suspected duplicate charges is ${formatCurrency(totalDuplicate)}.
 ${evidenceBlock ? `\n${evidenceBlock}` : ""}
-I am requesting:
-
-1. A detailed review of each charge listed above
-2. Removal of any confirmed duplicate charges
-3. A corrected bill reflecting the appropriate total
-
-Please provide a written response within 30 days of receipt of this letter.
+${requestBlock}
 
 Sincerely,
 

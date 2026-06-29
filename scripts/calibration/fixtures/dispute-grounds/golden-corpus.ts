@@ -394,6 +394,13 @@ for (const { type, findings } of ZERO_BUG_TYPES) {
   check("A1′ insurer asks for the EOB / line-by-line adjudication", insReq.includes(EOB), insReq);
   check("A1′ insurer does NOT request an itemized statement (provider artifact)", !insReq.includes(ITEMIZED));
   check("A1′ insurer does NOT render the collections-hold", !insReq.includes(HOLD));
+
+  // A.2 — duplicate_charge now routes through buildRequestSection → carries the itemized ask + (owes>0) the hold.
+  const dupReq = renderGenerateON("duplicate_charge", bill,
+    [makeFinding({ type: "duplicate", title: "Duplicate charge", estimatedOvercharge: 120, billedAmount: 120 })],
+    evFrom([{ ...evidenceLine(makeFinding(), "li-dup"), patientOwes: 120 }]));
+  check("A.2 duplicate_charge routes through buildRequestSection (itemized ask present)", dupReq.includes(ITEMIZED), dupReq);
+  check("A.2 duplicate_charge carries the collections-hold (owes>0)", dupReq.includes(HOLD));
 }
 
 // ── Report (house style) ─────────────────────────────────────────────────────
