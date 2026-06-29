@@ -231,6 +231,12 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
       { element: "nsa_protection", party: "provider", authority: "the No Surprises Act", condition: "nsa_applicable", voiceIfMet: "demand", voiceIfNot: "fall_to_facts" },
       // contracted-rate ≠ chargemaster (see header): the INSURER APPLIES the negotiated rate.
       { element: "contracted_rate_apply", party: "insurer", authority: "the plan's duty to process at the contracted rate (§18.10.B)", condition: "contract_exists", voiceIfMet: "demand", voiceIfNot: "omit" },
+      // Item B (R3 5.4 Phase 3) — PROVIDER side: an in-network provider accepts the contracted rate
+      // as payment in full; billing the difference is a contractual breach. Patient-facing copy is
+      // DATA-AWARE (templates.ts buildRequestSection cites the per-line $) — `contracted_rate_apply`
+      // has NO prose entry, so renderObligationClauses emits nothing for it; the element's VOICE
+      // (selectObligationVoice → contract_exists) still gates whether the data-aware ask fires.
+      { element: "contracted_rate_apply", party: "provider", authority: "the provider's network agreement (the contracted rate is payment in full)", condition: "contract_exists", voiceIfMet: "demand", voiceIfNot: "omit" },
     ],
   },
   duplicate: {

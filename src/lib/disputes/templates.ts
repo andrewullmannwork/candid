@@ -603,9 +603,9 @@ export function buildRequestSection(params: {
   }
 
   // 4) balance_billing — limit to in-network (the core relief) + the obligation clauses (NSA,
-  // contracted-rate) from the registry, voiced per recipient (R3 step 3). Today every predicate
-  // is unknown → fall_to_facts (the verbatim "apply any applicable NSA" clause) / omit → the
-  // composed string is byte-identical; demands light up at the dispute_grounds_v1 flip + data.
+  // contracted-rate) from the registry, voiced per recipient (R3 step 3). NSA stays fall_to_facts
+  // (the verbatim "apply any applicable NSA" clause); contracted_rate_apply has no registry prose —
+  // its copy is the DATA-AWARE Item B ask below. demandsEnabled OFF / no allowed-rate → byte-identical.
   if (b.balanceBilling.length > 0) {
     const many = b.balanceBilling.length > 1;
     // §18 incr-4: the deductible-aware write-off (== the card recovery) on assertable lines;
@@ -615,15 +615,46 @@ export function buildRequestSection(params: {
     const over = letterRecovery
       ? sumAssertable(b.balanceBilling, letterRecovery, "writeOff")
       : sumOf(b.balanceBilling, (li) => li.discrepancyAmount);
-    const obClauses = renderObligationClauses(
-      "balance_billing",
-      recipient,
-      buildObligationContext(),
-      demandsEnabled ?? false,
-    );
+    const ctx = buildObligationContext(b.balanceBilling);
+    const obClauses = renderObligationClauses("balance_billing", recipient, ctx, demandsEnabled ?? false);
     const obText = obClauses.length > 0 ? ` and ${obClauses.join(" and ")}` : "";
+
+    // R3 step 5.4 Phase 3 (Item B) — contracted-rate ask. A SINGLE balance-billed line with a known
+    // allowed amount below the billed charge cites the allowed amount. Network-aware (claims-lawyer
+    // review, S254): in-network / tiered (ctx.contractExists — a proven participating contract) → the
+    // strong contracted-rate demand, NSA omitted (it is an out-of-network protection); null / unknown
+    // (rate known, contract not proven) → a factual allowed-amount request; out-of-network → suppress
+    // (no contract to invoke → the base ask + NSA below is the right relief). Multi-line falls to the
+    // aggregate base ask. Replaces the base ask for the line (no doubled "limit to cost-sharing");
+    // demandsEnabled OFF or no allowed-rate → itemB null → base ask → byte-identical. Andrew-approved
+    // copy (S254); plain-language per [[feedback_candid_copy_plain_language]].
+    let itemB: string | null = null;
+    if ((demandsEnabled ?? false) && b.balanceBilling.length === 1) {
+      const li = b.balanceBilling[0];
+      const allowed = li.allowedAmount;
+      if (allowed != null && li.billedAmount > allowed && !lineIsClampBound(li)) {
+        const svc = label(li);
+        const aStr = formatCurrency(allowed);
+        const bStr = formatCurrency(li.billedAmount);
+        const overStr = formatCurrency(li.billedAmount - allowed);
+        if (ctx.contractExists === true) {
+          // in-network / tiered — proven contract → the contracted-rate demand.
+          itemB = isInsurer
+            ? `Your records show ${svc} was provided in-network at a contracted rate of ${aStr}. Please make sure my cost-share is based on that contracted rate — not the provider's billed ${bStr} — and that the provider writes off the ${overStr} difference, as your network agreement requires. If my claim was processed otherwise, please reprocess it and correct my cost-share.`
+            : `My plan shows this provider as in-network, so the contract between them sets the price for ${svc} at ${aStr} — which the provider accepts as payment in full. The ${bStr} billed is ${overStr} above that price, and an in-network provider may not bill me the difference. Please reduce this charge to ${aStr} and bill me only my in-network cost-share.`;
+        } else if (li.networkStatus !== "out_of_network") {
+          // null / unknown network — factual allowed-amount request (no contract asserted).
+          itemB = isInsurer
+            ? `For ${svc}, my plan allowed ${aStr}. Please confirm my cost-share was calculated on the allowed amount rather than the provider's billed ${bStr}, and reprocess if it was not.`
+            : `My plan's allowed amount for ${svc} is ${aStr}, not the billed ${bStr}. Please base my balance on my plan's allowed amount and cost-sharing, and itemize any portion of the ${overStr} difference you contend I owe.`;
+        }
+        // out_of_network → itemB stays null → base ask + NSA below (the correct OON relief).
+      }
+    }
+
     asks.push(
-      `Limit my responsibility for ${many ? "these services" : "this service"} to my in-network cost-sharing${obText}${over > 0 ? `; write off the ${formatCurrency(over)} billed above it` : ""}.`,
+      itemB ??
+        `Limit my responsibility for ${many ? "these services" : "this service"} to my in-network cost-sharing${obText}${over > 0 ? `; write off the ${formatCurrency(over)} billed above it` : ""}.`,
     );
   }
 

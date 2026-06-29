@@ -7,8 +7,10 @@
  *                coverage") — byte-identical, for a no-plan AND a plan-backed coverage line.
  *  - FLAG ON + NO plan on file (no planBenefit on any coverage line) → the counsel-approved
  *                REQUEST copy (insurer: "State, in writing, the specific plan provision…";
- *                provider: "place any collection activity on this balance on hold…"), and the
- *                insurer breakdown tail becomes the claim adjudication (EOB), not itemized charges.
+ *                provider: "place any collection activity on this balance on hold…").
+ *  - INSURER TAIL (flag-independent — Item A's A1′ fix): the insurer is asked for the claim's
+ *                line-by-line adjudication (EOB), its own artifact, in BOTH flag states — NEVER the
+ *                provider's itemized statement of charges (which the provider holds). Asserted below.
  *  - FLAG ON + plan IS cited (planBenefit present) → asserting copy UNCHANGED (the reframe only
  *                fires when there's nothing to cite — never weakens a backed letter).
  *  - A bill-side ground (balance-billing) alongside the coverage line renders in BOTH modes
@@ -107,7 +109,7 @@ const ASSERT_INSURER = "under the plan terms cited above";
 const ASSERT_PROVIDER = "under my plan's coverage";
 const REFRAME_INSURER = "State, in writing, the specific plan provision";
 const REFRAME_PROVIDER = "place any collection activity on this balance on hold";
-const TAIL_ITEMIZED = "complete itemized statement of all charges";
+const TAIL_PROVIDER_ITEMIZED = "Provide a fully itemized statement for this account";
 const TAIL_ADJUDICATION = "line-by-line adjudication";
 
 // reqSection — the pure fn under change, called directly (no body scaffolding).
@@ -120,13 +122,14 @@ const reqSection = (recipient: "insurer" | "provider", ev: DisputeEvidence, flag
   const off = reqSection("insurer", noPlan, false);
   has("insurer OFF no-plan → asserting copy", off, ASSERT_INSURER);
   absent("insurer OFF no-plan → no reframe", off, REFRAME_INSURER);
-  has("insurer OFF → itemized-charges tail", off, TAIL_ITEMIZED);
+  has("insurer OFF → adjudication (EOB) tail (A1′ — insurer never gets an itemized-charges tail)", off, TAIL_ADJUDICATION);
+  absent("insurer OFF → never the provider's itemized tail", off, TAIL_PROVIDER_ITEMIZED);
 
   const on = reqSection("insurer", noPlan, true);
   has("insurer ON no-plan → REFRAME request", on, REFRAME_INSURER);
   absent("insurer ON no-plan → drops the assertion", on, ASSERT_INSURER);
   has("insurer ON → adjudication (EOB) tail", on, TAIL_ADJUDICATION);
-  absent("insurer ON → no provider-shaped itemized tail", on, TAIL_ITEMIZED);
+  absent("insurer ON → never the provider's itemized tail", on, TAIL_PROVIDER_ITEMIZED);
 
   const withPlan = reqSection("insurer", makeEvidence([coverageLine(true)]), true);
   has("insurer ON + plan cited → asserting copy (reframe inert)", withPlan, ASSERT_INSURER);

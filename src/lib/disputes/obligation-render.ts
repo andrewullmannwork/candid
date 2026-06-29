@@ -10,6 +10,7 @@
 // (fall_to_facts / omit) → today's clause.
 
 import type { DisputeGroundType } from "./dispute-grounds";
+import type { LineItemEvidence } from "./evidence-resolver";
 import {
   DISPUTE_GROUND_CATALOG,
   selectObligationVoice,
@@ -19,20 +20,29 @@ import {
 } from "./dispute-ground-catalog";
 
 /**
- * Build the predicate context an ask's obligation voices are evaluated against. Returns ALL-NULL
- * today — no NSA / contract / statute / rate signal exists on LineItemEvidence yet, so every
- * predicate is unknown and the registry defaults to the safe voice (byte-identical). This function
- * is the ONE seam the post-launch Care data layer ([[care_network_rate_transparency]] §3.2.1)
- * plugs into: it will take the ask's lines and aggregate per-line signals
- * (e.g. `nsaApplicable: lines.some(...)`); the single caller passes them when that data lands.
- * Kept as a function (not a constant) precisely to mark that seam.
+ * Build the predicate context an ask's obligation voices are evaluated against, from the ask's
+ * lines. R3 step 5.4 Phase 3 (Item B) lit the contracted-rate half of this seam: a balance-billed
+ * line carrying a known allowed amount BELOW the billed charge proves a rate is known (`rateKnown`),
+ * and when that line is in-network / tiered it proves a participating contract (`contractExists` →
+ * the contracted-rate demand). Out-of-network / unknown lines set `rateKnown` but NOT
+ * `contractExists` (no proven contract → the letter makes a factual request, not a contract demand;
+ * see templates.ts). `nsaApplicable` / `statuteVerified` stay null — they await the post-launch Care
+ * rate layer ([[care_network_rate_transparency]] §3.2.1) + the verified citation registry (§4).
+ * Booleans are TRUE-or-null (never `false`): absence of proof is "unknown", not "known false", so
+ * the selector still defaults to the safe voice. Empty lines / no signal → all-null → byte-identical.
  */
-export function buildObligationContext(): ObligationContext {
+export function buildObligationContext(lines: readonly LineItemEvidence[]): ObligationContext {
+  const rateGap = (li: LineItemEvidence): boolean =>
+    li.allowedAmount != null && li.billedAmount > li.allowedAmount;
+  const rateKnown = lines.some(rateGap);
+  const contractExists = lines.some(
+    (li) => rateGap(li) && (li.networkStatus === "in_network" || li.networkStatus === "tiered"),
+  );
   return {
     nsaApplicable: null,
-    contractExists: null,
+    contractExists: contractExists ? true : null,
     statuteVerified: null,
-    rateKnown: null,
+    rateKnown: rateKnown ? true : null,
   };
 }
 
@@ -41,7 +51,7 @@ export function buildObligationContext(): ObligationContext {
  * facts-based clause VERBATIM (byte-identical); `demand` / `raise` are the upgraded asks, INERT
  * today (selected only when a predicate is met AND demands are enabled). `omit` needs no entry
  * (renders nothing). The demand copy is INTERIM — incr-5 replaces it with the counsel-reviewed
- * §19 paragraphs (NSA safe-harbor + CMS escalation; contracted-rate apply).
+ * §19 paragraphs (NSA safe-harbor + CMS escalation).
  */
 const OBLIGATION_PROSE: Record<string, Partial<Record<ObligationVoice, string>>> = {
   nsa_protection: {
@@ -50,10 +60,10 @@ const OBLIGATION_PROSE: Record<string, Partial<Record<ObligationVoice, string>>>
     demand:
       "apply the No Surprises Act's balance-billing protections, which limit my responsibility for these services to my in-network cost-sharing",
   },
-  contracted_rate_apply: {
-    // voiceIfNot = omit (no clause today). INTERIM demand — incr-5 + Care contracted-rate data (§18.10.B).
-    demand: "process these services at the contracted in-network rate and restate my balance accordingly",
-  },
+  // R3 step 5.4 Phase 3 (Item B) — `contracted_rate_apply` has NO prose entry on purpose: the
+  // contracted-rate copy is DATA-AWARE (cites the per-line $ allowed / billed), rendered directly in
+  // templates.ts buildRequestSection, not as a static (element, voice) string. The catalog element
+  // still records the obligation (party / authority / predicate); its VOICE gates the data-aware ask.
 };
 
 /**

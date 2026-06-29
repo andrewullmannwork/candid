@@ -24,12 +24,13 @@ import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import { findPeerCodesForSlug } from "./peer-code-engine";
 import { resolveCanonicalSlugs } from "@/lib/parser/canonical-resolution";
 import { normalizeCoinsurancePct, normalizeCoinsuranceDecimal, normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
-import type { ClaimLevelFindingMeta } from "@/lib/billing/types";
+import type { ClaimLevelFindingMeta, NetworkTier } from "@/lib/billing/types";
 import {
   resolveEffectiveClaimTotals,
   type EffectiveClaimTotals,
 } from "@/lib/claims/effective-totals";
 import { resolveCoverageForLine, type CoverageDecision } from "@/lib/claims/coverage-decision";
+import { coerceNetworkTier } from "@/lib/claims/cost-share-loader";
 import {
   classifyDisputeType,
   deriveCiteGradeTier,
@@ -212,6 +213,21 @@ export interface LineItemEvidence {
    * didn't populate it (→ request degrades to "reverse the charge").
    */
   patientPaid: number | null;
+  /**
+   * Item B (R3 step 5.4 Phase 3) — the plan's allowed / contracted amount for this line
+   * (claim_line_items.allowed_amount). Drives the contracted-rate ask. Null when the
+   * bill/EOB had no per-line allowed column (the parser is conservative — common on
+   * provider itemized bills) → the ask doesn't fire. Optional so the many fixture
+   * literals that predate it stay valid (undefined === no signal).
+   */
+  allowedAmount?: number | null;
+  /**
+   * Item B — per-line network tier (claim_line_items.network_status, coerced via
+   * coerceNetworkTier). Selects the contracted-rate voice: in_network/tiered → the
+   * contract demand; out_of_network → suppress (no contract to invoke); null/unknown →
+   * a factual allowed-amount request. Optional (see allowedAmount).
+   */
+  networkStatus?: NetworkTier | null;
   planBenefit: PlanBenefitDetail | null;
   expectedPatientCost: number | null;
   actualPatientCost: number | null;
@@ -577,7 +593,7 @@ export async function resolveEvidence(
       userId,
       "claim_line_items",
       claimIds,
-      "id, claim_id, line_number, billing_code, billing_code_type, service_slug, description, billed_amount, insurance_paid, insurance_adjusted_amount, patient_owes, patient_paid_amount, plan_year, metadata",
+      "id, claim_id, line_number, billing_code, billing_code_type, service_slug, description, billed_amount, allowed_amount, insurance_paid, insurance_adjusted_amount, patient_owes, patient_paid_amount, network_status, plan_year, metadata",
     ),
   ]);
 
@@ -1904,9 +1920,11 @@ function buildLineItemEvidence(
     service_slug: string | null;
     description: string | null;
     billed_amount: number | null;
+    allowed_amount: number | null;
     insurance_paid: number | null;
     patient_owes: number | null;
     patient_paid_amount: number | null;
+    network_status: string | null;
     metadata?: Record<string, unknown>;
   },
   coverageByServiceSlug: Map<string, PlanBenefitDetail>,
@@ -2027,6 +2045,8 @@ function buildLineItemEvidence(
     insurancePaid,
     patientOwes,
     patientPaid,
+    allowedAmount: li.allowed_amount != null ? Number(li.allowed_amount) : null,
+    networkStatus: coerceNetworkTier(li.network_status),
     planBenefit,
     expectedPatientCost,
     actualPatientCost,
