@@ -38,6 +38,7 @@ const ORIGINAL_TYPE_ORDER: DisputeGroundType[] = [
   "benchmark",
   "unallocated_balance",
   "coding_peer",
+  "chargemaster",
 ];
 // disputes/index.ts FINDING_TO_LETTER (now projected via deriveFindingToLetter()).
 const ORIGINAL_FINDING_TO_LETTER: Partial<Record<FindingType, DisputeLetterType>> = {
@@ -63,6 +64,7 @@ const ALL_FINDING_TYPES: FindingType[] = [
   "insurance_underpayment",
   "code_uncategorized_description_match",
   "uncategorized_service",
+  "chargemaster",
 ];
 // templates.ts buildRequestSection bucket per ground (null = falls to the fallback ask).
 const EXPECTED_BUCKET: Record<DisputeGroundType, string | null> = {
@@ -75,6 +77,7 @@ const EXPECTED_BUCKET: Record<DisputeGroundType, string | null> = {
   benchmark: null,
   unallocated_balance: null,
   coding_peer: "coding",
+  chargemaster: null, // finding-keyed data-aware ask (not a bucket); see templates.ts
 };
 // plan §3 — the recovery aggregation scope per ground.
 const EXPECTED_SCOPE: Record<DisputeGroundType, string> = {
@@ -87,6 +90,7 @@ const EXPECTED_SCOPE: Record<DisputeGroundType, string> = {
   benchmark: "line",
   unallocated_balance: "claim",
   coding_peer: "line_set",
+  chargemaster: "line",
 };
 // scorer class per ground (service_not_rendered = the resolver's attestation OVERRIDE).
 const EXPECTED_CLASS: Record<DisputeGroundType, DisputeTypeClass> = {
@@ -99,6 +103,7 @@ const EXPECTED_CLASS: Record<DisputeGroundType, DisputeTypeClass> = {
   benchmark: "benchmark",
   unallocated_balance: "other",
   coding_peer: "coding_peer",
+  chargemaster: "benchmark", // statistical tier, reused (no new DisputeTypeClass)
 };
 
 const ALL_GROUNDS = Object.keys(EXPECTED_CLASS) as DisputeGroundType[];
@@ -107,12 +112,12 @@ const ALL_GROUNDS = Object.keys(EXPECTED_CLASS) as DisputeGroundType[];
 {
   const keys = Object.keys(DISPUTE_GROUND_CATALOG) as DisputeGroundType[];
   check(
-    "P1 catalog has all 9 grounds",
-    keys.length === 9 && ALL_GROUNDS.every((g) => g in DISPUTE_GROUND_CATALOG),
+    "P1 catalog has all 10 grounds",
+    keys.length === 10 && ALL_GROUNDS.every((g) => g in DISPUTE_GROUND_CATALOG),
     keys,
   );
   const orders = ALL_GROUNDS.map((g) => DISPUTE_GROUND_CATALOG[g].order).sort((a, b) => a - b);
-  check("P1 orders are 0..8 unique", orders.join() === "0,1,2,3,4,5,6,7,8", orders);
+  check("P1 orders are 0..9 unique", orders.join() === "0,1,2,3,4,5,6,7,8,9", orders);
 }
 
 // ── P2 — order parity: grounds sorted by catalog.order == original TYPE_ORDER. ────
@@ -137,7 +142,7 @@ const ALL_GROUNDS = Object.keys(EXPECTED_CLASS) as DisputeGroundType[];
 // ── P4 — scoringClass / requestBucket / scope deep-equal the oracle + obligationElements are
 //         well-formed (R3 step 3 seeded them; the deep per-element × per-recipient voice matrix
 //         lives in obligation-registry-parity, not here). ──────────
-const VALID_PREDICATES = new Set(["nsa_applicable", "contract_exists", "statute_verified", "rate_known"]);
+const VALID_PREDICATES = new Set(["nsa_applicable", "contract_exists", "statute_verified", "rate_known", "published_rate_exceeded"]);
 const VALID_VOICE_MET = new Set(["demand", "raise", "request"]);
 const VALID_VOICE_NOT = new Set(["omit", "fall_to_facts"]);
 for (const g of ALL_GROUNDS) {
@@ -202,6 +207,7 @@ const PROBES: Array<[DisputeGroundType, ClassifyInput]> = [
   ["duplicate", mkInput({ auditFindings: af("duplicate") })],
   ["unallocated_balance", mkInput({ auditFindings: af("unallocated_balance") })],
   ["coding_peer", mkInput({ peerCodes: [peer("99213"), peer("99214")] })],
+  ["chargemaster", mkInput({ auditFindings: af("chargemaster") })],
 ];
 for (const [ground, input] of PROBES) {
   const got = classifyDisputeType(input);

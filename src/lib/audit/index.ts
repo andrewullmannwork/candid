@@ -2,6 +2,7 @@
 
 import type { AuditReport, ParsedBill, AuditFinding } from "../billing/types";
 import { lookupCMSRatesBatch } from "../cms/ppl";
+import { lookupChargemasterRatesBatch } from "./chargemaster";
 import { DETECTOR_REGISTRY } from "./detector-registry";
 import { isFeatureEnabled } from "../config/product-flags";
 import type { AcaFallbackLineCoverageMap, PlanCoverageMap } from "./coverage-loader";
@@ -54,6 +55,12 @@ export async function runAudit(
   }));
 
   const benchmarks = await lookupCMSRatesBatch(codes);
+  // Item C — load the provider's published chargemaster rates upfront (mirrors benchmarks). Empty
+  // when the bill has no NPI / no hospital_hpt seed / on DB error → the chargemaster detector is inert.
+  const chargemasterRates = await lookupChargemasterRatesBatch(
+    bill.provider.npi,
+    bill.lineItems.map((li) => li.procedureCode),
+  );
 
   // Step 2: Run the detector pipeline — the ORDERED registry unifying the former sync ALL_RULES
   // loop + the hand-wired async checks (detector-registry.ts). Each detector sees the findings
@@ -65,6 +72,7 @@ export async function runAudit(
     const findings = await detector.run({
       bill,
       benchmarks,
+      chargemasterRates,
       planCoverage,
       acaFallback,
       priorFindings: allFindings,

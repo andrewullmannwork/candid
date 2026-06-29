@@ -44,6 +44,7 @@ const EXPECTED_ORDER = [
   "unallocated_balance",
   "insurance_underpayment",
   "description_match",
+  "chargemaster",
 ];
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -70,6 +71,7 @@ function ctx(over: Partial<DetectorContext>): DetectorContext {
   return {
     bill: makeBill([]),
     benchmarks: new Map<string, CMSPPLRate>(),
+    chargemasterRates: new Map<string, number>(),
     planCoverage: null,
     acaFallback: null,
     priorFindings: [],
@@ -108,8 +110,8 @@ async function main() {
   // ── P1 — completeness ──────────────────────────────────────────────────────
   {
     const keys = DETECTOR_REGISTRY.map((d) => d.key);
-    check("P1 9 detectors", DETECTOR_REGISTRY.length === 9, keys);
-    check("P1 keys unique", new Set(keys).size === 9);
+    check("P1 10 detectors", DETECTOR_REGISTRY.length === 10, keys);
+    check("P1 keys unique", new Set(keys).size === 10);
   }
 
   // ── P2 — order == the pre-refactor sequence ────────────────────────────────

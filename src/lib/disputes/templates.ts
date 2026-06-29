@@ -664,6 +664,36 @@ export function buildRequestSection(params: {
     if (peer) asks.push(`Verify whether ${peer} more accurately reflects the service provided, and reprocess accordingly.`);
   }
 
+  // 5b) chargemaster (Item C, R3 5.4 Phase 3) — lines billed ABOVE the provider's OWN published
+  // chargemaster average. A `chargemaster` detector finding carries that published rate in
+  // benchmarkAmount; this data-aware ask cites it (RAISE voice — "please review", never assert; §4).
+  // Gated by published_rate_exceeded × demandsEnabled (via buildObligationContext) → byte-inert until
+  // the dispute_grounds_v1 flip AND the hospital_hpt rate seed land. NPI-keyed match happens upstream
+  // (the detector); here we just render. Provider → reduce toward published pricing; insurer → don't
+  // pass it through. rung-2 (exact-list "remove the excess") + rung-3 (complaints) stay deferred.
+  {
+    const cmEntries = allLines
+      .filter((li) => !removedIds.has(li.lineItemId) && !lineIsClampBound(li))
+      .map((li) => {
+        const f = (li.auditFindings ?? []).find(
+          (x) => x.type === "chargemaster" && x.benchmarkAmount != null && li.billedAmount > (x.benchmarkAmount ?? 0),
+        );
+        return f && f.benchmarkAmount != null ? { li, avg: f.benchmarkAmount } : null;
+      })
+      .filter((e): e is { li: LineItemEvidence; avg: number } => e !== null);
+    if (cmEntries.length > 0 && (demandsEnabled ?? false) && buildObligationContext(cmEntries.map((e) => e.li)).publishedRateExceeded === true) {
+      for (const { li, avg } of cmEntries) {
+        const svc = label(li);
+        const over = li.billedAmount - avg;
+        asks.push(
+          isInsurer
+            ? `For ${svc}, the provider billed ${formatCurrency(li.billedAmount)} — above the ${formatCurrency(avg)} average charge on its own chargemaster. Please confirm my cost-share is not based on a charge that exceeds the provider's published pricing.`
+            : `Your hospital's own chargemaster lists an average charge of ${formatCurrency(avg)} for ${svc}, yet I was billed ${formatCurrency(li.billedAmount)} — ${formatCurrency(over)} more. Please review this charge and bring my bill in line with your own published pricing.`,
+        );
+      }
+    }
+  }
+
   // 6) SET tier (duplicate / unbundling). The removed copy was dropped from the buckets above (removal
   // dominates); here the set is argued ONCE. Provider letter → remove/refund the redundant charge
   // (patient-exposed; R3 step 5.3). Insurer letter (R3 step 5.4 Phase 2) → the counsel-blessed

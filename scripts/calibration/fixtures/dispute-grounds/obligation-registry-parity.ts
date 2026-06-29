@@ -85,12 +85,13 @@ const NSA_FALL = "apply any applicable No Surprises Act protections";
 
   // Predicate-field coverage: each predicate's evaluator must read ITS OWN ctx field. Condition on
   // predicate P, set ONLY P true → demand; set a DIFFERENT field true (P still null) → omit.
-  const PREDS: ObligationPredicate[] = ["nsa_applicable", "contract_exists", "statute_verified", "rate_known"];
+  const PREDS: ObligationPredicate[] = ["nsa_applicable", "contract_exists", "statute_verified", "rate_known", "published_rate_exceeded"];
   const CTX_KEY: Record<ObligationPredicate, keyof ObligationContext> = {
     nsa_applicable: "nsaApplicable",
     contract_exists: "contractExists",
     statute_verified: "statuteVerified",
     rate_known: "rateKnown",
+    published_rate_exceeded: "publishedRateExceeded",
   };
   for (const p of PREDS) {
     const el = synth(p, "demand", "omit");
@@ -137,6 +138,9 @@ const EXPECTED_SEEDING: Record<DisputeGroundType, Row[]> = {
   unallocated_balance: [],
   coding_peer: [
     { element: "coding_review", party: "provider", condition: null, voiceIfMet: "raise", voiceIfNot: "omit" },
+  ],
+  chargemaster: [
+    { element: "published_rate_ceiling", party: "provider", condition: "published_rate_exceeded", voiceIfMet: "raise", voiceIfNot: "omit" },
   ],
 };
 const EXPECTED_CLAIM_LEVEL: Row[] = [
@@ -345,6 +349,51 @@ assertSeeding("CLAIM_LEVEL", CLAIM_LEVEL_OBLIGATIONS, EXPECTED_CLAIM_LEVEL);
   check("ITEMB no allowed-rate + ON → base ask (no fire)", noRate.includes(BASE_PROV) && !noRate.includes("may not bill me the difference"), noRate);
   const noGap = on(mkEv(300, "in_network"), "provider");
   check("ITEMB allowed==billed (no gap) + ON → base ask (no fire)", noGap.includes(BASE_PROV) && !noGap.includes("may not bill me the difference"), noGap);
+}
+
+// ── 7. Item C (chargemaster, data-aware) — buildRequestSection renders the RAISE-voice chargemaster
+//    ask when a `chargemaster` finding (benchmarkAmount < billed) is present + demandsEnabled; byte-inert
+//    when OFF (the flag gate) or when no finding. Provider cites "your hospital's own chargemaster";
+//    insurer cites "its own chargemaster". (The detector/NPI-match upstream is proven by runaudit-smoke.) ─
+{
+  const mkEv = (avg: number | null): DisputeEvidence => {
+    const line: LineItemEvidence = {
+      lineItemId: "li-cm", billingCode: { value: "70450", type: "CPT" }, serviceSlug: "ct_head",
+      serviceName: "CT Head", billedAmount: 9000, insurancePaid: 0, patientOwes: 9000, patientPaid: 0,
+      planBenefit: null, expectedPatientCost: null, actualPatientCost: 9000, discrepancyAmount: 0,
+      discrepancyReason: null, communityOutcome: null, siblingCodes: null, pricingBenchmark: null,
+      auditFindings: avg != null ? [{
+        type: "chargemaster", severity: "medium", title: "Charge above the provider's published rate",
+        description: "Billed above the provider's published average charge.",
+        estimatedOvercharge: 9000 - avg, benchmarkAmount: avg, benchmarkSource: "Provider chargemaster (Hospital Price Transparency)",
+      }] : null,
+      auditRan: true, peerCodes: null, disputeType: "benchmark", citeGradeTier: "header",
+      dollarAtStake: 0, serviceNotRenderedAttested: false, secondaryCoverageVerify: null,
+    };
+    const claim = {
+      claimId: "c-cm", dateOfService: "2024-06-01", providerName: "Woodland Memorial Hospital",
+      totalBilled: 9000, planYear: 2024, lineItemEvidence: [line],
+      effectiveTotals: {} as unknown as ClaimEvidence["effectiveTotals"],
+      dataTrust: { headerReconciliationFailed: false, signViolation: false },
+    } satisfies ClaimEvidence;
+    return {
+      claims: [claim], totals: { claimCount: 1, lineItemCount: 1, totalBilled: 9000, totalDiscrepancy: 0 },
+      planEvidence: null, networkEvidence: null, communityEvidence: null, legalBasis: [], gaps: [],
+      dataTrust: { headerReconciliationFailed: false, signViolation: false },
+    };
+  };
+  const onP = buildRequestSection({ evidence: mkEv(4733), planContext: null, recipient: "provider", demandsEnabled: true });
+  check("ITEMC provider ON → chargemaster RAISE ask (cites own chargemaster + published pricing)",
+    onP.includes("Your hospital's own chargemaster lists an average charge of") && onP.includes("bring my bill in line with your own published pricing"), onP);
+  const onI = buildRequestSection({ evidence: mkEv(4733), planContext: null, recipient: "insurer", demandsEnabled: true });
+  check("ITEMC insurer ON → chargemaster ask (cites its own chargemaster, don't-pass-through)",
+    onI.includes("average charge on its own chargemaster") && onI.includes("exceeds the provider's published pricing"), onI);
+  // flag gate: OFF → no chargemaster copy (byte-inert) — the same evidence flips clean.
+  const offP = buildRequestSection({ evidence: mkEv(4733), planContext: null, recipient: "provider", demandsEnabled: false });
+  check("ITEMC provider OFF → no chargemaster copy (flag gate)", !offP.includes("own chargemaster"), offP);
+  // no chargemaster finding + ON → not rendered (the detector hasn't fired; no hospital_hpt seed match).
+  const noFind = buildRequestSection({ evidence: mkEv(null), planContext: null, recipient: "provider", demandsEnabled: true });
+  check("ITEMC no finding + ON → not rendered", !noFind.includes("own chargemaster"), noFind);
 }
 
 console.log(`\nobligation-registry-parity: ${pass} passed, ${fails.length} failed`);

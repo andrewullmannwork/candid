@@ -203,7 +203,8 @@ export function classifyDisputeType(li: ClassifyInput): DisputeTypeClass {
   if (
     findingTypes.has("overcharge") ||
     findingTypes.has("upcoding") ||
-    findingTypes.has("unbundling")
+    findingTypes.has("unbundling") ||
+    findingTypes.has("chargemaster")
   ) {
     return "benchmark";
   }

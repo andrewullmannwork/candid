@@ -53,7 +53,8 @@ export type ObligationPredicate =
   | "nsa_applicable" // the No Surprises Act applies to this line (OON balance-billing protection)
   | "contract_exists" // an in-network contract exists → a contracted rate is owed (§18.10.B)
   | "statute_verified" // a counsel-verified LEGAL_CITATION_REGISTRY entry exists (§4; unbuilt → null)
-  | "rate_known"; // the allowed / contracted rate is known well enough to assert a number
+  | "rate_known" // the allowed / contracted rate is known well enough to assert a number
+  | "published_rate_exceeded"; // billed above the provider's OWN published standard/average charge (HPT; Item C)
 
 /** The upgraded voice when the obligation is backed (predicate met + demands enabled). */
 export type ObligationVoiceMet = "demand" | "raise" | "request";
@@ -92,6 +93,7 @@ export interface ObligationContext {
   readonly contractExists?: boolean | null;
   readonly statuteVerified?: boolean | null;
   readonly rateKnown?: boolean | null;
+  readonly publishedRateExceeded?: boolean | null;
 }
 
 /** Evaluate one predicate against the context. `null` = unknown (the default-safe path). */
@@ -105,6 +107,8 @@ function evalObligationPredicate(p: ObligationPredicate, ctx: ObligationContext)
       return ctx.statuteVerified ?? null;
     case "rate_known":
       return ctx.rateKnown ?? null;
+    case "published_rate_exceeded":
+      return ctx.publishedRateExceeded ?? null;
     default: {
       // Exhaustiveness: adding a predicate without a case is a COMPILE error — keeps the
       // "1 enum member + 1 case" extensibility contract honest (the charter's referral/visit/
@@ -309,6 +313,22 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
     scope: "line_set",
     obligationElements: [
       { element: "coding_review", party: "provider", authority: "coding-accuracy review (AMA CPT)", condition: null, voiceIfMet: "raise", voiceIfNot: "omit" },
+    ],
+  },
+  chargemaster: {
+    order: 9,
+    scoringClass: "benchmark", // statistical tier (same as unbundling/overcharge); NO new DisputeTypeClass
+    autoLetterType: "overcharge",
+    requestBucket: null, // finding-keyed data-aware ask in buildRequestSection (disputeType resolves to "benchmark", so it can't bucket-route); copy is NOT registry prose
+    fromFindings: ["chargemaster"],
+    scope: "line",
+    obligationElements: [
+      // R3 5.4 Phase 3 (Item C) — the provider billed above its OWN published standard/average charge.
+      // RAISE, never ASSERT/demand (§4). NO prose entry → renderObligationClauses emits nothing; the
+      // element's VOICE (published_rate_exceeded → raise) gates the data-aware ask (templates.ts). rung-2
+      // (exact-list "remove the excess") + rung-3 (complaints) are deferred — they need the full CDM
+      // (exact list price) + counsel + the verified citation registry.
+      { element: "published_rate_ceiling", party: "provider", authority: "the provider's own published standard charge (federal Hospital Price Transparency requirements)", condition: "published_rate_exceeded", voiceIfMet: "raise", voiceIfNot: "omit" },
     ],
   },
 };

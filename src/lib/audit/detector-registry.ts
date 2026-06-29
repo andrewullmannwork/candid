@@ -33,12 +33,16 @@ import { runZeroCostShareCheck } from "./zero-cost-share";
 import { runClaimHeaderArithmeticCheck } from "./claim-header-arithmetic";
 import { runInsuranceUnderpaymentCheck } from "./insurance-underpayment";
 import { runDescriptionMatchCheck } from "./description-service-match";
+import { checkChargemaster } from "./chargemaster";
 
 export interface DetectorContext {
   bill: ParsedBill;
   benchmarks: Map<string, CMSPPLRate>;
   planCoverage: PlanCoverageMap | null;
   acaFallback: AcaFallbackLineCoverageMap | null;
+  /** Item C — per-code published chargemaster rates for the bill's provider, loaded upfront by
+   *  runAudit (mirrors `benchmarks`). Empty when no NPI / no hospital_hpt seed / DB error → inert. */
+  chargemasterRates: Map<string, number>;
   /** Findings accumulated by EARLIER detectors in the pipeline — the only cross-detector state. */
   priorFindings: readonly AuditFinding[];
 }
@@ -137,6 +141,14 @@ export const DETECTOR_REGISTRY: Detector[] = [
     key: "description_match",
     emits: ["code_uncategorized_description_match", "uncategorized_service"],
     run: (ctx) => runDescriptionMatchCheck(ctx.bill),
+  },
+  {
+    // Item C — chargemaster: the provider billed above its OWN published average charge. No ordering
+    // dependency (reads ctx.chargemasterRates, not priorFindings) → appended last. Inert when the rate
+    // map is empty (no NPI / no hospital_hpt seed) → byte-identical.
+    key: "chargemaster",
+    emits: ["chargemaster"],
+    run: (ctx) => checkChargemaster(ctx.bill, ctx.chargemasterRates),
   },
 ];
 

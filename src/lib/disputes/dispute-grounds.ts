@@ -42,7 +42,8 @@ export type DisputeGroundType =
   | "cost_share_misapplication" // wrong copay / coinsurance vs plan terms
   | "benchmark" // billed far above the CMS / community benchmark (overcharge)
   | "unallocated_balance" // bill header total exceeds the sum of line responsibilities
-  | "coding_peer"; // a peer code is paid for the same service
+  | "coding_peer" // a peer code is paid for the same service
+  | "chargemaster"; // billed above the provider's OWN published standard/average charge (HPT/AB-1045; Item C)
 
 /**
  * A render-ready finding for a ground: the persisted `description` (now surfaced via the
@@ -118,6 +119,7 @@ export function groundsForLine(line: LineItemEvidence, claimId: string): Dispute
   if (findingTypes.has("duplicate")) out.push(mk("duplicate", findingDollar(line, "duplicate"), "duplicate"));
   if (findingTypes.has("unbundling")) out.push(mk("unbundling", findingDollar(line, "unbundling"), "unbundling"));
   if (findingTypes.has("overcharge")) out.push(mk("benchmark", findingDollar(line, "overcharge"), "overcharge"));
+  if (findingTypes.has("chargemaster")) out.push(mk("chargemaster", findingDollar(line, "chargemaster"), "chargemaster"));
   if (findingTypes.has("unallocated_balance")) out.push(mk("unallocated_balance", findingDollar(line, "unallocated_balance"), "unallocated_balance"));
 
   // Cost-share vs coverage-contradiction — MUTUALLY EXCLUSIVE; additive over balance_billing.

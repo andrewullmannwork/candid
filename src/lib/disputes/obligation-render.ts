@@ -38,11 +38,20 @@ export function buildObligationContext(lines: readonly LineItemEvidence[]): Obli
   const contractExists = lines.some(
     (li) => rateGap(li) && (li.networkStatus === "in_network" || li.networkStatus === "tiered"),
   );
+  // Item C — the provider billed above its OWN published standard/average charge: a chargemaster
+  // detector finding carries that published rate in `benchmarkAmount`. Null until the detector + the
+  // pricing_data hospital_hpt seed land → publishedRateExceeded stays null → the voice omits → inert.
+  const publishedRateExceeded = lines.some((li) =>
+    (li.auditFindings ?? []).some(
+      (f) => f.type === "chargemaster" && f.benchmarkAmount != null && li.billedAmount > f.benchmarkAmount,
+    ),
+  );
   return {
     nsaApplicable: null,
     contractExists: contractExists ? true : null,
     statuteVerified: null,
     rateKnown: rateKnown ? true : null,
+    publishedRateExceeded: publishedRateExceeded ? true : null,
   };
 }
 
