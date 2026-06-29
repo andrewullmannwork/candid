@@ -11,6 +11,7 @@ import { isFeatureEnabled, readFeatureFlagConfig } from "@/lib/config/product-fl
 import { parsePlanDocumentHaiku } from "@/lib/plan_doc/parser";
 import { toLegacyPlanDocResult } from "@/lib/plan_doc/legacy-adapter";
 import type { PlanDocHaikuParseResult } from "@/lib/plan_doc/types";
+import type { RawService } from "@/lib/plan_doc/haiku-prompts/services-cost-sharing";
 
 // Re-export the same result type for consistency
 export type PlanDocParseResult = SBCParseResult;
@@ -31,6 +32,14 @@ export interface ParsePlanDocumentOptions {
    *  can drive the WHOLE synonym path flag-ON without flipping global PROD. PROD callers leave it
    *  undefined → the prompt reads the live flag (byte-identical). */
   thesaurusPhase1a?: boolean;
+  /** S253 cold-start seed regen — inject the Sonnet sub-agent's cached extraction as the service
+   *  list, bypassing the Haiku LLM (deterministic Stage C). PROD callers leave it undefined →
+   *  normal Haiku extraction (byte-identical). */
+  rawServicesOverride?: RawService[];
+  /** S253 cold-start seed regen — pin `coverage_dims_v1` (per-service referral + visit) for the
+   *  deterministic seed instead of reading the live flag. PROD callers leave it undefined → live
+   *  flag (byte-identical). Exposes the param parser.ts already honors (input.coverageDims). */
+  coverageDims?: boolean;
 }
 
 /**
@@ -53,8 +62,10 @@ export async function parsePlanDocument(
   ocrText: string,
   opts?: ParsePlanDocumentOptions,
 ): Promise<PlanDocParseResult> {
-  const flagEnabled = await isFeatureEnabled("plan_doc_parser_v2");
-  if (flagEnabled) {
+  // Seed override (cold-start regen, S253) forces the Haiku-shaped path independent of
+  // plan_doc_parser_v2 — the deterministic seed must not depend on a live flag.
+  const useHaikuPath = opts?.rawServicesOverride !== undefined || (await isFeatureEnabled("plan_doc_parser_v2"));
+  if (useHaikuPath) {
     const haikuResult = await parsePlanDocumentHaiku({
       ocrText,
       extractionMethod: opts?.extractionMethod ?? "pdftotext",
@@ -63,6 +74,9 @@ export async function parsePlanDocument(
         opts?.chunkConcurrency ?? (await readFeatureFlagConfig("plan_doc_parser_v2", "chunk_concurrency", 1)),
       extractionV2: opts?.extractionV2,
       thesaurusPhase1a: opts?.thesaurusPhase1a,
+      // S253 cold-start seed regen — deterministic Stage C inject + pinned coverage_dims.
+      rawServicesOverride: opts?.rawServicesOverride,
+      coverageDims: opts?.coverageDims,
     });
     return toLegacyPlanDocResult(haikuResult);
   }
@@ -82,8 +96,10 @@ export async function parsePlanDocumentWithMeta(
   ocrText: string,
   opts?: ParsePlanDocumentOptions,
 ): Promise<{ legacy: PlanDocParseResult; haiku: PlanDocHaikuParseResult | null }> {
-  const flagEnabled = await isFeatureEnabled("plan_doc_parser_v2");
-  if (flagEnabled) {
+  // Seed override (cold-start regen, S253) forces the Haiku-shaped path independent of
+  // plan_doc_parser_v2 — the deterministic seed must not depend on a live flag.
+  const useHaikuPath = opts?.rawServicesOverride !== undefined || (await isFeatureEnabled("plan_doc_parser_v2"));
+  if (useHaikuPath) {
     const haiku = await parsePlanDocumentHaiku({
       ocrText,
       extractionMethod: opts?.extractionMethod ?? "pdftotext",
@@ -92,6 +108,9 @@ export async function parsePlanDocumentWithMeta(
         opts?.chunkConcurrency ?? (await readFeatureFlagConfig("plan_doc_parser_v2", "chunk_concurrency", 1)),
       extractionV2: opts?.extractionV2,
       thesaurusPhase1a: opts?.thesaurusPhase1a,
+      // S253 cold-start seed regen — deterministic Stage C inject + pinned coverage_dims.
+      rawServicesOverride: opts?.rawServicesOverride,
+      coverageDims: opts?.coverageDims,
     });
     return { legacy: toLegacyPlanDocResult(haiku), haiku };
   }
