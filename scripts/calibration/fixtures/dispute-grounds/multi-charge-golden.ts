@@ -437,14 +437,45 @@ function letterFor(ev: DisputeEvidence, recipient: "insurer" | "provider"): stri
   check("L1 provider letter names the $200 write-off exactly once (no double-count)", (prov.match(/\$200\.00/g) ?? []).length === 1, prov);
 }
 
-// L2 — a $0-patient insurer-PAID duplicate: insurer letter raises the hedged review; the provider
-//      letter does NOT argue it (no patient exposure).
+// L2 — Phase 2: a $0-patient insurer-PAID duplicate on the INSURER letter → the counsel-blessed
+//      burden-shift ask (substantiate → correct accumulators → recoup); $0 to the headline (1a). The
+//      provider letter does NOT argue it (no patient exposure).
 {
   const survivor = makeLine({ lineItemId: "L2-d0", billedAmount: 150, patientPaid: 0, patientOwes: 0, insurancePaid: 150, auditFindings: [aud({ findingId: "L2F", removed: false, estimatedOvercharge: 150 })] });
   const copy = makeLine({ lineItemId: "L2-d1", billedAmount: 150, patientPaid: 0, patientOwes: 0, insurancePaid: 150, auditFindings: [aud({ findingId: "L2F", removed: true, estimatedOvercharge: 150 })] });
   const ev = makeEvidence({ lines: [survivor, copy] });
-  check("L2 insurer letter raises the insurer-paid-duplicate review", /was paid more than once/i.test(letterFor(ev, "insurer")), letterFor(ev, "insurer"));
+  const ins = letterFor(ev, "insurer");
+  check("L2 insurer duplicate ask: states it appears more than once", /appears more than once on this bill for the same service/i.test(ins), ins);
+  check("L2 insurer duplicate ask: demands recoupment of the overpayment", /recover any resulting overpayment from the provider/i.test(ins), ins);
+  check("L2 insurer duplicate ask is $0 to the headline (set excluded for insurer)", near(resolveLetterRecovery(ev, EMPTY_BASIS, "insurer").total, 0), resolveLetterRecovery(ev, EMPTY_BASIS, "insurer").total);
   check("L2 provider letter does NOT argue the $0 duplicate", !/duplicate charge/i.test(letterFor(ev, "provider")), letterFor(ev, "provider"));
+}
+
+// L2b — Phase 2 (broadened): a PATIENT-paid duplicate on the INSURER letter now fires the same
+//       burden-shift ask (silent pre-Phase-2). $0 to the insurer headline (the provider letter
+//       carries the refund dollars under the recipient model).
+{
+  const survivor = makeLine({ lineItemId: "L2b-d0", billedAmount: 150, patientPaid: 150, patientOwes: 0, auditFindings: [aud({ findingId: "L2bF", removed: false, estimatedOvercharge: 150 })] });
+  const copy = makeLine({ lineItemId: "L2b-d1", billedAmount: 150, patientPaid: 150, patientOwes: 0, auditFindings: [aud({ findingId: "L2bF", removed: true, estimatedOvercharge: 150 })] });
+  const ev = makeEvidence({ lines: [survivor, copy] });
+  const ins = letterFor(ev, "insurer");
+  check("L2b insurer fires the duplicate ask for a PATIENT-paid duplicate too", /appears more than once on this bill/i.test(ins), ins);
+  check("L2b insurer headline still excludes the set ($0)", near(resolveLetterRecovery(ev, EMPTY_BASIS, "insurer").total, 0), resolveLetterRecovery(ev, EMPTY_BASIS, "insurer").total);
+}
+
+// L7 — Phase 2: an UNBUNDLING set on the INSURER letter → the counsel-blessed unbundling ask (lists
+//      the component codes in bill order, cites NCCI, asks to reprocess + produce corrected coding +
+//      a revised EOB). $0 to the headline.
+{
+  const u0 = makeLine({ lineItemId: "L7-u0", billingCode: { value: "80053", type: "CPT" }, serviceName: "Metabolic panel", billedAmount: 120, patientPaid: 0, patientOwes: 120, auditFindings: [aud({ findingId: "L7F", type: "unbundling", title: "Possible unbundling", removed: false, estimatedOvercharge: 120 })] });
+  const u1 = makeLine({ lineItemId: "L7-u1", billingCode: { value: "80061", type: "CPT" }, serviceName: "Lipid panel", billedAmount: 120, patientPaid: 0, patientOwes: 120, auditFindings: [aud({ findingId: "L7F", type: "unbundling", title: "Possible unbundling", removed: true, estimatedOvercharge: 120 })] });
+  const ev = makeEvidence({ lines: [u0, u1] });
+  const ins = letterFor(ev, "insurer");
+  check("L7 insurer unbundling ask: names the practice", /a practice known as unbundling/i.test(ins), ins);
+  check("L7 insurer unbundling ask: lists the component codes (bill order)", /CPT 80053 and CPT 80061/.test(ins), ins);
+  check("L7 insurer unbundling ask: cites NCCI", /National Correct Coding Initiative/.test(ins), ins);
+  check("L7 insurer unbundling ask: demands a revised EOB", /revised Explanation of Benefits/.test(ins), ins);
+  check("L7 insurer unbundling ask is $0 to the headline", near(resolveLetterRecovery(ev, EMPTY_BASIS, "insurer").total, 0), resolveLetterRecovery(ev, EMPTY_BASIS, "insurer").total);
 }
 
 // L3 — an unallocated claim finding: provider letter asks to itemize the gap.

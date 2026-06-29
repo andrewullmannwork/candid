@@ -625,12 +625,14 @@ export function buildRequestSection(params: {
     if (peer) asks.push(`Verify whether ${peer} more accurately reflects the service provided, and reprocess accordingly.`);
   }
 
-  // 6) R3 step 5.3 — SET tier (duplicate / unbundling). The removed copy was dropped from the buckets
-  // above (removal dominates); here the set is argued ONCE. Provider letter → remove/refund the
-  // redundant charge (patient-exposed). Insurer letter → a hedged review of an insurer-PAID duplicate
-  // the patient has no exposure to (Decision 2, counsel-tightened — a notice, not a demand). A set
-  // whose service is also attested not-rendered is skipped (that whole-charge ask subsumes it). Precise
-  // dollars drop for a clamp-bound claim (the ask stands without a number).
+  // 6) SET tier (duplicate / unbundling). The removed copy was dropped from the buckets above (removal
+  // dominates); here the set is argued ONCE. Provider letter → remove/refund the redundant charge
+  // (patient-exposed; R3 step 5.3). Insurer letter (R3 step 5.4 Phase 2) → the counsel-blessed
+  // burden-shift ask, $0 to the headline (1a holds coherence): DUPLICATE = substantiate → (if
+  // unsubstantiated) correct accumulators → recoup; UNBUNDLING = determine/reprocess → produce the
+  // corrected coding determination + revised EOB → adjust accumulators. A set whose service is also
+  // attested not-rendered is skipped (1b — that whole-charge ask subsumes it). Provider precise dollars
+  // drop for a clamp-bound claim (the ask stands without a number); the insurer asks carry no dollars.
   for (const set of setRecoveries) {
     // R3 step 5.4 (1b) — an attested member subsumes the set (the whole-charge not-rendered ask covers
     // it); read the SAME flag the fold uses so amount_disputed and this letter body can't drift (was an
@@ -640,22 +642,36 @@ export function buildRequestSection(params: {
     const ref = members[0];
     if (!ref) continue;
     const svc = label(ref);
-    const bound = clampBound.has(set.claimId);
     const dup = set.type === "duplicate";
-    if (set.recovery > 0 && !isInsurer) {
-      const refund = bound ? 0 : set.refund;
-      const writeOff = bound ? 0 : set.writeOff;
-      const what = dup
-        ? `the duplicate charge for ${svc}, which appears on my bill more than once`
-        : `the unbundled charge for ${svc}, which should be billed under a single code`;
-      const remedy: string[] = [];
-      if (refund > 0) remedy.push(`refund the ${formatCurrency(refund)} I paid`);
-      if (writeOff > 0) remedy.push(`write off the ${formatCurrency(writeOff)} still billed`);
-      asks.push(`${capFirst(`remove ${what}`)}${remedy.length ? `, and ${joinClauses(remedy)}` : ""}.`);
-    } else if (set.recovery <= 0 && isInsurer && dup) {
-      const d = dateByLine.get(ref.lineItemId);
-      const dateStr = d ? formatDate(d) : null;
-      asks.push(`Review whether ${svc}${dateStr ? ` on ${dateStr}` : ""} was paid more than once and, if so, correct my claim record so my deductible and out-of-pocket totals reflect a single charge.`);
+    const d = dateByLine.get(ref.lineItemId);
+    const dateStr = d ? formatDate(d) : null;
+    if (!isInsurer) {
+      // Provider letter — argue the patient-exposed dollars ONCE. UNCHANGED by Phase 2 (byte-identical).
+      const bound = clampBound.has(set.claimId);
+      if (set.recovery > 0) {
+        const refund = bound ? 0 : set.refund;
+        const writeOff = bound ? 0 : set.writeOff;
+        const what = dup
+          ? `the duplicate charge for ${svc}, which appears on my bill more than once`
+          : `the unbundled charge for ${svc}, which should be billed under a single code`;
+        const remedy: string[] = [];
+        if (refund > 0) remedy.push(`refund the ${formatCurrency(refund)} I paid`);
+        if (writeOff > 0) remedy.push(`write off the ${formatCurrency(writeOff)} still billed`);
+        asks.push(`${capFirst(`remove ${what}`)}${remedy.length ? `, and ${joinClauses(remedy)}` : ""}.`);
+      }
+    } else if (dup) {
+      // R3 step 5.4 Phase 2 — insurer DUPLICATE ask (counsel-blessed, verbatim). $0 to the headline:
+      // a burden-shift — substantiate first, then correct accumulators, then recoup from the provider.
+      asks.push(
+        `${svc} appears more than once on this bill for the same service${dateStr ? ` and date of service, ${dateStr}` : ""}. A single service billed — and paid — more than once is a billing error. I ask that you: (1) require the provider to produce an itemized statement and documentation substantiating that this service was actually rendered more than once; (2) if it cannot be substantiated, correct my claim record so my deductible and out-of-pocket maximum reflect a single instance of this service; and (3) recover any resulting overpayment from the provider.`,
+      );
+    } else {
+      // R3 step 5.4 Phase 2 — insurer UNBUNDLING ask (counsel-blessed, verbatim). $0 to the headline:
+      // the insurer determines/reprocesses + PRODUCES the corrected coding determination + revised EOB.
+      const codes = members.map((m) => (m.billingCode ? `${m.billingCode.type} ${m.billingCode.value}` : m.serviceName));
+      asks.push(
+        `This bill lists ${joinClauses(codes)} as separate charges${dateStr ? ` for ${dateStr}` : ""}. These appear to be components of a single service that should be billed together under one comprehensive code; billing them separately — a practice known as unbundling — inflates both the total charge and the share passed on to me. Because your plan applies correct-coding edits (including those based on the National Correct Coding Initiative) when it adjudicates claims, I ask that you: (1) determine whether these charges should be combined under a single comprehensive code and, if so, reprocess the claim on that basis; (2) provide me your corrected coding determination and a revised Explanation of Benefits; and (3) adjust my deductible and out-of-pocket maximum to reflect the reprocessed amount.`,
+      );
     }
   }
 
