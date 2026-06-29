@@ -61,11 +61,20 @@ export type ObligationVoiceMet = "demand" | "raise" | "request";
 export type ObligationVoiceNot = "omit" | "fall_to_facts";
 export type ObligationVoice = ObligationVoiceMet | ObligationVoiceNot;
 
+/**
+ * Who can satisfy an obligation element = the RENDER-ROUTING key for which recipient's letter the
+ * clause appears in (shared by `ObligationElement.party` + `renderObligationClauses`'s recipient so
+ * the equality match at obligation-render.ts can't drift). R3 step 5.4 — `provider_financial_assistance`
+ * is the (inert) slot for the charity/FA fast-follow: no element uses it yet → renders nothing. It is
+ * a render key, NOT a data entity (Pattern S: FA is a provider modifier at the data layer).
+ */
+export type ObligationParty = "insurer" | "provider" | "provider_financial_assistance";
+
 export interface ObligationElement {
   /** Stable identity key (e.g. "nsa_protection") — also the prose-registry lookup key. */
   readonly element: string;
   /** Which party can satisfy it; the element renders only in that recipient's letter. */
-  readonly party: "insurer" | "provider";
+  readonly party: ObligationParty;
   /** Human-readable legal authority (DATA, Rule #2), e.g. "No Surprises Act". Drives demand copy. */
   readonly authority: string;
   /** The predicate gating the upgrade; `null` = unconditionally certain (always `voiceIfMet`). */

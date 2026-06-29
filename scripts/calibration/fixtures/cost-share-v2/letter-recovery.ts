@@ -162,7 +162,7 @@ const evidence = makeEvidence();
 console.log("\nS1 — pre-deductible (known not-met): the $240 blind over-claim is eliminated");
 {
   const result = engine(ACC_UNMET, "in_network");
-  const rec = resolveLetterRecovery(evidence, new Map([["li-1", result]]));
+  const rec = resolveLetterRecovery(evidence, new Map([["li-1", result]]), "provider");
   const byLine = rec.byLine.get("li-1")!;
   check("S1 card recovery is $0 (owe full allowed pre-deductible)", near(result.potentialRecovery, 0), result.potentialRecovery);
   check("S1 shouldOwe grounded (accumulator known)", result.shouldOweGrounded === true);
@@ -179,7 +179,7 @@ console.log("\nS1 — pre-deductible (known not-met): the $240 blind over-claim 
 console.log("\nS2 — deductible met: real $240 recovery preserved (letter == card)");
 {
   const result = engine(ACC_MET, "in_network");
-  const rec = resolveLetterRecovery(evidence, new Map([["li-1", result]]));
+  const rec = resolveLetterRecovery(evidence, new Map([["li-1", result]]), "provider");
   const byLine = rec.byLine.get("li-1")!;
   check("S2 card recovery is $240 (paid $300, owe $60 coinsurance)", near(result.potentialRecovery, 240), result.potentialRecovery);
   check("S2 line assertable", byLine.assertable === true);
@@ -193,7 +193,7 @@ console.log("\nS2 — deductible met: real $240 recovery preserved (letter == ca
 console.log("\nS3 — deductible unknown: §18.10.D omit (not grounded → prompt to confirm)");
 {
   const result = engine(null, "in_network");
-  const rec = resolveLetterRecovery(evidence, new Map([["li-1", result]]));
+  const rec = resolveLetterRecovery(evidence, new Map([["li-1", result]]), "provider");
   const byLine = rec.byLine.get("li-1")!;
   check("S3 shouldOwe NOT grounded (no met-status data)", result.shouldOweGrounded === false);
   check("S3 deductible_met assumption present", result.assumptions.some((a) => a.field === "deductible_met"));
@@ -208,7 +208,7 @@ console.log("\nS3 — deductible unknown: §18.10.D omit (not grounded → promp
 console.log("\nS4 — network assumed (no signal): OON-rate gate omits even a grounded $240");
 {
   const result = engine(ACC_MET, null); // no networkClaim → networkAssumed → network assumption
-  const rec = resolveLetterRecovery(evidence, new Map([["li-1", result]]));
+  const rec = resolveLetterRecovery(evidence, new Map([["li-1", result]]), "provider");
   const byLine = rec.byLine.get("li-1")!;
   check("S4 shouldOwe grounded (deductible met)", result.shouldOweGrounded === true);
   check("S4 network assumption present (assumed in-network)", result.assumptions.some((a) => a.field === "network"));
@@ -225,7 +225,7 @@ console.log("\nS4 — network assumed (no signal): OON-rate gate omits even a gr
 console.log("\nS5 — rate-starved (no coinsurance) + deductible/network unknown: prompt SUPPRESSED");
 {
   const result = engine(null, null, SERVICE_NO_RATE, PLAN_NO_RATE);
-  const rec = resolveLetterRecovery(evidence, new Map([["li-1", result]]));
+  const rec = resolveLetterRecovery(evidence, new Map([["li-1", result]]), "provider");
   const byLine = rec.byLine.get("li-1")!;
   check("S5 service_cost assumption present (rate unknown)", result.assumptions.some((a) => a.field === "service_cost"));
   check("S5 line NOT assertable", byLine.assertable === false);

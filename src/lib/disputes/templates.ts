@@ -632,8 +632,11 @@ export function buildRequestSection(params: {
   // whose service is also attested not-rendered is skipped (that whole-charge ask subsumes it). Precise
   // dollars drop for a clamp-bound claim (the ask stands without a number).
   for (const set of setRecoveries) {
+    // R3 step 5.4 (1b) — an attested member subsumes the set (the whole-charge not-rendered ask covers
+    // it); read the SAME flag the fold uses so amount_disputed and this letter body can't drift (was an
+    // inline members.some(serviceNotRenderedAttested) recompute — two sources could disagree).
+    if (set.attestationSubsumed) continue;
     const members = set.memberLineItemIds.map((id) => lineById.get(id)).filter((l): l is LineItemEvidence => !!l);
-    if (members.some((l) => l.serviceNotRenderedAttested)) continue;
     const ref = members[0];
     if (!ref) continue;
     const svc = label(ref);
@@ -717,13 +720,24 @@ export function buildRequestSection(params: {
 // markers (source, confidence, k-anonymity counts) gate rendering but never
 // appear in the output — see Candid_Data_Patterns.md hard rule 4.
 
+/**
+ * R3 step 5.4 (1c) — the trailing render flags collected into one options bag (was 3+ positional
+ * booleans → a 4th would be a smell). `renderEvidenceBlock` forwards this verbatim to
+ * `renderLineItemEvidence`; only the latter reads the fields. All optional with the SAME defaults the
+ * positional params had → byte-identical. `disputeGroundsOn` gates the dismissed-finding skip.
+ */
+interface RenderEvidenceOpts {
+  gateUnverified?: boolean;
+  attestingName?: string;
+  v3DesignOn?: boolean;
+  disputeGroundsOn?: boolean;
+}
+
 function renderEvidenceBlock(
   evidence: DisputeEvidence | null | undefined,
   planContext: PlanContext | null | undefined,
   title: string = "Why this service should be covered",
-  gateUnverified: boolean = false,
-  attestingName: string = "",
-  v3DesignOn: boolean = false,
+  opts: RenderEvidenceOpts = {},
 ): string {
   if (!evidence || evidence.claims.length === 0) return "";
 
@@ -754,7 +768,7 @@ function renderEvidenceBlock(
     }
 
     for (const li of claim.lineItemEvidence) {
-      const block = renderLineItemEvidence(li, itemNumber, planContext, gateUnverified, attestingName, v3DesignOn);
+      const block = renderLineItemEvidence(li, itemNumber, planContext, opts);
       if (block) {
         lines.push(block, "");
         itemNumber++;
@@ -789,10 +803,10 @@ function renderLineItemEvidence(
   li: LineItemEvidence,
   index: number,
   planContext: PlanContext | null | undefined,
-  gateUnverified: boolean = false,
-  attestingName: string = "",
-  v3DesignOn: boolean = false,
+  opts: RenderEvidenceOpts = {},
 ): string {
+  // R3 step 5.4 (1c) — defaults copied verbatim from the former positional params → byte-identical.
+  const { gateUnverified = false, attestingName = "", v3DesignOn = false, disputeGroundsOn = false } = opts;
   // Bare minimum to render: a code OR a billed amount. Skip phantom items.
   if (!li.billingCode && li.billedAmount === 0 && !li.patientOwes) return "";
 
@@ -1016,6 +1030,10 @@ function renderLineItemEvidence(
   // duplicate / upcoding flags captured at claim creation.
   if (li.auditFindings && li.auditFindings.length > 0) {
     for (const f of li.auditFindings) {
+      // R3 step 5.4 (1c) — when dispute_grounds_v1 is ON, skip findings the user dismissed ("not an
+      // issue"), matching the recovery math (which only runs ON + already skips dismissed). OFF →
+      // renders all (byte-identical). Activates atomically with the flag.
+      if (disputeGroundsOn && f.dismissed) continue;
       const parts: string[] = [];
       parts.push(`Candid audit flag (${f.title})`);
       if (f.benchmarkAmount != null && f.benchmarkSource) {
@@ -1114,9 +1132,7 @@ const overchargeTemplate: LetterTemplate = {
       evidence,
       planContext,
       "Supporting evidence for each charge",
-      gateUnverified ?? false,
-      attestingName ?? patientName,
-      v3DesignOn ?? false,
+      { gateUnverified: gateUnverified ?? false, attestingName: attestingName ?? patientName, v3DesignOn: v3DesignOn ?? false, disputeGroundsOn: disputeGroundsOn ?? false },
     );
 
     const recipientBlock = buildProviderRecipientBlock(providerName, planContext?.providerContact, bill);
@@ -1297,9 +1313,7 @@ const insuranceAppealTemplate: LetterTemplate = {
       evidence,
       planContext,
       (v3DesignOn ?? false) ? "Supporting detail" : "Why this service should be covered",
-      gateUnverified ?? false,
-      attestingName ?? patientName,
-      v3DesignOn ?? false,
+      { gateUnverified: gateUnverified ?? false, attestingName: attestingName ?? patientName, v3DesignOn: v3DesignOn ?? false, disputeGroundsOn: disputeGroundsOn ?? false },
     );
 
     const recipientBlock = buildInsurerRecipientBlock(insurerName, planContext);
@@ -1396,9 +1410,7 @@ const balanceBillingTemplate: LetterTemplate = {
       evidence,
       planContext,
       "Why these charges violate my plan's cost-sharing terms",
-      gateUnverified ?? false,
-      attestingName ?? patientName,
-      v3DesignOn ?? false,
+      { gateUnverified: gateUnverified ?? false, attestingName: attestingName ?? patientName, v3DesignOn: v3DesignOn ?? false, disputeGroundsOn: disputeGroundsOn ?? false },
     );
     // §18 incr-3 — finding block from EVIDENCE when ON (rerender-safe); OFF → byte-identical.
     const effectiveFindings: Array<AuditFinding | GroundFinding> =
@@ -1494,7 +1506,9 @@ const duplicateChargeTemplate: LetterTemplate = {
       evidence,
       planContext,
       "Line items flagged as duplicates",
-      gateUnverified ?? false,
+      // duplicate-letter body fn has no attestingName/v3DesignOn in scope → omitted (defaults "" /
+      // false, exactly as the prior positional call relied on). R3 step 5.4 (1c).
+      { gateUnverified: gateUnverified ?? false, disputeGroundsOn: disputeGroundsOn ?? false },
     );
     // §18 incr-3 — finding block from EVIDENCE when ON (rerender-safe); OFF → byte-identical.
     const effectiveFindings: Array<AuditFinding | GroundFinding> =

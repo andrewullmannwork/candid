@@ -121,6 +121,15 @@ export function generateDisputeLetter(
   const { planEvidence, planContext, evidence, gateUnverified, enforceDataTrustGate, disputeGroundsOn, disputeGroundBasis, noPlanCoverageRequestOn } =
     options;
 
+  // Resolve the letter type up front (was below, before the template lookup) so the recovery fold
+  // can be recipient-aware. R3 step 5.4 (1a) — the set/claim tiers fold into the headline ONLY for
+  // the provider letter; deriving the recipient from this resolvedType (the SAME value used to pick
+  // the template + returned as letter.letterType) keeps amount_disputed == the letter body per
+  // recipient.
+  const resolvedType =
+    letterType || FINDING_TO_LETTER[findings[0].type] || "overcharge";
+  const recipientKind = letterRecipientKind(resolvedType);
+
   // §18 incr-4 — the per-line deductible-aware letter dollars (== the card recovery), used by
   // the request block to source refund/write-off from the engine, not the deductible-blind
   // discrepancyAmount. Only when the flag is ON AND a basis was loaded → otherwise undefined
@@ -129,7 +138,7 @@ export function generateDisputeLetter(
   // letter asks; the OFF / no-basis path leaves it undefined → byte-identical.
   const recovery =
     disputeGroundsOn && evidence && disputeGroundBasis
-      ? resolveLetterRecovery(evidence, disputeGroundBasis)
+      ? resolveLetterRecovery(evidence, disputeGroundBasis, recipientKind)
       : undefined;
   const letterRecovery = recovery?.byLine;
 
@@ -140,10 +149,6 @@ export function generateDisputeLetter(
   if (enforceDataTrustGate && evidence?.dataTrust?.headerReconciliationFailed) {
     return null;
   }
-
-  // Auto-detect letter type from findings if not specified
-  const resolvedType =
-    letterType || FINDING_TO_LETTER[findings[0].type] || "overcharge";
 
   const template = LETTER_TEMPLATES[resolvedType];
   if (!template) {

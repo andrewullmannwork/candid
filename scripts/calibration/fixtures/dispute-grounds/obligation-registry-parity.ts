@@ -185,6 +185,12 @@ assertSeeding("CLAIM_LEVEL", CLAIM_LEVEL_OBLIGATIONS, EXPECTED_CLAIM_LEVEL);
   // recipient filter: contracted_rate is insurer-only → provider gets only the nsa clause.
   const provBoth = renderObligationClauses("balance_billing", "provider", { nsaApplicable: true, contractExists: true }, true);
   check("RENDER provider · nsa+contract met · ON → 1 clause (contracted is insurer-only)", provBoth.length === 1, provBoth);
+
+  // R3 step 5.4 (recipient dimension) — provider_financial_assistance is the INERT additive slot: no
+  // element targets it yet, so it renders nothing even with every predicate met + demands ON. Locks
+  // the type widening as byte-inert until the charity/FA fast-follow wires an element to it.
+  const faInert = renderObligationClauses("balance_billing", "provider_financial_assistance", { nsaApplicable: true, contractExists: true }, true);
+  check("RENDER provider_financial_assistance · all met · ON → [] (no FA element yet — inert slot)", faInert.length === 0, faInert);
 }
 
 // ── 4. buildRequestSection THREADING (registry → live composed letter) ────────────────────────

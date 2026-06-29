@@ -15,6 +15,7 @@ import type { DisputeLetterType, AuditReport } from "@/lib/billing/types";
 import type { PlanContext } from "./plan-context";
 import type { DisputeEvidence } from "./evidence-resolver";
 import { LETTER_TEMPLATES } from "./templates";
+import { letterRecipientKind } from "./index";
 import { resolveLetterRecovery } from "./dispute-grounds";
 import { loadDisputeGroundBasis } from "./dispute-ground-basis";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
@@ -140,7 +141,7 @@ export async function rerenderDisputeLetter(
   // the two paths can't diverge on the dollar.
   const recovery =
     disputeGroundsOn && evidence
-      ? resolveLetterRecovery(evidence, await loadDisputeGroundBasis(supabase, userId, [claimId]))
+      ? resolveLetterRecovery(evidence, await loadDisputeGroundBasis(supabase, userId, [claimId]), letterRecipientKind(letterType))
       : null;
   const letterRecovery = recovery?.byLine;
 

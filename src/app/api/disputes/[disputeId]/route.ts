@@ -471,6 +471,7 @@ export async function GET(
         const rec = resolveLetterRecovery(
           evidence,
           await loadDisputeGroundBasis(supabase, user.id, [dispute.claim_id as string]),
+          letterRecipientKind(dispute.dispute_type),
         );
         strengthenLetter = rec.weakened
           ? { weakened: rec.weakened, fields: rec.strengthenableFields }

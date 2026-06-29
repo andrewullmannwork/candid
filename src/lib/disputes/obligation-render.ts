@@ -14,6 +14,7 @@ import {
   DISPUTE_GROUND_CATALOG,
   selectObligationVoice,
   type ObligationContext,
+  type ObligationParty,
   type ObligationVoice,
 } from "./dispute-ground-catalog";
 
@@ -63,7 +64,7 @@ const OBLIGATION_PROSE: Record<string, Partial<Record<ObligationVoice, string>>>
  */
 export function renderObligationClauses(
   ground: DisputeGroundType,
-  recipient: "insurer" | "provider",
+  recipient: ObligationParty,
   ctx: ObligationContext,
   demandsEnabled: boolean,
 ): string[] {

@@ -328,6 +328,12 @@ export interface SetRecovery {
   refund: number;
   /** removed copies still BILLED → forgiveness. */
   writeOff: number;
+  /** R3 step 5.4 (1b) — ≥1 member is attested not-rendered, so the whole-charge not-rendered ask(s)
+   *  subsume this set: it is NOT folded into the headline AND the letter skips its set ask (both read
+   *  THIS one flag → fold + letter cannot drift). The attested members are argued + folded in the
+   *  attested/line tier instead (they are rescued from `removedLineItemIds`); non-attested copies are
+   *  dropped (subsumed) — safe-direction, no attestation propagated to a line the user did not attest. */
+  attestationSubsumed: boolean;
 }
 
 /**
@@ -354,10 +360,19 @@ const FINDING_TO_GROUND: ReadonlyMap<FindingType, DisputeGroundType> = (() => {
  * LineItemEvidence.lineItemId). Only reached when dispute_grounds_v1 is ON; the OFF path never
  * calls this (buildRequestSection falls back to discrepancyAmount → byte-identical). A
  * service_not_rendered line is always assertable (attestation IS the basis; shouldOwe 0).
+ *
+ * R3 step 5.4 (1a) — `recipient` makes the headline fold recipient-aware: the set/claim tiers
+ * (duplicate/unbundling/unallocated) fold into `total` ONLY for the `provider` letter (the only
+ * recipient that argues them with dollars). The insurer letter raises them as $0 verification
+ * asks, so folding there would make `amount_disputed` exceed its letter body. The set/claim
+ * ARRAYS always populate (the insurer letter still renders its $0 asks); only the pool fold is
+ * gated. Derive it from the resolved letter type via `letterRecipientKind` so the persisted
+ * `amount_disputed` and the rendered body agree per recipient.
  */
 export function resolveLetterRecovery(
   evidence: DisputeEvidence | null,
   basis: Map<string, CostShareV2Result>,
+  recipient: "insurer" | "provider",
 ): {
   byLine: Map<string, LineRecovery>;
   total: number;
@@ -436,7 +451,12 @@ export function resolveLetterRecovery(
         }
         agg.lineIds.add(line.lineItemId);
         agg.overcharge = Math.max(agg.overcharge, f.estimatedOvercharge);
-        if (f.removed) agg.removedLineIds.add(line.lineItemId);
+        // R3 step 5.4 (1b) — an attested not-rendered line is NEVER a removed copy: it is rescued to
+        // the attested/line tier (its strongest, attestation-backed ground) instead of being dropped.
+        // The line stays a set MEMBER (so the set forms + attestationSubsumed below detects it), but it
+        // is excluded from removedLineIds → it reaches the attested bucket in the letter + folds as
+        // not-rendered. Non-attested sets are unaffected (the guard is always true) → byte-identical.
+        if (f.removed && !line.serviceNotRenderedAttested) agg.removedLineIds.add(line.lineItemId);
       }
     }
   }
@@ -514,6 +534,12 @@ export function resolveLetterRecovery(
   // the totals + the letter at step 5.3 (headline-inert now → golden-48 byte-identical).
   const setRecoveries: SetRecovery[] = [];
   for (const [findingId, a] of participatingSets) {
+    // R3 step 5.4 (1b) — does any member attest the service was not rendered? If so, the whole-charge
+    // not-rendered ask(s) subsume this set: skip the headline fold here AND (via this flag on the
+    // pushed SetRecovery) the letter's set ask. ONE source → fold + letter cannot drift.
+    const attestationSubsumed = Array.from(a.lineIds).some(
+      (id) => lineById.get(id)?.serviceNotRenderedAttested === true,
+    );
     const removed = Array.from(a.removedLineIds)
       .map((id) => lineById.get(id))
       .filter((l): l is LineItemEvidence => !!l);
@@ -533,8 +559,14 @@ export function resolveLetterRecovery(
     const refundRaw = Math.max(0, Math.min(recoveryRaw, paid));
     const writeOffRaw = Math.max(0, recoveryRaw - refundRaw);
     // R3 step 5.3 — fold (raw) into the set's OWN claim pool; round for the recorded SetRecovery.
+    // R3 step 5.4 (1a) — recipient-aware: set-tier dollars fold into the headline ONLY for the
+    // provider letter (the only recipient that argues them with dollars). The insurer letter
+    // raises a $0 verification ask, so folding here would make amount_disputed exceed its letter
+    // body. The setRecoveries array still populates below → the insurer letter renders its $0 ask.
+    // R3 step 5.4 (1b) — also skip the fold when an attested member subsumes the set (the attested
+    // line is folded as not-rendered in the line tier instead; folding here too would double-count).
     const setPool = pools.get(a.claimId);
-    if (setPool) {
+    if (setPool && recipient === "provider" && !attestationSubsumed) {
       setPool.refundRaw += refundRaw;
       setPool.writeOffRaw += writeOffRaw;
     }
@@ -548,6 +580,7 @@ export function resolveLetterRecovery(
       recovery: round2(recoveryRaw),
       refund: round2(refundRaw),
       writeOff: round2(writeOffRaw),
+      attestationSubsumed,
     });
   }
 
@@ -565,8 +598,10 @@ export function resolveLetterRecovery(
       const recoveryRaw = Math.max(0, f.estimatedOvercharge);
       if (recoveryRaw <= 0) continue;
       // R3 step 5.3 — unallocated is billed (not shown paid) → the claim's write-off pool.
+      // R3 step 5.4 (1a) — recipient-aware fold (see set-tier note): claim-tier dollars fold into
+      // the headline ONLY for the provider letter; the claimRecoveries array still populates below.
       const claimPool = pools.get(claim.claimId);
-      if (claimPool) claimPool.writeOffRaw += recoveryRaw;
+      if (claimPool && recipient === "provider") claimPool.writeOffRaw += recoveryRaw;
       claimRecoveries.push({
         claimId: claim.claimId,
         type: ground,

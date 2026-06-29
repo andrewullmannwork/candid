@@ -372,8 +372,11 @@ export async function POST(req: NextRequest) {
         // follow-up emails consistent with the letter. `floatAmountDisputed` retires the
         // only-increase max-merge for this path (frozen at send). OFF → totalDisputed, max-merge.
         const deductibleAware = !!(disputeGroundsOn && disputeGroundBasis && evidence);
+        // R3 step 5.4 (1a) — derive the recipient from letter.letterType (the resolved type the
+        // body used, returned by generateDisputeLetter) so this persisted amount_disputed and the
+        // rendered letter body fold set/claim tiers identically → coherent by construction.
         const letterRecoveryResult = deductibleAware
-          ? resolveLetterRecovery(evidence!, disputeGroundBasis!)
+          ? resolveLetterRecovery(evidence!, disputeGroundBasis!, letterRecipientKind(letter.letterType))
           : null;
         const amountDisputed = letterRecoveryResult ? letterRecoveryResult.total : totalDisputed;
         strengthenLetter = letterRecoveryResult

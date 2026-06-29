@@ -315,6 +315,44 @@ for (const { type, findings } of ZERO_BUG_TYPES) {
   check("negotiation renders a non-empty body", neg.length > 0);
 }
 
+// ── R3 step 5.4 (1c) — dismissed audit findings drop from the per-line evidence bullet when
+//    dispute_grounds_v1 is ON; OFF renders them (byte-identical legacy). The skip is in
+//    renderLineItemEvidence's "Candid audit flag (…)" loop, reached via the evidence section. ──
+{
+  const dismissLine: LineItemEvidence = {
+    ...evidenceLine(makeFinding(), "li-dz"),
+    auditFindings: [
+      { type: "overcharge", severity: "medium", title: "DISMISSED-FLAG", description: "user marked not an issue", estimatedOvercharge: 50, benchmarkAmount: null, benchmarkSource: null, dismissed: true },
+      { type: "overcharge", severity: "medium", title: "ACTIVE-FLAG", description: "", estimatedOvercharge: 50, benchmarkAmount: null, benchmarkSource: null },
+    ],
+  };
+  const ev: DisputeEvidence = {
+    claims: [{
+      claimId: "claim-dz", dateOfService: SERVICE_DATE, providerName: "Sample Medical Center",
+      totalBilled: 500, planYear: 2024, lineItemEvidence: [dismissLine],
+      effectiveTotals: {} as unknown as ClaimEvidence["effectiveTotals"],
+      dataTrust: { headerReconciliationFailed: false, signViolation: false },
+    } satisfies ClaimEvidence],
+    totals: { claimCount: 1, lineItemCount: 1, totalBilled: 500, totalDiscrepancy: 0 },
+    planEvidence: null, networkEvidence: null, communityEvidence: null, legalBasis: [], gaps: [],
+    dataTrust: { headerReconciliationFailed: false, signViolation: false },
+  };
+  const renderDismiss = (groundsOn: boolean): string =>
+    LETTER_TEMPLATES.overcharge.body({
+      patientName: bill.patient.name, providerName: bill.provider.name, serviceDate: bill.serviceDate,
+      findings: [], bill, planContext: null, evidence: ev, gateUnverified: GATE, v3DesignOn: V3, disputeGroundsOn: groundsOn,
+    });
+  const dismOff = renderDismiss(false);
+  const dismOn = renderDismiss(true);
+  // OFF — legacy: BOTH flags render (byte-identical; the OFF-combo this fixture also exercises with
+  // the default gate/v3 left untouched is gate #9's domain, but the dismissed bullet path is proven here).
+  check("1c OFF renders the dismissed audit flag (byte-identical legacy)", dismOff.includes("Candid audit flag (DISMISSED-FLAG)"), dismOff);
+  check("1c OFF renders the active audit flag", dismOff.includes("Candid audit flag (ACTIVE-FLAG)"));
+  // ON — the fix: dismissed skipped, active kept.
+  check("1c ON SKIPS the dismissed audit flag", !dismOn.includes("Candid audit flag (DISMISSED-FLAG)"), dismOn);
+  check("1c ON keeps the active (non-dismissed) audit flag", dismOn.includes("Candid audit flag (ACTIVE-FLAG)"));
+}
+
 // ── Report (house style) ─────────────────────────────────────────────────────
 if (captured.length) console.log(`Captured ${captured.length} new golden(s): ${captured.join(", ")}`);
 console.log(`\ndispute-grounds golden corpus: ${pass} passed, ${fails.length} failed`);
