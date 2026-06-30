@@ -123,13 +123,21 @@ export function groundsForLine(line: LineItemEvidence, claimId: string): Dispute
   if (findingTypes.has("unallocated_balance")) out.push(mk("unallocated_balance", findingDollar(line, "unallocated_balance"), "unallocated_balance"));
 
   // Cost-share vs coverage-contradiction — MUTUALLY EXCLUSIVE; additive over balance_billing.
+  // Spine ORDER reconciled with classifyDisputeType (strength-scoring.ts): a denial finding
+  // (insurance_underpayment / missing_adjustment) is the documentary spine and OUTRANKS the
+  // structural cost-share signal — so the recovery's primary spine ground matches the letter BODY's
+  // bucket (classifyDisputeType → li.disputeType), keeping amount_disputed coherent with the asks.
+  // Previously `zeroCs || structuralCostShare` was tested FIRST, so a planBenefit+discrepancy line
+  // that ALSO carried a denial finding counted the cost-share sliver while the body argued coverage
+  // (the divergence). zero_cost_share_overcharge is itself an explicit cost-share FINDING, so absent a
+  // denial finding it (and the structural signal) → cost-share. Locked by classifier-parity.ts.
   const zeroCs = findingTypes.has("zero_cost_share_overcharge");
   const coverageContra = findingTypes.has("insurance_underpayment") || findingTypes.has("missing_adjustment");
   const structuralCostShare = !!line.planBenefit && (line.discrepancyAmount ?? 0) > 0;
-  if (zeroCs || structuralCostShare) {
-    out.push(mk("cost_share_misapplication", line.discrepancyAmount ?? findingDollar(line, "zero_cost_share_overcharge")));
-  } else if (coverageContra) {
+  if (coverageContra) {
     out.push(mk("coverage_contradiction", findingDollar(line, "insurance_underpayment") + findingDollar(line, "missing_adjustment")));
+  } else if (zeroCs || structuralCostShare) {
+    out.push(mk("cost_share_misapplication", line.discrepancyAmount ?? findingDollar(line, "zero_cost_share_overcharge")));
   } else if (line.planBenefit) {
     out.push(mk("coverage_contradiction", 0));
   }
