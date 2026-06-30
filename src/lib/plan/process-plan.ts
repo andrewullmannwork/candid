@@ -928,9 +928,12 @@ export async function processPlanDocumentData(
     let canonicalNeedsConfirmation = false;
     let canonicalIsNew = false;
 
-    // (d) seedMode (cold-start regen): the identity-driven canonical match below is gated on
-    // insurerMatch + plan_name, which the empty-identity override lacks → it's skipped. Resolve the
-    // canonical from the existing plan's PRESERVED link so the promotion (admin_override) can fire.
+    // (d) seedMode (cold-start regen): resolve the canonical from the plan's PRESERVED link (the
+    // AUTHORITATIVE target) so the promotion (admin_override) can fire. The identity-driven match below is
+    // then EXPLICITLY skipped for seedMode (see the seedMode branch in the canonical-match conditional).
+    // S256: pre-identity-override the seed had empty insurer/plan_name → the match self-skipped; now the
+    // seed carries a real identity, so it would re-match + could CREATE AN ORPHAN canonical — hence the
+    // explicit skip.
     if (options?.seedMode && options.seedTargetPlanId) {
       const { data: seedPlan, error: seedErr } = await supabase
         .from("insurance_plans").select("canonical_plan_id").eq("id", options.seedTargetPlanId).maybeSingle();
@@ -950,6 +953,12 @@ export async function processPlanDocumentData(
       console.log("[canonical-plan] Feature flag disabled for this user, skipping");
     } else if (skipCanonical) {
       // Medium-confidence doc — held for admin review, don't touch canonical tables
+    } else if (options?.seedMode) {
+      // (d) seedMode (cold-start regen): canonicalPlanId is ALREADY resolved from the plan's preserved link
+      // (934-942) — the authoritative target. Skip the identity-driven match entirely: post-S256 the seed
+      // carries a real insurer/plan_name (identity override), so matchInsurerWithPlanFallback would
+      // re-identify and could CREATE AN ORPHAN canonical + set canonicalNeedsConfirmation (silently
+      // blocking the promotion at ~line 1495). The seed targets a KNOWN canonical; never re-identify/insert.
     } else try {
       // Use the plan-name fallback so PEO-administered plans (where
       // `insurer_name` was captured as the group sponsor — e.g., "Sequoia
