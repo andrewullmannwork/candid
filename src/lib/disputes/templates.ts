@@ -655,7 +655,7 @@ export function buildRequestSection(params: {
           // in-network / tiered — proven contract → the contracted-rate demand.
           itemB = isInsurer
             ? `Your records show ${svc} was provided in-network at a contracted rate of ${aStr}. Please make sure my cost-share is based on that contracted rate — not the provider's billed ${bStr} — and that the provider writes off the ${overStr} difference, as your network agreement requires. If my claim was processed otherwise, please reprocess it and correct my cost-share.`
-            : `My plan shows this provider as in-network, so the contract between them sets the price for ${svc} at ${aStr} — which the provider accepts as payment in full. The ${bStr} billed is ${overStr} above that price, and an in-network provider may not bill me the difference. Please reduce this charge to ${aStr} and bill me only my in-network cost-share.`;
+            : `My plan shows this provider as in-network. Their contract rate sets the price for ${svc} at ${aStr} — which the provider accepts as payment in full. The ${bStr} billed is ${overStr} above that price, and an in-network provider may not bill me the difference. Please reduce this charge to ${aStr} and bill me only my in-network cost-share.`;
         } else if (li.networkStatus !== "out_of_network") {
           // null / unknown network — factual allowed-amount request (no contract asserted).
           itemB = isInsurer
@@ -675,7 +675,7 @@ export function buildRequestSection(params: {
   // 5) coding_peer — AMA-compliant "verify whether" (never "should be coded as").
   if (b.coding.length > 0) {
     const peer = b.coding[0].peerCodes?.[0]?.code;
-    if (peer) asks.push(`Verify whether ${peer} more accurately reflects the service provided, and reprocess accordingly.`);
+    if (peer) asks.push(`Verify whether code ${peer} more accurately reflects the service provided, and reprocess accordingly.`);
   }
 
   // 5b) chargemaster (Item C, R3 5.4 Phase 3) — lines billed ABOVE the provider's OWN published
@@ -746,14 +746,14 @@ export function buildRequestSection(params: {
       // R3 step 5.4 Phase 2 — insurer DUPLICATE ask (counsel-blessed, verbatim). $0 to the headline:
       // a burden-shift — substantiate first, then correct accumulators, then recoup from the provider.
       asks.push(
-        `${svc} appears more than once on this bill for the same service${dateStr ? ` and date of service, ${dateStr}` : ""}. A single service billed — and paid — more than once is a billing error. I ask that you: (1) require the provider to produce an itemized statement and documentation substantiating that this service was actually rendered more than once; (2) if it cannot be substantiated, correct my claim record so my deductible and out-of-pocket maximum reflect a single instance of this service; and (3) recover any resulting overpayment from the provider.`,
+        `${svc} appears more than once on this bill for the same service${dateStr ? ` and date of service, ${dateStr}` : ""}. This is a billing error. I ask that you: (1) require the provider to substantiate, with an itemized statement and documentation, that this service was actually rendered more than once; (2) if it cannot, correct my claim record so my deductible and out-of-pocket maximum reflect a single instance of this service; and (3) recover any resulting overpayment from the provider.`,
       );
     } else {
       // R3 step 5.4 Phase 2 — insurer UNBUNDLING ask (counsel-blessed, verbatim). $0 to the headline:
       // the insurer determines/reprocesses + PRODUCES the corrected coding determination + revised EOB.
       const codes = members.map((m) => (m.billingCode ? `${m.billingCode.type} ${m.billingCode.value}` : m.serviceName));
       asks.push(
-        `This bill lists ${joinClauses(codes)} as separate charges${dateStr ? ` for ${dateStr}` : ""}. These appear to be components of a single service that should be billed together under one comprehensive code; billing them separately — a practice known as unbundling — inflates both the total charge and the share passed on to me. Because your plan applies correct-coding edits (including those based on the National Correct Coding Initiative) when it adjudicates claims, I ask that you: (1) determine whether these charges should be combined under a single comprehensive code and, if so, reprocess the claim on that basis; (2) provide me your corrected coding determination and a revised Explanation of Benefits; and (3) adjust my deductible and out-of-pocket maximum to reflect the reprocessed amount.`,
+        `This bill lists ${joinClauses(codes)} as separate charges${dateStr ? ` for ${dateStr}` : ""}. These appear to be components of a single service that should be billed under one comprehensive code; billing them separately — unbundling — inflates both the total charge and my share. Because your plan applies correct-coding edits (including the National Correct Coding Initiative) when it adjudicates claims, I ask that you: (1) determine whether these charges should be combined under a single comprehensive code and, if so, reprocess the claim on that basis; (2) provide your corrected coding determination and a revised Explanation of Benefits; and (3) adjust my deductible and out-of-pocket maximum to reflect the reprocessed amount.`,
       );
     }
   }
@@ -764,8 +764,8 @@ export function buildRequestSection(params: {
     const unalloc = claimRecoveries.filter((c) => !clampBound.has(c.claimId)).reduce((s, c) => s + c.writeOff, 0);
     asks.push(
       unalloc > 0
-        ? `Itemize the ${formatCurrency(unalloc)} by which the bill total exceeds the sum of the listed charges, and confirm I owe only the itemized amounts.`
-        : `Itemize any balance by which the bill total exceeds the sum of the listed charges, and confirm I owe only the itemized amounts.`,
+        ? `The bill total exceeds the sum of the listed charges. Itemize the ${formatCurrency(unalloc)} and confirm I owe only the itemized amounts.`
+        : `The bill total exceeds the sum of the listed charges. Itemize any such balance and confirm I owe only the itemized amounts.`,
     );
   }
 
@@ -843,7 +843,7 @@ export function buildRequestSection(params: {
   return [
     "RELIEF REQUESTED",
     "",
-    `I request that ${payee} respond in writing within 30 days of receipt and:`,
+    `I request that ${isInsurer ? `${payee}'s legal department` : payee} respond in writing within 30 days of receipt and:`,
     "",
     numbered,
     "",

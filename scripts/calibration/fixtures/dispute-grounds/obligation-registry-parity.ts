@@ -324,7 +324,7 @@ assertSeeding("CLAIM_LEVEL", CLAIM_LEVEL_OBLIGATIONS, EXPECTED_CLAIM_LEVEL);
 
   // tiered → also strong (participating = proven contract).
   const tierProv = on(mkEv(200, "tiered"), "provider");
-  check("ITEMB tiered provider → strong contract copy", tierProv.includes("the contract between them") && tierProv.includes("payment in full"), tierProv);
+  check("ITEMB tiered provider → strong contract copy", tierProv.includes("Their contract rate") && tierProv.includes("payment in full"), tierProv);
 
   // out-of-network → SUPPRESS (no contract to invoke) → base ask + NSA.
   const oonProv = on(mkEv(200, "out_of_network"), "provider");

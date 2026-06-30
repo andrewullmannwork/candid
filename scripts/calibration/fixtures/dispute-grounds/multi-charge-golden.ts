@@ -471,7 +471,7 @@ function letterFor(ev: DisputeEvidence, recipient: "insurer" | "provider"): stri
   const u1 = makeLine({ lineItemId: "L7-u1", billingCode: { value: "80061", type: "CPT" }, serviceName: "Lipid panel", billedAmount: 120, patientPaid: 0, patientOwes: 120, auditFindings: [aud({ findingId: "L7F", type: "unbundling", title: "Possible unbundling", removed: true, estimatedOvercharge: 120 })] });
   const ev = makeEvidence({ lines: [u0, u1] });
   const ins = letterFor(ev, "insurer");
-  check("L7 insurer unbundling ask: names the practice", /a practice known as unbundling/i.test(ins), ins);
+  check("L7 insurer unbundling ask: names the practice", /separately — unbundling —/i.test(ins), ins);
   check("L7 insurer unbundling ask: lists the component codes (bill order)", /CPT 80053 and CPT 80061/.test(ins), ins);
   check("L7 insurer unbundling ask: cites NCCI", /National Correct Coding Initiative/.test(ins), ins);
   check("L7 insurer unbundling ask: demands a revised EOB", /revised Explanation of Benefits/.test(ins), ins);
@@ -481,7 +481,7 @@ function letterFor(ev: DisputeEvidence, recipient: "insurer" | "provider"): stri
 // L3 — an unallocated claim finding: provider letter asks to itemize the gap.
 {
   const prov = letterFor(makeEvidence({ lines: [notRenderedLine], claimFindings: [claimFinding()] }), "provider");
-  check("L3 provider letter asks to itemize the $146 unallocated gap", /itemize the \$146\.00 by which the bill total exceeds/i.test(prov), prov);
+  check("L3 provider letter asks to itemize the $146 unallocated gap", /bill total exceeds the sum of the listed charges\. Itemize the \$146\.00/i.test(prov), prov);
 }
 
 // L5 — a clamp-bound claim drops precise dollars: the not-rendered ask renders WITHOUT a refund $.
