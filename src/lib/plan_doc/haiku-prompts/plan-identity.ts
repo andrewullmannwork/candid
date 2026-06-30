@@ -71,7 +71,9 @@ would only "make sense" if joined across lines.`;
 // parse time with a 5-min in-process cache. The compile-time const above is
 // the fallback when no active DB row exists. Admin tunes via /admin/parse-
 // quality-tuning (Stage 5c) which writes a new active row + busts the cache.
-async function buildInstructions(layout: PlanDocLayout | undefined): Promise<string> {
+// Exported (S256) so the cold-start seed regen can snapshot the EXACT production identity prompt for the
+// Sonnet sub-agent (prompt parity, §18). PROD extraction is unaffected — this is the same builder it calls.
+export async function buildInstructions(layout: PlanDocLayout | undefined): Promise<string> {
   if (layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant") {
     const supplement = await loadActiveSupplement(
       PROMPT_FILE_PATH,

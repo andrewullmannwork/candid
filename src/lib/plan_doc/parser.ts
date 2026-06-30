@@ -389,6 +389,10 @@ export interface ParsePlanDocInput {
    *  parsePlanDocumentHaiku skips ALL LLM dispatch and returns them post-processed (deterministic,
    *  services-only; identity/access skipped, owned by the identity phase). undefined → normal parse. */
   rawServicesOverride?: RawService[];
+  /** S256 cold-start seed regen — inject the Sonnet sub-agent's cached plan-identity (in + out
+   *  deductible/OOP). When set, the seed early-return uses it instead of emptyPlanIdentity, so identity
+   *  flows to the persist + canonical promotion (seedMode). undefined → normal parse / empty seed identity. */
+  planIdentityOverride?: PlanDocPlanIdentity;
 }
 
 export async function parsePlanDocumentHaiku(
@@ -486,7 +490,7 @@ export async function parsePlanDocumentHaiku(
       );
     }
     const seedResult: PlanDocHaikuParseResult = {
-      planIdentity: emptyPlanIdentity(extractionMethod),
+      planIdentity: input.planIdentityOverride ?? emptyPlanIdentity(extractionMethod),
       services: r.data.services,
       accessInstructions: null,
       parseWarnings: [

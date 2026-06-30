@@ -221,7 +221,7 @@ export async function processPlanDocumentData(
   // promotion READS those rows (expandPerServiceCandidates); suppressing them would starve it.
   // `seedTargetPlanId` (required with seedMode) routes the persist to the doc's EXISTING canonical-
   // linked plan + supplies the canonical from its preserved link (the empty-identity override can't).
-  options?: { skipCanonical?: boolean; thesaurusRoutingOverride?: boolean; seedMode?: boolean; rawServicesOverride?: RawService[]; coverageDims?: boolean; seedTargetPlanId?: string }
+  options?: { skipCanonical?: boolean; thesaurusRoutingOverride?: boolean; seedMode?: boolean; rawServicesOverride?: RawService[]; coverageDims?: boolean; seedTargetPlanId?: string; planIdentityOverride?: PlanDocPlanIdentity }
 ): Promise<ProcessPlanResult> {
   try {
     // seedMode (cold-start regen) targets an EXISTING plan by id; without it the persist falls through
@@ -336,6 +336,7 @@ export async function processPlanDocumentData(
         // S253 cold-start seed regen: deterministic Stage C inject + pinned coverage_dims.
         rawServicesOverride: options?.rawServicesOverride,
         coverageDims: options?.coverageDims,
+        planIdentityOverride: options?.planIdentityOverride,
       });
       parseResult = planDocResult.legacy;
       planDocHaikuResult = planDocResult.haiku;
@@ -817,8 +818,36 @@ export async function processPlanDocumentData(
     if (options?.seedMode && options.seedTargetPlanId) {
       // (c) seed write-path: target the doc's existing canonical-linked plan directly. The production
       // mismatch/active-merge/INSERT resolution keys on is_active + can't find an inactive seed plan
-      // (it would orphan). No insurance_plans write here → identity + is_active preserved (subsumes b).
+      // (it would orphan). is_active + canonical_plan_id preserved by omission below.
       targetPlanId = options.seedTargetPlanId;
+      // S256: when the seed carries a plan-identity override, persist the regenerated EXTRACTED identity
+      // (deductible/OOP in+out, plan_name/type/year + Pattern-P8 provenance) to the existing plan so the
+      // canonical identity promotion reads it. §19-D clobber-guard: only write fields the override has a
+      // NON-NULL value for (a parse-miss can't null-clobber a populated deductible). metal_level/is_aca
+      // (derived, §16-D/§19-D) + is_active + canonical_plan_id are preserved by omission.
+      if (options.planIdentityOverride) {
+        const SEED_IDENTITY_COLS = [
+          "in_deductible_individual", "in_deductible_family", "in_oop_max_individual", "in_oop_max_family",
+          "out_deductible_individual", "out_deductible_family", "out_oop_max_individual", "out_oop_max_family",
+          "plan_name", "plan_type", "plan_year",
+        ] as const;
+        const { data: existingPlan } = await supabase
+          .from("insurance_plans").select("field_provenance").eq("id", targetPlanId).maybeSingle();
+        const mergedProv: Record<string, unknown> = { ...((existingPlan?.field_provenance as Record<string, unknown>) ?? {}) };
+        const idUpdate: Record<string, unknown> = {};
+        for (const col of SEED_IDENTITY_COLS) {
+          const v = (planInsert as Record<string, unknown>)[col];
+          if (v == null) continue; // clobber-guard: a null/missing re-parse never overwrites a populated value
+          idUpdate[col] = v;
+          const entry = (planIdentityProvenance as Record<string, unknown> | null)?.[col];
+          if (entry != null) mergedProv[col] = entry;
+        }
+        if (Object.keys(idUpdate).length > 0) {
+          idUpdate.field_provenance = mergedProv;
+          const { error: idErr } = await supabase.from("insurance_plans").update(idUpdate).eq("id", targetPlanId);
+          if (idErr) throw new Error(`seedMode identity write (${targetPlanId}) failed: ${idErr.message}`);
+        }
+      }
     } else if (mergeIntoExistingPlan) {
       targetPlanId = mergeIntoExistingPlan;
       // Update the existing plan with any new metadata (deductibles, OOP, etc.)
@@ -1465,11 +1494,15 @@ export async function processPlanDocumentData(
       // hard-delete prohibition; superseded comment in mig 069.
       if (canonicalPlanId && !canonicalNeedsConfirmation) {
         try {
-          // seedMode (cold-start regen): suppress the 7 plan-identity candidates — identity is a
-          // separate phase (§19-D). expandPerServiceCandidates (in the helper) still supplies the
-          // per-service coverage from the persisted rows. PROD passes the SBC identity candidates.
+          // S256: seedMode promotes the regenerated EXTRACTED plan-identity (incl. OON via the A-option
+          // list) — metal_level EXCLUDED (derived, §16-D/§19-D). Per-service coverage promotes separately
+          // via expandPerServiceCandidates (helper-internal). Identity values were just persisted to
+          // seedTargetPlanId above; a null identity field carries no value → no-op (clobber-guard holds
+          // end-to-end). PROD (non-seed) passes the SBC identity + per-service candidates.
           const candidates = options?.seedMode
-            ? []
+            ? PHASE_4_0_6_PLAN_IDENTITY_FIELDS_SBC
+                .filter((f) => f !== "metal_level")
+                .map((fieldName) => ({ serviceSlug: null, fieldName }))
             : derivePromotionCandidatesFromHaikuResult(haikuResult);
           const result = await commitUploadAndEvaluateCorroboration(supabase, {
             canonicalPlanId: canonicalPlanId!,

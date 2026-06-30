@@ -10,7 +10,7 @@ import type { ExtractionMethod } from "@/lib/parser/types";
 import { isFeatureEnabled, readFeatureFlagConfig } from "@/lib/config/product-flags";
 import { parsePlanDocumentHaiku } from "@/lib/plan_doc/parser";
 import { toLegacyPlanDocResult } from "@/lib/plan_doc/legacy-adapter";
-import type { PlanDocHaikuParseResult } from "@/lib/plan_doc/types";
+import type { PlanDocHaikuParseResult, PlanDocPlanIdentity } from "@/lib/plan_doc/types";
 import type { RawService } from "@/lib/plan_doc/haiku-prompts/services-cost-sharing";
 
 // Re-export the same result type for consistency
@@ -40,6 +40,11 @@ export interface ParsePlanDocumentOptions {
    *  deterministic seed instead of reading the live flag. PROD callers leave it undefined → live
    *  flag (byte-identical). Exposes the param parser.ts already honors (input.coverageDims). */
   coverageDims?: boolean;
+  /** S256 cold-start seed regen — inject the Sonnet sub-agent's cached plan-identity (in + out
+   *  deductible/OOP) as the deterministic identity, bypassing the Haiku identity LLM. PROD callers
+   *  leave it undefined → normal extraction (byte-identical). Promoted to canonical only in seedMode
+   *  (extracted fields; metal/ACA excluded — those are derived, §16-D/§19-D). */
+  planIdentityOverride?: PlanDocPlanIdentity;
 }
 
 /**
@@ -77,6 +82,7 @@ export async function parsePlanDocument(
       // S253 cold-start seed regen — deterministic Stage C inject + pinned coverage_dims.
       rawServicesOverride: opts?.rawServicesOverride,
       coverageDims: opts?.coverageDims,
+      planIdentityOverride: opts?.planIdentityOverride,
     });
     return toLegacyPlanDocResult(haikuResult);
   }
@@ -111,6 +117,7 @@ export async function parsePlanDocumentWithMeta(
       // S253 cold-start seed regen — deterministic Stage C inject + pinned coverage_dims.
       rawServicesOverride: opts?.rawServicesOverride,
       coverageDims: opts?.coverageDims,
+      planIdentityOverride: opts?.planIdentityOverride,
     });
     return { legacy: toLegacyPlanDocResult(haiku), haiku };
   }

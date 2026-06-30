@@ -73,6 +73,13 @@ export const PHASE_4_0_6_PLAN_IDENTITY_FIELDS_SBC: readonly string[] = [
   "in_deductible_family",
   "in_oop_max_individual",
   "in_oop_max_family",
+  // S256 (mig 192) — OON plan-identity. Promoted to canonical for live uploads AND the cold-start seed
+  // regen (§16-D "live + seed"; columns + apply_promotion_event arms landed in mig 192). Additive — a
+  // plan with no OON identity yields distinct_user_count=0 → no-op.
+  "out_deductible_individual",
+  "out_deductible_family",
+  "out_oop_max_individual",
+  "out_oop_max_family",
   "plan_name",
   "plan_year",
   "plan_type",
