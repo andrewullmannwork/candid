@@ -103,6 +103,15 @@ interface TemplateParams {
    * Default false → byte-identical (asserting coverage copy + provider-shaped tail).
    */
   noPlanCoverageRequestOn?: boolean;
+  /**
+   * R3 step 5.4 Phase 3 (Item D — financial-assistance structure; INERT until activation). The
+   * resolved per-dispute FA opt-in for a PROVIDER letter. When true, buildRequestSection adds an FA
+   * application ask + folds an FA basis into the standing collections-hold. The activation
+   * fast-follow composes it from the `financial_assistance_request_v1` flag + the
+   * `dispute.metadata.finAssistOptIn` opt-in and threads it via the re-render path; no live
+   * generator passes it today → defaults false → byte-identical. Provider-only.
+   */
+  finAssistContext?: boolean;
 }
 
 // ============================================================================
@@ -443,8 +452,13 @@ export function buildRequestSection(params: {
   // safe voice (fall_to_facts / omit) → byte-identical. Even ON, a demand fires only when a
   // predicate is met (all unknown today). Threaded from the render fns' disputeGroundsOn.
   demandsEnabled?: boolean;
+  // R3 step 5.4 Phase 3 (Item D) — resolved provider FA opt-in. INERT until the activation
+  // fast-follow wires the signal (the `financial_assistance_request_v1` flag + the
+  // `dispute.metadata.finAssistOptIn` opt-in); defaults false → byte-identical. See
+  // TemplateParams.finAssistContext.
+  finAssistContext?: boolean;
 }): string {
-  const { evidence, planContext, recipient, letterRecovery, recovery, noPlanCoverageRequestOn, demandsEnabled } = params;
+  const { evidence, planContext, recipient, letterRecovery, recovery, noPlanCoverageRequestOn, demandsEnabled, finAssistContext } = params;
   if (!evidence) return "";
   const allLines = evidence.claims.flatMap((c) => c.lineItemEvidence);
   if (allLines.length === 0) return "";
@@ -756,8 +770,8 @@ export function buildRequestSection(params: {
   }
 
   // Fallback — never emit an empty request block. (Substantive asks only; the housekeeping asks
-  // below — collections-hold + the itemized/adjudication request — append after, so a letter with
-  // only housekeeping still carries the fallback's substantive ask.)
+  // below — FA application + collections-hold + the itemized/adjudication request — append after, so
+  // a letter with only housekeeping still carries the fallback's substantive ask.)
   if (asks.length === 0) {
     asks.push(
       isInsurer
@@ -766,14 +780,37 @@ export function buildRequestSection(params: {
     );
   }
 
+  // R3 step 5.4 Phase 3 (Item D — financial-assistance structure; INERT until activation). On a
+  // PROVIDER letter where the patient has opted into financial assistance, ask the provider for its
+  // FA options AND fold an FA basis into the standing collections-hold below. `finAssistContext` is
+  // the resolved opt-in (the activation fast-follow composes it from the
+  // `financial_assistance_request_v1` flag + `dispute.metadata.finAssistOptIn`); no live generator
+  // passes it today → false → byte-identical. Coherence gate: at least one owed line that is NOT
+  // attested not-rendered — you do not seek assistance for a balance you say you never incurred. This
+  // SAME `faActive` drives both the ask and the hold clause, so the hold can never reference an FA
+  // request the letter did not make. Patient-driven + provider-agnostic (charity care + for-profit
+  // programs); asserts no statute (the §501(r) obligation-demand version is the deferred upgrade) →
+  // counsel pass before the activation flip.
+  const faActive =
+    !isInsurer &&
+    (finAssistContext ?? false) &&
+    allLines.some((li) => (li.patientOwes ?? 0) > 0 && !li.serviceNotRenderedAttested);
+  if (faActive) {
+    asks.push(
+      `I would like to apply for any financial assistance available for this balance. Please send me information on the options you offer.`,
+    );
+  }
+
   // R3 step 5.4 Phase 3 (Item A) — standing collections-hold. A provider letter asks to pause
   // collection activity + credit reporting on any outstanding balance (`patientOwes > 0`) while the
   // dispute is pending. Skipped when the no-plan coverage hold above already requested it (dedup via
   // collectionsHoldRequested). Unconditional (not demand-gated) → protects the patient the moment
-  // the letter ships.
+  // the letter ships. Item D — when `faActive`, the ONE hold cites BOTH bases (dispute + FA review);
+  // no redundant second hold. (When the no-plan hold pre-empted this one, collections are already
+  // held by it and no false FA reference exists → FA-awareness stays scoped to this hold.)
   if (!isInsurer && !collectionsHoldRequested && allLines.some((li) => (li.patientOwes ?? 0) > 0)) {
     asks.push(
-      `I dispute these charges. While this dispute is unresolved, place any collection activity for this balance on hold and do not report it to a credit bureau. If it has already been reported, report it as disputed.`,
+      `I dispute these charges. While this dispute is unresolved${faActive ? " and my financial-assistance request is under review" : ""}, place any collection activity for this balance on hold and do not report it to a credit bureau. If it has already been reported, report it as disputed.`,
     );
   }
 
@@ -1212,6 +1249,7 @@ const overchargeTemplate: LetterTemplate = {
     letterRecovery,
     recovery,
     noPlanCoverageRequestOn,
+    finAssistContext,
   }) => {
     // §18 incr-3 — source the finding block from EVIDENCE when the flag is ON (rerender-safe;
     // kills the $0.00 bug). OFF or no-evidence → the AuditReport findings (byte-identical;
@@ -1243,7 +1281,7 @@ const overchargeTemplate: LetterTemplate = {
     // Block C2 item 4 — v3 replaces the fixed "I am requesting 1/2/3" list with
     // the conditional request tree (provider voice). OFF → byte-identical.
     const requestBlock = (v3DesignOn ?? false)
-      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, demandsEnabled: disputeGroundsOn ?? false })
+      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, finAssistContext, demandsEnabled: disputeGroundsOn ?? false })
       : `I am requesting the following:
 
 1. A detailed, itemized bill showing all charges, procedure codes (CPT/HCPCS), and quantities.
@@ -1507,6 +1545,7 @@ const balanceBillingTemplate: LetterTemplate = {
     letterRecovery,
     recovery,
     noPlanCoverageRequestOn,
+    finAssistContext,
   }) => {
     const evidenceBlock = renderEvidenceBlock(
       evidence,
@@ -1535,7 +1574,7 @@ const balanceBillingTemplate: LetterTemplate = {
     // Block C2 item 4 — v3 replaces the fixed "I am requesting 1/2/3" list with
     // the conditional request tree (provider voice). OFF → byte-identical.
     const requestBlock = (v3DesignOn ?? false)
-      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, demandsEnabled: disputeGroundsOn ?? false })
+      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, finAssistContext, demandsEnabled: disputeGroundsOn ?? false })
       : `I am requesting:
 
 1. An immediate review of these charges
@@ -1606,6 +1645,7 @@ const duplicateChargeTemplate: LetterTemplate = {
     letterRecovery,
     recovery,
     noPlanCoverageRequestOn,
+    finAssistContext,
     bill,
   }) => {
     const evidenceBlock = renderEvidenceBlock(
@@ -1642,7 +1682,7 @@ const duplicateChargeTemplate: LetterTemplate = {
     // path / the evidence:null fixture variant) fall to the legacy list — duplicate has no separate
     // closing line, so an empty relief would read abruptly (unlike overcharge, which has one).
     const requestBlock = ((v3DesignOn ?? false) && evidence)
-      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, demandsEnabled: disputeGroundsOn ?? false })
+      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, finAssistContext, demandsEnabled: disputeGroundsOn ?? false })
       : `I am requesting:
 
 1. A detailed review of each charge listed above
