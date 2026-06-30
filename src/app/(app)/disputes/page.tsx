@@ -23,6 +23,7 @@ import {
   type PlanSearchModalMode,
 } from "@/components/disputes/PlanSearchModal";
 import { DisputePlanChooser, type DisputePlanChooserPlan } from "@/components/disputes/DisputePlanChooser";
+import { StrengthenLetterPrompt, type StrengthField } from "@/components/disputes/StrengthenLetterPrompt";
 import { DownloadWarningModal } from "@/components/disputes/DownloadWarningModal";
 import { EvidenceGaps } from "@/components/disputes/EvidenceGaps";
 import { InsurerAddressCorrectionModal } from "@/components/disputes/InsurerAddressCorrectionModal";
@@ -218,6 +219,12 @@ function DisputesContent() {
   const [isStale, setIsStale] = useState(false);
   const [staleBannerCollapsed, setStaleBannerCollapsed] = useState(false);
   const [refreshingLetter, setRefreshingLetter] = useState(false);
+  // §18.10.D — the "confirm to strengthen" signal from the dispute GET/redraft. Non-null +
+  // fields populated only when the deductible-aware letter omitted a precise dollar.
+  const [strengthenLetter, setStrengthenLetter] = useState<{ weakened: boolean; fields: StrengthField[] } | null>(null);
+  // Collapse owned at the page (like staleBannerCollapsed) so "minimize after rebuild" persists
+  // across the refetch and the user can reopen it; re-expands on a fresh navigation.
+  const [strengthenCollapsed, setStrengthenCollapsed] = useState(false);
   // S109 PR #2 (Chunk B) — current same-plan-confirmation answer; drives
   // SamePlanConfirmBanner visibility and the letter's fallback-cite framing.
   const [userConfirmedSamePlan, setUserConfirmedSamePlan] = useState<
@@ -334,10 +341,15 @@ function DisputesContent() {
     // navigation re-expands the banner; a refresh keeps the user's collapse
     // state (the refreshed letter is no longer stale anyway).
     setIsStale(data.isStale === true);
-    if (!opts?.refresh) setStaleBannerCollapsed(false);
+    if (!opts?.refresh) { setStaleBannerCollapsed(false); setStrengthenCollapsed(false); }
     setPlanContext(data.planContext ?? null);
     setEvidence(data.evidence ?? null);
     setNameMismatch(data.patientNameMismatch ?? null);
+    setStrengthenLetter(
+      data.strengthenLetter && Array.isArray(data.strengthenLetter.fields)
+        ? { weakened: data.strengthenLetter.weakened === true, fields: data.strengthenLetter.fields as StrengthField[] }
+        : null,
+    );
     setGateUnverified(!!data.gateUnverified);
     setDisputeStatus(typeof data.status === "string" ? data.status : null);
     setDisputeFiledDate(typeof data.filedDate === "string" ? data.filedDate : null);
@@ -828,6 +840,27 @@ function DisputesContent() {
       </div>
     )
   ) : null;
+
+  // §18.10.D — the "confirm to strengthen + rebuild" prompt. Present only when the deductible-
+  // aware letter omitted a precise dollar AND there are user-fixable inputs. Confirming writes
+  // the same cost-share overrides the claim page uses; Rebuild reuses handleRefreshLetter
+  // (GET ?refresh=1 → re-resolves the basis with the new overrides → precise figure).
+  const strengthenPromptNode =
+    strengthenLetter?.weakened && strengthenLetter.fields.length > 0 && letter?.auditReportId ? (
+      <StrengthenLetterPrompt
+        claimId={letter.auditReportId}
+        fields={strengthenLetter.fields}
+        getToken={async () => {
+          const t = await getAuthToken();
+          if (!t) throw new Error("no auth token");
+          return t;
+        }}
+        onRebuild={handleRefreshLetter}
+        rebuilding={refreshingLetter}
+        collapsed={strengthenCollapsed}
+        onToggleCollapsed={setStrengthenCollapsed}
+      />
+    ) : null;
 
   const recipientNode = (
     <DisputeRecipientCard
@@ -1459,6 +1492,7 @@ function DisputesContent() {
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]">
           <div className="min-w-0 space-y-5">
             {staleBannerNode}
+            {strengthenPromptNode}
             {dataTrustBannerNode}
             {heroNode}
             {recipientNode}
@@ -1483,6 +1517,7 @@ function DisputesContent() {
       ) : (
         <>
           {staleBannerNode}
+          {strengthenPromptNode}
           {heroNode}
           {recipientNode}
           {evidenceNode}

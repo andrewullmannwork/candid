@@ -23,11 +23,14 @@ import { extractPatternP8FromEntry, isCitationGrade } from "@/lib/parser/consume
 import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import { findPeerCodesForSlug } from "./peer-code-engine";
 import { resolveCanonicalSlugs } from "@/lib/parser/canonical-resolution";
-import { normalizeCoinsurancePct, normalizeCoinsuranceDecimal } from "@/lib/billing/coinsurance";
+import { normalizeCoinsurancePct, normalizeCoinsuranceDecimal, normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
+import type { ClaimLevelFindingMeta, NetworkTier } from "@/lib/billing/types";
 import {
   resolveEffectiveClaimTotals,
   type EffectiveClaimTotals,
 } from "@/lib/claims/effective-totals";
+import { resolveCoverageForLine, type CoverageDecision } from "@/lib/claims/coverage-decision";
+import { coerceNetworkTier } from "@/lib/claims/cost-share-loader";
 import {
   classifyDisputeType,
   deriveCiteGradeTier,
@@ -40,6 +43,7 @@ import {
   loadPlanCoverageMeta,
   loadBillSlugMeta,
   loadSecondaryGate,
+  loadCoverageRows,
   type SecondaryCoverage,
 } from "@/lib/audit/coverage-loader";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
@@ -63,6 +67,9 @@ function secondaryCostShareLabel(cov: { copay: number | null; coinsurance: numbe
  * user-confirmed coverage. `secondaryMatchedSlug` records the borrowed sibling.
  */
 function buildSecondaryPlanBenefit(sec: SecondaryCoverage, planYear: number | null): PlanBenefitDetail {
+  // R2 (S242) — a verified secondary (category) match IS covered by definition;
+  // carry the shared decision so the route layer reads planStance uniformly.
+  const coverageDecision = resolveCoverageForLine({ covered: true }, null);
   return {
     covered: true,
     copay: sec.coverage.copay,
@@ -77,6 +84,7 @@ function buildSecondaryPlanBenefit(sec: SecondaryCoverage, planYear: number | nu
     sourcedFrom: "user_exact",
     sourcedFromYear: planYear,
     secondaryMatchedSlug: sec.matchedSlug,
+    coverageDecision,
   };
 }
 
@@ -176,6 +184,17 @@ export interface PlanBenefitDetail {
    * for direct exact-slug matches.
    */
   secondaryMatchedSlug?: string | null;
+  /**
+   * R2 (S242) — the shared CoverageDecision this benefit's coverage stance was
+   * derived from (additive). The `covered` boolean above is now its LEGACY
+   * PROJECTION (`planStance !== "not_covered"`). Carries planStance forward so the
+   * route layer (R3) can detect `coverage_contradiction` (plan covered + insurer
+   * denied) without re-deriving it. The insurer axis is null here — the row-mapper
+   * has no claim line in scope; it merges where the adjudication lives. Optional:
+   * only the two letter loaders (`buildPlanBenefitFromRow` /
+   * `buildSecondaryPlanBenefit`) populate it today.
+   */
+  coverageDecision?: CoverageDecision;
 }
 
 export interface LineItemEvidence {
@@ -194,6 +213,21 @@ export interface LineItemEvidence {
    * didn't populate it (→ request degrades to "reverse the charge").
    */
   patientPaid: number | null;
+  /**
+   * Item B (R3 step 5.4 Phase 3) — the plan's allowed / contracted amount for this line
+   * (claim_line_items.allowed_amount). Drives the contracted-rate ask. Null when the
+   * bill/EOB had no per-line allowed column (the parser is conservative — common on
+   * provider itemized bills) → the ask doesn't fire. Optional so the many fixture
+   * literals that predate it stay valid (undefined === no signal).
+   */
+  allowedAmount?: number | null;
+  /**
+   * Item B — per-line network tier (claim_line_items.network_status, coerced via
+   * coerceNetworkTier). Selects the contracted-rate voice: in_network/tiered → the
+   * contract demand; out_of_network → suppress (no contract to invoke); null/unknown →
+   * a factual allowed-amount request. Optional (see allowedAmount).
+   */
+  networkStatus?: NetworkTier | null;
   planBenefit: PlanBenefitDetail | null;
   expectedPatientCost: number | null;
   actualPatientCost: number | null;
@@ -250,9 +284,22 @@ export interface LineItemEvidence {
     type: string;
     severity: string;
     title: string;
+    /** §18 Stage 1 — the persisted finding description (persist.ts:278). Surfaced so the
+     *  grounds builder can reproduce the letter's finding-detail block on the rerender path
+     *  (the finding-level billedAmount is NOT persisted → the builder sources it from the
+     *  line's billedAmount). Optional + additive → existing constructors/consumers ignore it. */
+    description?: string | null;
     estimatedOvercharge: number;
     benchmarkAmount: number | null;
     benchmarkSource: string | null;
+    /** R3 step 5.2 — the persisted finding id (claims/persist.ts) + the removal flag. The SET tier
+     *  groups by findingId across the claim's lines + drops removed copies. Optional/additive. */
+    findingId?: string;
+    removed?: boolean;
+    /** R3 step 5.3 — the persisted dismiss flag. Surfaced additively so the flag-gated recovery
+     *  tiers (groundsForLine / SET pre-pass) + the detail block skip a user-dismissed finding; the
+     *  OFF path never reads it → byte-identical. The CLAIM tier already filters f.dismissed. */
+    dismissed?: boolean;
   }> | null;
   /**
    * Block C2.2 (S152) — true when an audit has actually RUN on this line (the
@@ -332,6 +379,13 @@ export interface ClaimEvidence {
     headerReconciliationFailed: boolean;
     signViolation: boolean;
   };
+  /**
+   * R3 step 5.1 — claim-header findings (lineItems=[], e.g. `unallocated_balance`) persisted at
+   * claim.metadata.auditSummary.claimLevelFindings. Surfaced RAW (incl. dismissed) so the dispute
+   * recovery's CLAIM tier (resolveLetterRecovery) applies the !dismissed/actionable/scope policy.
+   * Optional/additive: absent on synthetic evidence → the claim tier is simply empty.
+   */
+  claimFindings?: ClaimLevelFindingMeta[];
 }
 
 export interface PlanEvidenceDetail {
@@ -539,7 +593,7 @@ export async function resolveEvidence(
       userId,
       "claim_line_items",
       claimIds,
-      "id, claim_id, line_number, billing_code, billing_code_type, service_slug, description, billed_amount, insurance_paid, insurance_adjusted_amount, patient_owes, patient_paid_amount, plan_year, metadata",
+      "id, claim_id, line_number, billing_code, billing_code_type, service_slug, description, billed_amount, allowed_amount, insurance_paid, insurance_adjusted_amount, patient_owes, patient_paid_amount, network_status, plan_year, metadata",
     ),
   ]);
 
@@ -695,6 +749,10 @@ export async function resolveEvidence(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         signViolation: (c.metadata as any)?.bill_parser_sign_violation === true,
       },
+      // R3 step 5.1 — claim-header findings for the dispute recovery's claim tier (raw; the
+      // recovery applies the !dismissed/actionable + catalog-scope policy).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      claimFindings: ((c.metadata as any)?.auditSummary?.claimLevelFindings as ClaimLevelFindingMeta[] | undefined) ?? [],
     });
   }
 
@@ -1240,7 +1298,152 @@ function emptyEvidence(
   };
 }
 
-async function loadCoverage(
+// ============================================================================
+// R1a (S240) — shared coverage-read helpers, extracted from loadCoverage +
+// loadCoverageFromCanonical (they were ~90% identical). Parity-gated in
+// scripts/calibration/fixtures/cost-share-v2/coverage-loader-parity.ts.
+// ============================================================================
+
+/** One coverage row in the shape buildPlanBenefitFromRow consumes. `sbc_excerpt` /
+ *  `sbc_page` are user-table (plan_covered_services) only — pass null for canonical. */
+export interface CoverageRowForBenefit {
+  covered: boolean | null;
+  in_copay: number | null;
+  in_coinsurance: number | null;
+  source: string | null;
+  confidence: number | null;
+  sbc_excerpt: string | null;
+  sbc_page: number | null;
+  field_provenance: Record<string, FieldProvenanceEntry> | null;
+  slug: string;
+  name: string;
+}
+
+/** Pre-loaded, per-plan cite-grade context shared across every row of one load. */
+export interface CiteGradeContext {
+  citeGradeGateOn: boolean;
+  canonicalCiteGradeBySlug: Map<string, { sourceExcerpt: string; sourceSectionHint: string }>;
+  coverageCanonicalMap: Map<string, string>;
+}
+
+/** Table-specific knobs — the only things the two loaders differed on per row. */
+export interface PlanBenefitRowOpts {
+  sourceTag: PlanBenefitDetail["sourcedFrom"];
+  sourceYear: number | null;
+  sourceDefault: string;
+  buildCitation: (name: string, sbcPage: number | null) => string;
+}
+
+/**
+ * The shared per-row cite-grade mapper: the A3 identity axis + the P-8 → canonical-
+ * haiku → legacy-sbc excerpt cascade + alias keying. PURE. Returns null when the row
+ * falls below the confidence floor (the prior loops' `continue`). Both loaders fetch
+ * rows for their table and call this; byte-identical to the prior inline loops
+ * (coverage-loader-parity.ts).
+ */
+export function buildPlanBenefitFromRow(
+  row: CoverageRowForBenefit,
+  ctx: CiteGradeContext,
+  opts: PlanBenefitRowOpts,
+): { canonicalSlug: string; detail: PlanBenefitDetail } | null {
+  const confidence = row.confidence ?? 0.5;
+  if (confidence < MIN_PLAN_BENEFIT_CONFIDENCE) return null;
+
+  // Pattern P-8 cite-grade for the row's primary cost field (in_copay when present, else in_coinsurance).
+  const primaryField = row.in_copay !== null ? "in_copay" : "in_coinsurance";
+  const p8Entry = row.field_provenance?.[primaryField];
+  const p8 = extractPatternP8FromEntry(p8Entry);
+  // A3: identity axis — unconfirmed synonym cache-win → referenced, not cited.
+  const identityInferred =
+    ctx.citeGradeGateOn &&
+    p8Entry?.resolution_source != null &&
+    p8Entry?.identity_confirmed !== true;
+  const userRowCiteGrade = isCitationGrade(p8, { identityInferred });
+  // Fall back to canonical_haiku_extractions when the row lacks its own cite-grade P-8.
+  const canonicalFallback = !userRowCiteGrade
+    ? ctx.canonicalCiteGradeBySlug.get(row.slug) ?? null
+    : null;
+  // A3: inferred identity → null the excerpt so the letter references but never quotes.
+  const preferredExcerpt = identityInferred
+    ? null
+    : p8?.source_excerpt ?? canonicalFallback?.sourceExcerpt ?? row.sbc_excerpt ?? null;
+  const sbcExcerptVerified = !identityInferred && (userRowCiteGrade || canonicalFallback !== null);
+  const citationSource: PlanBenefitDetail["citationSource"] = identityInferred
+    ? null
+    : userRowCiteGrade
+    ? "user_doc"
+    : canonicalFallback !== null
+    ? "canonical_fallback"
+    : row.sbc_excerpt
+    ? "legacy_sbc_excerpt"
+    : null;
+
+  // S99 B5 — key by canonical sibling (identity when no aliases exist).
+  const canonicalSlug = ctx.coverageCanonicalMap.get(row.slug) ?? row.slug;
+  // R2 (S242) — the shared coverage decision for this row; planStance feeds the
+  // legacy `covered` projection below and is carried forward on the detail.
+  const coverageDecision = resolveCoverageForLine({ covered: row.covered }, null);
+  return {
+    canonicalSlug,
+    detail: {
+      covered: coverageDecision.planStance !== "not_covered",
+      copay: row.in_copay,
+      // R1c (S240) — normalize to decimal [0,1] at load (same as planCoverageFromRow on the
+      // card path) so PlanBenefitDetail.coinsurance is a consistent decimal contract. The
+      // display/dollar/fingerprint consumers already re-normalize idempotently → render-neutral.
+      coinsurance: normalizeCoinsuranceForStorage(row.in_coinsurance),
+      source: row.source ?? opts.sourceDefault,
+      confidence,
+      citation: opts.buildCitation(row.name, row.sbc_page),
+      sbcExcerpt: preferredExcerpt,
+      sbcPage: row.sbc_page ?? null,
+      sbcExcerptVerified,
+      citationSource,
+      sourcedFrom: opts.sourceTag,
+      sourcedFromYear: opts.sourceYear,
+      coverageDecision,
+    },
+  };
+}
+
+/**
+ * Pre-load cite-grade excerpts from canonical_haiku_extractions for a canonical plan
+ * (verified + section-verified only = cite-grade per Pattern P-8). Most-recent wins.
+ * Shared by both loaders (was duplicated verbatim). Empty map when no canonical id.
+ */
+async function loadCanonicalCiteGradeBySlug(
+  supabase: SupabaseClient,
+  canonicalPlanId: string | null,
+): Promise<Map<string, { sourceExcerpt: string; sourceSectionHint: string }>> {
+  const out = new Map<string, { sourceExcerpt: string; sourceSectionHint: string }>();
+  if (!canonicalPlanId) return out;
+  const { data: extractions } = await supabase
+    .from("canonical_haiku_extractions")
+    .select("service_slug, source_excerpt, source_section_hint, created_at")
+    .eq("canonical_plan_id", canonicalPlanId)
+    .eq("field_name", "services_cost_sharing_row")
+    .eq("source_excerpt_verified", "verified")
+    .eq("source_section_verified", true)
+    .order("created_at", { ascending: false });
+  if (extractions) {
+    for (const ext of extractions as Array<{
+      service_slug: string | null;
+      source_excerpt: string | null;
+      source_section_hint: string | null;
+    }>) {
+      if (!ext.service_slug || !ext.source_excerpt) continue;
+      if (!out.has(ext.service_slug)) {
+        out.set(ext.service_slug, {
+          sourceExcerpt: ext.source_excerpt,
+          sourceSectionHint: ext.source_section_hint ?? "",
+        });
+      }
+    }
+  }
+  return out;
+}
+
+export async function loadCoverage(
   supabase: SupabaseClient,
   insurancePlanId: string | null,
   sourceTag: PlanBenefitDetail["sourcedFrom"] = "user_exact",
@@ -1271,42 +1474,14 @@ async function loadCoverage(
     .maybeSingle();
   const canonicalPlanId = (planRow?.canonical_plan_id as string | null | undefined) ?? null;
 
-  const canonicalCiteGradeBySlug = new Map<string, { sourceExcerpt: string; sourceSectionHint: string }>();
-  if (canonicalPlanId) {
-    const { data: extractions } = await supabase
-      .from("canonical_haiku_extractions")
-      .select("service_slug, source_excerpt, source_section_hint, created_at")
-      .eq("canonical_plan_id", canonicalPlanId)
-      .eq("field_name", "services_cost_sharing_row")
-      .eq("source_excerpt_verified", "verified")
-      .eq("source_section_verified", true)
-      .order("created_at", { ascending: false });
-
-    if (extractions) {
-      for (const ext of extractions as Array<{ service_slug: string | null; source_excerpt: string | null; source_section_hint: string | null }>) {
-        if (!ext.service_slug || !ext.source_excerpt) continue;
-        // Most-recent wins (DESC ordering above + first-set semantics).
-        if (!canonicalCiteGradeBySlug.has(ext.service_slug)) {
-          canonicalCiteGradeBySlug.set(ext.service_slug, {
-            sourceExcerpt: ext.source_excerpt,
-            sourceSectionHint: ext.source_section_hint ?? "",
-          });
-        }
-      }
-    }
-  }
+  const canonicalCiteGradeBySlug = await loadCanonicalCiteGradeBySlug(supabase, canonicalPlanId);
 
   // plan_covered_services rows; service_catalog.slug is the natural join key.
   // sbc_excerpt/sbc_page exist after migration 050 (Phase 4.5).
   // field_provenance JSONB exists after migration 056 (Phase 3 — per-field P-8 storage).
   // Use optional chaining / default-null to stay compatible with rows that predate
   // either migration.
-  const { data: rows } = await supabase
-    .from("plan_covered_services")
-    .select(
-      "covered, in_copay, in_coinsurance, source, confidence, sbc_excerpt, sbc_page, field_provenance, service_catalog!inner(slug, name)",
-    )
-    .eq("insurance_plan_id", insurancePlanId);
+  const { data: rows } = await loadCoverageRows(supabase, [insurancePlanId], { citeGrade: true });
 
   if (!rows) return byServiceSlug;
 
@@ -1324,6 +1499,7 @@ async function loadCoverage(
       ? await resolveCanonicalSlugs(rawSlugsForCanonical, supabase)
       : new Map<string, string>();
 
+  const citeCtx: CiteGradeContext = { citeGradeGateOn, canonicalCiteGradeBySlug, coverageCanonicalMap };
   for (const r of rows as unknown as Array<{
     covered: boolean | null;
     in_copay: number | null;
@@ -1337,67 +1513,28 @@ async function loadCoverage(
   }>) {
     const cat = Array.isArray(r.service_catalog) ? r.service_catalog[0] : r.service_catalog;
     if (!cat?.slug) continue;
-    const confidence = r.confidence ?? 0.5;
-    if (confidence < MIN_PLAN_BENEFIT_CONFIDENCE) continue;
-
-    // Phase 4 Task 4-E: derive Pattern P-8 cite-grade verification for the row's
-    // primary cost field. Per Q-DR-4E-1 LOCK = (B), the gating field is in_copay
-    // when copay is non-null; in_coinsurance otherwise. When P-8 verbatim is
-    // available, prefer it over the legacy sbc_excerpt column.
-    const primaryField = r.in_copay !== null ? "in_copay" : "in_coinsurance";
-    const p8Entry = r.field_provenance?.[primaryField];
-    const p8 = extractPatternP8FromEntry(p8Entry);
-    // A3: identity axis — unconfirmed synonym cache-win → referenced, not cited.
-    const identityInferred =
-      citeGradeGateOn &&
-      p8Entry?.resolution_source != null &&
-      p8Entry?.identity_confirmed !== true;
-    const userRowCiteGrade = isCitationGrade(p8, { identityInferred });
-
-    // S72 commit 4: when user's own row lacks cite-grade Pattern P-8 excerpt,
-    // fall back to canonical_haiku_extractions (cite-grade citations from any prior
-    // cite-grade Haiku run on the same canonical+service). Closes CF-20 cite-grade
-    // gap for smart-skipped users (post-CF-40 v3 dependency). Canonical fallback
-    // is cite-grade by query construction (only verified+section_verified rows).
-    const canonicalFallback = !userRowCiteGrade
-      ? canonicalCiteGradeBySlug.get(cat.slug) ?? null
-      : null;
-
-    // A3: inferred identity → no verbatim citation. Null the excerpt (also keyed on the uncertain
-    // remapped slug for the canonical fallback) so the letter references but never quotes; clears
-    // when the user confirms the match (identity_confirmed → identityInferred false).
-    const preferredExcerpt = identityInferred
-      ? null
-      : p8?.source_excerpt ?? canonicalFallback?.sourceExcerpt ?? r.sbc_excerpt ?? null;
-    const sbcExcerptVerified = !identityInferred && (userRowCiteGrade || canonicalFallback !== null);
-    // S74 Pillar 2 — track the excerpt's provenance for the canonical-fallback
-    // transparency disclosure in EvidenceBlock.
-    const citationSource: PlanBenefitDetail["citationSource"] = identityInferred
-      ? null
-      : userRowCiteGrade
-      ? "user_doc"
-      : canonicalFallback !== null
-      ? "canonical_fallback"
-      : r.sbc_excerpt
-      ? "legacy_sbc_excerpt"
-      : null;
-
-    // S99 B5 — key by canonical sibling (identity when no aliases exist).
-    const canonicalSlug = coverageCanonicalMap.get(cat.slug) ?? cat.slug;
-    byServiceSlug.set(canonicalSlug, {
-      covered: r.covered !== false,
-      copay: r.in_copay,
-      coinsurance: r.in_coinsurance,
-      source: r.source ?? "unknown",
-      confidence,
-      citation: `Plan SBC${r.sbc_page ? `, page ${r.sbc_page}` : ""} — ${cat.name}`,
-      sbcExcerpt: preferredExcerpt,
-      sbcPage: r.sbc_page ?? null,
-      sbcExcerptVerified,
-      citationSource,
-      sourcedFrom: sourceTag,
-      sourcedFromYear: sourceYear,
-    });
+    const built = buildPlanBenefitFromRow(
+      {
+        covered: r.covered,
+        in_copay: r.in_copay,
+        in_coinsurance: r.in_coinsurance,
+        source: r.source,
+        confidence: r.confidence,
+        sbc_excerpt: r.sbc_excerpt,
+        sbc_page: r.sbc_page,
+        field_provenance: r.field_provenance,
+        slug: cat.slug,
+        name: cat.name,
+      },
+      citeCtx,
+      {
+        sourceTag,
+        sourceYear,
+        sourceDefault: "unknown",
+        buildCitation: (name, page) => `Plan SBC${page ? `, page ${page}` : ""} — ${name}`,
+      },
+    );
+    if (built) byServiceSlug.set(built.canonicalSlug, built.detail);
   }
 
   return byServiceSlug;
@@ -1422,7 +1559,7 @@ async function loadCoverage(
  * "Per {insurer} {planName} {year} SBC (community-verified)" framing in
  * both cases.
  */
-async function loadCoverageFromCanonical(
+export async function loadCoverageFromCanonical(
   supabase: SupabaseClient,
   canonicalPlanId: string,
   sourceTag: PlanBenefitDetail["sourcedFrom"],
@@ -1435,123 +1572,72 @@ async function loadCoverageFromCanonical(
   // pre-Group-B (today's canonical seed carries no resolution_source); forward-correct. Flag OFF → no-op.
   const citeGradeGateOn = await isFeatureEnabled("cite_grade_gate_v1");
 
-  // Pre-load cite-grade excerpts from canonical_haiku_extractions for this
-  // canonical. Same query as loadCoverage's fallback path — only verified +
-  // section-verified rows are cite-grade per Pattern P-8.
-  const canonicalCiteGradeBySlug = new Map<
-    string,
-    { sourceExcerpt: string; sourceSectionHint: string }
-  >();
-  const { data: extractions } = await supabase
-    .from("canonical_haiku_extractions")
-    .select("service_slug, source_excerpt, source_section_hint, created_at")
-    .eq("canonical_plan_id", canonicalPlanId)
-    .eq("field_name", "services_cost_sharing_row")
-    .eq("source_excerpt_verified", "verified")
-    .eq("source_section_verified", true)
-    .order("created_at", { ascending: false });
+  // Pre-load cite-grade excerpts from canonical_haiku_extractions for this canonical.
+  const canonicalCiteGradeBySlug = await loadCanonicalCiteGradeBySlug(supabase, canonicalPlanId);
 
-  if (extractions) {
-    for (const ext of extractions as Array<{
-      service_slug: string | null;
-      source_excerpt: string | null;
-      source_section_hint: string | null;
-    }>) {
-      if (!ext.service_slug || !ext.source_excerpt) continue;
-      if (!canonicalCiteGradeBySlug.has(ext.service_slug)) {
-        canonicalCiteGradeBySlug.set(ext.service_slug, {
-          sourceExcerpt: ext.source_excerpt,
-          sourceSectionHint: ext.source_section_hint ?? "",
-        });
-      }
-    }
-  }
-
-  // Fetch canonical_plan_services rows for this canonical with service_catalog
-  // join for display name. Schema per src/lib/plan/compare.ts:209+ — copay /
-  // coinsurance / deductible_applies + OON mirrors + is_covered + field_provenance.
+  // R1b-canon (S240) — canonical_plan_services has NO service_catalog FK, so the prior
+  // `service_catalog!inner(slug, name)` embedded join ERRORED → rows null → this returned an
+  // EMPTY coverage map (the canonical-archive letter path was silently broken since S110).
+  // Fix: read the rows, then resolve display names via a separate service_catalog lookup —
+  // the working pattern loadCanonicalCoverageMeta uses. Behavior change: empty → real coverage.
   const { data: rows } = await supabase
     .from("canonical_plan_services")
-    .select(
-      "covered, in_copay, in_coinsurance, source, confidence, field_provenance, service_catalog!inner(slug, name)",
-    )
+    .select("service_slug, covered, in_copay, in_coinsurance, source, confidence, field_provenance")
     .eq("canonical_plan_id", canonicalPlanId);
 
   if (!rows) return byServiceSlug;
 
-  // Pre-resolve canonical sibling for every raw slug emitted by this
-  // canonical's coverage rows — preserves the S99 B5 alias normalization
-  // even though post-S95 reset this is identity (no aliases).
-  const rawSlugsForCanonical: string[] = [];
-  for (const r of rows) {
-    const cat = (r as { service_catalog: { slug?: string } | { slug?: string }[] }).service_catalog;
-    const slug = Array.isArray(cat) ? cat[0]?.slug : cat?.slug;
-    if (slug) rawSlugsForCanonical.push(slug);
-  }
-  const coverageCanonicalMap =
-    rawSlugsForCanonical.length > 0
-      ? await resolveCanonicalSlugs(rawSlugsForCanonical, supabase)
-      : new Map<string, string>();
-
-  for (const r of rows as unknown as Array<{
+  const canonRows = rows as unknown as Array<{
+    service_slug: string | null;
     covered: boolean | null;
     in_copay: number | null;
     in_coinsurance: number | null;
     source: string | null;
     confidence: number | null;
     field_provenance: Record<string, FieldProvenanceEntry> | null;
-    service_catalog: { slug: string; name: string } | Array<{ slug: string; name: string }>;
-  }>) {
-    const cat = Array.isArray(r.service_catalog) ? r.service_catalog[0] : r.service_catalog;
-    if (!cat?.slug) continue;
-    const confidence = r.confidence ?? 0.5;
-    if (confidence < MIN_PLAN_BENEFIT_CONFIDENCE) continue;
+  }>;
 
-    // Pattern P-8 cite-grade for canonical path: rely on
-    // canonical_haiku_extractions excerpt (admin-attested or community-
-    // verified cite-grade). canonical_plan_services rows may have their own
-    // field_provenance with admin_attested sources; treat those as verified
-    // structurally (Pattern 1 #4) but excerpt comes from haiku-extractions.
-    const primaryField = r.in_copay !== null ? "in_copay" : "in_coinsurance";
-    const p8Entry = r.field_provenance?.[primaryField];
-    const p8 = extractPatternP8FromEntry(p8Entry);
-    // A3: identity axis — unconfirmed synonym cache-win → referenced, not cited.
-    const identityInferred =
-      citeGradeGateOn &&
-      p8Entry?.resolution_source != null &&
-      p8Entry?.identity_confirmed !== true;
-    const userRowCiteGrade = isCitationGrade(p8, { identityInferred });
+  // Display names for the slugs (no FK → separate lookup; mirrors loadCanonicalCoverageMeta).
+  const slugList = Array.from(new Set(canonRows.map((r) => r.service_slug).filter(Boolean) as string[]));
+  const nameBySlug = new Map<string, string>();
+  if (slugList.length > 0) {
+    const { data: catalog } = await supabase.from("service_catalog").select("slug, name").in("slug", slugList);
+    for (const c of catalog ?? []) nameBySlug.set(c.slug as string, (c.name as string | null) ?? (c.slug as string));
+  }
 
-    const canonicalCiteGrade = canonicalCiteGradeBySlug.get(cat.slug) ?? null;
+  // Pre-resolve canonical sibling for alias normalization (identity when no aliases exist).
+  const coverageCanonicalMap =
+    slugList.length > 0
+      ? await resolveCanonicalSlugs(slugList, supabase)
+      : new Map<string, string>();
 
-    // A3: inferred identity → null the excerpt so the letter references but never quotes.
-    const preferredExcerpt = identityInferred
-      ? null
-      : p8?.source_excerpt ?? canonicalCiteGrade?.sourceExcerpt ?? null;
-    const sbcExcerptVerified = !identityInferred && (userRowCiteGrade || canonicalCiteGrade !== null);
-    const citationSource: PlanBenefitDetail["citationSource"] = identityInferred
-      ? null
-      : userRowCiteGrade
-      ? "user_doc"
-      : canonicalCiteGrade !== null
-      ? "canonical_fallback"
-      : null;
-
-    const canonicalSlug = coverageCanonicalMap.get(cat.slug) ?? cat.slug;
-    byServiceSlug.set(canonicalSlug, {
-      covered: r.covered !== false,
-      copay: r.in_copay,
-      coinsurance: r.in_coinsurance,
-      source: r.source ?? "canonical",
-      confidence,
-      citation: `Summary of Benefits and Coverage — ${cat.name}`,
-      sbcExcerpt: preferredExcerpt,
-      sbcPage: null,
-      sbcExcerptVerified,
-      citationSource,
-      sourcedFrom: sourceTag,
-      sourcedFromYear: sourceYear,
-    });
+  const citeCtx: CiteGradeContext = { citeGradeGateOn, canonicalCiteGradeBySlug, coverageCanonicalMap };
+  for (const r of canonRows) {
+    if (!r.service_slug) continue;
+    // canonical_plan_services has no sbc_excerpt / sbc_page columns → pass null (the cascade
+    // degrades to the canonical-haiku excerpt, and the legacy branch never fires).
+    const built = buildPlanBenefitFromRow(
+      {
+        covered: r.covered,
+        in_copay: r.in_copay,
+        in_coinsurance: r.in_coinsurance,
+        source: r.source,
+        confidence: r.confidence,
+        sbc_excerpt: null,
+        sbc_page: null,
+        field_provenance: r.field_provenance,
+        slug: r.service_slug,
+        name: nameBySlug.get(r.service_slug) ?? r.service_slug,
+      },
+      citeCtx,
+      {
+        sourceTag,
+        sourceYear,
+        sourceDefault: "canonical",
+        buildCitation: (name) => `Summary of Benefits and Coverage — ${name}`,
+      },
+    );
+    if (built) byServiceSlug.set(built.canonicalSlug, built.detail);
   }
 
   return byServiceSlug;
@@ -1834,9 +1920,11 @@ function buildLineItemEvidence(
     service_slug: string | null;
     description: string | null;
     billed_amount: number | null;
+    allowed_amount: number | null;
     insurance_paid: number | null;
     patient_owes: number | null;
     patient_paid_amount: number | null;
+    network_status: string | null;
     metadata?: Record<string, unknown>;
   },
   coverageByServiceSlug: Map<string, PlanBenefitDetail>,
@@ -1957,6 +2045,8 @@ function buildLineItemEvidence(
     insurancePaid,
     patientOwes,
     patientPaid,
+    allowedAmount: li.allowed_amount != null ? Number(li.allowed_amount) : null,
+    networkStatus: coerceNetworkTier(li.network_status),
     planBenefit,
     expectedPatientCost,
     actualPatientCost,
@@ -1985,9 +2075,18 @@ function extractAuditFindings(metadata: Record<string, unknown> | undefined): Li
       type: String(f.type ?? "finding"),
       severity: String(f.severity ?? "medium"),
       title: String(f.title ?? "Audit finding"),
+      // §18 Stage 1 (Gap 1) — surface the persisted description so the grounds builder
+      // reproduces the letter's finding-detail block on the rerender path. Additive.
+      description: f.description != null ? String(f.description) : null,
       estimatedOvercharge: Number(f.estimatedOvercharge ?? 0),
       benchmarkAmount: f.benchmarkAmount != null ? Number(f.benchmarkAmount) : null,
       benchmarkSource: f.benchmarkSource != null ? String(f.benchmarkSource) : null,
+      // R3 step 5.2 — surface the finding id + removal flag for the SET tier (dispute recovery).
+      findingId: f.id != null ? String(f.id) : undefined,
+      removed: f.removed === true,
+      // R3 step 5.3 — surface the dismiss flag so the flag-gated recovery tiers + detail block skip
+      // a user-dismissed finding (the CLAIM tier already filters it on claimFindings).
+      dismissed: f.dismissed === true,
     }));
   return findings.length > 0 ? findings : null;
 }

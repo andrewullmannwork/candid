@@ -9,11 +9,7 @@ import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import {
   computeRecoveryV2,
-  computeCostShareV2,
   rollupCostShareVerdict,
-  isFamilyTier,
-  resolveStillOutstanding,
-  type PlanCoverageInput,
   type PlanCostShareParams,
   type CostShareOverrides,
   type RecoveryMetrics,
@@ -22,28 +18,26 @@ import {
   type InsurerDiscrepancy,
 } from "@/lib/claims/recovery-math";
 import {
-  buildServiceCostShare,
   loadPlanCostShareParams,
   mapRawAccumulator,
-  resolveAccumulatorForLine,
-  applyPreClaimAdjustment,
   loadCostShareOverrides,
   resolveOverridesForBill,
   loadCostShareGate,
-  buildLineInsurer,
   coerceNetworkTier,
   coerceNetworkOverride,
-  EMPTY_PLAN_COST_SHARE_PARAMS,
   type RawAccumulator,
   type CostShareGate,
 } from "@/lib/claims/cost-share-loader";
 import {
+  resolveCostShareForLine,
+  resolveLinePrep,
+  type CostShareClaimCtx,
+  type ClaimCostSharePrep,
+} from "@/lib/claims/resolve-cost-share";
+import {
   resolveEffectiveClaimTotals,
-  resolvePerLinePatientPaid,
-  resolvePerLineInsuranceAdjusted,
   resolvePerLineInsurancePaid,
 } from "@/lib/claims/effective-totals";
-import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import {
   loadFingerprintInputForClaim,
@@ -53,11 +47,9 @@ import {
 import { maybeReauditClaim } from "@/lib/audit/reaudit";
 import { buildAcaCoverageFallback, detectPreventiveMembership } from "@/lib/audit/aca-coverage-fallback";
 import {
-  resolveLineCoverage,
-  resolveSecondaryCoverage,
   loadSecondaryGate,
+  loadPlanCoverageMeta,
   DEFAULT_SECONDARY_GATE,
-  type CoveredSlugMeta,
   type BillSlugMeta,
 } from "@/lib/audit/coverage-loader";
 
@@ -224,46 +216,21 @@ export async function GET(
     }
   }
 
-  // Fetch coverage status for each line item's service_slug
-  const coverageMap = new Map<string, { covered: boolean | null; copay: number | null; coinsurance: number | null; source: string | null }>();
-  // S153 — covered-slug metadata (incl. category) for the secondary (category)
-  // coverage match when a bill line's exact slug has no plan row.
-  const coveredMeta: CoveredSlugMeta[] = [];
-
-  if (claim.insurance_plan_id) {
-    // B9 B1.2 — plan_covered_services has no user_id; selectOwnedChildren
-    // verifies the parent insurance_plan is owned then returns its rows (the
-    // embedded service_catalog!inner select is sent verbatim). +DiD: a plan not
-    // owned by this user yields [] (op-equivalent — the claim's plan is theirs).
-    const coveredServices = await selectOwnedChildren(
-      supabase,
-      user.id,
-      "plan_covered_services",
-      [claim.insurance_plan_id as string],
-      "covered, in_copay, in_coinsurance, source, service_catalog!inner(slug, category)",
-    );
-
-    if (coveredServices) {
-      for (const svc of coveredServices) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const sc = svc.service_catalog as any;
-        const slug = sc?.slug as string | undefined;
-        if (slug) {
-          const coverage = {
-            covered: svc.covered as boolean | null,
-            copay: svc.in_copay as number | null,
-            // S132 iter-11 — plan_covered_services.in_coinsurance holds either
-            // integer percent (30) OR already-decimal (0.3); both mean 30% in
-            // plan-document language. normalizeCoinsuranceForStorage detects
-            // both forms and returns decimal 0-1 uniformly.
-            coinsurance: normalizeCoinsuranceForStorage(svc.in_coinsurance as number | null),
-          };
-          coverageMap.set(slug, { ...coverage, source: svc.source as string | null });
-          coveredMeta.push({ slug, category: (sc?.category as string | null) ?? null, coverage });
-        }
-      }
-    }
-  }
+  // §18.10 Path 2 — coverage via loadPlanCoverageMeta (the canonical loader the LIST
+  // route already uses) → RICH coverage: the plan's explicit in_deductible_applies
+  // (96.8% populated) + OON terms. Replaces the prior LEAN inline build, which dropped
+  // those and GUESSED in_deductible_applies (diverged from the explicit value ~45% of
+  // the time; ~9.6k over-claim rows). B9: the claim read above is user-scoped (404 on a
+  // foreign claim), so claim.insurance_plan_id is the user's own plan → this reads only
+  // their coverage (same posture as the list route).
+  const planMeta = claim.insurance_plan_id
+    ? (await loadPlanCoverageMeta(supabase, [claim.insurance_plan_id as string])).get(
+        claim.insurance_plan_id as string,
+      )
+    : undefined;
+  const coverageMap = planMeta?.coverageMap ?? new Map();
+  const coveredMeta = planMeta?.coveredMeta ?? [];
+  const planAcaCompliant: boolean | null = planMeta?.acaCompliant ?? null;
 
   // S153 — bill-line slug metadata (category + ACA-preventive eligibility) +
   // the plan's ACA-compliance flag, for the secondary coverage match.
@@ -282,15 +249,6 @@ export async function GET(
         isPreventiveEligible: Boolean(r.is_preventive_eligible),
       });
     }
-  }
-  let planAcaCompliant: boolean | null = null;
-  if (claim.insurance_plan_id) {
-    const { data: planRow } = await userScoped(supabase, user.id)
-      .table("insurance_plans")
-      .select("is_aca_compliant")
-      .eq("id", claim.insurance_plan_id)
-      .maybeSingle();
-    planAcaCompliant = (planRow?.is_aca_compliant as boolean | null) ?? null;
   }
 
   // S74.6 D2 — Demographic-aware ACA-gated coverage fallback. For lines where
@@ -402,119 +360,74 @@ export async function GET(
     });
   }
 
+  // §18.9 — assemble the shared cost-share engine context ONCE per claim (the
+  // per-line accumulator-resolve + computeCostShareV2 call now live in
+  // resolveCostShareForLine, parity-locked vs the prior inline assembly). Inert
+  // when costShareV2 is OFF (csCtx is only read in the ON branch below).
+  const csCtx: CostShareClaimCtx = {
+    planParams: csPlanParams,
+    overrides: csOverrides,
+    accRows: csAccumulatorRows,
+    memberSums: csMemberSums,
+    preventiveLines: csPreventiveLines,
+    acaStatus: csAcaStatus,
+    claimInsurerPaidZero: csClaimInsurerPaidZero,
+    gate: csGate,
+    networkClaim: coerceNetworkTier(claim.network_status),
+    coverageTier: csPlanParams?.coverageTier ?? null,
+    planYear: csPlanYear,
+  };
+
+  // §18.10 Path 2 — per-line PREP inputs (coverage + secondary + ACA-fallback +
+  // proration context), assembled once per claim, fed to resolveLinePrep per line.
+  const csPrepInputs: ClaimCostSharePrep = {
+    coverageMap,
+    coveredMeta,
+    billSlugMeta,
+    planAcaCompliant,
+    secondaryGate,
+    secondaryEnabled: secondaryV2,
+    acaFallback,
+    claimTotalBilled,
+    claimStillOutstanding,
+    effectiveTotals,
+  };
+
   // Enrich line items with coverage status + recovery metrics
   const enrichedLineItems = (lineItems || []).map((item) => {
     // S135 — 4-state ACA matrix via shared helper. Plan wins on match; ACA wins
     // on conflict (non-$0 plan vs $0 ACA mandate OR plan-excludes vs ACA-covers);
     // ACA-only when plan missing slug. Override info preserved for UI inline
     // render + dispute pipeline citation.
-    let rawPlanCoverage: PlanCoverageInput | null = item.service_slug
-      ? coverageMap.get(item.service_slug) || null
-      : null;
-    // S153 — secondary (category) coverage match when the exact slug has no
-    // plan row (e.g. annual_physical → covered preventive_care, or an ACA
-    // preventive $0 backstop). Marked so the UI shows it as an inferred match,
-    // never a direct plan hit.
-    let secondaryMatchedSlug: string | null = null;
-    let secondaryCoverageSource: "secondary_match" | "aca_preventive" | null = null;
-    let secondaryConfidence: "confident" | "estimate" | null = null;
-    if (secondaryV2 && !rawPlanCoverage && item.service_slug) {
-      const meta = billSlugMeta.get(item.service_slug as string);
-      if (meta) {
-        const sec = resolveSecondaryCoverage(
-          item.service_slug as string,
-          meta,
-          coveredMeta,
-          planAcaCompliant,
-          secondaryGate,
-        );
-        if (sec) {
-          rawPlanCoverage = sec.coverage;
-          secondaryMatchedSlug = sec.matchedSlug;
-          secondaryCoverageSource = sec.source;
-          secondaryConfidence = sec.confidence;
-        }
-      }
-    }
-    const acaCoverage: PlanCoverageInput | null =
-      acaFallback.byLineNumber.get(Number(item.line_number ?? 0)) || null;
-    const resolved = resolveLineCoverage(
-      rawPlanCoverage,
-      acaCoverage,
-      acaFallback.planMeta,
-    );
-    const coverage = resolved.coverage;
-    const acaOverride = resolved.acaOverride;
-    // Coverage source attribution for tooltip + telemetry. ACA wins → 'aca_*';
-    // secondary match → 'secondary_match'/'aca_preventive'; plan → its source.
-    const coverageFromAca = coverage === acaCoverage && coverage != null;
-    const coverageSource = coverageFromAca
-      ? "aca_zero_cost_share"
-      : secondaryCoverageSource
-        ? secondaryCoverageSource
-        : coverage && item.service_slug
-          ? coverageMap.get(item.service_slug as string)?.source ?? null
-          : null;
-
+    // §18.10 Path 2 — per-line cost-share PREP via the shared recipe (coverage:
+    // exact → secondary → ACA fallback; writeoff proration + allowed; patientPaid +
+    // patientResponsibility). Byte-identical to the prior inline given the same inputs
+    // (scripts/calibration/fixtures/cost-share-v2/prep-parity.ts, strategy "detail");
+    // coverageMap is now RICH (loadPlanCoverageMeta).
+    const lp = resolveLinePrep(item as Record<string, unknown>, csPrepInputs, "detail");
+    const coverage = lp.coverage;
+    const acaOverride = lp.acaOverride;
+    const coverageSource = lp.coverageSource;
+    const secondaryMatchedSlug = lp.secondaryMatchedSlug;
+    const secondaryConfidence = lp.secondaryConfidence;
     const billed = Number(item.billed_amount || 0);
-    // F-1 / mig 092 — patient_paid_amount column drives refund/forgiveness split.
-    // S140 — resolvePerLinePatientPaid returns per-line raw when cite-grade
-    // (sum matches header) AND value is non-null; otherwise pro-rates from
-    // the effective claim-header patientPaid. Gates per-line LineDrawer
-    // recovery strip rendering downstream.
-    const linePatientPaidRaw =
-      item.patient_paid_amount != null ? Number(item.patient_paid_amount) : null;
-    const { value: patientPaid, source: patientPaidSource } =
-      resolvePerLinePatientPaid({
-        lineBilled: billed,
-        linePatientPaid: linePatientPaidRaw,
-        claimTotalBilled,
-        effectiveClaimPatientPaid: effectiveTotals,
-      });
-    // S140 fix-pass H1 — pro-rate per-line writeoff when sparse so that
-    // computeShouldOwe applies coinsurance to ADJUSTED billed (correct
-    // insurance math: coinsurance % is contractually applied to allowed
-    // amount, not gross billed). Reverses the earlier "keep raw" trade-off
-    // — the trade-off was avoiding shouldOwe shift, but the prior math was
-    // applying coinsurance to gross which over-counts cost-share. Fixing.
-    const lineInsuranceAdjustedRaw =
-      item.insurance_adjusted_amount != null
-        ? Number(item.insurance_adjusted_amount)
-        : null;
-    const {
-      value: lineInsuranceAdjusted,
-      source: insuranceAdjustedSource,
-    } = resolvePerLineInsuranceAdjusted({
-      lineBilled: billed,
-      lineInsuranceAdjusted: lineInsuranceAdjustedRaw,
-      claimTotalBilled,
-      effectiveClaimInsuranceAdjusted: effectiveTotals,
-    });
-    const adjustedBilled = Math.max(0, billed - lineInsuranceAdjusted);
-    // S140 fix-pass H5 — pro-rate per-line insurance_paid (display only;
-    // not consumed by recovery math). Without this, LineDrawer Bill card
-    // + desktop YOU PAID column show "Insurer paid $0" on every line for
-    // header-only EOBs while bill-level FlaggedBody shows the real total.
+    const patientPaid = lp.patientPaid;
+    const patientPaidSource = lp.patientPaidSource;
+    const lineInsuranceAdjusted = lp.insuranceAdjusted;
+    const insuranceAdjustedSource = lp.insuranceAdjustedSource;
+    const adjustedBilled = lp.allowed;
+    const patientResponsibility = lp.patientResponsibility;
+    // S140 fix-pass H5 — per-line insurer payment (DISPLAY only; not consumed by
+    // recovery math). Pro-rated when sparse; raw when cite-grade match.
     const lineInsurancePaidRaw =
       item.insurance_paid != null ? Number(item.insurance_paid) : null;
-    const {
-      value: insurancePaidResolved,
-      source: insurancePaidSource,
-    } = resolvePerLineInsurancePaid({
-      lineBilled: billed,
-      lineInsurancePaid: lineInsurancePaidRaw,
-      claimTotalBilled,
-      effectiveClaimInsurancePaid: effectiveTotals,
-    });
-    const patientResponsibility = item.patient_owes != null
-      ? Number(item.patient_owes)
-      : resolveStillOutstanding({
-          lineBilled: billed,
-          lineStillOutstanding: item.amount_still_outstanding != null ? Number(item.amount_still_outstanding) : null,
-          linePatientOwes: null,
-          claimTotalBilled,
-          claimStillOutstanding,
-        });
+    const { value: insurancePaidResolved, source: insurancePaidSource } =
+      resolvePerLineInsurancePaid({
+        lineBilled: billed,
+        lineInsurancePaid: lineInsurancePaidRaw,
+        claimTotalBilled,
+        effectiveClaimInsurancePaid: effectiveTotals,
+      });
     // Cost-Share v2 — when ON, the plan-derived phase engine replaces the
     // deductible-blind computeShouldOwe path. The engine result is a
     // RecoveryMetrics superset, so the claim-level rollup below consumes it
@@ -524,51 +437,24 @@ export async function GET(
     let lineCostShareAssumptions: CostShareAssumption[] | null = null;
     let lineInsurerDiscrepancy: InsurerDiscrepancy | null = null;
     if (costShareV2) {
-      const lineNetwork = coerceNetworkTier(
-        (item as Record<string, unknown>).network_status,
-      );
-      const accumulator = applyPreClaimAdjustment(
-        resolveAccumulatorForLine(csAccumulatorRows, {
-          benefitYear: csPlanYear != null ? String(csPlanYear) : null,
-          networkTier: lineNetwork ?? "in_network",
-          accumulatorType: "medical",
-          isIndividual: !isFamilyTier(csPlanParams?.coverageTier ?? null),
-        }),
-        csMemberSums,
-      );
-      const cs = computeCostShareV2({
-        line: {
+      // §18.9 — shared resolution layer (parity-locked vs the prior inline assembly,
+      // scripts/calibration/fixtures/cost-share-v2/resolve-parity.ts). allowed is the
+      // header-prorated value (adjustedBilled — the real allowed, e.g. cf91a49e
+      // $163.27, not the sparse $0 raw line); divergent prep stays at the call site.
+      const cs = resolveCostShareForLine(
+        {
+          lineNumber: Number(item.line_number ?? 0),
           billed,
-          // Header-prorated allowed (post-writeoff). The displayed shouldOwe
-          // needs the real allowed (e.g. cf91a49e $163.27, not the sparse $0
-          // raw line value); lineInsuranceAdjusted is the route's prorated
-          // writeoff (S140 fix-pass H1).
           allowed: adjustedBilled,
           insuranceAdjusted: lineInsuranceAdjusted,
           patientPaid,
           patientResponsibility,
+          coverage,
+          networkStatus: (item as Record<string, unknown>).network_status as string | null,
+          raw: item as Record<string, unknown>,
         },
-        service: buildServiceCostShare(coverage),
-        insurer: buildLineInsurer(item as Record<string, unknown>),
-        plan: csPlanParams ?? EMPTY_PLAN_COST_SHARE_PARAMS,
-        accumulator,
-        overrides:
-          csOverrides ?? {
-            deductibleMet: null,
-            deductibleMetAsOf: null,
-            oopMet: null,
-            oopMetAsOf: null,
-            userNetworkOverride: null,
-          },
-        networkLine: lineNetwork,
-        networkClaim: coerceNetworkTier(claim.network_status),
-        minRecovery: csGate.minRecovery,
-        preventive: {
-          isPreventive: csPreventiveLines.has(Number(item.line_number ?? 0)),
-          acaStatus: csAcaStatus,
-        },
-        claimInsurerPaidZero: csClaimInsurerPaidZero,
-      });
+        csCtx,
+      );
       recovery = cs;
       lineCostShareVerdict = cs.verdict;
       lineCostShareAssumptions = cs.assumptions;

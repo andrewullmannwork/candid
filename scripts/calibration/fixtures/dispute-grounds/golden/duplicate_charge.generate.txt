@@ -1,0 +1,35 @@
+<LETTER_DATE>
+
+Sample Medical Center
+Billing Department
+123 Care St
+Anytown, CA 90000
+
+Re: Duplicate Charge Dispute — Date of Service: March 15, 2024
+Patient: Jordan Sample
+
+To Whom It May Concern:
+
+I am writing to dispute what appear to be duplicate charges on my medical bill for services rendered on March 15, 2024.
+
+After reviewing my bill, I have identified the following charges that appear to be duplicated:
+
+1. Duplicate charge for the same service
+   The billed amount exceeds the Medicare national average for this service.
+
+The total amount of suspected duplicate charges is $120.00.
+
+I am requesting:
+
+1. A detailed review of each charge listed above
+2. Removal of any confirmed duplicate charges
+3. A corrected bill reflecting the appropriate total
+
+Please provide a written response within 30 days of receipt of this letter.
+
+Sincerely,
+
+Jordan Sample
+
+---
+DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis tool. Candid is not a law firm, does not provide legal advice, and does not act as your legal representative. The information above is based on anonymized, aggregated community data and publicly available rates, and may not reflect your specific contractual rates or coverage.

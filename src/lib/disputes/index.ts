@@ -11,20 +11,19 @@ import { LETTER_TEMPLATES } from "./templates";
 import type { PlanBenefitEvidence } from "./templates";
 import type { PlanContext } from "./plan-context";
 import type { DisputeEvidence } from "./evidence-resolver";
+import { resolveLetterRecovery } from "./dispute-grounds";
+import { deriveFindingToLetter } from "./dispute-ground-catalog";
+import type { CostShareV2Result } from "../claims/recovery-math";
 import { randomUUID } from "crypto";
 
 export type { PlanBenefitEvidence };
 
-// Map finding types to appropriate letter types
-const FINDING_TO_LETTER: Partial<Record<FindingType, DisputeLetterType>> = {
-  overcharge: "overcharge",
-  duplicate: "duplicate_charge",
-  unbundling: "overcharge",
-  upcoding: "overcharge",
-  balance_billing: "balance_billing",
-  missing_adjustment: "overcharge",
-  stale_claim: "overcharge",
-};
+// Map finding types to appropriate letter types — PROJECTED from DISPUTE_GROUND_CATALOG (the
+// single source of truth). Byte-identical to the prior hardcoded map at the consumer below
+// (`FINDING_TO_LETTER[findings[0].type] || "overcharge"`): findings raised by no ground
+// (upcoding/stale_claim/uncategorized) are absent here and fall to that default. Pinned by the
+// catalog-projection-parity fixture across all FindingType.
+const FINDING_TO_LETTER: Partial<Record<FindingType, DisputeLetterType>> = deriveFindingToLetter();
 
 /**
  * Who the finished letter is addressed to — the single source of truth shared by
@@ -77,6 +76,29 @@ export interface GenerateDisputeLetterOptions {
    * is a shield). See plans/dispute_letter_overhaul.md §1a.
    */
   enforceDataTrustGate?: boolean;
+  /**
+   * §18 incr-3 (dispute_grounds_v1) — when true, the 3 provider templates source
+   * their finding block from the resolved EVIDENCE (rerender-safe) instead of the
+   * AuditReport `findings`, killing the $0.00 refresh bug. Caller passes the
+   * dispute_grounds_v1 flag state. Default false → byte-identical. A SEPARATE flag
+   * from enforceDataTrustGate/v3DesignOn (not folded into that overload).
+   */
+  disputeGroundsOn?: boolean;
+  /**
+   * §18 incr-4 — the rich per-line cost-share basis (loadDisputeGroundBasis's
+   * Map<lineItemId, CostShareV2Result>), loaded by the route when dispute_grounds_v1 is
+   * ON. Resolved here into the per-line deductible-aware letter dollars (resolveLetterRecovery)
+   * and threaded to the templates. Absent → byte-identical (the request block falls back to
+   * the deductible-blind discrepancyAmount).
+   */
+  disputeGroundBasis?: Map<string, CostShareV2Result>;
+  /**
+   * dispute_noplan_coverage_request_v1 — when true, the coverage ask is reframed to a
+   * plan-document + line-by-line-adjudication REQUEST when no plan is on file to cite,
+   * instead of asserting coverage we can't back (Evidence Disclosure Rule). Caller passes
+   * the flag state. Default false → byte-identical.
+   */
+  noPlanCoverageRequestOn?: boolean;
 }
 
 export function generateDisputeLetter(
@@ -96,7 +118,29 @@ export function generateDisputeLetter(
   const options: GenerateDisputeLetterOptions = Array.isArray(optionsOrPlanEvidence)
     ? { planEvidence: optionsOrPlanEvidence }
     : (optionsOrPlanEvidence ?? {});
-  const { planEvidence, planContext, evidence, gateUnverified, enforceDataTrustGate } = options;
+  const { planEvidence, planContext, evidence, gateUnverified, enforceDataTrustGate, disputeGroundsOn, disputeGroundBasis, noPlanCoverageRequestOn } =
+    options;
+
+  // Resolve the letter type up front (was below, before the template lookup) so the recovery fold
+  // can be recipient-aware. R3 step 5.4 (1a) — the set/claim tiers fold into the headline ONLY for
+  // the provider letter; deriving the recipient from this resolvedType (the SAME value used to pick
+  // the template + returned as letter.letterType) keeps amount_disputed == the letter body per
+  // recipient.
+  const resolvedType =
+    letterType || FINDING_TO_LETTER[findings[0].type] || "overcharge";
+  const recipientKind = letterRecipientKind(resolvedType);
+
+  // §18 incr-4 — the per-line deductible-aware letter dollars (== the card recovery), used by
+  // the request block to source refund/write-off from the engine, not the deductible-blind
+  // discrepancyAmount. Only when the flag is ON AND a basis was loaded → otherwise undefined
+  // (the templates fall back to discrepancyAmount → byte-identical).
+  // R3 step 5.3 — the FULL recovery (byLine + set/claim tiers + clampBound) drives the multi-charge
+  // letter asks; the OFF / no-basis path leaves it undefined → byte-identical.
+  const recovery =
+    disputeGroundsOn && evidence && disputeGroundBasis
+      ? resolveLetterRecovery(evidence, disputeGroundBasis, recipientKind)
+      : undefined;
+  const letterRecovery = recovery?.byLine;
 
   // Block A — data-trust HARD STOP. A bill that failed header reconciliation has
   // numbers we don't trust enough to cite, so we suppress generation and let the
@@ -105,10 +149,6 @@ export function generateDisputeLetter(
   if (enforceDataTrustGate && evidence?.dataTrust?.headerReconciliationFailed) {
     return null;
   }
-
-  // Auto-detect letter type from findings if not specified
-  const resolvedType =
-    letterType || FINDING_TO_LETTER[findings[0].type] || "overcharge";
 
   const template = LETTER_TEMPLATES[resolvedType];
   if (!template) {
@@ -130,6 +170,10 @@ export function generateDisputeLetter(
     // Block C2 item 4 — the caller passes the dispute_letter_v3_design flag as
     // enforceDataTrustGate; it is the same flag that switches on the request tree.
     v3DesignOn: enforceDataTrustGate ?? false,
+    disputeGroundsOn: disputeGroundsOn ?? false,
+    letterRecovery,
+    recovery,
+    noPlanCoverageRequestOn: noPlanCoverageRequestOn ?? false,
   });
 
   // Recipient: insurance appeals use insurer + appeals address when available;

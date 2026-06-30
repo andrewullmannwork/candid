@@ -15,6 +15,9 @@ import type { DisputeLetterType, AuditReport } from "@/lib/billing/types";
 import type { PlanContext } from "./plan-context";
 import type { DisputeEvidence } from "./evidence-resolver";
 import { LETTER_TEMPLATES } from "./templates";
+import { letterRecipientKind } from "./index";
+import { resolveLetterRecovery } from "./dispute-grounds";
+import { loadDisputeGroundBasis } from "./dispute-ground-basis";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 
 interface RerenderParams {
@@ -34,10 +37,22 @@ interface RerenderParams {
   attestingName?: string;
 }
 
+/** §18 incr-4 — the re-rendered body plus the deductible-aware recovery summary (present
+ *  only on the dispute_grounds_v1 path) so callers can FLOAT amount_disputed on rebuild and
+ *  surface the §18.10.D "confirm to strengthen" prompt. */
+export interface RerenderResult {
+  body: string;
+  recovery: {
+    total: number;
+    weakened: boolean;
+    strengthenableFields: Array<"deductible" | "oop" | "network">;
+  } | null;
+}
+
 export async function rerenderDisputeLetter(
   supabase: SupabaseClient,
   params: RerenderParams,
-): Promise<string | null> {
+): Promise<RerenderResult | null> {
   const { userId, letterType, claimId, planContext, evidence } = params;
 
   const template = LETTER_TEMPLATES[letterType];
@@ -47,6 +62,12 @@ export async function rerenderDisputeLetter(
   // data-trust HARD STOP and switches the body into the conditional request tree
   // (passed to template.body below). OFF → legacy letter, byte-identical.
   const v3DesignOn = await isFeatureEnabled("dispute_letter_v3_design");
+
+  // §18 incr-3 — when ON, the 3 provider templates source their finding block from
+  // `evidence` (passed below) instead of the AuditReport findings, which this path sets to
+  // [] → the $0.00 refresh bug. OFF → byte-identical (renders findings: []). THIS is the
+  // path the bug lives on: rerender re-derives the body with no findings.
+  const disputeGroundsOn = await isFeatureEnabled("dispute_grounds_v1");
 
   // Block A — data-trust HARD STOP (flag-gated). Symmetric with
   // generateDisputeLetter: a header-reconciliation failure suppresses
@@ -109,6 +130,20 @@ export async function rerenderDisputeLetter(
   // letter applies the gating; when flag flips OFF, letter goes back to
   // legacy unconditional rendering. Symmetric with /api/disputes/generate.
   const gateUnverified = await isFeatureEnabled("consumer_read_filter_v1");
+  // dispute_noplan_coverage_request_v1 — symmetric with generate; reframe the coverage ask
+  // to a plan-document + adjudication request when no plan is on file. OFF → byte-identical.
+  const noPlanCoverageRequestOn = await isFeatureEnabled("dispute_noplan_coverage_request_v1");
+
+  // §18 incr-4 — the per-line deductible-aware letter dollars (== the card recovery), gated on
+  // the flag. A user-triggered redraft re-resolves the basis FRESH, so any cost-share overrides
+  // the user just supplied (deductible/OOP/network) flow into a STRONGER letter on rebuild. OFF →
+  // undefined → byte-identical legacy (discrepancyAmount) rendering. SYMMETRIC with generate so
+  // the two paths can't diverge on the dollar.
+  const recovery =
+    disputeGroundsOn && evidence
+      ? resolveLetterRecovery(evidence, await loadDisputeGroundBasis(supabase, userId, [claimId]), letterRecipientKind(letterType))
+      : null;
+  const letterRecovery = recovery?.byLine;
 
   const body = template.body({
     patientName: bill.patient.name ?? "",
@@ -120,10 +155,19 @@ export async function rerenderDisputeLetter(
     evidence,
     gateUnverified,
     v3DesignOn,
+    disputeGroundsOn,
     attestingName: params.attestingName,
+    letterRecovery,
+    recovery: recovery ?? undefined,
+    noPlanCoverageRequestOn,
   });
 
-  return body;
+  return {
+    body,
+    recovery: recovery
+      ? { total: recovery.total, weakened: recovery.weakened, strengthenableFields: recovery.strengthenableFields }
+      : null,
+  };
 }
 
 // Default to the account holder's name (from users.display_name); fall back

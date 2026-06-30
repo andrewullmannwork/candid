@@ -1,0 +1,7 @@
+# §18 Stage 0 — local-only oracle artifacts (contain real PROD PII/PHI; never commit).
+# Per feedback_pii_audit_discipline + project_candid_bill_calibration_corpus:
+# per-bill artifacts + bill-specific scripts are local-only. The COMMITTED firewall
+# is the synthetic, PII-free golden-corpus.ts (no real names/amounts/UUIDs).
+golden-local/
+*.local.ts
+manifest.local.json

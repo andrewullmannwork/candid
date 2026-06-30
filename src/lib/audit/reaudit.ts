@@ -9,7 +9,7 @@
  *     durability.
  *   - Reconstructs a ParsedBill from the persisted claim + claim_line_items
  *     and dispatches runAudit() so D13 zero-cost-share + D15 claim-header
- *     arithmetic + the existing ALL_RULES re-fire.
+ *     arithmetic + the full ordered DETECTOR_REGISTRY re-fire.
  *   - Writes refreshed findings back to claim_line_items.metadata.auditFindings
  *     and claim.metadata.auditSummary, clears the stale flag, and records the
  *     re-audit event in throttle state.
@@ -55,6 +55,71 @@ interface PriorDismissal {
 interface DismissedSourceEntry extends PriorDismissal {
   type?: string;
   estimatedOvercharge?: number;
+}
+
+/**
+ * S74.5c §1.7 / R3 step 5.1 — refresh the persisted claim-level findings (claim-header findings
+ * like `unallocated_balance`, lineItems=[]) from a fresh audit summary, re-attaching any prior
+ * dismissal by (type, amount) so a re-audit never resurrects a user-dismissed claim-level finding.
+ * SHARED by both re-audit paths — `maybeReauditClaim` (GET) and the dispute `rerun-audit` route —
+ * so they cannot drift (the drift WAS the bug: the dispute path refreshed per-line findings but
+ * left `auditSummary.claimLevelFindings` stale, starving the dispute recovery's claim tier).
+ */
+export function refreshClaimLevelFindings(
+  newClaimLevel: ClaimLevelFindingMeta[] | undefined,
+  priorClaimLevel: ReadonlyArray<{
+    type?: string;
+    estimatedOvercharge?: number;
+    dismissed?: boolean;
+    dismissed_at?: string;
+    dismissed_reason?: string;
+    dismissed_note?: string | null;
+  }>,
+): ClaimLevelFindingMeta[] {
+  const priorDismissals = new Map<string, PriorDismissal>();
+  for (const f of priorClaimLevel) {
+    if (!f.dismissed) continue;
+    priorDismissals.set(
+      dismissPreservationKey({
+        type: String(f.type ?? "unknown"),
+        lineNumber: null,
+        amountCents: Math.round(Number(f.estimatedOvercharge ?? 0) * 100),
+      }),
+      {
+        dismissed: true,
+        dismissed_at: f.dismissed_at ?? "",
+        dismissed_reason: f.dismissed_reason ?? "",
+        dismissed_note: f.dismissed_note ?? null,
+      },
+    );
+  }
+  return (newClaimLevel ?? []).map((f) => {
+    const base: ClaimLevelFindingMeta = {
+      id: f.id,
+      type: f.type,
+      severity: f.severity,
+      estimatedOvercharge: f.estimatedOvercharge,
+      title: f.title,
+      description: f.description,
+      benchmarkSource: f.benchmarkSource,
+      actionable: f.actionable,
+    };
+    const prior = priorDismissals.get(
+      dismissPreservationKey({
+        type: f.type,
+        lineNumber: null,
+        amountCents: Math.round(f.estimatedOvercharge * 100),
+      }),
+    );
+    if (!prior) return base;
+    return {
+      ...base,
+      dismissed: true,
+      dismissed_at: prior.dismissed_at,
+      dismissed_reason: prior.dismissed_reason,
+      dismissed_note: prior.dismissed_note,
+    };
+  });
 }
 
 interface ClaimRow {
@@ -173,23 +238,11 @@ export async function maybeReauditClaim(
       });
     }
   }
+  // Prior CLAIM-LEVEL dismissals are re-attached by refreshClaimLevelFindings below (they key on
+  // lineNumber=null); the per-line loop above covers line-level dismissals for attachPriorDismissal.
   const priorClaimLevel = (meta.auditSummary as
     | { claimLevelFindings?: DismissedSourceEntry[] }
     | undefined)?.claimLevelFindings ?? [];
-  for (const f of priorClaimLevel) {
-    if (!f.dismissed) continue;
-    const key = dismissPreservationKey({
-      type: String(f.type ?? "unknown"),
-      lineNumber: null,
-      amountCents: Math.round(Number(f.estimatedOvercharge ?? 0) * 100),
-    });
-    priorDismissals.set(key, {
-      dismissed: true,
-      dismissed_at: f.dismissed_at,
-      dismissed_reason: f.dismissed_reason,
-      dismissed_note: f.dismissed_note ?? null,
-    });
-  }
 
   const parsedBill = reconstructParsedBill(claim, lineItems);
 
@@ -313,35 +366,13 @@ export async function maybeReauditClaim(
   });
   await Promise.allSettled(writes);
 
-  // S74.5c §1.7 — re-attach prior dismissals onto the claim-level findings
-  // before persisting them to claim.metadata.auditSummary.
-  const claimLevelOut: ClaimLevelFindingMeta[] = (
-    auditReport.summary.claimLevelFindings ?? []
-  ).map((f) => {
-    const base = {
-      id: f.id,
-      type: f.type,
-      severity: f.severity,
-      estimatedOvercharge: f.estimatedOvercharge,
-      title: f.title,
-      description: f.description,
-      benchmarkSource: f.benchmarkSource,
-      actionable: f.actionable,
-    };
-    // attachPriorDismissal needs the AuditFinding shape; we have the
-    // ClaimLevelFindingMeta shape (lacks lineItems). Build a minimal
-    // synthetic AuditFinding-shaped object — only `type` + estimatedOvercharge
-    // are read by the helper.
-    const synthetic: AuditFinding = {
-      ...f,
-      lineItems: [],
-      description: f.description ?? "",
-      benchmarkSource: f.benchmarkSource ?? "",
-      billedAmount: 0,
-      confidence: 0,
-    };
-    return attachPriorDismissal(base, synthetic, null) as unknown as ClaimLevelFindingMeta;
-  });
+  // S74.5c §1.7 — re-attach prior dismissals onto the refreshed claim-level findings before
+  // persisting to claim.metadata.auditSummary. Shared with the dispute rerun-audit path via
+  // refreshClaimLevelFindings — one implementation, no drift.
+  const claimLevelOut = refreshClaimLevelFindings(
+    auditReport.summary.claimLevelFindings,
+    priorClaimLevel,
+  );
 
   // Clear stale flag + record throttle state on claim. Status flips to
   // 'flagged' or 'processed' based on whether any findings remain.

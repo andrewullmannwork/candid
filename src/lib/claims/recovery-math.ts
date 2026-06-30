@@ -33,6 +33,8 @@
  * and should NOT be used in recovery math. Use patient_paid instead.
  */
 
+import { resolveCoverageForLine, isInsurerDenied, type CoverageDecision } from "./coverage-decision";
+
 export interface PlanCoverageInput {
   covered: boolean | null;
   /** Per-visit fixed dollar amount the patient owes. Caps at allowed amount. */
@@ -400,8 +402,25 @@ export interface CostShareV2Result extends RecoveryMetrics {
   networkUsed: NetworkTier;
   insurerDiscrepancy: InsurerDiscrepancy | null;
   assumptions: CostShareAssumption[];
+  /**
+   * §18 incr-4 — whether `shouldOwe` rests on KNOWN facts (hard met-status data, a
+   * known cost-share rate, or the insurer-$0 pure-deductible proof) vs a load-bearing
+   * GUESS. This is the engine's own honesty gate (the verdict already trusts it at the
+   * `!shouldOweGrounded → "insufficient"` branch). Exposed so the dispute letter can
+   * OMIT the precise deductible-aware dollar when it would rest on an assumption
+   * (§18.10.D / Evidence Disclosure Rule). NOT the whole gate — a `network` assumption
+   * can still mask an OON line while this is true; see `isPreciseDollarAssertable`.
+   */
+  shouldOweGrounded: boolean;
   /** amount of `allowed` that went toward the deductible on this line (for cross-line threading). */
   deductibleConsumed: number;
+  /**
+   * R3 step 4 — the shared coverage decision (planStance × insurerAdjudication × derivedStatus)
+   * this result was computed against, SURFACED (the engine already computed it internally) for the
+   * dispute route layer + the POST-R3 classifier collapse. Additive; the card reads
+   * shouldOwe/verdict/phase, not this → byte-identical.
+   */
+  coverageDecision: CoverageDecision;
 }
 
 export interface ComputeCostShareV2Args {
@@ -495,6 +514,11 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
   const minRec = args.minRecovery ?? 1;
   const service = args.service;
   const insurer = args.insurer ?? EMPTY_INSURER;
+  // R2 (S242) — the ONE shared coverage decision for this line. The card reads its
+  // planStance (phase/verdict) and insurer-denied projection from here instead of
+  // re-deriving `service.covered` / `deniedAmount` inline; byte-identical (see
+  // coverage-decision-parity.ts). planStance and insurerAdjudication stay separate.
+  const coverageDecision = resolveCoverageForLine(service, insurer);
   const plan = args.plan;
   const acc = args.accumulator;
   const ov = args.overrides;
@@ -545,7 +569,9 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
       networkUsed,
       insurerDiscrepancy: null,
       assumptions: [],
+      shouldOweGrounded: true,
       deductibleConsumed: 0,
+      coverageDecision,
     };
   }
 
@@ -574,14 +600,25 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
     : service?.deductibleApplies;
 
   // ── 4. Met-status (hard data = accumulator or user override; else conservative not-met) ──
+  // A plan with a $0 deductible has nothing to meet → the deductible is trivially MET
+  // (KNOWN, not assumed). Without this, a $0-deductible plan with no accumulator falls to
+  // the conservative "not met" path and charges the FULL allowed toward a non-existent
+  // deductible (e.g. a 10%-coinsurance service billed at full allowed instead of 10%).
+  // `deductibleMax` is null when unparsed (pick() returns the null individual figure), so
+  // `=== 0` matches only a genuinely-zero deductible, never "unknown".
+  const planDeductibleZero = deductibleMax === 0;
   const accDedKnown = num(acc?.deductibleApplied) != null && num(acc?.deductibleMax) != null;
   const accOopKnown = num(acc?.oopApplied) != null && num(acc?.oopMax) != null;
-  const dedMetKnown = ov.deductibleMet != null || accDedKnown;
+  const dedMetKnown = ov.deductibleMet != null || accDedKnown || planDeductibleZero;
   const oopMetKnown = ov.oopMet != null || accOopKnown;
   const dedMet =
-    ov.deductibleMet === true || (accDedKnown && acc!.deductibleApplied! >= acc!.deductibleMax!);
+    ov.deductibleMet === true || (accDedKnown && acc!.deductibleApplied! >= acc!.deductibleMax!) || planDeductibleZero;
   const oopMet = ov.oopMet === true || (accOopKnown && acc!.oopApplied! >= acc!.oopMax!);
-  const remainingDeductible = accDedKnown ? Math.max(0, acc!.deductibleMax! - acc!.deductibleApplied!) : null;
+  const remainingDeductible = accDedKnown
+    ? Math.max(0, acc!.deductibleMax! - acc!.deductibleApplied!)
+    : planDeductibleZero
+      ? 0
+      : null;
   const remainingOop = accOopKnown ? Math.max(0, acc!.oopMax! - acc!.oopApplied!) : null;
 
   // ── 5. Phase machine → plan-derived shouldOwe ──
@@ -598,7 +635,7 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
     assumptions.push({ field: "network", assumed: "in_network", value: null, correctable: true, reason: "default" });
   }
 
-  if (service?.covered === false) {
+  if (coverageDecision.planStance === "not_covered") {
     phase = "not_covered";
     shouldOwe = allowed;
   } else if (isPreventiveService) {
@@ -711,13 +748,14 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
   // silently owing the full allowed and hiding a recovery. Not-covered is a KNOWN share (owe
   // full) → excluded. Backstop only; the root cure is richer plan-doc extraction (cold-start).
   const serviceCostUnknown =
-    service == null || (service.covered !== false && copay == null && coinsurance == null);
+    service == null ||
+    (coverageDecision.planStance !== "not_covered" && copay == null && coinsurance == null);
   if ((serviceCostUnknown || costShareUnknown) && phase !== "not_covered" && !isPreventiveService) {
     assumptions.push({ field: "service_cost", assumed: "unknown", value: null, correctable: true, reason: "no_plan_value" });
   }
 
   // denial: never rubber-stamped as owed (Decision 3 / Q4) — surfaced as appealable.
-  const denied = (num(insurer.deniedAmount) ?? 0) > 0;
+  const denied = isInsurerDenied(coverageDecision);
   if (denied) {
     assumptions.push({ field: "denial", assumed: "denied", value: insurer.deniedAmount, correctable: true, reason: "insurer_denied" });
   }
@@ -786,7 +824,7 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
   let verdict: CostShareVerdict;
   if (base.potentialRecovery >= minRec) verdict = "recovery";
   else if (denied) verdict = "insufficient";
-  else if (service?.covered === false) verdict = "not_covered";
+  else if (coverageDecision.planStance === "not_covered") verdict = "not_covered";
   else if (preventiveAcaUnknown) verdict = "insufficient";
   else if (!shouldOweGrounded) verdict = "insufficient";
   else if (assumptions.length > 0) verdict = "correct";
@@ -801,7 +839,9 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
     networkUsed,
     insurerDiscrepancy,
     assumptions,
+    shouldOweGrounded,
     deductibleConsumed: round2(deductibleConsumed),
+    coverageDecision,
   };
 }
 
