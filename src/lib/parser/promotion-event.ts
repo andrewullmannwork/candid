@@ -131,13 +131,16 @@ export async function applyPromotionEvent(
   opts: {
     actorUserId?: string | null;
     forceEventType?: ForceEventType | null;
-    // S167 Thesaurus (mig 148): pos/component target the 4-col canonical_plan_services key. Defaults
+    // S167 Thesaurus (mig 148): pos/component target the canonical_plan_services key. Defaults
     // 'any'/'global'; real values flow once the parser produces pos/component.
     placeOfService?: string;
     component?: string;
+    // mig 194 (S258): plan-local drug cost-share BUCKET — the 5th key column. Defaults 'none'; real values
+    // flow once the resolver emits planTierLabel (cold-start dup-key fix). 'none' == byte-identical to pre-194.
+    planTierLabel?: string;
   } = {},
 ): Promise<ApplyPromotionEventResult> {
-  const { actorUserId = null, forceEventType = null, placeOfService = "any", component = "global" } = opts;
+  const { actorUserId = null, forceEventType = null, placeOfService = "any", component = "global", planTierLabel = "none" } = opts;
   // Ing-E: redact PII from cross-user excerpts before they land in canonical
   // field_provenance.sources[].excerpt. This is the single chokepoint for BOTH
   // canonical_plans (service_slug NULL) and canonical_plan_services + every caller
@@ -178,6 +181,7 @@ export async function applyPromotionEvent(
     p_place_of_service: placeOfService,
     p_component: component,
     p_provenance_meta: provenanceMeta,
+    p_plan_tier_label: planTierLabel,
   });
 
   if (error) {

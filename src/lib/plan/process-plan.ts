@@ -26,6 +26,7 @@ import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { routePlanDocServices } from "@/lib/plan_doc/thesaurus-routing";
 import type { RawService } from "@/lib/plan_doc/haiku-prompts/services-cost-sharing";
 import { applyPlanCoverageCell, mergeServiceCoverageRules, coerceComponent } from "@/lib/plan/coverage-targeting";
+import { derivePlanTierLabel } from "@/lib/claims/service-resolver";
 import { votedParseSBC } from "@/lib/sbc/voted-parser";
 import type { VotedParseSBCResult } from "@/lib/sbc/voted-parser";
 import { translateHaikuToLegacy } from "@/lib/sbc/legacy-adapter";
@@ -1301,11 +1302,27 @@ export async function processPlanDocumentData(
         }
       }
 
-      // Deduplicate: keep highest-confidence per (slug, place_of_service)
+      // Cell identity = (slug, place_of_service, component, plan_tier_label) — matches the storage UNIQUE key
+      // (canonical_plan_services mig 147/169/194 + plan_covered_services mig 157/195). Keying dedup + provenance
+      // maps on the FULL tuple (not just slug|pos) stops component-distinct rows (ER "Facility" coinsurance vs
+      // "Physician Services" copay) AND bucket-distinct drug rows (generic Preferred vs Non-Preferred; Tier 1 vs
+      // Tier 2; Condition-Care vs All-Other) from silently collapsing before write. Additive: only splits
+      // previously-merged variants, never merges.
+      // ensureTier (mig 194, S258): derive the plan-local drug cost-share BUCKET from the verbatim label once
+      // per service (deterministic + shared claims/plan-doc); 'none' when not a bucketed drug line. Caches on
+      // the object so the dedup key, the provenance-map keys, and the pcs payload all agree.
+      const ensureTier = (s: SBCParsedService): string => {
+        if (s.planTierLabel == null) s.planTierLabel = derivePlanTierLabel(s.rawLabel ?? "").planTierLabel ?? "none";
+        return s.planTierLabel;
+      };
+      const cellKey = (
+        slug: string, pos: string | null | undefined, component: string | null | undefined, planTierLabel: string,
+      ) => `${slug}|${pos || "any"}|${coerceComponent(component)}|${planTierLabel}`;
+      // Deduplicate: keep highest-confidence per (slug, place_of_service, component, plan_tier_label)
       const deduped = new Map<string, SBCParsedService>();
       for (const s of parseResult.services) {
         if (!slugToId.has(s.serviceSlug)) continue;
-        const key = `${s.serviceSlug}|${s.placeOfService || "any"}`;
+        const key = cellKey(s.serviceSlug, s.placeOfService, s.component, ensureTier(s));
         const existing = deduped.get(key);
         if (!existing || s.confidence > existing.confidence) deduped.set(key, s);
       }
@@ -1323,7 +1340,7 @@ export async function processPlanDocumentData(
       const haikuServiceByKey = new Map<string, SBCHaikuService>();
       if (haikuResult) {
         for (const hs of [...haikuResult.services, ...haikuResult.otherCoveredServices]) {
-          const key = `${hs.serviceSlug}|${hs.placeOfService || "any"}`;
+          const key = cellKey(hs.serviceSlug, hs.placeOfService, hs.component, ensureTier(hs));
           const existing = haikuServiceByKey.get(key);
           if (!existing || hs.confidence > existing.confidence) haikuServiceByKey.set(key, hs);
         }
@@ -1331,7 +1348,7 @@ export async function processPlanDocumentData(
       const planDocServiceByKey = new Map<string, import("@/lib/plan_doc/types").PlanDocService>();
       if (planDocHaikuResult) {
         for (const ps of planDocHaikuResult.services) {
-          const key = `${ps.serviceSlug}|${ps.placeOfService || "any"}`;
+          const key = cellKey(ps.serviceSlug, ps.placeOfService, ps.component, ensureTier(ps));
           const existing = planDocServiceByKey.get(key);
           if (!existing || ps.confidence > existing.confidence) planDocServiceByKey.set(key, ps);
         }
@@ -1363,16 +1380,17 @@ export async function processPlanDocumentData(
 
       const serviceInserts = confident.map((s) => {
         const pos = coercePOS(s.placeOfService);
-        const haikuService = haikuServiceByKey.get(`${s.serviceSlug}|${coercePOS(s.placeOfService)}`)
-          ?? haikuServiceByKey.get(`${s.serviceSlug}|${s.placeOfService || "any"}`);
-        const planDocService = planDocServiceByKey.get(`${s.serviceSlug}|${coercePOS(s.placeOfService)}`)
-          ?? planDocServiceByKey.get(`${s.serviceSlug}|${s.placeOfService || "any"}`);
+        const haikuService = haikuServiceByKey.get(cellKey(s.serviceSlug, coercePOS(s.placeOfService), s.component, ensureTier(s)))
+          ?? haikuServiceByKey.get(cellKey(s.serviceSlug, s.placeOfService, s.component, ensureTier(s)));
+        const planDocService = planDocServiceByKey.get(cellKey(s.serviceSlug, coercePOS(s.placeOfService), s.component, ensureTier(s)))
+          ?? planDocServiceByKey.get(cellKey(s.serviceSlug, s.placeOfService, s.component, ensureTier(s)));
         return {
           insurance_plan_id: targetPlanId,
           service_id: slugToId.get(s.serviceSlug)!,
           concept_id: conceptIdMap.get(s.serviceSlug) || null,
           place_of_service: pos,
           component: coerceComponent(s.component),
+          plan_tier_label: s.planTierLabel ?? "none",
           in_copay: s.inCopay, in_coinsurance: normalizeCoinsuranceForStorage(s.inCoinsurance),
           in_deductible_applies: s.inDeductibleApplies, in_copay_waiver_condition: s.inCopayWaiverCondition,
           in_cost_description: s.inCostDescription,
