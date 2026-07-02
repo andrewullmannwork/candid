@@ -192,7 +192,7 @@ function buildCollectorRecipientBlock(
  *  (null / undefined / empty string / empty array), else the clause. Guarantees no `$[…]` / `[date]`
  *  placeholder ever renders. (S3 formalizes the CI no-placeholder fixture + retrofits the existing
  *  templates onto this helper.) */
-function renderGated<T>(value: T | null | undefined, clause: (v: T) => string): string {
+export function renderGated<T>(value: T | null | undefined, clause: (v: T) => string): string {
   if (value == null) return "";
   if (typeof value === "string" && value.trim() === "") return "";
   if (Array.isArray(value) && value.length === 0) return "";
@@ -1371,7 +1371,7 @@ Under the No Surprises Act and applicable state consumer protection laws, I am e
 ${recipientBlock}
 
 Re: Billing Dispute — Date of Service: ${formatDate(serviceDate)}
-${patientRefBlock}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
+${patientRefBlock}${renderGated(accountNumber, (a) => `\nAccount #: ${a}`)}
 
 To Whom It May Concern:
 
@@ -1430,7 +1430,7 @@ const itemizedRequestTemplate: LetterTemplate = {
 ${recipientBlock}
 
 Re: Request for Itemized Bill — Date of Service: ${formatDate(serviceDate)}
-${patientRefBlock}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
+${patientRefBlock}${renderGated(accountNumber, (a) => `\nAccount #: ${a}`)}
 
 To Whom It May Concern:
 
@@ -1489,12 +1489,13 @@ const insuranceAppealTemplate: LetterTemplate = {
     //      in case resolveInsurer returned null but the bind succeeded)
     //   3. bill.insurer.name (from EOB metadata)
     //   4. planContext.plan.insurerName (user's plan row)
-    //   5. literal placeholder
+    //   5. generic addressee (dispute-letters v2 S3 — never a bracketed placeholder;
+    //      enforced by the no-placeholder fixture)
     const insurerName = planContext?.insurer?.name
       || planContext?.boundCanonicalPlan?.insurerName
       || bill.insurer?.name
       || planContext?.plan?.insurerName
-      || "[Insurance Company]";
+      || "the plan administrator";
     const memberId = bill.patient.memberId || undefined;
     // S111 smoke #4/#6 — plan label resolution + wrong-year detection.
     // When the cited plan's year differs from the bill year, we render the
@@ -1664,7 +1665,7 @@ Please respond within 30 days. If I do not receive a satisfactory resolution, I 
 ${recipientBlock}
 
 Re: Balance Billing Dispute — Date of Service: ${formatDate(serviceDate)}
-${patientRefBlock}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
+${patientRefBlock}${renderGated(accountNumber, (a) => `\nAccount #: ${a}`)}
 
 To Whom It May Concern:
 
@@ -1772,7 +1773,7 @@ Please provide a written response within 30 days of receipt of this letter.`;
 ${recipientBlock}
 
 Re: Duplicate Charge Dispute — Date of Service: ${formatDate(serviceDate)}
-${patientRefBlock}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
+${patientRefBlock}${renderGated(accountNumber, (a) => `\nAccount #: ${a}`)}
 
 To Whom It May Concern:
 
@@ -1856,7 +1857,7 @@ const finalNoticeTemplate: LetterTemplate = {
 ${recipientBlock}
 
 Re: Final Notice Before Escalation — Date of Service: ${formatDate(serviceDate)}
-${patientRefBlock}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}${certifiedLine}
+${patientRefBlock}${renderGated(accountNumber, (a) => `\nAccount #: ${a}`)}${certifiedLine}
 
 To Whom It May Concern:
 

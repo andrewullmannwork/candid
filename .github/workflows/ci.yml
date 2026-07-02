@@ -39,6 +39,13 @@ jobs:
         # fail-closed + the parent-scoped child read/write primitives.
         run: npx tsx scripts/security-layer-contract.mjs
 
+      - name: No-placeholder letters (dispute-letters v2 S3)
+        # Fails the build if any rendered dispute letter — happy-path golden OR
+        # adversarial-sparse render (null insurer/plan/account) — contains a literal
+        # placeholder token ($[…] / [date] / [X] / [Word]), e.g. a `|| "[literal]"`
+        # fallback leak. renderGated keeps the gated clauses fail-closed; this enforces it.
+        run: npx tsx scripts/calibration/fixtures/dispute-grounds/no-placeholder.ts
+
       - name: Type check
         run: npx tsc --noEmit
 
