@@ -1,7 +1,7 @@
 <LETTER_DATE>
 
 Sample Medical Center
-Billing Department
+Compliance Department
 123 Care St
 Anytown, CA 90000
 
@@ -15,10 +15,10 @@ I am writing to formally dispute charges on my medical bill for services rendere
 1. Potential overcharge on office visit
    Billed amount: $300.00
    Medicare national average: $70.00
-   Estimated overcharge: $230.00
-   The billed amount exceeds the Medicare national average for this service.
+   Amount above the Medicare benchmark: $230.00
+   The billed amount substantially exceeds the Medicare benchmark for this service.
 
-The total estimated overcharge across these items is $230.00.
+The total amount billed above the Medicare benchmark across these items is $230.00.
 
 
 

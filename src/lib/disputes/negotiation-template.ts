@@ -43,7 +43,7 @@ export function generateNegotiationLetter(params: NegotiationParams): string {
   return `${today}
 
 ${providerName}
-Billing Department
+Compliance Department
 
 Re: Self-Pay Rate Negotiation${serviceDate ? ` — Date of Service: ${serviceDate}` : ""}
 Patient: ${patientName}

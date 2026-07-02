@@ -1,7 +1,7 @@
 <LETTER_DATE>
 
 Sample Medical Center
-Billing Department
+Compliance Department
 123 Care St
 Anytown, CA 90000
 
@@ -15,23 +15,23 @@ I am writing to dispute what appear to be duplicate charges on my medical bill f
 After reviewing my bill, I have identified the following charges that appear to be duplicated:
 
 1. Duplicate charge for the same service
-   The billed amount exceeds the Medicare national average for this service.
+   This service appears billed more than once for the same date of service.
 
 The total amount of suspected duplicate charges is $120.00.
 
 LINE ITEMS FLAGGED AS DUPLICATES
 
 1. Office visit (CPT 99213)
-   - Candid audit flag (Duplicate charge for the same service) · CMS PPL benchmark $70.00 · estimated overcharge $120.00.
+   - Candid audit flag (Duplicate charge for the same service) · duplicate amount $120.00.
 
 RELIEF REQUESTED
 
-I request that the provider respond in writing within 30 days of receipt and:
+I request that the provider's compliance department respond in writing within 30 days of receipt and:
 
 1. Review the charges identified above and provide a corrected bill.
 2. Provide a fully itemized statement for this account. For each charge, list the billing code (CPT, HCPCS, revenue code, or NDC), the date of service, the units or quantity, and the amount billed, so I can confirm the charges match the care I received.
 
-Please treat this as a formal billing dispute. If this matter is not resolved, I may file a complaint with the appropriate state insurance regulator and, where applicable, the federal No Surprises Help Desk.
+Please treat this as a formal billing dispute. If this matter is not resolved, I may file a complaint with my state's consumer-protection authority and, where applicable, the federal No Surprises Help Desk.
 
 Sincerely,
 

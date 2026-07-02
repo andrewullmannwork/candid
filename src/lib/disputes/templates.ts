@@ -144,7 +144,7 @@ function buildProviderRecipientBlock(
   providerContact: ProviderContact | null | undefined,
   bill: ParsedBill | undefined,
 ): string {
-  const lines: string[] = [providerName, "Billing Department"];
+  const lines: string[] = [providerName, "Compliance Department"];
   const address = providerContact?.address ?? bill?.provider?.address ?? null;
   if (address) {
     lines.push(address);
@@ -157,7 +157,7 @@ function buildInsurerRecipientBlock(
   insurerName: string,
   planContext: PlanContext | null | undefined,
 ): string {
-  const lines: string[] = [insurerName, "Member Services — Appeals"];
+  const lines: string[] = [insurerName, "Compliance Department"];
   const appealsAddress = planContext?.insurer?.appealsAddress;
   if (appealsAddress) {
     lines.push(formatAppealsAddressBlock(appealsAddress));
@@ -299,9 +299,19 @@ function buildClosingArgument(
   if (!evidence) return "";
   const hasExactPlan = !!planContext?.plan;
   const anyBenefit = hasAnyPlanBenefit(evidence);
+  const isERISA = planContext?.planSource === "employer";
 
   // Case A — per-line cites carry the letter.
   if (hasExactPlan && anyBenefit) return "";
+
+  // dispute-letters v2 S1 — ERISA citation gate (defense-in-depth on this DORMANT v3-OFF path; the
+  // LIVE path is buildRequestSection under dispute_letter_v3_design=ON). Only self-reported employer
+  // (ERISA) plans reach the §-cited branches below (§2560.503-1(g)/(h)(2)(iii), §1024(b)(4)); any
+  // other/unknown source → a generic full-and-fair-review closing with no statute. Guarantees a
+  // v3-design flip-OFF cannot mis-cite ERISA to a non-ERISA plan. Fail-safe (never over-fires).
+  if (!isERISA) {
+    return "I am entitled to a full and fair review of this denial. I request a written determination citing the specific plan provision on which any denial is based, together with copies of all documents relevant to this claim, including the applicable cost-sharing and coverage provisions.";
+  }
 
   // Case B — exact plan but no benefit-row matched.
   if (hasExactPlan && !anyBenefit) {
@@ -422,9 +432,11 @@ function buildClosingArgument(
 // v3-gated by the caller (flag OFF → the fixed legacy list renders, byte-
 // identical). Statutory backbone = COMMERCIAL DEFAULT this session: the broadly-
 // correct external-review hook (ACA §2719 / 45 CFR §147.136) + plain-English
-// determination/itemized-statement asks. The ERISA document-penalty teeth
-// (§1024(b)(4)/§1132(c)) are a plan-type-gated upgrade once plan_source is
-// threaded (L1, next session); medicare/medicaid then suppress §2719. Guards:
+// determination/itemized-statement asks. dispute-letters v2 S1 — plan_source is
+// now threaded: the ERISA claim-file ask (§2560.503-1(h)(2)(iii)) is emitted for
+// self-reported employer plans (isERISA) via the tail below. The §1024(b)(4)/
+// §1132(c) document-penalty teeth remain deferred (separate administrator letter,
+// post-launch tracker Q3). Guards:
 // one ask per line (priority-bucketed); never demand reversal of correctly-
 // applied cost-share (cost_share fires only on a computed overage); never name
 // an amount we cannot compute; skip $0 lines; clamp amounts ≥ 0.
@@ -464,6 +476,11 @@ export function buildRequestSection(params: {
   if (allLines.length === 0) return "";
 
   const isInsurer = recipient === "insurer";
+  // dispute-letters v2 S1 — ERISA citation gate. Only self-reported employer (ERISA) plans get the
+  // §2560.503-1(h)(2)(iii) claim-file ask below; any other/unknown source → the generic asks only
+  // (full-and-fair-review default). Coarse + fail-safe: only the user's explicit "employer" choice
+  // sets profiles.plan_source='employer', so this can under-fire but never over-fire.
+  const isERISA = planContext?.planSource === "employer";
   const payee = isInsurer ? (planContext?.insurer?.name || "the plan") : "the provider";
   const label = (li: LineItemEvidence): string =>
     li.billingCode ? `${li.serviceName} (${li.billingCode.type} ${li.billingCode.value})` : li.serviceName;
@@ -830,20 +847,32 @@ export function buildRequestSection(params: {
     );
   }
 
+  // dispute-letters v2 S1 — ERISA claim-file ask (insurer letters, employer-sponsored plans only).
+  // The claims fiduciary owes the documents relevant to the claim, free of charge, under 29 CFR
+  // §2560.503-1(h)(2)(iii); this also asks the plan to confirm the appeal-received date (§10 I1).
+  // Non-employer/unknown → omitted (the generic EOB/adjudication ask above carries the document
+  // request). §1024(b)(4) SPD-production is the deferred separate administrator letter (tracker Q3).
+  if (isInsurer && isERISA) {
+    asks.push(
+      `As documents relevant to this claim under 29 CFR §2560.503-1(h)(2)(iii), please provide, free of charge, copies of the plan provisions, guidelines, and records relied upon in adjudicating it, and confirm in writing the date this appeal was received.`,
+    );
+  }
+
   // Assemble: numbered relief + deadline + recipient-appropriate consequence.
   // Deadline anchored to the §1024(b)(4) document-production window (30 days);
   // L1 will plan-type-tune (ERISA penalty / urgency-shortening).
   const numbered = asks.map((a, i) => `${i + 1}. ${a}`).join("\n");
   const state = planContext?.userState ?? null;
-  const regulator = state ? `the ${state} Department of Insurance` : "the appropriate state insurance regulator";
+  const insurerRegulator = state ? `the ${state} Department of Insurance` : "the appropriate state insurance regulator";
+  const providerForum = state ? `my state's consumer-protection authority (the ${state} Attorney General's office)` : "my state's consumer-protection authority";
   const consequence = isInsurer
-    ? ` If this matter is not resolved, I intend to pursue external review under ACA §2719 / 45 CFR §147.136 and may file a complaint with ${regulator}.`
-    : ` If this matter is not resolved, I may file a complaint with ${regulator} and, where applicable, the federal No Surprises Help Desk.`;
+    ? ` If this matter is not resolved, I intend to pursue external review under ACA §2719 / 45 CFR §147.136 and may file a complaint with ${insurerRegulator}.`
+    : ` If this matter is not resolved, I may file a complaint with ${providerForum} and, where applicable, the federal No Surprises Help Desk.`;
 
   return [
     "RELIEF REQUESTED",
     "",
-    `I request that ${isInsurer ? `${payee}'s legal department` : payee} respond in writing within 30 days of receipt and:`,
+    `I request that ${payee}'s compliance department respond in writing within 30 days of receipt and:`,
     "",
     numbered,
     "",
@@ -1179,7 +1208,12 @@ function renderLineItemEvidence(
         parts.push(`${f.benchmarkSource} benchmark ${formatCurrency(f.benchmarkAmount)}`);
       }
       if (f.estimatedOvercharge > 0) {
-        parts.push(`estimated overcharge ${formatCurrency(f.estimatedOvercharge)}`);
+        const amountLabel =
+          f.type === "duplicate" ? "duplicate amount"
+          : f.type === "balance_billing" ? "amount above allowed"
+          : f.benchmarkAmount != null ? "amount above benchmark"
+          : "amount in question";
+        parts.push(`${amountLabel} ${formatCurrency(f.estimatedOvercharge)}`);
       }
       bullets.push(`   - ${parts.join(" · ")}.`);
     }
@@ -1259,7 +1293,7 @@ const overchargeTemplate: LetterTemplate = {
     const findingDetails = effectiveFindings
       .map(
         (f, i) =>
-          `${i + 1}. ${f.title}\n   Billed amount: ${formatCurrency(f.billedAmount)}${f.benchmarkAmount ? `\n   Medicare national average: ${formatCurrency(f.benchmarkAmount)}` : ""}\n   Estimated overcharge: ${formatCurrency(f.estimatedOvercharge)}\n   ${f.description ?? ""}`
+          `${i + 1}. ${f.title}\n   Billed amount: ${formatCurrency(f.billedAmount)}${f.benchmarkAmount ? `\n   Medicare national average: ${formatCurrency(f.benchmarkAmount)}` : ""}\n   Amount above the Medicare benchmark: ${formatCurrency(f.estimatedOvercharge)}\n   ${f.description ?? ""}`
       )
       .join("\n\n");
 
@@ -1303,7 +1337,7 @@ I am writing to formally dispute charges on my medical bill for services rendere
 
 ${findingDetails}
 
-The total estimated overcharge across these items is ${formatCurrency(totalOvercharge)}.
+The total amount billed above the Medicare benchmark across these items is ${formatCurrency(totalOvercharge)}.
 ${evidenceBlock ? `\n${evidenceBlock}` : ""}
 ${planEvidence && planEvidence.length > 0 ? `
 Additionally, according to my insurance plan documents, the following services are covered under my plan:
@@ -1358,7 +1392,7 @@ ${patientRefBlock}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
 
 To Whom It May Concern:
 
-I am writing to request a complete itemized bill for services rendered on ${formatDate(serviceDate)}. I am exercising my right under federal and state law to receive a detailed breakdown of all charges.
+I am writing to request a complete itemized bill for services rendered on ${formatDate(serviceDate)}. Please provide a detailed, line-by-line breakdown of all charges so I can verify them against the care I received.
 
 Please include the following information for each line item:
 
@@ -1506,7 +1540,7 @@ To Whom It May Concern:
 
 I am writing to formally appeal the denial of my claim for services rendered on ${formatDate(serviceDate)} by ${providerName}.${planLabelSentence}
 
-The services provided were medically necessary and should be covered under my plan.${reviewSection}
+I believe the services provided were medically necessary and should be covered under my plan.${reviewSection}
 
 ${evidenceBlock ? `${evidenceBlock}` : ""}${reliefSection}
 
@@ -1550,7 +1584,7 @@ const balanceBillingTemplate: LetterTemplate = {
     const evidenceBlock = renderEvidenceBlock(
       evidence,
       planContext,
-      "Why these charges violate my plan's cost-sharing terms",
+      "Why these charges appear inconsistent with my plan's cost-sharing terms",
       { gateUnverified: gateUnverified ?? false, attestingName: attestingName ?? patientName, v3DesignOn: v3DesignOn ?? false, disputeGroundsOn: disputeGroundsOn ?? false },
     );
     // §18 incr-3 — finding block from EVIDENCE when ON (rerender-safe); OFF → byte-identical.
@@ -1594,7 +1628,7 @@ To Whom It May Concern:
 
 I am writing to dispute what appears to be balance billing on my account for services rendered on ${formatDate(serviceDate)}.
 
-After reviewing my Explanation of Benefits and your bill, I have identified charges that exceed my plan's allowed amount minus my insurance payment. Under the No Surprises Act (effective January 1, 2022) and applicable state balance billing protections, I should not be billed for amounts beyond my in-network cost-sharing obligations for covered services.
+After reviewing my Explanation of Benefits and your bill, I have identified charges that exceed my plan's allowed amount minus my insurance payment. If these services are subject to the No Surprises Act (for example, emergency services, or services from an out-of-network provider at an in-network facility) or to applicable state balance-billing protections, I should not be billed beyond my in-network cost-sharing for covered services. Please confirm whether these protections apply to these charges and, to the extent they do, correct the balance accordingly.
 
 Specifically:
 

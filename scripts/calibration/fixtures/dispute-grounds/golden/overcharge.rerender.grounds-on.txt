@@ -1,7 +1,7 @@
 <LETTER_DATE>
 
 Sample Medical Center
-Billing Department
+Compliance Department
 123 Care St
 Anytown, CA 90000
 
@@ -15,25 +15,25 @@ I am writing to formally dispute charges on my medical bill for services rendere
 1. Potential overcharge on office visit
    Billed amount: $300.00
    Medicare national average: $70.00
-   Estimated overcharge: $230.00
-   The billed amount exceeds the Medicare national average for this service.
+   Amount above the Medicare benchmark: $230.00
+   The billed amount substantially exceeds the Medicare benchmark for this service.
 
-The total estimated overcharge across these items is $230.00.
+The total amount billed above the Medicare benchmark across these items is $230.00.
 
 SUPPORTING EVIDENCE FOR EACH CHARGE
 
 1. Office visit (CPT 99213) — billed $300.00
-   - Candid audit flag (Potential overcharge on office visit) · CMS PPL benchmark $70.00 · estimated overcharge $230.00.
+   - Candid audit flag (Potential overcharge on office visit) · Medicare benchmark $70.00 · amount above benchmark $230.00.
 
 
 RELIEF REQUESTED
 
-I request that the provider respond in writing within 30 days of receipt and:
+I request that the provider's compliance department respond in writing within 30 days of receipt and:
 
 1. Review the charges identified above and provide a corrected bill.
 2. Provide a fully itemized statement for this account. For each charge, list the billing code (CPT, HCPCS, revenue code, or NDC), the date of service, the units or quantity, and the amount billed, so I can confirm the charges match the care I received.
 
-Please treat this as a formal billing dispute. If this matter is not resolved, I may file a complaint with the appropriate state insurance regulator and, where applicable, the federal No Surprises Help Desk.
+Please treat this as a formal billing dispute. If this matter is not resolved, I may file a complaint with my state's consumer-protection authority and, where applicable, the federal No Surprises Help Desk.
 
 Please send your response to the address above or contact me to discuss this matter.
 

@@ -158,6 +158,18 @@ export interface PlanContext {
    */
   userState: string | null;
   /**
+   * dispute-letters v2 S1 — user's self-reported insurance funding type from
+   * profiles.plan_source ('employer' | 'marketplace' | 'off_exchange' |
+   * 'medicare' | 'medicaid'; may also carry a data-provenance marker like
+   * 'insurance_card' / 'catalog_match' left by card-scan/search flows). Gates
+   * the ERISA citations in the dispute letters: only 'employer' emits ERISA
+   * §-cites (§2560.503-1 / §1024(b)(4)); anything else → generic full-and-fair-
+   * review. Coarse + fail-safe — only the user's explicit "employer" choice
+   * ever sets that value, so the gate can under-fire (→ safe generic) but never
+   * over-fire. NOT the data-source `planSource` used by /api/plan/analyze.
+   */
+  planSource: string | null;
+  /**
    * S110 Chunk C — community-corroborated bill-year canonical found via strict
    * Pattern 2 identity year-shift from the user's current plan canonical.
    *
@@ -470,15 +482,17 @@ export async function resolvePlanContext(
         };
   }
 
-  // S109 PR #2 — pull user's state for the dispute letter escalation paragraph.
-  // Used to name the state Department of Insurance the user may escalate to.
-  // Null when profile state is missing; letter falls back to generic copy.
+  // S109 PR #2 — pull user's state for the dispute letter escalation paragraph
+  // (names the state Department of Insurance the user may escalate to).
+  // dispute-letters v2 S1 — also pull plan_source (self-reported funding type) to
+  // gate the ERISA citations. Null when the profile field is missing → generic copy.
   const { data: profile } = await supabase
     .from("profiles")
-    .select("state")
+    .select("state, plan_source")
     .eq("user_id", userId)
     .maybeSingle();
   const userState = (profile?.state as string | null) ?? null;
+  const planSource = (profile?.plan_source as string | null) ?? null;
 
   // S110 Chunk C — community-corroborated bill-year canonical auto-lookup.
   // Only fires when (a) no exact-year user plan, (b) fallback plan has a
@@ -508,6 +522,7 @@ export async function resolvePlanContext(
     fallbackPlan: toResolved(fallbackPlan),
     providerContact,
     userState,
+    planSource,
     archiveCanonicalPlan,
     boundCanonicalPlan,
   };
