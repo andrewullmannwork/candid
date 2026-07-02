@@ -112,6 +112,16 @@ interface TemplateParams {
    * generator passes it today → defaults false → byte-identical. Provider-only.
    */
   finAssistContext?: boolean;
+  /**
+   * dispute-letters v2 S2 — escalation / collections inputs. User-supplied via dispute.metadata /
+   * request body at launch (the FE collects them in S5/S6). Fail-closed: absent → the gated clause
+   * is OMITTED via renderGated (never a placeholder).
+   */
+  priorContactDates?: string[]; // final_notice — recital of prior attempts (attested)
+  certifiedMail?: boolean; // final_notice — user opted to send certified → adds the notation
+  appealExhausted?: { attested: boolean; denialDate?: string | null }; // external_review gate
+  collector?: { name: string; address?: string | null; originalCreditor?: string | null }; // debt_validation recipient (user-supplied)
+  debtWithinWindow?: boolean; // debt_validation — within FDCPA §1692g 30-day window (route-computed)
 }
 
 // ============================================================================
@@ -157,7 +167,7 @@ function buildInsurerRecipientBlock(
   insurerName: string,
   planContext: PlanContext | null | undefined,
 ): string {
-  const lines: string[] = [insurerName, "Compliance Department"];
+  const lines: string[] = [insurerName, "Appeals Department"];
   const appealsAddress = planContext?.insurer?.appealsAddress;
   if (appealsAddress) {
     lines.push(formatAppealsAddressBlock(appealsAddress));
@@ -167,6 +177,38 @@ function buildInsurerRecipientBlock(
     lines.push(`Phone: ${phone}`);
   }
   return lines.join("\n");
+}
+
+/** Recipient block for the collections debt-validation letter. The collector is USER-SUPPLIED
+ *  (map §4 — collections is a user-supplied event at launch; no event model). */
+function buildCollectorRecipientBlock(
+  collector: { name: string; address?: string | null } | null | undefined,
+): string {
+  if (!collector?.name) return "";
+  return [collector.name, collector.address ?? null].filter(Boolean).join("\n");
+}
+
+/** dispute-letters v2 S2 — fail-closed clause renderer. Returns "" when the gate value is missing
+ *  (null / undefined / empty string / empty array), else the clause. Guarantees no `$[…]` / `[date]`
+ *  placeholder ever renders. (S3 formalizes the CI no-placeholder fixture + retrofits the existing
+ *  templates onto this helper.) */
+function renderGated<T>(value: T | null | undefined, clause: (v: T) => string): string {
+  if (value == null) return "";
+  if (typeof value === "string" && value.trim() === "") return "";
+  if (Array.isArray(value) && value.length === 0) return "";
+  return clause(value);
+}
+
+/** dispute-letters v2 S2 — state-specific citation registry. INERT at launch (no verified entries),
+ *  so `resolveStateCitation` returns null for every (state, lever). Counsel-verified, per-entry
+ *  activation is post-launch (map §10 / tracker Item R). */
+const LEGAL_CITATION_REGISTRY: Record<string, string> = {}; // keyed `${state}:${lever}` — empty until verified
+
+/** State-aware via profiles.state (planContext.userState); fail-closed to null (unverified state →
+ *  federal levers + generic only, per map §5). */
+function resolveStateCitation(state: string | null | undefined, lever: string): string | null {
+  if (!state) return null;
+  return LEGAL_CITATION_REGISTRY[`${state}:${lever}`] ?? null;
 }
 
 /** Patient + reference block. Surfaces Provider NPI when it's known —
@@ -872,7 +914,7 @@ export function buildRequestSection(params: {
   return [
     "RELIEF REQUESTED",
     "",
-    `I request that ${payee}'s compliance department respond in writing within 30 days of receipt and:`,
+    `I request that ${payee}'s ${isInsurer ? "appeals department" : "compliance department"} respond in writing within 30 days of receipt and:`,
     "",
     numbered,
     "",
@@ -1786,6 +1828,126 @@ DISCLAIMER: This letter is informational only. Candid does not negotiate on your
   },
 };
 
+// ============================================================================
+// dispute-letters v2 S2 — escalation + collections templates. All user-triggered
+// (outcome-driven flow); fail-closed on gated clauses via renderGated; state
+// citations inert (registry not shipped). Recipients: final_notice → provider
+// Compliance, external_review → insurer Appeals, debt_validation → the collector.
+// ============================================================================
+
+const finalNoticeTemplate: LetterTemplate = {
+  type: "final_notice",
+  subject: (provider) => `Final Notice Before Escalation — ${provider}`,
+  body: ({ patientName, providerName, serviceDate, accountNumber, planContext, bill, findings, priorContactDates, certifiedMail }) => {
+    const recipientBlock = buildProviderRecipientBlock(providerName, planContext?.providerContact, bill);
+    const patientRefBlock = buildPatientReferenceBlock(patientName, undefined, planContext?.providerContact, bill);
+    const total = (findings ?? []).reduce((s, f) => s + f.estimatedOvercharge, 0);
+    const state = planContext?.userState ?? null;
+    const certifiedLine = certifiedMail ? "\nSent via certified mail, return receipt requested" : "";
+    const recital = renderGated(priorContactDates, (dates) =>
+      ` I previously contacted you about these charges on ${dates.join(", ")} and have not received a resolution.`);
+    const amountLine = total > 0 ? ` The amount in dispute is ${formatCurrency(total)}.` : "";
+    const forum = state
+      ? `my state's consumer-protection authority (the ${state} Attorney General's office)`
+      : "my state's consumer-protection authority";
+    const stateCitation = renderGated(resolveStateCitation(state, "medical_debt"), (c) => ` ${c}`);
+    return `${formatDate(new Date().toISOString())}
+
+${recipientBlock}
+
+Re: Final Notice Before Escalation — Date of Service: ${formatDate(serviceDate)}
+${patientRefBlock}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}${certifiedLine}
+
+To Whom It May Concern:
+
+This is my final attempt to resolve the disputed charges on this account before I escalate.${recital}${amountLine}
+
+Please respond in writing within 15 business days of receipt confirming the correction of these charges. While this dispute is unresolved, please do not refer this account to collections or report it to a credit bureau.
+
+If this matter is not resolved, I intend to file complaints with ${forum} and, where applicable, the federal No Surprises Help Desk, and this unresolved dispute will be noted in those complaints.${stateCitation}
+
+Sincerely,
+
+${patientName}
+
+---
+DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis tool. Candid is not a law firm, does not provide legal advice, and does not act as your legal representative. The information above is based on anonymized, aggregated community data and publicly available rates, and may not reflect your specific contractual rates or coverage.`;
+  },
+};
+
+const externalReviewTemplate: LetterTemplate = {
+  type: "external_review",
+  subject: (provider) => `Request for External Review — ${provider}`,
+  body: ({ patientName, serviceDate, accountNumber, planContext, appealExhausted }) => {
+    const insurerName = planContext?.insurer?.name ?? "My Health Plan";
+    const recipientBlock = buildInsurerRecipientBlock(insurerName, planContext);
+    const denialLine = renderGated(appealExhausted?.denialDate, (d) => ` on ${formatDate(d)}`);
+    return `${formatDate(new Date().toISOString())}
+
+${recipientBlock}
+
+Re: Request for External Review — Date of Service: ${formatDate(serviceDate)}
+Patient: ${patientName}${accountNumber ? `\nClaim/Account #: ${accountNumber}` : ""}
+
+To Whom It May Concern:
+
+I have completed your internal appeals process and received a final adverse determination${denialLine}. Under the Affordable Care Act (ACA §2719 / 45 CFR §147.136), I am entitled to an independent external review of this denial, and I am requesting one.
+
+Enclosed with this request:
+1. The final internal denial (adverse benefit determination)
+2. My prior internal appeal
+3. The Explanation of Benefits for the claim
+4. Supporting documentation (medical records or provider letter, as applicable)
+
+Please initiate the external review and confirm in writing the date this request was received and the external review organization to which it is assigned. If external review must instead be requested through my state Department of Insurance or the federal HHS-administered process, please advise so I can submit it there.
+
+Sincerely,
+
+${patientName}
+
+---
+DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis tool. Candid is not a law firm, does not provide legal advice, and does not act as your legal representative. You should consult with a qualified attorney or patient advocate if you need assistance with your external review.`;
+  },
+};
+
+const debtValidationTemplate: LetterTemplate = {
+  type: "debt_validation",
+  subject: () => `Debt Validation Request`,
+  body: ({ patientName, accountNumber, planContext, collector, debtWithinWindow }) => {
+    const recipientBlock = buildCollectorRecipientBlock(collector);
+    const state = planContext?.userState ?? null;
+    const creditor = renderGated(collector?.originalCreditor, (oc) => ` (original creditor: ${oc})`);
+    const acctLine = renderGated(accountNumber, (a) => ` — Account #: ${a}`);
+    const validationTeeth = debtWithinWindow
+      ? `\n\nUnder the Fair Debt Collection Practices Act (15 U.S.C. §1692g), please provide: (1) the amount of the debt; (2) the name of the original creditor; and (3) verification that the debt is valid and that you are authorized to collect it, together with an itemized statement of the charges.`
+      : "";
+    const cease = debtWithinWindow
+      ? `\n\nUntil you provide the requested validation, please cease collection activity on this account.`
+      : "";
+    const stateCitation = renderGated(resolveStateCitation(state, "credit_furnishing"), (c) => ` ${c}`);
+    return `${formatDate(new Date().toISOString())}
+
+${recipientBlock}
+
+Re: Debt Validation Request${acctLine}${creditor}
+
+To Whom It May Concern:
+
+I am writing regarding the above account. I dispute this debt and request validation. This letter is not an acknowledgment that I owe this debt.
+
+Please provide validation of this debt, including documentation that it is valid and that the amount is accurate.${validationTeeth}
+
+Please mark this debt as disputed in your records and in any report you make to a consumer reporting agency, as required by the Fair Debt Collection Practices Act (15 U.S.C. §1692e(8)).${stateCitation}${cease}
+
+Sincerely,
+
+${patientName}
+
+---
+DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis tool. Candid is not a law firm, does not provide legal advice, and does not act as your legal representative. You should consult with a qualified attorney if you need legal advice regarding this debt.`;
+  },
+};
+
 export const LETTER_TEMPLATES: Record<DisputeLetterType, LetterTemplate> = {
   overcharge: overchargeTemplate,
   itemized_request: itemizedRequestTemplate,
@@ -1793,4 +1955,7 @@ export const LETTER_TEMPLATES: Record<DisputeLetterType, LetterTemplate> = {
   balance_billing: balanceBillingTemplate,
   duplicate_charge: duplicateChargeTemplate,
   negotiation: negotiationTemplate,
+  final_notice: finalNoticeTemplate,
+  external_review: externalReviewTemplate,
+  debt_validation: debtValidationTemplate,
 };

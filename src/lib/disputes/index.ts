@@ -39,10 +39,26 @@ const FINDING_TO_LETTER: Partial<Record<FindingType, DisputeLetterType>> = deriv
  * have without a second resolve. Unknown / undefined → "provider" (the common
  * case + the conservative default: requires the address the provider letter prints).
  */
-const INSURER_RECIPIENT_TYPES = new Set<string>([
-  // DisputeLetterType
-  "insurance_appeal",
-  // dispute_outcomes.dispute_type values that resolve to insurance_appeal
+// EXHAUSTIVE over DisputeLetterType — the compiler forces every letter type to declare its
+// recipient here, so a new type cannot silently fall through to "provider" (dispute-letters v2
+// S2 hardening; replaces the prior silent-omit Set).
+export type LetterRecipientKind = "insurer" | "provider" | "collector";
+
+const RECIPIENT_BY_LETTER_TYPE: Record<DisputeLetterType, LetterRecipientKind> = {
+  overcharge: "provider",
+  duplicate_charge: "provider",
+  balance_billing: "provider",
+  itemized_request: "provider",
+  negotiation: "provider",
+  insurance_appeal: "insurer",
+  final_notice: "provider",
+  external_review: "insurer",
+  debt_validation: "collector",
+};
+
+// Raw dispute_outcomes.dispute_type values (NOT DisputeLetterType) that resolve to the insurer —
+// the legacy rerender path passes these directly.
+const INSURER_DISPUTE_TYPES = new Set<string>([
   "internal_appeal",
   "cost_share_misapplication",
   "coverage_contradiction",
@@ -51,8 +67,12 @@ const INSURER_RECIPIENT_TYPES = new Set<string>([
 
 export function letterRecipientKind(
   type: string | null | undefined,
-): "insurer" | "provider" {
-  return type && INSURER_RECIPIENT_TYPES.has(type) ? "insurer" : "provider";
+): LetterRecipientKind {
+  if (!type) return "provider";
+  if (Object.prototype.hasOwnProperty.call(RECIPIENT_BY_LETTER_TYPE, type)) {
+    return RECIPIENT_BY_LETTER_TYPE[type as DisputeLetterType];
+  }
+  return INSURER_DISPUTE_TYPES.has(type) ? "insurer" : "provider";
 }
 
 export interface GenerateDisputeLetterOptions {
@@ -99,6 +119,16 @@ export interface GenerateDisputeLetterOptions {
    * the flag state. Default false → byte-identical.
    */
   noPlanCoverageRequestOn?: boolean;
+  /**
+   * dispute-letters v2 S2 — escalation / collections gate inputs threaded to the template body.
+   * User-supplied via the request body at launch (the FE collects them in S5/S6). Fail-closed:
+   * absent → the gated clause is OMITTED (renderGated), never a placeholder.
+   */
+  priorContactDates?: string[];
+  certifiedMail?: boolean;
+  appealExhausted?: { attested: boolean; denialDate?: string | null };
+  collector?: { name: string; address?: string | null; originalCreditor?: string | null };
+  debtWithinWindow?: boolean;
 }
 
 export function generateDisputeLetter(
@@ -118,7 +148,8 @@ export function generateDisputeLetter(
   const options: GenerateDisputeLetterOptions = Array.isArray(optionsOrPlanEvidence)
     ? { planEvidence: optionsOrPlanEvidence }
     : (optionsOrPlanEvidence ?? {});
-  const { planEvidence, planContext, evidence, gateUnverified, enforceDataTrustGate, disputeGroundsOn, disputeGroundBasis, noPlanCoverageRequestOn } =
+  const { planEvidence, planContext, evidence, gateUnverified, enforceDataTrustGate, disputeGroundsOn, disputeGroundBasis, noPlanCoverageRequestOn,
+    priorContactDates, certifiedMail, appealExhausted, collector, debtWithinWindow } =
     options;
 
   // Resolve the letter type up front (was below, before the template lookup) so the recovery fold
@@ -174,28 +205,43 @@ export function generateDisputeLetter(
     letterRecovery,
     recovery,
     noPlanCoverageRequestOn: noPlanCoverageRequestOn ?? false,
+    priorContactDates,
+    certifiedMail,
+    appealExhausted,
+    collector,
+    debtWithinWindow,
   });
 
   // Recipient: insurance appeals use insurer + appeals address when available;
   // fall back to provider for billing-department letters.
-  const isAppeal = resolvedType === "insurance_appeal";
+  // dispute-letters v2 S2 — recipient metadata is recipientKind-aware (was isAppeal-only): insurer
+  // letters (insurance_appeal + external_review) → Appeals; collector (debt_validation) → the
+  // user-supplied collector; everything else → provider Compliance. insurance_appeal behavior is
+  // unchanged (recipientKind==="insurer" && insurer ≡ the prior isAppeal && insurer guard for it).
   const insurer = planContext?.insurer ?? null;
   const hasInsurerAddress = !!insurer?.appealsAddress;
 
-  const recipient = isAppeal && insurer
-    ? {
-        name: insurer.name,
-        role: "Compliance Department",
-        address: hasInsurerAddress
-          ? formatAppealsAddress(insurer.appealsAddress!)
-          : undefined,
-        phone: insurer.appealsPhone ?? undefined,
-      }
-    : {
-        name: bill.provider.name,
-        role: "Compliance Department",
-        address: bill.provider.address,
-      };
+  const recipient =
+    recipientKind === "insurer" && insurer
+      ? {
+          name: insurer.name,
+          role: "Appeals Department",
+          address: hasInsurerAddress
+            ? formatAppealsAddress(insurer.appealsAddress!)
+            : undefined,
+          phone: insurer.appealsPhone ?? undefined,
+        }
+      : recipientKind === "collector"
+        ? {
+            name: collector?.name ?? "The debt collector",
+            role: "",
+            address: collector?.address ?? undefined,
+          }
+        : {
+            name: bill.provider.name,
+            role: "Compliance Department",
+            address: bill.provider.address,
+          };
 
   return {
     id: randomUUID(),
@@ -295,6 +341,17 @@ function getLegalBasis(type: DisputeLetterType): string {
       return "HIPAA Section 164.524 (right of access), state itemized bill laws";
     case "negotiation":
       return "State consumer protection laws, fair pricing standards";
+    case "final_notice":
+      return "State consumer protection laws; No Surprises Act (Public Law 116-260) where applicable";
+    case "external_review":
+      return "Affordable Care Act Section 2719, 45 CFR §147.136 (external review)";
+    case "debt_validation":
+      return "Fair Debt Collection Practices Act (15 U.S.C. §1692g, §1692e(8))";
+    default: {
+      // Exhaustiveness guard — a new DisputeLetterType without a case here is a compile error.
+      const _exhaustive: never = type;
+      return _exhaustive;
+    }
   }
 }
 
@@ -317,5 +374,16 @@ function getRequestedAction(
       return `Provide complete itemized bill with procedure codes and line-item pricing`;
     case "negotiation":
       return `Negotiate a fair self-pay rate based on community and Medicare benchmarks`;
+    case "final_notice":
+      return `Correct the disputed charges within 15 business days before I escalate to regulators`;
+    case "external_review":
+      return `Initiate an independent external review of the denied claim`;
+    case "debt_validation":
+      return `Validate the debt and mark it as disputed pending validation`;
+    default: {
+      // Exhaustiveness guard — a new DisputeLetterType without a case here is a compile error.
+      const _exhaustive: never = type;
+      return _exhaustive;
+    }
   }
 }

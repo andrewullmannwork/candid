@@ -1659,6 +1659,9 @@ const LETTER_TYPE_LABELS: Record<DisputeLetter["letterType"], string> = {
   duplicate_charge: "Duplicate Charge Dispute",
   itemized_request: "Itemized Bill Request",
   negotiation: "Self-Pay Negotiation",
+  final_notice: "Final Notice",
+  external_review: "External Review Request",
+  debt_validation: "Debt Validation",
 };
 
 function buildAskSummary(letter: DisputeLetter, recovery: number | null): string | null {

@@ -421,6 +421,54 @@ for (const { type, findings } of ZERO_BUG_TYPES) {
   check("A.2 duplicate_charge carries the collections-hold (owes>0)", dupReq.includes(HOLD));
 }
 
+// ── dispute-letters v2 S2 — the 3 new escalation/collections templates. Rendered with gate inputs
+//    present (recital / denial date / in-window §1692g); debt_validation ALSO out-of-window to prove
+//    the fail-closed 30-day gate (teeth omitted, §1692e(8) disputed-status still fires). ──────────
+{
+  const finalNotice = LETTER_TEMPLATES.final_notice.body({
+    patientName: bill.patient.name, providerName: bill.provider.name, serviceDate: bill.serviceDate,
+    accountNumber: "ACCT-1", findings: [makeFinding()], bill, planContext: null,
+    priorContactDates: ["January 10, 2024", "February 2, 2024"], certifiedMail: true,
+  });
+  snapshot("final_notice.generate", finalNotice);
+  check("final_notice → provider Compliance Department", finalNotice.includes("Compliance Department"), finalNotice);
+  check("final_notice recital renders attested prior dates", finalNotice.includes("January 10, 2024"));
+  check("final_notice certified-mail notation (opt-in)", finalNotice.includes("certified mail"));
+  check("final_notice 15 business days + will-be-noted", finalNotice.includes("15 business days") && finalNotice.includes("will be noted in those complaints"));
+  check("final_notice collections-hold protection", finalNotice.includes("do not refer this account to collections"));
+
+  const externalReview = LETTER_TEMPLATES.external_review.body({
+    patientName: bill.patient.name, providerName: bill.provider.name, serviceDate: bill.serviceDate,
+    accountNumber: "CLM-9", findings: [], bill, planContext: null,
+    appealExhausted: { attested: true, denialDate: "2024-04-01" },
+  });
+  snapshot("external_review.generate", externalReview);
+  check("external_review → insurer Appeals Department", externalReview.includes("Appeals Department"), externalReview);
+  check("external_review cites ACA §2719 / 45 CFR §147.136", externalReview.includes("ACA §2719 / 45 CFR §147.136"));
+  check("external_review lists enclosures", externalReview.includes("Enclosed with this request:"));
+  check("external_review renders attested denial date", externalReview.includes("April 1, 2024"));
+
+  const collector = { name: "ABC Collections LLC", address: "1 Debt Way\nCollectionville, TX 70000", originalCreditor: "Sample Medical Center" };
+  const debtInWindow = LETTER_TEMPLATES.debt_validation.body({
+    patientName: bill.patient.name, providerName: bill.provider.name, serviceDate: bill.serviceDate,
+    accountNumber: "COLL-1", findings: [], bill, planContext: null, collector, debtWithinWindow: true,
+  });
+  snapshot("debt_validation.in_window", debtInWindow);
+  check("debt_validation → the collector (user-supplied)", debtInWindow.includes("ABC Collections LLC"), debtInWindow);
+  check("debt_validation not-an-acknowledgment line", debtInWindow.includes("not an acknowledgment that I owe this debt"));
+  check("debt_validation §1692e(8) disputed-status (always)", debtInWindow.includes("§1692e(8)"));
+  check("debt_validation in-window renders §1692g teeth + cease", debtInWindow.includes("§1692g") && debtInWindow.includes("cease collection activity"));
+
+  const debtOutWindow = LETTER_TEMPLATES.debt_validation.body({
+    patientName: bill.patient.name, providerName: bill.provider.name, serviceDate: bill.serviceDate,
+    accountNumber: "COLL-1", findings: [], bill, planContext: null, collector, debtWithinWindow: false,
+  });
+  snapshot("debt_validation.out_window", debtOutWindow);
+  check("debt_validation OUT-of-window still marks disputed (§1692e(8))", debtOutWindow.includes("§1692e(8)"));
+  check("debt_validation OUT-of-window OMITS §1692g teeth (fail-closed)", !debtOutWindow.includes("§1692g"));
+  check("debt_validation OUT-of-window OMITS cease-collection", !debtOutWindow.includes("cease collection activity"));
+}
+
 // ── Report (house style) ─────────────────────────────────────────────────────
 if (captured.length) console.log(`Captured ${captured.length} new golden(s): ${captured.join(", ")}`);
 console.log(`\ndispute-grounds golden corpus: ${pass} passed, ${fails.length} failed`);
