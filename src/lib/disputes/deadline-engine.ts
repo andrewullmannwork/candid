@@ -91,7 +91,9 @@ export interface DeadlineResult {
 
 // Letter-type → track. Kept local + explicit (recipient routing lives in templates/index; this is
 // only the deadline classification). Provider letters have no statutory response deadline.
-const INSURER_TRACK = new Set<string>(["insurance_appeal", "external_review"]);
+// external_review (I2) is the escalation TARGET of plan_response (map §3.1 "escalate I1→I2"), not a
+// plan_response-tracked letter itself → it falls through to null (no governing deadline at launch).
+const INSURER_TRACK = new Set<string>(["insurance_appeal"]);
 const COLLECTOR_TRACK = new Set<string>(["debt_validation"]);
 
 const DAY_MS = 24 * 60 * 60 * 1000;

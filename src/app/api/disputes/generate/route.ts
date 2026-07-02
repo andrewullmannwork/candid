@@ -15,6 +15,7 @@ import {
   type StrengthResult,
 } from "@/lib/disputes/strength-scoring";
 import { persistDisputeLetter } from "@/lib/disputes/persist";
+import { evaluateDeadline, readDeadlineConfig, type DeadlineGuard } from "@/lib/disputes/deadline-engine";
 import { createServerClient } from "@/lib/supabase/server";
 import { reparseField } from "@/lib/plan/reparse-field";
 import { loadDecorationContext } from "@/lib/plan/analyze-decoration";
@@ -41,7 +42,7 @@ export async function POST(req: NextRequest) {
           { status: 401 }
         );
       }
-      const { findingIds, letterType, insurancePlanId, priorContactDates, certifiedMail, appealExhausted, collector, collectorFirstContactDate } = body as {
+      const { findingIds, letterType, insurancePlanId, priorContactDates, certifiedMail, appealExhausted, collector, collectorFirstContactDate, denialNoticeDate } = body as {
         findingIds: string[];
         letterType?: DisputeLetterType;
         insurancePlanId?: string;
@@ -51,6 +52,11 @@ export async function POST(req: NextRequest) {
         appealExhausted?: { attested: boolean; denialDate?: string | null };
         collector?: { name: string; address?: string | null; originalCreditor?: string | null };
         collectorFirstContactDate?: string | null;
+        // dispute-letters v2 S4 — the INITIAL adverse-determination (denial) date → the
+        // erisa_appeal_180 anchor for the deadline engine. Distinct from appealExhausted.denialDate
+        // (the FINAL internal-appeal denial that gates external_review). User-supplied; no input
+        // path until S5 → the erisa guard stays dormant (fail-closed) until then.
+        denialNoticeDate?: string | null;
       };
       // Authoritative userId comes from the verified Firebase token, not the
       // request body. Closes B9-1 §C1 IDOR.
@@ -354,16 +360,38 @@ export async function POST(req: NextRequest) {
           ? await loadDisputeGroundBasis(supabase, auditReport.userId, [body.claimId as string])
           : undefined;
 
-      // dispute-letters v2 S2 — FDCPA §1692g 30-day window, computed from the collector's
-      // user-supplied first-contact date (kept OUT of the template so the body stays deterministic).
-      // Unknown / unparseable → false (fail-closed: no §1692g teeth without a substantiated in-window
-      // date; the §1692e(8) disputed-status marking still always fires).
-      const debtWithinWindow = (() => {
-        if (!collectorFirstContactDate) return false;
-        const first = Date.parse(collectorFirstContactDate);
-        if (Number.isNaN(first)) return false;
-        return Date.now() - first <= 30 * 24 * 60 * 60 * 1000;
-      })();
+      // dispute-letters v2 S4 — deadline & follow-up engine (map §3), flag-gated. When ON, the
+      // engine is the SINGLE source of the FDCPA §1692g in-window check (unifying the S2 inline
+      // below) PLUS the governing deadline (dispute_outcomes columns) and the past-window guard.
+      // When OFF, the S2 inline runs verbatim (byte-identical) and NO governing_deadline_date /
+      // deadline_type column is referenced anywhere (safe to deploy before mig 196 is applied).
+      const deadlineEngineOn = await isFlagEnabled("dispute_deadline_engine_v1");
+      let governingDeadlineDate: string | null = null;
+      let deadlineType: string | null = null;
+      let deadlineWarning: DeadlineGuard | null = null;
+      let debtWithinWindow: boolean;
+      if (deadlineEngineOn) {
+        const deadlineConfig = await readDeadlineConfig(supabase);
+        const deadlineResult = evaluateDeadline(
+          { letterType: letterType ?? "", denialNoticeDate, collectorFirstContactDate },
+          deadlineConfig,
+        );
+        debtWithinWindow = deadlineResult.debtWithinWindow;
+        governingDeadlineDate = deadlineResult.governingDeadlineDate;
+        deadlineType = deadlineResult.deadlineType;
+        // Surface only an actionable guard (past / urgent); 'ok' → null (nothing to warn about).
+        deadlineWarning = deadlineResult.guard.severity === "ok" ? null : deadlineResult.guard;
+      } else {
+        // dispute-letters v2 S2 — FDCPA §1692g 30-day window (flag-OFF fallback; byte-identical).
+        // Unknown / unparseable → false (fail-closed: no §1692g teeth without a substantiated
+        // in-window date; the §1692e(8) disputed-status marking still always fires).
+        debtWithinWindow = (() => {
+          if (!collectorFirstContactDate) return false;
+          const first = Date.parse(collectorFirstContactDate);
+          if (Number.isNaN(first)) return false;
+          return Date.now() - first <= 30 * 24 * 60 * 60 * 1000;
+        })();
+      }
 
       const letter = generateDisputeLetter(auditReport, findingIds, letterType, {
         planEvidence,
@@ -456,6 +484,9 @@ export async function POST(req: NextRequest) {
           // dispute reads the claim's live DOS-correct plan on every view (no
           // frozen copy to go stale). Written only here + /repin.
           insurancePlanId: insurancePlanId ?? null,
+          // dispute-letters v2 S4 — INSERT-only governing deadline, passed ONLY when the engine
+          // flag is ON so the new columns are never referenced OFF (safe pre-mig-196-apply).
+          ...(deadlineEngineOn ? { deadline: { governingDeadlineDate, deadlineType } } : {}),
         });
         disputeId = result?.disputeId || null;
         deduplicated = result?.deduplicated ?? false;
@@ -519,6 +550,9 @@ export async function POST(req: NextRequest) {
         // (which user-fixable inputs to prompt for, then Rebuild). Null on the OFF path.
         strengthenLetter,
         missingPlanForYear: planContext?.missingForYear ?? null,
+        // dispute-letters v2 S4 — the deadline guard verdict (past / urgent) or null (ok / flag OFF).
+        // Consumed by the S5/S6 case page (countdown + next-step); ignored by today's UI.
+        deadlineWarning,
       });
     }
 

@@ -89,8 +89,9 @@ expect("appeal, denial −175d → erisa urgent, still files", ev("insurance_app
 expect("appeal, pre-service → 30d plan_response", ev("insurance_appeal", { isPreService: true }), {
   gov: "2026-08-01", type: "plan_response",
 });
-expect("external_review is insurer track", ev("external_review", {}), {
-  gov: "2026-08-31", type: "plan_response", sev: "ok",
+// external_review (I2) is the escalation TARGET, not a plan_response-tracked letter → null.
+expect("external_review → null (not plan_response-tracked)", ev("external_review", { denialNoticeDate: iso(-30) }), {
+  gov: null, type: null, sev: "ok", within: false,
 });
 
 // ── Provider track + INERT — no governing deadline at launch ──
