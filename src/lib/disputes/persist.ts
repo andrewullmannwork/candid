@@ -377,6 +377,12 @@ function mapLetterTypeToDisputeType(letterType: DisputeLetterType): string {
     case "balance_billing": return "complaint";
     case "duplicate_charge": return "internal_appeal";
     case "itemized_request": return "negotiation";
-    default: return "negotiation";
+    case "negotiation": return "negotiation";
+    default: {
+      // Exhaustiveness guard — a new DisputeLetterType must declare its dispute_type here
+      // rather than silently persisting "negotiation" (dispute-letters v2 S2 hardening).
+      const _exhaustive: never = letterType;
+      return _exhaustive;
+    }
   }
 }

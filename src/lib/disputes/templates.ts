@@ -157,7 +157,7 @@ function buildInsurerRecipientBlock(
   insurerName: string,
   planContext: PlanContext | null | undefined,
 ): string {
-  const lines: string[] = [insurerName, "Compliance Department"];
+  const lines: string[] = [insurerName, "Appeals Department"];
   const appealsAddress = planContext?.insurer?.appealsAddress;
   if (appealsAddress) {
     lines.push(formatAppealsAddressBlock(appealsAddress));
@@ -872,7 +872,7 @@ export function buildRequestSection(params: {
   return [
     "RELIEF REQUESTED",
     "",
-    `I request that ${payee}'s compliance department respond in writing within 30 days of receipt and:`,
+    `I request that ${payee}'s ${isInsurer ? "appeals department" : "compliance department"} respond in writing within 30 days of receipt and:`,
     "",
     numbered,
     "",

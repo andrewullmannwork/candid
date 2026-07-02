@@ -39,10 +39,21 @@ const FINDING_TO_LETTER: Partial<Record<FindingType, DisputeLetterType>> = deriv
  * have without a second resolve. Unknown / undefined → "provider" (the common
  * case + the conservative default: requires the address the provider letter prints).
  */
-const INSURER_RECIPIENT_TYPES = new Set<string>([
-  // DisputeLetterType
-  "insurance_appeal",
-  // dispute_outcomes.dispute_type values that resolve to insurance_appeal
+// EXHAUSTIVE over DisputeLetterType — the compiler forces every letter type to declare its
+// recipient here, so a new type cannot silently fall through to "provider" (dispute-letters v2
+// S2 hardening; replaces the prior silent-omit Set).
+const RECIPIENT_BY_LETTER_TYPE: Record<DisputeLetterType, "insurer" | "provider"> = {
+  overcharge: "provider",
+  duplicate_charge: "provider",
+  balance_billing: "provider",
+  itemized_request: "provider",
+  negotiation: "provider",
+  insurance_appeal: "insurer",
+};
+
+// Raw dispute_outcomes.dispute_type values (NOT DisputeLetterType) that resolve to the insurer —
+// the legacy rerender path passes these directly.
+const INSURER_DISPUTE_TYPES = new Set<string>([
   "internal_appeal",
   "cost_share_misapplication",
   "coverage_contradiction",
@@ -52,7 +63,11 @@ const INSURER_RECIPIENT_TYPES = new Set<string>([
 export function letterRecipientKind(
   type: string | null | undefined,
 ): "insurer" | "provider" {
-  return type && INSURER_RECIPIENT_TYPES.has(type) ? "insurer" : "provider";
+  if (!type) return "provider";
+  if (Object.prototype.hasOwnProperty.call(RECIPIENT_BY_LETTER_TYPE, type)) {
+    return RECIPIENT_BY_LETTER_TYPE[type as DisputeLetterType];
+  }
+  return INSURER_DISPUTE_TYPES.has(type) ? "insurer" : "provider";
 }
 
 export interface GenerateDisputeLetterOptions {
@@ -185,7 +200,7 @@ export function generateDisputeLetter(
   const recipient = isAppeal && insurer
     ? {
         name: insurer.name,
-        role: "Compliance Department",
+        role: "Appeals Department",
         address: hasInsurerAddress
           ? formatAppealsAddress(insurer.appealsAddress!)
           : undefined,
@@ -295,6 +310,11 @@ function getLegalBasis(type: DisputeLetterType): string {
       return "HIPAA Section 164.524 (right of access), state itemized bill laws";
     case "negotiation":
       return "State consumer protection laws, fair pricing standards";
+    default: {
+      // Exhaustiveness guard — a new DisputeLetterType without a case here is a compile error.
+      const _exhaustive: never = type;
+      return _exhaustive;
+    }
   }
 }
 
@@ -317,5 +337,10 @@ function getRequestedAction(
       return `Provide complete itemized bill with procedure codes and line-item pricing`;
     case "negotiation":
       return `Negotiate a fair self-pay rate based on community and Medicare benchmarks`;
+    default: {
+      // Exhaustiveness guard — a new DisputeLetterType without a case here is a compile error.
+      const _exhaustive: never = type;
+      return _exhaustive;
+    }
   }
 }

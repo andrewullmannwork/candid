@@ -223,6 +223,11 @@ function titleForType(type: DisputeLetter["letterType"]): string {
       return "Itemized bill request";
     case "negotiation":
       return "Self-pay negotiation";
+    default: {
+      // Exhaustiveness guard — a new letter type without a title here is a compile error.
+      const _exhaustive: never = type;
+      return _exhaustive;
+    }
   }
 }
 
