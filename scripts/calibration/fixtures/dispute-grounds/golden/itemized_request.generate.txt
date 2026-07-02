@@ -1,7 +1,7 @@
 <LETTER_DATE>
 
 Sample Medical Center
-Billing Department
+Compliance Department
 123 Care St
 Anytown, CA 90000
 
@@ -10,7 +10,7 @@ Patient: Jordan Sample
 
 To Whom It May Concern:
 
-I am writing to request a complete itemized bill for services rendered on March 15, 2024. I am exercising my right under federal and state law to receive a detailed breakdown of all charges.
+I am writing to request a complete itemized bill for services rendered on March 15, 2024. Please provide a detailed, line-by-line breakdown of all charges so I can verify them against the care I received.
 
 Please include the following information for each line item:
 

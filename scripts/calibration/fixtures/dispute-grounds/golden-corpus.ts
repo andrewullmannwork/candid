@@ -25,6 +25,7 @@ import { LETTER_TEMPLATES, buildRequestSection } from "../../../../src/lib/dispu
 import { generateNegotiationLetter } from "../../../../src/lib/disputes/negotiation-template";
 import type { AuditFinding, ParsedBill, DisputeLetterType } from "../../../../src/lib/billing/types";
 import type { DisputeEvidence, LineItemEvidence, ClaimEvidence } from "../../../../src/lib/disputes/evidence-resolver";
+import type { PlanContext } from "../../../../src/lib/disputes/plan-context";
 
 const GOLDEN_DIR = resolve(__dirname, "golden");
 mkdirSync(GOLDEN_DIR, { recursive: true });
@@ -96,9 +97,9 @@ function makeFinding(over: Partial<AuditFinding> = {}): AuditFinding {
     severity: "high",
     lineItems: [1],
     title: "Potential overcharge on office visit",
-    description: "The billed amount exceeds the Medicare national average for this service.",
+    description: "The billed amount substantially exceeds the Medicare benchmark for this service.",
     estimatedOvercharge: 230,
-    benchmarkSource: "CMS PPL",
+    benchmarkSource: "Medicare",
     benchmarkAmount: 70,
     billedAmount: 300,
     confidence: 0.9,
@@ -242,8 +243,8 @@ const bill = makeBill();
 // The 3 findings-driven templates that exhibit the $0.00 refresh bug.
 const ZERO_BUG_TYPES: { type: DisputeLetterType; findings: AuditFinding[] }[] = [
   { type: "overcharge", findings: [makeFinding()] },
-  { type: "balance_billing", findings: [makeFinding({ type: "balance_billing", title: "Balance billed above allowed amount", estimatedOvercharge: 150, billedAmount: 400 })] },
-  { type: "duplicate_charge", findings: [makeFinding({ type: "duplicate", title: "Duplicate charge for the same service", estimatedOvercharge: 120, billedAmount: 120 })] },
+  { type: "balance_billing", findings: [makeFinding({ type: "balance_billing", title: "Balance billed above allowed amount", description: "This amount exceeds my plan's allowed amount after the insurer's payment.", estimatedOvercharge: 150, billedAmount: 400, benchmarkAmount: undefined, benchmarkSource: undefined })] },
+  { type: "duplicate_charge", findings: [makeFinding({ type: "duplicate", title: "Duplicate charge for the same service", description: "This service appears billed more than once for the same date of service.", estimatedOvercharge: 120, billedAmount: 120, benchmarkAmount: undefined, benchmarkSource: undefined })] },
 ];
 
 for (const { type, findings } of ZERO_BUG_TYPES) {
@@ -394,6 +395,23 @@ for (const { type, findings } of ZERO_BUG_TYPES) {
   check("A1′ insurer asks for the EOB / line-by-line adjudication", insReq.includes(EOB), insReq);
   check("A1′ insurer does NOT request an itemized statement (provider artifact)", !insReq.includes(ITEMIZED));
   check("A1′ insurer does NOT render the collections-hold", !insReq.includes(HOLD));
+
+  // ── dispute-letters v2 S1 — ERISA claim-file gate. plan_source='employer' unlocks the
+  //    §2560.503-1(h)(2)(iii) claim-file ask on the LIVE (v3) insurer relief section; any other/
+  //    unknown source → generic (no ERISA statute). Tested directly on buildRequestSection (mirrors
+  //    A1′) to sidestep the full body's effectiveTotals.provenance requirement, orthogonal here. ──
+  const CLAIMFILE = "29 CFR §2560.503-1(h)(2)(iii)";
+  const APPEAL_DATE_ASK = "confirm in writing the date this appeal was received";
+  const insReqErisa = buildRequestSection({
+    evidence: evFrom([evidenceLine(makeFinding(), "li-erisa")]),
+    planContext: { planSource: "employer" } as unknown as PlanContext,
+    recipient: "insurer", demandsEnabled: true,
+  });
+  snapshot("insurer_request.generic", insReq);     // non-employer (A1′ planContext:null) → no ERISA cite
+  snapshot("insurer_request.erisa", insReqErisa);   // employer → claim-file cite present
+  check("ERISA employer insurer request includes the §2560.503-1(h)(2)(iii) claim-file ask", insReqErisa.includes(CLAIMFILE), insReqErisa);
+  check("ERISA employer request asks the plan to confirm the appeal-received date", insReqErisa.includes(APPEAL_DATE_ASK));
+  check("non-employer insurer request OMITS the ERISA claim-file cite", !insReq.includes(CLAIMFILE));
 
   // A.2 — duplicate_charge now routes through buildRequestSection → carries the itemized ask + (owes>0) the hold.
   const dupReq = renderGenerateON("duplicate_charge", bill,

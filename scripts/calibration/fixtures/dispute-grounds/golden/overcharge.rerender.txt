@@ -1,7 +1,7 @@
 <LETTER_DATE>
 
 Sample Medical Center
-Billing Department
+Compliance Department
 123 Care St
 Anytown, CA 90000
 
@@ -14,7 +14,7 @@ I am writing to formally dispute charges on my medical bill for services rendere
 
 
 
-The total estimated overcharge across these items is $0.00.
+The total amount billed above the Medicare benchmark across these items is $0.00.
 
 
 

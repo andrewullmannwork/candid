@@ -1,7 +1,7 @@
 <LETTER_DATE>
 
 Sample Medical Center
-Billing Department
+Compliance Department
 123 Care St
 Anytown, CA 90000
 
@@ -12,29 +12,29 @@ To Whom It May Concern:
 
 I am writing to dispute what appears to be balance billing on my account for services rendered on March 15, 2024.
 
-After reviewing my Explanation of Benefits and your bill, I have identified charges that exceed my plan's allowed amount minus my insurance payment. Under the No Surprises Act (effective January 1, 2022) and applicable state balance billing protections, I should not be billed for amounts beyond my in-network cost-sharing obligations for covered services.
+After reviewing my Explanation of Benefits and your bill, I have identified charges that exceed my plan's allowed amount minus my insurance payment. If these services are subject to the No Surprises Act (for example, emergency services, or services from an out-of-network provider at an in-network facility) or to applicable state balance-billing protections, I should not be billed beyond my in-network cost-sharing for covered services. Please confirm whether these protections apply to these charges and, to the extent they do, correct the balance accordingly.
 
 Specifically:
 
 1. Balance billed above allowed amount
-   The billed amount exceeds the Medicare national average for this service.
+   This amount exceeds my plan's allowed amount after the insurer's payment.
 
 The total excess charges amount to approximately $150.00.
 
-WHY THESE CHARGES VIOLATE MY PLAN'S COST-SHARING TERMS
+WHY THESE CHARGES APPEAR INCONSISTENT WITH MY PLAN'S COST-SHARING TERMS
 
 1. Office visit (CPT 99213) — billed $400.00
-   - Candid audit flag (Balance billed above allowed amount) · CMS PPL benchmark $70.00 · estimated overcharge $150.00.
+   - Candid audit flag (Balance billed above allowed amount) · amount above allowed $150.00.
 
 
 RELIEF REQUESTED
 
-I request that the provider respond in writing within 30 days of receipt and:
+I request that the provider's compliance department respond in writing within 30 days of receipt and:
 
 1. Review the charges identified above and provide a corrected bill.
 2. Provide a fully itemized statement for this account. For each charge, list the billing code (CPT, HCPCS, revenue code, or NDC), the date of service, the units or quantity, and the amount billed, so I can confirm the charges match the care I received.
 
-Please treat this as a formal billing dispute. If this matter is not resolved, I may file a complaint with the appropriate state insurance regulator and, where applicable, the federal No Surprises Help Desk.
+Please treat this as a formal billing dispute. If this matter is not resolved, I may file a complaint with my state's consumer-protection authority and, where applicable, the federal No Surprises Help Desk.
 
 Sincerely,
 

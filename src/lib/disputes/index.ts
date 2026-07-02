@@ -185,7 +185,7 @@ export function generateDisputeLetter(
   const recipient = isAppeal && insurer
     ? {
         name: insurer.name,
-        role: "Member Services — Appeals",
+        role: "Compliance Department",
         address: hasInsurerAddress
           ? formatAppealsAddress(insurer.appealsAddress!)
           : undefined,
@@ -193,7 +193,7 @@ export function generateDisputeLetter(
       }
     : {
         name: bill.provider.name,
-        role: isAppeal ? "Insurance Appeals Department" : "Billing Department",
+        role: "Compliance Department",
         address: bill.provider.address,
       };
 
@@ -270,7 +270,7 @@ export function generateItemizedBillRequest(
     findingIds: [],
     recipient: {
       name: bill.providerName,
-      role: "Billing Department",
+      role: "Compliance Department",
     },
     subject: template.subject(bill.providerName),
     body,

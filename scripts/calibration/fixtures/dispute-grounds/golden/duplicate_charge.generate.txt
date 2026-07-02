@@ -1,7 +1,7 @@
 <LETTER_DATE>
 
 Sample Medical Center
-Billing Department
+Compliance Department
 123 Care St
 Anytown, CA 90000
 
@@ -15,7 +15,7 @@ I am writing to dispute what appear to be duplicate charges on my medical bill f
 After reviewing my bill, I have identified the following charges that appear to be duplicated:
 
 1. Duplicate charge for the same service
-   The billed amount exceeds the Medicare national average for this service.
+   This service appears billed more than once for the same date of service.
 
 The total amount of suspected duplicate charges is $120.00.
 

@@ -1,7 +1,7 @@
 <LETTER_DATE>
 
 Sample Medical Center
-Billing Department
+Compliance Department
 
 Re: Self-Pay Rate Negotiation — Date of Service: 2024-03-15
 Patient: Jordan Sample
