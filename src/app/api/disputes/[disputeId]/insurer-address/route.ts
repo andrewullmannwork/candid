@@ -22,6 +22,7 @@ import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
 import { validateUsAddress } from "@/lib/address/validate-us-address";
 import type { InsurerAddressOverride } from "@/lib/disputes/plan-context";
+import { notifyInsurerAppealsProposal } from "@/lib/disputes/insurer-appeals-notify";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -126,7 +127,7 @@ export async function POST(
     try {
       const { data: current } = await supabase
         .from("insurer_catalog")
-        .select("appeals_address_line_1, appeals_address_line_2, appeals_city, appeals_state, appeals_postal_code, appeals_phone, appeals_source")
+        .select("name, appeals_address_line_1, appeals_address_line_2, appeals_city, appeals_state, appeals_postal_code, appeals_phone, appeals_source")
         .eq("id", insurerId)
         .maybeSingle();
       await supabase.from("insurer_appeals_proposed_changes").insert({
@@ -153,6 +154,31 @@ export async function POST(
           phone: phone || null,
         },
         status: "pending",
+      });
+
+      // Real-time admin nudge so the proposal doesn't sit unseen in the queue.
+      // Fail-soft (never throws); the user's letter already has the override.
+      await notifyInsurerAppealsProposal({
+        insurerName: current?.name ?? insurerName ?? "Unknown insurer",
+        source: "user_correction",
+        current: current?.appeals_address_line_1
+          ? {
+              addressLine1: current.appeals_address_line_1,
+              addressLine2: current.appeals_address_line_2,
+              city: current.appeals_city,
+              state: current.appeals_state,
+              postalCode: current.appeals_postal_code,
+              phone: current.appeals_phone,
+            }
+          : null,
+        proposed: {
+          addressLine1,
+          addressLine2: addressLine2 || null,
+          city,
+          state,
+          postalCode,
+          phone: phone || null,
+        },
       });
     } catch (err) {
       // Non-fatal — the user's letter already has the override.

@@ -14,6 +14,7 @@
  *     for admin review. NEVER overwrite admin_verified data silently.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { notifyInsurerAppealsProposal } from "./insurer-appeals-notify";
 
 export interface ExtractedAppealsBlock {
   addressLine1?: string | null;
@@ -46,7 +47,7 @@ export async function upsertAppealsFromDoc(
 
   const { data: current } = await supabase
     .from("insurer_catalog")
-    .select("appeals_address_line_1, appeals_address_line_2, appeals_city, appeals_state, appeals_postal_code, appeals_phone, appeals_source, appeals_verification_count")
+    .select("name, appeals_address_line_1, appeals_address_line_2, appeals_city, appeals_state, appeals_postal_code, appeals_phone, appeals_source, appeals_verification_count")
     .eq("id", insurerId)
     .maybeSingle();
 
@@ -137,6 +138,31 @@ export async function upsertAppealsFromDoc(
     },
     confidence: extracted.confidence ?? null,
     status: "pending",
+  });
+
+  // Real-time admin nudge (fail-soft) so the doc-extraction conflict gets reviewed
+  // instead of sitting unseen in the queue.
+  await notifyInsurerAppealsProposal({
+    insurerName: current.name ?? "Unknown insurer",
+    source: "doc_extraction",
+    current: current.appeals_address_line_1
+      ? {
+          addressLine1: current.appeals_address_line_1,
+          addressLine2: current.appeals_address_line_2,
+          city: current.appeals_city,
+          state: current.appeals_state,
+          postalCode: current.appeals_postal_code,
+          phone: current.appeals_phone,
+        }
+      : null,
+    proposed: {
+      addressLine1: extracted.addressLine1,
+      addressLine2: extracted.addressLine2 ?? null,
+      city: extracted.city ?? null,
+      state: extracted.state ?? null,
+      postalCode: extracted.postalCode ?? null,
+      phone: extracted.phone ?? null,
+    },
   });
 
   await logConfirmation(supabase, {
