@@ -19,6 +19,7 @@ import { resolve } from "path";
 import { readdirSync, readFileSync } from "fs";
 import { LETTER_TEMPLATES } from "../../../../src/lib/disputes/templates";
 import { generateNegotiationLetter } from "../../../../src/lib/disputes/negotiation-template";
+import { buildFollowupLetter } from "../../../../src/lib/disputes/followup-letter";
 import type { AuditFinding, ParsedBill, DisputeLetterType } from "../../../../src/lib/billing/types";
 
 let pass = 0;
@@ -118,6 +119,28 @@ try {
   );
 } catch (e) {
   check("render negotiation [sparse] does not throw", false, e instanceof Error ? e.message : e);
+}
+
+// dispute-letters v2 S4 — graduated follow-up letters (map §3.3). Every reachable recipient track
+// + final/interim + an adversarial empty parent date + an unknown parent type (fail-closed
+// formatDate + PARENT_LABEL fallback). buildFollowupLetter uses no bracket templates → this locks
+// that in at CI so a future edit can't re-introduce a placeholder.
+const followupCases = [
+  { recipientKind: "insurer" as const, parentLetterType: "insurance_appeal", deadlineType: "plan_response", isFinal: false },
+  { recipientKind: "insurer" as const, parentLetterType: "insurance_appeal", deadlineType: "plan_response", isFinal: true },
+  { recipientKind: "collector" as const, parentLetterType: "debt_validation", deadlineType: "fdcpa_validation_30", isFinal: true },
+  { recipientKind: "provider" as const, parentLetterType: "overcharge", deadlineType: "state_timely_billing", isFinal: false },
+  { recipientKind: "insurer" as const, parentLetterType: "unknown_type", deadlineType: "plan_response", isFinal: false },
+];
+for (const [i, c] of followupCases.entries()) {
+  try {
+    assertClean(
+      `followup letter [${i} ${c.parentLetterType}/${c.recipientKind}${c.isFinal ? "/final" : ""}]`,
+      buildFollowupLetter({ ...c, parentSentDate: i === 4 ? "" : "2024-03-15", governingDeadlineDate: "2024-06-01" }),
+    );
+  } catch (e) {
+    check(`render followup [${i}] does not throw`, false, e instanceof Error ? e.message : e);
+  }
 }
 
 // ── report ────────────────────────────────────────────────────────────────────

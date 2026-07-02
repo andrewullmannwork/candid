@@ -14,11 +14,13 @@
 import {
   evaluateDeadline,
   mergeDeadlineConfig,
+  computeFollowupSchedule,
   DEADLINE_DEFAULTS,
   type DeadlineResult,
   type DeadlineType,
   type DeadlineSeverity,
 } from "../../../../src/lib/disputes/deadline-engine";
+import { buildFollowupLetter } from "../../../../src/lib/disputes/followup-letter";
 
 let pass = 0;
 const fails: string[] = [];
@@ -137,6 +139,54 @@ check("valid fractions override", JSON.stringify(cfgFrac.followUpFractions) === 
 
 // DEADLINE_DEFAULTS is the fallback source of truth.
 check("DEADLINE_DEFAULTS buffer 10", DEADLINE_DEFAULTS.bufferDays === 10, DEADLINE_DEFAULTS.bufferDays);
+
+// ── Graduated follow-up schedule (⅓ / ⅔ / final = deadline − buffer) ──
+function checkSchedule(label: string, dl: string, expected: [string, string][]): void {
+  const sched = computeFollowupSchedule(dl, CFG, NOW);
+  check(`${label} · len ${expected.length}`, sched.length === expected.length, JSON.stringify(sched));
+  expected.forEach(([date, kind], i) => {
+    check(`${label} · [${i}] ${date}/${kind}`, sched[i]?.dueDate === date && sched[i]?.kind === kind, JSON.stringify(sched[i]));
+  });
+}
+// plan_response 60d window (deadline NOW+60): ⅓→+20, ⅔→+40, final→deadline−10.
+checkSchedule("schedule 60d", "2026-08-31", [
+  ["2026-07-22", "deadline_interim"],
+  ["2026-08-11", "deadline_interim"],
+  ["2026-08-21", "deadline_final"],
+]);
+// fdcpa 20d remaining (deadline NOW+20): ⅓→+7, final→+10; the ⅔ point (+13) is past the final → dropped.
+checkSchedule("schedule 20d (⅔ past final → dropped)", "2026-07-22", [
+  ["2026-07-09", "deadline_interim"],
+  ["2026-07-12", "deadline_final"],
+]);
+// 5d window: buffer (10) exceeds window → no final; interims still run up to the deadline.
+checkSchedule("schedule 5d (buffer>window → interims only)", "2026-07-07", [
+  ["2026-07-04", "deadline_interim"],
+  ["2026-07-05", "deadline_interim"],
+]);
+checkSchedule("schedule deadline today → none", iso(0), []);
+checkSchedule("schedule deadline past → none", iso(-10), []);
+
+// ── Follow-up letter render (fail-closed, no placeholder, framework-anchored) ──
+const PLACEHOLDER = /\$\[|\[[A-Za-z]/;
+const apLetter = buildFollowupLetter({
+  recipientKind: "insurer", parentLetterType: "insurance_appeal", parentSentDate: "2026-07-02",
+  governingDeadlineDate: "2026-08-31", deadlineType: "plan_response", isFinal: false, now: NOW,
+});
+check("followup letter (appeal) · Appeals Department", apLetter.includes("Appeals Department"));
+check("followup letter (appeal) · references internal appeal", apLetter.includes("internal appeal"));
+check("followup letter (appeal) · deadline date rendered", apLetter.includes("August 31, 2026"));
+check("followup letter (appeal) · disclaimer", apLetter.includes("not a law firm"));
+check("followup letter (appeal) · no placeholder", !PLACEHOLDER.test(apLetter), PLACEHOLDER.exec(apLetter)?.[0]);
+
+const dvLetter = buildFollowupLetter({
+  recipientKind: "collector", parentLetterType: "debt_validation", parentSentDate: "2026-07-02",
+  governingDeadlineDate: "2026-07-22", deadlineType: "fdcpa_validation_30", isFinal: true, now: NOW,
+});
+check("followup letter (debt, final) · Collections Department", dvLetter.includes("Collections Department"));
+check("followup letter (debt, final) · final follow-up wording", dvLetter.includes("final follow-up"));
+check("followup letter (debt, final) · FDCPA clause", dvLetter.includes("Fair Debt Collection Practices Act"));
+check("followup letter (debt, final) · no placeholder", !PLACEHOLDER.test(dvLetter), PLACEHOLDER.exec(dvLetter)?.[0]);
 
 console.log(`\ndeadline-engine fixture: ${pass} passed, ${fails.length} failed`);
 if (fails.length) {

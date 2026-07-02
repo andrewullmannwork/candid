@@ -173,6 +173,9 @@ export async function persistDisputeLetter(
       }
     }
 
+    // dispute-letters v2 S4 — capture the filed date once so the graduated follow-up letters
+    // reference the same "[parent letter] of [date]" this row records.
+    const filedDate = new Date().toISOString().split("T")[0];
     const { data, error } = await supabase
       .from("dispute_outcomes")
       .insert({
@@ -186,7 +189,7 @@ export async function persistDisputeLetter(
         status: "dispute_letter_drafted",
         amount_disputed: input.amountDisputed,
         amount_recovered: 0,
-        filed_date: new Date().toISOString().split("T")[0],
+        filed_date: filedDate,
         insurer_id: input.insurerId || null,
         concept_id: input.conceptId || null,
         letter_content: input.letterContent || null,
@@ -230,7 +233,13 @@ export async function persistDisputeLetter(
       const followupsEnabled = await isFeatureEnabled("dispute_feedback_loop");
       if (followupsEnabled) {
         const { createFollowups } = await import("@/lib/disputes/followups");
-        await createFollowups(supabase, { disputeId: data.id, userId: input.userId });
+        await createFollowups(supabase, {
+          disputeId: data.id,
+          userId: input.userId,
+          letterType: input.letterType,
+          filedDate,
+          deadline: input.deadline,
+        });
       }
     } catch (err) {
       console.error("[disputes-persist] Follow-up creation failed (non-fatal):", err);

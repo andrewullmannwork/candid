@@ -194,6 +194,49 @@ export function evaluateDeadline(input: DeadlineInput, config: DeadlineConfig): 
   return { governingDeadlineDate: null, deadlineType: null, guard: OK_GUARD, debtWithinWindow: false };
 }
 
+export type FollowupScheduleKind = "deadline_interim" | "deadline_final";
+
+export interface FollowupScheduleEntry {
+  dueDate: string; // YYYY-MM-DD
+  kind: FollowupScheduleKind;
+}
+
+/**
+ * Graduated follow-up schedule for a dispute WITH a governing deadline (map §3.3): interim nudges
+ * at each configured fraction of the [today, deadline] window + a final notice at (deadline −
+ * buffer). Interims must precede the final; when the buffer exceeds the remaining window there is
+ * no final and interims run up to (but not including) the deadline, so a short window still gets
+ * nudges. A deadline today/past → [] (schedule nothing; the past-window guard already warned). Pure;
+ * final wins any same-day collision with an interim.
+ */
+export function computeFollowupSchedule(
+  governingDeadlineDate: string,
+  config: DeadlineConfig,
+  now?: Date,
+): FollowupScheduleEntry[] {
+  const nowMs = utcMidnight((now ?? new Date()).getTime());
+  const parsed = parseDate(governingDeadlineDate);
+  if (parsed === null) return [];
+  const deadlineMs = utcMidnight(parsed);
+  const windowDays = Math.round((deadlineMs - nowMs) / DAY_MS);
+  if (windowDays <= 0) return []; // deadline today/past → nothing to schedule
+
+  const finalMs = deadlineMs - config.bufferDays * DAY_MS;
+  const hasFinal = finalMs > nowMs;
+  const interimCeiling = hasFinal ? finalMs : deadlineMs; // interims precede the final (or the deadline)
+
+  const byDate = new Map<string, FollowupScheduleKind>();
+  for (const f of config.followUpFractions) {
+    const dueMs = nowMs + Math.round(f * windowDays) * DAY_MS;
+    if (dueMs > nowMs && dueMs < interimCeiling) byDate.set(toIsoDate(dueMs), "deadline_interim");
+  }
+  if (hasFinal) byDate.set(toIsoDate(finalMs), "deadline_final"); // overwrites any same-day interim
+
+  return [...byDate.entries()]
+    .map(([dueDate, kind]) => ({ dueDate, kind }))
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+}
+
 function positiveNumber(v: unknown, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : fallback;
 }

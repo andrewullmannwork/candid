@@ -14,6 +14,10 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { userScoped } from "@/lib/security/user-scoped";
+import { readDeadlineConfig, computeFollowupSchedule } from "@/lib/disputes/deadline-engine";
+import { buildFollowupLetter } from "@/lib/disputes/followup-letter";
+import { letterRecipientKind } from "@/lib/disputes";
+import type { DisputeLetterType } from "@/lib/billing/types";
 
 const DEFAULT_FIRST_DAYS = 30;
 const DEFAULT_REPEAT_DAYS = 14;
@@ -89,9 +93,33 @@ export interface ActiveFollowup extends FollowupRow {
  */
 export async function createFollowups(
   supabase: SupabaseClient,
-  params: { disputeId: string; userId: string }
+  params: {
+    disputeId: string;
+    userId: string;
+    // dispute-letters v2 S4 — when a governing deadline is present (the generate route supplies it
+    // ONLY while dispute_deadline_engine_v1 is ON), schedule graduated deadline-anchored follow-up
+    // LETTERS (map §3.3) instead of the flat 30/14 cadence.
+    letterType?: string;
+    filedDate?: string;
+    deadline?: { governingDeadlineDate: string | null; deadlineType: string | null };
+  }
 ): Promise<void> {
   const { disputeId, userId } = params;
+
+  // Graduated deadline follow-ups (map §3.3). Presence of a governing deadline is the signal.
+  if (params.deadline?.governingDeadlineDate && params.deadline.deadlineType && params.letterType) {
+    await createDeadlineFollowups(supabase, {
+      disputeId,
+      userId,
+      letterType: params.letterType,
+      filedDate: params.filedDate,
+      governingDeadlineDate: params.deadline.governingDeadlineDate,
+      deadlineType: params.deadline.deadlineType,
+    });
+    return;
+  }
+
+  // Default (no governing deadline / engine flag OFF) — the existing single initial follow-up.
   const { firstDays } = await readCadence(supabase);
   const dueDate = addDays(firstDays);
 
@@ -103,6 +131,64 @@ export async function createFollowups(
   });
 
   console.log(`[followups] Created ${firstDays}-day follow-up for dispute ${disputeId}, due ${dueDate}`);
+}
+
+/**
+ * dispute-letters v2 S4 — schedule the graduated deadline follow-up LETTERS (map §3.3). Each row
+ * carries its rendered Appeals/Compliance/collector-addressed nudge in metadata (the existing
+ * send-followups cron surfaces it; the letter itself is read on the S5/S6 case page). Reuses the
+ * existing followup_type values + a metadata.followup_kind discriminator (no CHECK change) —
+ * handleFollowupAction skips the reactive reprompt chain for these (they're pre-scheduled in full).
+ */
+async function createDeadlineFollowups(
+  supabase: SupabaseClient,
+  params: {
+    disputeId: string;
+    userId: string;
+    letterType: string;
+    filedDate?: string;
+    governingDeadlineDate: string;
+    deadlineType: string;
+  },
+): Promise<void> {
+  const { disputeId, userId, letterType, governingDeadlineDate, deadlineType } = params;
+  const config = await readDeadlineConfig(supabase);
+  const schedule = computeFollowupSchedule(governingDeadlineDate, config);
+  if (!schedule.length) {
+    console.log(
+      `[followups] No graduated follow-ups for dispute ${disputeId} (deadline ${governingDeadlineDate} too close)`,
+    );
+    return;
+  }
+
+  const recipientKind = letterRecipientKind(letterType as DisputeLetterType);
+  const parentSentDate = params.filedDate ?? new Date().toISOString().split("T")[0];
+  const rows = schedule.map((entry) => ({
+    dispute_id: disputeId,
+    // Reuse existing enum values (no CHECK change); the real semantic rides in metadata.followup_kind.
+    followup_type: entry.kind === "deadline_final" ? "final" : "reprompt_14d",
+    due_date: entry.dueDate,
+    status: "pending",
+    metadata: {
+      followup_kind: entry.kind,
+      letter: buildFollowupLetter({
+        recipientKind,
+        parentLetterType: letterType,
+        parentSentDate,
+        governingDeadlineDate,
+        deadlineType,
+        isFinal: entry.kind === "deadline_final",
+      }),
+      governing_deadline_date: governingDeadlineDate,
+      deadline_type: deadlineType,
+      parent_letter_type: letterType,
+    },
+  }));
+
+  await userScoped(supabase, userId).table("dispute_followups").insert(rows);
+  console.log(
+    `[followups] Created ${rows.length} graduated deadline follow-up(s) for dispute ${disputeId} (deadline ${governingDeadlineDate})`,
+  );
 }
 
 /**
@@ -162,7 +248,7 @@ export async function handleFollowupAction(
   // Fetch the follow-up and verify ownership
   const { data: followup, error } = await userScoped(supabase, userId)
     .table("dispute_followups")
-    .select("id, dispute_id, followup_type, status")
+    .select("id, dispute_id, followup_type, status, metadata")
     .eq("id", followupId)
     .single();
 
@@ -202,6 +288,14 @@ export async function handleFollowupAction(
 
   // "still_waiting" — create next follow-up
   if (action === "still_waiting") {
+    // dispute-letters v2 S4 — graduated deadline follow-ups are PRE-SCHEDULED in full (⅓/⅔/final),
+    // so "still waiting" on one is terminal: do NOT spawn a reactive reprompt (would double-book the
+    // timer). Non-deadline follow-ups keep the existing reactive initial→reprompt→final chain.
+    const meta = ((followup as { metadata?: Record<string, unknown> | null }).metadata) ?? {};
+    if (typeof meta.followup_kind === "string" && meta.followup_kind.startsWith("deadline_")) {
+      return { success: true, nextFollowupCreated: false };
+    }
+
     const isInitial = followup.followup_type === "initial_30d";
     const isReprompt = followup.followup_type === "reprompt_14d";
 
