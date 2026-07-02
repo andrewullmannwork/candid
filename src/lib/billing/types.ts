@@ -302,7 +302,10 @@ export type DisputeLetterType =
   | "insurance_appeal" // Insurance denial appeal
   | "balance_billing" // Balance billing complaint
   | "duplicate_charge" // Duplicate charge dispute
-  | "negotiation"; // Self-pay / uninsured rate negotiation
+  | "negotiation" // Self-pay / uninsured rate negotiation
+  | "final_notice" // Provider escalation — final notice before complaints (follow-up)
+  | "external_review" // Insurer escalation — external review after internal appeal (follow-up)
+  | "debt_validation"; // Collections — FDCPA §1692g debt validation
 
 export interface DisputeLetter {
   id: string;

@@ -51,6 +51,9 @@ const LETTER_TYPE_EYEBROW: Record<DisputeLetter["letterType"], string> = {
   duplicate_charge: "DISPUTE LETTER · DUPLICATE CHARGE · DRAFT",
   itemized_request: "LETTER · ITEMIZED BILL REQUEST · DRAFT",
   negotiation: "LETTER · SELF-PAY NEGOTIATION · DRAFT",
+  final_notice: "DISPUTE LETTER · FINAL NOTICE · DRAFT",
+  external_review: "DISPUTE LETTER · EXTERNAL REVIEW · DRAFT",
+  debt_validation: "LETTER · DEBT VALIDATION · DRAFT",
 };
 
 export function DisputeLetterHero({
@@ -223,6 +226,12 @@ function titleForType(type: DisputeLetter["letterType"]): string {
       return "Itemized bill request";
     case "negotiation":
       return "Self-pay negotiation";
+    case "final_notice":
+      return "Final notice";
+    case "external_review":
+      return "External review request";
+    case "debt_validation":
+      return "Debt validation";
     default: {
       // Exhaustiveness guard — a new letter type without a title here is a compile error.
       const _exhaustive: never = type;

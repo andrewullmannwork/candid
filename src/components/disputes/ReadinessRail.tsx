@@ -93,6 +93,10 @@ const RECIPIENT_ADDRESS_COPY: Record<
     label: "Recipient address on file",
     hint: "The printed letter needs an insurer and/or provider mailing address.",
   },
+  collector: {
+    label: "Collector address on file",
+    hint: "The printed letter needs the debt collector's mailing address.",
+  },
 };
 
 export function ReadinessRail({

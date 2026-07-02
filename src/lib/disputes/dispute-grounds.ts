@@ -382,7 +382,7 @@ const FINDING_TO_GROUND: ReadonlyMap<FindingType, DisputeGroundType> = (() => {
 export function resolveLetterRecovery(
   evidence: DisputeEvidence | null,
   basis: Map<string, CostShareV2Result>,
-  recipient: "insurer" | "provider",
+  recipient: "insurer" | "provider" | "collector",
 ): {
   byLine: Map<string, LineRecovery>;
   total: number;
@@ -412,7 +412,8 @@ export function resolveLetterRecovery(
   const capBoundLineIds: string[] = [];
   const strengthenable = new Set<"deductible" | "oop" | "network">();
   let weakened = false;
-  if (!evidence)
+  // Collector (debt_validation) has no recovery pool — validation, not a dollar dispute.
+  if (recipient === "collector" || !evidence)
     return { byLine, total: 0, totalRefund: 0, totalWriteOff: 0, capBoundLineIds, weakened, strengthenableFields: [], claimRecoveries: [], setRecoveries: [], clampBoundClaimIds: [] };
 
   // R3 step 5.3 — per-claim clamp pools. The two-pool clamp (refund ≤ claim patientPaid; writeOff ≤

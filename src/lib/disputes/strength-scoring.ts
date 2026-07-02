@@ -109,7 +109,9 @@ export type ReadinessState = "attention" | "ready_to_send" | "airtight";
  * behavior). Derived from the letter type by `letterRecipientKind` in
  * src/lib/disputes/index.ts (single source of truth, shared with the templates).
  */
-export type RecipientKind = "insurer" | "provider" | "both";
+// "collector" (debt_validation) is accepted for parity with LetterRecipientKind; it falls to the
+// conservative else-branch below and is not recovery-scored (dispute-letters v2 S2).
+export type RecipientKind = "insurer" | "provider" | "both" | "collector";
 
 export interface StrengthWeights {
   probativeTier: Record<ProbativeTier, number>;

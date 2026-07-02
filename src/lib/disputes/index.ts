@@ -42,13 +42,18 @@ const FINDING_TO_LETTER: Partial<Record<FindingType, DisputeLetterType>> = deriv
 // EXHAUSTIVE over DisputeLetterType — the compiler forces every letter type to declare its
 // recipient here, so a new type cannot silently fall through to "provider" (dispute-letters v2
 // S2 hardening; replaces the prior silent-omit Set).
-const RECIPIENT_BY_LETTER_TYPE: Record<DisputeLetterType, "insurer" | "provider"> = {
+export type LetterRecipientKind = "insurer" | "provider" | "collector";
+
+const RECIPIENT_BY_LETTER_TYPE: Record<DisputeLetterType, LetterRecipientKind> = {
   overcharge: "provider",
   duplicate_charge: "provider",
   balance_billing: "provider",
   itemized_request: "provider",
   negotiation: "provider",
   insurance_appeal: "insurer",
+  final_notice: "provider",
+  external_review: "insurer",
+  debt_validation: "collector",
 };
 
 // Raw dispute_outcomes.dispute_type values (NOT DisputeLetterType) that resolve to the insurer —
@@ -62,7 +67,7 @@ const INSURER_DISPUTE_TYPES = new Set<string>([
 
 export function letterRecipientKind(
   type: string | null | undefined,
-): "insurer" | "provider" {
+): LetterRecipientKind {
   if (!type) return "provider";
   if (Object.prototype.hasOwnProperty.call(RECIPIENT_BY_LETTER_TYPE, type)) {
     return RECIPIENT_BY_LETTER_TYPE[type as DisputeLetterType];
@@ -310,6 +315,12 @@ function getLegalBasis(type: DisputeLetterType): string {
       return "HIPAA Section 164.524 (right of access), state itemized bill laws";
     case "negotiation":
       return "State consumer protection laws, fair pricing standards";
+    case "final_notice":
+      return "State consumer protection laws; No Surprises Act (Public Law 116-260) where applicable";
+    case "external_review":
+      return "Affordable Care Act Section 2719, 45 CFR §147.136 (external review)";
+    case "debt_validation":
+      return "Fair Debt Collection Practices Act (15 U.S.C. §1692g, §1692e(8))";
     default: {
       // Exhaustiveness guard — a new DisputeLetterType without a case here is a compile error.
       const _exhaustive: never = type;
@@ -337,6 +348,12 @@ function getRequestedAction(
       return `Provide complete itemized bill with procedure codes and line-item pricing`;
     case "negotiation":
       return `Negotiate a fair self-pay rate based on community and Medicare benchmarks`;
+    case "final_notice":
+      return `Correct the disputed charges within 15 business days before I escalate to regulators`;
+    case "external_review":
+      return `Initiate an independent external review of the denied claim`;
+    case "debt_validation":
+      return `Validate the debt and mark it as disputed pending validation`;
     default: {
       // Exhaustiveness guard — a new DisputeLetterType without a case here is a compile error.
       const _exhaustive: never = type;
