@@ -119,6 +119,16 @@ export interface GenerateDisputeLetterOptions {
    * the flag state. Default false → byte-identical.
    */
   noPlanCoverageRequestOn?: boolean;
+  /**
+   * dispute-letters v2 S2 — escalation / collections gate inputs threaded to the template body.
+   * User-supplied via the request body at launch (the FE collects them in S5/S6). Fail-closed:
+   * absent → the gated clause is OMITTED (renderGated), never a placeholder.
+   */
+  priorContactDates?: string[];
+  certifiedMail?: boolean;
+  appealExhausted?: { attested: boolean; denialDate?: string | null };
+  collector?: { name: string; address?: string | null; originalCreditor?: string | null };
+  debtWithinWindow?: boolean;
 }
 
 export function generateDisputeLetter(
@@ -138,7 +148,8 @@ export function generateDisputeLetter(
   const options: GenerateDisputeLetterOptions = Array.isArray(optionsOrPlanEvidence)
     ? { planEvidence: optionsOrPlanEvidence }
     : (optionsOrPlanEvidence ?? {});
-  const { planEvidence, planContext, evidence, gateUnverified, enforceDataTrustGate, disputeGroundsOn, disputeGroundBasis, noPlanCoverageRequestOn } =
+  const { planEvidence, planContext, evidence, gateUnverified, enforceDataTrustGate, disputeGroundsOn, disputeGroundBasis, noPlanCoverageRequestOn,
+    priorContactDates, certifiedMail, appealExhausted, collector, debtWithinWindow } =
     options;
 
   // Resolve the letter type up front (was below, before the template lookup) so the recovery fold
@@ -194,28 +205,43 @@ export function generateDisputeLetter(
     letterRecovery,
     recovery,
     noPlanCoverageRequestOn: noPlanCoverageRequestOn ?? false,
+    priorContactDates,
+    certifiedMail,
+    appealExhausted,
+    collector,
+    debtWithinWindow,
   });
 
   // Recipient: insurance appeals use insurer + appeals address when available;
   // fall back to provider for billing-department letters.
-  const isAppeal = resolvedType === "insurance_appeal";
+  // dispute-letters v2 S2 — recipient metadata is recipientKind-aware (was isAppeal-only): insurer
+  // letters (insurance_appeal + external_review) → Appeals; collector (debt_validation) → the
+  // user-supplied collector; everything else → provider Compliance. insurance_appeal behavior is
+  // unchanged (recipientKind==="insurer" && insurer ≡ the prior isAppeal && insurer guard for it).
   const insurer = planContext?.insurer ?? null;
   const hasInsurerAddress = !!insurer?.appealsAddress;
 
-  const recipient = isAppeal && insurer
-    ? {
-        name: insurer.name,
-        role: "Appeals Department",
-        address: hasInsurerAddress
-          ? formatAppealsAddress(insurer.appealsAddress!)
-          : undefined,
-        phone: insurer.appealsPhone ?? undefined,
-      }
-    : {
-        name: bill.provider.name,
-        role: "Compliance Department",
-        address: bill.provider.address,
-      };
+  const recipient =
+    recipientKind === "insurer" && insurer
+      ? {
+          name: insurer.name,
+          role: "Appeals Department",
+          address: hasInsurerAddress
+            ? formatAppealsAddress(insurer.appealsAddress!)
+            : undefined,
+          phone: insurer.appealsPhone ?? undefined,
+        }
+      : recipientKind === "collector"
+        ? {
+            name: collector?.name ?? "The debt collector",
+            role: "",
+            address: collector?.address ?? undefined,
+          }
+        : {
+            name: bill.provider.name,
+            role: "Compliance Department",
+            address: bill.provider.address,
+          };
 
   return {
     id: randomUUID(),

@@ -41,10 +41,16 @@ export async function POST(req: NextRequest) {
           { status: 401 }
         );
       }
-      const { findingIds, letterType, insurancePlanId } = body as {
+      const { findingIds, letterType, insurancePlanId, priorContactDates, certifiedMail, appealExhausted, collector, collectorFirstContactDate } = body as {
         findingIds: string[];
         letterType?: DisputeLetterType;
         insurancePlanId?: string;
+        // dispute-letters v2 S2 — escalation / collections gate inputs (FE-supplied in S5/S6).
+        priorContactDates?: string[];
+        certifiedMail?: boolean;
+        appealExhausted?: { attested: boolean; denialDate?: string | null };
+        collector?: { name: string; address?: string | null; originalCreditor?: string | null };
+        collectorFirstContactDate?: string | null;
       };
       // Authoritative userId comes from the verified Firebase token, not the
       // request body. Closes B9-1 §C1 IDOR.
@@ -67,14 +73,35 @@ export async function POST(req: NextRequest) {
       // points already gate on isPro, so this closes the direct-API bypass
       // (defense-in-depth). Only this Case 1 branch is gated — itemized-bill
       // requests (Case 2) + uninsured negotiation letters (Case 3) stay free.
-      const subscription = await loadServerSubscription(supabase, authedUser.id);
-      if (!subscription.isPro) {
-        console.log(
-          `[disputes/generate] tier gate blocked: user ${authedUser.id} tier=${subscription.tier} status=${subscription.status} → 403`,
-        );
+      // dispute-letters v2 S2 — tier flipped to "free to start, pay to escalate": only the FOLLOW-UP
+      // escalation letters (final_notice / external_review) are Pro; the first-contact dispute letters
+      // + debt_validation are FREE (consumer-protection funnel). Itemized (Case 2) + negotiation
+      // (Case 3) remain free as before.
+      const requiresPro = letterType === "final_notice" || letterType === "external_review";
+      if (requiresPro) {
+        const subscription = await loadServerSubscription(supabase, authedUser.id);
+        if (!subscription.isPro) {
+          console.log(
+            `[disputes/generate] tier gate blocked (${letterType}): user ${authedUser.id} tier=${subscription.tier} status=${subscription.status} → 403`,
+          );
+          return NextResponse.json(
+            { error: "subscription_required", requiredTier: "pro" },
+            { status: 403 },
+          );
+        }
+      }
+
+      // dispute-letters v2 S2 — I2 exhaustion hard-gate. external_review may only be generated after
+      // the plan's internal appeal is exhausted. letterType is client-supplied, so enforce this
+      // server-side (fail-closed): no attestation → refuse. The FE offers I2 only after a
+      // "denial upheld" outcome, which supplies appealExhausted.attested.
+      if (letterType === "external_review" && !appealExhausted?.attested) {
         return NextResponse.json(
-          { error: "subscription_required", requiredTier: "pro" },
-          { status: 403 },
+          {
+            error: "external_review_requires_exhaustion",
+            reason: "Complete your plan's internal appeal before requesting an external review.",
+          },
+          { status: 400 },
         );
       }
 
@@ -327,6 +354,17 @@ export async function POST(req: NextRequest) {
           ? await loadDisputeGroundBasis(supabase, auditReport.userId, [body.claimId as string])
           : undefined;
 
+      // dispute-letters v2 S2 — FDCPA §1692g 30-day window, computed from the collector's
+      // user-supplied first-contact date (kept OUT of the template so the body stays deterministic).
+      // Unknown / unparseable → false (fail-closed: no §1692g teeth without a substantiated in-window
+      // date; the §1692e(8) disputed-status marking still always fires).
+      const debtWithinWindow = (() => {
+        if (!collectorFirstContactDate) return false;
+        const first = Date.parse(collectorFirstContactDate);
+        if (Number.isNaN(first)) return false;
+        return Date.now() - first <= 30 * 24 * 60 * 60 * 1000;
+      })();
+
       const letter = generateDisputeLetter(auditReport, findingIds, letterType, {
         planEvidence,
         planContext,
@@ -336,6 +374,11 @@ export async function POST(req: NextRequest) {
         disputeGroundsOn,
         disputeGroundBasis,
         noPlanCoverageRequestOn,
+        priorContactDates,
+        certifiedMail,
+        appealExhausted,
+        collector,
+        debtWithinWindow,
       });
 
       // Defense-in-depth: generateDisputeLetter returns null when the data-trust
