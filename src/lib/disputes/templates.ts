@@ -1142,15 +1142,31 @@ function renderLineItemEvidence(
     // S140 — skip null fields instead of citing as $0 (cite-grade violation).
     // When parser populates only one of (insurance_paid, patient_owes), cite
     // only what we actually have. billedAmount always present.
-    const eobParts: string[] = [];
-    eobParts.push(`${formatCurrency(li.billedAmount)} billed`);
-    if (li.insurancePaid != null) {
-      eobParts.push(`${formatCurrency(li.insurancePaid)} insurance paid`);
+    //
+    // dispute-letters v2 S3 — fallback-first EOB arithmetic (map §5). A real EOB
+    // reconciles by construction: allowed = insurer-paid + patient-owes, and
+    // billed ≥ allowed, so insurer-paid + patient-owes ≤ billed. If our EXTRACTED
+    // figures violate that (sum exceeds billed, or any negative), the fault is
+    // almost certainly our parse — insurer systems don't emit non-reconciling
+    // numbers — so OMIT the figures rather than hand over broken math (the
+    // coverage / balance-billing asks still argue the line). $0.01 rounding
+    // tolerance; partial data (a single field present) is unaffected.
+    const eobReconciles =
+      (li.billedAmount ?? 0) >= 0 &&
+      (li.insurancePaid ?? 0) >= 0 &&
+      (li.patientOwes ?? 0) >= 0 &&
+      (li.insurancePaid ?? 0) + (li.patientOwes ?? 0) <= (li.billedAmount ?? 0) + 0.01;
+    if (eobReconciles) {
+      const eobParts: string[] = [];
+      eobParts.push(`${formatCurrency(li.billedAmount)} billed`);
+      if (li.insurancePaid != null) {
+        eobParts.push(`${formatCurrency(li.insurancePaid)} insurance paid`);
+      }
+      if (li.patientOwes != null) {
+        eobParts.push(`${formatCurrency(li.patientOwes)} patient responsibility`);
+      }
+      bullets.push(`   - EOB shows: ${eobParts.join(" · ")}.`);
     }
-    if (li.patientOwes != null) {
-      eobParts.push(`${formatCurrency(li.patientOwes)} patient responsibility`);
-    }
-    bullets.push(`   - EOB shows: ${eobParts.join(" · ")}.`);
   }
 
   if (li.expectedPatientCost != null && li.actualPatientCost != null && planBenefitTrusted && !li.serviceNotRenderedAttested) {
