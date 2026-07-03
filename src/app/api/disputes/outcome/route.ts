@@ -79,6 +79,11 @@ export async function POST(req: NextRequest) {
       // metadata.outcomeDetail as the launch record + seed for tracker-M
       // auto-advance. Advisory only — no auto-escalation here.
       outcomeDetail,
+      // dispute-letters v2 Zone-3 (S266) — undo support (clicked in error). clearSentAt
+      // unmarks a sent dispute (status back to drafted); clearOutcomeDetail reverts a
+      // reported result (status back to filed). The FE sends the target status too.
+      clearSentAt,
+      clearOutcomeDetail,
     } = await req.json();
 
     if (!disputeId || !status) {
@@ -173,6 +178,32 @@ export async function POST(req: NextRequest) {
           "[disputes/outcome] outcomeDetail metadata persist failed (non-fatal):",
           err,
         );
+      }
+    }
+
+    // dispute-letters v2 Zone-3 (S266) — undo. clearSentAt un-sends (drops sent_at +
+    // cooldown so the stage returns to draft); clearOutcomeDetail reverts a reported
+    // result (drops metadata.outcomeDetail so the escalate CTA + terminal stage clear).
+    // The coarse status was already set by updateDisputeOutcome above. Non-fatal.
+    if (clearSentAt || clearOutcomeDetail) {
+      try {
+        const patch: Record<string, unknown> = {};
+        if (clearSentAt) {
+          patch.sent_at = null;
+          patch.cooldown_until = null;
+        }
+        if (clearOutcomeDetail) {
+          const baseMetadata = { ...((existing.metadata as Record<string, unknown>) ?? {}) };
+          delete baseMetadata.outcomeDetail;
+          delete baseMetadata.outcomeReportedAt;
+          patch.metadata = baseMetadata;
+        }
+        await userScoped(supabase, userId)
+          .table("dispute_outcomes")
+          .update(patch)
+          .eq("id", disputeId);
+      } catch (err) {
+        console.error("[disputes/outcome] undo patch failed (non-fatal):", err);
       }
     }
 

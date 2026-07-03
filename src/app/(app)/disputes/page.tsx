@@ -30,7 +30,7 @@ import { ProviderAddressModal } from "@/components/disputes/ProviderAddressModal
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
 import { CollectorModal } from "@/components/disputes/CollectorModal";
 import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestModal";
-import { suggestNextStep, isOutcomeDetail, type NextStepSuggestion } from "@/lib/disputes/outcome-taxonomy";
+import { suggestNextStep, isOutcomeDetail, mapOutcomeToStatus, type NextStepSuggestion } from "@/lib/disputes/outcome-taxonomy";
 import { CaseNeedsPanel, type PlanCostService } from "@/components/disputes/CaseNeedsPanel";
 import { CaseSummary } from "@/components/disputes/CaseSummary";
 import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
@@ -759,9 +759,11 @@ function DisputesContent() {
   const alreadySent = isSentStatus(disputeStatus);
   const handleMarkSent = async () => {
     if (!user || !disputeId || markingSent || alreadySent) return;
-    if (!window.confirm("Mark this dispute as sent? We'll start the follow-up reminder schedule and you'll see status updates on your claim.")) {
-      return;
-    }
+    // Optimistic (S266) — flip status locally so the stage-action bar advances
+    // instantly; reconcile in the background (rollback on failure). No confirm dialog
+    // (undo covers a mis-click).
+    const prevStatus = disputeStatus;
+    setDisputeStatus("filed");
     setMarkingSent(true);
     setMarkSentToast(null);
     try {
@@ -779,12 +781,56 @@ function DisputesContent() {
         throw new Error(data?.error || `mark-sent failed (${res.status})`);
       }
       setMarkSentToast("Marked as sent. Follow-up reminders are scheduled.");
-      await fetchDispute(disputeId);
+      void fetchDispute(disputeId);
     } catch (err) {
+      setDisputeStatus(prevStatus);
       setMarkSentToast(err instanceof Error ? err.message : "Failed to mark as sent");
     } finally {
       setMarkingSent(false);
       setTimeout(() => setMarkSentToast(null), 6000);
+    }
+  };
+
+  // Zone-3 (S266) — undo (clicked in error). Optimistic + background reconcile.
+  const handleUndoSent = async () => {
+    if (!user || !disputeId || !alreadySent) return;
+    const prevStatus = disputeStatus;
+    setDisputeStatus("dispute_letter_drafted");
+    setSuggestedNextStep(null);
+    try {
+      const token = await user.firebaseUser.getIdToken();
+      const res = await fetch(`/api/disputes/outcome`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ disputeId, status: "dispute_letter_drafted", clearSentAt: true, clearOutcomeDetail: true }),
+      });
+      if (!res.ok) throw new Error("undo failed");
+      void fetchDispute(disputeId);
+    } catch {
+      setDisputeStatus(prevStatus);
+      setMarkSentToast("Couldn't undo — please try again.");
+      setTimeout(() => setMarkSentToast(null), 6000);
+    }
+  };
+
+  const handleUndoOutcome = async () => {
+    if (!user || !disputeId) return;
+    const prevStatus = disputeStatus;
+    setDisputeStatus("filed");
+    setSuggestedNextStep(null);
+    try {
+      const token = await user.firebaseUser.getIdToken();
+      const res = await fetch(`/api/disputes/outcome`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ disputeId, status: "filed", clearOutcomeDetail: true }),
+      });
+      if (!res.ok) throw new Error("undo failed");
+      void fetchDispute(disputeId);
+    } catch {
+      setDisputeStatus(prevStatus);
+      setOutcomeToast("Couldn't undo — please try again.");
+      setTimeout(() => setOutcomeToast(null), 6000);
     }
   };
 
@@ -1403,6 +1449,8 @@ function DisputesContent() {
         onReportOutcome={() => setOutcomeModalOpen(true)}
         onCollections={() => setCollectorModalOpen(true)}
         onEscalateNext={handleSuggestedNextStep}
+        onUndoSent={handleUndoSent}
+        onUndoOutcome={handleUndoOutcome}
         markingSent={markingSent}
         escalating={escalating}
         nextStepLabel={suggestedNextStep?.ctaLabel ?? null}
@@ -1771,10 +1819,10 @@ function DisputesContent() {
           setOutcomeModalOpen(false);
           setOutcomeToast("Outcome saved. Thanks for closing the loop.");
           setTimeout(() => setOutcomeToast(null), 6000);
-          // Zone-3 — surface the advisory next rung (user-triggered; the generate
-          // action + "Sent to collections" are wired in the collections step).
+          // Optimistic (S266) — flip status + next rung locally so the stage-action bar
+          // updates instantly (no lingering button); reconcile in the background.
+          setDisputeStatus(mapOutcomeToStatus(detail));
           setSuggestedNextStep(suggestNextStep(letter.letterType, detail));
-          // Refresh dispute state so the toolbar reflects the new status.
           if (disputeId) {
             void fetchDispute(disputeId);
           }

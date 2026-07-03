@@ -47,6 +47,8 @@ export interface CaseSummaryProps {
   onReportOutcome?: () => void;
   onCollections?: () => void;
   onEscalateNext?: () => void;
+  onUndoSent?: () => void;
+  onUndoOutcome?: () => void;
   markingSent?: boolean;
   escalating?: boolean;
   /** suggestNextStep().ctaLabel — its presence means a next rung is available. */
@@ -224,6 +226,9 @@ export function CaseSummary(props: CaseSummaryProps) {
     hasNextStep: !!props.nextStepLabel,
   });
   const actions = stageActions(stage);
+  // Render the bar for actionable stages, OR for resolved so an "Undo this result"
+  // escape hatch is available after a mis-reported outcome.
+  const showActionBar = actions.length > 0 || (stage === "resolved" && !!props.onUndoOutcome);
   const actionCls = (primary: boolean) =>
     primary
       ? "inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700 disabled:opacity-60"
@@ -286,10 +291,10 @@ export function CaseSummary(props: CaseSummaryProps) {
           draft → Mark as sent · awaiting → Report the result / Sent to collections ·
           next → escalate CTA / Report a different result. Consolidates what used to be
           scattered across the toolbar + a separate "Heard back?" box. */}
-      {actions.length > 0 ? (
-        <div className="mt-5 border-t border-gray-100 pt-4">
+      {showActionBar ? (
+        <div className="mt-6 border-t border-gray-100 pt-5">
           {stage === "draft" && dw?.severity === "past" ? (
-            <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-snug text-amber-800">
+            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-[12px] leading-snug text-amber-800">
               <span className="font-medium">This filing window has passed.</span>
               {dw.nextStep ? <span className="ml-1 text-amber-700">{dw.nextStep}</span> : null}
             </div>
@@ -332,6 +337,25 @@ export function CaseSummary(props: CaseSummaryProps) {
             <p className="mt-2 text-[12px] leading-snug text-gray-500">
               Based on what you reported, this is the usual next step.
             </p>
+          ) : null}
+          {/* Undo (S266) — a quiet escape hatch for a mis-click (no confirm dialog). */}
+          {stage === "awaiting" && props.onUndoSent ? (
+            <button
+              type="button"
+              onClick={props.onUndoSent}
+              className="mt-3 text-[12px] font-medium text-gray-400 underline-offset-2 hover:text-gray-600 hover:underline"
+            >
+              Mark as not sent
+            </button>
+          ) : null}
+          {(stage === "next" || stage === "resolved") && props.onUndoOutcome ? (
+            <button
+              type="button"
+              onClick={props.onUndoOutcome}
+              className="mt-3 block text-[12px] font-medium text-gray-400 underline-offset-2 hover:text-gray-600 hover:underline"
+            >
+              Undo this result
+            </button>
           ) : null}
         </div>
       ) : null}
