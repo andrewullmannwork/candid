@@ -31,6 +31,32 @@ async function getAuthUser(req: NextRequest) {
   }
 }
 
+/**
+ * Cost-H (S267) — resolve the async-ingestion UX tier for an auto-processed
+ * upload. Extracted so the HIGH- and MEDIUM-confidence auto-process paths AND
+ * the doc-type-confirmation path emit the SAME { isLargeDoc, willEmail } signal.
+ * The S198 "medium-conf FIRING-GAP" was exactly this drift: a path omitted the
+ * tier, so a large doc landing that path got a blind wait (no splash) while the
+ * completion email/banner still fired on their own page gates. One definition =
+ * the paths can't diverge again.
+ */
+async function resolveUploadAsyncTier(
+  pageCount: number,
+  contentType: string,
+  userEmail: string,
+): Promise<{ isLargeDoc: boolean; willEmail: boolean }> {
+  const asyncIngestionEnabled = await isFeatureEnabled("async_ingestion_ux_v1", userEmail);
+  const { getFlags, classifyAsyncDocTier } = await import("@/lib/config/feature-flags");
+  const { ASYNC_REDIRECT_MAX_PAGES, ASYNC_EMAIL_MAX_PAGES } = await getFlags();
+  return classifyAsyncDocTier({
+    pageCount,
+    isPdf: contentType === "application/pdf",
+    asyncEnabled: asyncIngestionEnabled,
+    redirectMaxPages: ASYNC_REDIRECT_MAX_PAGES,
+    emailMaxPages: ASYNC_EMAIL_MAX_PAGES,
+  });
+}
+
 export async function POST(req: NextRequest) {
   const decoded = await getAuthUser(req);
   if (!decoded) {
@@ -567,12 +593,25 @@ export async function POST(req: NextRequest) {
               },
             })
             .eq("id", documentId);
+          // Cost-H (S267) — carry the async tier on the confirmation response so
+          // a >REDIRECT doc that trips the doc-type modal shows the splash after
+          // the user confirms (FE captures the signal at page.tsx:542, which runs
+          // before the confirmation branch, and it persists through confirm).
+          // NB: userEmail (const at ~L597) isn't declared yet here — use decoded
+          // directly, matching the classifyErr catch below.
+          const { isLargeDoc, willEmail } = await resolveUploadAsyncTier(
+            classification.pageCount,
+            contentType,
+            decoded.email || "",
+          );
           return NextResponse.json({
             documentId,
             storagePath,
             status: "awaiting_user_confirmation",
             awaitingDocTypeConfirmation: true,
             confirmation: confirmationMeta,
+            isLargeDoc,
+            willEmail,
           });
         }
       }
@@ -662,21 +701,16 @@ export async function POST(req: NextRequest) {
       // `async_ingestion_ux_v1` (mig 085). Page-count gate is purely PDF-based —
       // HEIC / JPEG cards are 1 "page" and always sync. Both thresholds default
       // 30 (= the prior single gate) → unchanged until REDIRECT is lowered (15)
-      // in lockstep with the frontend tier-aware copy (§R.2).
-      const asyncIngestionEnabled = await isFeatureEnabled("async_ingestion_ux_v1", userEmail);
-      const { getFlags, classifyAsyncDocTier } = await import("@/lib/config/feature-flags");
-      const { ASYNC_REDIRECT_MAX_PAGES, ASYNC_EMAIL_MAX_PAGES } = await getFlags();
-      // Tier decision shared with the fixture (one source of truth). isLargeDoc =
-      // async splash; willEmail = the splash may promise an email (§R.3 additive,
-      // frontend-read). At default (30==30) willEmail == isLargeDoc, preserving
-      // today's "we'll email you" splash for >30-page PDFs.
-      const { isLargeDoc, willEmail } = classifyAsyncDocTier({
-        pageCount: classification.pageCount,
-        isPdf: contentType === "application/pdf",
-        asyncEnabled: asyncIngestionEnabled,
-        redirectMaxPages: ASYNC_REDIRECT_MAX_PAGES,
-        emailMaxPages: ASYNC_EMAIL_MAX_PAGES,
-      });
+      // in lockstep with the frontend tier-aware copy (§R.2). Cost-H (S267): all
+      // three processing-bound paths resolve the tier via resolveUploadAsyncTier
+      // so they emit the same signal (closes the S198 medium-conf FIRING-GAP).
+      // The pure classifyAsyncDocTier (called inside the helper) stays the
+      // fixture's one source of truth for the two-tier semantics.
+      const { isLargeDoc, willEmail } = await resolveUploadAsyncTier(
+        classification.pageCount,
+        contentType,
+        userEmail,
+      );
 
       return NextResponse.json({
         documentId,
@@ -769,11 +803,23 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ documentId, storagePath, status: "error", error: "Failed to enqueue" }, { status: 500 });
       }
 
+      // Cost-H (S267) — close the S198 FIRING-GAP: the medium-confidence path
+      // must emit the SAME async-tier signal as the high-confidence path, else a
+      // large doc landing medium-confidence blind-waits (no splash) while the
+      // email/banner still fire on their own page gates.
+      const { isLargeDoc, willEmail } = await resolveUploadAsyncTier(
+        classification.pageCount,
+        contentType,
+        userEmail,
+      );
+
       return NextResponse.json({
         documentId,
         storagePath,
         autoProcessed: true,
         mediumConfidence: true,
+        isLargeDoc,
+        willEmail,
         // B2-UP.1 — surface effective doc-type (see HIGH-confidence response above).
         resolvedDocType: docType,
         classification: {
