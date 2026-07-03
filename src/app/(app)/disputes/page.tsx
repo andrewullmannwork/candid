@@ -29,6 +29,7 @@ import { InsurerAddressCorrectionModal } from "@/components/disputes/InsurerAddr
 import { ProviderAddressModal } from "@/components/disputes/ProviderAddressModal";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
 import { CaseNeedsPanel, type PlanCostService } from "@/components/disputes/CaseNeedsPanel";
+import { CaseSummary } from "@/components/disputes/CaseSummary";
 import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useDisputeDraftOverlay } from "@/lib/loading/dispute-draft-overlay";
@@ -291,6 +292,21 @@ function DisputesContent() {
     denialNoticeDate: string | null;
     collectorFirstContactDate: string | null;
   }>({ denialNoticeDate: null, collectorFirstContactDate: null });
+  // Dispute Letters v2 (Zone-2) — recovery estimate + deadline surface hydrated from the GET.
+  const [amountDisputed, setAmountDisputed] = useState<number | null>(null);
+  const [deadlineData, setDeadlineData] = useState<{
+    deadlineWarning: {
+      severity: "urgent" | "past";
+      deadlineType: string | null;
+      daysRemaining: number | null;
+      nextStep: string | null;
+    } | null;
+    governingDeadlineDate: string | null;
+    deadlineType: string | null;
+    filingDeadlineDate: string | null;
+    followups: Array<{ dueDate: string; kind: string }>;
+    followupPlan: Array<{ dueDate: string; kind: string }>;
+  } | null>(null);
   const [addPlanModal, setAddPlanModal] = useState<{
     serviceSlug: string;
     serviceLabel: string;
@@ -417,6 +433,31 @@ function DisputesContent() {
         typeof data.deadlineInputs?.collectorFirstContactDate === "string"
           ? data.deadlineInputs.collectorFirstContactDate
           : null,
+    });
+    // Dispute Letters v2 (Zone-2) — recovery estimate + deadline surface (flag-gated fields are
+    // null when dispute_deadline_engine_v1 is OFF → CaseSummary renders only what's present).
+    setAmountDisputed(typeof data.amountDisputed === "number" ? data.amountDisputed : null);
+    setDeadlineData({
+      deadlineWarning:
+        data.deadlineWarning && typeof data.deadlineWarning === "object"
+          ? (data.deadlineWarning as {
+              severity: "urgent" | "past";
+              deadlineType: string | null;
+              daysRemaining: number | null;
+              nextStep: string | null;
+            })
+          : null,
+      governingDeadlineDate:
+        typeof data.governingDeadlineDate === "string" ? data.governingDeadlineDate : null,
+      deadlineType: typeof data.deadlineType === "string" ? data.deadlineType : null,
+      filingDeadlineDate:
+        typeof data.filingDeadlineDate === "string" ? data.filingDeadlineDate : null,
+      followups: Array.isArray(data.followups)
+        ? (data.followups as Array<{ dueDate: string; kind: string }>)
+        : [],
+      followupPlan: Array.isArray(data.followupPlan)
+        ? (data.followupPlan as Array<{ dueDate: string; kind: string }>)
+        : [],
     });
     if (data.letterContent) {
       // Server-resolved letter type (S74). Authoritative — reads metadata.letterType
@@ -1271,6 +1312,23 @@ function DisputesContent() {
         }}
         onSaveDeadlineDate={handleSaveDeadlineDate}
       />
+
+      {/* Dispute Letters v2 — Zone-2 "The case" (map §6). Render-when-present; the deadline
+          fields are null when dispute_deadline_engine_v1 is OFF. */}
+      <CaseSummary
+        letterType={letter.letterType}
+        status={disputeStatus}
+        isSent={alreadySent}
+        filedDate={disputeFiledDate}
+        recoveryAmount={amountDisputed}
+        deadlineWarning={deadlineData?.deadlineWarning ?? null}
+        governingDeadlineDate={deadlineData?.governingDeadlineDate ?? null}
+        deadlineType={deadlineData?.deadlineType ?? null}
+        filingDeadlineDate={deadlineData?.filingDeadlineDate ?? null}
+        followups={deadlineData?.followups ?? []}
+        followupPlan={deadlineData?.followupPlan ?? []}
+      />
+
       {addPlanModal && letter.auditReportId && (
         <AddPlanDetailsModal
           open
