@@ -28,6 +28,8 @@ import { DownloadWarningModal } from "@/components/disputes/DownloadWarningModal
 import { InsurerAddressCorrectionModal } from "@/components/disputes/InsurerAddressCorrectionModal";
 import { ProviderAddressModal } from "@/components/disputes/ProviderAddressModal";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
+import { CollectorModal } from "@/components/disputes/CollectorModal";
+import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestModal";
 import { suggestNextStep, type NextStepSuggestion } from "@/lib/disputes/outcome-taxonomy";
 import { CaseNeedsPanel, type PlanCostService } from "@/components/disputes/CaseNeedsPanel";
 import { CaseSummary } from "@/components/disputes/CaseSummary";
@@ -286,6 +288,10 @@ function DisputesContent() {
   const [outcomeModalOpen, setOutcomeModalOpen] = useState(false);
   // Zone-3 (S266) — advisory next rung surfaced after an outcome is reported.
   const [suggestedNextStep, setSuggestedNextStep] = useState<NextStepSuggestion | null>(null);
+  // Zone-3 (S266) — ladder-advance capture modals + in-flight guard.
+  const [collectorModalOpen, setCollectorModalOpen] = useState(false);
+  const [exhaustionModalOpen, setExhaustionModalOpen] = useState(false);
+  const [escalating, setEscalating] = useState(false);
   // Bugbash Item 3 — "Why {band}?" evidence-strength explanation modal.
   const [evidenceModalOpen, setEvidenceModalOpen] = useState(false);
   const [outcomeToast, setOutcomeToast] = useState<string | null>(null);
@@ -774,6 +780,67 @@ function DisputesContent() {
     }
   };
 
+  // Zone-3 (S266) — user-triggered ladder advance. POST /escalate spawns the
+  // next-rung letter as a new dispute row (server-side render) and we navigate to
+  // it. A 403 means the escalation letter is Pro; other errors surface a toast.
+  const handleEscalate = async (
+    targetLetterType: "external_review" | "final_notice" | "debt_validation",
+    extra: Record<string, unknown> = {},
+  ) => {
+    if (!user || !disputeId || escalating) return;
+    setEscalating(true);
+    try {
+      const token = await user.firebaseUser.getIdToken();
+      if (!token) {
+        setOutcomeToast("You are not signed in. Refresh and try again.");
+        setTimeout(() => setOutcomeToast(null), 6000);
+        return;
+      }
+      const res = await fetch(`/api/disputes/${disputeId}/escalate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ targetLetterType, ...extra }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        const msg =
+          res.status === 403
+            ? "That escalation letter is a Candid Pro feature."
+            : e.reason || e.error || "We couldn't create that letter. Please try again.";
+        setOutcomeToast(msg);
+        setTimeout(() => setOutcomeToast(null), 7000);
+        return;
+      }
+      const data = await res.json();
+      if (data?.disputeId) {
+        // Navigate to the newly created next-rung dispute (each rung = its own row).
+        window.location.href = `/disputes?dispute=${data.disputeId}`;
+      }
+    } catch {
+      setOutcomeToast("We couldn't create that letter. Please try again.");
+      setTimeout(() => setOutcomeToast(null), 7000);
+    } finally {
+      setEscalating(false);
+    }
+  };
+
+  // Route the advisory next-rung CTA: external_review needs the exhaustion
+  // attestation first; final_notice escalates directly (reciting the sent letter's
+  // date as the prior contact). Reads suggestedNextStep from state to avoid
+  // closure-narrowing on the nullable value.
+  const handleSuggestedNextStep = () => {
+    const sns = suggestedNextStep;
+    if (!sns) return;
+    if (sns.nextLetterType === "external_review") {
+      setExhaustionModalOpen(true);
+    } else if (sns.nextLetterType === "final_notice") {
+      void handleEscalate("final_notice", {
+        priorContactDates: disputeFiledDate ? [disputeFiledDate] : undefined,
+        certifiedMail: true,
+      });
+    }
+  };
+
   // Dispute Letters v2 (Z1.2) — Zone-1 inline saves (optimistic; refetch reconciles).
   const handleSaveAmountPaid = useCallback(
     async (amount: number | null) => {
@@ -1208,24 +1275,46 @@ function DisputesContent() {
             Tell us what happened so we can track the case and suggest your next step.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setOutcomeModalOpen(true)}
-          className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
-        >
-          <ToolbarIcon name="sent" />
-          Got a response
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setOutcomeModalOpen(true)}
+            className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
+          >
+            <ToolbarIcon name="sent" />
+            Got a response
+          </button>
+          <button
+            type="button"
+            onClick={() => setCollectorModalOpen(true)}
+            className="inline-flex shrink-0 items-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
+          >
+            Sent to collections
+          </button>
+        </div>
       </div>
       {suggestedNextStep ? (
-        <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-          <div className="text-[13px] font-medium text-amber-800">
-            Suggested next step: {suggestedNextStep.ctaLabel}
-          </div>
-          {suggestedNextStep.note ? (
-            <div className="mt-0.5 text-[12px] leading-snug text-amber-700">
-              {suggestedNextStep.note}
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+          <div className="min-w-0">
+            <div className="text-[13px] font-medium text-amber-800">
+              Suggested next step: {suggestedNextStep.ctaLabel}
             </div>
+            {suggestedNextStep.note ? (
+              <div className="mt-0.5 text-[12px] leading-snug text-amber-700">
+                {suggestedNextStep.note}
+              </div>
+            ) : null}
+          </div>
+          {suggestedNextStep.nextLetterType === "external_review" ||
+          suggestedNextStep.nextLetterType === "final_notice" ? (
+            <button
+              type="button"
+              disabled={escalating}
+              onClick={handleSuggestedNextStep}
+              className="inline-flex shrink-0 items-center rounded-lg bg-amber-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-amber-700 disabled:opacity-60"
+            >
+              {escalating ? "Creating…" : suggestedNextStep.ctaLabel}
+            </button>
           ) : null}
         </div>
       ) : null}
@@ -1743,6 +1832,31 @@ function DisputesContent() {
           }
         }}
         getIdToken={getAuthToken}
+      />
+
+      {/* Zone-3 (S266) — ladder-advance capture: collector details (→ debt_validation)
+          + internal-appeal exhaustion attestation (→ external_review). Both POST
+          /escalate and navigate to the new dispute. */}
+      <CollectorModal
+        open={collectorModalOpen}
+        submitting={escalating}
+        onCancel={() => setCollectorModalOpen(false)}
+        onSubmit={(input) => {
+          setCollectorModalOpen(false);
+          void handleEscalate("debt_validation", {
+            collector: input.collector,
+            collectorFirstContactDate: input.collectorFirstContactDate,
+          });
+        }}
+      />
+      <ExhaustionAttestModal
+        open={exhaustionModalOpen}
+        submitting={escalating}
+        onCancel={() => setExhaustionModalOpen(false)}
+        onSubmit={(input) => {
+          setExhaustionModalOpen(false);
+          void handleEscalate("external_review", { appealExhausted: input.appealExhausted });
+        }}
       />
 
       {/* Item 3 — "Why {band}?" evidence-strength explanation (v3 only). */}
