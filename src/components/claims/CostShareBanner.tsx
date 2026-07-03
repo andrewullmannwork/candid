@@ -53,6 +53,11 @@ interface CostShareBannerProps {
   errorMsg: string | null;
   onShouldBeCovered: () => void;
   onAddPlanDetails: () => void;
+  /** S263 — the user's OWN entered cost-share for the disputed service
+   *  (plan_covered_services.source='manual'). Present → a persistent "Plan cost ·
+   *  $X · Edit" row so they can correct their own mistake. Null when unknown (the
+   *  Add-details gap) or plan-doc-parsed (authoritative → read-only). */
+  editableServiceCost?: { serviceLabel: string; copay: number | null; coinsurancePercent: number | null } | null;
   onUploadEob: () => void;
   onBack: () => void;
 }
@@ -155,6 +160,7 @@ export function CostShareBanner({
   errorMsg,
   onShouldBeCovered,
   onAddPlanDetails,
+  editableServiceCost,
   onUploadEob,
   onBack,
 }: CostShareBannerProps) {
@@ -232,6 +238,9 @@ export function CostShareBanner({
   const showOop = oopExists && (!oopResolved || editAll);
   const showAca = !!acaA && !acaDismissed;
   const hasServiceCostGap = serviceCostChips.length > 0;
+  // S263 — the user's own manual cost-share is EDITABLE (correct a mistake); a
+  // plan-doc/parsed cost is authoritative and read-only (gated in the parent).
+  const hasEditableCost = !!editableServiceCost;
 
   // pending = assumptions still awaiting a first pick (drives the headline copy).
   const pendingCount =
@@ -240,11 +249,11 @@ export function CostShareBanner({
     ((oopExists && !oopResolved) ? 1 : 0) +
     serviceCostChips.length +
     (showAca ? 1 : 0);
-  const rawSectionHasRows = showNetwork || showDeductible || showOop || hasServiceCostGap || showAca;
+  const rawSectionHasRows = showNetwork || showDeductible || showOop || hasServiceCostGap || showAca || hasEditableCost;
   // Section is OPEN unless the user dismissed it via "Done"; when closed but
   // assumptions exist, "Update assumptions" brings it back.
   const sectionOpen = !dismissed && rawSectionHasRows;
-  const anyAssumptions = networkExists || deductibleExists || oopExists || hasServiceCostGap || !!acaA;
+  const anyAssumptions = networkExists || deductibleExists || oopExists || hasServiceCostGap || !!acaA || hasEditableCost;
   const showUpdateLink = !sectionOpen && anyAssumptions;
   const effectivePending = sectionOpen ? pendingCount : 0;
   const isClean = verdict === "correct" || verdict === "confident";
@@ -343,6 +352,21 @@ export function CostShareBanner({
                 We don&apos;t have your plan&apos;s cost for {chip.serviceLabel} yet, so this is a conservative estimate.
               </Row>
             ))}
+
+            {editableServiceCost && (
+              <Row
+                icon={DocIcon}
+                label="Plan cost"
+                control={
+                  <button type="button" onClick={onAddPlanDetails} className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50">Edit</button>
+                }
+              >
+                You told us your plan&apos;s cost for {editableServiceCost.serviceLabel} is{" "}
+                {editableServiceCost.copay != null
+                  ? `$${editableServiceCost.copay} copay`
+                  : `${editableServiceCost.coinsurancePercent}% coinsurance`}. Edit if that&apos;s not right.
+              </Row>
+            )}
 
             {showAca && (
               <div className="mt-3 rounded-xl border border-blue-200 bg-blue-50 p-3 text-[13px] text-blue-900">
