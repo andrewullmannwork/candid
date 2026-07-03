@@ -2,18 +2,26 @@
  * CaseNeedsPanel — dispute-letters v2 Zone-1 ("What we need from you", map §6).
  *
  * The single consolidated top-of-page widget: one card listing every missing/confirmable
- * input as an icon + label + (why) + control row, with an "N of M" completion pill. Reuses
- * the shared Row/IconChip primitive (same shape as the claim-page CostShareBanner).
+ * input as an icon + label + (why) + control row. Reuses the shared Row/IconChip primitive
+ * (same shape as the claim-page CostShareBanner).
  *
- * Reuse-first + delegate: the panel owns only layout, the counter, and the inline value
- * editors (amount-paid + the two deadline dates). Every other row delegates to an existing
- * handler/modal. The value rows use the claim-page "expand to edit" pattern — a compact
- * Add/Edit affordance that reveals a full-width editor BELOW the row (never a cramped
- * right-column input), so it reads clean and wraps on mobile.
+ * S265 refinements:
+ *  - Unified readiness indicator at the top (one pill + meter) — replaces the separate
+ *    ReadinessRail. Spans the required floor ("Not ready" until a recipient address /
+ *    backed line exists → from the backend `strength.readiness`) and the soft strengtheners
+ *    ("Ready to send" → "Strong" → "Airtight" as plan cost / EOB / amount / denial land).
+ *  - Per-row importance: high-impact evidence inputs carry an "Important" chip.
+ *  - De-clutter: incomplete rows (important-first) render full at the top; completed rows
+ *    sink to an "Added" group below, each still editable.
+ *  - Editable-after-verify: the confirmed name + attested-services rows expose an Edit.
+ *
+ * Reuse-first + delegate: the panel owns only layout, the readiness computation, and the
+ * inline value editors (amount-paid + the two deadline dates). Every other row delegates to
+ * an existing handler/modal.
  */
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { Row } from "@/components/shared/InputRow";
 
 /** One disputed service's plan-cost state (derived from evidence line planBenefit). */
@@ -47,6 +55,16 @@ export interface CaseNeedsPanelProps {
   planLabel: string | null;
   showInsuranceRow: boolean;
   canChangePlan: boolean;
+  /**
+   * The backend-computed readiness floor (`strength.readiness`) — drives the bottom rung
+   * of the unified indicator (can the letter be credibly sent at all). Null when the
+   * strength payload is absent → the panel falls back to a name+address heuristic.
+   */
+  readiness: {
+    state: "attention" | "ready_to_send" | "airtight";
+    requiredMet: number;
+    requiredTotal: number;
+  } | null;
   onAddPlanDetails: (svc: PlanCostService) => void;
   onConfirmName: () => void;
   onEditLetter: () => void;
@@ -63,6 +81,7 @@ export interface CaseNeedsPanelProps {
 }
 
 type EditorKey = "amount" | "denial" | "collector";
+type Importance = "important" | "helpful";
 
 const INSURER_TRACK = new Set(["insurance_appeal", "final_notice", "external_review"]);
 const todayIso = (): string => new Date().toISOString().slice(0, 10);
@@ -89,6 +108,41 @@ const ReceiptIcon = (<svg width="18" height="18" viewBox="0 0 24 24" {...stroke}
 const CashIcon = (<svg width="18" height="18" viewBox="0 0 24 24" {...stroke} aria-hidden><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" /></svg>);
 const CardIcon = (<svg width="18" height="18" viewBox="0 0 24 24" {...stroke} aria-hidden><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M3 10h18" /></svg>);
 const CalendarIcon = (<svg width="18" height="18" viewBox="0 0 24 24" {...stroke} aria-hidden><rect x="4" y="5" width="16" height="16" rx="2" /><path d="M8 3v4M16 3v4M4 11h16" /></svg>);
+const PencilIcon = (<svg width="18" height="18" viewBox="0 0 24 24" {...stroke} className="text-blue-600" aria-hidden><path d="M12 20h9M4 20l1-4 10-10a2.1 2.1 0 013 3L8 19l-4 1z" /></svg>);
+
+// ── unified readiness ladder ──────────────────────────────────────────────────
+type Tier = "not_ready" | "ready" | "strong" | "airtight";
+const TIER_META: Record<Tier, { label: string; pill: string; bar: string }> = {
+  not_ready: { label: "Not ready to send", pill: "border-amber-200 bg-amber-50 text-amber-800", bar: "bg-amber-400" },
+  ready: { label: "Ready to send", pill: "border-blue-200 bg-blue-50 text-blue-700", bar: "bg-blue-500" },
+  strong: { label: "Strong", pill: "border-indigo-200 bg-indigo-50 text-indigo-700", bar: "bg-indigo-500" },
+  airtight: { label: "Airtight", pill: "border-emerald-200 bg-emerald-50 text-emerald-700", bar: "bg-emerald-500" },
+};
+
+/**
+ * The four-rung tier. `floorMet` = the required-to-send floor is satisfied (a recipient
+ * address + a backed line, per the backend readiness state). Above the floor the soft
+ * strengtheners (weighted: Important ×2, Helpful ×1) push Ready → Strong → Airtight.
+ */
+export function computeTier(
+  floorMet: boolean,
+  items: Array<{ done: boolean; importance: Importance }>,
+): Tier {
+  if (!floorMet) return "not_ready";
+  const w = (imp: Importance) => (imp === "important" ? 2 : 1);
+  const totalW = items.reduce((s, i) => s + w(i.importance), 0);
+  const doneW = items.reduce((s, i) => s + (i.done ? w(i.importance) : 0), 0);
+  const frac = totalW === 0 ? 1 : doneW / totalW;
+  if (frac >= 1) return "airtight";
+  if (frac >= 0.5) return "strong";
+  return "ready";
+}
+
+const ImportantBadge = (
+  <span className="inline-flex items-center rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+    Important
+  </span>
+);
 
 // ── small controls ────────────────────────────────────────────────────────────
 function DoneChip({ label }: { label: string }) {
@@ -99,12 +153,13 @@ function DoneChip({ label }: { label: string }) {
     </span>
   );
 }
-function OnFileEdit({ onEdit }: { onEdit: () => void }) {
+/** "<label> · Edit" — a resolved row that stays editable (addresses, name, attestation). */
+function DoneEdit({ label, onEdit }: { label: string; onEdit: () => void }) {
   return (
     <span className="inline-flex items-center gap-2.5 whitespace-nowrap">
       <span className="inline-flex items-center gap-1 text-[13px] font-medium text-emerald-600">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M5 13l4 4L19 7" /></svg>
-        On file
+        {label}
       </span>
       <button type="button" onClick={onEdit} className="text-[13px] font-medium text-blue-600 hover:text-blue-700">Edit</button>
     </span>
@@ -223,12 +278,49 @@ function DateEditor({ initial, prompt, onSaved }: { initial: string | null; prom
   );
 }
 
+/** Header: title + the unified readiness pill + a thin completion meter. */
+function ReadinessHeader({ tier, completed, total }: { tier: Tier; completed: number; total: number }) {
+  const meta = TIER_META[tier];
+  const pct = total === 0 ? 0 : Math.round((completed / total) * 100);
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          {PencilIcon}
+          <h3 className="text-[15px] font-semibold text-gray-900">What we need from you</h3>
+        </div>
+        <span className={`whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-semibold ${meta.pill}`}>
+          {meta.label}
+        </span>
+      </div>
+      <p className="mt-1.5 text-[13px] text-gray-500">
+        Add what you can — each item makes your letter stronger, and we&apos;ll use it right away.
+      </p>
+      <div className="mt-3 flex items-center gap-3">
+        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-gray-100">
+          <div className={`h-full rounded-full transition-all ${meta.bar}`} style={{ width: `${pct}%` }} />
+        </div>
+        <span className="whitespace-nowrap text-[12px] font-medium text-gray-500">{completed} of {total} added</span>
+      </div>
+    </div>
+  );
+}
+
+interface RowDesc {
+  key: string;
+  done: boolean;
+  importance: Importance;
+  /** editor keys can force an otherwise-"done" row back into the open group while editing. */
+  editorKey?: EditorKey;
+  node: ReactNode;
+}
+
 export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   const {
     letterType, planServices, nameMismatch, nameResolved, billName, profileName,
     attestationReviewed, hasInsurer, providerAddressOnFile, insurerAddressOnFile,
     eobPresent, userPatientPaid, denialNoticeDate, collectorFirstContactDate,
-    planLabel, showInsuranceRow, canChangePlan,
+    planLabel, showInsuranceRow, canChangePlan, readiness,
     onAddPlanDetails, onConfirmName, onEditLetter, onReviewAttestation,
     onAddProviderAddress, onAddInsurerAddress, onUploadEob, onSaveAmountPaid,
     onChangePlan, onSaveDeadlineDate,
@@ -239,230 +331,295 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
 
   const insurerTrack = INSURER_TRACK.has(letterType);
   const collectorTrack = letterType === "debt_validation";
+  const nameDone = !nameMismatch || nameResolved;
 
-  // Counter over "need" rows (the change-insurance action is excluded).
-  const needs: boolean[] = [
-    ...planServices.map((s) => s.known),
-    !nameMismatch || nameResolved,
-    attestationReviewed,
-    providerAddressOnFile,
-    ...(hasInsurer ? [insurerAddressOnFile] : []),
-    eobPresent,
-    userPatientPaid != null,
-    ...(insurerTrack ? [denialNoticeDate != null] : []),
-    ...(collectorTrack ? [collectorFirstContactDate != null] : []),
-  ];
-  const completed = needs.filter(Boolean).length;
-  const total = needs.length;
-  const allDone = completed === total && total > 0;
+  // ── row descriptors (each carries done-ness + importance so we can order + group) ──
+  const descs: RowDesc[] = [];
 
-  return (
-    <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm md:p-6">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <svg width="18" height="18" viewBox="0 0 24 24" {...stroke} className="text-blue-600" aria-hidden><path d="M12 20h9M4 20l1-4 10-10a2.1 2.1 0 013 3L8 19l-4 1z" /></svg>
-          <h3 className="text-[15px] font-semibold text-gray-900">What we need from you</h3>
-        </div>
-        <span
-          className={`whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium ${
-            allDone ? "bg-emerald-50 text-emerald-700" : "bg-gray-100 text-gray-600"
-          }`}
-        >
-          {completed} of {total}
-        </span>
-      </div>
-      <p className="mt-1.5 text-[13px] text-gray-500">
-        Add what you can — each item makes your letter stronger, and we&apos;ll use it right away.
-      </p>
-
-      <div className="mt-3">
-        {/* Plan details — one row per disputed, slug'd service. */}
-        {planServices.map((svc) =>
-          svc.known ? (
-            <Row
-              key={`svc-${svc.serviceSlug}`}
-              icon={ShieldIcon}
-              label={`Plan cost — ${svc.serviceLabel}`}
-              control={
-                svc.source === "manual" ? (
-                  <ValueEdit
-                    value={svc.copay != null ? `${money(svc.copay)} copay` : `${svc.coinsurancePercent}% coinsurance`}
-                    onEdit={() => onAddPlanDetails(svc)}
-                  />
-                ) : (
-                  <DoneChip label="On file" />
-                )
-              }
-            />
-          ) : (
-            <Row
-              key={`svc-${svc.serviceSlug}`}
-              icon={ShieldIcon}
-              label={`Add plan cost — ${svc.serviceLabel}`}
-              control={<AddButton label="Add" onClick={() => onAddPlanDetails(svc)} />}
-            >
-              Adds your plan&apos;s cost-share to the letter.
-            </Row>
-          ),
-        )}
-
-        {/* Verify patient name. */}
-        {nameMismatch && !nameResolved ? (
-          <Row
-            icon={UserIcon}
-            label="Verify the patient name"
-            control={
-              <div className="flex items-center gap-2">
-                <AddButton label="This is me" onClick={onConfirmName} />
-                <button type="button" onClick={onEditLetter} className="whitespace-nowrap text-[13px] font-medium text-gray-500 hover:text-gray-700">Edit</button>
-              </div>
-            }
-          >
-            {billName && profileName
-              ? `The bill lists "${billName}" — we're using "${profileName}".`
-              : "Make sure the bill's patient is you."}
-          </Row>
-        ) : (
-          <Row icon={UserIcon} label="Patient name" control={<DoneChip label="Verified" />} />
-        )}
-
-        {/* Attest services performed (delegates to the evidence attestation). */}
-        {attestationReviewed ? (
-          <Row icon={CheckListIcon} label="Services performed" control={<DoneChip label="Attested" />} />
-        ) : (
-          <Row
-            icon={CheckListIcon}
-            label="Confirm the services"
-            control={<AddButton label="Review" onClick={onReviewAttestation} />}
-          >
-            Tell us if a service wasn&apos;t actually done.
-          </Row>
-        )}
-
-        {/* Provider address — always relevant (there's always a biller). */}
-        {providerAddressOnFile ? (
-          <Row icon={MapPinIcon} label="Provider address" control={<OnFileEdit onEdit={onAddProviderAddress} />} />
-        ) : (
-          <Row
-            icon={MapPinIcon}
-            label="Provider address"
-            control={<AddButton label="Add" onClick={onAddProviderAddress} />}
-          >
-            Where a provider-directed letter is mailed.
-          </Row>
-        )}
-
-        {/* Insurer appeals address — only when the claim has an insurer. */}
-        {hasInsurer &&
-          (insurerAddressOnFile ? (
-            <Row icon={MapPinIcon} label="Insurer appeals address" control={<OnFileEdit onEdit={onAddInsurerAddress} />} />
-          ) : (
-            <Row
-              icon={MapPinIcon}
-              label="Insurer appeals address"
-              control={<AddButton label="Add" onClick={onAddInsurerAddress} />}
-            >
-              Where an appeal is mailed.
-            </Row>
-          ))}
-
-        {/* EOB line detail. */}
-        {eobPresent ? (
-          <Row icon={ReceiptIcon} label="EOB detail" control={<DoneChip label="On file" />} />
-        ) : (
-          <Row
-            icon={ReceiptIcon}
-            label="EOB detail"
-            control={<AddButton label="Upload" onClick={onUploadEob} />}
-          >
-            Adds the billed-vs-paid breakdown.
-          </Row>
-        )}
-
-        {/* Amount paid (expand-to-edit; unlocks a refund request). */}
+  // Plan details — one row per disputed, slug'd service.
+  for (const svc of planServices) {
+    descs.push({
+      key: `svc-${svc.serviceSlug}`,
+      done: svc.known,
+      importance: "important",
+      node: svc.known ? (
         <Row
-          icon={CashIcon}
-          label="Amount you paid"
+          icon={ShieldIcon}
+          label={`Plan cost — ${svc.serviceLabel}`}
           control={
-            openEditor === "amount" ? (
-              <CancelLink onClick={close} />
-            ) : userPatientPaid != null ? (
-              <ValueEdit value={money(userPatientPaid)} onEdit={() => setOpenEditor("amount")} />
+            svc.source === "manual" ? (
+              <ValueEdit
+                value={svc.copay != null ? `${money(svc.copay)} copay` : `${svc.coinsurancePercent}% coinsurance`}
+                onEdit={() => onAddPlanDetails(svc)}
+              />
             ) : (
-              <AddButton label="Add" onClick={() => setOpenEditor("amount")} />
+              <DoneChip label="On file" />
+            )
+          }
+        />
+      ) : (
+        <Row
+          icon={ShieldIcon}
+          label={`Add plan cost — ${svc.serviceLabel}`}
+          badge={ImportantBadge}
+          control={<AddButton label="Add" onClick={() => onAddPlanDetails(svc)} />}
+        >
+          Your plan&apos;s cost-share for this service — lets the letter quote your exact benefit.
+        </Row>
+      ),
+    });
+  }
+
+  // Verify patient name (editable once verified — families can re-point to a different patient).
+  descs.push({
+    key: "name",
+    done: nameDone,
+    importance: "helpful",
+    node: nameMismatch && !nameResolved ? (
+      <Row
+        icon={UserIcon}
+        label="Verify the patient name"
+        control={
+          <div className="flex items-center gap-2">
+            <AddButton label="This is me" onClick={onConfirmName} />
+            <button type="button" onClick={onEditLetter} className="whitespace-nowrap text-[13px] font-medium text-gray-500 hover:text-gray-700">Edit</button>
+          </div>
+        }
+      >
+        {billName && profileName
+          ? `The bill lists "${billName}" — we're using "${profileName}". Confirm it's you, or edit for a family member.`
+          : "Make sure the bill's patient is you (or a family member you're disputing for)."}
+      </Row>
+    ) : (
+      <Row icon={UserIcon} label="Patient name" control={<DoneEdit label="Verified" onEdit={onEditLetter} />} />
+    ),
+  });
+
+  // Attest services performed (editable once attested — un-attest a service in the evidence list).
+  descs.push({
+    key: "attest",
+    done: attestationReviewed,
+    importance: "helpful",
+    node: attestationReviewed ? (
+      <Row icon={CheckListIcon} label="Services performed" control={<DoneEdit label="Attested" onEdit={onReviewAttestation} />} />
+    ) : (
+      <Row
+        icon={CheckListIcon}
+        label="Confirm the services"
+        control={<AddButton label="Review" onClick={onReviewAttestation} />}
+      >
+        Confirm each billed service was actually performed — flag any that weren&apos;t.
+      </Row>
+    ),
+  });
+
+  // Provider address — always relevant (there's always a biller).
+  descs.push({
+    key: "provider-addr",
+    done: providerAddressOnFile,
+    importance: "helpful",
+    node: providerAddressOnFile ? (
+      <Row icon={MapPinIcon} label="Provider address" control={<DoneEdit label="On file" onEdit={onAddProviderAddress} />} />
+    ) : (
+      <Row
+        icon={MapPinIcon}
+        label="Provider address"
+        control={<AddButton label="Add" onClick={onAddProviderAddress} />}
+      >
+        The biller&apos;s mailing address — where a provider-directed letter is sent.
+      </Row>
+    ),
+  });
+
+  // Insurer appeals address — only when the claim has an insurer.
+  if (hasInsurer) {
+    descs.push({
+      key: "insurer-addr",
+      done: insurerAddressOnFile,
+      importance: "helpful",
+      node: insurerAddressOnFile ? (
+        <Row icon={MapPinIcon} label="Insurer appeals address" control={<DoneEdit label="On file" onEdit={onAddInsurerAddress} />} />
+      ) : (
+        <Row
+          icon={MapPinIcon}
+          label="Insurer appeals address"
+          control={<AddButton label="Add" onClick={onAddInsurerAddress} />}
+        >
+          Your plan&apos;s appeals-department address — where the appeal is mailed.
+        </Row>
+      ),
+    });
+  }
+
+  // EOB line detail.
+  descs.push({
+    key: "eob",
+    done: eobPresent,
+    importance: "important",
+    node: eobPresent ? (
+      <Row icon={ReceiptIcon} label="EOB detail" control={<DoneChip label="On file" />} />
+    ) : (
+      <Row
+        icon={ReceiptIcon}
+        label="EOB detail"
+        badge={ImportantBadge}
+        control={<AddButton label="Upload" onClick={onUploadEob} />}
+      >
+        Your insurer&apos;s billed-vs-allowed-vs-paid breakdown — powers the balance-billing math.
+      </Row>
+    ),
+  });
+
+  // Amount paid (expand-to-edit; unlocks a refund request).
+  descs.push({
+    key: "amount",
+    done: userPatientPaid != null,
+    importance: "important",
+    editorKey: "amount",
+    node: (
+      <Row
+        icon={CashIcon}
+        label="Amount you paid"
+        badge={userPatientPaid == null && openEditor !== "amount" ? ImportantBadge : undefined}
+        control={
+          openEditor === "amount" ? (
+            <CancelLink onClick={close} />
+          ) : userPatientPaid != null ? (
+            <ValueEdit value={money(userPatientPaid)} onEdit={() => setOpenEditor("amount")} />
+          ) : (
+            <AddButton label="Add" onClick={() => setOpenEditor("amount")} />
+          )
+        }
+        below={
+          openEditor === "amount" ? (
+            <AmountEditor
+              initial={userPatientPaid}
+              onSaved={async (a) => { await onSaveAmountPaid(a); close(); }}
+            />
+          ) : undefined
+        }
+      >
+        {userPatientPaid == null && openEditor !== "amount"
+          ? "How much you've paid so far. If you overpaid, we add a refund request."
+          : undefined}
+      </Row>
+    ),
+  });
+
+  // Denial-notice date (insurer track) — sets the appeal deadline.
+  if (insurerTrack) {
+    descs.push({
+      key: "denial",
+      done: denialNoticeDate != null,
+      importance: "important",
+      editorKey: "denial",
+      node: (
+        <Row
+          icon={CalendarIcon}
+          label="Denial date"
+          badge={denialNoticeDate == null && openEditor !== "denial" ? ImportantBadge : undefined}
+          control={
+            openEditor === "denial" ? (
+              <CancelLink onClick={close} />
+            ) : denialNoticeDate != null ? (
+              <ValueEdit value={prettyDate(denialNoticeDate)} onEdit={() => setOpenEditor("denial")} />
+            ) : (
+              <AddButton label="Add" onClick={() => setOpenEditor("denial")} />
             )
           }
           below={
-            openEditor === "amount" ? (
-              <AmountEditor
-                initial={userPatientPaid}
-                onSaved={async (a) => { await onSaveAmountPaid(a); close(); }}
+            openEditor === "denial" ? (
+              <DateEditor
+                initial={denialNoticeDate}
+                prompt="When did you receive the denial? Use the date printed on the insurer's denial letter."
+                onSaved={async (v) => { await onSaveDeadlineDate("denialNoticeDate", v); close(); }}
               />
             ) : undefined
           }
         >
-          {userPatientPaid == null && openEditor !== "amount" ? "If you overpaid, we'll ask for a refund." : undefined}
+          {denialNoticeDate == null && openEditor !== "denial"
+            ? "The date printed on your insurer's denial letter — this sets your appeal deadline."
+            : undefined}
         </Row>
+      ),
+    });
+  }
 
-        {/* Denial-notice date (insurer track) — sets the appeal deadline. */}
-        {insurerTrack && (
-          <Row
-            icon={CalendarIcon}
-            label="Denial date"
-            control={
-              openEditor === "denial" ? (
-                <CancelLink onClick={close} />
-              ) : denialNoticeDate != null ? (
-                <ValueEdit value={prettyDate(denialNoticeDate)} onEdit={() => setOpenEditor("denial")} />
-              ) : (
-                <AddButton label="Add" onClick={() => setOpenEditor("denial")} />
-              )
-            }
-            below={
-              openEditor === "denial" ? (
-                <DateEditor
-                  initial={denialNoticeDate}
-                  prompt="When did you receive the denial?"
-                  onSaved={async (v) => { await onSaveDeadlineDate("denialNoticeDate", v); close(); }}
-                />
-              ) : undefined
-            }
-          >
-            {denialNoticeDate == null && openEditor !== "denial" ? "Sets your appeal deadline." : undefined}
-          </Row>
-        )}
+  // Collector first-contact date (collections track) — 30-day validation window.
+  if (collectorTrack) {
+    descs.push({
+      key: "collector",
+      done: collectorFirstContactDate != null,
+      importance: "important",
+      editorKey: "collector",
+      node: (
+        <Row
+          icon={CalendarIcon}
+          label="Collector contact date"
+          badge={collectorFirstContactDate == null && openEditor !== "collector" ? ImportantBadge : undefined}
+          control={
+            openEditor === "collector" ? (
+              <CancelLink onClick={close} />
+            ) : collectorFirstContactDate != null ? (
+              <ValueEdit value={prettyDate(collectorFirstContactDate)} onEdit={() => setOpenEditor("collector")} />
+            ) : (
+              <AddButton label="Add" onClick={() => setOpenEditor("collector")} />
+            )
+          }
+          below={
+            openEditor === "collector" ? (
+              <DateEditor
+                initial={collectorFirstContactDate}
+                prompt="When did the collector first contact you? Use the date of their first letter or call."
+                onSaved={async (v) => { await onSaveDeadlineDate("collectorFirstContactDate", v); close(); }}
+              />
+            ) : undefined
+          }
+        >
+          {collectorFirstContactDate == null && openEditor !== "collector"
+            ? "The date the collector first contacted you — starts the 30-day validation window."
+            : undefined}
+        </Row>
+      ),
+    });
+  }
 
-        {/* Collector first-contact date (collections track) — 30-day validation window. */}
-        {collectorTrack && (
-          <Row
-            icon={CalendarIcon}
-            label="Collector contact date"
-            control={
-              openEditor === "collector" ? (
-                <CancelLink onClick={close} />
-              ) : collectorFirstContactDate != null ? (
-                <ValueEdit value={prettyDate(collectorFirstContactDate)} onEdit={() => setOpenEditor("collector")} />
-              ) : (
-                <AddButton label="Add" onClick={() => setOpenEditor("collector")} />
-              )
-            }
-            below={
-              openEditor === "collector" ? (
-                <DateEditor
-                  initial={collectorFirstContactDate}
-                  prompt="When did the collector first contact you?"
-                  onSaved={async (v) => { await onSaveDeadlineDate("collectorFirstContactDate", v); close(); }}
-                />
-              ) : undefined
-            }
-          >
-            {collectorFirstContactDate == null && openEditor !== "collector" ? "Sets the 30-day validation window." : undefined}
-          </Row>
-        )}
+  // ── counter + tier + grouping ──
+  const completed = descs.filter((d) => d.done).length;
+  const total = descs.length;
+  const floorMet = readiness
+    ? readiness.state !== "attention"
+    : nameDone && (providerAddressOnFile || (hasInsurer && insurerAddressOnFile));
+  const tier = computeTier(floorMet, descs.map((d) => ({ done: d.done, importance: d.importance })));
 
-        {/* Insurance for this claim — shown only when a plan is bound (a missing-year
-            claim is owned by VerifStrip). An action, excluded from the counter. */}
-        {showInsuranceRow && (
+  // A value row whose editor is open renders full at the top even though it's "done".
+  const isEditing = (d: RowDesc) => d.editorKey != null && openEditor === d.editorKey;
+  const openDescs = descs
+    .filter((d) => !d.done || isEditing(d))
+    .sort((a, b) => (a.importance === b.importance ? 0 : a.importance === "important" ? -1 : 1));
+  const doneDescs = descs.filter((d) => d.done && !isEditing(d));
+
+  return (
+    <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm md:p-6">
+      <ReadinessHeader tier={tier} completed={completed} total={total} />
+
+      <div className="mt-3">
+        {openDescs.map((d) => (
+          <Fragment key={d.key}>{d.node}</Fragment>
+        ))}
+
+        {doneDescs.length > 0 ? (
+          <>
+            <div className="mt-3 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">Added</div>
+            {doneDescs.map((d) => (
+              <Fragment key={d.key}>{d.node}</Fragment>
+            ))}
+          </>
+        ) : null}
+
+        {/* Insurance for this claim — an action (excluded from the counter + readiness),
+            shown only when a plan is bound (a missing-year claim is owned by VerifStrip). */}
+        {showInsuranceRow ? (
           <Row
             icon={CardIcon}
             label="Insurance for this claim"
@@ -476,7 +633,7 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
           >
             {canChangePlan ? "Use a different plan for these dates." : undefined}
           </Row>
-        )}
+        ) : null}
       </div>
     </section>
   );

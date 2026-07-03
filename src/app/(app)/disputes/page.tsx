@@ -40,7 +40,6 @@ import type {
 import type { DisputeEvidence } from "@/lib/disputes/evidence-resolver";
 // Block C (dispute_letter_v3_design) — the three-axis strength readouts.
 import { DataTrustBanner } from "@/components/disputes/DataTrustBanner";
-import { ReadinessRail } from "@/components/disputes/ReadinessRail";
 import type { StrengthResult, EvidenceBand } from "@/lib/disputes/strength-scoring";
 
 export default function DisputesPage() {
@@ -829,19 +828,10 @@ function DisputesContent() {
   // Single source per node — no forked wiring, no duplicated handlers.
   // ===================================================================
 
-  // Readout 1 (data-trust banner) + readout 3 (readiness rail) — v3-only.
+  // Readout 1 (data-trust banner) — v3-only. (Readout 3, the readiness rail, was retired
+  // at S265: the unified readiness indicator now lives at the top of Zone-1's CaseNeedsPanel,
+  // combining the required-to-send floor with the soft strengtheners — one signal, not two.)
   const dataTrustBannerNode = <DataTrustBanner dataTrust={strength?.dataTrust} />;
-  const readinessRailNode = (
-    <ReadinessRail
-      readiness={strength?.readiness}
-      // Block C2 — inline confirm/undo + edit affordances (v3-only).
-      // Z1.3 — the identity ACTION now lives in Zone-1's "Verify the patient name" row;
-      // the rail keeps only the readiness readout (no inline confirm) to avoid duplication.
-      onResolvePatientIdentity={undefined}
-      onEditLetter={v3DesignOn ? () => setIsEditing(true) : undefined}
-      patientIdentityResolved={patientIdentityResolved}
-    />
-  );
 
   const heroNode = (
     <DisputeLetterHero
@@ -1263,6 +1253,7 @@ function DisputesContent() {
         planLabel={planLabel}
         showInsuranceRow={zone1ShowInsuranceRow}
         canChangePlan={planPinningEnabled}
+        readiness={strength?.readiness ?? null}
         onAddPlanDetails={(svc) =>
           setAddPlanModal({
             serviceSlug: svc.serviceSlug,
@@ -1622,7 +1613,6 @@ function DisputesContent() {
               until the left column catches up. */}
           <aside className="space-y-5 lg:sticky lg:top-4 lg:self-start lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
 
-            {readinessRailNode}
             {gapsNode}
             {nextStepsNode}
             {caseFileNode}

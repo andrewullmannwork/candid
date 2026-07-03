@@ -28,12 +28,15 @@ export function IconChip({ children }: { children: ReactNode }) {
 export function Row({
   icon,
   label,
+  badge,
   control,
   children,
   below,
 }: {
   icon: ReactNode;
   label: string;
+  /** Optional inline chip after the label (e.g. an "Important" importance tag). */
+  badge?: ReactNode;
   control: ReactNode;
   children?: ReactNode;
   below?: ReactNode;
@@ -44,7 +47,10 @@ export function Row({
         <div className="flex min-w-0 items-start gap-3">
           <IconChip>{icon}</IconChip>
           <div className="min-w-0 pt-0.5">
-            <div className="text-sm font-medium text-gray-900">{label}</div>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+              <span className="text-sm font-medium text-gray-900">{label}</span>
+              {badge != null ? badge : null}
+            </div>
             {children != null && children !== "" ? (
               <div className="mt-0.5 text-[13px] leading-snug text-gray-600">{children}</div>
             ) : null}
