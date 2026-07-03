@@ -366,8 +366,13 @@ function DisputesContent() {
   }, [user]);
 
   // Fetch dispute + plan context + evidence (reused for refetch-on-focus).
+  // S266 (#3) — mutation generation. Optimistic handlers bump this; a background
+  // refetch that started before a newer mutation is DROPPED, so a slow stale reload
+  // can't clobber the fresher optimistic state (the undo→won→awaiting flicker).
+  const mutationGenRef = useRef(0);
   const fetchDispute = useCallback(async (id: string, opts?: { refresh?: boolean }) => {
     if (!user) return;
+    const startGen = mutationGenRef.current;
     const token = await user.firebaseUser.getIdToken();
     // ?refresh=1 regenerates the letter server-side (versioning the prior) and
     // returns the recomputed isStale (W4 / Finding 4). A plain load reads current.
@@ -377,6 +382,8 @@ function DisputesContent() {
     );
     if (!res.ok) return;
     const data = await res.json();
+    // Drop a superseded reload (a newer optimistic mutation happened mid-fetch).
+    if (mutationGenRef.current !== startGen) return;
     // Cost-Share v2 (W4) — staleness for the letter-page banner. A fresh
     // navigation re-expands the banner; a refresh keeps the user's collapse
     // state (the refreshed letter is no longer stale anyway).
@@ -763,6 +770,7 @@ function DisputesContent() {
     // instantly; reconcile in the background (rollback on failure). No confirm dialog
     // (undo covers a mis-click).
     const prevStatus = disputeStatus;
+    mutationGenRef.current += 1;
     setDisputeStatus("filed");
     setMarkingSent(true);
     setMarkSentToast(null);
@@ -795,6 +803,7 @@ function DisputesContent() {
   const handleUndoSent = async () => {
     if (!user || !disputeId || !alreadySent) return;
     const prevStatus = disputeStatus;
+    mutationGenRef.current += 1;
     setDisputeStatus("dispute_letter_drafted");
     setSuggestedNextStep(null);
     try {
@@ -816,6 +825,7 @@ function DisputesContent() {
   const handleUndoOutcome = async () => {
     if (!user || !disputeId) return;
     const prevStatus = disputeStatus;
+    mutationGenRef.current += 1;
     setDisputeStatus("filed");
     setSuggestedNextStep(null);
     try {
@@ -1821,6 +1831,7 @@ function DisputesContent() {
           setTimeout(() => setOutcomeToast(null), 6000);
           // Optimistic (S266) — flip status + next rung locally so the stage-action bar
           // updates instantly (no lingering button); reconcile in the background.
+          mutationGenRef.current += 1;
           setDisputeStatus(mapOutcomeToStatus(detail));
           setSuggestedNextStep(suggestNextStep(letter.letterType, detail));
           if (disputeId) {
