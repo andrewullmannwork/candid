@@ -667,11 +667,12 @@ async function mergeServicesIntoCanonical(
   if (canonicalInserts.length > 0) {
     const { error } = await supabase
       .from("canonical_plan_services")
-      // S167 Thesaurus (mig 147): the unique key is 4-col
-      // (canonical_plan_id, service_slug, place_of_service, component). mig 186 (S241): these inserts now
-      // carry the user-side place_of_service/component (above) instead of collapsing to the 'any'/'global'
-      // DEFAULTs, so they align with the apply_promotion_event cells (no orphan rows).
-      .upsert(canonicalInserts, { onConflict: "canonical_plan_id,service_slug,place_of_service,component" });
+      // S167 Thesaurus (mig 147) + mig 194 (S258): the unique key is 5-col
+      // (canonical_plan_id, service_slug, place_of_service, component, plan_tier_label). mig 186 (S241):
+      // these inserts carry the user-side place_of_service/component (above) instead of collapsing to the
+      // 'any'/'global' DEFAULTs, so they align with the apply_promotion_event cells (no orphan rows).
+      // plan_tier_label defaults 'none' here (live Pattern-2 path); the cold-start seed populates it via promotion.
+      .upsert(canonicalInserts, { onConflict: "canonical_plan_id,service_slug,place_of_service,component,plan_tier_label" });
 
     if (error) {
       console.error("[canonical-plan] Failed to merge services:", error);
