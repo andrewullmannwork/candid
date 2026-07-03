@@ -18,6 +18,7 @@ import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import { resolvePlanContext, type InsurerAddressOverride } from "@/lib/disputes/plan-context";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
+import { readUserPatientPaidOverride } from "@/lib/claims/effective-totals";
 import {
   computeDisputeStrength,
   loadStrengthConfig,
@@ -490,6 +491,10 @@ export async function GET(
   // Block C2 item 1 — the account holder's name (users.display_name) is the default
   // "Attesting as" name for the attestation flow; surfaced in the payload below.
   let accountName = "";
+  // Dispute Letters v2 (Z1.1c) — the user's confirmed amount-paid override
+  // (claims.metadata.userPatientPaid), read from the same claim load below; prefills the
+  // Zone-1 amount-paid row. Null when unset.
+  let userPatientPaid: number | null = null;
   try {
     const [{ data: claim }, { data: userRow }] = await Promise.all([
       userScoped(supabase, user.id)
@@ -504,6 +509,7 @@ export async function GET(
         .maybeSingle(),
     ]);
     const billName = (claim?.metadata as { patient?: { name?: string } } | undefined)?.patient?.name?.trim() ?? "";
+    userPatientPaid = readUserPatientPaidOverride(claim?.metadata ?? null);
     accountName = resolveAccountName(userRow?.display_name, userRow?.email);
     if (billName && accountName && normalizeNameForCompare(billName) !== normalizeNameForCompare(accountName)) {
       patientNameMismatch = { billName, profileName: accountName };
@@ -697,6 +703,22 @@ export async function GET(
             (dispute.evidence_fingerprint as string | null) ?? null,
         }
       : null,
+    // Dispute Letters v2 (Z1.1c) — Zone-1 read-signals. Additive; these are user inputs,
+    // always surfaced (no flag gate). userPatientPaid prefills the amount-paid row;
+    // deadlineInputs prefill the denial-notice + collector-first-contact date inputs
+    // (persisted via POST …/deadline-inputs).
+    userPatientPaid,
+    deadlineInputs: {
+      denialNoticeDate: ((): string | null => {
+        const v = (dispute.metadata as Record<string, unknown> | null)?.denialNoticeDate;
+        return typeof v === "string" ? v : null;
+      })(),
+      collectorFirstContactDate: ((): string | null => {
+        const v = (dispute.metadata as Record<string, unknown> | null)
+          ?.collectorFirstContactDate;
+        return typeof v === "string" ? v : null;
+      })(),
+    },
   });
 }
 
