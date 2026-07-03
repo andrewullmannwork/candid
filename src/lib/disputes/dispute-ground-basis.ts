@@ -39,7 +39,11 @@ import {
   coerceNetworkTier,
   coerceNetworkOverride,
 } from "../claims/cost-share-loader";
-import { resolveEffectiveClaimTotals } from "../claims/effective-totals";
+import {
+  resolveEffectiveClaimTotals,
+  readUserPatientPaidOverride,
+  applyUserPatientPaidOverride,
+} from "../claims/effective-totals";
 import {
   buildAcaCoverageFallback,
   detectPreventiveMembership,
@@ -152,6 +156,23 @@ async function loadClaimBasisBundle(
   const rawLines = (
     await selectOwnedChildren(supabase, userId, "claim_line_items", [claimId], LINE_COLUMNS)
   ).sort((a, b) => (Number(a.line_number ?? 0)) - (Number(b.line_number ?? 0)));
+
+  // Dispute Letters v2 (Z1.1b) — user-confirmed amount-paid override. A claim-level figure
+  // the user supplied via the cost-share banner (claims.metadata.userPatientPaid, Rule #9).
+  // Overlaid here (claim header total_patient_paid + prorated per-line patient_paid_amount
+  // kept in sync so header == line-sum) so the letter's refund reflects it via the
+  // effective-totals path with no list/detail divergence. No-op when unset → byte-identical.
+  const userPatientPaid = readUserPatientPaidOverride(claim.metadata);
+  if (userPatientPaid != null) {
+    applyUserPatientPaidOverride(
+      claim as { total_patient_paid?: number | null },
+      rawLines as Array<{
+        billed_amount?: number | null;
+        patient_paid_amount?: number | null;
+      }>,
+      userPatientPaid,
+    );
+  }
 
   const acaLineItems = rawLines.map((li) => ({
     lineNumber: Number(li.line_number ?? 0),

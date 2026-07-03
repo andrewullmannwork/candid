@@ -262,3 +262,66 @@ export function resolvePerLineInsuranceAdjusted(args: {
     ) / 100;
   return { value: prorated, source: "header_prorated" };
 }
+
+/**
+ * Dispute Letters v2 (Z1.1b) — read a user-confirmed claim-level amount-paid override
+ * from claims.metadata (Rule #9 JSONB store; key `userPatientPaid`). Returns a finite
+ * dollar amount >= 0, or null when unset/invalid (→ caller no-ops and the parsed values
+ * stand). Zero is a valid, meaningful override ("I paid nothing" → suppresses a refund).
+ */
+export function readUserPatientPaidOverride(metadata: unknown): number | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  const v = (metadata as Record<string, unknown>).userPatientPaid;
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) return null;
+  return Math.round(v * 100) / 100;
+}
+
+/**
+ * Overlay a user-confirmed claim-level amount-paid onto a claim + its line items IN PLACE,
+ * so the dispute letter's refund math reflects it. Sets the claim header total_patient_paid
+ * to the override AND distributes the same total across the lines' patient_paid_amount by
+ * billed share (equal split when nothing is billed), placing the rounding remainder on the
+ * largest-billed line so the per-line sum equals the header exactly. Keeping header == sum
+ * makes resolveEffectiveClaimTotals treat it as cite-grade `per_line_sum`, so BOTH the
+ * detail (prorated) and list (raw per-line) cost-share strategies read consistent values —
+ * no list/detail divergence. Mutates the passed objects (in-memory reads only; never
+ * persisted). Callers no-op when readUserPatientPaidOverride returns null → byte-identical.
+ */
+export function applyUserPatientPaidOverride(
+  claim: { total_patient_paid?: number | null },
+  lines: Array<{ billed_amount?: number | null; patient_paid_amount?: number | null }>,
+  overrideTotal: number,
+): void {
+  claim.total_patient_paid = overrideTotal;
+  if (lines.length === 0) return;
+
+  const totalBilled = lines.reduce((s, li) => s + toNumber(li.billed_amount), 0);
+  const n = lines.length;
+  const shares = lines.map((li) =>
+    totalBilled > 0
+      ? Math.round((toNumber(li.billed_amount) / totalBilled) * overrideTotal * 100) / 100
+      : Math.round((overrideTotal / n) * 100) / 100,
+  );
+
+  // Correct rounding drift so sum(shares) === overrideTotal (keeps header == sum, and thus
+  // within resolveEffectiveClaimTotals' $0.01 cite-grade tolerance). Residual lands on the
+  // largest-billed line (index 0 fallback).
+  const sum = shares.reduce((s, v) => s + v, 0);
+  const remainder = Math.round((overrideTotal - sum) * 100) / 100;
+  if (remainder !== 0) {
+    let idx = 0;
+    let maxBilled = -Infinity;
+    lines.forEach((li, i) => {
+      const b = toNumber(li.billed_amount);
+      if (b > maxBilled) {
+        maxBilled = b;
+        idx = i;
+      }
+    });
+    shares[idx] = Math.round((shares[idx] + remainder) * 100) / 100;
+  }
+
+  lines.forEach((li, i) => {
+    li.patient_paid_amount = shares[i];
+  });
+}
