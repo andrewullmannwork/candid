@@ -394,14 +394,14 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
           icon={ShieldIcon}
           label={`Plan cost — ${svc.serviceLabel}`}
           control={
-            svc.source === "manual" ? (
-              <ValueEdit
-                value={svc.copay != null ? `${money(svc.copay)} copay` : `${svc.coinsurancePercent}% coinsurance`}
-                onEdit={() => onAddPlanDetails(svc)}
-              />
-            ) : (
-              <DoneChip label="On file" />
-            )
+            // S266 (item 5) — every known plan-cost row is editable. Editing writes a
+            // user-scoped cost-share override (Pattern 1 #14); the canonical/parsed value
+            // is untouched. (Was read-only "On file" for parsed sources — Andrew's S263
+            // rule, reversed here so a user can fix a wrong value.)
+            <ValueEdit
+              value={svc.copay != null ? `${money(svc.copay)} copay` : `${svc.coinsurancePercent}% coinsurance`}
+              onEdit={() => onAddPlanDetails(svc)}
+            />
           }
         />
       ) : (
