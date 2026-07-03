@@ -1155,6 +1155,23 @@ function DisputesContent() {
           )}
         </div>
       </div>
+      {/* Zone-3 (S266) — pre-send deadline guard (map §3.2): warn at the point of
+          action before sending a letter whose window has closed. Post-send, Zone-2's
+          CaseSummary owns the response-window countdown, so this is !alreadySent-only. */}
+      {!alreadySent && deadlineData?.deadlineWarning ? (
+        <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-snug text-amber-800">
+          <span className="font-medium">
+            {deadlineData.deadlineWarning.severity === "past"
+              ? "This filing window has passed."
+              : `${deadlineData.deadlineWarning.daysRemaining ?? 0} day${
+                  deadlineData.deadlineWarning.daysRemaining === 1 ? "" : "s"
+                } left to file — send soon.`}
+          </span>
+          {deadlineData.deadlineWarning.nextStep ? (
+            <span className="ml-1 text-amber-700">{deadlineData.deadlineWarning.nextStep}</span>
+          ) : null}
+        </div>
+      ) : null}
       {redraftToast && (
         <div
           className={`mt-2 rounded-md px-3 py-2 text-xs ${
