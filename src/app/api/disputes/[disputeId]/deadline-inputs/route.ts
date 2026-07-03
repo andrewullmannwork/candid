@@ -24,6 +24,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
+import { evaluateDeadline, readDeadlineConfig } from "@/lib/disputes/deadline-engine";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -52,6 +54,30 @@ function validateAnchor(
   const t = Date.parse(`${value}T00:00:00Z`);
   if (Number.isNaN(t) || value > todayIso) return { ok: false };
   return { ok: true, value };
+}
+
+/** Resolve the letter type from a dispute row (metadata.letterType wins; else map dispute_type).
+ *  Mirrors resolveLetterTypeFromDispute in the GET + redraft routes (kept local per that pattern). */
+function resolveLetterType(dispute: {
+  dispute_type: string;
+  metadata?: Record<string, unknown> | null;
+}): string {
+  const metaType =
+    dispute.metadata && typeof dispute.metadata === "object"
+      ? (dispute.metadata as { letterType?: string }).letterType
+      : undefined;
+  if (metaType) return metaType;
+  switch (dispute.dispute_type) {
+    case "internal_appeal":
+    case "external_appeal":
+      return "insurance_appeal";
+    case "negotiation":
+      return "negotiation";
+    case "complaint":
+      return "balance_billing";
+    default:
+      return "overcharge";
+  }
 }
 
 export async function POST(
@@ -118,7 +144,7 @@ export async function POST(
 
   const { data: dispute, error: fetchErr } = await userScoped(supabase, user.id)
     .table("dispute_outcomes")
-    .select("id, metadata")
+    .select("id, metadata, dispute_type, filed_date, governing_deadline_date")
     .eq("id", disputeId)
     .single();
   if (fetchErr || !dispute) {
@@ -133,12 +159,48 @@ export async function POST(
   if (collector !== undefined) nextMetadata.collectorFirstContactDate = collector;
   nextMetadata.deadlineInputsUpdatedAt = new Date().toISOString();
 
+  // dispute-letters v2 (Zone-2, A3) — when the deadline engine is ON, saving an anchor date also
+  // computes + persists the governing deadline and (first time only) schedules the graduated
+  // follow-up letters. Flag-gated so the governing columns are never referenced while OFF.
+  const updatePayload: Record<string, unknown> = {
+    metadata: nextMetadata,
+    updated_at: new Date().toISOString(),
+  };
+  let scheduleDeadline:
+    | { governingDeadlineDate: string; deadlineType: string; letterType: string }
+    | null = null;
+  const deadlineEngineOn = await isFeatureEnabled("dispute_deadline_engine_v1");
+  if (deadlineEngineOn) {
+    const letterType = resolveLetterType(
+      dispute as { dispute_type: string; metadata?: Record<string, unknown> | null },
+    );
+    const config = await readDeadlineConfig(supabase);
+    const dr = evaluateDeadline(
+      {
+        letterType,
+        denialNoticeDate: (nextMetadata.denialNoticeDate as string | null) ?? null,
+        collectorFirstContactDate: (nextMetadata.collectorFirstContactDate as string | null) ?? null,
+      },
+      config,
+    );
+    updatePayload.governing_deadline_date = dr.governingDeadlineDate;
+    updatePayload.deadline_type = dr.deadlineType;
+    // First-time scheduling only: the governing deadline was unset before this save. (Editing an
+    // anchor later re-persists the columns but does NOT reschedule the rows — deferred, tracker §E.)
+    const wasSet =
+      (dispute as { governing_deadline_date?: string | null }).governing_deadline_date != null;
+    if (dr.governingDeadlineDate && dr.deadlineType && !wasSet) {
+      scheduleDeadline = {
+        governingDeadlineDate: dr.governingDeadlineDate,
+        deadlineType: dr.deadlineType,
+        letterType,
+      };
+    }
+  }
+
   const { error: updateErr } = await userScoped(supabase, user.id)
     .table("dispute_outcomes")
-    .update({
-      metadata: nextMetadata,
-      updated_at: new Date().toISOString(),
-    })
+    .update(updatePayload)
     .eq("id", dispute.id);
 
   if (updateErr) {
@@ -147,6 +209,26 @@ export async function POST(
       { error: "Failed to persist deadline inputs" },
       { status: 500 },
     );
+  }
+
+  // Schedule the graduated follow-up letters once (first time a governing deadline is set). Non-fatal:
+  // the anchors + governing columns already persisted; a scheduling hiccup must not fail the save.
+  if (scheduleDeadline) {
+    try {
+      const { createFollowups } = await import("@/lib/disputes/followups");
+      await createFollowups(supabase, {
+        disputeId: dispute.id,
+        userId: user.id,
+        letterType: scheduleDeadline.letterType,
+        filedDate: (dispute as { filed_date?: string | null }).filed_date ?? undefined,
+        deadline: {
+          governingDeadlineDate: scheduleDeadline.governingDeadlineDate,
+          deadlineType: scheduleDeadline.deadlineType,
+        },
+      });
+    } catch (e) {
+      console.error("[deadline-inputs] follow-up scheduling failed:", e);
+    }
   }
 
   return NextResponse.json({
