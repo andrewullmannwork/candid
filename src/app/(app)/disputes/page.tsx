@@ -742,7 +742,10 @@ function DisputesContent() {
         body: JSON.stringify({ field: "patient_paid", amount }),
       });
       if (!res.ok) throw new Error("Failed to save amount paid");
-      if (disputeId) await fetchDispute(disputeId);
+      // Optimistic — reflect the value immediately + reconcile in the background so Save
+      // doesn't block on the full dispute re-resolve (S265 Andrew feedback: saves felt slow).
+      setUserPatientPaid(amount);
+      if (disputeId) void fetchDispute(disputeId);
     },
     [user, letter?.auditReportId, disputeId, fetchDispute],
   );
@@ -759,7 +762,9 @@ function DisputesContent() {
         body: JSON.stringify({ [field]: value }),
       });
       if (!res.ok) throw new Error("Failed to save date");
-      await fetchDispute(disputeId);
+      // Optimistic + background reconcile (S265 Andrew feedback — don't block Save on refetch).
+      setDeadlineInputs((prev) => ({ ...prev, [field]: value }));
+      void fetchDispute(disputeId);
     },
     [user, disputeId, fetchDispute],
   );

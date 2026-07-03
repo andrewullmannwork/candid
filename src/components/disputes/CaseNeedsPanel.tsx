@@ -327,6 +327,7 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   } = props;
 
   const [openEditor, setOpenEditor] = useState<EditorKey | null>(null);
+  const [showAdded, setShowAdded] = useState(false);
   const close = () => setOpenEditor(null);
 
   const insurerTrack = INSURER_TRACK.has(letterType);
@@ -451,21 +452,23 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
     });
   }
 
-  // EOB line detail.
+  // EOB line detail — a SUPPLEMENT to the bill. The bill already gives us the billed amounts
+  // and (with plan details) the cost-share for the core math; the EOB only adds the insurer
+  // paid/allowed side that powers the optional balance-billing clause. So it's Helpful, not
+  // Important — never nag for it as if the letter can't be built without it.
   descs.push({
     key: "eob",
     done: eobPresent,
-    importance: "important",
+    importance: "helpful",
     node: eobPresent ? (
       <Row icon={ReceiptIcon} label="EOB detail" control={<DoneChip label="On file" />} />
     ) : (
       <Row
         icon={ReceiptIcon}
         label="EOB detail"
-        badge={ImportantBadge}
         control={<AddButton label="Upload" onClick={onUploadEob} />}
       >
-        Your insurer&apos;s billed-vs-allowed-vs-paid breakdown — powers the balance-billing math.
+        We already use your bill for the core math, but your insurer&apos;s EOB adds the paid/allowed side — important for balance-billing.
       </Row>
     ),
   });
@@ -609,12 +612,32 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
         ))}
 
         {doneDescs.length > 0 ? (
-          <>
-            <div className="mt-3 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">Added</div>
-            {doneDescs.map((d) => (
-              <Fragment key={d.key}>{d.node}</Fragment>
-            ))}
-          </>
+          <div className="border-t border-gray-100">
+            <button
+              type="button"
+              onClick={() => setShowAdded((v) => !v)}
+              aria-expanded={showAdded}
+              className="flex w-full items-center justify-between rounded-lg py-2.5 text-left transition-colors hover:bg-gray-50"
+            >
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                Added ({doneDescs.length})
+              </span>
+              <span className="inline-flex items-center gap-1 text-[13px] font-medium text-blue-600">
+                {showAdded ? "Hide" : "Show"}
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  {...stroke}
+                  className={`transition-transform ${showAdded ? "rotate-180" : ""}`}
+                  aria-hidden
+                >
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </span>
+            </button>
+            {showAdded ? doneDescs.map((d) => <Fragment key={d.key}>{d.node}</Fragment>) : null}
+          </div>
         ) : null}
 
         {/* Insurance for this claim — an action (excluded from the counter + readiness),
