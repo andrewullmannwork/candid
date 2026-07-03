@@ -666,6 +666,10 @@ export async function GET(
     ...(costShareV2 ? { isStale, letterVersionCount } : {}),
     letterType: resolvedLetterType,
     status: dispute.status,
+    // Zone-3 (S266) — the persisted nested outcome; the page re-derives suggestNextStep
+    // from it on load so the stage-action bar's escalate CTA survives a page refresh.
+    outcomeDetail:
+      (dispute.metadata as Record<string, unknown> | null)?.outcomeDetail ?? null,
     amountDisputed: dispute.amount_disputed,
     amountRecovered: dispute.amount_recovered,
     filedDate: dispute.filed_date,

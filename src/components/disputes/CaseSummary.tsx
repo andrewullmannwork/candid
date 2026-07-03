@@ -14,6 +14,8 @@
  */
 "use client";
 
+import { computeCaseStage, stageActions } from "@/lib/disputes/case-stage";
+
 interface DeadlineWarning {
   severity: "urgent" | "past";
   deadlineType: string | null;
@@ -38,6 +40,17 @@ export interface CaseSummaryProps {
   filingDeadlineDate: string | null;
   followups: Followup[];
   followupPlan: Followup[];
+  // Zone-3 (S266) — dynamic stage-action bar. Handlers live on the page (they close
+  // over page state); the bar just calls them for the current stage. Omitted handlers
+  // hide their action, so a read-only render is still valid.
+  onMarkSent?: () => void;
+  onReportOutcome?: () => void;
+  onCollections?: () => void;
+  onEscalateNext?: () => void;
+  markingSent?: boolean;
+  escalating?: boolean;
+  /** suggestNextStep().ctaLabel — its presence means a next rung is available. */
+  nextStepLabel?: string | null;
 }
 
 const TERMINAL = new Set([
@@ -205,6 +218,16 @@ export function CaseSummary(props: CaseSummaryProps) {
   const showRecovery = recoveryAmount != null && recoveryAmount > 0;
   const dw = deadlineWarning;
   const countdownDate = prettyDate(filingDeadlineDate ?? governingDeadlineDate);
+  const stage = computeCaseStage({
+    status: props.status,
+    isSent: props.isSent,
+    hasNextStep: !!props.nextStepLabel,
+  });
+  const actions = stageActions(stage);
+  const actionCls = (primary: boolean) =>
+    primary
+      ? "inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700 disabled:opacity-60"
+      : "inline-flex items-center rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 disabled:opacity-60";
 
   return (
     <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm md:p-6">
@@ -258,6 +281,60 @@ export function CaseSummary(props: CaseSummaryProps) {
           ))}
         </ol>
       </div>
+
+      {/* Zone-3 (S266) — dynamic stage-action bar: the ladder's current action(s).
+          draft → Mark as sent · awaiting → Report the result / Sent to collections ·
+          next → escalate CTA / Report a different result. Consolidates what used to be
+          scattered across the toolbar + a separate "Heard back?" box. */}
+      {actions.length > 0 ? (
+        <div className="mt-5 border-t border-gray-100 pt-4">
+          {stage === "draft" && dw?.severity === "past" ? (
+            <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-snug text-amber-800">
+              <span className="font-medium">This filing window has passed.</span>
+              {dw.nextStep ? <span className="ml-1 text-amber-700">{dw.nextStep}</span> : null}
+            </div>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-2">
+            {actions.map((key, i) => {
+              const primary = i === 0;
+              if (key === "mark_sent" && props.onMarkSent) {
+                return (
+                  <button key={key} type="button" onClick={props.onMarkSent} disabled={props.markingSent} className={actionCls(primary)}>
+                    {props.markingSent ? "Marking…" : "Mark as sent"}
+                  </button>
+                );
+              }
+              if (key === "report_result" && props.onReportOutcome) {
+                return (
+                  <button key={key} type="button" onClick={props.onReportOutcome} className={actionCls(primary)}>
+                    {stage === "next" ? "Report a different result" : "Report the result"}
+                  </button>
+                );
+              }
+              if (key === "collections" && props.onCollections) {
+                return (
+                  <button key={key} type="button" onClick={props.onCollections} className={actionCls(primary)}>
+                    Sent to collections
+                  </button>
+                );
+              }
+              if (key === "escalate_next" && props.onEscalateNext) {
+                return (
+                  <button key={key} type="button" onClick={props.onEscalateNext} disabled={props.escalating} className={actionCls(primary)}>
+                    {props.escalating ? "Creating…" : (props.nextStepLabel ?? "Take the next step")}
+                  </button>
+                );
+              }
+              return null;
+            })}
+          </div>
+          {stage === "next" && props.nextStepLabel ? (
+            <p className="mt-2 text-[12px] leading-snug text-gray-500">
+              Based on what you reported, this is the usual next step.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
     </section>
   );
 }

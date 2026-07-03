@@ -30,7 +30,7 @@ import { ProviderAddressModal } from "@/components/disputes/ProviderAddressModal
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
 import { CollectorModal } from "@/components/disputes/CollectorModal";
 import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestModal";
-import { suggestNextStep, type NextStepSuggestion } from "@/lib/disputes/outcome-taxonomy";
+import { suggestNextStep, isOutcomeDetail, type NextStepSuggestion } from "@/lib/disputes/outcome-taxonomy";
 import { CaseNeedsPanel, type PlanCostService } from "@/components/disputes/CaseNeedsPanel";
 import { CaseSummary } from "@/components/disputes/CaseSummary";
 import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
@@ -499,6 +499,14 @@ function DisputesContent() {
       };
       setLetter(synthesized);
       setEditedBody(data.letterContent);
+      // Zone-3 (S266) — re-derive the advisory next rung from the persisted outcome so
+      // the stage-action bar's escalate CTA survives a refresh (not just in-session).
+      const persistedOutcome = data.outcomeDetail;
+      setSuggestedNextStep(
+        isOutcomeDetail(persistedOutcome)
+          ? suggestNextStep(resolvedLetterType, persistedOutcome)
+          : null,
+      );
     }
   }, [user]);
 
@@ -1133,45 +1141,17 @@ function DisputesContent() {
             icon="letter"
             label="Download letter"
           />
+          {/* Zone-3 (S266) — case ACTIONS (Mark as sent / Report result / escalate) moved
+              to the stage-action bar in "The case" timeline. The toolbar keeps letter
+              actions + this at-a-glance sent-status pill. */}
           {alreadySent ? (
-            <>
-              <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-700">
-                <SentCheckIcon />
-                Sent{disputeFiledDate ? ` ${formatFiledDate(disputeFiledDate)}` : ""}
-              </span>
-              <ToolbarButton
-                onClick={() => setOutcomeModalOpen(true)}
-                icon="sent"
-                label="Report outcome"
-              />
-            </>
-          ) : (
-            <ToolbarButton
-              onClick={handleMarkSent}
-              icon="sent"
-              label={markingSent ? "Marking…" : "Mark as sent"}
-              tone="primary"
-            />
-          )}
-        </div>
-      </div>
-      {/* Zone-3 (S266) — pre-send deadline guard (map §3.2): warn at the point of
-          action before sending a letter whose window has closed. Post-send, Zone-2's
-          CaseSummary owns the response-window countdown, so this is !alreadySent-only. */}
-      {!alreadySent && deadlineData?.deadlineWarning ? (
-        <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-snug text-amber-800">
-          <span className="font-medium">
-            {deadlineData.deadlineWarning.severity === "past"
-              ? "This filing window has passed."
-              : `${deadlineData.deadlineWarning.daysRemaining ?? 0} day${
-                  deadlineData.deadlineWarning.daysRemaining === 1 ? "" : "s"
-                } left to file — send soon.`}
-          </span>
-          {deadlineData.deadlineWarning.nextStep ? (
-            <span className="ml-1 text-amber-700">{deadlineData.deadlineWarning.nextStep}</span>
+            <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-700">
+              <SentCheckIcon />
+              Sent{disputeFiledDate ? ` ${formatFiledDate(disputeFiledDate)}` : ""}
+            </span>
           ) : null}
         </div>
-      ) : null}
+      </div>
       {redraftToast && (
         <div
           className={`mt-2 rounded-md px-3 py-2 text-xs ${
@@ -1279,64 +1259,10 @@ function DisputesContent() {
     </section>
   );
 
-  // Zone-3 (S266) — "Did you hear back?" post-send tracking. Renders only after
-  // the letter is marked sent. "Got a response" opens the nested outcome modal;
-  // after an outcome is reported, the advisory next rung is surfaced (the generate
-  // action + "Sent to collections" are wired in the collections step).
-  const heardBackNode = alreadySent ? (
-    <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm md:p-7">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="text-sm font-semibold text-slate-900">Heard back from them?</h3>
-          <p className="mt-0.5 text-sm text-slate-600">
-            Tell us what happened so we can track the case and suggest your next step.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setOutcomeModalOpen(true)}
-            className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
-          >
-            <ToolbarIcon name="sent" />
-            Got a response
-          </button>
-          <button
-            type="button"
-            onClick={() => setCollectorModalOpen(true)}
-            className="inline-flex shrink-0 items-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
-          >
-            Sent to collections
-          </button>
-        </div>
-      </div>
-      {suggestedNextStep ? (
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-          <div className="min-w-0">
-            <div className="text-[13px] font-medium text-amber-800">
-              Suggested next step: {suggestedNextStep.ctaLabel}
-            </div>
-            {suggestedNextStep.note ? (
-              <div className="mt-0.5 text-[12px] leading-snug text-amber-700">
-                {suggestedNextStep.note}
-              </div>
-            ) : null}
-          </div>
-          {suggestedNextStep.nextLetterType === "external_review" ||
-          suggestedNextStep.nextLetterType === "final_notice" ? (
-            <button
-              type="button"
-              disabled={escalating}
-              onClick={handleSuggestedNextStep}
-              className="inline-flex shrink-0 items-center rounded-lg bg-amber-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-amber-700 disabled:opacity-60"
-            >
-              {escalating ? "Creating…" : suggestedNextStep.ctaLabel}
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-    </section>
-  ) : null;
+  // Zone-3 (S266) — the "Did you hear back?" tracking (Got a response / Sent to
+  // collections / escalate CTA) is now the stage-action bar at the bottom of the
+  // "The case" timeline (CaseSummary), driven by computeCaseStage. See the
+  // <CaseSummary> render below.
 
   // Dispute Letters v2 (Z1.2) — Zone-1 panel inputs derived from evidence/planContext.
   const zone1Services: PlanCostService[] = (() => {
@@ -1473,6 +1399,13 @@ function DisputesContent() {
         filingDeadlineDate={deadlineData?.filingDeadlineDate ?? null}
         followups={deadlineData?.followups ?? []}
         followupPlan={deadlineData?.followupPlan ?? []}
+        onMarkSent={handleMarkSent}
+        onReportOutcome={() => setOutcomeModalOpen(true)}
+        onCollections={() => setCollectorModalOpen(true)}
+        onEscalateNext={handleSuggestedNextStep}
+        markingSent={markingSent}
+        escalating={escalating}
+        nextStepLabel={suggestedNextStep?.ctaLabel ?? null}
       />
 
       {addPlanModal && letter.auditReportId && (
@@ -1801,7 +1734,6 @@ function DisputesContent() {
 
             {nextStepsNode}
             {caseFileNode}
-            {heardBackNode}
           </aside>
         </div>
       ) : (
@@ -1815,7 +1747,6 @@ function DisputesContent() {
           {articleNode}
           {nextStepsNode}
           {caseFileNode}
-          {heardBackNode}
         </>
       )}
 
