@@ -121,8 +121,8 @@ function CancelLink({ onClick }: { onClick: () => void }) {
 /** Full-width editor panel shared by the value rows — wraps on mobile. */
 function EditorShell({ prompt, children }: { prompt: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-gray-200 bg-gray-50 p-3.5">
-      <p className="mb-2.5 text-[13px] font-medium text-gray-800">{prompt}</p>
+    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+      <p className="mb-3 text-[13px] font-medium text-gray-800">{prompt}</p>
       {children}
     </div>
   );
@@ -145,7 +145,7 @@ function AmountEditor({ initial, onSaved }: { initial: number | null; onSaved: (
   };
   return (
     <EditorShell prompt="How much have you paid on this bill?">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center justify-end gap-2">
         <div className="flex items-center gap-1.5">
           <span className="text-sm text-gray-500">$</span>
           <input
@@ -184,7 +184,7 @@ function DateEditor({ initial, prompt, onSaved }: { initial: string | null; prom
   };
   return (
     <EditorShell prompt={prompt}>
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center justify-end gap-2">
         <input
           type="date"
           max={todayIso()}
@@ -251,11 +251,11 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
           {completed} of {total}
         </span>
       </div>
-      <p className="mt-1 text-[13px] text-gray-500">
+      <p className="mt-1.5 text-[13px] text-gray-500">
         Add what you can — each item makes your letter stronger, and we&apos;ll use it right away.
       </p>
 
-      <div className="mt-1.5">
+      <div className="mt-3">
         {/* Plan details — one row per disputed, slug'd service. */}
         {planServices.map((svc) =>
           svc.known ? (
