@@ -34,19 +34,25 @@ export interface CaseNeedsPanelProps {
   planServices: PlanCostService[];
   nameMismatch: boolean;
   nameResolved: boolean;
+  billName: string | null;
+  profileName: string | null;
   attestationReviewed: boolean;
-  addressOnFile: boolean;
+  hasInsurer: boolean;
+  providerAddressOnFile: boolean;
+  insurerAddressOnFile: boolean;
   eobPresent: boolean;
   userPatientPaid: number | null;
   denialNoticeDate: string | null;
   collectorFirstContactDate: string | null;
   planLabel: string | null;
+  showInsuranceRow: boolean;
   canChangePlan: boolean;
   onAddPlanDetails: (svc: PlanCostService) => void;
   onConfirmName: () => void;
   onEditLetter: () => void;
   onReviewAttestation: () => void;
-  onAddAddress: () => void;
+  onAddProviderAddress: () => void;
+  onAddInsurerAddress: () => void;
   onUploadEob: () => void;
   onSaveAmountPaid: (amount: number | null) => Promise<void>;
   onChangePlan: () => void;
@@ -90,6 +96,17 @@ function DoneChip({ label }: { label: string }) {
     <span className="inline-flex items-center gap-1 whitespace-nowrap text-[13px] font-medium text-emerald-600">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M5 13l4 4L19 7" /></svg>
       {label}
+    </span>
+  );
+}
+function OnFileEdit({ onEdit }: { onEdit: () => void }) {
+  return (
+    <span className="inline-flex items-center gap-2.5 whitespace-nowrap">
+      <span className="inline-flex items-center gap-1 text-[13px] font-medium text-emerald-600">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M5 13l4 4L19 7" /></svg>
+        On file
+      </span>
+      <button type="button" onClick={onEdit} className="text-[13px] font-medium text-blue-600 hover:text-blue-700">Edit</button>
     </span>
   );
 }
@@ -208,11 +225,13 @@ function DateEditor({ initial, prompt, onSaved }: { initial: string | null; prom
 
 export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   const {
-    letterType, planServices, nameMismatch, nameResolved, attestationReviewed,
-    addressOnFile, eobPresent, userPatientPaid, denialNoticeDate,
-    collectorFirstContactDate, planLabel, canChangePlan,
-    onAddPlanDetails, onConfirmName, onEditLetter, onReviewAttestation, onAddAddress,
-    onUploadEob, onSaveAmountPaid, onChangePlan, onSaveDeadlineDate,
+    letterType, planServices, nameMismatch, nameResolved, billName, profileName,
+    attestationReviewed, hasInsurer, providerAddressOnFile, insurerAddressOnFile,
+    eobPresent, userPatientPaid, denialNoticeDate, collectorFirstContactDate,
+    planLabel, showInsuranceRow, canChangePlan,
+    onAddPlanDetails, onConfirmName, onEditLetter, onReviewAttestation,
+    onAddProviderAddress, onAddInsurerAddress, onUploadEob, onSaveAmountPaid,
+    onChangePlan, onSaveDeadlineDate,
   } = props;
 
   const [openEditor, setOpenEditor] = useState<EditorKey | null>(null);
@@ -226,7 +245,8 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
     ...planServices.map((s) => s.known),
     !nameMismatch || nameResolved,
     attestationReviewed,
-    addressOnFile,
+    providerAddressOnFile,
+    ...(hasInsurer ? [insurerAddressOnFile] : []),
     eobPresent,
     userPatientPaid != null,
     ...(insurerTrack ? [denialNoticeDate != null] : []),
@@ -298,7 +318,9 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
               </div>
             }
           >
-            Make sure the bill&apos;s patient is you.
+            {billName && profileName
+              ? `The bill lists "${billName}" — we're using "${profileName}".`
+              : "Make sure the bill's patient is you."}
           </Row>
         ) : (
           <Row icon={UserIcon} label="Patient name" control={<DoneChip label="Verified" />} />
@@ -317,18 +339,32 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
           </Row>
         )}
 
-        {/* Recipient address. */}
-        {addressOnFile ? (
-          <Row icon={MapPinIcon} label="Recipient address" control={<DoneChip label="On file" />} />
+        {/* Provider address — always relevant (there's always a biller). */}
+        {providerAddressOnFile ? (
+          <Row icon={MapPinIcon} label="Provider address" control={<OnFileEdit onEdit={onAddProviderAddress} />} />
         ) : (
           <Row
             icon={MapPinIcon}
-            label="Recipient address"
-            control={<AddButton label="Add" onClick={onAddAddress} />}
+            label="Provider address"
+            control={<AddButton label="Add" onClick={onAddProviderAddress} />}
           >
-            So the letter reaches the right office.
+            Where a provider-directed letter is mailed.
           </Row>
         )}
+
+        {/* Insurer appeals address — only when the claim has an insurer. */}
+        {hasInsurer &&
+          (insurerAddressOnFile ? (
+            <Row icon={MapPinIcon} label="Insurer appeals address" control={<OnFileEdit onEdit={onAddInsurerAddress} />} />
+          ) : (
+            <Row
+              icon={MapPinIcon}
+              label="Insurer appeals address"
+              control={<AddButton label="Add" onClick={onAddInsurerAddress} />}
+            >
+              Where an appeal is mailed.
+            </Row>
+          ))}
 
         {/* EOB line detail. */}
         {eobPresent ? (
@@ -424,20 +460,23 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
           </Row>
         )}
 
-        {/* Change insurance — an action, not a "need" (excluded from the counter). */}
-        <Row
-          icon={CardIcon}
-          label="Insurance for this claim"
-          control={
-            canChangePlan ? (
-              <AddButton label="Change" onClick={onChangePlan} />
-            ) : (
-              <span className="max-w-[45vw] truncate text-[13px] text-gray-500">{planLabel ?? "—"}</span>
-            )
-          }
-        >
-          {canChangePlan ? "Use a different plan for these dates." : undefined}
-        </Row>
+        {/* Insurance for this claim — shown only when a plan is bound (a missing-year
+            claim is owned by VerifStrip). An action, excluded from the counter. */}
+        {showInsuranceRow && (
+          <Row
+            icon={CardIcon}
+            label="Insurance for this claim"
+            control={
+              canChangePlan ? (
+                <AddButton label="Change" onClick={onChangePlan} />
+              ) : (
+                <span className="max-w-[45vw] truncate text-[13px] text-gray-500">{planLabel ?? "—"}</span>
+              )
+            }
+          >
+            {canChangePlan ? "Use a different plan for these dates." : undefined}
+          </Row>
+        )}
       </div>
     </section>
   );

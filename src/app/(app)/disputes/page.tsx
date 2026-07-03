@@ -27,6 +27,7 @@ import { StrengthenLetterPrompt, type StrengthField } from "@/components/dispute
 import { DownloadWarningModal } from "@/components/disputes/DownloadWarningModal";
 import { EvidenceGaps } from "@/components/disputes/EvidenceGaps";
 import { InsurerAddressCorrectionModal } from "@/components/disputes/InsurerAddressCorrectionModal";
+import { ProviderAddressModal } from "@/components/disputes/ProviderAddressModal";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
 import { CaseNeedsPanel, type PlanCostService } from "@/components/disputes/CaseNeedsPanel";
 import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
@@ -276,6 +277,8 @@ function DisputesContent() {
     useState<PlanSearchModalMode>("search");
   // S74 — InsurerAddressCorrectionModal open state.
   const [insurerCorrectionOpen, setInsurerCorrectionOpen] = useState(false);
+  // Z1.3 — provider address modal (Zone-1 owns both address surfaces now).
+  const [providerAddressOpen, setProviderAddressOpen] = useState(false);
   // S74 — Mark-sent button state + transient toast.
   const [markingSent, setMarkingSent] = useState(false);
   const [markSentToast, setMarkSentToast] = useState<string | null>(null);
@@ -832,9 +835,9 @@ function DisputesContent() {
     <ReadinessRail
       readiness={strength?.readiness}
       // Block C2 — inline confirm/undo + edit affordances (v3-only).
-      onResolvePatientIdentity={
-        disputeId && v3DesignOn ? handleResolvePatientIdentity : undefined
-      }
+      // Z1.3 — the identity ACTION now lives in Zone-1's "Verify the patient name" row;
+      // the rail keeps only the readiness readout (no inline confirm) to avoid duplication.
+      onResolvePatientIdentity={undefined}
       onEditLetter={v3DesignOn ? () => setIsEditing(true) : undefined}
       patientIdentityResolved={patientIdentityResolved}
     />
@@ -963,7 +966,12 @@ function DisputesContent() {
 
   const gapsNode = (
     <EvidenceGaps
-      gaps={evidence?.gaps ?? []}
+      gaps={(evidence?.gaps ?? []).filter(
+        (g) =>
+          g.kind !== "provider_address_missing" &&
+          g.kind !== "provider_address_confirm" &&
+          g.kind !== "insurer_address_missing",
+      )}
       onAuditRerun={
         disputeId
           ? async () => {
@@ -1024,65 +1032,8 @@ function DisputesContent() {
     />
   );
 
-  const nameMismatchNode = nameMismatch ? (
-    <div className="flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 shadow-sm md:flex-row md:items-start md:justify-between">
-      <div className="flex flex-1 items-start gap-3">
-        <NameMismatchIcon />
-        <div className="min-w-0">
-          <div className="text-sm font-semibold text-amber-900">
-            Verify the patient name before sending
-          </div>
-          <p className="mt-1 text-sm leading-relaxed text-amber-800">
-            We&apos;re using your account name{" "}
-            <span className="font-semibold">{nameMismatch.profileName}</span>{" "}
-            in the letter. The bill listed{" "}
-            <span className="font-semibold">&ldquo;{nameMismatch.billName}&rdquo;</span>{" "}
-            — confirm this matches the patient of record. Edit the letter if a
-            dependent or family member should be named instead.
-          </p>
-        </div>
-      </div>
-      {v3DesignOn ? (
-        <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
-          <button
-            type="button"
-            onClick={() => handleResolvePatientIdentity(true)}
-            className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-amber-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-amber-700"
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="3"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <path d="M5 13l4 4L19 7" />
-            </svg>
-            This is me — confirm
-          </button>
-          <button
-            type="button"
-            onClick={() => setIsEditing(true)}
-            className="inline-flex items-center justify-center rounded-lg border border-amber-300 bg-white px-3.5 py-2 text-sm font-semibold text-amber-800 shadow-sm hover:bg-amber-50"
-          >
-            Edit letter
-          </button>
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={() => setIsEditing(true)}
-          className="inline-flex shrink-0 items-center justify-center rounded-lg bg-amber-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-amber-700"
-        >
-          Edit letter
-        </button>
-      )}
-    </div>
-  ) : null;
+  // Z1.3 — name-mismatch banner removed; Zone-1's "Verify the patient name" row now owns
+  // the confirm/edit actions + surfaces the bill-vs-account detail inline.
 
   const toolbarNode = (
     <div className="sticky top-4 z-10 rounded-2xl border border-slate-200 bg-white/90 px-4 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-white/70">
@@ -1267,16 +1218,15 @@ function DisputesContent() {
     }
     return out;
   })();
-  const zone1AddressGap = (evidence?.gaps ?? []).some(
-    (g) =>
-      g.kind === "provider_address_missing" ||
-      g.kind === "provider_address_confirm" ||
-      g.kind === "insurer_address_missing",
-  );
+  const zone1ProviderAddressOnFile = planContext?.providerContact?.address != null;
+  const zone1HasInsurer = planContext?.insurer != null;
+  const zone1InsurerAddressOnFile = planContext?.insurer?.appealsAddress != null;
   const zone1EobPresent = (evidence?.claims ?? []).some((c) =>
     (c.lineItemEvidence ?? []).some((li) => li.insurancePaid != null || li.patientOwes != null),
   );
-  const zone1CanChangePlan = planContext?.missingForYear != null || planPinningEnabled;
+  // Insurance row shows only when a plan is bound (a missing-year claim is owned by
+  // VerifStrip); the Change action is available only when re-pinning is enabled.
+  const zone1ShowInsuranceRow = planContext?.plan != null;
 
   return (
     <div className={v3DesignOn ? "mx-auto max-w-6xl space-y-5" : "max-w-4xl mx-auto space-y-5"}>
@@ -1300,14 +1250,19 @@ function DisputesContent() {
         planServices={zone1Services}
         nameMismatch={nameMismatch != null}
         nameResolved={patientIdentityResolved}
+        billName={nameMismatch?.billName ?? null}
+        profileName={nameMismatch?.profileName ?? null}
         attestationReviewed={serviceAttestationReviewed}
-        addressOnFile={!zone1AddressGap}
+        hasInsurer={zone1HasInsurer}
+        providerAddressOnFile={zone1ProviderAddressOnFile}
+        insurerAddressOnFile={zone1InsurerAddressOnFile}
         eobPresent={zone1EobPresent}
         userPatientPaid={userPatientPaid}
         denialNoticeDate={deadlineInputs.denialNoticeDate}
         collectorFirstContactDate={deadlineInputs.collectorFirstContactDate}
         planLabel={planLabel}
-        canChangePlan={zone1CanChangePlan}
+        showInsuranceRow={zone1ShowInsuranceRow}
+        canChangePlan={planPinningEnabled}
         onAddPlanDetails={(svc) =>
           setAddPlanModal({
             serviceSlug: svc.serviceSlug,
@@ -1323,19 +1278,22 @@ function DisputesContent() {
             .getElementById("dispute-evidence")
             ?.scrollIntoView({ behavior: "smooth", block: "center" })
         }
-        onAddAddress={() => {
-          if (planContext?.insurer) setInsurerCorrectionOpen(true);
-          else
-            document
-              .getElementById("dispute-evidence")
-              ?.scrollIntoView({ behavior: "smooth" });
-        }}
+        onAddProviderAddress={() => setProviderAddressOpen(true)}
+        onAddInsurerAddress={() => setInsurerCorrectionOpen(true)}
         onUploadEob={() => window.location.assign("/upload")}
         onSaveAmountPaid={handleSaveAmountPaid}
-        onChangePlan={() => {
-          if (planContext?.missingForYear != null) {
-            setPlanSearchModalMode("search");
-            setPlanSearchModalOpen(true);
+        onChangePlan={async () => {
+          if (!user || !planContext?.plan?.planYear) return;
+          const token = await user.firebaseUser.getIdToken();
+          const qp = new URLSearchParams({ year: String(planContext.plan.planYear) });
+          if (planContext.plan.id) qp.set("pin", planContext.plan.id);
+          const res = await fetch(`/api/plan/by-year?${qp.toString()}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (res.ok) {
+            const { plans } = (await res.json()) as { plans: DisputePlanChooserPlan[] };
+            setRebindPlans(plans ?? []);
+            setRebindOpen(true);
           }
         }}
         onSaveDeadlineDate={handleSaveDeadlineDate}
@@ -1653,7 +1611,6 @@ function DisputesContent() {
             {dataTrustBannerNode}
             {heroNode}
             {recipientNode}
-            {nameMismatchNode}
             {toolbarNode}
             {articleNode}
             {evidenceNode}
@@ -1679,7 +1636,6 @@ function DisputesContent() {
           {recipientNode}
           {evidenceNode}
           {gapsNode}
-          {nameMismatchNode}
           {toolbarNode}
           {articleNode}
           {nextStepsNode}
@@ -1741,6 +1697,20 @@ function DisputesContent() {
           onClose={() => setInsurerCorrectionOpen(false)}
           onSubmitted={refetchAfterChange}
           getAuthToken={getAuthToken}
+        />
+      ) : null}
+
+      {disputeId ? (
+        <ProviderAddressModal
+          open={providerAddressOpen}
+          disputeId={disputeId}
+          initialName={planContext?.providerContact?.name ?? null}
+          initialAddressFields={planContext?.providerContact?.addressFields ?? null}
+          initialPhone={planContext?.providerContact?.phone ?? null}
+          initialNpi={planContext?.providerContact?.npi ?? null}
+          getAuthToken={getAuthToken}
+          onClose={() => setProviderAddressOpen(false)}
+          onSaved={refetchAfterChange}
         />
       ) : null}
     </div>
@@ -1832,25 +1802,6 @@ function buildAskSummary(letter: DisputeLetter, recovery: number | null): string
 function formatUsd(n: number): string {
   const rounded = Math.round(n * 100) / 100;
   return `$${rounded.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
-function NameMismatchIcon() {
-  return (
-    <svg
-      className="mt-0.5 h-5 w-5 shrink-0 text-amber-600"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      viewBox="0 0 24 24"
-      aria-hidden
-    >
-      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-      <line x1="12" y1="9" x2="12" y2="13" />
-      <line x1="12" y1="17" x2="12.01" y2="17" />
-    </svg>
-  );
 }
 
 // Small icon set (stroke-based, matches Lucide aesthetic without the dep).
