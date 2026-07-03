@@ -108,6 +108,10 @@ function UploadForm() {
   // vs the existing sync UnifiedParseScreen messaging.
   const [isLargeDoc, setIsLargeDoc] = useState(false);
   const [largeDocPageCount, setLargeDocPageCount] = useState<number | null>(null);
+  // Cost-H (S267) — EMAIL tier signal (pageCount > ASYNC_EMAIL_MAX_PAGES). Drives
+  // the ProcessingFlow splash copy: willEmail → "we'll email you"; large but
+  // !willEmail (the 15–30 band once REDIRECT→15) → "we'll populate results here".
+  const [willEmail, setWillEmail] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [processingProgress, setProcessingProgress] = useState<{
     status: string;
@@ -536,11 +540,17 @@ function UploadForm() {
           setDocType(uploadResult.resolvedDocType as DocType);
         }
 
-        // S78 — capture large-doc flag for async UX splash + email-on-complete.
-        // Backend sets to true only when async_ingestion_ux_v1 flag is ON, PDF,
-        // and pageCount > 30.
+        // S78 / Cost-H (S267) — capture the async-UX tier signals from every
+        // processing-bound upload response (high-conf, medium-conf, AND the
+        // awaiting_confirmation path so the doc-type modal is covered). Backend
+        // sets isLargeDoc when async_ingestion_ux_v1 is ON + PDF + pageCount >
+        // REDIRECT; willEmail when pageCount > EMAIL. Equal at 30/30 (neutral);
+        // once REDIRECT→15 the 15–30 band is isLargeDoc && !willEmail.
         if (uploadResult.isLargeDoc) {
           setIsLargeDoc(true);
+        }
+        if (uploadResult.willEmail) {
+          setWillEmail(true);
         }
 
         // Handle different processing outcomes
@@ -1039,6 +1049,7 @@ function UploadForm() {
     processingProgress,
     classificationResult,
     isLargeDoc,
+    willEmail,
     largeDocPageCount,
     yearRolloverEnabled,
     premiumSaved,
