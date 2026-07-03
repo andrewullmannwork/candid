@@ -28,6 +28,8 @@ import { DownloadWarningModal } from "@/components/disputes/DownloadWarningModal
 import { EvidenceGaps } from "@/components/disputes/EvidenceGaps";
 import { InsurerAddressCorrectionModal } from "@/components/disputes/InsurerAddressCorrectionModal";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
+import { CaseNeedsPanel, type PlanCostService } from "@/components/disputes/CaseNeedsPanel";
+import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useDisputeDraftOverlay } from "@/lib/loading/dispute-draft-overlay";
 import type {
@@ -282,6 +284,18 @@ function DisputesContent() {
   // Bugbash Item 3 — "Why {band}?" evidence-strength explanation modal.
   const [evidenceModalOpen, setEvidenceModalOpen] = useState(false);
   const [outcomeToast, setOutcomeToast] = useState<string | null>(null);
+  // Dispute Letters v2 (Z1.2) — Zone-1 read-signals + AddPlanDetailsModal state.
+  const [userPatientPaid, setUserPatientPaid] = useState<number | null>(null);
+  const [deadlineInputs, setDeadlineInputs] = useState<{
+    denialNoticeDate: string | null;
+    collectorFirstContactDate: string | null;
+  }>({ denialNoticeDate: null, collectorFirstContactDate: null });
+  const [addPlanModal, setAddPlanModal] = useState<{
+    serviceSlug: string;
+    serviceLabel: string;
+    initialCopay: number | null;
+    initialCoinsurancePercent: number | null;
+  } | null>(null);
   const disputeId = searchParams.get("dispute");
   // Stretch 2 — enriched Case File rollout flag (case_file_enriched_v1), read
   // via /api/feature-flags (a browser-Supabase read returns [] under Firebase auth).
@@ -391,6 +405,18 @@ function DisputesContent() {
       typeof data.attestingAsName === "string" ? data.attestingAsName : null,
     );
     setAccountName(typeof data.accountName === "string" ? data.accountName : "");
+    // Dispute Letters v2 (Z1.2) — Zone-1 prefill signals.
+    setUserPatientPaid(typeof data.userPatientPaid === "number" ? data.userPatientPaid : null);
+    setDeadlineInputs({
+      denialNoticeDate:
+        typeof data.deadlineInputs?.denialNoticeDate === "string"
+          ? data.deadlineInputs.denialNoticeDate
+          : null,
+      collectorFirstContactDate:
+        typeof data.deadlineInputs?.collectorFirstContactDate === "string"
+          ? data.deadlineInputs.collectorFirstContactDate
+          : null,
+    });
     if (data.letterContent) {
       // Server-resolved letter type (S74). Authoritative — reads metadata.letterType
       // first, then maps from legacy dispute_type vocab. Without this, the recipient
@@ -703,6 +729,39 @@ function DisputesContent() {
     }
   };
 
+  // Dispute Letters v2 (Z1.2) — Zone-1 inline saves (optimistic; refetch reconciles).
+  const handleSaveAmountPaid = useCallback(
+    async (amount: number | null) => {
+      if (!user || !letter?.auditReportId) return;
+      const token = await user.firebaseUser.getIdToken();
+      const res = await fetch(`/api/claims/${letter.auditReportId}/cost-share-override`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ field: "patient_paid", amount }),
+      });
+      if (!res.ok) throw new Error("Failed to save amount paid");
+      if (disputeId) await fetchDispute(disputeId);
+    },
+    [user, letter?.auditReportId, disputeId, fetchDispute],
+  );
+  const handleSaveDeadlineDate = useCallback(
+    async (
+      field: "denialNoticeDate" | "collectorFirstContactDate",
+      value: string | null,
+    ) => {
+      if (!user || !disputeId) return;
+      const token = await user.firebaseUser.getIdToken();
+      const res = await fetch(`/api/disputes/${disputeId}/deadline-inputs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ [field]: value }),
+      });
+      if (!res.ok) throw new Error("Failed to save date");
+      await fetchDispute(disputeId);
+    },
+    [user, disputeId, fetchDispute],
+  );
+
   // S74 — InsurerAddressCorrectionModal callbacks.
   const handleProposeInsurerCorrection = () => setInsurerCorrectionOpen(true);
   const refetchAfterChange = async () => {
@@ -883,6 +942,7 @@ function DisputesContent() {
   );
 
   const evidenceNode = (
+    <div id="dispute-evidence">
     <EvidenceBlock
       evidence={evidence}
       planLabel={planLabel}
@@ -898,6 +958,7 @@ function DisputesContent() {
       accountName={accountName}
       attestingAsName={attestingAsName}
     />
+    </div>
   );
 
   const gapsNode = (
@@ -1185,6 +1246,38 @@ function DisputesContent() {
     </section>
   );
 
+  // Dispute Letters v2 (Z1.2) — Zone-1 panel inputs derived from evidence/planContext.
+  const zone1Services: PlanCostService[] = (() => {
+    const seen = new Set<string>();
+    const out: PlanCostService[] = [];
+    for (const c of evidence?.claims ?? []) {
+      for (const li of c.lineItemEvidence ?? []) {
+        if (!li.serviceSlug || seen.has(li.serviceSlug)) continue;
+        seen.add(li.serviceSlug);
+        const pb = li.planBenefit;
+        out.push({
+          serviceSlug: li.serviceSlug,
+          serviceLabel: li.serviceName,
+          known: pb != null,
+          copay: pb?.copay ?? null,
+          coinsurancePercent: pb?.coinsurance != null ? Math.round(pb.coinsurance * 100) : null,
+          source: pb?.source ?? null,
+        });
+      }
+    }
+    return out;
+  })();
+  const zone1AddressGap = (evidence?.gaps ?? []).some(
+    (g) =>
+      g.kind === "provider_address_missing" ||
+      g.kind === "provider_address_confirm" ||
+      g.kind === "insurer_address_missing",
+  );
+  const zone1EobPresent = (evidence?.claims ?? []).some((c) =>
+    (c.lineItemEvidence ?? []).some((li) => li.insurancePaid != null || li.patientOwes != null),
+  );
+  const zone1CanChangePlan = planContext?.missingForYear != null || planPinningEnabled;
+
   return (
     <div className={v3DesignOn ? "mx-auto max-w-6xl space-y-5" : "max-w-4xl mx-auto space-y-5"}>
       {/* S109 PR #2 — Back link to claim view. Uses letter.auditReportId
@@ -1198,6 +1291,72 @@ function DisputesContent() {
         >
           <span aria-hidden>←</span> Back to claim
         </a>
+      )}
+
+      {/* Dispute Letters v2 — Zone-1 "What we need from you" (map §6). Delegates to the
+          existing handlers/modals; owns only the counter + the 3 inline inputs. */}
+      <CaseNeedsPanel
+        claimId={letter.auditReportId || null}
+        letterType={letter.letterType}
+        planServices={zone1Services}
+        nameMismatch={nameMismatch != null}
+        nameResolved={patientIdentityResolved}
+        attestationReviewed={serviceAttestationReviewed}
+        addressGap={zone1AddressGap}
+        addressOnFile={!zone1AddressGap}
+        eobPresent={zone1EobPresent}
+        userPatientPaid={userPatientPaid}
+        denialNoticeDate={deadlineInputs.denialNoticeDate}
+        collectorFirstContactDate={deadlineInputs.collectorFirstContactDate}
+        planLabel={planLabel}
+        canChangePlan={zone1CanChangePlan}
+        onAddPlanDetails={(svc) =>
+          setAddPlanModal({
+            serviceSlug: svc.serviceSlug,
+            serviceLabel: svc.serviceLabel,
+            initialCopay: svc.copay,
+            initialCoinsurancePercent: svc.coinsurancePercent,
+          })
+        }
+        onConfirmName={() => handleResolvePatientIdentity(true)}
+        onEditLetter={() => setIsEditing(true)}
+        onReviewAttestation={() =>
+          document
+            .getElementById("dispute-evidence")
+            ?.scrollIntoView({ behavior: "smooth", block: "center" })
+        }
+        onAddAddress={() => {
+          if (planContext?.insurer) setInsurerCorrectionOpen(true);
+          else
+            document
+              .getElementById("dispute-evidence")
+              ?.scrollIntoView({ behavior: "smooth" });
+        }}
+        onUploadEob={() => window.location.assign("/upload")}
+        onSaveAmountPaid={handleSaveAmountPaid}
+        onChangePlan={() => {
+          if (planContext?.missingForYear != null) {
+            setPlanSearchModalMode("search");
+            setPlanSearchModalOpen(true);
+          }
+        }}
+        onSaveDeadlineDate={handleSaveDeadlineDate}
+      />
+      {addPlanModal && letter.auditReportId && (
+        <AddPlanDetailsModal
+          open
+          claimId={letter.auditReportId}
+          planId={(planContext?.plan as { id?: string } | null | undefined)?.id ?? null}
+          serviceSlug={addPlanModal.serviceSlug}
+          serviceLabel={addPlanModal.serviceLabel}
+          getAuthToken={getAuthToken}
+          onClose={() => setAddPlanModal(null)}
+          onSaved={async () => {
+            if (disputeId) await fetchDispute(disputeId);
+          }}
+          initialCopay={addPlanModal.initialCopay}
+          initialCoinsurancePercent={addPlanModal.initialCoinsurancePercent}
+        />
       )}
 
       {/* S111 D3 — VerifStrip replaces SamePlanConfirmBanner + "Strengthen

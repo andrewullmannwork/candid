@@ -19,6 +19,7 @@
 
 import { useState, type ReactNode } from "react";
 import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recovery-math";
+import { Row, IconChip } from "@/components/shared/InputRow";
 
 export type CostShareVerdict =
   | "confident"
@@ -72,11 +73,7 @@ function fmtDate(iso: string | null): string {
 const todayIso = (): string => new Date().toISOString().slice(0, 10);
 const NUMBER_WORD: Record<number, string> = { 2: "two", 3: "three", 4: "four", 5: "five" };
 
-// ── presentational helpers ──────────────────────────────────────────────────
-
-function IconChip({ children }: { children: ReactNode }) {
-  return <div className="grid h-9 w-9 flex-none place-items-center rounded-xl bg-gray-100 text-gray-500">{children}</div>;
-}
+// ── presentational helpers (Row + IconChip now shared: @/components/shared/InputRow) ──
 
 const GlobeIcon = (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -118,23 +115,6 @@ function Segment({ seg }: { seg: Seg }) {
     <button type="button" onClick={seg.onSelect} className="rounded-md px-3 py-1.5 font-medium text-blue-600 hover:text-blue-800">
       {seg.prompt}
     </button>
-  );
-}
-
-function Row({ icon, label, control, children }: { icon: ReactNode; label: string; control: ReactNode; children: ReactNode }) {
-  return (
-    <div className="border-t border-gray-100 py-3.5">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-start gap-3">
-          <IconChip>{icon}</IconChip>
-          <div className="pt-0.5">
-            <div className="text-sm font-medium text-gray-900">{label}</div>
-            <div className="mt-0.5 text-[13px] leading-snug text-gray-600">{children}</div>
-          </div>
-        </div>
-        <div className="pt-1">{control}</div>
-      </div>
-    </div>
   );
 }
 
