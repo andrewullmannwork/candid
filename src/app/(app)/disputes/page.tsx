@@ -28,6 +28,7 @@ import { DownloadWarningModal } from "@/components/disputes/DownloadWarningModal
 import { InsurerAddressCorrectionModal } from "@/components/disputes/InsurerAddressCorrectionModal";
 import { ProviderAddressModal } from "@/components/disputes/ProviderAddressModal";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
+import { suggestNextStep, type NextStepSuggestion } from "@/lib/disputes/outcome-taxonomy";
 import { CaseNeedsPanel, type PlanCostService } from "@/components/disputes/CaseNeedsPanel";
 import { CaseSummary } from "@/components/disputes/CaseSummary";
 import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
@@ -283,6 +284,8 @@ function DisputesContent() {
   const [markSentToast, setMarkSentToast] = useState<string | null>(null);
   // S74.6 D5 §E.2 — outcome reporting modal state.
   const [outcomeModalOpen, setOutcomeModalOpen] = useState(false);
+  // Zone-3 (S266) — advisory next rung surfaced after an outcome is reported.
+  const [suggestedNextStep, setSuggestedNextStep] = useState<NextStepSuggestion | null>(null);
   // Bugbash Item 3 — "Why {band}?" evidence-strength explanation modal.
   const [evidenceModalOpen, setEvidenceModalOpen] = useState(false);
   const [outcomeToast, setOutcomeToast] = useState<string | null>(null);
@@ -1192,6 +1195,43 @@ function DisputesContent() {
     </section>
   );
 
+  // Zone-3 (S266) — "Did you hear back?" post-send tracking. Renders only after
+  // the letter is marked sent. "Got a response" opens the nested outcome modal;
+  // after an outcome is reported, the advisory next rung is surfaced (the generate
+  // action + "Sent to collections" are wired in the collections step).
+  const heardBackNode = alreadySent ? (
+    <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm md:p-7">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold text-slate-900">Heard back from them?</h3>
+          <p className="mt-0.5 text-sm text-slate-600">
+            Tell us what happened so we can track the case and suggest your next step.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setOutcomeModalOpen(true)}
+          className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
+        >
+          <ToolbarIcon name="sent" />
+          Got a response
+        </button>
+      </div>
+      {suggestedNextStep ? (
+        <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+          <div className="text-[13px] font-medium text-amber-800">
+            Suggested next step: {suggestedNextStep.ctaLabel}
+          </div>
+          {suggestedNextStep.note ? (
+            <div className="mt-0.5 text-[12px] leading-snug text-amber-700">
+              {suggestedNextStep.note}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  ) : null;
+
   // Dispute Letters v2 (Z1.2) — Zone-1 panel inputs derived from evidence/planContext.
   const zone1Services: PlanCostService[] = (() => {
     const seen = new Set<string>();
@@ -1655,6 +1695,7 @@ function DisputesContent() {
 
             {nextStepsNode}
             {caseFileNode}
+            {heardBackNode}
           </aside>
         </div>
       ) : (
@@ -1668,6 +1709,7 @@ function DisputesContent() {
           {articleNode}
           {nextStepsNode}
           {caseFileNode}
+          {heardBackNode}
         </>
       )}
 
@@ -1688,10 +1730,13 @@ function DisputesContent() {
         disputeId={letter.id}
         defaultAmount={null}
         onCancel={() => setOutcomeModalOpen(false)}
-        onSubmitted={() => {
+        onSubmitted={(detail) => {
           setOutcomeModalOpen(false);
           setOutcomeToast("Outcome saved. Thanks for closing the loop.");
           setTimeout(() => setOutcomeToast(null), 6000);
+          // Zone-3 — surface the advisory next rung (user-triggered; the generate
+          // action + "Sent to collections" are wired in the collections step).
+          setSuggestedNextStep(suggestNextStep(letter.letterType, detail));
           // Refresh dispute state so the toolbar reflects the new status.
           if (disputeId) {
             void fetchDispute(disputeId);

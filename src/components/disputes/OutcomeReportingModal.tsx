@@ -1,37 +1,47 @@
 /**
- * OutcomeReportingModal — S74.6 D5 §E.2
+ * OutcomeReportingModal — dispute-letters v2 Zone-3 (S266); orig S74.6 D5 §E.2.
  *
- * Lets the user mark a sent dispute as won / lost / won_on_escalation /
- * settled, capture the amount recovered + resolution date, and optionally
- * report the alternative billing code the insurer reprocessed under (only
- * when status === 'won_on_escalation'). The recodedAs payload feeds the
- * §E.1 `dispute_won_recoding` SourceEntry write on the audit-side flywheel.
+ * "Did you hear back?" capture. The user reports the NESTED outcome (resolved /
+ * partial / some-covered / counteroffer / fully-denied / needs-info / no-response
+ * / new-problem); we derive the coarse `dispute_outcomes.status` from it via the
+ * shared outcome-taxonomy module (single source of truth with the route) and, on
+ * a win, still capture the alternative code the insurer reprocessed under (feeds
+ * the §E.1 `dispute_won_recoding` peer-vote). `collections` is handled by the
+ * dedicated "Sent to collections" entry (→ debt_validation), not this modal.
  *
- * POST shape: same /api/disputes/outcome contract used by the existing
- * Mark-as-Sent flow. We pass full {disputeId, status, amountRecovered,
- * resolutionDate, recodedAs} and let the route persist accordingly.
+ * POST shape: the /api/disputes/outcome contract — {disputeId, status,
+ * outcomeDetail, amountRecovered, resolutionDate, recodedAs?}. onSubmitted fires
+ * with the reported outcome so the caller can surface the next-rung CTA
+ * (suggestNextStep).
  */
 "use client";
 
 import { useState } from "react";
+import { mapOutcomeToStatus, type OutcomeDetail } from "@/lib/disputes/outcome-taxonomy";
 
 interface Props {
   open: boolean;
   disputeId: string;
   defaultAmount?: number | null;
   onCancel: () => void;
-  onSubmitted: () => void;
+  /** Fires with the reported outcome so the caller can surface the next-step CTA. */
+  onSubmitted: (detail: OutcomeDetail) => void;
   /** Returns Firebase ID token (caller-managed). */
   getIdToken: () => Promise<string | null>;
 }
 
-type OutcomeStatus = "won" | "lost" | "won_on_escalation" | "settled";
-
-const STATUS_OPTIONS: { value: OutcomeStatus; label: string }[] = [
-  { value: "won", label: "Won — insurer paid the original code" },
-  { value: "won_on_escalation", label: "Won on escalation — insurer reprocessed under a different code" },
-  { value: "settled", label: "Settled — partial payment / negotiated outcome" },
-  { value: "lost", label: "Lost / denied — no payment" },
+// Outcomes shown in the modal (collections routes through its own entry). `money`
+// gates the amount + resolution-date fields; `resolved_win` shows the recode
+// sub-question below.
+const OUTCOME_OPTIONS: { value: OutcomeDetail; label: string; money: boolean }[] = [
+  { value: "resolved_win", label: "Resolved — they approved it / paid in full", money: true },
+  { value: "denied_partial", label: "Partially paid — less than the billed amount", money: true },
+  { value: "denied_some_covered", label: "Covered some services, denied others", money: true },
+  { value: "denied_counteroffer", label: "They made a counteroffer", money: true },
+  { value: "denied_fully", label: "Fully denied — no payment", money: false },
+  { value: "needs_info", label: "They asked for more information", money: false },
+  { value: "no_response", label: "No response yet", money: false },
+  { value: "new_problem", label: "A new problem came up", money: false },
 ];
 
 // CPT (5 digits), HCPCS L2 (letter + 4 digits), G-codes (G + 4 digits),
@@ -60,7 +70,7 @@ export function OutcomeReportingModal({
   onSubmitted,
   getIdToken,
 }: Props) {
-  const [status, setStatus] = useState<OutcomeStatus>("won");
+  const [detail, setDetail] = useState<OutcomeDetail>("resolved_win");
   const [amountRecovered, setAmountRecovered] = useState<string>(
     defaultAmount != null ? String(defaultAmount) : "",
   );
@@ -79,18 +89,19 @@ export function OutcomeReportingModal({
 
   if (!open) return null;
 
-  const showRecoded = status === "won_on_escalation";
+  const showMoney = OUTCOME_OPTIONS.find((o) => o.value === detail)?.money ?? false;
+  const showRecoded = detail === "resolved_win";
   const recodedCodeTrim = recodedAsCode.trim();
   const recodedValid = !showRecoded || recodedCodeTrim.length === 0 || isValidCodeFormat(recodedCodeTrim);
 
   async function handleSubmit() {
     setError(null);
     const amt = Number(amountRecovered);
-    if (Number.isNaN(amt) || amt < 0) {
+    if (showMoney && (Number.isNaN(amt) || amt < 0)) {
       setError("Amount recovered must be a non-negative number.");
       return;
     }
-    if (!resolutionDate) {
+    if (showMoney && !resolutionDate) {
       setError("Resolution date is required.");
       return;
     }
@@ -98,6 +109,12 @@ export function OutcomeReportingModal({
       setError("Recoded code must be 4-7 alphanumeric characters (e.g., 99213, G0008).");
       return;
     }
+
+    // Derive the coarse status the existing consumers read (metrics, accuracy,
+    // follow-up cancellation, CaseSummary). A win with a recoded code keeps the
+    // S74.6 won_on_escalation path (recoded_as_code columns + peer-vote).
+    const status =
+      showRecoded && recodedCodeTrim ? "won_on_escalation" : mapOutcomeToStatus(detail);
 
     setSubmitting(true);
     try {
@@ -107,12 +124,11 @@ export function OutcomeReportingModal({
         setSubmitting(false);
         return;
       }
-      const body: Record<string, unknown> = {
-        disputeId,
-        status,
-        amountRecovered: amt,
-        resolutionDate,
-      };
+      const body: Record<string, unknown> = { disputeId, status, outcomeDetail: detail };
+      if (showMoney) {
+        body.amountRecovered = amt;
+        body.resolutionDate = resolutionDate;
+      }
       if (showRecoded && recodedCodeTrim) {
         body.recodedAs = {
           code: recodedCodeTrim.toUpperCase(),
@@ -133,7 +149,7 @@ export function OutcomeReportingModal({
         setSubmitting(false);
         return;
       }
-      onSubmitted();
+      onSubmitted(detail);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to update outcome.");
     } finally {
@@ -165,7 +181,7 @@ export function OutcomeReportingModal({
               Outcome
             </label>
             <div className="mt-2 space-y-1.5">
-              {STATUS_OPTIONS.map((opt) => (
+              {OUTCOME_OPTIONS.map((opt) => (
                 <label
                   key={opt.value}
                   className="flex cursor-pointer items-start gap-2 rounded-md border border-slate-100 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
@@ -174,8 +190,8 @@ export function OutcomeReportingModal({
                     type="radio"
                     name="outcome-status"
                     value={opt.value}
-                    checked={status === opt.value}
-                    onChange={() => setStatus(opt.value)}
+                    checked={detail === opt.value}
+                    onChange={() => setDetail(opt.value)}
                     className="mt-0.5"
                   />
                   <span>{opt.label}</span>
@@ -184,35 +200,37 @@ export function OutcomeReportingModal({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label htmlFor="outcome-amount" className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Amount recovered
-              </label>
-              <input
-                id="outcome-amount"
-                type="number"
-                min="0"
-                step="0.01"
-                value={amountRecovered}
-                onChange={(e) => setAmountRecovered(e.target.value)}
-                placeholder="0.00"
-                className="mt-1 block w-full rounded-md border border-slate-200 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
+          {showMoney && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="outcome-amount" className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Amount recovered
+                </label>
+                <input
+                  id="outcome-amount"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={amountRecovered}
+                  onChange={(e) => setAmountRecovered(e.target.value)}
+                  placeholder="0.00"
+                  className="mt-1 block w-full rounded-md border border-slate-200 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label htmlFor="outcome-resolution-date" className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Resolution date
+                </label>
+                <input
+                  id="outcome-resolution-date"
+                  type="date"
+                  value={resolutionDate}
+                  onChange={(e) => setResolutionDate(e.target.value)}
+                  className="mt-1 block w-full rounded-md border border-slate-200 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
             </div>
-            <div>
-              <label htmlFor="outcome-resolution-date" className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Resolution date
-              </label>
-              <input
-                id="outcome-resolution-date"
-                type="date"
-                value={resolutionDate}
-                onChange={(e) => setResolutionDate(e.target.value)}
-                className="mt-1 block w-full rounded-md border border-slate-200 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
-            </div>
-          </div>
+          )}
 
           {showRecoded && (
             <div className="rounded-md border border-blue-100 bg-blue-50/60 px-3 py-3">
