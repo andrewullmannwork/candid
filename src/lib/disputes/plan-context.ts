@@ -453,6 +453,7 @@ export async function resolvePlanContext(
   // suppresses the insurer_address_missing gap. The shared catalog address is
   // untouched — it only changes via admin review of the queued proposal.
   const ov = params.insurerAddressOverride;
+  let appealsFromUserOverride = false;
   if (ov && ov.addressLine1 && ov.city && ov.state && ov.postalCode) {
     const overrideAddress: AppealsAddress = {
       line1: ov.addressLine1,
@@ -480,6 +481,57 @@ export async function resolvePlanContext(
           appealsVerificationCount: 0,
           needsConfirmation: false,
         };
+    appealsFromUserOverride = true;
+  }
+
+  // dispute-letters v2 Zone-3 (S266) — cross-dispute appeals-address REUSE overlay.
+  // When THIS dispute has no user-supplied appeals address (no per-dispute override
+  // above) and no catalog address, carry the address the user supplied on ANOTHER of
+  // their same-insurer disputes (Pattern 1 #14, user-scoped, no-admin). GAP-FILL only —
+  // never clobbers a catalog-verified address. Requires a resolved insurer to match
+  // against, so the current dispute (which has no override) can't self-match.
+  // needsConfirmation:true — the value prefills (saves re-entry) but invites a light
+  // "Looks right?" confirm since it was supplied for a different dispute.
+  if (!appealsFromUserOverride && insurer && !insurer.appealsAddress) {
+    try {
+      const { data: overrideRows } = await supabase
+        .from("dispute_outcomes")
+        .select("metadata, updated_at")
+        .eq("user_id", userId)
+        .not("metadata->insurerAddressOverride", "is", null)
+        .order("updated_at", { ascending: false })
+        .limit(50);
+      const candidates: InsurerAddressOverride[] = (overrideRows ?? [])
+        .map(
+          (r) =>
+            (r.metadata as Record<string, unknown> | null)?.insurerAddressOverride as
+              | InsurerAddressOverride
+              | undefined,
+        )
+        .filter((o): o is InsurerAddressOverride => !!o);
+      const reuse = pickReusableAppealsOverride(
+        { id: insurer.id || null, name: insurer.name || null },
+        candidates,
+      );
+      if (reuse) {
+        insurer = {
+          ...insurer,
+          appealsAddress: {
+            line1: reuse.addressLine1,
+            line2: reuse.addressLine2 ?? null,
+            city: reuse.city,
+            state: reuse.state,
+            postalCode: reuse.postalCode,
+          },
+          appealsPhone: reuse.phone ?? insurer.appealsPhone,
+          appealsSource: "user_correction",
+          appealsLastConfirmedAt: reuse.confirmedAt ?? insurer.appealsLastConfirmedAt,
+          needsConfirmation: true,
+        };
+      }
+    } catch (err) {
+      console.error("[plan-context] appeals-address reuse overlay failed (non-fatal):", err);
+    }
   }
 
   // S109 PR #2 — pull user's state for the dispute letter escalation paragraph
@@ -955,6 +1007,35 @@ export function normalizeInsurerName(name: string): string {
     .replace(/\s+/g, " ")
     .replace(/\binc\b|\bllc\b|\bco\b|\bcorp(oration)?\b/g, "")
     .trim();
+}
+
+/**
+ * dispute-letters v2 Zone-3 (S266) — pick the user's most-recent supplied appeals
+ * address for the current insurer from their OTHER disputes' overrides, so a
+ * corrected address auto-carries to same-insurer disputes (Pattern 1 #14 — user-
+ * scoped, no-admin). Match by insurerId equality OR normalized insurer name;
+ * require a complete address; most-recent confirmedAt wins (ISO strings sort
+ * lexicographically). Pure — unit-tested by
+ * scripts/calibration/fixtures/dispute-grounds/appeals-address-reuse.ts.
+ */
+export function pickReusableAppealsOverride(
+  current: { id: string | null; name: string | null },
+  candidates: InsurerAddressOverride[],
+): InsurerAddressOverride | null {
+  const currentNameKey = current.name ? normalizeInsurerName(current.name) : null;
+  if (!current.id && !currentNameKey) return null; // no key to match against
+  let best: InsurerAddressOverride | null = null;
+  for (const c of candidates) {
+    // Complete address only (mirrors the per-dispute overlay's field guard).
+    if (!c.addressLine1 || !c.city || !c.state || !c.postalCode) continue;
+    const idMatch = !!(current.id && c.insurerId && current.id === c.insurerId);
+    const nameMatch = !!(
+      currentNameKey && c.insurerName && normalizeInsurerName(c.insurerName) === currentNameKey
+    );
+    if (!idMatch && !nameMatch) continue;
+    if (!best || (c.confirmedAt ?? "") > (best.confirmedAt ?? "")) best = c;
+  }
+  return best;
 }
 
 function computeNeedsConfirmation(params: {

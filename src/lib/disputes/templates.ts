@@ -192,7 +192,7 @@ function buildCollectorRecipientBlock(
  *  (null / undefined / empty string / empty array), else the clause. Guarantees no `$[…]` / `[date]`
  *  placeholder ever renders. (S3 formalizes the CI no-placeholder fixture + retrofits the existing
  *  templates onto this helper.) */
-function renderGated<T>(value: T | null | undefined, clause: (v: T) => string): string {
+export function renderGated<T>(value: T | null | undefined, clause: (v: T) => string): string {
   if (value == null) return "";
   if (typeof value === "string" && value.trim() === "") return "";
   if (Array.isArray(value) && value.length === 0) return "";
@@ -1142,15 +1142,31 @@ function renderLineItemEvidence(
     // S140 — skip null fields instead of citing as $0 (cite-grade violation).
     // When parser populates only one of (insurance_paid, patient_owes), cite
     // only what we actually have. billedAmount always present.
-    const eobParts: string[] = [];
-    eobParts.push(`${formatCurrency(li.billedAmount)} billed`);
-    if (li.insurancePaid != null) {
-      eobParts.push(`${formatCurrency(li.insurancePaid)} insurance paid`);
+    //
+    // dispute-letters v2 S3 — fallback-first EOB arithmetic (map §5). A real EOB
+    // reconciles by construction: allowed = insurer-paid + patient-owes, and
+    // billed ≥ allowed, so insurer-paid + patient-owes ≤ billed. If our EXTRACTED
+    // figures violate that (sum exceeds billed, or any negative), the fault is
+    // almost certainly our parse — insurer systems don't emit non-reconciling
+    // numbers — so OMIT the figures rather than hand over broken math (the
+    // coverage / balance-billing asks still argue the line). $0.01 rounding
+    // tolerance; partial data (a single field present) is unaffected.
+    const eobReconciles =
+      (li.billedAmount ?? 0) >= 0 &&
+      (li.insurancePaid ?? 0) >= 0 &&
+      (li.patientOwes ?? 0) >= 0 &&
+      (li.insurancePaid ?? 0) + (li.patientOwes ?? 0) <= (li.billedAmount ?? 0) + 0.01;
+    if (eobReconciles) {
+      const eobParts: string[] = [];
+      eobParts.push(`${formatCurrency(li.billedAmount)} billed`);
+      if (li.insurancePaid != null) {
+        eobParts.push(`${formatCurrency(li.insurancePaid)} insurance paid`);
+      }
+      if (li.patientOwes != null) {
+        eobParts.push(`${formatCurrency(li.patientOwes)} patient responsibility`);
+      }
+      bullets.push(`   - EOB shows: ${eobParts.join(" · ")}.`);
     }
-    if (li.patientOwes != null) {
-      eobParts.push(`${formatCurrency(li.patientOwes)} patient responsibility`);
-    }
-    bullets.push(`   - EOB shows: ${eobParts.join(" · ")}.`);
   }
 
   if (li.expectedPatientCost != null && li.actualPatientCost != null && planBenefitTrusted && !li.serviceNotRenderedAttested) {
@@ -1371,7 +1387,7 @@ Under the No Surprises Act and applicable state consumer protection laws, I am e
 ${recipientBlock}
 
 Re: Billing Dispute — Date of Service: ${formatDate(serviceDate)}
-${patientRefBlock}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
+${patientRefBlock}${renderGated(accountNumber, (a) => `\nAccount #: ${a}`)}
 
 To Whom It May Concern:
 
@@ -1430,7 +1446,7 @@ const itemizedRequestTemplate: LetterTemplate = {
 ${recipientBlock}
 
 Re: Request for Itemized Bill — Date of Service: ${formatDate(serviceDate)}
-${patientRefBlock}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
+${patientRefBlock}${renderGated(accountNumber, (a) => `\nAccount #: ${a}`)}
 
 To Whom It May Concern:
 
@@ -1489,12 +1505,13 @@ const insuranceAppealTemplate: LetterTemplate = {
     //      in case resolveInsurer returned null but the bind succeeded)
     //   3. bill.insurer.name (from EOB metadata)
     //   4. planContext.plan.insurerName (user's plan row)
-    //   5. literal placeholder
+    //   5. generic addressee (dispute-letters v2 S3 — never a bracketed placeholder;
+    //      enforced by the no-placeholder fixture)
     const insurerName = planContext?.insurer?.name
       || planContext?.boundCanonicalPlan?.insurerName
       || bill.insurer?.name
       || planContext?.plan?.insurerName
-      || "[Insurance Company]";
+      || "the plan administrator";
     const memberId = bill.patient.memberId || undefined;
     // S111 smoke #4/#6 — plan label resolution + wrong-year detection.
     // When the cited plan's year differs from the bill year, we render the
@@ -1664,7 +1681,7 @@ Please respond within 30 days. If I do not receive a satisfactory resolution, I 
 ${recipientBlock}
 
 Re: Balance Billing Dispute — Date of Service: ${formatDate(serviceDate)}
-${patientRefBlock}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
+${patientRefBlock}${renderGated(accountNumber, (a) => `\nAccount #: ${a}`)}
 
 To Whom It May Concern:
 
@@ -1772,7 +1789,7 @@ Please provide a written response within 30 days of receipt of this letter.`;
 ${recipientBlock}
 
 Re: Duplicate Charge Dispute — Date of Service: ${formatDate(serviceDate)}
-${patientRefBlock}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}
+${patientRefBlock}${renderGated(accountNumber, (a) => `\nAccount #: ${a}`)}
 
 To Whom It May Concern:
 
@@ -1856,7 +1873,7 @@ const finalNoticeTemplate: LetterTemplate = {
 ${recipientBlock}
 
 Re: Final Notice Before Escalation — Date of Service: ${formatDate(serviceDate)}
-${patientRefBlock}${accountNumber ? `\nAccount #: ${accountNumber}` : ""}${certifiedLine}
+${patientRefBlock}${renderGated(accountNumber, (a) => `\nAccount #: ${a}`)}${certifiedLine}
 
 To Whom It May Concern:
 

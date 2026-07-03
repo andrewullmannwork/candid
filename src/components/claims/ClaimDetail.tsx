@@ -922,6 +922,21 @@ export function ClaimDetail({
     const match = v ? primaryLineItems.find((li) => li.costShareVerdict === v) : null;
     return (match ?? primaryLineItems[0])?.id ?? null;
   })();
+  // S263 — the disputed service's cost-share is EDITABLE only when the USER
+  // entered it (planCoverage.source==='manual'); a plan-doc/parsed cost is
+  // authoritative → read-only. Drives the persistent "Plan cost · Edit" banner row.
+  const bannerEditableCost = (() => {
+    const line = bannerTargetLineId
+      ? primaryLineItems.find((li) => li.id === bannerTargetLineId)
+      : null;
+    const pc = line?.planCoverage;
+    if (!pc || pc.source !== "manual" || (pc.copay == null && pc.coinsurance == null)) return null;
+    return {
+      serviceLabel: humanizeSlug(line!.service_slug) || line!.description || "this service",
+      copay: pc.copay,
+      coinsurancePercent: pc.coinsurance != null ? normalizeCoinsurancePct(pc.coinsurance) : null,
+    };
+  })();
 
   // §1.7 — claim-level findings live on claim.metadata.auditSummary.claimLevelFindings.
   // Same dismiss filter as line-level (showDismissed toggles visibility).
@@ -2147,6 +2162,7 @@ export function ClaimDetail({
             if (line?.service_slug) setAddPlanDetailsLineId(line.id);
             else if (bannerTargetLineId) openCorrectionModal(bannerTargetLineId);
           }}
+          editableServiceCost={bannerEditableCost}
           onUploadEob={() => router.push("/upload?type=eob")}
           onBack={onBack}
         />
@@ -2398,7 +2414,13 @@ export function ClaimDetail({
       )}
 
       {/* B4.2 — Bill action footer per design's .bill-action chrome */}
-      {billState === "overcharge_no_draft" ? (
+      {billState === "overcharge_no_draft" && data.disputes.length > 0 ? (
+        /* A dispute already exists on this bill (incl. cancelled) — suppress the
+           redundant "Draft my dispute letter" banner; the Disputes card below is
+           the single CTA (Open → redraft). Mirrors overcharge_drafted below. The
+           green "Recoverable from this bill" bar still shows the amount. */
+        null
+      ) : billState === "overcharge_no_draft" ? (
         <div className="mt-7 flex flex-col gap-4 rounded-[18px] border border-blue-200 bg-gradient-to-br from-blue-50 to-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
           <div className="max-w-[50ch] text-[13px] leading-[1.55] text-gray-600">
             <div className="mb-1.5 flex items-center gap-1.5 text-sm font-bold text-blue-900">
@@ -2453,21 +2475,28 @@ export function ClaimDetail({
             </div>
           </div>
           {/* Bulk dispute still available for needs_review when findings exist —
-              user may want to dispute uncertain charges. */}
-          <BulkDisputeButton
-            claimId={claimId}
-            claim={claim}
-            primaryLineItems={primaryLineItems}
-            claimLevelFindings={visibleClaimLevelFindings}
-            showDismissed={showDismissed}
-            getAuthToken={getAuthToken}
-            onGenerated={(result) => router.push(disputeUrlForResult(result))}
-            existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
-          />
+              user may want to dispute uncertain charges. Suppressed once ANY dispute
+              exists on the bill (incl. cancelled) — the Disputes card is the single
+              CTA, and this also kills the transient "Draft" flash during a
+              billState-recompute refetch. */}
+          {data.disputes.length === 0 && (
+            <BulkDisputeButton
+              claimId={claimId}
+              claim={claim}
+              primaryLineItems={primaryLineItems}
+              claimLevelFindings={visibleClaimLevelFindings}
+              showDismissed={showDismissed}
+              getAuthToken={getAuthToken}
+              onGenerated={(result) => router.push(disputeUrlForResult(result))}
+              existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
+            />
+          )}
         </>
-      ) : (
+      ) : data.disputes.length === 0 ? (
         // billState is null/clean — back-compat: render BulkDisputeButton standalone.
-        // For clean state it self-suppresses when there's nothing to dispute.
+        // For clean state it self-suppresses when there's nothing to dispute. Also
+        // suppressed once ANY dispute exists — the Disputes card below is the single
+        // CTA (kills the transient "Draft" flash during a billState-recompute refetch).
         <BulkDisputeButton
           claimId={claimId}
           claim={claim}
@@ -2478,7 +2507,7 @@ export function ClaimDetail({
           onGenerated={(result) => router.push(disputeUrlForResult(result))}
           existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
         />
-      )}
+      ) : null}
 
       {/* S139 — BundleSuggestion: peer bills in the same claim_group_id at the
           bottom of bill-detail. Replaces the legacy "Related documents (N)"
@@ -2498,7 +2527,7 @@ export function ClaimDetail({
 
       {/* Disputes on this bill — new lifecycle vocabulary, clickable expansion */}
       {data.disputes.length > 0 && (
-        <div className="mb-4">
+        <div className="mt-8 mb-4">
           <h3 className="text-sm font-semibold text-gray-900 mb-2">Disputes</h3>
           <div className="space-y-2">
             {data.disputes.map((d) => (
@@ -2582,6 +2611,12 @@ export function ClaimDetail({
             serviceSlug={line.service_slug}
             serviceLabel={humanizeSlug(line.service_slug) || line.description || "this service"}
             getAuthToken={getAuthToken}
+            initialCopay={line.planCoverage?.copay ?? null}
+            initialCoinsurancePercent={
+              line.planCoverage?.coinsurance != null
+                ? normalizeCoinsurancePct(line.planCoverage.coinsurance)
+                : null
+            }
             onClose={() => setAddPlanDetailsLineId(null)}
             onSaved={async () => {
               await refetchClaim();

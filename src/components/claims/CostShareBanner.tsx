@@ -19,6 +19,7 @@
 
 import { useState, type ReactNode } from "react";
 import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recovery-math";
+import { Row, IconChip } from "@/components/shared/InputRow";
 
 export type CostShareVerdict =
   | "confident"
@@ -53,6 +54,11 @@ interface CostShareBannerProps {
   errorMsg: string | null;
   onShouldBeCovered: () => void;
   onAddPlanDetails: () => void;
+  /** S263 — the user's OWN entered cost-share for the disputed service
+   *  (plan_covered_services.source='manual'). Present → a persistent "Plan cost ·
+   *  $X · Edit" row so they can correct their own mistake. Null when unknown (the
+   *  Add-details gap) or plan-doc-parsed (authoritative → read-only). */
+  editableServiceCost?: { serviceLabel: string; copay: number | null; coinsurancePercent: number | null } | null;
   onUploadEob: () => void;
   onBack: () => void;
 }
@@ -67,11 +73,7 @@ function fmtDate(iso: string | null): string {
 const todayIso = (): string => new Date().toISOString().slice(0, 10);
 const NUMBER_WORD: Record<number, string> = { 2: "two", 3: "three", 4: "four", 5: "five" };
 
-// ── presentational helpers ──────────────────────────────────────────────────
-
-function IconChip({ children }: { children: ReactNode }) {
-  return <div className="grid h-9 w-9 flex-none place-items-center rounded-xl bg-gray-100 text-gray-500">{children}</div>;
-}
+// ── presentational helpers (Row + IconChip now shared: @/components/shared/InputRow) ──
 
 const GlobeIcon = (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -116,23 +118,6 @@ function Segment({ seg }: { seg: Seg }) {
   );
 }
 
-function Row({ icon, label, control, children }: { icon: ReactNode; label: string; control: ReactNode; children: ReactNode }) {
-  return (
-    <div className="border-t border-gray-100 py-3.5">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-start gap-3">
-          <IconChip>{icon}</IconChip>
-          <div className="pt-0.5">
-            <div className="text-sm font-medium text-gray-900">{label}</div>
-            <div className="mt-0.5 text-[13px] leading-snug text-gray-600">{children}</div>
-          </div>
-        </div>
-        <div className="pt-1">{control}</div>
-      </div>
-    </div>
-  );
-}
-
 // ── main ────────────────────────────────────────────────────────────────────
 
 interface Optimistic {
@@ -155,6 +140,7 @@ export function CostShareBanner({
   errorMsg,
   onShouldBeCovered,
   onAddPlanDetails,
+  editableServiceCost,
   onUploadEob,
   onBack,
 }: CostShareBannerProps) {
@@ -232,6 +218,9 @@ export function CostShareBanner({
   const showOop = oopExists && (!oopResolved || editAll);
   const showAca = !!acaA && !acaDismissed;
   const hasServiceCostGap = serviceCostChips.length > 0;
+  // S263 — the user's own manual cost-share is EDITABLE (correct a mistake); a
+  // plan-doc/parsed cost is authoritative and read-only (gated in the parent).
+  const hasEditableCost = !!editableServiceCost;
 
   // pending = assumptions still awaiting a first pick (drives the headline copy).
   const pendingCount =
@@ -240,11 +229,11 @@ export function CostShareBanner({
     ((oopExists && !oopResolved) ? 1 : 0) +
     serviceCostChips.length +
     (showAca ? 1 : 0);
-  const rawSectionHasRows = showNetwork || showDeductible || showOop || hasServiceCostGap || showAca;
+  const rawSectionHasRows = showNetwork || showDeductible || showOop || hasServiceCostGap || showAca || hasEditableCost;
   // Section is OPEN unless the user dismissed it via "Done"; when closed but
   // assumptions exist, "Update assumptions" brings it back.
   const sectionOpen = !dismissed && rawSectionHasRows;
-  const anyAssumptions = networkExists || deductibleExists || oopExists || hasServiceCostGap || !!acaA;
+  const anyAssumptions = networkExists || deductibleExists || oopExists || hasServiceCostGap || !!acaA || hasEditableCost;
   const showUpdateLink = !sectionOpen && anyAssumptions;
   const effectivePending = sectionOpen ? pendingCount : 0;
   const isClean = verdict === "correct" || verdict === "confident";
@@ -343,6 +332,21 @@ export function CostShareBanner({
                 We don&apos;t have your plan&apos;s cost for {chip.serviceLabel} yet, so this is a conservative estimate.
               </Row>
             ))}
+
+            {editableServiceCost && (
+              <Row
+                icon={DocIcon}
+                label="Plan cost"
+                control={
+                  <button type="button" onClick={onAddPlanDetails} className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50">Edit</button>
+                }
+              >
+                You told us your plan&apos;s cost for {editableServiceCost.serviceLabel} is{" "}
+                {editableServiceCost.copay != null
+                  ? `$${editableServiceCost.copay} copay`
+                  : `${editableServiceCost.coinsurancePercent}% coinsurance`}. Edit if that&apos;s not right.
+              </Row>
+            )}
 
             {showAca && (
               <div className="mt-3 rounded-xl border border-blue-200 bg-blue-50 p-3 text-[13px] text-blue-900">

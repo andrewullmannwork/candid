@@ -34,6 +34,8 @@ import {
 } from "@/lib/claims/resolve-cost-share";
 import {
   resolveEffectiveClaimTotals,
+  readUserPatientPaidOverride,
+  applyUserPatientPaidOverride,
 } from "@/lib/claims/effective-totals";
 import { buildAcaCoverageFallback, detectPreventiveMembership } from "@/lib/audit/aca-coverage-fallback";
 import {
@@ -275,6 +277,21 @@ export async function GET(req: NextRequest) {
       );
 
       const items = lineItems || [];
+      // Dispute Letters v2 (Z1.1d) — reflect the user's amount-paid override on the list
+      // recovery summary too (parity with the dispute page). No-op when unset → byte-identical.
+      {
+        const ov = readUserPatientPaidOverride((claim as { metadata?: unknown }).metadata);
+        if (ov != null) {
+          applyUserPatientPaidOverride(
+            claim as { total_patient_paid?: number | null },
+            items as Array<{
+              billed_amount?: number | null;
+              patient_paid_amount?: number | null;
+            }>,
+            ov,
+          );
+        }
+      }
       const planMeta = claim.insurance_plan_id
         ? planMetaByPlan.get(claim.insurance_plan_id)
         : undefined;

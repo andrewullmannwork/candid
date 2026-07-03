@@ -4,6 +4,7 @@
  * Uses Medicare benchmark + community pricing to establish a fair rate.
  * CROA compliant: user reviews, edits, and sends the letter themselves.
  */
+import { renderGated } from "./templates";
 
 export interface NegotiationParams {
   patientName: string;
@@ -45,12 +46,12 @@ export function generateNegotiationLetter(params: NegotiationParams): string {
 ${providerName}
 Compliance Department
 
-Re: Self-Pay Rate Negotiation${serviceDate ? ` — Date of Service: ${serviceDate}` : ""}
+Re: Self-Pay Rate Negotiation${renderGated(serviceDate, (d) => ` — Date of Service: ${d}`)}
 Patient: ${patientName}
 
 To Whom It May Concern:
 
-I am writing to discuss the charges for ${serviceName}${serviceDate ? ` received on ${serviceDate}` : ""}. As a self-pay patient, I am requesting a fair rate for this service based on publicly available pricing data.
+I am writing to discuss the charges for ${serviceName}${renderGated(serviceDate, (d) => ` received on ${d}`)}. As a self-pay patient, I am requesting a fair rate for this service based on publicly available pricing data.
 ${billedAmount ? `
 My current bill shows a charge of $${billedAmount.toLocaleString()} for this service.
 ` : ""}

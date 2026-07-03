@@ -35,6 +35,19 @@ interface RerenderParams {
    * templates fall back to patientName when absent.
    */
   attestingName?: string;
+  /**
+   * dispute-letters v2 Zone-3 (S266) — escalation/collections gate inputs threaded
+   * to the ladder-advance templates (final_notice / external_review / debt_validation)
+   * when this render is driven by the escalate route. Absent for the redraft/GET
+   * callers → byte-identical (the templates renderGated-omit each clause). Mirrors
+   * the shapes generateDisputeLetter passes so the two build paths can't diverge.
+   */
+  accountNumber?: string | null;
+  priorContactDates?: string[];
+  certifiedMail?: boolean;
+  appealExhausted?: { attested: boolean; denialDate?: string | null };
+  collector?: { name: string; address?: string | null; originalCreditor?: string | null };
+  debtWithinWindow?: boolean;
 }
 
 /** §18 incr-4 — the re-rendered body plus the deductible-aware recovery summary (present
@@ -160,6 +173,14 @@ export async function rerenderDisputeLetter(
     letterRecovery,
     recovery: recovery ?? undefined,
     noPlanCoverageRequestOn,
+    // Zone-3 (S266) — escalation/collections inputs for the ladder-advance
+    // templates (absent for redraft/GET → renderGated omits → byte-identical).
+    accountNumber: params.accountNumber ?? undefined,
+    priorContactDates: params.priorContactDates,
+    certifiedMail: params.certifiedMail,
+    appealExhausted: params.appealExhausted,
+    collector: params.collector,
+    debtWithinWindow: params.debtWithinWindow,
   });
 
   return {

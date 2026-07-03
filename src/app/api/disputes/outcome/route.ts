@@ -14,6 +14,7 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
 import { updateDisputeOutcome, getUserDisputes } from "@/lib/disputes/persist";
+import { isOutcomeDetail } from "@/lib/disputes/outcome-taxonomy";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import {
   computeCooldownUntil,
@@ -73,11 +74,30 @@ export async function POST(req: NextRequest) {
       // Only persisted when status='won_on_escalation' (paired with status
       // because pre-escalation wins typically use the original code).
       recodedAs,
+      // dispute-letters v2 Zone-3 (S266) — optional nested outcome the FE derived
+      // `status` from (via outcome-taxonomy). Persisted verbatim to
+      // metadata.outcomeDetail as the launch record + seed for tracker-M
+      // auto-advance. Advisory only — no auto-escalation here.
+      outcomeDetail,
+      // dispute-letters v2 Zone-3 (S266) — undo support (clicked in error). clearSentAt
+      // unmarks a sent dispute (status back to drafted); clearOutcomeDetail reverts a
+      // reported result (status back to filed). The FE sends the target status too.
+      clearSentAt,
+      clearOutcomeDetail,
     } = await req.json();
 
     if (!disputeId || !status) {
       return NextResponse.json(
         { error: "disputeId and status are required" },
+        { status: 400 }
+      );
+    }
+
+    // Zone-3: outcomeDetail is optional (back-compat with mark-sent + legacy
+    // callers that send only `status`), but if present it must be a known value.
+    if (outcomeDetail !== undefined && !isOutcomeDetail(outcomeDetail)) {
+      return NextResponse.json(
+        { error: "outcomeDetail is not a recognized outcome" },
         { status: 400 }
       );
     }
@@ -115,7 +135,7 @@ export async function POST(req: NextRequest) {
     // could mutate any dispute by knowing its UUID.
     const { data: existing } = await userScoped(supabase, userId)
       .table("dispute_outcomes")
-      .select("id, user_id, status, filed_date, claim_id, letter_content, sent_at")
+      .select("id, user_id, status, filed_date, claim_id, letter_content, sent_at, metadata")
       .eq("id", disputeId)
       .single();
 
@@ -132,6 +152,59 @@ export async function POST(req: NextRequest) {
 
     if (!success) {
       return NextResponse.json({ error: "Failed to update dispute" }, { status: 500 });
+    }
+
+    // dispute-letters v2 Zone-3 (S266) — persist the nested outcome verbatim to
+    // metadata.outcomeDetail (JSONB, Rule #9 store-first — no schema change). The
+    // coarse `status` column above was derived from this by the FE; keeping the
+    // fine-grained outcome is the launch record + the seed for the tracker-M
+    // auto-advance state machine. Merge (never clobber sibling metadata). Non-
+    // fatal — the status write already succeeded and is the source of truth.
+    if (outcomeDetail && isOutcomeDetail(outcomeDetail)) {
+      try {
+        const baseMetadata = (existing.metadata as Record<string, unknown>) ?? {};
+        await userScoped(supabase, userId)
+          .table("dispute_outcomes")
+          .update({
+            metadata: {
+              ...baseMetadata,
+              outcomeDetail,
+              outcomeReportedAt: new Date().toISOString(),
+            },
+          })
+          .eq("id", disputeId);
+      } catch (err) {
+        console.error(
+          "[disputes/outcome] outcomeDetail metadata persist failed (non-fatal):",
+          err,
+        );
+      }
+    }
+
+    // dispute-letters v2 Zone-3 (S266) — undo. clearSentAt un-sends (drops sent_at +
+    // cooldown so the stage returns to draft); clearOutcomeDetail reverts a reported
+    // result (drops metadata.outcomeDetail so the escalate CTA + terminal stage clear).
+    // The coarse status was already set by updateDisputeOutcome above. Non-fatal.
+    if (clearSentAt || clearOutcomeDetail) {
+      try {
+        const patch: Record<string, unknown> = {};
+        if (clearSentAt) {
+          patch.sent_at = null;
+          patch.cooldown_until = null;
+        }
+        if (clearOutcomeDetail) {
+          const baseMetadata = { ...((existing.metadata as Record<string, unknown>) ?? {}) };
+          delete baseMetadata.outcomeDetail;
+          delete baseMetadata.outcomeReportedAt;
+          patch.metadata = baseMetadata;
+        }
+        await userScoped(supabase, userId)
+          .table("dispute_outcomes")
+          .update(patch)
+          .eq("id", disputeId);
+      } catch (err) {
+        console.error("[disputes/outcome] undo patch failed (non-fatal):", err);
+      }
     }
 
     // S74.6 D5 — capture recoded_as_code on won_on_escalation outcomes. Writes

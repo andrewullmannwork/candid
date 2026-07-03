@@ -68,6 +68,15 @@ export async function GET(req: NextRequest) {
     .is("appeals_address_line_1", null)
     .limit(50);
 
+  // Recently updated: insurers that HAVE an appeals address, newest first — the
+  // "revise an already-set address" surface (dispute-letters v2 S3).
+  const { data: recent } = await supabase
+    .from("insurer_catalog")
+    .select("id, name, appeals_address_line_1, appeals_address_line_2, appeals_city, appeals_state, appeals_postal_code, appeals_phone, appeals_source, appeals_last_confirmed_at")
+    .not("appeals_address_line_1", "is", null)
+    .order("appeals_last_confirmed_at", { ascending: false, nullsFirst: false })
+    .limit(25);
+
   return NextResponse.json({
     pending: (pending ?? []).map((p) => ({
       id: p.id,
@@ -83,5 +92,19 @@ export async function GET(req: NextRequest) {
     })),
     stale: stale ?? [],
     coverageGaps: gaps ?? [],
+    recentlyUpdated: (recent ?? []).map((r) => ({
+      id: r.id,
+      name: r.name,
+      source: r.appeals_source,
+      lastConfirmedAt: r.appeals_last_confirmed_at,
+      values: {
+        address_line_1: r.appeals_address_line_1,
+        address_line_2: r.appeals_address_line_2,
+        city: r.appeals_city,
+        state: r.appeals_state,
+        postal_code: r.appeals_postal_code,
+        phone: r.appeals_phone,
+      },
+    })),
   });
 }

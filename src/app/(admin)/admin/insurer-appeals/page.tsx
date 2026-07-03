@@ -37,12 +37,36 @@ interface GapRow {
   appeals_source: string | null;
 }
 
+interface RecentRow {
+  id: string;
+  name: string;
+  source: string | null;
+  lastConfirmedAt: string | null;
+  values: Record<string, string | null>;
+}
+
+// The editable appeals-address fields (snake_case — matches proposed_values + the review API).
+const PROPOSED_FIELDS = ["address_line_1", "address_line_2", "city", "state", "postal_code", "phone"] as const;
+
+function proposedToFields(proposed: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of PROPOSED_FIELDS) out[k] = proposed[k] == null ? "" : String(proposed[k]);
+  return out;
+}
+
 export default function InsurerAppealsAdminPage() {
   const { user } = useAuth();
   const [pending, setPending] = useState<PendingProposal[]>([]);
   const [stale, setStale] = useState<StaleRow[]>([]);
   const [gaps, setGaps] = useState<GapRow[]>([]);
   const [loading, setLoading] = useState(true);
+  // Per-proposal editable address fields (admin can fix a value before accepting).
+  const [edits, setEdits] = useState<Record<string, Record<string, string>>>({});
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  // "Recently updated — revise" section: edit an already-set appeals address directly.
+  const [recent, setRecent] = useState<RecentRow[]>([]);
+  const [recentEdits, setRecentEdits] = useState<Record<string, Record<string, string>>>({});
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
 
   const refresh = async () => {
     if (!user) return;
@@ -54,9 +78,14 @@ export default function InsurerAppealsAdminPage() {
       });
       if (!res.ok) return;
       const data = await res.json();
-      setPending(data.pending ?? []);
+      const nextPending: PendingProposal[] = data.pending ?? [];
+      setPending(nextPending);
       setStale(data.stale ?? []);
       setGaps(data.coverageGaps ?? []);
+      setEdits(Object.fromEntries(nextPending.map((p) => [p.id, proposedToFields(p.proposed)])));
+      const nextRecent: RecentRow[] = data.recentlyUpdated ?? [];
+      setRecent(nextRecent);
+      setRecentEdits(Object.fromEntries(nextRecent.map((r) => [r.id, proposedToFields(r.values)])));
     } finally {
       setLoading(false);
     }
@@ -69,15 +98,44 @@ export default function InsurerAppealsAdminPage() {
 
   const review = async (proposalId: string, decision: "accept" | "reject") => {
     if (!user) return;
+    setReviewError(null);
     const token = await user.firebaseUser.getIdToken();
-    await fetch("/api/admin/insurer-appeals/review", {
+    const res = await fetch("/api/admin/insurer-appeals/review", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ proposalId, decision }),
+      // On accept, send the (possibly-edited) fields; the API validates + writes these.
+      body: JSON.stringify({
+        proposalId,
+        decision,
+        ...(decision === "accept" ? { editedValues: edits[proposalId] } : {}),
+      }),
     });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      setReviewError(err.error ?? "Review failed. Check the address fields and try again.");
+      return;
+    }
+    await refresh();
+  };
+
+  const saveRevision = async (insurerId: string) => {
+    if (!user) return;
+    setSaveMsg(null);
+    const token = await user.firebaseUser.getIdToken();
+    const res = await fetch("/api/admin/insurer-appeals/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ insurerId, values: recentEdits[insurerId] }),
+    });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      setSaveMsg(err.error ?? "Save failed. Check the address fields.");
+      return;
+    }
+    setSaveMsg("Saved.");
     await refresh();
   };
 
@@ -98,6 +156,11 @@ export default function InsurerAppealsAdminPage() {
       </header>
 
       <Card title={`Pending changes (${pending.length})`}>
+        {reviewError ? (
+          <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            {reviewError}
+          </div>
+        ) : null}
         {pending.length === 0 ? (
           <EmptyState label="No pending proposals. Everything is up to date." />
         ) : (
@@ -116,7 +179,15 @@ export default function InsurerAppealsAdminPage() {
                 </div>
                 <div className="mt-3 grid gap-4 md:grid-cols-2">
                   <ValueBlock title="Current" values={p.current} />
-                  <ValueBlock title="Proposed" values={p.proposed} highlight />
+                  <EditableProposed
+                    fields={edits[p.id] ?? proposedToFields(p.proposed)}
+                    onChange={(k, v) =>
+                      setEdits((prev) => ({
+                        ...prev,
+                        [p.id]: { ...(prev[p.id] ?? proposedToFields(p.proposed)), [k]: v },
+                      }))
+                    }
+                  />
                 </div>
                 {p.sourceExcerpt ? (
                   <blockquote className="mt-3 border-l-2 border-indigo-200 bg-slate-50 px-3 py-2 text-xs italic text-slate-700">
@@ -181,6 +252,49 @@ export default function InsurerAppealsAdminPage() {
           </ul>
         )}
       </Card>
+
+      <Card title={`Recently updated — revise (${recent.length})`}>
+        {saveMsg ? (
+          <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+            {saveMsg}
+          </div>
+        ) : null}
+        {recent.length === 0 ? (
+          <EmptyState label="No appeals addresses set yet." />
+        ) : (
+          <ul className="divide-y divide-slate-200">
+            {recent.map((r) => (
+              <li key={r.id} className="py-4">
+                <div className="mb-2 flex items-baseline justify-between">
+                  <div className="font-semibold text-slate-900">{r.name}</div>
+                  <div className="text-xs text-slate-500">
+                    {r.source ?? "—"}
+                    {r.lastConfirmedAt ? ` · ${new Date(r.lastConfirmedAt).toLocaleDateString("en-US")}` : ""}
+                  </div>
+                </div>
+                <EditableProposed
+                  fields={recentEdits[r.id] ?? proposedToFields(r.values)}
+                  onChange={(k, v) =>
+                    setRecentEdits((prev) => ({
+                      ...prev,
+                      [r.id]: { ...(prev[r.id] ?? proposedToFields(r.values)), [k]: v },
+                    }))
+                  }
+                />
+                <div className="mt-3">
+                  <button
+                    type="button"
+                    onClick={() => saveRevision(r.id)}
+                    className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700"
+                  >
+                    Save
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
     </div>
   );
 }
@@ -219,6 +333,33 @@ function ValueBlock({
           <div key={k} className="flex justify-between gap-3">
             <dt className="text-slate-500">{k}</dt>
             <dd className="truncate text-right">{v == null ? "—" : String(v)}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
+function EditableProposed({
+  fields,
+  onChange,
+}: {
+  fields: Record<string, string>;
+  onChange: (key: string, value: string) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-emerald-300 bg-emerald-50/60 p-3 text-xs">
+      <div className="mb-1 font-semibold uppercase tracking-wide text-slate-500">Proposed (editable)</div>
+      <dl className="space-y-1 text-slate-800">
+        {PROPOSED_FIELDS.map((k) => (
+          <div key={k} className="flex items-center justify-between gap-3">
+            <dt className="text-slate-500">{k}</dt>
+            <input
+              type="text"
+              value={fields[k] ?? ""}
+              onChange={(e) => onChange(k, e.target.value)}
+              className="w-44 rounded border border-slate-300 bg-white px-2 py-1 text-right text-xs focus:border-emerald-500 focus:outline-none"
+            />
           </div>
         ))}
       </dl>

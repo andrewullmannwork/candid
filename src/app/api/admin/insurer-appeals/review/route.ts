@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { validateUsAddress } from "@/lib/address/validate-us-address";
 
 async function requireAdmin(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -36,6 +37,17 @@ export async function POST(req: NextRequest) {
     proposalId?: string;
     decision?: "accept" | "reject";
     notes?: string;
+    // dispute-letters v2 S3 — optional admin-edited address (fix a field before accept).
+    // Same snake_case shape as proposed_values; when present it (validated) overrides
+    // proposed_values on write. Absent → accept writes proposed_values as-is (legacy).
+    editedValues?: {
+      address_line_1?: string;
+      address_line_2?: string | null;
+      city?: string;
+      state?: string;
+      postal_code?: string;
+      phone?: string;
+    };
   };
   if (!body.proposalId || !body.decision) {
     return NextResponse.json(
@@ -55,25 +67,44 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Already reviewed" }, { status: 400 });
   }
 
+  const proposed = (proposal.proposed_values ?? {}) as {
+    address_line_1?: string;
+    address_line_2?: string | null;
+    city?: string;
+    state?: string;
+    postal_code?: string;
+    phone?: string;
+  };
+  const ADDR_KEYS = ["address_line_1", "address_line_2", "city", "state", "postal_code", "phone"] as const;
+  // Did the admin actually change a field (vs accept as-proposed)? Drives the audit note.
+  const adminEdited =
+    body.editedValues != null &&
+    ADDR_KEYS.some((k) => (body.editedValues?.[k] ?? "") !== (proposed[k] ?? ""));
+
   if (body.decision === "accept") {
-    const proposed = proposal.proposed_values as {
-      address_line_1?: string;
-      address_line_2?: string | null;
-      city?: string;
-      state?: string;
-      postal_code?: string;
-      phone?: string;
-    };
+    // Final values = admin edits when supplied, else the original proposal. Validated
+    // either way — nothing invalid (e.g. a test "st"/"Test") reaches the shared catalog.
+    const finalValues = body.editedValues ?? proposed;
+    const normState = (finalValues.state ?? "").toUpperCase();
+    const addrErrors = validateUsAddress({
+      addressLine1: finalValues.address_line_1 ?? "",
+      addressLine2: finalValues.address_line_2 ?? "",
+      city: finalValues.city ?? "",
+      state: normState,
+      postalCode: finalValues.postal_code ?? "",
+    });
+    const firstError = Object.values(addrErrors)[0];
+    if (firstError) return NextResponse.json({ error: firstError }, { status: 400 });
 
     await supabase
       .from("insurer_catalog")
       .update({
-        appeals_address_line_1: proposed.address_line_1 ?? null,
-        appeals_address_line_2: proposed.address_line_2 ?? null,
-        appeals_city: proposed.city ?? null,
-        appeals_state: proposed.state ?? null,
-        appeals_postal_code: proposed.postal_code ?? null,
-        appeals_phone: proposed.phone ?? null,
+        appeals_address_line_1: finalValues.address_line_1 ?? null,
+        appeals_address_line_2: finalValues.address_line_2 ?? null,
+        appeals_city: finalValues.city ?? null,
+        appeals_state: normState || null,
+        appeals_postal_code: finalValues.postal_code ?? null,
+        appeals_phone: finalValues.phone ?? null,
         appeals_source: "admin_verified",
         appeals_confidence: 1.0,
         appeals_verification_count: 1,
@@ -89,7 +120,10 @@ export async function POST(req: NextRequest) {
       status: body.decision === "accept" ? "accepted" : "rejected",
       reviewed_by_admin_id: user.id,
       reviewed_at: new Date().toISOString(),
-      admin_notes: body.notes ?? null,
+      admin_notes:
+        body.decision === "accept" && adminEdited
+          ? `${body.notes ? `${body.notes} ` : ""}[admin-edited before accept]`
+          : body.notes ?? null,
     })
     .eq("id", proposal.id);
 

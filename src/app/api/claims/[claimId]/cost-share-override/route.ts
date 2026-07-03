@@ -72,7 +72,7 @@ export async function POST(
   // Ownership + plan/year context (userScoped injects user_id).
   const { data: claim } = await userScoped(supabase, user.id)
     .table("claims")
-    .select("id, insurance_plan_id, date_of_service")
+    .select("id, insurance_plan_id, date_of_service, metadata")
     .eq("id", claimId)
     .maybeSingle();
   if (!claim) {
@@ -88,6 +88,29 @@ export async function POST(
     const { error } = await userScoped(supabase, user.id)
       .table("claims")
       .update({ user_network_override: ov.value })
+      .eq("id", claimId);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true, field: ov.field, applied: true });
+  }
+
+  // ── Amount the patient actually paid (per-claim; plan-independent) ────────
+  // Durable override in claims.metadata.userPatientPaid (Rule #9 JSONB-first) — re-parse-
+  // proof + updatable by overwrite; null clears. Read at letter-generation time by
+  // loadDisputeGroundBasis, which overlays it onto the claim's effective totals so the
+  // refund math + letter reflect it. Spread-merge preserves sibling metadata (e.g. provider).
+  if (ov.field === "patient_paid") {
+    const baseMeta = (claim.metadata as Record<string, unknown> | null) ?? {};
+    const nextMeta: Record<string, unknown> = { ...baseMeta };
+    if (ov.amount === null) {
+      delete nextMeta.userPatientPaid;
+      delete nextMeta.userPatientPaidUpdatedAt;
+    } else {
+      nextMeta.userPatientPaid = ov.amount;
+      nextMeta.userPatientPaidUpdatedAt = new Date().toISOString();
+    }
+    const { error } = await userScoped(supabase, user.id)
+      .table("claims")
+      .update({ metadata: nextMeta })
       .eq("id", claimId);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json({ ok: true, field: ov.field, applied: true });

@@ -25,9 +25,15 @@ import {
 import { DisputePlanChooser, type DisputePlanChooserPlan } from "@/components/disputes/DisputePlanChooser";
 import { StrengthenLetterPrompt, type StrengthField } from "@/components/disputes/StrengthenLetterPrompt";
 import { DownloadWarningModal } from "@/components/disputes/DownloadWarningModal";
-import { EvidenceGaps } from "@/components/disputes/EvidenceGaps";
 import { InsurerAddressCorrectionModal } from "@/components/disputes/InsurerAddressCorrectionModal";
+import { ProviderAddressModal } from "@/components/disputes/ProviderAddressModal";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
+import { CollectorModal } from "@/components/disputes/CollectorModal";
+import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestModal";
+import { suggestNextStep, isOutcomeDetail, mapOutcomeToStatus, type NextStepSuggestion } from "@/lib/disputes/outcome-taxonomy";
+import { CaseNeedsPanel, type PlanCostService } from "@/components/disputes/CaseNeedsPanel";
+import { CaseSummary } from "@/components/disputes/CaseSummary";
+import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useDisputeDraftOverlay } from "@/lib/loading/dispute-draft-overlay";
 import type {
@@ -37,7 +43,6 @@ import type {
 import type { DisputeEvidence } from "@/lib/disputes/evidence-resolver";
 // Block C (dispute_letter_v3_design) — the three-axis strength readouts.
 import { DataTrustBanner } from "@/components/disputes/DataTrustBanner";
-import { ReadinessRail } from "@/components/disputes/ReadinessRail";
 import type { StrengthResult, EvidenceBand } from "@/lib/disputes/strength-scoring";
 
 export default function DisputesPage() {
@@ -274,14 +279,49 @@ function DisputesContent() {
     useState<PlanSearchModalMode>("search");
   // S74 — InsurerAddressCorrectionModal open state.
   const [insurerCorrectionOpen, setInsurerCorrectionOpen] = useState(false);
+  // Z1.3 — provider address modal (Zone-1 owns both address surfaces now).
+  const [providerAddressOpen, setProviderAddressOpen] = useState(false);
   // S74 — Mark-sent button state + transient toast.
   const [markingSent, setMarkingSent] = useState(false);
   const [markSentToast, setMarkSentToast] = useState<string | null>(null);
   // S74.6 D5 §E.2 — outcome reporting modal state.
   const [outcomeModalOpen, setOutcomeModalOpen] = useState(false);
+  // Zone-3 (S266) — advisory next rung surfaced after an outcome is reported.
+  const [suggestedNextStep, setSuggestedNextStep] = useState<NextStepSuggestion | null>(null);
+  // Zone-3 (S266) — ladder-advance capture modals + in-flight guard.
+  const [collectorModalOpen, setCollectorModalOpen] = useState(false);
+  const [exhaustionModalOpen, setExhaustionModalOpen] = useState(false);
+  const [escalating, setEscalating] = useState(false);
   // Bugbash Item 3 — "Why {band}?" evidence-strength explanation modal.
   const [evidenceModalOpen, setEvidenceModalOpen] = useState(false);
   const [outcomeToast, setOutcomeToast] = useState<string | null>(null);
+  // Dispute Letters v2 (Z1.2) — Zone-1 read-signals + AddPlanDetailsModal state.
+  const [userPatientPaid, setUserPatientPaid] = useState<number | null>(null);
+  const [deadlineInputs, setDeadlineInputs] = useState<{
+    denialNoticeDate: string | null;
+    collectorFirstContactDate: string | null;
+  }>({ denialNoticeDate: null, collectorFirstContactDate: null });
+  // Dispute Letters v2 (Zone-2) — recovery estimate + deadline surface hydrated from the GET.
+  const [amountDisputed, setAmountDisputed] = useState<number | null>(null);
+  const [deadlineData, setDeadlineData] = useState<{
+    deadlineWarning: {
+      severity: "urgent" | "past";
+      deadlineType: string | null;
+      daysRemaining: number | null;
+      nextStep: string | null;
+    } | null;
+    governingDeadlineDate: string | null;
+    deadlineType: string | null;
+    filingDeadlineDate: string | null;
+    followups: Array<{ dueDate: string; kind: string }>;
+    followupPlan: Array<{ dueDate: string; kind: string }>;
+  } | null>(null);
+  const [addPlanModal, setAddPlanModal] = useState<{
+    serviceSlug: string;
+    serviceLabel: string;
+    initialCopay: number | null;
+    initialCoinsurancePercent: number | null;
+  } | null>(null);
   const disputeId = searchParams.get("dispute");
   // Stretch 2 — enriched Case File rollout flag (case_file_enriched_v1), read
   // via /api/feature-flags (a browser-Supabase read returns [] under Firebase auth).
@@ -326,8 +366,13 @@ function DisputesContent() {
   }, [user]);
 
   // Fetch dispute + plan context + evidence (reused for refetch-on-focus).
+  // S266 (#3) — mutation generation. Optimistic handlers bump this; a background
+  // refetch that started before a newer mutation is DROPPED, so a slow stale reload
+  // can't clobber the fresher optimistic state (the undo→won→awaiting flicker).
+  const mutationGenRef = useRef(0);
   const fetchDispute = useCallback(async (id: string, opts?: { refresh?: boolean }) => {
     if (!user) return;
+    const startGen = mutationGenRef.current;
     const token = await user.firebaseUser.getIdToken();
     // ?refresh=1 regenerates the letter server-side (versioning the prior) and
     // returns the recomputed isStale (W4 / Finding 4). A plain load reads current.
@@ -337,6 +382,8 @@ function DisputesContent() {
     );
     if (!res.ok) return;
     const data = await res.json();
+    // Drop a superseded reload (a newer optimistic mutation happened mid-fetch).
+    if (mutationGenRef.current !== startGen) return;
     // Cost-Share v2 (W4) — staleness for the letter-page banner. A fresh
     // navigation re-expands the banner; a refresh keeps the user's collapse
     // state (the refreshed letter is no longer stale anyway).
@@ -391,6 +438,43 @@ function DisputesContent() {
       typeof data.attestingAsName === "string" ? data.attestingAsName : null,
     );
     setAccountName(typeof data.accountName === "string" ? data.accountName : "");
+    // Dispute Letters v2 (Z1.2) — Zone-1 prefill signals.
+    setUserPatientPaid(typeof data.userPatientPaid === "number" ? data.userPatientPaid : null);
+    setDeadlineInputs({
+      denialNoticeDate:
+        typeof data.deadlineInputs?.denialNoticeDate === "string"
+          ? data.deadlineInputs.denialNoticeDate
+          : null,
+      collectorFirstContactDate:
+        typeof data.deadlineInputs?.collectorFirstContactDate === "string"
+          ? data.deadlineInputs.collectorFirstContactDate
+          : null,
+    });
+    // Dispute Letters v2 (Zone-2) — recovery estimate + deadline surface (flag-gated fields are
+    // null when dispute_deadline_engine_v1 is OFF → CaseSummary renders only what's present).
+    setAmountDisputed(typeof data.amountDisputed === "number" ? data.amountDisputed : null);
+    setDeadlineData({
+      deadlineWarning:
+        data.deadlineWarning && typeof data.deadlineWarning === "object"
+          ? (data.deadlineWarning as {
+              severity: "urgent" | "past";
+              deadlineType: string | null;
+              daysRemaining: number | null;
+              nextStep: string | null;
+            })
+          : null,
+      governingDeadlineDate:
+        typeof data.governingDeadlineDate === "string" ? data.governingDeadlineDate : null,
+      deadlineType: typeof data.deadlineType === "string" ? data.deadlineType : null,
+      filingDeadlineDate:
+        typeof data.filingDeadlineDate === "string" ? data.filingDeadlineDate : null,
+      followups: Array.isArray(data.followups)
+        ? (data.followups as Array<{ dueDate: string; kind: string }>)
+        : [],
+      followupPlan: Array.isArray(data.followupPlan)
+        ? (data.followupPlan as Array<{ dueDate: string; kind: string }>)
+        : [],
+    });
     if (data.letterContent) {
       // Server-resolved letter type (S74). Authoritative — reads metadata.letterType
       // first, then maps from legacy dispute_type vocab. Without this, the recipient
@@ -422,6 +506,14 @@ function DisputesContent() {
       };
       setLetter(synthesized);
       setEditedBody(data.letterContent);
+      // Zone-3 (S266) — re-derive the advisory next rung from the persisted outcome so
+      // the stage-action bar's escalate CTA survives a refresh (not just in-session).
+      const persistedOutcome = data.outcomeDetail;
+      setSuggestedNextStep(
+        isOutcomeDetail(persistedOutcome)
+          ? suggestNextStep(resolvedLetterType, persistedOutcome)
+          : null,
+      );
     }
   }, [user]);
 
@@ -674,9 +766,12 @@ function DisputesContent() {
   const alreadySent = isSentStatus(disputeStatus);
   const handleMarkSent = async () => {
     if (!user || !disputeId || markingSent || alreadySent) return;
-    if (!window.confirm("Mark this dispute as sent? We'll start the follow-up reminder schedule and you'll see status updates on your claim.")) {
-      return;
-    }
+    // Optimistic (S266) — flip status locally so the stage-action bar advances
+    // instantly; reconcile in the background (rollback on failure). No confirm dialog
+    // (undo covers a mis-click).
+    const prevStatus = disputeStatus;
+    mutationGenRef.current += 1;
+    setDisputeStatus("filed");
     setMarkingSent(true);
     setMarkSentToast(null);
     try {
@@ -694,8 +789,9 @@ function DisputesContent() {
         throw new Error(data?.error || `mark-sent failed (${res.status})`);
       }
       setMarkSentToast("Marked as sent. Follow-up reminders are scheduled.");
-      await fetchDispute(disputeId);
+      void fetchDispute(disputeId);
     } catch (err) {
+      setDisputeStatus(prevStatus);
       setMarkSentToast(err instanceof Error ? err.message : "Failed to mark as sent");
     } finally {
       setMarkingSent(false);
@@ -703,8 +799,152 @@ function DisputesContent() {
     }
   };
 
-  // S74 — InsurerAddressCorrectionModal callbacks.
-  const handleProposeInsurerCorrection = () => setInsurerCorrectionOpen(true);
+  // Zone-3 (S266) — undo (clicked in error). Optimistic + background reconcile.
+  const handleUndoSent = async () => {
+    if (!user || !disputeId || !alreadySent) return;
+    const prevStatus = disputeStatus;
+    mutationGenRef.current += 1;
+    setDisputeStatus("dispute_letter_drafted");
+    setSuggestedNextStep(null);
+    try {
+      const token = await user.firebaseUser.getIdToken();
+      const res = await fetch(`/api/disputes/outcome`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ disputeId, status: "dispute_letter_drafted", clearSentAt: true, clearOutcomeDetail: true }),
+      });
+      if (!res.ok) throw new Error("undo failed");
+      void fetchDispute(disputeId);
+    } catch {
+      setDisputeStatus(prevStatus);
+      setMarkSentToast("Couldn't undo — please try again.");
+      setTimeout(() => setMarkSentToast(null), 6000);
+    }
+  };
+
+  const handleUndoOutcome = async () => {
+    if (!user || !disputeId) return;
+    const prevStatus = disputeStatus;
+    mutationGenRef.current += 1;
+    setDisputeStatus("filed");
+    setSuggestedNextStep(null);
+    try {
+      const token = await user.firebaseUser.getIdToken();
+      const res = await fetch(`/api/disputes/outcome`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ disputeId, status: "filed", clearOutcomeDetail: true }),
+      });
+      if (!res.ok) throw new Error("undo failed");
+      void fetchDispute(disputeId);
+    } catch {
+      setDisputeStatus(prevStatus);
+      setOutcomeToast("Couldn't undo — please try again.");
+      setTimeout(() => setOutcomeToast(null), 6000);
+    }
+  };
+
+  // Zone-3 (S266) — user-triggered ladder advance. POST /escalate spawns the
+  // next-rung letter as a new dispute row (server-side render) and we navigate to
+  // it. A 403 means the escalation letter is Pro; other errors surface a toast.
+  const handleEscalate = async (
+    targetLetterType: "external_review" | "final_notice" | "debt_validation",
+    extra: Record<string, unknown> = {},
+  ) => {
+    if (!user || !disputeId || escalating) return;
+    setEscalating(true);
+    try {
+      const token = await user.firebaseUser.getIdToken();
+      if (!token) {
+        setOutcomeToast("You are not signed in. Refresh and try again.");
+        setTimeout(() => setOutcomeToast(null), 6000);
+        return;
+      }
+      const res = await fetch(`/api/disputes/${disputeId}/escalate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ targetLetterType, ...extra }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        const msg =
+          res.status === 403
+            ? "That escalation letter is a Candid Pro feature."
+            : e.reason || e.error || "We couldn't create that letter. Please try again.";
+        setOutcomeToast(msg);
+        setTimeout(() => setOutcomeToast(null), 7000);
+        return;
+      }
+      const data = await res.json();
+      if (data?.disputeId) {
+        // Navigate to the newly created next-rung dispute (each rung = its own row).
+        window.location.href = `/disputes?dispute=${data.disputeId}`;
+      }
+    } catch {
+      setOutcomeToast("We couldn't create that letter. Please try again.");
+      setTimeout(() => setOutcomeToast(null), 7000);
+    } finally {
+      setEscalating(false);
+    }
+  };
+
+  // Route the advisory next-rung CTA: external_review needs the exhaustion
+  // attestation first; final_notice escalates directly (reciting the sent letter's
+  // date as the prior contact). Reads suggestedNextStep from state to avoid
+  // closure-narrowing on the nullable value.
+  const handleSuggestedNextStep = () => {
+    const sns = suggestedNextStep;
+    if (!sns) return;
+    if (sns.nextLetterType === "external_review") {
+      setExhaustionModalOpen(true);
+    } else if (sns.nextLetterType === "final_notice") {
+      void handleEscalate("final_notice", {
+        priorContactDates: disputeFiledDate ? [disputeFiledDate] : undefined,
+        certifiedMail: true,
+      });
+    }
+  };
+
+  // Dispute Letters v2 (Z1.2) — Zone-1 inline saves (optimistic; refetch reconciles).
+  const handleSaveAmountPaid = useCallback(
+    async (amount: number | null) => {
+      if (!user || !letter?.auditReportId) return;
+      const token = await user.firebaseUser.getIdToken();
+      const res = await fetch(`/api/claims/${letter.auditReportId}/cost-share-override`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ field: "patient_paid", amount }),
+      });
+      if (!res.ok) throw new Error("Failed to save amount paid");
+      // Optimistic — reflect the value immediately + reconcile in the background so Save
+      // doesn't block on the full dispute re-resolve (S265 Andrew feedback: saves felt slow).
+      setUserPatientPaid(amount);
+      if (disputeId) void fetchDispute(disputeId);
+    },
+    [user, letter?.auditReportId, disputeId, fetchDispute],
+  );
+  const handleSaveDeadlineDate = useCallback(
+    async (
+      field: "denialNoticeDate" | "collectorFirstContactDate",
+      value: string | null,
+    ) => {
+      if (!user || !disputeId) return;
+      const token = await user.firebaseUser.getIdToken();
+      const res = await fetch(`/api/disputes/${disputeId}/deadline-inputs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ [field]: value }),
+      });
+      if (!res.ok) throw new Error("Failed to save date");
+      // Optimistic + background reconcile (S265 Andrew feedback — don't block Save on refetch).
+      setDeadlineInputs((prev) => ({ ...prev, [field]: value }));
+      void fetchDispute(disputeId);
+    },
+    [user, disputeId, fetchDispute],
+  );
+
+  // S74 — InsurerAddressCorrectionModal callbacks. (S265 Z1 refine d — the recipient card
+  // no longer proposes corrections; Zone-1's onAddInsurerAddress opens the modal directly.)
   const refetchAfterChange = async () => {
     if (disputeId) await fetchDispute(disputeId);
   };
@@ -767,19 +1007,10 @@ function DisputesContent() {
   // Single source per node — no forked wiring, no duplicated handlers.
   // ===================================================================
 
-  // Readout 1 (data-trust banner) + readout 3 (readiness rail) — v3-only.
+  // Readout 1 (data-trust banner) — v3-only. (Readout 3, the readiness rail, was retired
+  // at S265: the unified readiness indicator now lives at the top of Zone-1's CaseNeedsPanel,
+  // combining the required-to-send floor with the soft strengtheners — one signal, not two.)
   const dataTrustBannerNode = <DataTrustBanner dataTrust={strength?.dataTrust} />;
-  const readinessRailNode = (
-    <ReadinessRail
-      readiness={strength?.readiness}
-      // Block C2 — inline confirm/undo + edit affordances (v3-only).
-      onResolvePatientIdentity={
-        disputeId && v3DesignOn ? handleResolvePatientIdentity : undefined
-      }
-      onEditLetter={v3DesignOn ? () => setIsEditing(true) : undefined}
-      patientIdentityResolved={patientIdentityResolved}
-    />
-  );
 
   const heroNode = (
     <DisputeLetterHero
@@ -871,18 +1102,17 @@ function DisputesContent() {
       planYear={planContext?.plan?.planYear ?? null}
       referenceId={letter.id}
       onConfirmAddress={handleConfirmAddress}
-      onProposeCorrection={planContext?.insurer ? handleProposeInsurerCorrection : undefined}
-      // Block C2 — surface the insurer address as confirm/edit-able even once
-      // confirmed, but only on v3 + insurer-recipient letters (provider addresses
-      // are edited via the EvidenceGaps form). recipientKind comes from the
-      // already-computed strength payload — no extra round-trip.
-      allowAddressEdit={
-        v3DesignOn && strength?.readiness?.recipientKind === "insurer"
-      }
+      // S265 (Z1 refine d) — the recipient card is display-only for the address now.
+      // Zone-1's "Insurer appeals address" row owns Add + Edit (same modal), so the card
+      // no longer duplicates them; it keeps only the lightweight "Looks right" confirm for a
+      // parsed-but-unconfirmed appeals address (Zone-1 has no confirm equivalent).
+      onProposeCorrection={undefined}
+      allowAddressEdit={false}
     />
   );
 
   const evidenceNode = (
+    <div id="dispute-evidence">
     <EvidenceBlock
       evidence={evidence}
       planLabel={planLabel}
@@ -898,130 +1128,41 @@ function DisputesContent() {
       accountName={accountName}
       attestingAsName={attestingAsName}
     />
-  );
-
-  const gapsNode = (
-    <EvidenceGaps
-      gaps={evidence?.gaps ?? []}
-      onAuditRerun={
-        disputeId
-          ? async () => {
-              if (!user) return;
-              const token = await user.firebaseUser.getIdToken();
-              const res = await fetch(
-                `/api/disputes/${disputeId}/rerun-audit`,
-                {
-                  method: "POST",
-                  headers: { Authorization: `Bearer ${token}` },
-                },
-              );
-              if (!res.ok) throw new Error("rerun-audit failed");
-              await fetchDispute(disputeId);
-            }
-          : undefined
-      }
-      onRedraft={disputeId ? handleRedraft : undefined}
-      disputeId={disputeId}
-      providerSeed={planContext?.providerContact ?? null}
-      getAuthToken={getAuthToken}
-      onProviderContactSaved={refetchAfterChange}
-      onUploadInModal={() => {
-        setPlanSearchModalMode("upload");
-        setPlanSearchModalOpen(true);
-      }}
-      // Block C2.2 (S152) — "Add address" on the insurer_address_missing gap
-      // opens the same insurer modal as the recipient card's edit affordance.
-      onAddInsurerAddress={
-        planContext?.insurer && disputeId
-          ? () => setInsurerCorrectionOpen(true)
-          : undefined
-      }
-      // S154 — resolve a secondary (category) coverage match's verify gate:
-      // POST the per-line decision then refetch so the gate clears and the
-      // letter re-renders with (match) / without (no_match) the citation.
-      onCoverageVerify={
-        disputeId
-          ? async (claimId, lineItemId, decision) => {
-              if (!user) return;
-              const token = await user.firebaseUser.getIdToken();
-              const res = await fetch(
-                `/api/claims/${claimId}/line-items/${lineItemId}/confirm-coverage`,
-                {
-                  method: "POST",
-                  headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${token}`,
-                  },
-                  body: JSON.stringify({ decision }),
-                },
-              );
-              if (!res.ok) throw new Error("confirm-coverage failed");
-              await refetchAfterChange();
-            }
-          : undefined
-      }
-    />
-  );
-
-  const nameMismatchNode = nameMismatch ? (
-    <div className="flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 shadow-sm md:flex-row md:items-start md:justify-between">
-      <div className="flex flex-1 items-start gap-3">
-        <NameMismatchIcon />
-        <div className="min-w-0">
-          <div className="text-sm font-semibold text-amber-900">
-            Verify the patient name before sending
-          </div>
-          <p className="mt-1 text-sm leading-relaxed text-amber-800">
-            We&apos;re using your account name{" "}
-            <span className="font-semibold">{nameMismatch.profileName}</span>{" "}
-            in the letter. The bill listed{" "}
-            <span className="font-semibold">&ldquo;{nameMismatch.billName}&rdquo;</span>{" "}
-            — confirm this matches the patient of record. Edit the letter if a
-            dependent or family member should be named instead.
-          </p>
-        </div>
-      </div>
-      {v3DesignOn ? (
-        <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
-          <button
-            type="button"
-            onClick={() => handleResolvePatientIdentity(true)}
-            className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-amber-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-amber-700"
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="3"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <path d="M5 13l4 4L19 7" />
-            </svg>
-            This is me — confirm
-          </button>
-          <button
-            type="button"
-            onClick={() => setIsEditing(true)}
-            className="inline-flex items-center justify-center rounded-lg border border-amber-300 bg-white px-3.5 py-2 text-sm font-semibold text-amber-800 shadow-sm hover:bg-amber-50"
-          >
-            Edit letter
-          </button>
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={() => setIsEditing(true)}
-          className="inline-flex shrink-0 items-center justify-center rounded-lg bg-amber-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-amber-700"
-        >
-          Edit letter
-        </button>
-      )}
     </div>
-  ) : null;
+  );
+
+  // S265 — coverage-verify + re-run-audit moved from the retired EvidenceGaps card into Zone-1.
+  const handleCoverageVerify = async (
+    claimId: string,
+    lineItemId: string,
+    decision: "match" | "no_match",
+  ) => {
+    if (!user) return;
+    const token = await user.firebaseUser.getIdToken();
+    const res = await fetch(
+      `/api/claims/${claimId}/line-items/${lineItemId}/confirm-coverage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ decision }),
+      },
+    );
+    if (!res.ok) throw new Error("confirm-coverage failed");
+    await refetchAfterChange();
+  };
+  const handleAuditRerun = async () => {
+    if (!user || !disputeId) return;
+    const token = await user.firebaseUser.getIdToken();
+    const res = await fetch(`/api/disputes/${disputeId}/rerun-audit`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error("rerun-audit failed");
+    await fetchDispute(disputeId);
+  };
+
+  // Z1.3 — name-mismatch banner removed; Zone-1's "Verify the patient name" row now owns
+  // the confirm/edit actions + surfaces the bill-vs-account detail inline.
 
   const toolbarNode = (
     <div className="sticky top-4 z-10 rounded-2xl border border-slate-200 bg-white/90 px-4 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-white/70">
@@ -1056,26 +1197,15 @@ function DisputesContent() {
             icon="letter"
             label="Download letter"
           />
+          {/* Zone-3 (S266) — case ACTIONS (Mark as sent / Report result / escalate) moved
+              to the stage-action bar in "The case" timeline. The toolbar keeps letter
+              actions + this at-a-glance sent-status pill. */}
           {alreadySent ? (
-            <>
-              <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-700">
-                <SentCheckIcon />
-                Sent{disputeFiledDate ? ` ${formatFiledDate(disputeFiledDate)}` : ""}
-              </span>
-              <ToolbarButton
-                onClick={() => setOutcomeModalOpen(true)}
-                icon="sent"
-                label="Report outcome"
-              />
-            </>
-          ) : (
-            <ToolbarButton
-              onClick={handleMarkSent}
-              icon="sent"
-              label={markingSent ? "Marking…" : "Mark as sent"}
-              tone="primary"
-            />
-          )}
+            <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-700">
+              <SentCheckIcon />
+              Sent{disputeFiledDate ? ` ${formatFiledDate(disputeFiledDate)}` : ""}
+            </span>
+          ) : null}
         </div>
       </div>
       {redraftToast && (
@@ -1185,6 +1315,55 @@ function DisputesContent() {
     </section>
   );
 
+  // Zone-3 (S266) — the "Did you hear back?" tracking (Got a response / Sent to
+  // collections / escalate CTA) is now the stage-action bar at the bottom of the
+  // "The case" timeline (CaseSummary), driven by computeCaseStage. See the
+  // <CaseSummary> render below.
+
+  // Dispute Letters v2 (Z1.2) — Zone-1 panel inputs derived from evidence/planContext.
+  const zone1Services: PlanCostService[] = (() => {
+    const seen = new Set<string>();
+    const out: PlanCostService[] = [];
+    for (const c of evidence?.claims ?? []) {
+      for (const li of c.lineItemEvidence ?? []) {
+        if (!li.serviceSlug || seen.has(li.serviceSlug)) continue;
+        seen.add(li.serviceSlug);
+        const pb = li.planBenefit;
+        out.push({
+          serviceSlug: li.serviceSlug,
+          serviceLabel: li.serviceName,
+          known: pb != null,
+          copay: pb?.copay ?? null,
+          coinsurancePercent: pb?.coinsurance != null ? Math.round(pb.coinsurance * 100) : null,
+          source: pb?.source ?? null,
+        });
+      }
+    }
+    return out;
+  })();
+  const zone1ProviderAddressOnFile = planContext?.providerContact?.address != null;
+  const zone1HasInsurer = planContext?.insurer != null;
+  const zone1InsurerAddressOnFile = planContext?.insurer?.appealsAddress != null;
+  const zone1EobPresent = (evidence?.claims ?? []).some((c) =>
+    (c.lineItemEvidence ?? []).some((li) => li.insurancePaid != null || li.patientOwes != null),
+  );
+  // Insurance row shows only when a plan is bound (a missing-year claim is owned by
+  // VerifStrip); the Change action is available only when re-pinning is enabled.
+  const zone1ShowInsuranceRow = planContext?.plan != null;
+  // S265 — service_coverage_verify gates + audit-findings-missing signal for Zone-1
+  // (absorbed from the retired EvidenceGaps card).
+  const coverageVerifyGaps = (evidence?.gaps ?? [])
+    .filter((g) => g.kind === "service_coverage_verify" && g.claimId && g.lineItemId)
+    .map((g) => ({
+      claimId: g.claimId as string,
+      lineItemId: g.lineItemId as string,
+      matchedServiceName: g.matchedServiceName ?? "this service",
+      description: g.description ?? "",
+    }));
+  const auditFindingsMissing = (evidence?.gaps ?? []).some(
+    (g) => g.kind === "audit_findings_missing",
+  );
+
   return (
     <div className={v3DesignOn ? "mx-auto max-w-6xl space-y-5" : "max-w-4xl mx-auto space-y-5"}>
       {/* S109 PR #2 — Back link to claim view. Uses letter.auditReportId
@@ -1198,6 +1377,110 @@ function DisputesContent() {
         >
           <span aria-hidden>←</span> Back to claim
         </a>
+      )}
+
+      {/* Dispute Letters v2 — Zone-1 "What we need from you" (map §6). Delegates to the
+          existing handlers/modals; owns only the counter + the 3 inline inputs. */}
+      <CaseNeedsPanel
+        letterType={letter.letterType}
+        planServices={zone1Services}
+        nameMismatch={nameMismatch != null}
+        nameResolved={patientIdentityResolved}
+        billName={nameMismatch?.billName ?? null}
+        profileName={nameMismatch?.profileName ?? null}
+        attestationReviewed={serviceAttestationReviewed}
+        hasInsurer={zone1HasInsurer}
+        providerAddressOnFile={zone1ProviderAddressOnFile}
+        insurerAddressOnFile={zone1InsurerAddressOnFile}
+        eobPresent={zone1EobPresent}
+        userPatientPaid={userPatientPaid}
+        denialNoticeDate={deadlineInputs.denialNoticeDate}
+        collectorFirstContactDate={deadlineInputs.collectorFirstContactDate}
+        planLabel={planLabel}
+        showInsuranceRow={zone1ShowInsuranceRow}
+        canChangePlan={planPinningEnabled}
+        readiness={strength?.readiness ?? null}
+        coverageVerifyGaps={coverageVerifyGaps}
+        onCoverageVerify={handleCoverageVerify}
+        rerunAuditEnabled={false}
+        auditFindingsMissing={auditFindingsMissing}
+        onAuditRerun={handleAuditRerun}
+        onAddPlanDetails={(svc) =>
+          setAddPlanModal({
+            serviceSlug: svc.serviceSlug,
+            serviceLabel: svc.serviceLabel,
+            initialCopay: svc.copay,
+            initialCoinsurancePercent: svc.coinsurancePercent,
+          })
+        }
+        onConfirmName={() => handleResolvePatientIdentity(true)}
+        onEditLetter={() => setIsEditing(true)}
+        onReviewAttestation={() =>
+          document
+            .getElementById("dispute-evidence")
+            ?.scrollIntoView({ behavior: "smooth", block: "center" })
+        }
+        onAddProviderAddress={() => setProviderAddressOpen(true)}
+        onAddInsurerAddress={() => setInsurerCorrectionOpen(true)}
+        onUploadEob={() => window.location.assign("/upload")}
+        onSaveAmountPaid={handleSaveAmountPaid}
+        onChangePlan={async () => {
+          if (!user || !planContext?.plan?.planYear) return;
+          const token = await user.firebaseUser.getIdToken();
+          const qp = new URLSearchParams({ year: String(planContext.plan.planYear) });
+          if (planContext.plan.id) qp.set("pin", planContext.plan.id);
+          const res = await fetch(`/api/plan/by-year?${qp.toString()}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (res.ok) {
+            const { plans } = (await res.json()) as { plans: DisputePlanChooserPlan[] };
+            setRebindPlans(plans ?? []);
+            setRebindOpen(true);
+          }
+        }}
+        onSaveDeadlineDate={handleSaveDeadlineDate}
+      />
+
+      {/* Dispute Letters v2 — Zone-2 "The case" (map §6). Render-when-present; the deadline
+          fields are null when dispute_deadline_engine_v1 is OFF. */}
+      <CaseSummary
+        letterType={letter.letterType}
+        status={disputeStatus}
+        isSent={alreadySent}
+        filedDate={disputeFiledDate}
+        recoveryAmount={amountDisputed}
+        deadlineWarning={deadlineData?.deadlineWarning ?? null}
+        governingDeadlineDate={deadlineData?.governingDeadlineDate ?? null}
+        deadlineType={deadlineData?.deadlineType ?? null}
+        filingDeadlineDate={deadlineData?.filingDeadlineDate ?? null}
+        followups={deadlineData?.followups ?? []}
+        followupPlan={deadlineData?.followupPlan ?? []}
+        onMarkSent={handleMarkSent}
+        onReportOutcome={() => setOutcomeModalOpen(true)}
+        onCollections={() => setCollectorModalOpen(true)}
+        onEscalateNext={handleSuggestedNextStep}
+        onUndoSent={handleUndoSent}
+        onUndoOutcome={handleUndoOutcome}
+        markingSent={markingSent}
+        escalating={escalating}
+        nextStepLabel={suggestedNextStep?.ctaLabel ?? null}
+      />
+
+      {addPlanModal && letter.auditReportId && (
+        <AddPlanDetailsModal
+          open
+          claimId={letter.auditReportId}
+          planId={(planContext?.plan as { id?: string } | null | undefined)?.id ?? null}
+          serviceSlug={addPlanModal.serviceSlug}
+          serviceLabel={addPlanModal.serviceLabel}
+          getAuthToken={getAuthToken}
+          onClose={() => setAddPlanModal(null)}
+          onSaved={async () => {
+            if (disputeId) await fetchDispute(disputeId);
+          }}
+          initialCopay={addPlanModal.initialCopay}
+          initialCoinsurancePercent={addPlanModal.initialCoinsurancePercent}
+        />
       )}
 
       {/* S111 D3 — VerifStrip replaces SamePlanConfirmBanner + "Strengthen
@@ -1496,7 +1779,6 @@ function DisputesContent() {
             {dataTrustBannerNode}
             {heroNode}
             {recipientNode}
-            {nameMismatchNode}
             {toolbarNode}
             {articleNode}
             {evidenceNode}
@@ -1508,8 +1790,6 @@ function DisputesContent() {
               until the left column catches up. */}
           <aside className="space-y-5 lg:sticky lg:top-4 lg:self-start lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
 
-            {readinessRailNode}
-            {gapsNode}
             {nextStepsNode}
             {caseFileNode}
           </aside>
@@ -1521,8 +1801,6 @@ function DisputesContent() {
           {heroNode}
           {recipientNode}
           {evidenceNode}
-          {gapsNode}
-          {nameMismatchNode}
           {toolbarNode}
           {articleNode}
           {nextStepsNode}
@@ -1547,16 +1825,45 @@ function DisputesContent() {
         disputeId={letter.id}
         defaultAmount={null}
         onCancel={() => setOutcomeModalOpen(false)}
-        onSubmitted={() => {
+        onSubmitted={(detail) => {
           setOutcomeModalOpen(false);
           setOutcomeToast("Outcome saved. Thanks for closing the loop.");
           setTimeout(() => setOutcomeToast(null), 6000);
-          // Refresh dispute state so the toolbar reflects the new status.
+          // Optimistic (S266) — flip status + next rung locally so the stage-action bar
+          // updates instantly (no lingering button); reconcile in the background.
+          mutationGenRef.current += 1;
+          setDisputeStatus(mapOutcomeToStatus(detail));
+          setSuggestedNextStep(suggestNextStep(letter.letterType, detail));
           if (disputeId) {
             void fetchDispute(disputeId);
           }
         }}
         getIdToken={getAuthToken}
+      />
+
+      {/* Zone-3 (S266) — ladder-advance capture: collector details (→ debt_validation)
+          + internal-appeal exhaustion attestation (→ external_review). Both POST
+          /escalate and navigate to the new dispute. */}
+      <CollectorModal
+        open={collectorModalOpen}
+        submitting={escalating}
+        onCancel={() => setCollectorModalOpen(false)}
+        onSubmit={(input) => {
+          setCollectorModalOpen(false);
+          void handleEscalate("debt_validation", {
+            collector: input.collector,
+            collectorFirstContactDate: input.collectorFirstContactDate,
+          });
+        }}
+      />
+      <ExhaustionAttestModal
+        open={exhaustionModalOpen}
+        submitting={escalating}
+        onCancel={() => setExhaustionModalOpen(false)}
+        onSubmit={(input) => {
+          setExhaustionModalOpen(false);
+          void handleEscalate("external_review", { appealExhausted: input.appealExhausted });
+        }}
       />
 
       {/* Item 3 — "Why {band}?" evidence-strength explanation (v3 only). */}
@@ -1584,6 +1891,20 @@ function DisputesContent() {
           onClose={() => setInsurerCorrectionOpen(false)}
           onSubmitted={refetchAfterChange}
           getAuthToken={getAuthToken}
+        />
+      ) : null}
+
+      {disputeId ? (
+        <ProviderAddressModal
+          open={providerAddressOpen}
+          disputeId={disputeId}
+          initialName={planContext?.providerContact?.name ?? null}
+          initialAddressFields={planContext?.providerContact?.addressFields ?? null}
+          initialPhone={planContext?.providerContact?.phone ?? null}
+          initialNpi={planContext?.providerContact?.npi ?? null}
+          getAuthToken={getAuthToken}
+          onClose={() => setProviderAddressOpen(false)}
+          onSaved={refetchAfterChange}
         />
       ) : null}
     </div>
@@ -1675,25 +1996,6 @@ function buildAskSummary(letter: DisputeLetter, recovery: number | null): string
 function formatUsd(n: number): string {
   const rounded = Math.round(n * 100) / 100;
   return `$${rounded.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
-function NameMismatchIcon() {
-  return (
-    <svg
-      className="mt-0.5 h-5 w-5 shrink-0 text-amber-600"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      viewBox="0 0 24 24"
-      aria-hidden
-    >
-      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-      <line x1="12" y1="9" x2="12" y2="13" />
-      <line x1="12" y1="17" x2="12.01" y2="17" />
-    </svg>
-  );
 }
 
 // Small icon set (stroke-based, matches Lucide aesthetic without the dep).

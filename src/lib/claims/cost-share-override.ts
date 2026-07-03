@@ -19,7 +19,8 @@ export type CostShareOverrideParsed =
       coinsurance: number | null; // decimal 0-1
       deductibleApplies: boolean | null;
     }
-  | { field: "aca"; status: "confirmed" | "non_aca" };
+  | { field: "aca"; status: "confirmed" | "non_aca" }
+  | { field: "patient_paid"; amount: number | null };
 
 export type ParseResult =
   | { ok: true; value: CostShareOverrideParsed }
@@ -104,6 +105,22 @@ export function parseCostShareOverride(body: unknown): ParseResult {
         return { ok: false, error: "aca status must be confirmed or non_aca" };
       }
       return { ok: true, value: { field: "aca", status: b.status } };
+    }
+
+    case "patient_paid": {
+      // Amount the patient actually paid out of pocket for this bill. null clears the
+      // override (fall back to parsed). A dollar figure (0 is valid) is stored as a
+      // durable claim-metadata override the letter's refund math consumes.
+      if (b.amount === null) {
+        return { ok: true, value: { field: "patient_paid", amount: null } };
+      }
+      if (typeof b.amount !== "number" || !Number.isFinite(b.amount) || b.amount < 0) {
+        return { ok: false, error: "patient_paid amount must be a number >= 0, or null to clear" };
+      }
+      return {
+        ok: true,
+        value: { field: "patient_paid", amount: Math.round(b.amount * 100) / 100 },
+      };
     }
 
     default:

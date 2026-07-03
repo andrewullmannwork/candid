@@ -45,6 +45,15 @@ export interface PersistDisputeInput {
    * once sent (`sent_at != null`). Undefined/false → the legacy max-merge (byte-identical).
    */
   floatAmountDisputed?: boolean;
+  /**
+   * dispute-letters v2 S4 — the deadline & follow-up engine's computed governing deadline
+   * (dispute_outcomes.governing_deadline_date + deadline_type). Passed ONLY when
+   * dispute_deadline_engine_v1 is ON, so the two additive columns are never REFERENCED while
+   * the flag is OFF (safe to deploy before mig 196 is applied). Written on INSERT only — a
+   * dedup re-draft keeps the existing value (set-once: never move a started clock), exactly
+   * like insurancePlanId.
+   */
+  deadline?: { governingDeadlineDate: string | null; deadlineType: string | null };
 }
 
 /**
@@ -164,6 +173,9 @@ export async function persistDisputeLetter(
       }
     }
 
+    // dispute-letters v2 S4 — capture the filed date once so the graduated follow-up letters
+    // reference the same "[parent letter] of [date]" this row records.
+    const filedDate = new Date().toISOString().split("T")[0];
     const { data, error } = await supabase
       .from("dispute_outcomes")
       .insert({
@@ -177,7 +189,7 @@ export async function persistDisputeLetter(
         status: "dispute_letter_drafted",
         amount_disputed: input.amountDisputed,
         amount_recovered: 0,
-        filed_date: new Date().toISOString().split("T")[0],
+        filed_date: filedDate,
         insurer_id: input.insurerId || null,
         concept_id: input.conceptId || null,
         letter_content: input.letterContent || null,
@@ -193,6 +205,16 @@ export async function persistDisputeLetter(
             ? { citation_source: input.citationSource }
             : {}),
         },
+        // dispute-letters v2 S4 — INSERT-only governing deadline (map §3). Spread only when the
+        // engine flag is ON (input.deadline present), so these columns are never REFERENCED while
+        // dispute_deadline_engine_v1 is OFF (safe before mig 196 is applied). Preserved on a dedup
+        // re-draft (the dedup UPDATE never touches them → set-once), like insurance_plan_id.
+        ...(input.deadline
+          ? {
+              governing_deadline_date: input.deadline.governingDeadlineDate,
+              deadline_type: input.deadline.deadlineType,
+            }
+          : {}),
       })
       .select("id")
       .single();
@@ -211,7 +233,13 @@ export async function persistDisputeLetter(
       const followupsEnabled = await isFeatureEnabled("dispute_feedback_loop");
       if (followupsEnabled) {
         const { createFollowups } = await import("@/lib/disputes/followups");
-        await createFollowups(supabase, { disputeId: data.id, userId: input.userId });
+        await createFollowups(supabase, {
+          disputeId: data.id,
+          userId: input.userId,
+          letterType: input.letterType,
+          filedDate,
+          deadline: input.deadline,
+        });
       }
     } catch (err) {
       console.error("[disputes-persist] Follow-up creation failed (non-fatal):", err);

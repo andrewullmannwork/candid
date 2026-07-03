@@ -37,6 +37,8 @@ import {
 import {
   resolveEffectiveClaimTotals,
   resolvePerLineInsurancePaid,
+  readUserPatientPaidOverride,
+  applyUserPatientPaidOverride,
 } from "@/lib/claims/effective-totals";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import {
@@ -288,6 +290,23 @@ export async function GET(
   // claim header, the helper falls back to header values and marks the
   // source. Powers per-line LineDrawer cite-grade gating + bill-level
   // FlaggedBody display + dispute pipeline citation framing.
+  // Dispute Letters v2 (Z1.1d) — reflect the user's amount-paid override on the claim page
+  // too (parity with the dispute-letter refund): overlay claims.metadata.userPatientPaid
+  // onto the claim header + prorated per-line BEFORE effective totals + cost-share, so the
+  // "You paid" column + recovery match the dispute page. No-op when unset → byte-identical.
+  {
+    const ov = readUserPatientPaidOverride((claim as { metadata?: unknown }).metadata);
+    if (ov != null) {
+      applyUserPatientPaidOverride(
+        claim as { total_patient_paid?: number | null },
+        (lineItems ?? []) as Array<{
+          billed_amount?: number | null;
+          patient_paid_amount?: number | null;
+        }>,
+        ov,
+      );
+    }
+  }
   const effectiveTotals = resolveEffectiveClaimTotals({
     claim,
     lineItems: lineItems || [],

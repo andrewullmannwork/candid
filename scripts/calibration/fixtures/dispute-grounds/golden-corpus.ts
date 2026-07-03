@@ -469,6 +469,33 @@ for (const { type, findings } of ZERO_BUG_TYPES) {
   check("debt_validation OUT-of-window OMITS cease-collection", !debtOutWindow.includes("cease collection activity"));
 }
 
+// ── dispute-letters v2 S3 — fallback-first EOB arithmetic gate. A line whose EOB
+//    figures reconcile (insurer-paid + patient-owes ≤ billed) renders the "EOB shows"
+//    numbers; a line that VIOLATES reconciliation (sum > billed, or a negative) omits
+//    them (almost always our parse error, not the insurer's — insurer EOBs reconcile
+//    by construction). Partial data (one field) is unaffected. ─────────────────────
+{
+  const eobEvidence = (over: Partial<LineItemEvidence>): DisputeEvidence => ({
+    claims: [{
+      claimId: "claim-eob", dateOfService: SERVICE_DATE, providerName: "Sample Medical Center",
+      totalBilled: 500, planYear: 2024,
+      lineItemEvidence: [{ ...evidenceLine(makeFinding(), "li-eob"), billedAmount: 500, ...over }],
+      effectiveTotals: {} as unknown as ClaimEvidence["effectiveTotals"],
+      dataTrust: { headerReconciliationFailed: false, signViolation: false },
+    } satisfies ClaimEvidence],
+    totals: { claimCount: 1, lineItemCount: 1, totalBilled: 500, totalDiscrepancy: 0 },
+    planEvidence: null, networkEvidence: null, communityEvidence: null, legalBasis: [], gaps: [],
+    dataTrust: { headerReconciliationFailed: false, signViolation: false },
+  });
+  const sane = renderGenerateON("overcharge", bill, [makeFinding()], eobEvidence({ insurancePaid: 300, patientOwes: 100 }));
+  const insaneSum = renderGenerateON("overcharge", bill, [makeFinding()], eobEvidence({ insurancePaid: 300, patientOwes: 400 }));
+  const insaneNeg = renderGenerateON("overcharge", bill, [makeFinding()], eobEvidence({ insurancePaid: -50, patientOwes: 100 }));
+  check("EOB gate — reconciling line renders the numbers",
+    sane.includes("EOB shows: $500.00 billed · $300.00 insurance paid · $100.00 patient responsibility."), sane);
+  check("EOB gate — non-reconciling (P+O > billed) OMITS the EOB numbers", !insaneSum.includes("EOB shows:"), insaneSum);
+  check("EOB gate — negative figure OMITS the EOB numbers", !insaneNeg.includes("EOB shows:"), insaneNeg);
+}
+
 // ── Report (house style) ─────────────────────────────────────────────────────
 if (captured.length) console.log(`Captured ${captured.length} new golden(s): ${captured.join(", ")}`);
 console.log(`\ndispute-grounds golden corpus: ${pass} passed, ${fails.length} failed`);
