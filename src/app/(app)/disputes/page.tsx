@@ -764,8 +764,8 @@ function DisputesContent() {
     [user, disputeId, fetchDispute],
   );
 
-  // S74 — InsurerAddressCorrectionModal callbacks.
-  const handleProposeInsurerCorrection = () => setInsurerCorrectionOpen(true);
+  // S74 — InsurerAddressCorrectionModal callbacks. (S265 Z1 refine d — the recipient card
+  // no longer proposes corrections; Zone-1's onAddInsurerAddress opens the modal directly.)
   const refetchAfterChange = async () => {
     if (disputeId) await fetchDispute(disputeId);
   };
@@ -923,14 +923,12 @@ function DisputesContent() {
       planYear={planContext?.plan?.planYear ?? null}
       referenceId={letter.id}
       onConfirmAddress={handleConfirmAddress}
-      onProposeCorrection={planContext?.insurer ? handleProposeInsurerCorrection : undefined}
-      // Block C2 — surface the insurer address as confirm/edit-able even once
-      // confirmed, but only on v3 + insurer-recipient letters (provider addresses
-      // are edited via the EvidenceGaps form). recipientKind comes from the
-      // already-computed strength payload — no extra round-trip.
-      allowAddressEdit={
-        v3DesignOn && strength?.readiness?.recipientKind === "insurer"
-      }
+      // S265 (Z1 refine d) — the recipient card is display-only for the address now.
+      // Zone-1's "Insurer appeals address" row owns Add + Edit (same modal), so the card
+      // no longer duplicates them; it keeps only the lightweight "Looks right" confirm for a
+      // parsed-but-unconfirmed appeals address (Zone-1 has no confirm equivalent).
+      onProposeCorrection={undefined}
+      allowAddressEdit={false}
     />
   );
 

@@ -183,23 +183,23 @@ function VerifyStrip({
     );
   }
 
-  // No address on file yet → a single "Add address" button (nothing to confirm).
-  // Block C2.2 (note 4) — "Looks right" is meaningless with no address.
+  // No address on file yet. S265 (Z1 refine d) — the recipient card is display-only:
+  // Zone-1's "Insurer appeals address" row owns adding a missing address, so without a
+  // propose handler there's nothing to show here (avoids a duplicate "Add address" prompt).
   if (!hasAddress) {
+    if (!onProposeCorrection) return null;
     return (
       <div className="mt-3 rounded-lg border border-amber-100 bg-amber-50/60 px-3 py-2.5 text-xs text-amber-900">
         <p className="mb-2 font-medium">
           We don&apos;t have {insurer.name}&apos;s appeals address yet.
         </p>
-        {onProposeCorrection ? (
-          <button
-            type="button"
-            onClick={() => onProposeCorrection(insurer.id)}
-            className={btnPrimary}
-          >
-            Add address
-          </button>
-        ) : null}
+        <button
+          type="button"
+          onClick={() => onProposeCorrection(insurer.id)}
+          className={btnPrimary}
+        >
+          Add address
+        </button>
       </div>
     );
   }
