@@ -37,9 +37,9 @@ check("coerceComponent('facility') -> facility", coerceComponent("facility") ===
 check("coerceComponent('PROFESSIONAL') -> professional", coerceComponent("PROFESSIONAL") === "professional");
 check("coerceComponent('bogus') -> global", coerceComponent("bogus") === "global");
 
-// (2) the onConflict constant is the 4-col key.
-check("PLAN_COVERED_ONCONFLICT is the 4-col key",
-  PLAN_COVERED_ONCONFLICT === "insurance_plan_id,service_id,place_of_service,component");
+// (2) the onConflict constant is the 5-col key (mig 194/195 re-key: + plan_tier_label).
+check("PLAN_COVERED_ONCONFLICT is the 5-col key",
+  PLAN_COVERED_ONCONFLICT === "insurance_plan_id,service_id,place_of_service,component,plan_tier_label");
 
 async function testUpsertTargets4Col(): Promise<void> {
   let captured = "";
@@ -52,7 +52,7 @@ async function testUpsertTargets4Col(): Promise<void> {
     },
   };
   await applyPlanCoverageCell(fake, { insurance_plan_id: "p", service_id: "s", place_of_service: "any", component: "global" });
-  check("applyPlanCoverageCell targets the 4-col onConflict (no over-broad 3-col write)", captured === PLAN_COVERED_ONCONFLICT);
+  check("applyPlanCoverageCell targets the 5-col onConflict (no over-broad write)", captured === PLAN_COVERED_ONCONFLICT);
 }
 
 async function testMergePatchesEveryCell(): Promise<void> {

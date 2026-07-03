@@ -25,11 +25,12 @@ import type { MedicalNecessityCriterion, PriorAuthCode, PatternP8Provenance } fr
 export type CoverageComponent = "facility" | "professional" | "global";
 
 /**
- * The 4-col conflict target for plan_covered_services (mig 157 `uq_plan_covered_service`).
- * The single source of truth — never inline this string at a call site.
+ * The 5-col conflict target for plan_covered_services (mig 157 + mig 195 `uq_plan_covered_service`).
+ * The single source of truth — never inline this string at a call site. plan_tier_label (mig 195) is the
+ * plan-local drug cost-share bucket; writers that omit it get the column DEFAULT 'none'.
  */
 export const PLAN_COVERED_ONCONFLICT =
-  "insurance_plan_id,service_id,place_of_service,component";
+  "insurance_plan_id,service_id,place_of_service,component,plan_tier_label";
 
 /**
  * A user-side coverage cell. `place_of_service` + `component` are REQUIRED: omitting either is a
