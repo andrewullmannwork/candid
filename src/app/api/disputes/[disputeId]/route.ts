@@ -35,6 +35,12 @@ import {
 } from "@/lib/disputes/coverage-snapshot";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import {
+  evaluateDeadline,
+  readDeadlineConfig,
+  computeFollowupSchedule,
+  type DeadlineGuard,
+} from "@/lib/disputes/deadline-engine";
+import {
   computeEvidenceFingerprint,
   decideDriftAction,
   isDisputeStale,
@@ -156,6 +162,73 @@ export async function GET(
   // §18.10.D — read on the GET so the "confirm to strengthen" prompt can be computed on a
   // PLAIN load (not only on regenerate); with costShareV2 ON a plain GET never regenerates.
   const disputeGroundsOn = await isFeatureEnabled("dispute_grounds_v1");
+
+  // dispute-letters v2 (Zone-2) — deadline surface, flag-gated on dispute_deadline_engine_v1.
+  // The GUARD (deadlineWarning) is recomputed fresh every load: it's anchored to FIXED dates
+  // (denial notice + 180d / collector contact + 30d), so daysRemaining counts down correctly.
+  // The GOVERNING deadline + follow-ups are READ from the persisted col/rows — the plan_response
+  // clock is generation-anchored (now + 60d), so a fresh recompute would drift forward daily.
+  // Null/empty when OFF (additive → existing consumers ignore the fields).
+  const deadlineEngineOn = await isFeatureEnabled(
+    "dispute_deadline_engine_v1",
+    user.email ?? undefined,
+  );
+  let deadlineWarning: DeadlineGuard | null = null;
+  let filingDeadlineDate: string | null = null;
+  let followups: Array<{ dueDate: string; kind: string; parentLetterType: string | null }> = [];
+  let followupPlan: Array<{ dueDate: string; kind: string }> = [];
+  const governingDeadlineDate = deadlineEngineOn
+    ? ((dispute.governing_deadline_date as string | null) ?? null)
+    : null;
+  const deadlineType = deadlineEngineOn
+    ? ((dispute.deadline_type as string | null) ?? null)
+    : null;
+  if (deadlineEngineOn) {
+    const meta = dispute.metadata as Record<string, unknown> | null;
+    const denial = typeof meta?.denialNoticeDate === "string" ? meta.denialNoticeDate : null;
+    const collector =
+      typeof meta?.collectorFirstContactDate === "string" ? meta.collectorFirstContactDate : null;
+    const deadlineConfig = await readDeadlineConfig(supabase);
+    const dr = evaluateDeadline(
+      { letterType: resolvedLetterType, denialNoticeDate: denial, collectorFirstContactDate: collector },
+      deadlineConfig,
+    );
+    deadlineWarning = dr.guard.severity === "ok" ? null : dr.guard;
+    // The guard reports daysRemaining but not the filing-deadline DATE — derive it (denial +
+    // ERISA window) so the UI can show "file before <date>".
+    if (denial && dr.guard.deadlineType === "erisa_appeal_180") {
+      const anchor = Date.parse(denial);
+      if (!Number.isNaN(anchor)) {
+        filingDeadlineDate = new Date(anchor + deadlineConfig.windowDays.erisa_appeal_180 * 86_400_000)
+          .toISOString()
+          .slice(0, 10);
+      }
+    }
+    // Persisted graduated follow-ups (deadline-anchored) for this dispute — owner-scoped.
+    const { data: fuRows } = await userScoped(supabase, user.id)
+      .table("dispute_followups")
+      .select("due_date, metadata")
+      .eq("dispute_id", disputeId)
+      .order("due_date", { ascending: true });
+    followups = ((fuRows ?? []) as Array<{ due_date: string; metadata: Record<string, unknown> | null }>)
+      .filter((r) => {
+        const k = r.metadata?.followup_kind;
+        return k === "deadline_interim" || k === "deadline_final";
+      })
+      .map((r) => ({
+        dueDate: r.due_date,
+        kind: (r.metadata?.followup_kind as string) ?? "",
+        parentLetterType: (r.metadata?.parent_letter_type as string | null) ?? null,
+      }));
+    // No persisted rows yet but a governing deadline exists → a computed PREVIEW of the plan.
+    if (followups.length === 0 && governingDeadlineDate) {
+      followupPlan = computeFollowupSchedule(governingDeadlineDate, deadlineConfig).map((e) => ({
+        dueDate: e.dueDate,
+        kind: e.kind,
+      }));
+    }
+  }
+
   const refreshRequested =
     costShareV2 && req.nextUrl.searchParams.get("refresh") === "1";
   const sentAt = dispute.sent_at ? new Date(dispute.sent_at as string) : null;
@@ -719,6 +792,15 @@ export async function GET(
         return typeof v === "string" ? v : null;
       })(),
     },
+    // dispute-letters v2 (Zone-2) — deadline surface (flag-gated; null/empty when OFF).
+    // deadlineWarning is recomputed fresh; governingDeadlineDate/deadlineType/followups are
+    // read from the persisted col/rows; followupPlan is a computed preview when none persisted.
+    deadlineWarning,
+    governingDeadlineDate,
+    deadlineType,
+    filingDeadlineDate,
+    followups,
+    followupPlan,
   });
 }
 
