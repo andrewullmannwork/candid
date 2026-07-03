@@ -19,26 +19,31 @@ export function IconChip({ children }: { children: ReactNode }) {
 
 /**
  * One row: icon chip + label + optional "why it matters" sub-line (children) + a
- * right-aligned control. `children` is optional so a resolved ("Done") row can omit
- * the sub-line; callers that always pass it render byte-identically to before.
+ * right-aligned control, with an optional full-width `below` slot (an expanded editor,
+ * aligned under the label) for the "expand to add a value" pattern. `children` and
+ * `below` are optional so a resolved ("Done") row omits the sub-line and callers that
+ * pass neither render byte-identically to before. `min-w-0` lets long labels wrap
+ * instead of overflowing the control (mobile-safe).
  */
 export function Row({
   icon,
   label,
   control,
   children,
+  below,
 }: {
   icon: ReactNode;
   label: string;
   control: ReactNode;
   children?: ReactNode;
+  below?: ReactNode;
 }) {
   return (
     <div className="border-t border-gray-100 py-3.5">
       <div className="flex items-start justify-between gap-3">
-        <div className="flex items-start gap-3">
+        <div className="flex min-w-0 items-start gap-3">
           <IconChip>{icon}</IconChip>
-          <div className="pt-0.5">
+          <div className="min-w-0 pt-0.5">
             <div className="text-sm font-medium text-gray-900">{label}</div>
             {children != null && children !== "" ? (
               <div className="mt-0.5 text-[13px] leading-snug text-gray-600">{children}</div>
@@ -47,6 +52,7 @@ export function Row({
         </div>
         <div className="pt-1">{control}</div>
       </div>
+      {below != null ? <div className="mt-3 pl-12">{below}</div> : null}
     </div>
   );
 }

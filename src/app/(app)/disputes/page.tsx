@@ -1296,13 +1296,11 @@ function DisputesContent() {
       {/* Dispute Letters v2 — Zone-1 "What we need from you" (map §6). Delegates to the
           existing handlers/modals; owns only the counter + the 3 inline inputs. */}
       <CaseNeedsPanel
-        claimId={letter.auditReportId || null}
         letterType={letter.letterType}
         planServices={zone1Services}
         nameMismatch={nameMismatch != null}
         nameResolved={patientIdentityResolved}
         attestationReviewed={serviceAttestationReviewed}
-        addressGap={zone1AddressGap}
         addressOnFile={!zone1AddressGap}
         eobPresent={zone1EobPresent}
         userPatientPaid={userPatientPaid}
