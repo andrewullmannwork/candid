@@ -25,7 +25,6 @@ import {
 import { DisputePlanChooser, type DisputePlanChooserPlan } from "@/components/disputes/DisputePlanChooser";
 import { StrengthenLetterPrompt, type StrengthField } from "@/components/disputes/StrengthenLetterPrompt";
 import { DownloadWarningModal } from "@/components/disputes/DownloadWarningModal";
-import { EvidenceGaps } from "@/components/disputes/EvidenceGaps";
 import { InsurerAddressCorrectionModal } from "@/components/disputes/InsurerAddressCorrectionModal";
 import { ProviderAddressModal } from "@/components/disputes/ProviderAddressModal";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
@@ -957,73 +956,35 @@ function DisputesContent() {
     </div>
   );
 
-  const gapsNode = (
-    <EvidenceGaps
-      gaps={(evidence?.gaps ?? []).filter(
-        (g) =>
-          g.kind !== "provider_address_missing" &&
-          g.kind !== "provider_address_confirm" &&
-          g.kind !== "insurer_address_missing",
-      )}
-      onAuditRerun={
-        disputeId
-          ? async () => {
-              if (!user) return;
-              const token = await user.firebaseUser.getIdToken();
-              const res = await fetch(
-                `/api/disputes/${disputeId}/rerun-audit`,
-                {
-                  method: "POST",
-                  headers: { Authorization: `Bearer ${token}` },
-                },
-              );
-              if (!res.ok) throw new Error("rerun-audit failed");
-              await fetchDispute(disputeId);
-            }
-          : undefined
-      }
-      onRedraft={disputeId ? handleRedraft : undefined}
-      disputeId={disputeId}
-      providerSeed={planContext?.providerContact ?? null}
-      getAuthToken={getAuthToken}
-      onProviderContactSaved={refetchAfterChange}
-      onUploadInModal={() => {
-        setPlanSearchModalMode("upload");
-        setPlanSearchModalOpen(true);
-      }}
-      // Block C2.2 (S152) — "Add address" on the insurer_address_missing gap
-      // opens the same insurer modal as the recipient card's edit affordance.
-      onAddInsurerAddress={
-        planContext?.insurer && disputeId
-          ? () => setInsurerCorrectionOpen(true)
-          : undefined
-      }
-      // S154 — resolve a secondary (category) coverage match's verify gate:
-      // POST the per-line decision then refetch so the gate clears and the
-      // letter re-renders with (match) / without (no_match) the citation.
-      onCoverageVerify={
-        disputeId
-          ? async (claimId, lineItemId, decision) => {
-              if (!user) return;
-              const token = await user.firebaseUser.getIdToken();
-              const res = await fetch(
-                `/api/claims/${claimId}/line-items/${lineItemId}/confirm-coverage`,
-                {
-                  method: "POST",
-                  headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${token}`,
-                  },
-                  body: JSON.stringify({ decision }),
-                },
-              );
-              if (!res.ok) throw new Error("confirm-coverage failed");
-              await refetchAfterChange();
-            }
-          : undefined
-      }
-    />
-  );
+  // S265 — coverage-verify + re-run-audit moved from the retired EvidenceGaps card into Zone-1.
+  const handleCoverageVerify = async (
+    claimId: string,
+    lineItemId: string,
+    decision: "match" | "no_match",
+  ) => {
+    if (!user) return;
+    const token = await user.firebaseUser.getIdToken();
+    const res = await fetch(
+      `/api/claims/${claimId}/line-items/${lineItemId}/confirm-coverage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ decision }),
+      },
+    );
+    if (!res.ok) throw new Error("confirm-coverage failed");
+    await refetchAfterChange();
+  };
+  const handleAuditRerun = async () => {
+    if (!user || !disputeId) return;
+    const token = await user.firebaseUser.getIdToken();
+    const res = await fetch(`/api/disputes/${disputeId}/rerun-audit`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error("rerun-audit failed");
+    await fetchDispute(disputeId);
+  };
 
   // Z1.3 — name-mismatch banner removed; Zone-1's "Verify the patient name" row now owns
   // the confirm/edit actions + surfaces the bill-vs-account detail inline.
@@ -1220,6 +1181,19 @@ function DisputesContent() {
   // Insurance row shows only when a plan is bound (a missing-year claim is owned by
   // VerifStrip); the Change action is available only when re-pinning is enabled.
   const zone1ShowInsuranceRow = planContext?.plan != null;
+  // S265 — service_coverage_verify gates + audit-findings-missing signal for Zone-1
+  // (absorbed from the retired EvidenceGaps card).
+  const coverageVerifyGaps = (evidence?.gaps ?? [])
+    .filter((g) => g.kind === "service_coverage_verify" && g.claimId && g.lineItemId)
+    .map((g) => ({
+      claimId: g.claimId as string,
+      lineItemId: g.lineItemId as string,
+      matchedServiceName: g.matchedServiceName ?? "this service",
+      description: g.description ?? "",
+    }));
+  const auditFindingsMissing = (evidence?.gaps ?? []).some(
+    (g) => g.kind === "audit_findings_missing",
+  );
 
   return (
     <div className={v3DesignOn ? "mx-auto max-w-6xl space-y-5" : "max-w-4xl mx-auto space-y-5"}>
@@ -1257,6 +1231,11 @@ function DisputesContent() {
         showInsuranceRow={zone1ShowInsuranceRow}
         canChangePlan={planPinningEnabled}
         readiness={strength?.readiness ?? null}
+        coverageVerifyGaps={coverageVerifyGaps}
+        onCoverageVerify={handleCoverageVerify}
+        rerunAuditEnabled={false}
+        auditFindingsMissing={auditFindingsMissing}
+        onAuditRerun={handleAuditRerun}
         onAddPlanDetails={(svc) =>
           setAddPlanModal({
             serviceSlug: svc.serviceSlug,
@@ -1616,7 +1595,6 @@ function DisputesContent() {
               until the left column catches up. */}
           <aside className="space-y-5 lg:sticky lg:top-4 lg:self-start lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
 
-            {gapsNode}
             {nextStepsNode}
             {caseFileNode}
           </aside>
@@ -1628,7 +1606,6 @@ function DisputesContent() {
           {heroNode}
           {recipientNode}
           {evidenceNode}
-          {gapsNode}
           {toolbarNode}
           {articleNode}
           {nextStepsNode}

@@ -65,6 +65,18 @@ export interface CaseNeedsPanelProps {
     requiredMet: number;
     requiredTotal: number;
   } | null;
+  /** service_coverage_verify gates — moved from EvidenceGaps into Zone-1 (S265). */
+  coverageVerifyGaps: Array<{
+    claimId: string;
+    lineItemId: string;
+    matchedServiceName: string;
+    description: string;
+  }>;
+  onCoverageVerify: (claimId: string, lineItemId: string, decision: "match" | "no_match") => Promise<void>;
+  /** Re-run audit — moved from EvidenceGaps. Gated OFF for now (the endpoint is broken, S265). */
+  rerunAuditEnabled: boolean;
+  auditFindingsMissing: boolean;
+  onAuditRerun: () => Promise<void>;
   onAddPlanDetails: (svc: PlanCostService) => void;
   onConfirmName: () => void;
   onEditLetter: () => void;
@@ -109,6 +121,8 @@ const CashIcon = (<svg width="18" height="18" viewBox="0 0 24 24" {...stroke} ar
 const CardIcon = (<svg width="18" height="18" viewBox="0 0 24 24" {...stroke} aria-hidden><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M3 10h18" /></svg>);
 const CalendarIcon = (<svg width="18" height="18" viewBox="0 0 24 24" {...stroke} aria-hidden><rect x="4" y="5" width="16" height="16" rx="2" /><path d="M8 3v4M16 3v4M4 11h16" /></svg>);
 const PencilIcon = (<svg width="18" height="18" viewBox="0 0 24 24" {...stroke} className="text-blue-600" aria-hidden><path d="M12 20h9M4 20l1-4 10-10a2.1 2.1 0 013 3L8 19l-4 1z" /></svg>);
+const ShieldCheckIcon = (<svg width="18" height="18" viewBox="0 0 24 24" {...stroke} aria-hidden><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z" /><path d="M9 12l2 2 4-4" /></svg>);
+const AuditIcon = (<svg width="18" height="18" viewBox="0 0 24 24" {...stroke} aria-hidden><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" /></svg>);
 
 // ── unified readiness ladder ──────────────────────────────────────────────────
 type Tier = "not_ready" | "ready" | "strong" | "airtight";
@@ -187,6 +201,37 @@ function ValueEdit({ value, onEdit }: { value: string; onEdit: () => void }) {
 function CancelLink({ onClick }: { onClick: () => void }) {
   return (
     <button type="button" onClick={onClick} className="whitespace-nowrap text-[13px] font-medium text-gray-500 hover:text-gray-700">Cancel</button>
+  );
+}
+
+/** Coverage-verify gate control — "Matches" / "Doesn't match" (from ServiceVerificationGateCard). */
+function CoverageVerifyControl({ onDecide }: { onDecide: (d: "match" | "no_match") => Promise<void> }) {
+  const [status, setStatus] = useState<"idle" | "match" | "no_match" | "error">("idle");
+  const busy = status === "match" || status === "no_match";
+  const decide = async (d: "match" | "no_match") => {
+    if (busy) return;
+    setStatus(d);
+    try { await onDecide(d); setStatus("idle"); } catch { setStatus("error"); }
+  };
+  return (
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      <button
+        type="button"
+        onClick={() => decide("match")}
+        disabled={busy}
+        className="whitespace-nowrap rounded-lg bg-blue-600 px-3 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
+      >
+        {status === "match" ? "Saving…" : "Matches"}
+      </button>
+      <button
+        type="button"
+        onClick={() => decide("no_match")}
+        disabled={busy}
+        className="whitespace-nowrap rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-60"
+      >
+        {status === "no_match" ? "Saving…" : "Doesn't match"}
+      </button>
+    </div>
   );
 }
 
@@ -321,6 +366,7 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
     attestationReviewed, hasInsurer, providerAddressOnFile, insurerAddressOnFile,
     eobPresent, userPatientPaid, denialNoticeDate, collectorFirstContactDate,
     planLabel, showInsuranceRow, canChangePlan, readiness,
+    coverageVerifyGaps, onCoverageVerify, rerunAuditEnabled, auditFindingsMissing, onAuditRerun,
     onAddPlanDetails, onConfirmName, onEditLetter, onReviewAttestation,
     onAddProviderAddress, onAddInsurerAddress, onUploadEob, onSaveAmountPaid,
     onChangePlan, onSaveDeadlineDate,
@@ -366,6 +412,45 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
           control={<AddButton label="Add" onClick={() => onAddPlanDetails(svc)} />}
         >
           Your plan&apos;s cost-share for this service — lets the letter quote your exact benefit.
+        </Row>
+      ),
+    });
+  }
+
+  // Coverage-verify gates (moved from EvidenceGaps into Zone-1, S265) — open when present.
+  for (const g of coverageVerifyGaps) {
+    descs.push({
+      key: `coverage-verify-${g.claimId}-${g.lineItemId}`,
+      done: false,
+      importance: "important",
+      node: (
+        <Row
+          icon={ShieldCheckIcon}
+          label={`Confirm coverage — ${g.matchedServiceName}`}
+          badge={ImportantBadge}
+          control={<CoverageVerifyControl onDecide={(d) => onCoverageVerify(g.claimId, g.lineItemId, d)} />}
+        >
+          {g.description}
+        </Row>
+      ),
+    });
+  }
+
+  // Re-run audit (moved from EvidenceGaps) — gated OFF for now (endpoint broken, S265; flip
+  // rerunAuditEnabled to re-enable). Shown only when the audit_findings_missing gap is present.
+  if (rerunAuditEnabled && auditFindingsMissing) {
+    descs.push({
+      key: "rerun-audit",
+      done: false,
+      importance: "important",
+      node: (
+        <Row
+          icon={AuditIcon}
+          label="Re-run the audit"
+          badge={ImportantBadge}
+          control={<AddButton label="Re-run" onClick={() => { void onAuditRerun(); }} />}
+        >
+          Re-run our audit against this bill to flag coverage mismatches, duplicate charges, and balance-billing — findings strengthen your letter.
         </Row>
       ),
     });
