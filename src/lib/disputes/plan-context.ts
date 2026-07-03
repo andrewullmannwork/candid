@@ -338,9 +338,26 @@ export async function resolvePlanContext(
   //    A valid anchor is by definition also a window/year match — this step just
   //    makes the CLAIM's plan win the tiebreak over other same-year duplicate
   //    rows (instead of created_at / is_active ordering).
-  const claimAnchorPlan = claimPinnedPlanId
+  let claimAnchorPlan = claimPinnedPlanId
     ? plans.find((p) => p.id === claimPinnedPlanId) ?? null
     : null;
+  // >1000-plan accounts: the claim's own plan can fall outside the bulk-fetch cap
+  // (PostgREST 1000-row default on `plans` above), exactly like the explicit pin.
+  // Without a direct-fetch the claim-anchor tiebreak silently loses to an arbitrary
+  // same-year duplicate — so a saved cost-share override (written to the claim's
+  // insurance_plan_id) is READ from a different plan and never surfaces (the item
+  // never marks "Added"). Mirror the pin's direct-fetch fallback above.
+  if (claimPinnedPlanId && !claimAnchorPlan) {
+    const { data: anchorRow } = await supabase
+      .from("insurance_plans")
+      .select(
+        "id, plan_name, plan_year, insurer_name, plan_type, canonical_plan_id, coverage_period_start, coverage_period_end, created_at, is_active",
+      )
+      .eq("id", claimPinnedPlanId)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (anchorRow) claimAnchorPlan = anchorRow as typeof plans[number];
+  }
   const claimAnchorValid =
     !!claimAnchorPlan &&
     ((planYear != null && claimAnchorPlan.plan_year === planYear) ||
