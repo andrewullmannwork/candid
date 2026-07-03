@@ -106,7 +106,7 @@ function ClockIcon({ className }: { className?: string }) {
 }
 
 // ── timeline model ────────────────────────────────────────────────────────────
-type RungState = "done" | "current" | "scheduled" | "locked";
+type RungState = "done" | "current" | "scheduled" | "locked" | "cancelled";
 interface Rung {
   key: string;
   label: string;
@@ -119,6 +119,13 @@ function buildRungs(p: CaseSummaryProps): Rung[] {
   const terminal = TERMINAL.has(p.status ?? "");
 
   rungs.push({ key: "drafted", label: "Letter drafted", state: "done" });
+
+  // Cancelled → a dead dispute: show it plainly (no "Ready to send" phantom) and no
+  // action bar (computeCaseStage returns "none").
+  if (p.status === "cancelled") {
+    rungs.push({ key: "cancelled", label: "Dispute cancelled", state: "cancelled" });
+    return rungs;
+  }
 
   if (p.isSent) {
     const when = prettyDate(p.filedDate);
@@ -200,6 +207,10 @@ function RungMarker({ state, last }: { state: RungState; last: boolean }) {
     ) : state === "scheduled" ? (
       <span className="grid h-5 w-5 place-items-center rounded-full border border-amber-200 bg-amber-50">
         <ClockIcon className="text-amber-600" />
+      </span>
+    ) : state === "cancelled" ? (
+      <span className="grid h-5 w-5 place-items-center rounded-full bg-gray-100">
+        <svg width="10" height="10" viewBox="0 0 24 24" {...stroke} className="text-gray-400" aria-hidden><path d="M6 12h12" /></svg>
       </span>
     ) : (
       <span className="grid h-5 w-5 place-items-center rounded-full border border-dashed border-gray-300">

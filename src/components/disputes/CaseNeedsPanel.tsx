@@ -734,8 +734,8 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
             control={
               // S266 (#1) — always show the CURRENT plan; add the Change action beside it
               // when re-pinning is enabled (was hiding the plan name behind the button).
-              <div className="flex items-center gap-3">
-                <span className="max-w-[38vw] truncate text-[13px] text-gray-500">{planLabel ?? "—"}</span>
+              <div className="flex flex-col items-end gap-1.5">
+                <span className="max-w-[42vw] truncate text-right text-[13px] text-gray-500">{planLabel ?? "—"}</span>
                 {canChangePlan ? <AddButton label="Change" onClick={onChangePlan} /> : null}
               </div>
             }
