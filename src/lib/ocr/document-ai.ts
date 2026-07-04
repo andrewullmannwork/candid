@@ -100,6 +100,25 @@ export async function splitPDF(buffer: Buffer, maxPages: number): Promise<Buffer
   return chunks;
 }
 
+/**
+ * Build a sub-PDF containing ONLY the given 0-based page indices, in order.
+ * Used by the per-page OCR fallback (src/lib/ocr/index.ts) to send just the
+ * undecodable pages to Document AI while keeping pdfjs's byte-exact text for
+ * every other page. Mirrors `splitPDF`'s pdf-lib `copyPages` pattern.
+ */
+export async function extractPagesToSubPdf(
+  buffer: Buffer,
+  pageIndices: number[],
+): Promise<Buffer> {
+  const { PDFDocument } = await import("pdf-lib");
+  const srcDoc = await PDFDocument.load(buffer);
+  const outDoc = await PDFDocument.create();
+  const copied = await outDoc.copyPages(srcDoc, pageIndices);
+  for (const page of copied) outDoc.addPage(page);
+  const bytes = await outDoc.save();
+  return Buffer.from(bytes);
+}
+
 /** Process a single PDF buffer through Document AI */
 async function processChunk(
   chunkBuffer: Buffer,

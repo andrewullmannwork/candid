@@ -56,7 +56,31 @@ export async function extractTextFromDocument(
     if (pdfjsPrimary) {
       try {
         const { extractTextFromPDFLayer } = await import("./pdf-text-extract");
-        return await extractTextFromPDFLayer(fileBuffer);
+        const { loadOcrUndecodableFallbackConfig } = await import(
+          "@/lib/config/ocr-fallback-config"
+        );
+        // Per-page OCR fallback: when a page draws text but pdfjs decodes
+        // ~nothing (undecodable text layer), re-OCR ONLY that page via Document
+        // AI and splice it back — keeping pdfjs's byte-exact text everywhere
+        // else. Flag OFF ⇒ detection skipped ⇒ byte-identical to pre-fix.
+        const fbCfg = await loadOcrUndecodableFallbackConfig();
+        const detection = fbCfg.enabled
+          ? {
+              candidateMaxChars: fbCfg.candidateMaxChars,
+              minTextOps: fbCfg.minTextOps,
+              minCharsPerOp: fbCfg.minCharsPerOp,
+            }
+          : undefined;
+        const pdfjsResult = await extractTextFromPDFLayer(fileBuffer, detection);
+        const undecodable = pdfjsResult.undecodablePageNumbers ?? [];
+        if (fbCfg.enabled && undecodable.length > 0) {
+          return await spliceUndecodablePagesViaDocAI(
+            fileBuffer,
+            pdfjsResult,
+            undecodable,
+          );
+        }
+        return pdfjsResult;
       } catch (err) {
         // ImageOnlyPDFError → fall through to Document AI (expected path for
         // scanned EOBs). Other errors also fall through defensively — we
@@ -77,6 +101,64 @@ export async function extractTextFromDocument(
   if (!reflowOn) return baseResult;
 
   return await applyReflowToOCRResult(baseResult);
+}
+
+/**
+ * Recover undecodable pages: send ONLY those pages to Document AI (a sub-PDF),
+ * then splice their OCR'd text back into the pdfjs result — keeping pdfjs's
+ * byte-exact text for every page that decoded cleanly.
+ *
+ * `undecodablePageNumbers` are 1-based, relative to `fileBuffer` (the same chunk
+ * pdfjs extracted). The sub-PDF's i-th page corresponds to the i-th entry.
+ *
+ * Degraded-safe: on ANY failure (sub-PDF build, Document AI, splice) this logs
+ * loudly and returns the ORIGINAL pdfjs result — the upload never hard-fails and
+ * is never worse than the pre-fix behavior (good pages still parse; the
+ * undecodable page is simply absent, exactly as today).
+ */
+async function spliceUndecodablePagesViaDocAI(
+  fileBuffer: Buffer,
+  pdfjsResult: OCRResult,
+  undecodablePageNumbers: number[],
+): Promise<OCRResult> {
+  try {
+    const { extractPagesToSubPdf, documentAIProvider } = await import("./document-ai");
+    const subPdf = await extractPagesToSubPdf(
+      fileBuffer,
+      undecodablePageNumbers.map((n) => n - 1),
+    );
+    const sub = await documentAIProvider.extractText(subPdf, "application/pdf");
+
+    if (sub.pages.length !== undecodablePageNumbers.length) {
+      console.warn(
+        `[ocr] per-page recovery page-count mismatch (expected ${undecodablePageNumbers.length}, got ${sub.pages.length}); splicing by position where possible.`,
+      );
+    }
+
+    const pages = pdfjsResult.pages.map((p) => ({ ...p }));
+    let recovered = 0;
+    undecodablePageNumbers.forEach((pageNum, i) => {
+      const subPage = sub.pages[i];
+      if (!subPage) return;
+      const target = pages.find((p) => p.pageNumber === pageNum);
+      if (!target) return;
+      target.text = subPage.text;
+      target.blocks = subPage.blocks;
+      recovered++;
+    });
+
+    const text = pages.map((p) => p.text).join("\n\n");
+    console.log(
+      `[ocr] recovered ${recovered}/${undecodablePageNumbers.length} undecodable page(s) via Document AI: [${undecodablePageNumbers.join(", ")}]`,
+    );
+    return { ...pdfjsResult, text, pages, undecodablePageNumbers };
+  } catch (err) {
+    console.warn(
+      `[ocr] per-page Document AI recovery FAILED for pages [${undecodablePageNumbers.join(", ")}]; returning pdfjs result (degraded, not worse than pre-fix):`,
+      (err as Error).message,
+    );
+    return pdfjsResult;
+  }
 }
 
 /**

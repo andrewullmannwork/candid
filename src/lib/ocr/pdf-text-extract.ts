@@ -90,16 +90,47 @@ export class ImageOnlyPDFError extends Error {
  * errors (encrypted PDF, malformed structure, etc.) directly so the caller
  * can decide whether to retry via OCR.
  */
+/**
+ * Config for undecodable-page detection. When provided, each near-empty page is
+ * probed to distinguish "text drawn but not decodable" (recover via OCR) from
+ * "genuinely empty / image-only" (leave to pdfjs). When omitted, detection is
+ * skipped entirely (byte-identical to the pre-detection path).
+ */
+export interface UndecodablePageDetection {
+  candidateMaxChars: number;
+  minTextOps: number;
+  minCharsPerOp: number;
+}
+
 export async function extractTextFromPDFLayer(
   fileBuffer: Buffer,
+  undecodableDetection?: UndecodablePageDetection,
 ): Promise<OCRResult> {
   // unpdf hides the worker-setup details that fail under Turbopack. Same
   // underlying pdfjs-dist; same PDFDocumentProxy shape on the other side.
-  const { getDocumentProxy } = await import("unpdf");
+  const { getDocumentProxy, getResolvedPDFJS } = await import("unpdf");
   const pdf = await getDocumentProxy(new Uint8Array(fileBuffer));
   const pages: OCRPage[] = [];
   const allPageText: string[] = [];
   let totalChars = 0;
+
+  // Undecodable-page detection setup — resolve OPS once from unpdf's OWN pdfjs
+  // instance (version-safe; avoids a direct pdfjs-dist import that would
+  // reintroduce the Turbopack worker issue unpdf exists to hide).
+  const undecodablePageNumbers: number[] = [];
+  let textShowOps: Set<number> | null = null;
+  if (undecodableDetection) {
+    try {
+      const { OPS } = await getResolvedPDFJS();
+      textShowOps = new Set([OPS.showText, OPS.showSpacedText]);
+    } catch (err) {
+      console.warn(
+        "[pdf-text-extract] could not resolve pdfjs OPS; undecodable-page detection disabled for this doc:",
+        (err as Error).message,
+      );
+      textShowOps = null;
+    }
+  }
 
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     const page = await pdf.getPage(pageNum);
@@ -162,6 +193,34 @@ export async function extractTextFromPDFLayer(
       blocks,
     });
     allPageText.push(pageText);
+
+    // Undecodable-page detection. A near-empty page is a candidate; a candidate
+    // that DRAWS text (>= minTextOps show-text ops) yet decoded far fewer chars
+    // than it drew (chars < textOps * minCharsPerOp) is a real text layer that
+    // failed to map to Unicode — recover it via targeted OCR. A candidate with
+    // few/no text ops is genuinely empty or image-only → leave it to pdfjs.
+    if (undecodableDetection && textShowOps) {
+      const trimmedLen = pageText.trim().length;
+      if (trimmedLen < undecodableDetection.candidateMaxChars) {
+        try {
+          const opList = await page.getOperatorList();
+          let drawnTextOps = 0;
+          for (const fn of opList.fnArray) if (textShowOps.has(fn)) drawnTextOps++;
+          if (
+            drawnTextOps >= undecodableDetection.minTextOps &&
+            trimmedLen < drawnTextOps * undecodableDetection.minCharsPerOp
+          ) {
+            undecodablePageNumbers.push(pageNum);
+          }
+        } catch (err) {
+          // Fail toward NOT flagging (fewer DocAI calls) — log for visibility.
+          console.warn(
+            `[pdf-text-extract] op-scan failed on p${pageNum}; not flagged:`,
+            (err as Error).message,
+          );
+        }
+      }
+    }
   }
 
   // Text-density gate: below threshold, signal caller to fall back to OCR.
@@ -177,6 +236,7 @@ export async function extractTextFromPDFLayer(
     text,
     pages,
     confidence: 1.0,
+    ...(undecodablePageNumbers.length > 0 ? { undecodablePageNumbers } : {}),
   };
 }
 
