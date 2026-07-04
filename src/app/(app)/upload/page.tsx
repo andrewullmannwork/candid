@@ -10,6 +10,7 @@ import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { createBrowserClient } from "@/lib/supabase/client";
 import { TurnstileWidget, type TurnstileWidgetHandle } from "@/components/security/TurnstileWidget";
 import { useProcessingFlowSlots } from "@/components/parsing/ProcessingFlow";
+import { useUploadFlow } from "@/lib/upload/upload-flow-context";
 import { ShareWithFriend } from "@/components/share/share-with-friend";
 import { TypeCard } from "@/components/upload/TypeCard";
 import { PathCard } from "@/components/upload/PathCard";
@@ -112,6 +113,15 @@ function UploadForm() {
   // the ProcessingFlow splash copy: willEmail → "we'll email you"; large but
   // !willEmail (the 15–30 band once REDIRECT→15) → "we'll populate results here".
   const [willEmail, setWillEmail] = useState(false);
+  // Cost-H (S267) — tell the global ParseCompleteBanner to stand down while this
+  // page is actively showing its own in-page splash/modal for a doc. When idle
+  // (user returned to an empty form), the banner surfaces the reading/ready
+  // status for a doc still processing in the background.
+  const { setInPageFlowActive } = useUploadFlow();
+  useEffect(() => {
+    setInPageFlowActive(uploaded);
+    return () => setInPageFlowActive(false);
+  }, [uploaded, setInPageFlowActive]);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [processingProgress, setProcessingProgress] = useState<{
     status: string;
