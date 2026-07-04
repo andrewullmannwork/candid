@@ -1,37 +1,42 @@
 "use client";
 
 /**
- * S78 — async ingestion notification banner.
+ * S78 / Cost-H (S267) — async ingestion status banner (two states).
  *
- * Shows on every authed page (mounted in app layout). Polls
- * /api/documents/recent every 30s while the tab is visible to detect when
- * a large-doc parse (>30 pages, async UX path) has completed in the
- * background. When found, renders a closable banner at the top of the
- * content area; click "See results" → routes to /plan.
+ * Shows on every authed page (mounted in the app layout). Polls
+ * /api/documents/recent to surface a large doc the user may have navigated
+ * away from while it processes in the background:
+ *   - reading → "We're still reading your {doc}…" (in-flight: queued/processing)
+ *   - ready   → "Your upload of {doc} is complete. See results" (processed)
  *
- * Visibility rules:
- *   - localStorage `dismissed_doc_notifications` (string[] of doc IDs):
- *     once dismissed (close-click OR auto-dismiss after window expires),
- *     never show that doc again on this device.
- *   - localStorage `first_seen_doc_notifications` (Record<doc_id, ms>):
- *     timestamp of first banner render for each doc. If (now - first_seen)
- *     exceeds AUTO_DISMISS_WINDOW_MS, the doc is auto-dismissed (added to
- *     dismissed set) so it doesn't return on refresh.
- *   - Email is the persistent fallback record — banner is just an
- *     in-session nudge that fades away.
+ * The reading state is NOT dismissible and dismisses ITSELF: it is derived
+ * purely from the latest poll, so the instant the doc's status leaves
+ * queued/processing (→ processed, or errored/aged-out) the endpoint stops
+ * returning it as "reading" and the banner flips to ready (or clears). Polls
+ * every 10s while a reading banner is up (30s otherwise) + immediately on tab
+ * re-focus, so the flip is prompt.
  *
- * If the feature flag (`async_ingestion_ux_v1`) is OFF, /api/documents/recent
- * returns an empty list and this component renders nothing — the polling
- * itself is harmless (one quick query per 30s).
+ * The ready state is dismissible (X) and auto-dismisses 10 min after it is
+ * first ACTUALLY RENDERED (not merely fetched) — the render-time first_seen
+ * stamp is what prevents the S267-discovered self-destruct where the clock ran
+ * down while the banner was suppressed on /upload.
+ *
+ * Suppressed only while the /upload page's own in-page splash/modal is active
+ * for a doc (UploadFlowContext.inPageFlowActive) — so returning to an idle
+ * /upload still surfaces the banner.
+ *
+ * If async_ingestion_ux_v1 is OFF, /api/documents/recent returns [] and this
+ * renders nothing.
  */
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
+import { useUploadFlow } from "@/lib/upload/upload-flow-context";
 
 const POLL_INTERVAL_MS = 30_000;
-const AUTO_DISMISS_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+const READING_POLL_MS = 10_000; // faster cadence while a reading banner is up → prompt flip to ready
+const AUTO_DISMISS_WINDOW_MS = 10 * 60 * 1000; // 10 minutes (ready state only)
 const DISMISSED_KEY = "dismissed_doc_notifications";
 const FIRST_SEEN_KEY = "first_seen_doc_notifications";
 
@@ -40,6 +45,9 @@ interface RecentDoc {
   file_name: string;
   processing_total_pages: number | null;
   created_at: string;
+  status: string;
+  classified_type: string | null;
+  state: "reading" | "ready";
 }
 
 function readDismissedSet(): Set<string> {
@@ -85,9 +93,18 @@ function writeFirstSeenMap(map: Record<string, number>): void {
   }
 }
 
+// Route "See results" to the surface that owns this doc type — mirrors the
+// upload page's own post-parse routing (bills → /audit, plan docs → /plan).
+// Once REDIRECT drops to 15, large itemized bills reach this banner too, so a
+// blanket → /plan would misroute them.
+function resultsPathFor(classifiedType: string | null): string {
+  if (classifiedType === "eob" || classifiedType === "itemized_bill") return "/audit";
+  return "/plan";
+}
+
 export function ParseCompleteBanner() {
-  const pathname = usePathname();
   const { user } = useAuth();
+  const { inPageFlowActive } = useUploadFlow();
   const [eligibleDoc, setEligibleDoc] = useState<RecentDoc | null>(null);
 
   const fetchRecent = useCallback(async () => {
@@ -121,59 +138,53 @@ export function ParseCompleteBanner() {
     const firstSeen = readFirstSeenMap();
     const now = Date.now();
 
-    // Find the most-recent doc that isn't dismissed AND is still within the
-    // 10-minute auto-dismiss window (or hasn't been seen yet, which we treat
-    // as "still in window").
+    // docs are created_at DESC — pick the freshest one we should show.
     let chosen: RecentDoc | null = null;
     for (const d of docs) {
+      if (d.state === "reading") {
+        // In-flight: always eligible, never dismissed/auto-dismissed. It clears
+        // itself when the next poll no longer returns it as "reading".
+        chosen = d;
+        break;
+      }
+      // ready: honor dismissal + the 10-min post-render auto-dismiss window.
       if (dismissed.has(d.id)) continue;
-
       const seenAt = firstSeen[d.id];
       if (seenAt && now - seenAt > AUTO_DISMISS_WINDOW_MS) {
-        // Auto-dismiss: window expired — move to dismissed set so we stop
-        // re-rendering / re-checking on subsequent polls.
-        dismissed.add(d.id);
+        dismissed.add(d.id); // window expired — stop re-checking on later polls
         continue;
       }
-
       chosen = d;
-      break; // docs are ordered created_at DESC; pick the freshest non-dismissed
+      break;
     }
 
-    // Persist any auto-dismissals we just decided.
     writeDismissedSet(dismissed);
-
-    // Record first-seen timestamp for the chosen doc (start its 10-min clock).
-    if (chosen && !firstSeen[chosen.id]) {
-      firstSeen[chosen.id] = now;
-      writeFirstSeenMap(firstSeen);
-    }
-
     setEligibleDoc(chosen);
   }, [user]);
+
+  // Suppress while the /upload page owns the in-page flow for a doc.
+  const suppressed = inPageFlowActive;
+  const readingActive = eligibleDoc?.state === "reading";
 
   useEffect(() => {
     if (!user) return;
 
     let cancelled = false;
-    let timer: ReturnType<typeof setInterval> | null = null;
-
     const tick = async () => {
       if (cancelled) return;
       if (typeof document !== "undefined" && document.hidden) return; // pause when tab hidden
       await fetchRecent();
     };
 
-    // Initial fetch immediately, then poll.
+    // Immediate fetch, then poll — faster while a reading banner is showing so
+    // it flips to ready promptly.
     tick();
-    timer = setInterval(tick, POLL_INTERVAL_MS);
+    const timer = setInterval(tick, readingActive ? READING_POLL_MS : POLL_INTERVAL_MS);
 
-    // Re-fetch on visibility change (catches the case where the user comes
-    // back to the tab after a parse completed in the background).
+    // Re-fetch on visibility change (catches the user coming back to the tab
+    // after a parse completed in the background → prompt reading→ready flip).
     const onVisibility = () => {
-      if (typeof document !== "undefined" && !document.hidden) {
-        tick();
-      }
+      if (typeof document !== "undefined" && !document.hidden) tick();
     };
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", onVisibility);
@@ -181,12 +192,23 @@ export function ParseCompleteBanner() {
 
     return () => {
       cancelled = true;
-      if (timer) clearInterval(timer);
+      clearInterval(timer);
       if (typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", onVisibility);
       }
     };
-  }, [user, fetchRecent]);
+  }, [user, fetchRecent, readingActive]);
+
+  // Start the ready-state auto-dismiss clock only when the banner is ACTUALLY on
+  // screen (ready + not suppressed) — the S267 self-destruct fix (previously the
+  // clock ran while the banner was hidden on /upload, so it expired unseen).
+  useEffect(() => {
+    if (suppressed || !eligibleDoc || eligibleDoc.state !== "ready") return;
+    const firstSeen = readFirstSeenMap();
+    if (firstSeen[eligibleDoc.id]) return;
+    firstSeen[eligibleDoc.id] = Date.now();
+    writeFirstSeenMap(firstSeen);
+  }, [eligibleDoc, suppressed]);
 
   const dismiss = useCallback(() => {
     if (!eligibleDoc) return;
@@ -197,11 +219,7 @@ export function ParseCompleteBanner() {
   }, [eligibleDoc]);
 
   if (!eligibleDoc) return null;
-  // S91 — suppress on /upload so the banner doesn't overlap with the
-  // disambiguation modal that fires for the SAME doc the user just uploaded.
-  // The banner is for OTHER pages where the user might have navigated away;
-  // on /upload the in-page UX is authoritative.
-  if (pathname === "/upload") return null;
+  if (suppressed) return null;
 
   // file_name can be long — truncate gracefully in the banner copy.
   const displayName =
@@ -209,6 +227,26 @@ export function ParseCompleteBanner() {
       ? eligibleDoc.file_name.slice(0, 57) + "…"
       : eligibleDoc.file_name;
 
+  if (eligibleDoc.state === "reading") {
+    return (
+      <div className="mb-4 rounded-xl bg-blue-50 border border-blue-200 px-4 py-3 flex items-center gap-3">
+        <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center shrink-0">
+          <svg className="w-4 h-4 text-blue-600 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-blue-900">
+            We&rsquo;re still reading <span className="font-semibold">{displayName}</span> — we&rsquo;ll show your
+            results the moment they&rsquo;re ready.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ready
   return (
     <div className="mb-4 rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-3 flex items-center gap-3">
       <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center shrink-0">
@@ -219,7 +257,10 @@ export function ParseCompleteBanner() {
       <div className="flex-1 min-w-0">
         <p className="text-sm text-emerald-900">
           Your upload of <span className="font-semibold">{displayName}</span> is complete.{" "}
-          <Link href="/plan" className="font-semibold underline hover:no-underline">
+          <Link
+            href={resultsPathFor(eligibleDoc.classified_type)}
+            className="font-semibold underline hover:no-underline"
+          >
             See results
           </Link>
         </p>

@@ -10,6 +10,7 @@ import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { createBrowserClient } from "@/lib/supabase/client";
 import { TurnstileWidget, type TurnstileWidgetHandle } from "@/components/security/TurnstileWidget";
 import { useProcessingFlowSlots } from "@/components/parsing/ProcessingFlow";
+import { useUploadFlow } from "@/lib/upload/upload-flow-context";
 import { ShareWithFriend } from "@/components/share/share-with-friend";
 import { TypeCard } from "@/components/upload/TypeCard";
 import { PathCard } from "@/components/upload/PathCard";
@@ -108,6 +109,19 @@ function UploadForm() {
   // vs the existing sync UnifiedParseScreen messaging.
   const [isLargeDoc, setIsLargeDoc] = useState(false);
   const [largeDocPageCount, setLargeDocPageCount] = useState<number | null>(null);
+  // Cost-H (S267) — EMAIL tier signal (pageCount > ASYNC_EMAIL_MAX_PAGES). Drives
+  // the ProcessingFlow splash copy: willEmail → "we'll email you"; large but
+  // !willEmail (the 15–30 band once REDIRECT→15) → "we'll populate results here".
+  const [willEmail, setWillEmail] = useState(false);
+  // Cost-H (S267) — tell the global ParseCompleteBanner to stand down while this
+  // page is actively showing its own in-page splash/modal for a doc. When idle
+  // (user returned to an empty form), the banner surfaces the reading/ready
+  // status for a doc still processing in the background.
+  const { setInPageFlowActive } = useUploadFlow();
+  useEffect(() => {
+    setInPageFlowActive(uploaded);
+    return () => setInPageFlowActive(false);
+  }, [uploaded, setInPageFlowActive]);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [processingProgress, setProcessingProgress] = useState<{
     status: string;
@@ -536,11 +550,17 @@ function UploadForm() {
           setDocType(uploadResult.resolvedDocType as DocType);
         }
 
-        // S78 — capture large-doc flag for async UX splash + email-on-complete.
-        // Backend sets to true only when async_ingestion_ux_v1 flag is ON, PDF,
-        // and pageCount > 30.
+        // S78 / Cost-H (S267) — capture the async-UX tier signals from every
+        // processing-bound upload response (high-conf, medium-conf, AND the
+        // awaiting_confirmation path so the doc-type modal is covered). Backend
+        // sets isLargeDoc when async_ingestion_ux_v1 is ON + PDF + pageCount >
+        // REDIRECT; willEmail when pageCount > EMAIL. Equal at 30/30 (neutral);
+        // once REDIRECT→15 the 15–30 band is isLargeDoc && !willEmail.
         if (uploadResult.isLargeDoc) {
           setIsLargeDoc(true);
+        }
+        if (uploadResult.willEmail) {
+          setWillEmail(true);
         }
 
         // Handle different processing outcomes
@@ -1039,6 +1059,7 @@ function UploadForm() {
     processingProgress,
     classificationResult,
     isLargeDoc,
+    willEmail,
     largeDocPageCount,
     yearRolloverEnabled,
     premiumSaved,

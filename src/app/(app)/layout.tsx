@@ -9,6 +9,7 @@ import { ParseCompleteBanner } from "@/components/notifications/ParseCompleteBan
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useMinHoldLoading } from "@/lib/loading/use-min-hold";
 import { DisputeDraftOverlayProvider } from "@/lib/loading/dispute-draft-overlay";
+import { UploadFlowProvider } from "@/lib/upload/upload-flow-context";
 
 const mainItems = [
   {
@@ -207,6 +208,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   );
 
   return (
+    <UploadFlowProvider>
     <DisputeDraftOverlayProvider>
       <div className="flex min-h-screen bg-gray-50/50">
         {/* Mobile top bar */}
@@ -259,5 +261,6 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       </main>
       </div>
     </DisputeDraftOverlayProvider>
+    </UploadFlowProvider>
   );
 }

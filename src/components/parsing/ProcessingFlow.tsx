@@ -116,6 +116,14 @@ export interface ProcessingFlowProps {
   processingProgress: ProcessingProgress | null;
   classificationResult: ClassificationResult | null;
   isLargeDoc: boolean;
+  /**
+   * Cost-H (S267) — the doc is in the EMAIL tier (pageCount >
+   * ASYNC_EMAIL_MAX_PAGES). Drives the large-doc splash copy: willEmail →
+   * "we'll email you"; isLargeDoc && !willEmail (the 15–30 band once
+   * REDIRECT→15) → "we'll populate your results", no email promise. Optional +
+   * defaults false so any non-/upload caller is unaffected.
+   */
+  willEmail?: boolean;
   largeDocPageCount: number | null;
   yearRolloverEnabled: boolean;
   premiumSaved: boolean;
@@ -198,6 +206,7 @@ export function useProcessingFlowSlots(props: ProcessingFlowProps): ProcessingFl
     confirmationData,
     processingProgress,
     isLargeDoc,
+    willEmail = false,
     largeDocPageCount,
     yearRolloverEnabled,
     premiumSaved,
@@ -532,18 +541,25 @@ export function useProcessingFlowSlots(props: ProcessingFlowProps): ProcessingFl
     smartSkipOutcome: processingProgress?.smartSkipOutcome ?? null,
   };
 
-  // Universal loader title + subtitle (Andrew direction S101).
+  // Universal loader title + subtitle (Andrew S101; Cost-H S267 tier-aware).
   const title = isLargeDoc ? "Thanks — we're reading your plan" : "Reading your document";
   const subtitle = isLargeDoc
     ? (() => {
         const pages = largeDocPageCount ?? 0;
-        const pagesPhrase = pages > 0 ? `${pages} pages of` : "";
         const largeDocDuration = getExpectedDurationCopy(docType, pages);
-        return `${pagesPhrase ? pagesPhrase + " " : ""}careful extraction takes about ${largeDocDuration}. Hang tight, browse the rest of Candid, or close the tab — we'll email you the moment it's ready.`;
+        if (willEmail) {
+          // EMAIL tier (pageCount > ASYNC_EMAIL_MAX_PAGES): long parse → the
+          // email is the durable pull-back, so "close the tab" is honest.
+          const pagesPhrase = pages > 0 ? `${pages} pages of` : "";
+          return `${pagesPhrase ? pagesPhrase + " " : ""}careful extraction takes about ${largeDocDuration}. Hang tight, browse the rest of Candid, or close the tab — we'll email you the moment it's ready.`;
+        }
+        // REDIRECT-only band (15–30 once REDIRECT→15): no email fires; the parse
+        // runs server-side and the results surface in-app. Copy per Andrew S267.
+        return `This usually takes about ${largeDocDuration}. You don't have to stay on this page. We'll populate your results the moment they're ready.`;
       })()
     : "We meticulously go over every detail in your plan not once but twice. That takes a while, but we know it's worth it.";
 
-  // Large-doc footer: optional "browse Candid" CTA.
+  // Large-doc footer: "browse Candid" CTA + a tier-aware note (Cost-H S267).
   const footer = isLargeDoc ? (
     <div className="text-center">
       <a
@@ -556,7 +572,9 @@ export function useProcessingFlowSlots(props: ProcessingFlowProps): ProcessingFl
         </svg>
       </a>
       <p className="text-xs text-slate-500 mt-3">
-        You can leave this tab. We&rsquo;ll email when your plan is ready.
+        {willEmail
+          ? "You can leave this tab. We'll email when your plan is ready."
+          : "It keeps processing in the background."}
       </p>
     </div>
   ) : undefined;

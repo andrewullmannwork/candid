@@ -1,9 +1,11 @@
 /**
  * S78 — async ingestion notification source-of-truth.
- *
- * Returns the authenticated user's recently-processed documents (last 24 hours)
- * so the ParseCompleteBanner component on every authed page can decide whether
- * to render the "Your upload of [doc_name] is complete" banner.
+ * Cost-H (S267) — extended to a TWO-STATE source: "reading" (in-flight:
+ * queued/processing) + "ready" (processed). The ParseCompleteBanner on every
+ * authed page renders "We're still reading your [doc]" while it parses in the
+ * background, then flips itself to "Your upload of [doc] is complete" — so a
+ * large doc the user navigated away from stays visible on return and the
+ * reading state dismisses itself the moment status becomes processed.
  *
  * Client-side state machine (banner.tsx):
  *   1. Poll this endpoint every 30s while tab visible.
@@ -36,15 +38,22 @@ import { userScoped } from "@/lib/security/user-scoped";
 // Read from flags in the handler (was a hardcoded 30 shared with
 // onboarding-emails + upload route; both now read their own tier flag).
 
-// 24h cap — older processed docs shouldn't pop a banner. Email + dashboard
-// listing are the long-term surfaces.
+// 24h cap — older processed ("ready") docs shouldn't pop a banner. Email +
+// dashboard listing are the long-term surfaces.
 const LOOKBACK_HOURS = 24;
 
-interface RecentDoc {
+// Cost-H (S267) — in-flight ("reading") docs only surface for a bounded window
+// so a stuck/dead parse drops off the banner instead of nagging forever. A
+// large-doc parse tops out ~15-20 min; 60 min gives comfortable margin.
+const IN_FLIGHT_LOOKBACK_MINUTES = 60;
+
+interface RecentDocRow {
   id: string;
   file_name: string;
   processing_total_pages: number | null;
   created_at: string;
+  status: string;
+  classified_type: string | null;
 }
 
 async function getAuthUser(req: NextRequest) {
@@ -85,10 +94,14 @@ export async function GET(req: NextRequest) {
 
   const cutoff = new Date(Date.now() - LOOKBACK_HOURS * 60 * 60 * 1000).toISOString();
 
+  // Cost-H (S267) — two-state banner source. "ready" = processed (24h window);
+  // "reading" = queued/processing (in-flight, bounded window). awaiting_user_
+  // confirmation is intentionally excluded — that state belongs to the doc-type
+  // modal, not the background-processing banner.
   const { data: docs, error } = await userScoped(supabase, user.id)
     .table("documents")
-    .select("id, file_name, processing_total_pages, created_at")
-    .eq("status", "processed")
+    .select("id, file_name, processing_total_pages, created_at, status, classified_type")
+    .in("status", ["queued", "processing", "processed"])
     .gte("created_at", cutoff)
     .order("created_at", { ascending: false })
     .limit(20);
@@ -98,15 +111,35 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ documents: [] });
   }
 
-  // Filter to large docs only — small docs use sync PlayfulParsingScreen so the
-  // banner isn't a useful surface for them. Cost-H.2 (S198): the cutoff is the
-  // redirect tier (flag-tunable, default 30).
+  // Large docs only — small docs finish during the sync PlayfulParsingScreen, so
+  // the banner isn't a useful surface for them. Cost-H.2 (S198): the cutoff is
+  // the redirect tier (flag-tunable, default 30). Cost-H (S267): tag each doc
+  // "reading" (in-flight, within the bounded window) or "ready" (processed), and
+  // drop everything else — so the reading state clears itself the instant a
+  // doc's status leaves queued/processing.
   const { getFlags } = await import("@/lib/config/feature-flags");
   const { ASYNC_REDIRECT_MAX_PAGES } = await getFlags();
-  const eligible = (docs ?? []).filter((d: RecentDoc) => {
+  const inFlightCutoffMs = Date.now() - IN_FLIGHT_LOOKBACK_MINUTES * 60 * 1000;
+  const documents = (docs ?? []).flatMap((d: RecentDocRow) => {
     const pages = d.processing_total_pages ?? 0;
-    return pages > ASYNC_REDIRECT_MAX_PAGES;
+    if (pages <= ASYNC_REDIRECT_MAX_PAGES) return [];
+    let state: "reading" | "ready" | null = null;
+    if (d.status === "processed") {
+      state = "ready"; // already 24h-bounded by the query
+    } else if (new Date(d.created_at).getTime() >= inFlightCutoffMs) {
+      state = "reading"; // queued/processing within the in-flight window
+    }
+    if (!state) return [];
+    return [{
+      id: d.id,
+      file_name: d.file_name,
+      processing_total_pages: d.processing_total_pages,
+      created_at: d.created_at,
+      status: d.status,
+      classified_type: d.classified_type,
+      state,
+    }];
   });
 
-  return NextResponse.json({ documents: eligible });
+  return NextResponse.json({ documents });
 }
