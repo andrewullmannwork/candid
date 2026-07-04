@@ -13,12 +13,13 @@ import { cn } from "@/lib/utils/cn";
  * reusable primitive per S112 §1.C.1 Rec 9.
  *
  * Tier (per S112 §1.C.1 Rec 9 + Pattern 1 #11):
- *  - GREEN  (verified)   — user_plan + sbc_upload/plan_doc_upload, or vs != "unverified", or matched_plan, or cms_api
+ *  - GREEN  (verified)   — user_plan + sbc_upload/plan_doc_upload/catalog_match, or vs != "unverified", or matched_plan, or cms_api
  *  - AMBER  (unverified) — user_plan + insurance_card/manual, or verified_plan, or static_catalog with planType
  *  - GREY   (unknown)    — static_catalog with no planType
  *
  * 7 copy variants preserved byte-identical from prior inline implementation to
- * avoid methodology-disclosure regressions across surfaces.
+ * avoid methodology-disclosure regressions across surfaces; an 8th variant
+ * (catalog_match — search-selected named plan) added S269 — see that branch.
  */
 
 type Tier = "verified" | "unverified" | "unknown";
@@ -47,6 +48,27 @@ function derive(props: DataSourceContextLineProps): DerivedCopy | null {
   if (ds === "user_plan" || ds === "user_plan_with_canonical") {
     if (ps === "sbc_upload" || ps === "plan_doc_upload" || (vs && vs !== "unverified")) {
       return { tier: "verified", body: <>Results based on your uploaded document.</> };
+    }
+    // catalog_match: user searched for + selected their exact named plan, so the
+    // benefits shown are that canonical plan's real per-service coverage
+    // (canonical-grade) — NOT "common benefits for your plan type." Green tier,
+    // but keep a soft upload nudge: canonical coverage can be partial, and an SBC
+    // upload still adds per-service specifics (+ feeds the corroboration
+    // flywheel). Mirrors set-active's source='catalog_match' intent — honest
+    // canonical-grade provenance, never a false "insurance card alone" claim.
+    if (ps === "catalog_match") {
+      return {
+        tier: "verified",
+        body: (
+          <>
+            Results based on the plan you selected.{" "}
+            <Link href="/upload" className="font-semibold underline">
+              Upload your plan document
+            </Link>{" "}
+            for the most complete results.
+          </>
+        ),
+      };
     }
     if (ps === "manual") {
       return {
