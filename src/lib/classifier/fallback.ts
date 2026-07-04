@@ -13,11 +13,16 @@
  *   the upload-time signal.
  *
  *   applyBillParserSanityGate() — last line of defense before processBillDocument
- *   fires. Even if the resolver decided the effective type is a bill, refuse
- *   if the document has too many pages OR matches too many SBC-specific
- *   phrases. Catches the case where (a) Haiku failed, (b) regex agreed with
- *   the user's wrong pick, and (c) the bill parser would otherwise hallucinate
- *   CPT codes from SBC page numbers and addresses.
+ *   fires. Even if the resolver decided the effective type is a bill, refuse if
+ *   the document is structurally an SBC — detected via the shared, hardened
+ *   `scanForSbcMarkers` (11 ACA-standardized template markers). Catches the
+ *   case where (a) Haiku failed, (b) regex agreed with the user's wrong pick,
+ *   and (c) the bill parser would otherwise hallucinate CPT codes from SBC page
+ *   numbers and addresses. NOTE: page count is deliberately NOT a signal here —
+ *   legitimate EOBs/bills run long (a 16-page Kaiser EOB carries a glossary,
+ *   OOP tables, and per-claim detail) while carrying ZERO SBC markers, so the
+ *   prior page-count heuristic hard-rejected valid bills. SBC markers are the
+ *   only reliable bill-vs-SBC discriminator (SBCs: 10/11; EOBs: 0/11 empirically).
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -34,6 +39,7 @@ import {
   PICKER_TYPES,
   getDocTypeClass,
 } from "@/lib/classifier/doc-type-vocabulary";
+import { scanForSbcMarkers } from "@/lib/billing/sbc-marker-scan";
 
 export {
   PICKER_TYPES,
@@ -76,23 +82,6 @@ export function shouldHaltForUserConfirmation(
   if (!PICKER_TYPES.has(classifierVerdict)) return false;
   return getDocTypeClass(userPick) !== getDocTypeClass(classifierVerdict);
 }
-
-// SBC-specific phrases with high specificity. These appear on the standardized
-// CMS template and are extremely unlikely to appear on an itemized bill or EOB.
-// Each entry is a regex tested against OCR text; matches contribute to the
-// sanity gate's phrase count.
-const SBC_HIGH_SPECIFICITY_PHRASES: RegExp[] = [
-  /summary\s+of\s+benefits\s+and\s+coverage/i,
-  /common\s+medical\s+events?/i,
-  /excluded\s+services?\s*(?:&|and)\s*other\s+covered\s+services/i,
-  /services\s+you\s+may\s+need/i,
-  /what\s+you\s+will\s+pay/i,
-  /minimum\s+essential\s+coverage/i,
-  /minimum\s+value\s+standard/i,
-  /coverage\s+examples?/i,
-  /the\s+plan\s+would\s+be\s+responsible/i,
-  /total\s+example\s+cost/i,
-];
 
 export interface HaikuFallbackResult {
   classification: HaikuClassification;
@@ -159,13 +148,23 @@ export interface SanityGateVerdict {
 }
 
 /**
- * Refuse to run the bill parser if the document looks structurally like an SBC.
- * Triggered when effectiveType is in BILL_TYPES and the flag is enabled. Two
- * independent OR-gated conditions:
- *   - pageCount >= config.sanity_gate_min_pages (default 10) — bills are
- *     typically 1-3 pages; 10+ pages is a strong contradiction.
- *   - matched SBC phrase count >= config.sanity_gate_sbc_phrase_count
- *     (default 2) — multi-phrase agreement is hard to explain away as noise.
+ * Refuse to run the bill parser if the document is structurally an SBC.
+ * Triggered when effectiveType is in BILL_TYPES and the flag is enabled.
+ *
+ * Blocks ONLY on positive SBC structural evidence — `scanForSbcMarkers` (the
+ * shared, hardened detector: 11 ACA-standardized template markers). Blocks when
+ * >= `config.sanity_gate_sbc_phrase_count` markers match (default 2; multi-marker
+ * agreement is hard to explain away as noise).
+ *
+ * Page count is deliberately NOT a signal. The prior heuristic (pageCount >=
+ * min_pages OR phrase_count) hard-rejected legitimately long bills/EOBs — a
+ * 16-page Kaiser EOB (glossary + OOP tables + per-claim detail) carries ZERO SBC
+ * markers yet tripped the page-count arm. Empirically (7 real SBC fixtures + a
+ * real EOB): SBCs match 10/11 markers regardless of length (8–370 pp); EOBs
+ * match 0/11. `matchedSbcPhrases` now carries the matched marker NAMES.
+ *
+ * This unifies the gate with the parser-side `scanForSbcMarkers` defense in
+ * `haiku-bill-parser.ts` — one detector, no divergent SBC lists.
  *
  * Caller is responsible for translating a blocked verdict into the appropriate
  * documents row update + user-visible error.
@@ -186,40 +185,23 @@ export async function applyBillParserSanityGate(args: {
     return { blocked: false, reason: null, matchedSbcPhrases: [], pageCount };
   }
 
-  const matchedPhrases: string[] = [];
-  for (const pattern of SBC_HIGH_SPECIFICITY_PHRASES) {
-    const m = ocrText.match(pattern);
-    if (m) matchedPhrases.push(m[0]);
-  }
+  const scan = scanForSbcMarkers(ocrText, config.sanity_gate_sbc_phrase_count);
 
-  const pageCountTrips =
-    typeof pageCount === "number" && pageCount >= config.sanity_gate_min_pages;
-  const phraseCountTrips =
-    matchedPhrases.length >= config.sanity_gate_sbc_phrase_count;
-
-  if (!pageCountTrips && !phraseCountTrips) {
+  if (!scan.isLikelySbc) {
     return {
       blocked: false,
       reason: null,
-      matchedSbcPhrases: matchedPhrases,
+      matchedSbcPhrases: scan.matchedMarkers,
       pageCount,
     };
   }
 
-  const tripped: string[] = [];
-  if (pageCountTrips) tripped.push(`pageCount=${pageCount} >= ${config.sanity_gate_min_pages}`);
-  if (phraseCountTrips) {
-    tripped.push(
-      `sbc_phrases=${matchedPhrases.length} >= ${config.sanity_gate_sbc_phrase_count}`,
-    );
-  }
-
-  const reason = `Document looks like an SBC, not a bill (${tripped.join(", ")}). Please re-upload using the "Plan summary" card, or upload an itemized bill / EOB instead.`;
+  const reason = `Document looks like an SBC, not a bill (${scan.matchedMarkers.length}/${scan.totalMarkersChecked} SBC markers: ${scan.matchedMarkers.join(", ")}). Please re-upload using the "Plan summary" card, or upload an itemized bill / EOB instead.`;
 
   return {
     blocked: true,
     reason,
-    matchedSbcPhrases: matchedPhrases,
+    matchedSbcPhrases: scan.matchedMarkers,
     pageCount,
   };
 }
