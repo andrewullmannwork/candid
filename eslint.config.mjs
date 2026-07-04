@@ -161,6 +161,14 @@ const eslintConfig = defineConfig([
     // these would force perpetual cleanup of code that intentionally captures
     // a moment-in-time investigation.
     "scripts/findings/**",
+    // Claude Code local tooling + git worktrees (.claude/worktrees/*). Gitignored
+    // (.git/info/exclude) + never present on CI, but a local `eslint .` otherwise
+    // recurses into each worktree's src/ + built .next/ output and reports
+    // generated/duplicate "errors" that aren't the real project's. The
+    // root-relative ".next/**" above does NOT cover nested worktree .next dirs.
+    // The only committed file under .claude/ is launch.json (JSON, unlintable),
+    // so ignoring .claude/** changes nothing about what CI lints.
+    ".claude/**",
   ]),
   // ── B9 B1 user-table ownership guard ──────────────────────────────────────
   // Covers the whole API-route surface BY DEFAULT (new routes are guarded the
