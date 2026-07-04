@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { TurnstileWidget, type TurnstileWidgetHandle } from "@/components/security/TurnstileWidget";
 
 const adminNav = [
   { href: "/admin/dashboard", label: "Dashboard", pinned: true },
@@ -47,6 +48,8 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
   const [pwInput, setPwInput] = useState("");
   const [pwError, setPwError] = useState("");
   const [pwSubmitting, setPwSubmitting] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const turnstileRef = useRef<TurnstileWidgetHandle>(null);
 
   // Check admin password cookie
   useEffect(() => {
@@ -89,16 +92,22 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
       const res = await fetch("/api/auth/admin-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: pwInput }),
+        body: JSON.stringify({ password: pwInput, turnstileToken }),
       });
       if (res.ok) {
         setPwAuthenticated(true);
         setPwInput("");
       } else {
-        setPwError("Invalid password");
+        // Surface the server's specific message (invalid / rate-limited / locked /
+        // bot-check), then reset Turnstile — its token is single-use, so a retry
+        // needs a fresh one.
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        setPwError(data.error || "Invalid password");
+        turnstileRef.current?.reset();
       }
     } catch {
       setPwError("Failed to verify password");
+      turnstileRef.current?.reset();
     }
     setPwSubmitting(false);
   }
@@ -141,6 +150,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
                 autoFocus
                 className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
+              <TurnstileWidget ref={turnstileRef} action="admin_login" onToken={setTurnstileToken} />
               {pwError && <p className="text-sm text-red-600">{pwError}</p>}
               <button
                 type="submit"

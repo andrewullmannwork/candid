@@ -3,7 +3,7 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { Resend } from "resend";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { verifyTurnstileToken, getRemoteIp } from "@/lib/security/turnstile";
-import { checkRateLimit } from "@/lib/security/rate-limit";
+import { consumeTiers } from "@/lib/security/durable-rate-limit";
 
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
@@ -15,7 +15,7 @@ const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KE
  * Anti-enumeration posture (B9-F10):
  *  - Turnstile gate (S68) when `turnstile_enforcement_v1` is ON — the primary
  *    bot defense; each request needs a single-use Cloudflare token.
- *  - IP-keyed rate limit — bounds casual probing volume (in-memory per-instance).
+ *  - IP-keyed rate limit — bounds probing volume (durable; auth_rate_limits, mig 197).
  *  - The Resend send is decoupled via `after()` so existing vs non-existent
  *    accounts return after the same work (no timing oracle), and the response is
  *    a uniform `{ success: true }` regardless of account existence (no content
@@ -34,11 +34,14 @@ export async function POST(req: NextRequest) {
 
     // B9-F10 — IP-keyed rate limit (defense-in-depth vs enumeration; turnstile is
     // the primary bot gate). Keyed on the real client IP (leftmost x-forwarded-for
-    // hop via getRemoteIp). In-memory per-instance; bounds casual probing, not
-    // distributed attacks. Placed before turnstile so it throttles the cheap path
-    // before the Cloudflare round-trip.
+    // hop via getRemoteIp). Durable now (auth_rate_limits, mig 197) so the bound holds
+    // across serverless instances. Placed before turnstile so it throttles the cheap
+    // path before the Cloudflare round-trip.
     const ip = getRemoteIp(req) ?? "unknown";
-    const rl = checkRateLimit(`reset-pw:${ip}`, { perMinute: 3, perHour: 10 });
+    const rl = await consumeTiers(`reset-pw:ip:${ip}`, [
+      { windowSeconds: 60, maxAttempts: 3 },
+      { windowSeconds: 3600, maxAttempts: 10 },
+    ]);
     if (!rl.allowed) {
       return NextResponse.json(
         { error: "Too many requests. Please try again shortly." },
