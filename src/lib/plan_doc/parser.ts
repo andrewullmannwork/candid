@@ -490,7 +490,9 @@ export async function parsePlanDocumentHaiku(
       );
     }
     const seedResult: PlanDocHaikuParseResult = {
-      planIdentity: input.planIdentityOverride ?? emptyPlanIdentity(extractionMethod),
+      planIdentity: input.planIdentityOverride
+        ? { ...emptyPlanIdentity(extractionMethod), ...input.planIdentityOverride }
+        : emptyPlanIdentity(extractionMethod),
       services: r.data.services,
       accessInstructions: null,
       parseWarnings: [
