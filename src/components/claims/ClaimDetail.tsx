@@ -1410,10 +1410,16 @@ export function ClaimDetail({
           // and OOP=$48.25, reads $217.04 (the allowed amount). The breakdown
           // ("Your insurer actually paid" vs "You paid OOP") lives in the
           // red box for full transparency.
-          // S140 fix-pass H5 — YOU PAID column = resolved insurer paid +
-          // resolved patient paid (both pro-rated when per-line sparse).
-          // For Dec 12 Line 1: $91.74 + $49.63 = $141.37 (was $0 raw).
-          const paid = insurancePaidDisplay + patientPaidDisplay;
+          // "You paid" column = the patient's out-of-pocket ONLY (what YOU paid).
+          // Previously insurer_paid + patient_paid ("total settled"), which read
+          // wrong under the "You paid" label whenever insurance paid — e.g. a
+          // $0-share EOB (insurer paid $126.35, you paid $0) showed "You paid
+          // $126.35". Patient-only is correct for every case: a bill you paid
+          // yourself is unchanged (insurer was $0), a mixed bill shows your
+          // actual OOP. The insurer's payment still surfaces in the expanded
+          // line drawer ("Insurer paid $X"). insurancePaidDisplay is retained
+          // for that drawer (line ~1916). Display-only; feeds no recovery math.
+          const paid = patientPaidDisplay;
           const owed = item.patient_owes || 0;
           // Session 85 — new column values:
           //   shouldOwe = plan-defined cost share (copay / coinsurance applied to billed)
