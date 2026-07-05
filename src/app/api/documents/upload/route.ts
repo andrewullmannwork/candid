@@ -834,6 +834,61 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Escalate-don't-dead-end: the user EXPLICITLY declared a healthcare type
+  // (Bill / Plan Document) but the quick classifier is under its auto-process
+  // floor. The quick classify is a cheap 4-page-sample pre-filter — documented-
+  // noisy, and artificially low on docs whose identifying pages don't decode
+  // (e.g. an EOB whose claim table is an undecodable text layer). Rather than
+  // park a user-declared healthcare doc in admin review, hand it to the
+  // authoritative full-text Haiku classify + the pipeline's own gates:
+  // `resolveDocumentType` re-classifies on the full OCR (which now recovers
+  // undecodable pages via ocr_undecodable_page_fallback_v1, so it sees the claim
+  // page the quick sample missed) and halts ITSELF if it's genuinely unsure;
+  // dispute generation keeps its verification-supplement gate. Non-user-typed
+  // low-signal docs still fall through to admin review / auto-reject below.
+  if (userSelectedHealthcareType) {
+    try {
+      await supabase.from("documents").update({
+        status: "queued",
+        processing_total_pages: classification.pageCount,
+      }).eq("id", documentId);
+
+      const baseUrl = req.headers.get("x-forwarded-proto") && req.headers.get("x-forwarded-host")
+        ? `${req.headers.get("x-forwarded-proto")}://${req.headers.get("x-forwarded-host")}`
+        : new URL(req.url).origin;
+      const enqueued = await enqueueChunk(documentId, baseUrl);
+
+      if (enqueued) {
+        const { isLargeDoc, willEmail } = await resolveUploadAsyncTier(
+          classification.pageCount,
+          contentType,
+          userEmail,
+        );
+        console.log(
+          `[upload] escalate-to-full-processing: user=${docType} classifier=${classification.classifiedType}@${classification.confidence.toFixed(2)} (below auto floor) → queued for authoritative full-text classify`,
+        );
+        return NextResponse.json({
+          documentId,
+          storagePath,
+          autoProcessed: true,
+          escalatedLowConfidence: true,
+          isLargeDoc,
+          willEmail,
+          resolvedDocType: docType,
+          classification: {
+            classifiedType: classification.classifiedType,
+            confidence: classification.confidence,
+            pageCount: classification.pageCount,
+          },
+        });
+      }
+      console.warn("[upload] escalate enqueue failed — falling through to pending_review");
+    } catch (err) {
+      console.error("[upload] escalate-to-full-processing error — falling through to pending_review:", err);
+    }
+    // Enqueue failed → fall through to the pending_review branch below.
+  }
+
   // MEDIUM confidence bill/EOB OR any other healthcare signal — queue for
   // admin review. Auto-reject only when classifier finds zero signals AND the
   // user didn't select a specific type.
