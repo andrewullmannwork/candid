@@ -65,7 +65,6 @@ export async function GET(req: NextRequest) {
 
   const supabase = createServerClient();
 
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
   const [
@@ -73,11 +72,19 @@ export async function GET(req: NextRequest) {
     documentsUncategorized,
     documentsStuck,
     documentsFailed,
+    documentsPendingReview,
     sbcTicketsOpen,
     supportTicketsOpen,
-    waitlistRecent,
     insurancePlansNeedsReview,
     appealsProposedPending,
+    costCapPaused,
+    codeIdentityProposed,
+    codeIdentityAmbiguous,
+    planAcaInferred,
+    subscriptionsPastDue,
+    reviewQueuePending,
+    discoveryPending,
+    serviceNeedsCategory,
   ] = await Promise.all([
     safeCount(supabase, "benefit_corrections", (q) => q.eq("status", "pending")),
     safeCount(supabase, "documents", (q) =>
@@ -87,11 +94,25 @@ export async function GET(req: NextRequest) {
       q.in("status", ["processing", "pending"]).lt("updated_at", oneDayAgo),
     ),
     safeCount(supabase, "documents", (q) => q.eq("status", "failed")),
+    safeCount(supabase, "documents", (q) => q.eq("status", "pending_review")),
     safeCount(supabase, "sbc_tickets", (q) => q.in("status", ["open", "in_progress"])),
     safeCount(supabase, "support_tickets", (q) => q.in("status", ["open", "in_progress"])),
-    safeCount(supabase, "waitlist_signups", (q) => q.gte("created_at", sevenDaysAgo)),
     safeCount(supabase, "insurance_plans", (q) => q.eq("verification_status", "unverified")),
     safeCount(supabase, "insurer_appeals_proposed_changes", (q) => q.eq("status", "pending")),
+    // Cost-cap: users paused at the daily Haiku spend cap (haiku_spend_tracking.paused_at set).
+    safeCount(supabase, "haiku_spend_tracking", (q) => q.not("paused_at", "is", null)),
+    // Code identity: proposed billing-code identities + ambiguous 2-candidate ties.
+    safeCount(supabase, "billing_code_identity", (q) => q.eq("promotion_state", "proposed")),
+    safeCount(supabase, "code_identity_admin_review_queue", (q) => q.eq("status", "pending")),
+    // Plans whose ACA-compliance flag was inferred (not attested) — need admin review.
+    safeCount(supabase, "insurance_plans", (q) =>
+      q.in("aca_compliance_basis", ["inferred_marketplace", "inferred_employer_post_2010", "unknown"]),
+    ),
+    safeCount(supabase, "stripe_customers", (q) => q.eq("subscription_status", "past_due")),
+    // Benefit pipeline: proposed service slugs + insurer discovery + uncategorized services.
+    safeCount(supabase, "service_catalog_admin_review_queue", (q) => q.eq("status", "pending")),
+    safeCount(supabase, "insurer_discovery_queue", (q) => q.eq("status", "pending")),
+    safeCount(supabase, "service_catalog", (q) => q.eq("category", "other")),
   ]);
 
   // Phase 7: pending disputes that are missing a plan for their claim year.
@@ -178,10 +199,64 @@ export async function GET(req: NextRequest) {
       {
         key: "documents_review",
         title: "Document Review",
-        count: documentsUncategorized + documentsFailed + documentsStuck,
+        count: documentsPendingReview + documentsUncategorized + documentsFailed + documentsStuck,
         href: "/admin/documents/review",
-        description: `${documentsUncategorized} uncategorized · ${documentsFailed} failed · ${documentsStuck} stuck (>24h).`,
+        description: `${documentsPendingReview} pending review · ${documentsUncategorized} uncategorized · ${documentsFailed} failed · ${documentsStuck} stuck (>24h).`,
         items: documentsTop,
+      },
+      {
+        key: "review_queue",
+        title: "Review Queue",
+        count: reviewQueuePending,
+        href: "/admin/review-queue",
+        description: "Parser-proposed service slugs awaiting promote / merge / reject.",
+        items: [],
+      },
+      {
+        key: "code_identity",
+        title: "Code Identity",
+        count: codeIdentityProposed + codeIdentityAmbiguous,
+        href: "/admin/code-identity-review",
+        description: `${codeIdentityProposed} proposed · ${codeIdentityAmbiguous} ambiguous ties to resolve.`,
+        items: [],
+      },
+      {
+        key: "insurer_appeals",
+        title: "Insurer Appeals",
+        count: appealsProposedPending,
+        href: "/admin/insurer-appeals",
+        description: "Proposed insurer appeals addresses awaiting admin review.",
+        items: [],
+      },
+      {
+        key: "disputes_missing_plan",
+        title: "Disputes missing plan year",
+        count: needsPlanCount,
+        href: "/admin/claims#missing-plan-year",
+        description: "Pending dispute letters where the claim's plan year has no matching user plan on file — letter is weaker without it.",
+        items: disputesNeedingPlan.map((d) => ({
+          id: d.id,
+          claimId: d.claim_id,
+          disputeType: d.dispute_type,
+          needsPlanForYear: d.claim_year,
+          created_at: d.created_at,
+        })),
+      },
+      {
+        key: "cost_cap",
+        title: "Spend-capped users",
+        count: costCapPaused,
+        href: "/admin/cost-cap",
+        description: "Users paused at the daily Haiku spend cap — unfreeze or set an override.",
+        items: [],
+      },
+      {
+        key: "plan_aca",
+        title: "Plan ACA review",
+        count: planAcaInferred,
+        href: "/admin/plan-aca-overrides",
+        description: "Plans with an inferred (not attested) ACA-compliance flag.",
+        items: [],
       },
       {
         key: "sbc_tickets",
@@ -200,42 +275,20 @@ export async function GET(req: NextRequest) {
         items: supportTop,
       },
       {
-        key: "waitlist",
-        title: "Waitlist Signups",
-        count: waitlistRecent,
-        href: "/admin/waitlist",
-        description: "New signups in the last 7 days.",
+        key: "subscriptions_past_due",
+        title: "Past-due subscriptions",
+        count: subscriptionsPastDue,
+        href: "/admin/subscriptions",
+        description: "Stripe subscriptions in a past_due state.",
         items: [],
       },
       {
-        key: "plans_unverified",
-        title: "Unverified Insurance Plans",
-        count: insurancePlansNeedsReview,
+        key: "pipeline",
+        title: "Benefit Pipeline",
+        count: insurancePlansNeedsReview + discoveryPending + serviceNeedsCategory,
         href: "/admin/pipeline",
-        description: "Plans pending verification or CMS match.",
+        description: `${insurancePlansNeedsReview} plans unverified · ${discoveryPending} insurers to triage · ${serviceNeedsCategory} services uncategorized.`,
         items: [],
-      },
-      {
-        key: "insurer_appeals",
-        title: "Insurer Appeals Queue",
-        count: appealsProposedPending,
-        href: "/admin/claims#insurer-appeals-pending",
-        description: "Doc extractions + user corrections awaiting admin review (Pattern 1 registry).",
-        items: [],
-      },
-      {
-        key: "disputes_missing_plan",
-        title: "Disputes missing plan year",
-        count: needsPlanCount,
-        href: "/admin/claims#missing-plan-year",
-        description: "Pending dispute letters where the claim's plan year has no matching user plan on file — letter is weaker without it.",
-        items: disputesNeedingPlan.map((d) => ({
-          id: d.id,
-          claimId: d.claim_id,
-          disputeType: d.dispute_type,
-          needsPlanForYear: d.claim_year,
-          created_at: d.created_at,
-        })),
       },
     ],
   });

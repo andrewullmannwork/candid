@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { getStripe } from "@/lib/stripe";
+import { logAdminAction } from "@/lib/admin/audit-log";
 
 async function verifyAdmin(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -11,7 +12,7 @@ async function verifyAdmin(req: NextRequest) {
     const supabase = createServerClient();
     const { data: user } = await supabase
       .from("users")
-      .select("id, is_admin")
+      .select("id, is_admin, email")
       .eq("firebase_uid", decoded.uid)
       .single();
     return user?.is_admin ? user : null;
@@ -78,6 +79,15 @@ export async function POST(req: NextRequest) {
         .update({ subscription_status: "canceled", subscription_tier: "free" })
         .eq("stripe_customer_id", stripe_customer_id);
 
+      await logAdminAction({
+        adminUserId: admin.id,
+        adminEmail: admin.email,
+        action: "subscription_cancel",
+        targetTable: "stripe_customers",
+        details: `customer=${stripe_customer_id} · canceled ${subs.data.length} active subscription(s) · reason=${reason || "—"}`,
+        ipAddress: req.headers.get("x-forwarded-for"),
+      });
+
       return NextResponse.json({ success: true, action: "canceled" });
     }
 
@@ -97,6 +107,15 @@ export async function POST(req: NextRequest) {
         charge: charge.id,
         reason: "requested_by_customer",
         metadata: { admin_reason: reason || "Admin refund" },
+      });
+
+      await logAdminAction({
+        adminUserId: admin.id,
+        adminEmail: admin.email,
+        action: "subscription_refund",
+        targetTable: "stripe_customers",
+        details: `customer=${stripe_customer_id} · refunded ${(charge.amount / 100).toFixed(2)} ${charge.currency} · reason=${reason || "—"}`,
+        ipAddress: req.headers.get("x-forwarded-for"),
       });
 
       return NextResponse.json({

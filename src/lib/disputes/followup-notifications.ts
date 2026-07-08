@@ -196,7 +196,7 @@ export async function notifyOutlierQuarantine(params: {
             `*Reason:* ${reason}\n` +
             `*amount_recovered:* $${amountRecovered.toLocaleString()}\n` +
             `*amount_disputed:* $${amountDisputed.toLocaleString()}\n\n` +
-            `Review at \`/admin/disputes\` (filter by flywheel_eligibility_status=quarantined_outlier). ` +
+            `Review in \`/admin/claims\` — dispute flagged flywheel_eligibility_status=quarantined_outlier. ` +
             `Release via update to 'verified_via_admin' if legitimate.`,
         },
       },
