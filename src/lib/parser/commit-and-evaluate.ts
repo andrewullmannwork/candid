@@ -54,6 +54,9 @@ export interface FieldEvaluationCandidate {
    */
   placeOfService?: string | null;
   component?: string | null;
+  /** mig 194/195 (S258): plan-local drug cost-share bucket — the 5th cell key. 'none'/undefined = not a
+   *  bucketed drug line (byte-identical to pre-194 grouping). */
+  planTierLabel?: string | null;
 }
 
 /**
@@ -73,6 +76,13 @@ export const PHASE_4_0_6_PLAN_IDENTITY_FIELDS_SBC: readonly string[] = [
   "in_deductible_family",
   "in_oop_max_individual",
   "in_oop_max_family",
+  // S256 (mig 192) — OON plan-identity. Promoted to canonical for live uploads AND the cold-start seed
+  // regen (§16-D "live + seed"; columns + apply_promotion_event arms landed in mig 192). Additive — a
+  // plan with no OON identity yields distinct_user_count=0 → no-op.
+  "out_deductible_individual",
+  "out_deductible_family",
+  "out_oop_max_individual",
+  "out_oop_max_family",
   "plan_name",
   "plan_year",
   "plan_type",
@@ -198,7 +208,7 @@ export async function expandPerServiceCandidates(
 
   const { data: rows } = await supabase
     .from("plan_covered_services")
-    .select("service_id, place_of_service, component, in_copay, in_coinsurance, in_deductible_applies, covered, prior_auth_required, out_copay, out_coinsurance, out_deductible_applies, requires_referral, visit_limit, annual_limit_value")
+    .select("service_id, place_of_service, component, plan_tier_label, in_copay, in_coinsurance, in_deductible_applies, covered, prior_auth_required, out_copay, out_coinsurance, out_deductible_applies, requires_referral, visit_limit, annual_limit_value")
     .eq("insurance_plan_id", plan.id);
   if (!rows || rows.length === 0) return existing;
 
@@ -236,7 +246,7 @@ export async function expandPerServiceCandidates(
   // surgery facility + office) collapsed to one candidate, losing the other cell.
   const seen = new Set<string>();
   for (const c of existing) {
-    seen.add(`${c.serviceSlug ?? ""}::${c.fieldName}::${c.placeOfService ?? ""}::${c.component ?? ""}`);
+    seen.add(`${c.serviceSlug ?? ""}::${c.fieldName}::${c.placeOfService ?? ""}::${c.component ?? ""}::${c.planTierLabel ?? ""}`);
   }
 
   const added: FieldEvaluationCandidate[] = [];
@@ -245,22 +255,23 @@ export async function expandPerServiceCandidates(
     if (!slug) continue;
     const placeOfService = (row.place_of_service as string | null) ?? null;
     const component = (row.component as string | null) ?? null;
+    const planTierLabel = (row.plan_tier_label as string | null) ?? null;
     for (const column of perServiceColumns) {
       const v = (row as Record<string, unknown>)[column as string];
       if (v === undefined || v === null) continue;
-      const key = `${slug}::${column as string}::${placeOfService ?? ""}::${component ?? ""}`;
+      const key = `${slug}::${column as string}::${placeOfService ?? ""}::${component ?? ""}::${planTierLabel ?? ""}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      added.push({ serviceSlug: slug, fieldName: column as string, placeOfService, component });
+      added.push({ serviceSlug: slug, fieldName: column as string, placeOfService, component, planTierLabel });
     }
     // annual_limit: the candidate fieldName is 'annual_limit' but the source column is annual_limit_value
     // (a NUMBER; mig 187 / S241). Emit it mapped so readAdminPerServiceValue + the RPC arm see 'annual_limit'.
     const annual = (row as Record<string, unknown>).annual_limit_value;
     if (annual !== undefined && annual !== null) {
-      const key = `${slug}::annual_limit::${placeOfService ?? ""}::${component ?? ""}`;
+      const key = `${slug}::annual_limit::${placeOfService ?? ""}::${component ?? ""}::${planTierLabel ?? ""}`;
       if (!seen.has(key)) {
         seen.add(key);
-        added.push({ serviceSlug: slug, fieldName: "annual_limit", placeOfService, component });
+        added.push({ serviceSlug: slug, fieldName: "annual_limit", placeOfService, component, planTierLabel });
       }
     }
   }
@@ -296,6 +307,9 @@ async function readAdminPerServiceValue(
   canonicalPlanId: string,
   serviceSlug: string,
   fieldName: string,
+  placeOfService: string | null,
+  component: string | null,
+  planTierLabel: string | null,
 ): Promise<{ value: unknown; excerpts: CorroboratorExcerpt[]; meta?: ProvenanceMeta } | null> {
   // Find actor's most recent insurance_plans row linked to this canonical
   const { data: plan } = await supabase
@@ -318,11 +332,16 @@ async function readAdminPerServiceValue(
 
   // Find the plan_covered_services row for this (plan, service). Reads the full coverage column set +
   // annual_limit_value (source for the 'annual_limit' candidate) + field_provenance (the P-8 block).
+  // mig 194/195 (S258): filter to the EXACT (pos, component, plan_tier_label) cell so a bucketed drug
+  // service (generic condition_care vs all_other) returns THAT bucket's value, not an arbitrary sibling.
   const { data: rows } = await supabase
     .from("plan_covered_services")
     .select("id, field_provenance, in_copay, in_coinsurance, in_deductible_applies, covered, prior_auth_required, out_copay, out_coinsurance, out_deductible_applies, requires_referral, visit_limit, annual_limit_value")
     .eq("insurance_plan_id", plan.id)
     .eq("service_id", svc.id)
+    .eq("place_of_service", placeOfService ?? "any")
+    .eq("component", component ?? "global")
+    .eq("plan_tier_label", planTierLabel ?? "none")
     .limit(1);
   const row = rows?.[0];
   if (!row) return null;
@@ -494,7 +513,7 @@ export async function commitUploadAndEvaluateCorroboration(
   }
 
   for (const candidate of effectiveCandidates) {
-    const { serviceSlug, fieldName, placeOfService, component } = candidate;
+    const { serviceSlug, fieldName, placeOfService, component, planTierLabel } = candidate;
 
     // Step 1: evaluate corroboration (read-only)
     // Still runs for admin path — evaluator builds corroborated_value +
@@ -536,20 +555,23 @@ export async function commitUploadAndEvaluateCorroboration(
       let attestValue = decision.corroborated_value;
       let attestExcerpts = decision.corroborator_excerpts;
       let attestMeta: ProvenanceMeta | undefined;
-      if (attestValue === null || attestValue === undefined) {
-        if (serviceSlug === null) {
-          const direct = await readAdminPlanIdentityValue(supabase, input.actorUserId!, input.canonicalPlanId, fieldName);
-          if (direct) {
-            attestValue = direct.value;
-            attestExcerpts = direct.excerpts;
-          }
-        } else {
-          const direct = await readAdminPerServiceValue(supabase, input.actorUserId!, input.canonicalPlanId, serviceSlug, fieldName);
-          if (direct) {
-            attestValue = direct.value;
-            attestExcerpts = direct.excerpts;
-            attestMeta = direct.meta; // G2: the full P-8 block → cite-grade admin promotion
-          }
+      // mig 194 (S258): for a per-service field the evaluator groups (slug,pos,component) TIER-BLIND, so its
+      // corroborated_value would MIX drug buckets (generic condition_care $4 vs all_other $15) onto every
+      // bucket row. Read the exact per-bucket value DIRECTLY from the admin's pcs cell instead — correct per
+      // (pos, component, plan_tier_label). A non-bucketed row ('none') reads the single cell = same value as
+      // before. Plan-identity (slug null) has no bucket → keep the evaluator value + its null-fallback.
+      if (serviceSlug !== null) {
+        const direct = await readAdminPerServiceValue(supabase, input.actorUserId!, input.canonicalPlanId, serviceSlug, fieldName, placeOfService ?? null, component ?? null, planTierLabel ?? null);
+        if (direct) {
+          attestValue = direct.value;
+          attestExcerpts = direct.excerpts;
+          attestMeta = direct.meta; // G2: the full P-8 block → cite-grade admin promotion
+        }
+      } else if (attestValue === null || attestValue === undefined) {
+        const direct = await readAdminPlanIdentityValue(supabase, input.actorUserId!, input.canonicalPlanId, fieldName);
+        if (direct) {
+          attestValue = direct.value;
+          attestExcerpts = direct.excerpts;
         }
       }
       if (attestValue === null || attestValue === undefined) {
@@ -572,8 +594,10 @@ export async function commitUploadAndEvaluateCorroboration(
           // S205: promote to the candidate's CELL so a multi-cell service doesn't collapse every
           // cell's value onto the default 'any'/'global' canonical row. No-op for single-cell
           // (candidate cell IS 'any'/'global'); ignored by mig-148 for plan-identity (slug null).
+          // mig 194 (S258): + the plan-local drug bucket, so per-bucket rows don't collapse.
           placeOfService: placeOfService ?? "any",
           component: component ?? "global",
+          planTierLabel: planTierLabel ?? "none",
         },
       );
       if (applyError || !eventId) {
@@ -601,9 +625,11 @@ export async function commitUploadAndEvaluateCorroboration(
         {
           actorUserId: input.actorUserId,
           // S205: promote to the candidate's CELL (no-op for single-cell 'any'/'global'; plan-identity
-          // passes 'any' which mig-148 ignores for the canonical_plans branch).
+          // passes 'any' which mig-148 ignores for the canonical_plans branch). mig 194 (S258): + the
+          // plan-local drug bucket, so per-bucket rows don't collapse.
           placeOfService: placeOfService ?? "any",
           component: component ?? "global",
+          planTierLabel: planTierLabel ?? "none",
         },
       );
       if (applyError || !eventId) {
@@ -628,9 +654,11 @@ export async function commitUploadAndEvaluateCorroboration(
         {
           actorUserId: input.actorUserId,
           // S205: promote to the candidate's CELL (no-op for single-cell 'any'/'global'; plan-identity
-          // passes 'any' which mig-148 ignores for the canonical_plans branch).
+          // passes 'any' which mig-148 ignores for the canonical_plans branch). mig 194 (S258): + the
+          // plan-local drug bucket, so per-bucket rows don't collapse.
           placeOfService: placeOfService ?? "any",
           component: component ?? "global",
+          planTierLabel: planTierLabel ?? "none",
         },
       );
       if (applyError || !eventId) {

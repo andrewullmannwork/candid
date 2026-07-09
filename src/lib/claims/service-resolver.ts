@@ -898,30 +898,51 @@ export function deriveModifiers(description: string): DerivedModifiers {
 }
 
 /**
- * Item 5 — extract the drug FORMULARY tier from a benefit/line description (lowercased). Returns
- * `{ planTierLabel: 'tier_<n>' }` ONLY for an unambiguous single-tier DRUG line; `{}` otherwise. Two
- * universal guards (A2b Phase 2, Andrew-ratified §8/D-C):
- *   (1) drug-context — requires a drug/pharmacy/prescription cue, so a NETWORK/provider "Tier N" (e.g.
- *       "Tier 1 hospital") is never mistaken for a formulary tier;
- *   (2) single-tier — a line naming several tiers ("Tier 1/2/4", "Tier 2 and Tier 4") is deliberately
- *       tier-agnostic (one cost-share across tiers) → omitted.
- * The slug is untouched (the descriptor); this is a plan-local modifier only. Clamped to tier_1..tier_12
- * (the mig-181 CHECK range).
+ * Item 5 / mig 194 (S258 dup-key fix) — derive the plan-local drug cost-share BUCKET from a benefit/line
+ * description (case-insensitive). Returns `{ planTierLabel: <token> }` for a single-bucket DRUG line; `{}`
+ * otherwise. The token is a normalized lowercase snake identifier (mig 194 CHECK `^[a-z][a-z0-9_]{0,39}$`):
+ * a formulary tier (`tier_1`..`tier_12`, incl a letter sub-tier `tier_1a`/`tier_1b`) OR a named cost-share
+ * program (`preferred`/`non_preferred`/`condition_care`/`all_other`/`value`/`select`/`preventive`). ONE
+ * plan-local axis (Pattern S / Hard Rule #17) — plan-local metadata, NEVER a cross-plan comparison key. The
+ * verbatim wording lives in source_excerpt (§14). Universal + deterministic (text-only; no DB/LLM). Guards:
+ *   (1) drug-context — requires a drug/pharmacy cue (incl `generic`/`brand`/`specialty`), so a NETWORK/provider
+ *       "Tier N" (e.g. "Tier 1 hospital") or a non-drug "preferred provider" is never mistaken for a bucket;
+ *   (2) multi-tier → tier-agnostic — a line naming several tiers ("Tier 1/2/4") is one shared cost-share → `{}`.
+ * Numeric tier wins over a named program (e.g. "Tier 2 – Preferred Generic" → tier_2). The slug stays the
+ * descriptor; this is a modifier only. Exported (S258): the plan-doc write path derives it from rawLabel.
  */
-function derivePlanTierLabel(d: string): { planTierLabel?: string } {
+export function derivePlanTierLabel(description: string): { planTierLabel?: string } {
+  const d = (description || "").toLowerCase();
   const drugCtx =
-    /\bdrugs?\b|\brx\b|\bpharmacy\b|\bprescriptions?\b|\bformulary\b|\bmedications?\b|\banticancer\b|\bchemo\w*\b|\binsulin\b|\bcontracepti\w*\b|\bbiologic\w*\b|\binfusion\b/.test(d);
-  if (!drugCtx) return {};
+    /\bdrugs?\b|\brx\b|\bpharmacy\b|\bprescriptions?\b|\bformulary\b|\bmedications?\b|\bgeneric\b|\bbrand\b|\bspecialty\b|\banticancer\b|\bchemo\w*\b|\binsulin\b|\bcontracepti\w*\b|\bbiologic\w*\b|\binfusion\b/.test(d);
+  // A bare numeric tier line can name its bucket via a cost-share cue instead of a drug word ("Tier 1 - $0
+  // Cost-share"); the network-tier false-positive ("Tier 1 hospital") has neither cue → stays 'none'.
+  const costShareCtx = /\bcost.?share\b/.test(d);
+  if (!drugCtx && !costShareCtx) return {};
   // multi-tier → tier-agnostic: ≥2 "tier N" mentions, or a "tier N/M" / "tier N & M" / "tier N-M" run.
   const tierMentions = (d.match(/\btiers?\s*\d/g) || []).length;
   const multi = tierMentions >= 2 || /\btier\s*\d+\s*[/,&–-]\s*\d/.test(d);
   if (multi) return {};
-  // (?!\d) not \b: a letter-suffixed sub-tier ("Tier 1a" / "Tier 1b") still reads tier_1, while a stray
-  // 3-digit run ("Tier 100…") is rejected (no real formulary tier exceeds the 1..12 CHECK range anyway).
-  const m = d.match(/\btiers?\s*(\d{1,2})(?!\d)/);
-  if (!m) return {};
-  const n = parseInt(m[1], 10);
-  return n >= 1 && n <= 12 ? { planTierLabel: `tier_${n}` } : {};
+  // Numeric formulary tier, incl a letter sub-tier ("Tier 1a"/"Tier 1b" are DISTINCT buckets, S258 A3). A
+  // stray 3-digit run ("Tier 100…") is rejected (no real formulary tier exceeds 1..12).
+  const m = d.match(/\btiers?\s*(\d{1,2})([a-z])?(?![\dA-Za-z])/);
+  if (m) {
+    const n = parseInt(m[1], 10);
+    if (n >= 1 && n <= 12) return { planTierLabel: `tier_${n}${m[2] ?? ""}` };
+  }
+  // Named cost-share PROGRAM (drug line with NO numeric tier). Requires drug context — "preferred"/"all
+  // other" are ambiguous outside it (e.g. "preferred provider"). PROGRAM labels WIN over the preference
+  // words, so "Preferred brand drugs — Condition Care Rx" reads its program (condition_care), not "preferred".
+  if (drugCtx) {
+    if (/\bcondition[\s-]?care\b/.test(d)) return { planTierLabel: "condition_care" };
+    if (/\ball[\s-]?other\b/.test(d)) return { planTierLabel: "all_other" };
+    if (/\bpreventive\b/.test(d)) return { planTierLabel: "preventive" };
+    if (/\bnon[\s-]?preferred\b/.test(d)) return { planTierLabel: "non_preferred" };
+    if (/\bpreferred\b/.test(d)) return { planTierLabel: "preferred" };
+    if (/\bvalue\b/.test(d)) return { planTierLabel: "value" };
+    if (/\bselect\b/.test(d)) return { planTierLabel: "select" };
+  }
+  return {};
 }
 
 /** Single-line resolve (manual / reaudit / search fallback). */

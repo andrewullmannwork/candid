@@ -49,7 +49,7 @@ import type {
   PlanDocService,
 } from "./types";
 import { extractPlanIdentity } from "./haiku-prompts/plan-identity";
-import { extractServicesCostSharing } from "./haiku-prompts/services-cost-sharing";
+import { extractServicesCostSharing, type RawService } from "./haiku-prompts/services-cost-sharing";
 import { extractAccessInstructions } from "./haiku-prompts/access-instructions";
 import { detectLayout } from "./layout-detector";
 import { verifyPlanDocSourceExcerpts } from "./verify-source-excerpts";
@@ -385,6 +385,14 @@ export interface ParsePlanDocInput {
    *  undefined → read the live flag (OFF → byte-identical). Set by the §13 oracle harness to measure
    *  flag-ON without flipping global PROD. */
   coverageDims?: boolean;
+  /** S253 cold-start regen Stage C — inject the Sonnet sub-agent's cached raw services. When set,
+   *  parsePlanDocumentHaiku skips ALL LLM dispatch and returns them post-processed (deterministic,
+   *  services-only; identity/access skipped, owned by the identity phase). undefined → normal parse. */
+  rawServicesOverride?: RawService[];
+  /** S256 cold-start seed regen — inject the Sonnet sub-agent's cached plan-identity (in + out
+   *  deductible/OOP). When set, the seed early-return uses it instead of emptyPlanIdentity, so identity
+   *  flows to the persist + canonical promotion (seedMode). undefined → normal parse / empty seed identity. */
+  planIdentityOverride?: PlanDocPlanIdentity;
 }
 
 export async function parsePlanDocumentHaiku(
@@ -450,6 +458,66 @@ export async function parsePlanDocumentHaiku(
     em: ExtractionMethod,
     hint: PlanDocSectionHint,
   ) => extractServicesCostSharing(text, range, em, hint, layout, thesaurusPhase1aEnabled, extractionV2Enabled, coverageDimsEnabled);
+
+  // ── Seed Stage C (S253 cold-start regen): deterministic services-only override, NO LLM ──
+  // Inject the Sonnet sub-agent's cached raw services and reuse extractServicesCostSharing's post-processors
+  // (referral/visit/cite-grade) against the RAW `ocrText` the agent saw (NOT cleaned `workingText` → the
+  // cached excerpts ground verbatim). Forces the single whole-text call regardless of doc size. Identity,
+  // access, and discovery are skipped — identity is owned by the dedicated identity phase (§19-D) and is
+  // PRESERVED at the persist layer via seedMode (a services-only override carries no identity).
+  if (input.rawServicesOverride !== undefined) {
+    const r = await extractServicesCostSharing(
+      ocrText,
+      { start: 0, end: ocrText.length },
+      extractionMethod,
+      "services_cost_sharing",
+      layout,
+      thesaurusPhase1aEnabled,
+      extractionV2Enabled,
+      coverageDimsEnabled,
+      input.rawServicesOverride,
+    );
+    // §19-E (amended S254): the inject's real silent-loss point is the post-processor's slug-less filter
+    // (services-cost-sharing.ts) — NOT legacy/haiku length (1:1 via toLegacyPlanDocResult, can't diverge).
+    // Surface any drop so the bulk run + degradation gate notice missing services (warn, not throw — a
+    // slug-less cached entry is a data-quality issue; keep the valid services per the recall bias).
+    const injectedCount = input.rawServicesOverride.length;
+    const survivedCount = r.data.services.length;
+    if (survivedCount !== injectedCount) {
+      warnings.push(`seed_override_drop:${injectedCount - survivedCount}_of_${injectedCount}_at_post_processor`);
+      console.warn(
+        `[parser] seed inject dropped ${injectedCount - survivedCount}/${injectedCount} override services (slug-less) for ${documentId}`,
+      );
+    }
+    const seedResult: PlanDocHaikuParseResult = {
+      planIdentity: input.planIdentityOverride
+        ? { ...emptyPlanIdentity(extractionMethod), ...input.planIdentityOverride }
+        : emptyPlanIdentity(extractionMethod),
+      services: r.data.services,
+      accessInstructions: null,
+      parseWarnings: [
+        ...warnings,
+        ...r.warnings,
+        `seed_override:${documentId}:${input.rawServicesOverride.length}_raw_services`,
+      ],
+      haikuTokensInput: 0,
+      haikuTokensOutput: 0,
+      haikuCacheCreateTokens: 0,
+      haikuCacheReadTokens: 0,
+      costUsd: 0,
+      parseStrategyV2: true,
+      dispatchedSections: ["services_cost_sharing"],
+      segmentationUsed: "seed_override",
+    };
+    // §14 #5 cite-grade (S254): the seed early-returns BEFORE the normal verify post-pass (~line 875),
+    // so the cached excerpts would stay source_excerpt_verified="not_found" (not cite-grade). Verify them
+    // against the RAW ocrText (the text the sub-agent saw, §19 grounding); verifyOne matches whole-text,
+    // so one services_cost_sharing range over [0,len] is correct. ~98-100% of cached excerpts are verbatim
+    // → cite-grade. dispatchedSections=[services_cost_sharing] (not all) prevents false verbatim_absent.
+    return verifyPlanDocSourceExcerpts(ocrText, seedResult, {
+      services_cost_sharing: [{ start: 0, end: ocrText.length }],
+    });
+  }
 
   // Step 1: Section segmentation (regex first, on cleaned text)
   let sectionRanges: SectionRanges = segmentPlanDocSections(workingText);

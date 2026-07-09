@@ -181,7 +181,10 @@ export interface PlanDocHaikuParseResult {
     | "whole_text_primary"
     // S215 cold-start regen — services recovered via the whole-text OCR-collapse fallback
     // (segmentation found no services section; extraction v2 re-ran over the full document).
-    | "whole_text_fallback";
+    | "whole_text_fallback"
+    // S253 cold-start regen Stage C — services injected from the Sonnet sub-agent's cached extraction
+    // (deterministic, no LLM; identity/access skipped).
+    | "seed_override";
 }
 
 /**

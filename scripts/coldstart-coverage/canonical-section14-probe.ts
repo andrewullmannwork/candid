@@ -56,6 +56,12 @@ const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL as string, process.
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
+// S256: optional scope to specific canonicals (the Step-3 written set) — measures the cite-grade-cell rate on
+// JUST the regenerated rows. Unset → whole table (today's behavior, byte-identical).
+const SCOPE_IDS = process.env.CANONICAL_IDS
+  ? process.env.CANONICAL_IDS.split(",").map((s) => s.trim()).filter(Boolean)
+  : null;
+
 type ProvEntry = Record<string, unknown>;
 type Row = { id: string; field_provenance: Record<string, ProvEntry> | null } & Record<string, unknown>;
 
@@ -96,7 +102,7 @@ interface Stats {
 }
 
 async function main(): Promise<void> {
-  console.log(`§14 canonical probe (READ-ONLY) over ${TABLE} — ${CITE_GRADE_FIELDS.length} cite-grade fields\n`);
+  console.log(`§14 canonical probe (READ-ONLY) over ${TABLE}${SCOPE_IDS ? ` [scoped: ${SCOPE_IDS.length} canonical(s)]` : " [whole table]"} — ${CITE_GRADE_FIELDS.length} cite-grade fields\n`);
 
   const s: Stats = {
     rowsScanned: 0, rowsWithProv: 0,
@@ -118,7 +124,9 @@ async function main(): Promise<void> {
   const pageSize = 1000;
   let from = 0;
   for (;;) {
-    const { data, error } = await sb.from(TABLE).select(selectCols).order("id", { ascending: true }).range(from, from + pageSize - 1);
+    let q = sb.from(TABLE).select(selectCols).order("id", { ascending: true }).range(from, from + pageSize - 1);
+    if (SCOPE_IDS) q = q.in("canonical_plan_id", SCOPE_IDS);
+    const { data, error } = await q;
     if (error) { console.error(`${TABLE} scan error:`, error.message); process.exit(1); }
     const rows = (data ?? []) as unknown as Row[];
     if (rows.length === 0) break;

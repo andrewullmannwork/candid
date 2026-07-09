@@ -24,7 +24,9 @@ import { recordCostEvent } from "@/lib/cost/parse-cost-events";
 import { matchInsurerWithPlanFallback } from "@/lib/plan/insurer-match";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { routePlanDocServices } from "@/lib/plan_doc/thesaurus-routing";
+import type { RawService } from "@/lib/plan_doc/haiku-prompts/services-cost-sharing";
 import { applyPlanCoverageCell, mergeServiceCoverageRules, coerceComponent } from "@/lib/plan/coverage-targeting";
+import { derivePlanTierLabel } from "@/lib/claims/service-resolver";
 import { votedParseSBC } from "@/lib/sbc/voted-parser";
 import type { VotedParseSBCResult } from "@/lib/sbc/voted-parser";
 import { translateHaikuToLegacy } from "@/lib/sbc/legacy-adapter";
@@ -214,9 +216,20 @@ export async function processPlanDocumentData(
   ocrText: string,
   documentId: string,
   classification: { classifiedType: string; confidence: number; mismatch: boolean },
-  options?: { skipCanonical?: boolean; thesaurusRoutingOverride?: boolean }
+  // `seedMode` (cold-start regen, S253): suppress the per-doc CHURN + NOTIFICATIONS that would be
+  // catastrophic ×~1,200 (active-plan pointer/deactivate, parse_cost_events, review-queue, email).
+  // KEEPS the insurance_plans/plan_covered_services persist + canonical writes — the canonical
+  // promotion READS those rows (expandPerServiceCandidates); suppressing them would starve it.
+  // `seedTargetPlanId` (required with seedMode) routes the persist to the doc's EXISTING canonical-
+  // linked plan + supplies the canonical from its preserved link (the empty-identity override can't).
+  options?: { skipCanonical?: boolean; thesaurusRoutingOverride?: boolean; seedMode?: boolean; rawServicesOverride?: RawService[]; coverageDims?: boolean; seedTargetPlanId?: string; planIdentityOverride?: PlanDocPlanIdentity }
 ): Promise<ProcessPlanResult> {
   try {
+    // seedMode (cold-start regen) targets an EXISTING plan by id; without it the persist falls through
+    // to the production INSERT and orphans an empty-identity plan. Fail loud, don't silently orphan.
+    if (options?.seedMode && !options.seedTargetPlanId) {
+      throw new Error("seedMode requires seedTargetPlanId — cold-start regen targets an existing plan");
+    }
     const isFullPlanDoc = classification.classifiedType === "plan_document"
       || (classification.classifiedType !== "sbc" && ocrText.length > 50000);
 
@@ -321,6 +334,10 @@ export async function processPlanDocumentData(
         // leg (~line 335) so the in-vivo smoke runs the whole synonym path flag-ON without flipping
         // global PROD. PROD callers don't pass thesaurusRoutingOverride → the prompt reads the live flag.
         thesaurusPhase1a: options?.thesaurusRoutingOverride,
+        // S253 cold-start seed regen: deterministic Stage C inject + pinned coverage_dims.
+        rawServicesOverride: options?.rawServicesOverride,
+        coverageDims: options?.coverageDims,
+        planIdentityOverride: options?.planIdentityOverride,
       });
       parseResult = planDocResult.legacy;
       planDocHaikuResult = planDocResult.haiku;
@@ -382,7 +399,9 @@ export async function processPlanDocumentData(
       || !parseResult.plan.insurer_name
       || !parseResult.plan.plan_year
       || !parseResult.plan.plan_type;
-    if (needsIdentityRecovery) {
+    // seedMode (cold-start regen): identity is owned by the dedicated identity phase (§19-D) + the
+    // existing plan's identity is PRESERVED — skip the Haiku identity-recovery LLM (determinism).
+    if (needsIdentityRecovery && !options?.seedMode) {
       try {
         const { extractPlanIdentifiersWithHaiku } = await import("@/lib/plan/extraction-dedup");
         const haikuIds = await extractPlanIdentifiersWithHaiku(ocrText);
@@ -758,13 +777,16 @@ export async function processPlanDocumentData(
       }
     }
 
-    if (mismatchData) {
+    // seedMode (cold-start regen): no mismatch concept for the seed (it targets a known plan) — skip
+    // the per-doc documents.insurer_mismatch churn write.
+    if (mismatchData && !options?.seedMode) {
       console.log(`[process-plan] Mismatch (${mismatchData.type})`);
       await supabase.from("documents").update({ insurer_mismatch: mismatchData }).eq("id", documentId);
       planInsert.is_active = false;
     }
 
-    if (yearRollover) {
+    // seedMode (cold-start regen): skip the per-doc year-rollover documents churn write.
+    if (yearRollover && !options?.seedMode) {
       // Store year rollover info alongside any mismatch data
       await supabase.from("documents").update({
         insurer_mismatch: { ...(mismatchData || {}), year_rollover: yearRollover },
@@ -794,7 +816,40 @@ export async function processPlanDocumentData(
     // If not merging (mismatch or no existing plan), create a new plan
     let targetPlanId: string;
 
-    if (mergeIntoExistingPlan) {
+    if (options?.seedMode && options.seedTargetPlanId) {
+      // (c) seed write-path: target the doc's existing canonical-linked plan directly. The production
+      // mismatch/active-merge/INSERT resolution keys on is_active + can't find an inactive seed plan
+      // (it would orphan). is_active + canonical_plan_id preserved by omission below.
+      targetPlanId = options.seedTargetPlanId;
+      // S256: when the seed carries a plan-identity override, persist the regenerated EXTRACTED identity
+      // (deductible/OOP in+out, plan_name/type/year + Pattern-P8 provenance) to the existing plan so the
+      // canonical identity promotion reads it. §19-D clobber-guard: only write fields the override has a
+      // NON-NULL value for (a parse-miss can't null-clobber a populated deductible). metal_level/is_aca
+      // (derived, §16-D/§19-D) + is_active + canonical_plan_id are preserved by omission.
+      if (options.planIdentityOverride) {
+        const SEED_IDENTITY_COLS = [
+          "in_deductible_individual", "in_deductible_family", "in_oop_max_individual", "in_oop_max_family",
+          "out_deductible_individual", "out_deductible_family", "out_oop_max_individual", "out_oop_max_family",
+          "plan_name", "plan_type", "plan_year",
+        ] as const;
+        const { data: existingPlan } = await supabase
+          .from("insurance_plans").select("field_provenance").eq("id", targetPlanId).maybeSingle();
+        const mergedProv: Record<string, unknown> = { ...((existingPlan?.field_provenance as Record<string, unknown>) ?? {}) };
+        const idUpdate: Record<string, unknown> = {};
+        for (const col of SEED_IDENTITY_COLS) {
+          const v = (planInsert as Record<string, unknown>)[col];
+          if (v == null) continue; // clobber-guard: a null/missing re-parse never overwrites a populated value
+          idUpdate[col] = v;
+          const entry = (planIdentityProvenance as Record<string, unknown> | null)?.[col];
+          if (entry != null) mergedProv[col] = entry;
+        }
+        if (Object.keys(idUpdate).length > 0) {
+          idUpdate.field_provenance = mergedProv;
+          const { error: idErr } = await supabase.from("insurance_plans").update(idUpdate).eq("id", targetPlanId);
+          if (idErr) throw new Error(`seedMode identity write (${targetPlanId}) failed: ${idErr.message}`);
+        }
+      }
+    } else if (mergeIntoExistingPlan) {
       targetPlanId = mergeIntoExistingPlan;
       // Update the existing plan with any new metadata (deductibles, OOP, etc.)
       // Phase 3.2.1 — also propagate field_provenance from this upload's parse so
@@ -820,13 +875,17 @@ export async function processPlanDocumentData(
       const profileUpdate: Record<string, unknown> = { active_insurance_plan_id: targetPlanId };
       if (planInsert.insurer_name) profileUpdate.insurer = planInsert.insurer_name;
       if (planInsert.plan_name) profileUpdate.plan_name = planInsert.plan_name;
-      await supabase.from("profiles").update(profileUpdate).eq("user_id", doc.user_id);
+      // seedMode (cold-start regen): never churn the admin's active-plan pointer ×N seed docs.
+      if (!options?.seedMode) {
+        await supabase.from("profiles").update(profileUpdate).eq("user_id", doc.user_id);
+      }
     } else {
       // For comparison uploads: never deactivate the user's existing primary
       // plan. The new comparison row inserts with is_active=false (per planInsert
       // above), so coexistence is automatic.
-      if (!mismatchData && !isComparisonUpload) {
-        // Deactivate old plans (but don't delete — data stays for platform)
+      if (!mismatchData && !isComparisonUpload && !options?.seedMode) {
+        // Deactivate old plans (but don't delete — data stays for platform).
+        // seedMode (cold-start regen): skip — don't deactivate the admin's other seed plans ×N docs.
         await supabase
           .from("insurance_plans")
           .update({ is_active: false })
@@ -850,7 +909,8 @@ export async function processPlanDocumentData(
 
       // Comparison uploads must NOT touch the profile's active_insurance_plan_id —
       // the user's existing primary plan stays the active one.
-      if (!mismatchData && !isComparisonUpload) {
+      // seedMode (cold-start regen): also skip — don't churn the admin's active-plan pointer ×N docs.
+      if (!mismatchData && !isComparisonUpload && !options?.seedMode) {
         // Back-populate profile with plan info from document
         const profileUpdate: Record<string, unknown> = { active_insurance_plan_id: newPlan.id };
         if (planInsert.insurer_name) profileUpdate.insurer = planInsert.insurer_name;
@@ -869,6 +929,23 @@ export async function processPlanDocumentData(
     let canonicalNeedsConfirmation = false;
     let canonicalIsNew = false;
 
+    // (d) seedMode (cold-start regen): resolve the canonical from the plan's PRESERVED link (the
+    // AUTHORITATIVE target) so the promotion (admin_override) can fire. The identity-driven match below is
+    // then EXPLICITLY skipped for seedMode (see the seedMode branch in the canonical-match conditional).
+    // S256: pre-identity-override the seed had empty insurer/plan_name → the match self-skipped; now the
+    // seed carries a real identity, so it would re-match + could CREATE AN ORPHAN canonical — hence the
+    // explicit skip.
+    if (options?.seedMode && options.seedTargetPlanId) {
+      const { data: seedPlan, error: seedErr } = await supabase
+        .from("insurance_plans").select("canonical_plan_id").eq("id", options.seedTargetPlanId).maybeSingle();
+      if (seedErr) throw new Error(`seedMode: read seedTargetPlanId failed: ${seedErr.message}`);
+      if (!seedPlan) throw new Error(`seedMode: seedTargetPlanId ${options.seedTargetPlanId} not found`);
+      if (!seedPlan.canonical_plan_id) {
+        throw new Error(`seedMode: plan ${options.seedTargetPlanId} has null canonical_plan_id (harness should pre-filter)`);
+      }
+      canonicalPlanId = seedPlan.canonical_plan_id as string;
+    }
+
     // Check feature flag — get user email for targeting
     const userForFlag = await getUserContextByPk(supabase, doc.user_id, "process-plan:canonical_plans");
     const canonicalEnabled = await isFeatureEnabled("canonical_plans", userForFlag?.email || undefined);
@@ -877,6 +954,12 @@ export async function processPlanDocumentData(
       console.log("[canonical-plan] Feature flag disabled for this user, skipping");
     } else if (skipCanonical) {
       // Medium-confidence doc — held for admin review, don't touch canonical tables
+    } else if (options?.seedMode) {
+      // (d) seedMode (cold-start regen): canonicalPlanId is ALREADY resolved from the plan's preserved link
+      // (934-942) — the authoritative target. Skip the identity-driven match entirely: post-S256 the seed
+      // carries a real insurer/plan_name (identity override), so matchInsurerWithPlanFallback would
+      // re-identify and could CREATE AN ORPHAN canonical + set canonicalNeedsConfirmation (silently
+      // blocking the promotion at ~line 1495). The seed targets a KNOWN canonical; never re-identify/insert.
     } else try {
       // Use the plan-name fallback so PEO-administered plans (where
       // `insurer_name` was captured as the group sponsor — e.g., "Sequoia
@@ -1024,7 +1107,8 @@ export async function processPlanDocumentData(
     // plan_doc Haiku ON: planDocHaikuResult.costUsd
     // plan_doc Haiku OFF (regex fallback): cost=0; still recorded for activity
     //   attribution even though no Haiku spend occurred.
-    if (haikuResult) {
+    // seedMode (cold-start regen): skip the parse_cost_events ledger ×N seed docs (all 3 branches).
+    if (!options?.seedMode && haikuResult) {
       await recordCostEvent(supabase, {
         canonicalPlanId: canonicalPlanId ?? null,
         insurancePlanId: targetPlanId,
@@ -1043,7 +1127,7 @@ export async function processPlanDocumentData(
           dispatched_sections: haikuResult.dispatchedSections,
         },
       });
-    } else if (planDocHaikuResult) {
+    } else if (!options?.seedMode && planDocHaikuResult) {
       await recordCostEvent(supabase, {
         canonicalPlanId: canonicalPlanId ?? null,
         insurancePlanId: targetPlanId,
@@ -1056,7 +1140,7 @@ export async function processPlanDocumentData(
           haiku_used: true,
         },
       });
-    } else if (isFullPlanDoc) {
+    } else if (!options?.seedMode && isFullPlanDoc) {
       // Regex fallback path — no Haiku spend, but record event for activity
       await recordCostEvent(supabase, {
         canonicalPlanId: canonicalPlanId ?? null,
@@ -1142,7 +1226,8 @@ export async function processPlanDocumentData(
               source_section_hint?: string;
               source_section_verified?: boolean;
             } }).patternP8;
-            await enqueueUnknownServiceSlug(supabase, {
+            // seedMode (cold-start regen): skip the review-queue enqueue ×N seed docs.
+            if (!options?.seedMode) await enqueueUnknownServiceSlug(supabase, {
               sourceDocId: documentId,
               proposedByUserId: slugEnqueueContext.proposedByUserId,
               parserSource: isFullPlanDoc ? "plan_document" : "sbc",
@@ -1217,11 +1302,27 @@ export async function processPlanDocumentData(
         }
       }
 
-      // Deduplicate: keep highest-confidence per (slug, place_of_service)
+      // Cell identity = (slug, place_of_service, component, plan_tier_label) — matches the storage UNIQUE key
+      // (canonical_plan_services mig 147/169/194 + plan_covered_services mig 157/195). Keying dedup + provenance
+      // maps on the FULL tuple (not just slug|pos) stops component-distinct rows (ER "Facility" coinsurance vs
+      // "Physician Services" copay) AND bucket-distinct drug rows (generic Preferred vs Non-Preferred; Tier 1 vs
+      // Tier 2; Condition-Care vs All-Other) from silently collapsing before write. Additive: only splits
+      // previously-merged variants, never merges.
+      // ensureTier (mig 194, S258): derive the plan-local drug cost-share BUCKET from the verbatim label once
+      // per service (deterministic + shared claims/plan-doc); 'none' when not a bucketed drug line. Caches on
+      // the object so the dedup key, the provenance-map keys, and the pcs payload all agree.
+      const ensureTier = (s: SBCParsedService): string => {
+        if (s.planTierLabel == null) s.planTierLabel = derivePlanTierLabel(s.rawLabel ?? "").planTierLabel ?? "none";
+        return s.planTierLabel;
+      };
+      const cellKey = (
+        slug: string, pos: string | null | undefined, component: string | null | undefined, planTierLabel: string,
+      ) => `${slug}|${pos || "any"}|${coerceComponent(component)}|${planTierLabel}`;
+      // Deduplicate: keep highest-confidence per (slug, place_of_service, component, plan_tier_label)
       const deduped = new Map<string, SBCParsedService>();
       for (const s of parseResult.services) {
         if (!slugToId.has(s.serviceSlug)) continue;
-        const key = `${s.serviceSlug}|${s.placeOfService || "any"}`;
+        const key = cellKey(s.serviceSlug, s.placeOfService, s.component, ensureTier(s));
         const existing = deduped.get(key);
         if (!existing || s.confidence > existing.confidence) deduped.set(key, s);
       }
@@ -1239,7 +1340,7 @@ export async function processPlanDocumentData(
       const haikuServiceByKey = new Map<string, SBCHaikuService>();
       if (haikuResult) {
         for (const hs of [...haikuResult.services, ...haikuResult.otherCoveredServices]) {
-          const key = `${hs.serviceSlug}|${hs.placeOfService || "any"}`;
+          const key = cellKey(hs.serviceSlug, hs.placeOfService, hs.component, ensureTier(hs));
           const existing = haikuServiceByKey.get(key);
           if (!existing || hs.confidence > existing.confidence) haikuServiceByKey.set(key, hs);
         }
@@ -1247,7 +1348,7 @@ export async function processPlanDocumentData(
       const planDocServiceByKey = new Map<string, import("@/lib/plan_doc/types").PlanDocService>();
       if (planDocHaikuResult) {
         for (const ps of planDocHaikuResult.services) {
-          const key = `${ps.serviceSlug}|${ps.placeOfService || "any"}`;
+          const key = cellKey(ps.serviceSlug, ps.placeOfService, ps.component, ensureTier(ps));
           const existing = planDocServiceByKey.get(key);
           if (!existing || ps.confidence > existing.confidence) planDocServiceByKey.set(key, ps);
         }
@@ -1279,16 +1380,17 @@ export async function processPlanDocumentData(
 
       const serviceInserts = confident.map((s) => {
         const pos = coercePOS(s.placeOfService);
-        const haikuService = haikuServiceByKey.get(`${s.serviceSlug}|${coercePOS(s.placeOfService)}`)
-          ?? haikuServiceByKey.get(`${s.serviceSlug}|${s.placeOfService || "any"}`);
-        const planDocService = planDocServiceByKey.get(`${s.serviceSlug}|${coercePOS(s.placeOfService)}`)
-          ?? planDocServiceByKey.get(`${s.serviceSlug}|${s.placeOfService || "any"}`);
+        const haikuService = haikuServiceByKey.get(cellKey(s.serviceSlug, coercePOS(s.placeOfService), s.component, ensureTier(s)))
+          ?? haikuServiceByKey.get(cellKey(s.serviceSlug, s.placeOfService, s.component, ensureTier(s)));
+        const planDocService = planDocServiceByKey.get(cellKey(s.serviceSlug, coercePOS(s.placeOfService), s.component, ensureTier(s)))
+          ?? planDocServiceByKey.get(cellKey(s.serviceSlug, s.placeOfService, s.component, ensureTier(s)));
         return {
           insurance_plan_id: targetPlanId,
           service_id: slugToId.get(s.serviceSlug)!,
           concept_id: conceptIdMap.get(s.serviceSlug) || null,
           place_of_service: pos,
           component: coerceComponent(s.component),
+          plan_tier_label: s.planTierLabel ?? "none",
           in_copay: s.inCopay, in_coinsurance: normalizeCoinsuranceForStorage(s.inCoinsurance),
           in_deductible_applies: s.inDeductibleApplies, in_copay_waiver_condition: s.inCopayWaiverCondition,
           in_cost_description: s.inCostDescription,
@@ -1419,7 +1521,16 @@ export async function processPlanDocumentData(
       // hard-delete prohibition; superseded comment in mig 069.
       if (canonicalPlanId && !canonicalNeedsConfirmation) {
         try {
-          const candidates = derivePromotionCandidatesFromHaikuResult(haikuResult);
+          // S256: seedMode promotes the regenerated EXTRACTED plan-identity (incl. OON via the A-option
+          // list) — metal_level EXCLUDED (derived, §16-D/§19-D). Per-service coverage promotes separately
+          // via expandPerServiceCandidates (helper-internal). Identity values were just persisted to
+          // seedTargetPlanId above; a null identity field carries no value → no-op (clobber-guard holds
+          // end-to-end). PROD (non-seed) passes the SBC identity + per-service candidates.
+          const candidates = options?.seedMode
+            ? PHASE_4_0_6_PLAN_IDENTITY_FIELDS_SBC
+                .filter((f) => f !== "metal_level")
+                .map((fieldName) => ({ serviceSlug: null, fieldName }))
+            : derivePromotionCandidatesFromHaikuResult(haikuResult);
           const result = await commitUploadAndEvaluateCorroboration(supabase, {
             canonicalPlanId: canonicalPlanId!,
             actorUserId: userForFlagCheck?.id ?? doc.user_id,
@@ -1507,7 +1618,10 @@ export async function processPlanDocumentData(
     // this yet" rather than another user's single-source assertion. Aligns
     // with Pattern 1 #14 cross-user inheritance implication. Always-on
     // post-Task 4.0.6-I cleanup (legacy unfiltered branch sunset).
-    if (canonicalPlanId && !canonicalNeedsConfirmation && !canonicalIsNew) {
+    // seedMode (cold-start regen): skip consumer-side inheritance — the seed is a PRODUCER of canonical
+    // coverage; inheriting canonical→user plan would pollute the seed plan's provenance (§19-C) + isn't
+    // re-run-safe. (No-op anyway for single-source clean-set canonicals.)
+    if (canonicalPlanId && !canonicalNeedsConfirmation && !canonicalIsNew && !options?.seedMode) {
       try {
         const { data: flagRow } = await supabase
           .from("feature_flag_rules")
@@ -1772,11 +1886,14 @@ export async function processPlanDocumentData(
     // S78 — async ingestion: fire parse-complete email for large plan_doc/SBC.
     // Helper internally gates on pageCount > 30 + Resend idempotency key prevents
     // double-sends on QStash retry. Fail-soft.
-    try {
-      const { sendParseCompleteEmail } = await import("@/lib/email/onboarding-emails");
-      await sendParseCompleteEmail(supabase, documentId);
-    } catch (err) {
-      console.error("[process-plan] parse-complete email (non-fatal):", err);
+    // seedMode (cold-start regen): never send the parse-complete email ×N seed docs.
+    if (!options?.seedMode) {
+      try {
+        const { sendParseCompleteEmail } = await import("@/lib/email/onboarding-emails");
+        await sendParseCompleteEmail(supabase, documentId);
+      } catch (err) {
+        console.error("[process-plan] parse-complete email (non-fatal):", err);
+      }
     }
 
     console.log(`[process-plan] Done. Plan=${targetPlanId}, services=${servicesCreated}, mismatch=${mismatchData?.type || "none"}, merged=${!!mergeIntoExistingPlan}`);

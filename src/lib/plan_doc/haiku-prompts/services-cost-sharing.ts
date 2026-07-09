@@ -271,7 +271,10 @@ per the rule above. Nothing else moves.`;
 // fallbacks when no active DB row exists (initial state pre-tuning) or when DB
 // fetch fails. Admin tunes via /admin/parse-quality-tuning (Stage 5c) which
 // writes a new active row + busts the cache.
-async function buildInstructions(
+// Exported (S251, cold-start regen Phase-0a): lets the seed harness snapshot the EXACT
+// production extraction prompt to feed the Sonnet sub-agent (input+prompt parity). Export only —
+// zero behavior change; the live pipeline calls it unchanged.
+export async function buildInstructions(
   layout: PlanDocLayout | undefined,
   thesaurusEnabled: boolean,
   extractionV2Enabled: boolean,
@@ -507,7 +510,7 @@ Correct emission: { serviceSlug: "proposed_hyperbaric_oxygen_therapy", inCoinsur
 
 ## NOW EXTRACT FROM THIS DOCUMENT SECTION:`;
 
-interface RawService {
+export interface RawService {
   serviceSlug?: string;
   placeOfService?: string;
   inCopay?: number | null;
@@ -729,6 +732,11 @@ export async function extractServicesCostSharing(
   // PROD leaves it undefined → reads the live flag (OFF → byte-identical). The §13 oracle harness
   // passes `true` to measure flag-ON without depending on DB flag state (calibration independence).
   coverageDimsOverride?: boolean,
+  // S253 cold-start regen Stage C: inject the Sonnet sub-agent's cached raw services — SKIP the LLM and
+  // run the SAME post-processors (referral/visit/cite-grade) on the override. undefined → normal LLM path
+  // (byte-identical). The caller passes the RAW text-cache as `sectionText` so the cached excerpts ground
+  // verbatim (the exact text the sub-agent saw).
+  rawServicesOverride?: RawService[],
 ): Promise<PlanDocSectionResult<{ services: PlanDocService[] }>> {
   const thesaurusEnabled =
     thesaurusPhase1aOverride ?? (await isFeatureEnabled("thesaurus_phase1a_v1"));
@@ -736,20 +744,29 @@ export async function extractServicesCostSharing(
     extractionV2Override ?? (await isFeatureEnabled("plan_doc_extraction_v2"));
   const coverageDimsEnabled =
     coverageDimsOverride ?? (await isFeatureEnabled("coverage_dims_v1"));
-  const systemPrompt = await buildInstructions(
-    layout,
-    thesaurusEnabled,
-    extractionV2Enabled,
-    coverageDimsEnabled,
-  );
-  const result = await callHaikuWithCache<RawResponse>({
-    systemPrompt: HAIKU_CACHE_PAD + systemPrompt,
-    userContent: sectionText,
-    sectionLabel:
-      layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant"
-        ? "services_cost_sharing_federal_sbc"
-        : "services_cost_sharing",
-  });
+  // S253 cold-start regen Stage C: when a cached extraction is injected, SKIP the LLM (no prompt build,
+  // no DB read, no API call) and feed the override into the SAME post-processors below — deterministic.
+  const result =
+    rawServicesOverride !== undefined
+      ? {
+          data: { services: rawServicesOverride } as RawResponse,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsd: 0,
+          cacheCreateTokens: 0,
+          cacheReadTokens: 0,
+          warnings: [`seed_override:${rawServicesOverride.length}_raw_services`],
+        }
+      : await callHaikuWithCache<RawResponse>({
+          systemPrompt:
+            HAIKU_CACHE_PAD +
+            (await buildInstructions(layout, thesaurusEnabled, extractionV2Enabled, coverageDimsEnabled)),
+          userContent: sectionText,
+          sectionLabel:
+            layout === "federal_sbc_8page" || layout === "federal_sbc_csr_variant"
+              ? "services_cost_sharing_federal_sbc"
+              : "services_cost_sharing",
+        });
 
   // coverage_dims_v1 (Option C): plan-level referral answer derived ONCE from the document text;
   // each service's referralRequired is then a deterministic function of (policy × slug × explicit text).

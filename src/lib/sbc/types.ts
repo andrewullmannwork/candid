@@ -90,6 +90,10 @@ export interface SBCParsedService {
   // aware at the corroboration/coverage boundary (T4).
   rawLabel?: string | null;
   component?: string | null;
+  // mig 194/195 (S258): plan-local drug cost-share BUCKET modifier (formulary tier_N or named program —
+  // condition_care/all_other/preferred/non_preferred/…). The 5th canonical/pcs key column. Populated by the
+  // resolver (derivePlanTierLabel) when thesaurus_phase1a_v1 is ON; default 'none' (byte-identical pre-194).
+  planTierLabel?: string | null;
   // A3 (cite-grade gate): set by thesaurus-routing when the synonym cache OVERRODE the
   // extractor slug (a cache-win, flag ON) — records the resolving cache tier so the coverage
   // row's field_provenance can mark the identity inferred. Absent = direct extraction / rename.
