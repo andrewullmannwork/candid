@@ -1047,6 +1047,9 @@ function BillDecisionTable(props: {
   highlightDecisionId?: string | null;
 }) {
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Andrew smoke-test #3: clean bills auto-pass (no action buttons). Default the
+  // Bills tab to only actionable (fire) verdicts so the work-to-do is what shows.
+  const [needsActionOnly, setNeedsActionOnly] = useState(true);
   const counts = {
     clean: props.rows.filter((r) => r.verdict === "clean").length,
     sign_violation: props.rows.filter((r) => r.verdict === "sign_violation").length,
@@ -1054,6 +1057,9 @@ function BillDecisionTable(props: {
     header_reconciliation_failed: props.rows.filter((r) => r.verdict === "header_reconciliation_failed").length,
     multi: props.rows.filter((r) => r.verdict === "multi").length,
   };
+  const visibleRows = needsActionOnly
+    ? props.rows.filter((r) => r.verdict !== "clean")
+    : props.rows;
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-gray-600">
@@ -1073,6 +1079,14 @@ function BillDecisionTable(props: {
           Verdicts in view: clean {counts.clean} · sign {counts.sign_violation} · sparse {counts.per_line_sparse}
           {" "}· header {counts.header_reconciliation_failed} · multi {counts.multi}
         </span>
+        <label className="ml-auto flex items-center gap-1.5 text-gray-700">
+          <input
+            type="checkbox"
+            checked={needsActionOnly}
+            onChange={(e) => setNeedsActionOnly(e.target.checked)}
+          />
+          Needs action only (hide clean)
+        </label>
       </div>
       <table className="w-full text-sm">
         <thead className="border-b border-gray-200 text-left text-xs uppercase text-gray-500">
@@ -1089,14 +1103,16 @@ function BillDecisionTable(props: {
           </tr>
         </thead>
         <tbody>
-          {props.rows.length === 0 && (
+          {visibleRows.length === 0 && (
             <tr>
               <td colSpan={9} className="py-4 text-center text-sm text-gray-500">
-                No bill_parser_decisions rows for the selected review filter.
+                {needsActionOnly && props.rows.length > 0
+                  ? `No action-needed bills here (${props.rows.length} clean — untick "Needs action only" to see them).`
+                  : "No bill_parser_decisions rows for the selected review filter."}
               </td>
             </tr>
           )}
-          {props.rows.map((row) => {
+          {visibleRows.map((row) => {
             const isFire = row.verdict !== "clean";
             const isHighlighted = props.highlightDecisionId === row.id;
             return (
