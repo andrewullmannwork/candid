@@ -1,26 +1,23 @@
+/**
+ * /api/admin/services/categories — CRUD for service_categories (the buckets that
+ * group service_catalog slugs on the admin services surface).
+ *   GET    — list all categories, sorted by sort_order.
+ *   POST   — create a category (id slugified to [a-z0-9_]; sort_order defaults 50).
+ *   DELETE — delete a category, but only after every service in it is reassigned
+ *            (reassignTo); the 'other' catch-all can never be deleted.
+ *
+ * Auth: requireAdmin (Firebase bearer token + users.is_admin).
+ */
+
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
-import { getAdminAuth } from "@/lib/firebase/admin";
+import { requireAdmin } from "@/lib/admin/require-admin";
 import { logAdminAction } from "@/lib/admin/audit-log";
-
-async function verifyAdmin(req: NextRequest) {
-  const authHeader = req.headers.get("authorization");
-  if (!authHeader?.startsWith("Bearer ")) return null;
-  try {
-    const decoded = await getAdminAuth().verifyIdToken(authHeader.slice(7));
-    const supabase = createServerClient();
-    const { data } = await supabase.from("users").select("id, is_admin").eq("firebase_uid", decoded.uid).single();
-    if (data?.is_admin !== true) return null;
-    return { adminUserId: data.id, adminEmail: decoded.email || "unknown" };
-  } catch {
-    return null;
-  }
-}
 
 /** GET /api/admin/services/categories — list all categories */
 export async function GET(req: NextRequest) {
-  const admin = await verifyAdmin(req);
-  if (!admin) return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+  const admin = await requireAdmin(req);
+  if (!admin.ok) return admin.response;
 
   const supabase = createServerClient();
   const { data, error } = await supabase
@@ -34,8 +31,8 @@ export async function GET(req: NextRequest) {
 
 /** POST /api/admin/services/categories — create a category */
 export async function POST(req: NextRequest) {
-  const admin = await verifyAdmin(req);
-  if (!admin) return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+  const admin = await requireAdmin(req);
+  if (!admin.ok) return admin.response;
 
   const { id, label } = await req.json();
   if (!id || !label) return NextResponse.json({ error: "id and label required" }, { status: 400 });
@@ -61,8 +58,8 @@ export async function POST(req: NextRequest) {
 
 /** DELETE /api/admin/services/categories — delete a category (with optional reassignment) */
 export async function DELETE(req: NextRequest) {
-  const admin = await verifyAdmin(req);
-  if (!admin) return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+  const admin = await requireAdmin(req);
+  if (!admin.ok) return admin.response;
 
   const { categoryId, reassignTo } = await req.json();
   if (!categoryId) return NextResponse.json({ error: "categoryId required" }, { status: 400 });

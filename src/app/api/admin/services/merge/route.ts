@@ -1,21 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
-import { getAdminAuth } from "@/lib/firebase/admin";
+import { requireAdmin } from "@/lib/admin/require-admin";
 import { logAdminAction } from "@/lib/admin/audit-log";
-
-async function verifyAdmin(req: NextRequest) {
-  const authHeader = req.headers.get("authorization");
-  if (!authHeader?.startsWith("Bearer ")) return null;
-  try {
-    const decoded = await getAdminAuth().verifyIdToken(authHeader.slice(7));
-    const supabase = createServerClient();
-    const { data } = await supabase.from("users").select("id, is_admin").eq("firebase_uid", decoded.uid).single();
-    if (data?.is_admin !== true) return null;
-    return { adminUserId: data.id, adminEmail: decoded.email || "unknown" };
-  } catch {
-    return null;
-  }
-}
 
 /**
  * POST /api/admin/services/merge
@@ -23,8 +9,8 @@ async function verifyAdmin(req: NextRequest) {
  * Merges duplicate services into one canonical service.
  */
 export async function POST(req: NextRequest) {
-  const admin = await verifyAdmin(req);
-  if (!admin) return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+  const admin = await requireAdmin(req);
+  if (!admin.ok) return admin.response;
 
   const { canonicalServiceId, mergeServiceIds } = await req.json();
   if (!canonicalServiceId || !mergeServiceIds?.length) {

@@ -1,29 +1,18 @@
+/**
+ * GET /api/admin/users — admin user directory. Returns up to 50 users (newest
+ * first), each hydrated with profile, Stripe, documents, and consent joins.
+ * Optional ?q= filters by email or display_name (ilike). Read-only.
+ *
+ * Auth: requireAdmin (Firebase bearer token + users.is_admin).
+ */
+
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
-import { getAdminAuth } from "@/lib/firebase/admin";
-
-async function verifyAdmin(req: NextRequest) {
-  const authHeader = req.headers.get("authorization");
-  if (!authHeader?.startsWith("Bearer ")) return null;
-  try {
-    const decoded = await getAdminAuth().verifyIdToken(authHeader.slice(7));
-    const supabase = createServerClient();
-    const { data: user } = await supabase
-      .from("users")
-      .select("id, is_admin")
-      .eq("firebase_uid", decoded.uid)
-      .single();
-    return user?.is_admin ? user : null;
-  } catch {
-    return null;
-  }
-}
+import { requireAdmin } from "@/lib/admin/require-admin";
 
 export async function GET(req: NextRequest) {
-  const admin = await verifyAdmin(req);
-  if (!admin) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const auth = await requireAdmin(req);
+  if (!auth.ok) return auth.response;
 
   const supabase = createServerClient();
   const q = req.nextUrl.searchParams.get("q")?.trim();

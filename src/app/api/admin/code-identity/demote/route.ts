@@ -25,41 +25,13 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { requireAdmin } from "@/lib/admin/require-admin";
 import { logAdminAction } from "@/lib/admin/audit-log";
 
-async function verifyAdmin(req: NextRequest): Promise<
-  | { authorized: false }
-  | { authorized: true; adminUserId: string; adminEmail: string }
-> {
-  const authHeader = req.headers.get("authorization");
-  if (!authHeader?.startsWith("Bearer ")) return { authorized: false };
-
-  try {
-    const decoded = await getAdminAuth().verifyIdToken(authHeader.slice(7));
-    const supabase = createServerClient();
-    const { data } = await supabase
-      .from("users")
-      .select("id, email, is_admin")
-      .eq("firebase_uid", decoded.uid)
-      .single();
-    if (!data?.is_admin) return { authorized: false };
-    return {
-      authorized: true,
-      adminUserId: data.id as string,
-      adminEmail: (data.email as string) ?? "",
-    };
-  } catch {
-    return { authorized: false };
-  }
-}
-
 export async function POST(req: NextRequest) {
-  const auth = await verifyAdmin(req);
-  if (!auth.authorized) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const auth = await requireAdmin(req);
+  if (!auth.ok) return auth.response;
 
   let body: { identityId?: unknown; reason?: unknown };
   try {

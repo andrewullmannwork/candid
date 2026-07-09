@@ -7,26 +7,12 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
-import { getAdminAuth } from "@/lib/firebase/admin";
+import { requireAdmin } from "@/lib/admin/require-admin";
 
-async function verifyAdmin(req: NextRequest) {
-  const authHeader = req.headers.get("authorization");
-  if (!authHeader?.startsWith("Bearer ")) return null;
-  try {
-    const decoded = await getAdminAuth().verifyIdToken(authHeader.slice(7));
-    const supabase = createServerClient();
-    const { data } = await supabase
-      .from("users")
-      .select("id, is_admin")
-      .eq("firebase_uid", decoded.uid)
-      .single();
-    if (data?.is_admin !== true) return null;
-    return { adminUserId: data.id };
-  } catch {
-    return null;
-  }
-}
-
+/**
+ * Fail-soft count: returns 0 on ANY error (missing table, permission, bad filter)
+ * instead of throwing — one broken query must never blank the whole To-Do Center.
+ */
 async function safeCount(
   supabase: ReturnType<typeof createServerClient>,
   table: string,
@@ -45,6 +31,7 @@ async function safeCount(
   }
 }
 
+/** Fail-soft fetch: returns [] on any error (same rationale as safeCount). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function safeFetch<T = any>(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -60,8 +47,8 @@ async function safeFetch<T = any>(
 }
 
 export async function GET(req: NextRequest) {
-  const admin = await verifyAdmin(req);
-  if (!admin) return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+  const auth = await requireAdmin(req);
+  if (!auth.ok) return auth.response;
 
   const supabase = createServerClient();
 

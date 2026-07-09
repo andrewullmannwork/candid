@@ -1,31 +1,22 @@
+/**
+ * /api/admin/subscriptions — Stripe subscription admin surface (stripe_customers).
+ *   GET  — list every customer with subscription status/tier + user join.
+ *   POST — { action: 'cancel' | 'refund', stripe_customer_id, reason? }. Cancel
+ *          ends all active Stripe subs and marks the row canceled/free; refund
+ *          refunds the customer's latest charge. Both write an admin_audit_log row.
+ *
+ * Auth: requireAdmin (Firebase bearer token + users.is_admin).
+ */
+
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
-import { getAdminAuth } from "@/lib/firebase/admin";
 import { getStripe } from "@/lib/stripe";
+import { requireAdmin } from "@/lib/admin/require-admin";
 import { logAdminAction } from "@/lib/admin/audit-log";
 
-async function verifyAdmin(req: NextRequest) {
-  const authHeader = req.headers.get("authorization");
-  if (!authHeader?.startsWith("Bearer ")) return null;
-  try {
-    const decoded = await getAdminAuth().verifyIdToken(authHeader.slice(7));
-    const supabase = createServerClient();
-    const { data: user } = await supabase
-      .from("users")
-      .select("id, is_admin, email")
-      .eq("firebase_uid", decoded.uid)
-      .single();
-    return user?.is_admin ? user : null;
-  } catch {
-    return null;
-  }
-}
-
 export async function GET(req: NextRequest) {
-  const admin = await verifyAdmin(req);
-  if (!admin) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const admin = await requireAdmin(req);
+  if (!admin.ok) return admin.response;
 
   const supabase = createServerClient();
 
@@ -46,10 +37,8 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const admin = await verifyAdmin(req);
-  if (!admin) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const admin = await requireAdmin(req);
+  if (!admin.ok) return admin.response;
 
   const { action, stripe_customer_id, reason } = await req.json();
 
@@ -80,8 +69,8 @@ export async function POST(req: NextRequest) {
         .eq("stripe_customer_id", stripe_customer_id);
 
       await logAdminAction({
-        adminUserId: admin.id,
-        adminEmail: admin.email,
+        adminUserId: admin.adminUserId,
+        adminEmail: admin.adminEmail,
         action: "subscription_cancel",
         targetTable: "stripe_customers",
         details: `customer=${stripe_customer_id} · canceled ${subs.data.length} active subscription(s) · reason=${reason || "—"}`,
@@ -110,8 +99,8 @@ export async function POST(req: NextRequest) {
       });
 
       await logAdminAction({
-        adminUserId: admin.id,
-        adminEmail: admin.email,
+        adminUserId: admin.adminUserId,
+        adminEmail: admin.adminEmail,
         action: "subscription_refund",
         targetTable: "stripe_customers",
         details: `customer=${stripe_customer_id} · refunded ${(charge.amount / 100).toFixed(2)} ${charge.currency} · reason=${reason || "—"}`,
