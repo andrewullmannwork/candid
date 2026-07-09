@@ -20,6 +20,10 @@ export default function CorrectionsPage() {
   const { user } = useAuth();
   const [corrections, setCorrections] = useState<CorrectionRow[]>([]);
   const [loading, setLoading] = useState(true);
+  // Andrew smoke-test #1: the page used to render "No corrections found" whether
+  // the fetch returned [] OR failed — so a load error (e.g. a slow/broken request)
+  // looked identical to an empty queue. Track error separately and surface it.
+  const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<"pending" | "approved" | "rejected" | "applied" | "all">("pending");
 
   useEffect(() => {
@@ -27,17 +31,22 @@ export default function CorrectionsPage() {
     let cancelled = false;
     (async () => {
       setLoading(true);
+      setError(null);
       try {
         const idToken = await user.firebaseUser.getIdToken();
         const res = await fetch(`/api/plan/corrections?status=${filter}`, {
           headers: { Authorization: `Bearer ${idToken}` },
         });
-        if (res.ok && !cancelled) {
+        if (cancelled) return;
+        if (res.ok) {
           const data = await res.json();
           setCorrections(data.corrections || []);
+        } else {
+          setError(`Couldn't load corrections (HTTP ${res.status}) — this is a load error, not an empty queue. Try again in a moment.`);
         }
       } catch (err) {
         console.error("Failed to load corrections:", err);
+        if (!cancelled) setError("Couldn't load corrections (network error) — this is a load error, not an empty queue.");
       }
       if (!cancelled) setLoading(false);
     })();
@@ -47,6 +56,7 @@ export default function CorrectionsPage() {
   async function loadCorrections() {
     if (!user) return;
     setLoading(true);
+    setError(null);
     try {
       const idToken = await user.firebaseUser.getIdToken();
       const res = await fetch(`/api/plan/corrections?status=${filter}`, {
@@ -55,9 +65,12 @@ export default function CorrectionsPage() {
       if (res.ok) {
         const data = await res.json();
         setCorrections(data.corrections || []);
+      } else {
+        setError(`Couldn't load corrections (HTTP ${res.status}) — this is a load error, not an empty queue. Try again in a moment.`);
       }
     } catch (err) {
       console.error("Failed to load corrections:", err);
+      setError("Couldn't load corrections (network error) — this is a load error, not an empty queue.");
     }
     setLoading(false);
   }
@@ -131,6 +144,10 @@ export default function CorrectionsPage() {
 
       {loading ? (
         <p className="text-sm text-gray-500">Loading corrections...</p>
+      ) : error ? (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {error}
+        </div>
       ) : corrections.length === 0 ? (
         <p className="text-sm text-gray-400">No corrections found.</p>
       ) : (
