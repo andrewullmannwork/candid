@@ -250,7 +250,7 @@ export function PlanCard(props: PlanCardProps) {
             disabled={resumeSubmitting}
             className="flex-1 rounded-xl bg-blue-600 px-3 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
           >
-            {resumeSubmitting ? "Resuming…" : "Resume subscription"}
+            {resumeSubmitting ? "Keeping…" : "Keep my subscription"}
           </button>
           <button
             type="button"
