@@ -17,38 +17,12 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { requireAdmin } from "@/lib/admin/require-admin";
 import { logAdminAction } from "@/lib/admin/audit-log";
 import { DEFAULT_DOC_TYPE_OVERRIDE_CONFIG } from "@/lib/documents/effective-doc-type";
 
 const FLAG_KEY = "doc_type_override_v1";
-
-async function verifyAdmin(req: NextRequest): Promise<
-  | { authorized: false }
-  | { authorized: true; adminUserId: string; adminEmail: string }
-> {
-  const authHeader = req.headers.get("authorization");
-  if (!authHeader?.startsWith("Bearer ")) return { authorized: false };
-
-  try {
-    const decoded = await getAdminAuth().verifyIdToken(authHeader.slice(7));
-    const supabase = createServerClient();
-    const { data } = await supabase
-      .from("users")
-      .select("id, email, is_admin")
-      .eq("firebase_uid", decoded.uid)
-      .single();
-    if (!data?.is_admin) return { authorized: false };
-    return {
-      authorized: true,
-      adminUserId: data.id as string,
-      adminEmail: (data.email as string) ?? "",
-    };
-  } catch {
-    return { authorized: false };
-  }
-}
 
 interface FlagRow {
   enabled: boolean;
@@ -90,8 +64,8 @@ function rowToResponse(row: FlagRow | null) {
 }
 
 export async function GET(req: NextRequest) {
-  const auth = await verifyAdmin(req);
-  if (!auth.authorized) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const auth = await requireAdmin(req);
+  if (!auth.ok) return auth.response;
 
   const supabase = createServerClient();
   const { data, error } = await supabase
@@ -108,8 +82,8 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const auth = await verifyAdmin(req);
-  if (!auth.authorized) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const auth = await requireAdmin(req);
+  if (!auth.ok) return auth.response;
 
   let body: Record<string, unknown>;
   try {

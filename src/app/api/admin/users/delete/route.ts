@@ -1,29 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
-import { createServerClient } from "@/lib/supabase/server";
 import { logAdminAction } from "@/lib/admin/audit-log";
+import { requireAdmin } from "@/lib/admin/require-admin";
 
 export async function POST(req: NextRequest) {
   try {
-    // Verify admin auth
-    const authHeader = req.headers.get("authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const decoded = await getAdminAuth().verifyIdToken(authHeader.slice(7));
-    const supabase = createServerClient();
-
-    // Verify caller is admin
-    const { data: caller } = await supabase
-      .from("users")
-      .select("id, is_admin")
-      .eq("firebase_uid", decoded.uid)
-      .single();
-
-    if (!caller?.is_admin) {
-      return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-    }
+    const auth = await requireAdmin(req);
+    if (!auth.ok) return auth.response;
+    const { supabase, adminUserId, adminEmail } = auth;
 
     const { userId } = await req.json();
     if (!userId) {
@@ -31,7 +15,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Prevent self-deletion
-    if (userId === caller.id) {
+    if (userId === adminUserId) {
       return NextResponse.json({ error: "Cannot delete your own account" }, { status: 400 });
     }
 
@@ -109,8 +93,8 @@ export async function POST(req: NextRequest) {
 
     // Audit log
     await logAdminAction({
-      adminUserId: caller.id,
-      adminEmail: decoded.email || "unknown",
+      adminUserId,
+      adminEmail,
       action: "user_delete",
       targetUserId: targetUser.id,
       details: `Deleted user ${targetUser.email}`,

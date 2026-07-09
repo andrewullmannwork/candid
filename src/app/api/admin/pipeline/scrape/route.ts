@@ -1,25 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { requireAdmin } from "@/lib/admin/require-admin";
 import { scrapeSBC } from "@/lib/pipeline/sbc-scraper";
 import { extractFromSBC } from "@/lib/pipeline/benefit-extractor";
-
-async function verifyAdmin(req: NextRequest) {
-  const authHeader = req.headers.get("authorization");
-  if (!authHeader?.startsWith("Bearer ")) return false;
-  try {
-    const decoded = await getAdminAuth().verifyIdToken(authHeader.slice(7));
-    const supabase = createServerClient();
-    const { data } = await supabase
-      .from("users")
-      .select("is_admin")
-      .eq("firebase_uid", decoded.uid)
-      .single();
-    return data?.is_admin === true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * POST /api/admin/pipeline/scrape
@@ -27,9 +10,8 @@ async function verifyAdmin(req: NextRequest) {
  * Full pipeline: scrape → OCR → extract → store in plan_catalog + plan_benefits
  */
 export async function POST(req: NextRequest) {
-  if (!(await verifyAdmin(req))) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
-  }
+  const auth = await requireAdmin(req);
+  if (!auth.ok) return auth.response;
 
   const { insurerId } = await req.json();
   if (!insurerId) {

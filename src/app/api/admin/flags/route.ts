@@ -1,31 +1,25 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getAdminAuth } from "@/lib/firebase/admin";
-import { createServerClient } from "@/lib/supabase/server";
-import { clearFlagCache } from "@/lib/config/feature-flags";
+/**
+ * GET   /api/admin/flags — list every row in the feature_flags table.
+ * PATCH /api/admin/flags — set a flag's value, then clear the in-memory flag
+ *   cache so the change takes effect immediately (no redeploy).
+ *
+ * Backs the /admin/flags console. Note the two-system gotcha: feature_flags is
+ * the key/value store (env → DB → default resolution, incl. int/config knobs);
+ * the boolean rule engine lives in feature_flag_rules (a separate surface).
+ * Writes stamp updated_by with the admin's users PK for the audit trail.
+ *
+ * Auth: requireAdmin (Firebase bearer token + users.is_admin).
+ */
 
-async function verifyAdmin(req: NextRequest) {
-  const authHeader = req.headers.get("authorization");
-  if (!authHeader?.startsWith("Bearer ")) return null;
-  try {
-    const decoded = await getAdminAuth().verifyIdToken(authHeader.slice(7));
-    const supabase = createServerClient();
-    const { data: user } = await supabase
-      .from("users")
-      .select("id, is_admin")
-      .eq("firebase_uid", decoded.uid)
-      .single();
-    return user?.is_admin ? user : null;
-  } catch {
-    return null;
-  }
-}
+import { NextRequest, NextResponse } from "next/server";
+import { createServerClient } from "@/lib/supabase/server";
+import { requireAdmin } from "@/lib/admin/require-admin";
+import { clearFlagCache } from "@/lib/config/feature-flags";
 
 /** GET: Return all feature flags */
 export async function GET(req: NextRequest) {
-  const admin = await verifyAdmin(req);
-  if (!admin) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const auth = await requireAdmin(req);
+  if (!auth.ok) return auth.response;
 
   const supabase = createServerClient();
   const { data, error } = await supabase
@@ -42,10 +36,8 @@ export async function GET(req: NextRequest) {
 
 /** PATCH: Update a feature flag */
 export async function PATCH(req: NextRequest) {
-  const admin = await verifyAdmin(req);
-  if (!admin) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const auth = await requireAdmin(req);
+  if (!auth.ok) return auth.response;
 
   const { key, value } = await req.json();
 
@@ -59,7 +51,7 @@ export async function PATCH(req: NextRequest) {
     .update({
       value: String(value),
       updated_at: new Date().toISOString(),
-      updated_by: admin.id,
+      updated_by: auth.adminUserId,
     })
     .eq("key", key);
 

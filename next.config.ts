@@ -22,6 +22,17 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  async redirects() {
+    return [
+      // The bare /admin/documents page was retired; its only job was to bounce to
+      // the review queue. Do it at the routing layer instead of a redirect page.
+      {
+        source: "/admin/documents",
+        destination: "/admin/documents/review",
+        permanent: false,
+      },
+    ];
+  },
 };
 
 export default nextConfig;

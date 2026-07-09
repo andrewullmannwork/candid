@@ -222,7 +222,7 @@ function formatChallengeSlackPayload(
           {
             type: "button",
             text: { type: "plain_text", text: "Open Admin Queue" },
-            url: `${APP_URL}/admin/canonical-challenges`,
+            url: `${APP_URL}/admin/canonical-quality`,
             style: "primary",
           },
         ],

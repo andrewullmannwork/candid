@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { requireAdmin } from "@/lib/admin/require-admin";
 import { logAdminAction } from "@/lib/admin/audit-log";
 
 // Allowed tables for admin queries — whitelist to prevent arbitrary table access
@@ -45,42 +45,14 @@ const ALLOWED_TABLES = [
 
 type AllowedTable = (typeof ALLOWED_TABLES)[number];
 
-async function verifyAdmin(req: NextRequest): Promise<
-  | { authorized: false }
-  | { authorized: true; adminUserId: string; adminEmail: string }
-> {
-  const authHeader = req.headers.get("authorization");
-  if (!authHeader?.startsWith("Bearer ")) return { authorized: false };
-
-  try {
-    const decoded = await getAdminAuth().verifyIdToken(authHeader.slice(7));
-    const supabase = createServerClient();
-    const { data } = await supabase
-      .from("users")
-      .select("id, is_admin")
-      .eq("firebase_uid", decoded.uid)
-      .single();
-    if (data?.is_admin !== true) return { authorized: false };
-    return {
-      authorized: true,
-      adminUserId: data.id,
-      adminEmail: decoded.email || "unknown",
-    };
-  } catch {
-    return { authorized: false };
-  }
-}
-
 /**
  * POST /api/admin/query
  * Body: { table, select?, filters?, order?, limit? }
  * Returns data from the specified table using service role (bypasses RLS).
  */
 export async function POST(req: NextRequest) {
-  const admin = await verifyAdmin(req);
-  if (!admin.authorized) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
-  }
+  const admin = await requireAdmin(req);
+  if (!admin.ok) return admin.response;
 
   const body = await req.json();
   const { table, select = "*", filters, order, limit = 100, insert } = body;
@@ -163,10 +135,8 @@ export async function POST(req: NextRequest) {
  * Updates a row by id using service role.
  */
 export async function PATCH(req: NextRequest) {
-  const admin = await verifyAdmin(req);
-  if (!admin.authorized) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
-  }
+  const admin = await requireAdmin(req);
+  if (!admin.ok) return admin.response;
 
   const body = await req.json();
   const { table, id, updates } = body;
@@ -201,10 +171,8 @@ export async function PATCH(req: NextRequest) {
  * Deletes a row by id using service role.
  */
 export async function DELETE(req: NextRequest) {
-  const admin = await verifyAdmin(req);
-  if (!admin.authorized) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
-  }
+  const admin = await requireAdmin(req);
+  if (!admin.ok) return admin.response;
 
   const body = await req.json();
   const { table, id } = body;

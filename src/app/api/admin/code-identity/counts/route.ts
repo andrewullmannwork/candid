@@ -12,30 +12,12 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
-
-async function verifyAdmin(req: NextRequest): Promise<boolean> {
-  const authHeader = req.headers.get("authorization");
-  if (!authHeader?.startsWith("Bearer ")) return false;
-  try {
-    const decoded = await getAdminAuth().verifyIdToken(authHeader.slice(7));
-    const supabase = createServerClient();
-    const { data } = await supabase
-      .from("users")
-      .select("is_admin")
-      .eq("firebase_uid", decoded.uid)
-      .single();
-    return Boolean(data?.is_admin);
-  } catch {
-    return false;
-  }
-}
+import { requireAdmin } from "@/lib/admin/require-admin";
 
 export async function GET(req: NextRequest) {
-  if (!(await verifyAdmin(req))) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const auth = await requireAdmin(req);
+  if (!auth.ok) return auth.response;
 
   const supabase = createServerClient();
   const states: Array<"proposed" | "corroborated" | "admin_verified"> = [
