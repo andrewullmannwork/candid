@@ -185,6 +185,10 @@ const eslintConfig = defineConfig([
       "src/app/api/cron/**",
       "src/app/api/stripe/**",
       "src/app/api/slack/**",
+      // email-forward = the Resend Inbound webhook (Svix-signed). A service-role
+      //   ticket lookup by shortId + sender-email — there is NO authenticated
+      //   user to scope to (same signed-webhook class as slack/** above).
+      "src/app/api/email-forward/**",
       "src/app/api/documents/process-chunk/**",
       "src/app/api/documents/upload/**",
       // — B1 migration ledger (the account-adjacent codemod arc is COMPLETE → this

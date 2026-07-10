@@ -236,3 +236,48 @@ export async function postThreadConfirmation(opts: {
     console.warn("[slack-support] thread confirmation failed:", err);
   }
 }
+
+/**
+ * Post a user's inbound email reply into the ticket's Slack thread (Direction B
+ * of the support reply loop). Called from /api/email-forward after an inbound
+ * reply is matched to a ticket. Returns true on a successful post, false on any
+ * failure (caller decides whether to signal a webhook retry).
+ */
+export async function postUserEmailReply(opts: {
+  threadTs: string;
+  senderEmail: string;
+  replyText: string;
+}): Promise<boolean> {
+  const token = process.env.SLACK_BOT_TOKEN;
+  const channel = process.env.SLACK_SUPPORT_CHANNEL_ID;
+  if (!token || !channel) {
+    console.warn("[slack-support] SLACK_BOT_TOKEN or SLACK_SUPPORT_CHANNEL_ID not configured — skipping user email reply");
+    return false;
+  }
+
+  try {
+    const res = await fetch(`${SLACK_API_BASE}/chat.postMessage`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify({
+        channel,
+        thread_ts: opts.threadTs,
+        text: `📧 *${opts.senderEmail} replied by email:*\n${opts.replyText}`,
+        unfurl_links: false,
+        unfurl_media: false,
+      }),
+    });
+    const data = (await res.json()) as { ok: boolean; error?: string };
+    if (!data.ok) {
+      console.warn(`[slack-support] postUserEmailReply failed: ${data.error ?? "unknown"}`);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn("[slack-support] postUserEmailReply network error:", err);
+    return false;
+  }
+}

@@ -768,7 +768,7 @@ We do not share your personal information with advertising networks, social-medi
 | Resend, Inc. | Outbound transactional email | Your email address and name; outbound message content (for dispute follow-ups: the dispute type, amount, and insurer name) |
 | Vercel, Inc. | Application hosting, serverless compute, scheduled jobs, and logs | Data in transit through the Services; server logs (IP; health-data residue redacted) |
 | Upstash (QStash) | Background document-processing queue | Job references only (a document ID and callback URL) — no document content |
-| Slack (Salesforce, Inc.) | Internal support and operations alerts | Support and dispute alerts include your email, message preview, dispute amount/insurer, and a time-limited document link; other internal channels receive only aggregate or system data |
+| Slack (Salesforce, Inc.) | Internal support and operations alerts | Support and dispute alerts include your email, your support messages and any replies you send (which may include billing and plan details you choose to share), dispute amount/insurer, and a time-limited document link; other internal channels receive only aggregate or system data |
 | Cloudflare Turnstile | Automated bot-challenge on upload and compare | A challenge token and IP address. No health data |
 
 Public reference lookups (not service providers). To match plans and providers, Candid queries U.S. government public-data endpoints (healthcare.gov, NPPES, data.cms.gov). These queries send only a 5-digit ZIP code or a provider NPI — never your identity or your records.
@@ -939,7 +939,7 @@ A small set of service providers (processors) help us operate Candid and may pro
 | Supabase, Inc. | Encrypted database and file storage (our system of record) | Your extracted billing and claims data, audit results, dispute records, and your original uploaded files |
 | Vercel, Inc. | Application hosting, compute, and logging | Health data transits Vercel's compute; server logs may carry incidental residue (identifiable data is redacted from logs) |
 | Resend, Inc. | Outbound transactional email | Dispute follow-up emails we send you embed your dispute type, the dollar amount disputed, and the insurer name |
-| Slack (Salesforce) | Internal support and operations alerts | In the support and dispute channels only: your email, your message's subject and a short preview, an attachment filename, and a time-limited link to a support document; dispute alerts include dispute type, amount, and insurer. Other channels receive only aggregate or system-level data |
+| Slack (Salesforce) | Internal support and operations alerts | In the support and dispute channels only: your email, your full support messages and any replies you send (which may include billing and plan details you choose to share), an attachment filename, and a time-limited link to a support document; dispute alerts include dispute type, amount, and insurer. Other channels receive only aggregate or system-level data |
 | Upstash (QStash) | Asynchronous processing queue | Job references only (document IDs) — no document content |
 
 We do not load third-party web analytics on the authenticated pages where your health data appears.
