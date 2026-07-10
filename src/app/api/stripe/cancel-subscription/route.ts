@@ -12,6 +12,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { getStripe, resolveCurrentPeriodEnd } from "@/lib/stripe";
+import { isStripeResourceMissing, downgradeOrphanedSubscription } from "@/lib/stripe/subscription-sync";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -51,11 +52,29 @@ export async function POST(req: NextRequest) {
   }
 
   const stripe = getStripe();
-  const subscription = await stripe.subscriptions.update(row.stripe_subscription_id, {
-    cancel_at_period_end: true,
-  });
-
-  const periodEnd = resolveCurrentPeriodEnd(subscription);
+  let periodEnd: number | null = null;
+  try {
+    const subscription = await stripe.subscriptions.update(row.stripe_subscription_id, {
+      cancel_at_period_end: true,
+    });
+    periodEnd = resolveCurrentPeriodEnd(subscription);
+  } catch (err) {
+    if (isStripeResourceMissing(err)) {
+      // The subscription no longer exists in Stripe (deleted, or a stale
+      // test-mode id after a switch to live keys). Nothing to cancel at period
+      // end — self-heal by downgrading to Free (the user has no active billing).
+      console.warn(
+        `[cancel-subscription] subscription ${row.stripe_subscription_id} missing in Stripe for user ${user.id} — downgrading to Free`,
+      );
+      await downgradeOrphanedSubscription(supabase, user.id);
+      return NextResponse.json({ ok: true, alreadyEnded: true, periodEnd: null });
+    }
+    console.error("[cancel-subscription] Stripe update failed:", err);
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Cancellation failed" },
+      { status: 502 },
+    );
+  }
 
   // Webhook will also mirror this, but write-through so the UI can refresh
   // immediately without waiting for the webhook round-trip.

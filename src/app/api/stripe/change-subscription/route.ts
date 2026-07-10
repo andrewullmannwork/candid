@@ -25,6 +25,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { getStripe } from "@/lib/stripe";
+import { isStripeResourceMissing, downgradeOrphanedSubscription } from "@/lib/stripe/subscription-sync";
 
 type TargetCycle = "monthly" | "annual";
 
@@ -104,26 +105,41 @@ export async function POST(req: NextRequest) {
 
   const stripe = getStripe();
 
-  // Retrieve the subscription so we know which subscription item to swap.
-  const subscription = await stripe.subscriptions.retrieve(
-    customerRow.stripe_subscription_id,
-  );
-
-  const itemToSwap = subscription.items.data[0];
-  if (!itemToSwap) {
-    return NextResponse.json(
-      { error: "Subscription has no items to update" },
-      { status: 500 },
-    );
-  }
-
   try {
+    // Retrieve the subscription so we know which subscription item to swap.
+    const subscription = await stripe.subscriptions.retrieve(
+      customerRow.stripe_subscription_id,
+    );
+
+    const itemToSwap = subscription.items.data[0];
+    if (!itemToSwap) {
+      return NextResponse.json(
+        { error: "Subscription has no items to update" },
+        { status: 500 },
+      );
+    }
+
     await stripe.subscriptions.update(customerRow.stripe_subscription_id, {
       items: [{ id: itemToSwap.id, price: targetPriceId }],
       proration_behavior: "always_invoice",
     });
   } catch (err) {
-    console.error("[change-subscription] Stripe update failed:", err);
+    if (isStripeResourceMissing(err)) {
+      // Sub is gone in Stripe — can't change a cycle on what no longer exists.
+      // Self-heal to Free and tell the client to resubscribe.
+      console.warn(
+        `[change-subscription] subscription ${customerRow.stripe_subscription_id} missing in Stripe for user ${user.id} — downgrading to Free`,
+      );
+      await downgradeOrphanedSubscription(supabase, user.id);
+      return NextResponse.json(
+        {
+          error: "subscription_not_found",
+          reason: "This subscription is no longer active. Please resubscribe.",
+        },
+        { status: 409 },
+      );
+    }
+    console.error("[change-subscription] Stripe change failed:", err);
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Stripe update failed" },
       { status: 502 },
