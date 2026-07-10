@@ -685,19 +685,21 @@ Candid is an Airgetlam Labs LLC company.`
   ),
 
   // ===========================================================================
-  // #6 — PRIVACY POLICY (v1.4)
+  // #6 — PRIVACY POLICY (v1.6)
   // Covers: data categories, purposes, processors, retention, no sale,
   //         CCPA/CPRA rights (incl. GPC), WA MHMD Act rights, cookies, security, children.
   // ===========================================================================
   privacy_policy: defineConsent(
     "privacy_policy",
-    "1.5",
-    "2026-06-13",
+    "1.6",
+    "2026-07-10",
     "Privacy Policy",
     "Our privacy policy explains how we collect, use, and protect your personal information.",
     `CANDID PRIVACY POLICY
-Version 1.5 — Effective June 13, 2026
+Version 1.6 — Effective July 10, 2026
 Operated by Airgetlam Labs LLC
+
+Version 1.6 amendment: Updated Section 5 (Service Providers and Other Recipients) — when you contact support, our support tool (Slack) now receives your full support messages and any replies you send, which may include billing and plan details you choose to share (previously only a short message preview).
 
 1. SCOPE — AND THE SEPARATE HEALTH-DATA POLICY
 This Privacy Policy explains how Airgetlam Labs LLC ("Candid," "we," "us," "our") collects, uses, shares, retains, and protects your personal information when you use the Candid platform at www.candidclaim.com and related services (the "Services"). It covers your account, profile, insurance-plan, billing, support, and usage information.
@@ -875,13 +877,15 @@ Airgetlam Labs LLC (operator of Candid), 7547 Leviston Avenue, El Cerrito, CA 94
   // ===========================================================================
   health_data_upload: defineConsent(
     "health_data_upload",
-    "1.5",
-    "2026-06-13",
+    "1.6",
+    "2026-07-10",
     "Health Data Consent",
     "Separate consent required before uploading medical bills, EOBs, or other health-related documents.",
     `CANDID HEALTH DATA CONSENT
-Version 1.5 — Effective June 13, 2026
+Version 1.6 — Effective July 10, 2026
 Operated by Airgetlam Labs LLC
+
+Version 1.6 amendment: Updated Section 4 (Service Providers That Receive Your Health Data) — when you contact support, Slack now receives your full support messages and any replies you send, which may include billing and plan details you choose to share (previously only your message's subject and a short preview).
 
 IMPORTANT — PLEASE READ BEFORE UPLOADING. This Health Data Consent is SEPARATE from our Terms of Service and Privacy Policy. Under the Washington My Health My Data Act (RCW 19.373, "MHMDA") and the California Consumer Privacy Act (CCPA/CPRA), the medical-billing and insurance information in the documents you provide is consumer health data ("CHD"). We obtain your specific, informed, freely-given consent before we collect or process it. You must accept this consent before uploading any health-related document or entering health information manually.
 
