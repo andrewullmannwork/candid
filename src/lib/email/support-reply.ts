@@ -49,6 +49,12 @@ export interface SupportReplyParams {
   originalSubject: string;
   replyText: string;
   adminDisplayName?: string | null;
+  /**
+   * Optional Resend idempotency key. The Slack events webhook passes
+   * `slack-reply:<event_id>` so a Slack retry of the same reply event does not
+   * send a second email (Resend dedupes server-side, ~24h retention).
+   */
+  idempotencyKey?: string | null;
 }
 
 export async function sendSupportReply(p: SupportReplyParams): Promise<boolean> {
@@ -68,14 +74,17 @@ export async function sendSupportReply(p: SupportReplyParams): Promise<boolean> 
   const htmlBody = `${textToHtml(p.replyText)}<p style="margin: 24px 0 8px 0; color: #6b7280; font-size: 14px;">${escapeHtml(signoff)}</p><hr style="border: 0; border-top: 1px solid #e5e7eb; margin: 24px 0;"><p style="color: #9ca3af; font-size: 12px;">Replying to ticket <code>#CN-${shortId}</code>. Reply to this email to keep the conversation going.</p>`;
 
   try {
-    const result = await resend.emails.send({
-      from: FROM,
-      to: p.toEmail,
-      replyTo: REPLY_TO,
-      subject,
-      text: textBody,
-      html: htmlBody,
-    });
+    const result = await resend.emails.send(
+      {
+        from: FROM,
+        to: p.toEmail,
+        replyTo: REPLY_TO,
+        subject,
+        text: textBody,
+        html: htmlBody,
+      },
+      p.idempotencyKey ? { idempotencyKey: p.idempotencyKey } : undefined,
+    );
     if (result.error) {
       console.warn("[support-reply] Resend returned error:", result.error);
       return false;
