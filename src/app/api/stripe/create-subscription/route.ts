@@ -86,10 +86,24 @@ export async function POST(req: NextRequest) {
     // Stripe idempotency key scoped to this user — if the client fires the
     // request twice (React Strict Mode in dev, fast double-clicks in prod),
     // Stripe returns the same customer instead of creating a duplicate.
-    const customer = await stripe.customers.create(
-      { email: user.email, metadata: { userId: user.id } },
-      { idempotencyKey: `customer:${user.id}` }
-    );
+    let customer: Stripe.Customer;
+    try {
+      customer = await stripe.customers.create(
+        { email: user.email, metadata: { userId: user.id } },
+        { idempotencyKey: `customer:${user.id}` }
+      );
+    } catch (err) {
+      // Surface the real Stripe reason (bad live key, etc.) as JSON instead of
+      // an unhandled 500 the client can't parse ("Unexpected end of JSON input").
+      console.error("[create-subscription] stripe.customers.create failed:", err);
+      return NextResponse.json(
+        {
+          error: err instanceof Error ? err.message : "Could not create Stripe customer",
+          code: (err as { code?: string })?.code,
+        },
+        { status: 502 }
+      );
+    }
     customerId = customer.id;
     // Upsert on user_id so a racing concurrent INSERT can't create two rows.
     await supabase
@@ -148,17 +162,32 @@ export async function POST(req: NextRequest) {
   //
   // Expand both `confirmation_secret` (new Clover-era shape) and
   // `payment_intent` (legacy shape) so we work across API versions.
-  const subscription = await stripe.subscriptions.create({
-    customer: customerId,
-    items: [{ price: priceId }],
-    payment_behavior: "default_incomplete",
-    payment_settings: {
-      save_default_payment_method: "on_subscription",
-      payment_method_types: ["card"],
-    },
-    expand: ["latest_invoice.confirmation_secret", "latest_invoice.payment_intent"],
-    metadata: { userId: user.id, triggerSurface },
-  });
+  let subscription: Stripe.Subscription;
+  try {
+    subscription = await stripe.subscriptions.create({
+      customer: customerId,
+      items: [{ price: priceId }],
+      payment_behavior: "default_incomplete",
+      payment_settings: {
+        save_default_payment_method: "on_subscription",
+        payment_method_types: ["card"],
+      },
+      expand: ["latest_invoice.confirmation_secret", "latest_invoice.payment_intent"],
+      metadata: { userId: user.id, triggerSurface },
+    });
+  } catch (err) {
+    // Most likely a misconfigured price id (e.g. a test-mode price id or an
+    // amount instead of a `price_…` id, or a live/test key mismatch). Return the
+    // real Stripe message + code so the failure is legible, not an empty 500.
+    console.error("[create-subscription] stripe.subscriptions.create failed:", err);
+    return NextResponse.json(
+      {
+        error: err instanceof Error ? err.message : "Could not create subscription",
+        code: (err as { code?: string })?.code,
+      },
+      { status: 502 }
+    );
+  }
 
   // Persist the subscription id now so webhook can match on either
   // stripe_subscription_id or stripe_customer_id.

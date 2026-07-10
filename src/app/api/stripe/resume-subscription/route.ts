@@ -11,6 +11,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { getStripe } from "@/lib/stripe";
+import { isStripeResourceMissing, downgradeOrphanedSubscription } from "@/lib/stripe/subscription-sync";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -53,9 +54,32 @@ export async function POST(req: NextRequest) {
   }
 
   const stripe = getStripe();
-  await stripe.subscriptions.update(row.stripe_subscription_id, {
-    cancel_at_period_end: false,
-  });
+  try {
+    await stripe.subscriptions.update(row.stripe_subscription_id, {
+      cancel_at_period_end: false,
+    });
+  } catch (err) {
+    if (isStripeResourceMissing(err)) {
+      // Sub is gone in Stripe — can't resume what no longer exists. Self-heal to
+      // Free and tell the client to resubscribe.
+      console.warn(
+        `[resume-subscription] subscription ${row.stripe_subscription_id} missing in Stripe for user ${user.id} — downgrading to Free`,
+      );
+      await downgradeOrphanedSubscription(supabase, user.id);
+      return NextResponse.json(
+        {
+          error: "subscription_not_found",
+          reason: "This subscription is no longer active. Please resubscribe.",
+        },
+        { status: 409 },
+      );
+    }
+    console.error("[resume-subscription] Stripe update failed:", err);
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Resume failed" },
+      { status: 502 },
+    );
+  }
 
   await supabase
     .from("stripe_customers")
