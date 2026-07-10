@@ -265,6 +265,19 @@ export function ChangePlanModal({
           anytime. We&apos;ll ask why before finalizing.
         </div>
       )}
+      {isCycleSwitch && currentCycle === "annual" && picked === "monthly" && (
+        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-900">
+          <strong>Heads up:</strong> you&apos;re on annual (prepaid). Switching to
+          monthly credits your unused annual time and moves you to $5/month going
+          forward — see your next invoice for the exact amount.
+        </div>
+      )}
+      {isCycleSwitch && currentCycle === "monthly" && picked === "annual" && (
+        <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 p-2.5 text-xs text-blue-900">
+          <strong>Heads up:</strong> switching to annual bills the prorated $48/year
+          now (and saves you $12/year vs monthly). You can switch back anytime.
+        </div>
+      )}
       {error && (
         <p className="mt-3 rounded-lg border border-red-100 bg-red-50 p-2 text-xs text-red-700">
           {error}
