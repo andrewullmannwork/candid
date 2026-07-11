@@ -28,6 +28,7 @@ import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import { loadServerSubscription } from "@/lib/subscription/server";
+import { letterRequiresPro, evaluateLetterAccess } from "@/lib/disputes/letter-access";
 
 export async function POST(req: NextRequest) {
   try {
@@ -83,10 +84,15 @@ export async function POST(req: NextRequest) {
       // escalation letters (final_notice / external_review) are Pro; the first-contact dispute letters
       // + debt_validation are FREE (consumer-protection funnel). Itemized (Case 2) + negotiation
       // (Case 3) remain free as before.
-      const requiresPro = letterType === "final_notice" || letterType === "external_review";
-      if (requiresPro) {
+      // Single source of truth for the tier rule — src/lib/disputes/letter-access.
+      // Load the subscription only when the type could require Pro (lazy).
+      if (letterRequiresPro(letterType)) {
         const subscription = await loadServerSubscription(supabase, authedUser.id);
-        if (!subscription.isPro) {
+        const access = evaluateLetterAccess({
+          letterType: letterType as DisputeLetterType,
+          isPro: subscription.isPro,
+        });
+        if (!access.allowed) {
           console.log(
             `[disputes/generate] tier gate blocked (${letterType}): user ${authedUser.id} tier=${subscription.tier} status=${subscription.status} → 403`,
           );

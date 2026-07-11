@@ -16,13 +16,19 @@ import { PastDueRetryLog } from "./PastDueRetryLog";
 import type { PastDueRetryEvent, TierCycle } from "@/lib/subscription/use-subscription";
 import { cn } from "@/lib/utils/cn";
 
-const PRO_PERKS = [
-  "Unlimited bill audits",
-  "Unlimited dispute letters",
-  "Bundle multiple bills into one appeal",
-  "Priority support · ~24 hour reply",
-  "Case file export when Case launches",
-];
+// The dispute-letters perk flips with dispute_letters_free_start_v1: when
+// free-to-start is ON, letters aren't a Pro perk — escalation is.
+function proPerks(disputeLettersFree: boolean): string[] {
+  return [
+    "Unlimited bill audits",
+    disputeLettersFree
+      ? "Escalation letters — final notice + external review"
+      : "Unlimited dispute letters",
+    "Bundle multiple bills into one appeal",
+    "Priority support · ~24 hour reply",
+    "Case file export when Case launches",
+  ];
+}
 
 interface PlanCardProps {
   tier: "free" | "pro";
@@ -38,6 +44,8 @@ interface PlanCardProps {
   onUpdateCard: () => void;
   resumeSubmitting?: boolean;
   upgradeDisabled?: boolean;
+  /** dispute_letters_free_start_v1 — flips the dispute-letters perk copy. */
+  disputeLettersFree?: boolean;
 }
 
 function formatDate(iso: string | null): string {
@@ -112,10 +120,16 @@ function PlanPriceBlock({ tierCycle }: { tierCycle: TierCycle }) {
   );
 }
 
-function PerksList({ tone = "default" }: { tone?: "default" | "muted" }) {
+function PerksList({
+  tone = "default",
+  disputeLettersFree = false,
+}: {
+  tone?: "default" | "muted";
+  disputeLettersFree?: boolean;
+}) {
   return (
     <ul className="mt-4 space-y-2">
-      {PRO_PERKS.map((p) => (
+      {proPerks(disputeLettersFree).map((p) => (
         <li
           key={p}
           className={cn(
@@ -151,6 +165,7 @@ export function PlanCard(props: PlanCardProps) {
     onUpdateCard,
     resumeSubmitting,
     upgradeDisabled,
+    disputeLettersFree = false,
   } = props;
 
   // ── Past-due variant ────────────────────────────────────────────────
@@ -241,7 +256,7 @@ export function PlanCard(props: PlanCardProps) {
           You keep Pro until {formatDate(periodEnd)}, then drop to Free.
         </div>
 
-        <PerksList tone="muted" />
+        <PerksList tone="muted" disputeLettersFree={disputeLettersFree} />
 
         <div className="mt-4 flex flex-wrap gap-2">
           <button
@@ -288,7 +303,7 @@ export function PlanCard(props: PlanCardProps) {
           Renews {formatDate(periodEnd)}
         </div>
 
-        <PerksList />
+        <PerksList disputeLettersFree={disputeLettersFree} />
 
         <div className="mt-4 flex flex-wrap gap-2">
           <button
@@ -334,7 +349,7 @@ export function PlanCard(props: PlanCardProps) {
           Unlock with Pro
         </div>
         <ul className="mt-2 space-y-1.5">
-          {PRO_PERKS.slice(0, 3).map((p) => (
+          {proPerks(disputeLettersFree).slice(0, 3).map((p) => (
             <li key={p} className="flex items-start gap-1.5 text-xs text-blue-900">
               <CheckIcon className="mt-0.5 h-3 w-3 flex-shrink-0 text-blue-600" />
               <span>{p}</span>

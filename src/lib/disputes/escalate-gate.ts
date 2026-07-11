@@ -16,6 +16,7 @@
  * scripts/calibration/fixtures/dispute-grounds/escalate-gating.ts.
  */
 import type { DisputeLetterType } from "@/lib/billing/types";
+import { evaluateLetterAccess } from "./letter-access";
 
 /** The only letter types escalate may spawn (the ladder-advance rungs). */
 export const ESCALATION_LETTER_TYPES = [
@@ -45,11 +46,11 @@ export function checkEscalateGate(input: {
     return { ok: false, status: 400, error: "unsupported_escalation_type" };
   }
 
-  // Tier: escalation letters are Pro; debt_validation stays free.
-  const requiresPro =
-    targetLetterType === "final_notice" || targetLetterType === "external_review";
-  if (requiresPro && !isPro) {
-    return { ok: false, status: 403, error: "subscription_required" };
+  // Tier: escalation letters are Pro; debt_validation stays free. Single source
+  // of truth for the rule — shared with /api/disputes/generate (Case 1).
+  const access = evaluateLetterAccess({ letterType: targetLetterType, isPro });
+  if (!access.allowed) {
+    return { ok: false, status: 403, error: access.reason ?? "subscription_required" };
   }
 
   // external_review exhaustion hard-gate (fail-closed): no attestation → refuse.
