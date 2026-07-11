@@ -39,6 +39,10 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# OPS.9 dev/prod clone — local-only credentials + dump artifacts (never commit)
+.ops9.env
+ops9_*.sql
+
 # vercel
 .vercel
 
