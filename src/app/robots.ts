@@ -9,6 +9,6 @@ export default function robots(): MetadataRoute.Robots {
         disallow: ["/admin/", "/api/", "/dashboard", "/profile", "/settings", "/upload", "/audit", "/disputes", "/billing", "/plan", "/care", "/claim", "/case", "/support"],
       },
     ],
-    sitemap: "https://candidclaim.com/sitemap.xml",
+    sitemap: "https://www.candidclaim.com/sitemap.xml",
   };
 }
