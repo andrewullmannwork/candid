@@ -20,24 +20,24 @@ export const metadata: Metadata = {
   },
   description:
     "Upload your medical bill and get a free audit in seconds. Candid Claim finds overcharges, surfaces insurance benefits you're not using, and drafts dispute letters. No credit card required.",
-  metadataBase: new URL("https://candidclaim.com"),
+  metadataBase: new URL("https://www.candidclaim.com"),
   alternates: {
     canonical: "/",
   },
   openGraph: {
-    title: "Candid Claim — Free Medical Bill Audit & Insurance Benefits Tool",
+    title: "Find medical bill errors. Discover benefits. Save money.",
     description:
-      "3 in 4 medical bills contain errors. Candid Claim finds overcharges, surfaces benefits you're not using, and drafts dispute letters — for free.",
-    url: "https://candidclaim.com",
+      "See what your insurance is hiding. Upload your bill, select your plan, and we do the rest…",
+    url: "https://www.candidclaim.com",
     siteName: "Candid Claim",
     locale: "en_US",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "Candid Claim — Free Medical Bill Audit & Insurance Benefits Tool",
+    title: "Find medical bill errors. Discover benefits. Save money.",
     description:
-      "3 in 4 medical bills contain errors. Candid Claim finds overcharges, surfaces benefits you're not using, and drafts dispute letters — for free.",
+      "See what your insurance is hiding. Upload your bill, select your plan, and we do the rest…",
   },
   robots: {
     index: true,
@@ -100,7 +100,7 @@ export const metadata: Metadata = {
     "understanding my EOB",
     "am I using all my insurance benefits",
   ],
-  authors: [{ name: "Candid Claim", url: "https://candidclaim.com" }],
+  authors: [{ name: "Candid Claim", url: "https://www.candidclaim.com" }],
   creator: "Airgetlam Labs LLC",
   publisher: "Airgetlam Labs LLC",
   category: "Health",
@@ -140,8 +140,8 @@ export default function RootLayout({
                   name: "Candid Claim",
                   alternateName: "Candid",
                   legalName: "Airgetlam Labs LLC",
-                  url: "https://candidclaim.com",
-                  logo: "https://candidclaim.com/logo.png",
+                  url: "https://www.candidclaim.com",
+                  logo: "https://www.candidclaim.com/logo.png",
                   description:
                     "Consumer medical bill audit and insurance benefits analysis tool. Upload bills to find overcharges, discover unused benefits, and draft dispute letters.",
                   foundingDate: "2026",
@@ -157,7 +157,7 @@ export default function RootLayout({
                 {
                   "@type": "WebApplication",
                   name: "Candid Claim",
-                  url: "https://candidclaim.com",
+                  url: "https://www.candidclaim.com",
                   applicationCategory: "HealthApplication",
                   operatingSystem: "Web",
                   description:

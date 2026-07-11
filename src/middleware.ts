@@ -48,7 +48,9 @@ export function middleware(req: NextRequest) {
     pathname === "/sitemap.xml" ||
     pathname === "/robots.txt" ||
     pathname === "/logo.png" ||
-    pathname === "/apple-touch-icon.png"
+    pathname === "/apple-touch-icon.png" ||
+    pathname.startsWith("/opengraph-image") ||
+    pathname.startsWith("/twitter-image")
   ) {
     response = NextResponse.next();
   } else {
