@@ -37,7 +37,14 @@ export function DropIdle({ kind, onPickFile, tipsOpen, onToggleTips }: DropIdleP
       <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-xs text-slate-500">
         <span>
           or{" "}
-          <button type="button" onClick={onPickFile} className="font-semibold text-blue-600 underline-offset-2 hover:underline">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onPickFile();
+            }}
+            className="font-semibold text-blue-600 underline-offset-2 hover:underline"
+          >
             browse files
           </button>
         </span>
@@ -46,8 +53,11 @@ export function DropIdle({ kind, onPickFile, tipsOpen, onToggleTips }: DropIdleP
       </div>
       <button
         type="button"
-        onClick={onToggleTips}
-        className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 transition-colors hover:text-slate-700"
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleTips();
+        }}
+        className="mt-1 inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-[11px] font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
       >
         {tipsOpen ? "Hide tips" : "Where do I find this?"}
         <svg

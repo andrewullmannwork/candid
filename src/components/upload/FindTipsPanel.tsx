@@ -4,18 +4,23 @@
  * FindTipsPanel — expandable "Where do I find this?" panel under the drop
  * zone for /upload (B2-UP.1 port). Open state owned by parent.
  *
- * Tips content sourced from doc-type-vocabulary PICKER_OPTIONS so the same
- * tips array drives both the legacy panel and this design-aligned panel.
+ * Two render modes, driven by the picker option's shape:
+ *   - findGuide present (plan_document) → two labeled PATHS (how to GET it:
+ *     ask HR / check the portal) + a "what to ask for / look for" explanation
+ *     (SBC / EOC — what the document actually is).
+ *   - tips only (bill) → the legacy numbered list.
  */
+
+import type { PickerOption, PlanFindGuide } from "@/lib/classifier/doc-type-vocabulary";
 
 export interface FindTipsPanelProps {
   kind: "bill" | "plan";
   open: boolean;
   onClose: () => void;
-  tips: readonly string[];
+  option: PickerOption;
 }
 
-export function FindTipsPanel({ kind, open, onClose, tips }: FindTipsPanelProps) {
+export function FindTipsPanel({ kind, open, onClose, option }: FindTipsPanelProps) {
   if (!open) return null;
   const heading = kind === "bill" ? "HOW TO FIND YOUR BILL" : "HOW TO FIND YOUR PLAN DOCUMENT";
   return (
@@ -30,19 +35,64 @@ export function FindTipsPanel({ kind, open, onClose, tips }: FindTipsPanelProps)
           Close ×
         </button>
       </div>
+      {"findGuide" in option ? (
+        <FindGuide guide={option.findGuide} />
+      ) : (
+        <ol className="space-y-2">
+          {option.tips.map((tip, i) => (
+            <li key={i} className="flex items-start gap-2">
+              <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-blue-100 text-[10px] font-bold text-blue-700">
+                {i + 1}
+              </span>
+              <span
+                className="text-xs leading-relaxed text-slate-600"
+                dangerouslySetInnerHTML={{ __html: tip.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>") }}
+              />
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Structured "two paths + explanation" layout for plan documents.
+ * Paths reuse the numbered-badge visual (Path 1 / Path 2); the explanation
+ * sits in its own white card so "what am I looking for?" reads as distinct
+ * from "how do I get it?".
+ */
+function FindGuide({ guide }: { guide: PlanFindGuide }) {
+  return (
+    <div className="space-y-3">
       <ol className="space-y-2">
-        {tips.map((tip, i) => (
+        {guide.paths.map((path, i) => (
           <li key={i} className="flex items-start gap-2">
             <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-blue-100 text-[10px] font-bold text-blue-700">
               {i + 1}
             </span>
-            <span
-              className="text-xs leading-relaxed text-slate-600"
-              dangerouslySetInnerHTML={{ __html: tip.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>") }}
-            />
+            <span className="text-xs leading-relaxed text-slate-600">
+              <span className="font-semibold text-slate-700">{path.label}</span>
+              {" — "}
+              {path.body}
+            </span>
           </li>
         ))}
       </ol>
+      <div className="rounded-xl border border-slate-100 bg-white p-3">
+        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-slate-400">
+          {guide.lookForHeading}
+        </div>
+        <ul className="space-y-1.5">
+          {guide.lookFor.map((item, i) => (
+            <li key={i} className="text-xs leading-relaxed text-slate-600">
+              <span className="font-semibold text-slate-700">{item.term}</span>
+              {" — "}
+              {item.desc}
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }
