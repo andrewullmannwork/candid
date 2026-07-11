@@ -1,0 +1,19 @@
+# Candid Claim
+
+> Candid Claim, an Airgetlam Labs LLC company, is a free tool that helps people understand and fight unfair medical bills. Upload a medical bill or insurance EOB and Candid audits it line by line for overcharges and errors, then drafts the dispute and appeal letters for you — grounded in ERISA (employer-plan appeals) and FDCPA (collections), addressed to the right office, with your appeal deadline tracked. Candid also compares health plans by what they actually cover. The core dispute and appeal letters are free.
+
+## What Candid does
+- Free medical bill & EOB audit: flags overcharges, duplicate charges, and billing errors line by line.
+- Dispute & appeal letters (core letters free): drafts the right letter — overcharge dispute to the provider's compliance office, denied-claim appeal to the insurer's appeals office, debt-validation to collectors — and tracks the appeal deadline. You review and send it.
+- Plan comparison & benefits: shows what a health plan actually covers, benefits you may not be using, and what care costs.
+
+## Key links
+- [Home](https://www.candidclaim.com)
+- [Terms of Service](https://www.candidclaim.com/terms)
+- [Privacy Policy](https://www.candidclaim.com/privacy)
+- [Health Data notice](https://www.candidclaim.com/health-data)
+
+## About & limits
+- Operated by Airgetlam Labs LLC.
+- Candid provides information to help you understand and dispute medical bills and insurance decisions. It is not legal, medical, or tax advice, and it does not send letters on your behalf — you review and send your own letters.
+- Candid never exposes individual medical or billing data; any published statistics are aggregated and anonymized.
