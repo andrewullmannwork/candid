@@ -22,6 +22,7 @@ const EXPOSED_FLAGS = new Set([
   "change_plan_v1", // S207 Stretch 1 — Change plan control on /plan
   "case_file_enriched_v1", // S207 Stretch 2 — enriched Case File download on /disputes
   "dispute_plan_pinning_v1", // S210 Mid-year plan change × disputes — plan pinning (P0)
+  "dispute_letters_free_start_v1", // 2026-07 dispute-letters free-to-start FE alignment gate
 ]);
 
 export async function GET(

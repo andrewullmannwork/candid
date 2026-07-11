@@ -4,6 +4,7 @@ import "./landing.css";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
+import { useFeatureFlag } from "@/lib/config/use-feature-flag";
 
 export default function LandingPage() {
   const { user } = useAuth();
@@ -99,19 +100,24 @@ function TopNav({ loggedIn }: { loggedIn: boolean }) {
 
 /* ── Hero ────────────────────────────────────────────────────────────── */
 function Hero({ loggedIn }: { loggedIn: boolean }) {
+  const { enabled: freeStart } = useFeatureFlag("dispute_letters_free_start_v1");
   return (
     <section className="hero">
       <div className="hero-inner">
         <div className="hero-copy">
           <span className="eyebrow-pill">
-            <span className="dot" /> Free bill audit — no credit card required
+            <span className="dot" />{" "}
+            {freeStart
+              ? "Free bill audit + dispute letter — no credit card required."
+              : "Free bill audit — no credit card required"}
           </span>
           <h1 className="h-hero">
             Healthcare should make you healthy, <span className="accent">not broke.</span>
           </h1>
           <p className="hero-sub">
-            Find out if you were overcharged. Find out what your insurance actually covers.
-            In under five minutes.
+            {freeStart
+              ? "Find overcharges, then draft your first dispute letter free — upgrade to escalate."
+              : "Find out if you were overcharged. Find out what your insurance actually covers. In under five minutes."}
           </p>
           <div className="hero-ctas">
             <Link
@@ -169,6 +175,7 @@ function HeroPeek() {
    Matches the design's hero peek composition: title + sub + Review Dispute CTA,
    gradient recovery card with up-arrow, 4-stat grid, bottom tab strip. */
 function HeroMockup() {
+  const { enabled: freeStart } = useFeatureFlag("dispute_letters_free_start_v1");
   return (
     <div style={{ padding: "20px 22px 16px", background: "var(--bg-1)", fontFamily: "var(--font-sans), system-ui, sans-serif" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
@@ -177,9 +184,16 @@ function HeroMockup() {
           <div style={{ fontSize: 16, fontWeight: 700, color: "var(--fg-1)", marginTop: 4, letterSpacing: "-0.005em" }}>Your claim, in plain English</div>
           <div style={{ fontSize: 11.5, color: "var(--fg-4)", marginTop: 3, lineHeight: 1.4 }}>Every bill audited line by line. Every overcharge flagged. Every dollar tracked.</div>
         </div>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "var(--bg-ink)", color: "#fff", fontSize: 10, fontWeight: 600, padding: "6px 10px", borderRadius: 999, whiteSpace: "nowrap", flexShrink: 0, marginLeft: 12 }}>
-          Review Dispute Letter {ICON.chevR}
-        </span>
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0, marginLeft: 12 }}>
+          {freeStart && (
+            <span style={{ background: "#d1fae5", color: "#065f46", fontSize: 9, fontWeight: 700, padding: "3px 7px", borderRadius: 999, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+              Free
+            </span>
+          )}
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "var(--bg-ink)", color: "#fff", fontSize: 10, fontWeight: 600, padding: "6px 10px", borderRadius: 999, whiteSpace: "nowrap" }}>
+            Review Dispute Letter {ICON.chevR}
+          </span>
+        </div>
       </div>
       <div style={{ background: "linear-gradient(180deg, var(--bg-1), var(--success-bg))", borderRadius: 14, padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4, border: "1px solid #d1fae5", marginBottom: 14 }}>
         <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--success-ink)" }}>Potential Recovery</div>

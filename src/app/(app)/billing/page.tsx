@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useSubscription } from "@/lib/subscription/use-subscription";
+import { useFeatureFlag } from "@/lib/config/use-feature-flag";
 import { useSubscribeTrigger } from "@/components/billing/SubscribeTrigger";
 import { UpdatePaymentMethodFlow } from "@/components/billing/UpdatePaymentMethodFlow";
 import { CancelModal } from "@/components/billing/CancelModal";
@@ -65,6 +66,7 @@ export default function BillingPage() {
     waitFor,
   } = useSubscription();
   const { trigger: openSubscribe, render: renderSubscribe, redirecting } = useSubscribeTrigger();
+  const { enabled: freeStart } = useFeatureFlag("dispute_letters_free_start_v1");
 
   const [cardBrand, setCardBrand] = useState<string | null>(null);
   const [cardLast4, setCardLast4] = useState<string | null>(null);
@@ -181,9 +183,16 @@ export default function BillingPage() {
           Candid billing
         </div>
         <h1 className="mt-1 text-2xl font-bold text-gray-900">Your subscription</h1>
+        {freeStart && (
+          <p className="mt-2 max-w-2xl text-sm font-medium text-gray-900">
+            Your dispute letters are free — upgrade to Pro for escalation,
+            bundling, and support.
+          </p>
+        )}
         <p className="mt-2 max-w-2xl text-sm text-gray-600">
-          Candid Pro powers unlimited audits and dispute letters. Manage your
-          plan, payment method, and invoices below.
+          {freeStart
+            ? "Candid Pro powers unlimited audits, letter escalation, and multi-bill bundling. Manage your plan, payment method, and invoices below."
+            : "Candid Pro powers unlimited audits and dispute letters. Manage your plan, payment method, and invoices below."}
         </p>
       </div>
 
@@ -203,6 +212,7 @@ export default function BillingPage() {
           onUpdateCard={() => setUpdateCardOpen(true)}
           resumeSubmitting={resumeSubmitting}
           upgradeDisabled={redirecting}
+          disputeLettersFree={freeStart}
         />
         <UsageStatsCard
           totalRecovered={usage.totalRecovered}

@@ -11,6 +11,10 @@ import {
   isEscalationLetterType,
   ESCALATION_LETTER_TYPES,
 } from "../../../../src/lib/disputes/escalate-gate";
+import {
+  evaluateLetterAccess,
+  letterRequiresPro,
+} from "../../../../src/lib/disputes/letter-access";
 
 let pass = 0;
 const fails: string[] = [];
@@ -74,6 +78,21 @@ check("allowlist · rejects null", !isEscalationLetterType(null));
   const r = checkEscalateGate({ targetLetterType: "external_review", isPro: false, appealExhausted: null });
   check("ordering · free + unattested → 403 (tier first)", !r.ok && r.status === 403);
 }
+
+// ── letter-access module (single source of truth shared with generate) ───────
+{
+  const a = evaluateLetterAccess({ letterType: "final_notice", isPro: false });
+  check(
+    "access · final_notice free → blocked + requiresPro + reason",
+    !a.allowed && a.requiresPro && a.reason === "subscription_required",
+  );
+}
+check("access · external_review free → blocked", !evaluateLetterAccess({ letterType: "external_review", isPro: false }).allowed);
+check("access · final_notice Pro → allowed", evaluateLetterAccess({ letterType: "final_notice", isPro: true }).allowed);
+check("access · debt_validation free → allowed", evaluateLetterAccess({ letterType: "debt_validation", isPro: false }).allowed);
+check("access · letterRequiresPro(final_notice) === true", letterRequiresPro("final_notice"));
+check("access · letterRequiresPro(debt_validation) === false", !letterRequiresPro("debt_validation"));
+check("access · letterRequiresPro(undefined) === false", !letterRequiresPro(undefined));
 
 console.log(`\nescalate-gating fixture: ${pass} passed, ${fails.length} failed`);
 if (fails.length) {

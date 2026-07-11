@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import type { DisputeLetter } from "@/lib/billing/types";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useSubscription } from "@/lib/subscription/use-subscription";
+import { useFeatureFlag } from "@/lib/config/use-feature-flag";
 import { LockedOverlay } from "@/components/shared/LockedOverlay";
 import { InlineSubscribePanel } from "@/components/billing/InlineSubscribePanel";
 import { downloadCaseFile } from "@/lib/casefile";
@@ -47,14 +48,22 @@ import type { StrengthResult, EvidenceBand } from "@/lib/disputes/strength-scori
 
 export default function DisputesPage() {
   const { isPro, loading, waitFor } = useSubscription();
+  const { enabled: freeStart, loading: freeStartLoading } = useFeatureFlag(
+    "dispute_letters_free_start_v1",
+  );
   const [subscribing, setSubscribing] = useState(false);
 
-  if (loading) {
+  if (loading || freeStartLoading) {
     // S132 iter-8 — unified cube loader.
     return <CubeLoaderBuilding />;
   }
 
-  if (!isPro) {
+  // Free to start (dispute_letters_free_start_v1 ON): render the workspace for
+  // all authed users — free users draft/download first-contact letters (the
+  // backend already permits this; only escalation needs Pro). Escalation CTAs
+  // 403 → the "your dispute letters are always free" toast. Flag OFF keeps
+  // today's Pro-wall (byte-identical).
+  if (!isPro && !freeStart) {
     return (
       <LockedOverlay
         title="Dispute Letters requires Candid Pro"
@@ -869,7 +878,7 @@ function DisputesContent() {
         const e = await res.json().catch(() => ({}));
         const msg =
           res.status === 403
-            ? "That escalation letter is a Candid Pro feature."
+            ? "Escalation letters are a Candid Pro feature — your dispute letters are always free."
             : e.reason || e.error || "We couldn't create that letter. Please try again.";
         setOutcomeToast(msg);
         setTimeout(() => setOutcomeToast(null), 7000);
