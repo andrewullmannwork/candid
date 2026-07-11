@@ -115,15 +115,37 @@ export const PICKER_OPTIONS = {
     short: "Plan Document",
     description: "Your insurance plan documents — SBC, EOC, or plan booklet",
     selectsAs: "plan_document" as const,
-    tips: [
-      "SBC = Summary of Benefits and Coverage (federally-required 8-page summary you got at enrollment)",
-      "EOC = Evidence of Coverage / plan certificate (the longer 50+ page document with the full coverage details)",
-      "Log into your insurer's portal under 'Plan Documents', or ask HR if you have employer-sponsored insurance",
-    ],
+    // Two ways to GET the document (paths) + one explanation of WHAT it is
+    // (lookFor). Rendered by FindTipsPanel's structured mode.
+    findGuide: {
+      paths: [
+        {
+          label: "Ask your HR or benefits team",
+          body: "Employer-sponsored? They can send you the SBC or EOC directly.",
+        },
+        {
+          label: "Check your insurer's portal",
+          body: "Log in and look under 'Plan Documents' to download either one.",
+        },
+      ],
+      lookForHeading: "What to ask for or look for",
+      lookFor: [
+        {
+          term: "SBC",
+          desc: "Summary of Benefits and Coverage (the federally-required 8-page summary from enrollment)",
+        },
+        {
+          term: "EOC",
+          desc: "Evidence of Coverage / plan certificate (the longer 50+ page document with full coverage details)",
+        },
+      ],
+    },
   },
 } as const;
 
 export type PickerOptionKey = keyof typeof PICKER_OPTIONS;
+export type PickerOption = (typeof PICKER_OPTIONS)[PickerOptionKey];
+export type PlanFindGuide = (typeof PICKER_OPTIONS)["plan_document"]["findGuide"];
 
 export const DOC_TYPES = {
   eob: {

@@ -1246,7 +1246,7 @@ function UploadForm() {
           kind={showTips === "bill" ? "bill" : "plan"}
           open={true}
           onClose={() => setShowTips(null)}
-          tips={PICKER_OPTIONS[showTips].tips}
+          option={PICKER_OPTIONS[showTips]}
         />
       )}
 
