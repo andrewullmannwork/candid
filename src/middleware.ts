@@ -59,6 +59,9 @@ function isCountablePage(pathname: string): boolean {
 }
 
 function countPageview(req: NextRequest, event: NextFetchEvent, pathname: string): void {
+  // Production only — local dev + Vercel preview deploys share the same
+  // Supabase, and their browsing would pollute the real "Top pages" counts.
+  if (process.env.VERCEL_ENV !== "production") return;
   if (req.method !== "GET" || !isCountablePage(pathname)) return;
   // Skip router prefetches (would inflate counts) and obvious crawlers (their
   // visits are tracked where they belong — GSC/Bing, not user pageviews).
