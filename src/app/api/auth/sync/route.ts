@@ -13,6 +13,29 @@ interface ConsentPayload {
   hash: string;
 }
 
+// first_touch (mig 203) — channel-attribution snapshot captured client-side
+// (src/lib/attribution/first-touch). Sanitized to an allowlist of string keys
+// with capped lengths; anything else is dropped. Persisted ONLY on the
+// new-user INSERT below — first touch wins, resyncs never overwrite.
+const FIRST_TOUCH_KEYS = [
+  "source",
+  "medium",
+  "campaign",
+  "referrer_host",
+  "landing",
+  "ts",
+] as const;
+
+function sanitizeFirstTouch(input: unknown): Record<string, string> | null {
+  if (!input || typeof input !== "object") return null;
+  const out: Record<string, string> = {};
+  for (const key of FIRST_TOUCH_KEYS) {
+    const value = (input as Record<string, unknown>)[key];
+    if (typeof value === "string" && value.length > 0) out[key] = value.slice(0, 160);
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 // User-initiated auth actions that must satisfy the Turnstile gate (S68).
 // Passive syncs from onAuthStateChanged (page reload, token refresh) omit
 // userAction and skip the gate — the user isn't doing anything triggerable
@@ -21,12 +44,14 @@ type UserAuthAction = "signup" | "signin";
 
 export async function POST(req: NextRequest) {
   try {
-    const { idToken, consents, userAction, turnstileToken } = (await req.json()) as {
-      idToken: string;
-      consents?: ConsentPayload[];
-      userAction?: UserAuthAction;
-      turnstileToken?: string;
-    };
+    const { idToken, consents, userAction, turnstileToken, firstTouch } =
+      (await req.json()) as {
+        idToken: string;
+        consents?: ConsentPayload[];
+        userAction?: UserAuthAction;
+        turnstileToken?: string;
+        firstTouch?: unknown;
+      };
     if (!idToken) {
       return NextResponse.json({ error: "Missing idToken" }, { status: 400 });
     }
@@ -164,6 +189,10 @@ export async function POST(req: NextRequest) {
       console.log("[auth/sync] Step 2 OK — linked to existing user:", userId);
     } else {
       // Normal upsert — new user or same UID
+      // first_touch: attach only for brand-new users — the upsert also runs on
+      // passive resyncs (same firebase_uid), and including it there would let a
+      // later localStorage state clobber the original first touch.
+      const sanitizedFirstTouch = isNewUser ? sanitizeFirstTouch(firstTouch) : null;
       const { data: upsertedUser, error: upsertError } = await supabase
         .from("users")
         .upsert(
@@ -174,6 +203,7 @@ export async function POST(req: NextRequest) {
             email_verified: emailVerified,
             phone_e164: phoneE164,
             phone_verified: phoneVerified,
+            ...(sanitizedFirstTouch ? { first_touch: sanitizedFirstTouch } : {}),
           },
           { onConflict: "firebase_uid" }
         )

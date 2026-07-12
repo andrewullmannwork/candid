@@ -259,6 +259,18 @@ Two nav groups are **read-only / dormant by design** ("Data Quality · Monitorin
 
 ---
 
+## Growth
+
+### Growth Metrics
+
+`/admin/growth`
+
+**What it's for.** The start of the metrics dashboards: signups → uploads by first-touch channel (`users.first_touch`, mig 203). The one growth metric — **uploads by source** — plus attributed %, top campaigns, and an 8-week trend. Window toggle: 7d / 30d / all-time.
+**What you do here.** Read-only. Weekly ritual (GTM playbook 04): note the biggest funnel drop + which channel produces uploads (not clicks); kill channels at ~0 after 30 days. Raw traffic (impressions / clicks / queries / AI citations) deliberately lives in the linked GSC / Bing / Bing-AI-Performance panels — Candid runs no client-side analytics (S199).
+**Watch out.** `(direct / untagged)` bundles pre-2026-07-12 users (attribution didn't exist yet) with genuine direct visits. If **new** signups suddenly go ~100% untagged, suspect the capture path broke (`FirstTouchCapture` in the root layout → `/api/auth/sync` persist), not that every channel died at once.
+
+---
+
 ## Accounts
 
 ### Users

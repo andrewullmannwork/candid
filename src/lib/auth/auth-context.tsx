@@ -23,6 +23,7 @@ import {
   type ConfirmationResult,
 } from "firebase/auth";
 import { getFirebaseAuth } from "@/lib/firebase/client";
+import { readFirstTouch } from "@/lib/attribution/first-touch";
 
 export interface CandidUser {
   firebaseUser: FirebaseUser;
@@ -109,7 +110,15 @@ async function syncWithBackend(
   const res = await fetch("/api/auth/sync", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ idToken, consents, userAction, turnstileToken }),
+    // firstTouch: channel-attribution snapshot (mig 203). Sent on every sync;
+    // the server persists it only on the new-user INSERT (first touch wins).
+    body: JSON.stringify({
+      idToken,
+      consents,
+      userAction,
+      turnstileToken,
+      firstTouch: readFirstTouch(),
+    }),
   });
 
   if (!res.ok) {
