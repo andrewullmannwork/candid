@@ -20,15 +20,28 @@ export interface GrowthMetrics {
   window: "7d" | "30d" | "all";
   totals: {
     signups: number;
+    verified: number;
     uploaders: number;
     uploads: number;
+    bills: number;
+    planDocs: number;
+    otherDocs: number;
     attributedSignups: number;
     attributedPct: number;
   };
-  bySource: { source: string; signups: number; uploaders: number; uploads: number }[];
+  bySource: {
+    source: string;
+    signups: number;
+    verified: number;
+    uploaders: number;
+    uploads: number;
+    bills: number;
+    planDocs: number;
+  }[];
   byCampaign: { campaign: string; source: string; signups: number }[];
   weekly: { weekStart: string; signups: number; uploads: number; topSource: string }[];
-  rowCapHit?: boolean;
+  topLanding: { landing: string; signups: number }[];
+  topPages: { path: string; views: number }[];
 }
 
 const WINDOWS: { key: GrowthMetrics["window"]; label: string }[] = [
@@ -105,10 +118,19 @@ export function GrowthMetricsView({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Tile label="Signups" value={String(data.totals.signups)} />
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+        <Tile label="Signups" value={String(data.totals.signups)} sub="finished signup" />
+        <Tile
+          label="Verified"
+          value={String(data.totals.verified)}
+          sub={`${pct(data.totals.verified, data.totals.signups)} of signups (email confirmed)`}
+        />
         <Tile label="Uploaders" value={String(data.totals.uploaders)} sub="users with ≥1 document" />
-        <Tile label="Uploads" value={String(data.totals.uploads)} sub="documents — the one metric" />
+        <Tile
+          label="Uploads"
+          value={String(data.totals.uploads)}
+          sub={`${data.totals.bills} bills · ${data.totals.planDocs} plan docs — the one metric`}
+        />
         <Tile
           label="Attributed"
           value={`${data.totals.attributedPct}%`}
@@ -129,15 +151,17 @@ export function GrowthMetricsView({
             <tr className="text-left text-[12px] uppercase tracking-wide text-gray-400">
               <th className="px-5 py-2.5 font-medium">Source</th>
               <th className="px-3 py-2.5 text-right font-medium">Signups</th>
+              <th className="px-3 py-2.5 text-right font-medium">Verified</th>
               <th className="px-3 py-2.5 text-right font-medium">Uploaders</th>
-              <th className="px-3 py-2.5 text-right font-medium">Uploads</th>
+              <th className="px-3 py-2.5 text-right font-medium">Bills</th>
+              <th className="px-3 py-2.5 text-right font-medium">Plan docs</th>
               <th className="px-5 py-2.5 text-right font-medium">Signup → upload</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-50">
             {data.bySource.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-5 py-8 text-center text-gray-400">
+                <td colSpan={7} className="px-5 py-8 text-center text-gray-400">
                   No signups in this window yet.
                 </td>
               </tr>
@@ -146,13 +170,21 @@ export function GrowthMetricsView({
               <tr key={r.source} className="text-gray-700">
                 <td className="px-5 py-2.5 font-medium text-gray-900">{r.source}</td>
                 <td className="px-3 py-2.5 text-right tabular-nums">{r.signups}</td>
+                <td className="px-3 py-2.5 text-right tabular-nums">{r.verified}</td>
                 <td className="px-3 py-2.5 text-right tabular-nums">{r.uploaders}</td>
-                <td className="px-3 py-2.5 text-right tabular-nums">{r.uploads}</td>
+                <td className="px-3 py-2.5 text-right tabular-nums">{r.bills}</td>
+                <td className="px-3 py-2.5 text-right tabular-nums">{r.planDocs}</td>
                 <td className="px-5 py-2.5 text-right tabular-nums">{pct(r.uploaders, r.signups)}</td>
               </tr>
             ))}
           </tbody>
         </table>
+        {data.totals.otherDocs > 0 && (
+          <p className="border-t border-gray-50 px-5 py-2 text-[11px] text-gray-400">
+            {data.totals.otherDocs} document(s) of other/unknown type counted in Uploads but not in
+            the Bills / Plan docs split.
+          </p>
+        )}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
@@ -214,6 +246,73 @@ export function GrowthMetricsView({
         </div>
       </div>
 
+      <div className="grid gap-6 lg:grid-cols-2">
+        <div className="rounded-2xl border border-gray-200 bg-white">
+          <div className="border-b border-gray-100 px-5 py-3">
+            <h2 className="text-sm font-semibold text-gray-900">Top pages</h2>
+            <p className="mt-0.5 text-[12px] text-gray-500">
+              Server-side counts (mig 204) — path-only, no user linkage; bots + prefetches
+              filtered; /admin excluded. Includes your own non-admin visits.
+            </p>
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[12px] uppercase tracking-wide text-gray-400">
+                <th className="px-5 py-2.5 font-medium">Path</th>
+                <th className="px-5 py-2.5 text-right font-medium">Views</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {data.topPages.length === 0 && (
+                <tr>
+                  <td colSpan={2} className="px-5 py-8 text-center text-gray-400">
+                    No pageviews recorded yet (counting starts at deploy).
+                  </td>
+                </tr>
+              )}
+              {data.topPages.map((p) => (
+                <tr key={p.path} className="text-gray-700">
+                  <td className="px-5 py-2.5 font-mono text-[13px] text-gray-900">{p.path}</td>
+                  <td className="px-5 py-2.5 text-right tabular-nums">{p.views}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="rounded-2xl border border-gray-200 bg-white">
+          <div className="border-b border-gray-100 px-5 py-3">
+            <h2 className="text-sm font-semibold text-gray-900">Top landing pages</h2>
+            <p className="mt-0.5 text-[12px] text-gray-500">
+              First page attributed signups arrived on (first-touch) — the pages that convert.
+            </p>
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[12px] uppercase tracking-wide text-gray-400">
+                <th className="px-5 py-2.5 font-medium">Landing path</th>
+                <th className="px-5 py-2.5 text-right font-medium">Signups</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {data.topLanding.length === 0 && (
+                <tr>
+                  <td colSpan={2} className="px-5 py-8 text-center text-gray-400">
+                    No attributed signups yet.
+                  </td>
+                </tr>
+              )}
+              {data.topLanding.map((l) => (
+                <tr key={l.landing} className="text-gray-700">
+                  <td className="px-5 py-2.5 font-mono text-[13px] text-gray-900">{l.landing}</td>
+                  <td className="px-5 py-2.5 text-right tabular-nums">{l.signups}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div className="rounded-2xl border border-gray-200 bg-white p-5">
         <h2 className="text-sm font-semibold text-gray-900">Traffic (external panels)</h2>
         <p className="mt-0.5 text-[12px] text-gray-500">
@@ -237,8 +336,8 @@ export function GrowthMetricsView({
       </div>
 
       <p className="text-right text-[11px] text-gray-400">
-        {data.rowCapHit && "⚠ row cap hit — numbers may undercount · "}
-        generated {new Date(data.generatedAt).toLocaleString()}
+        founder/admin accounts excluded from all signup + upload metrics · generated{" "}
+        {new Date(data.generatedAt).toLocaleString()}
       </p>
     </div>
   );
