@@ -31,6 +31,11 @@ export const ADMIN_DASHBOARD: AdminNavItem = {
 
 export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
   {
+    label: "Growth",
+    defaultOpen: true,
+    items: [{ href: "/admin/growth", label: "Growth Metrics", opsSlug: "growth-metrics" }],
+  },
+  {
     label: "Queues",
     defaultOpen: true,
     items: [

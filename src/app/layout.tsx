@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { AuthProvider } from "@/lib/auth/auth-context";
+import { FirstTouchCapture } from "@/components/attribution/FirstTouchCapture";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -129,6 +130,10 @@ export default function RootLayout({
             the root layout, firing on authenticated, health-data pages
             (/claim, /disputes, /plan, /upload) with no consent gate. Removed
             entirely to keep third-party analytics off consumer-health surfaces. */}
+        {/* First-touch attribution (mig 203) is NOT analytics: first-party
+            localStorage snapshot of UTM/referrer, no cookie, no tracker, no
+            network call — persisted once at signup via /api/auth/sync. */}
+        <FirstTouchCapture />
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{
