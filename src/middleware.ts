@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, type NextFetchEvent } from "next/server";
 
 /** Public routes that don't require authentication */
 const PUBLIC_ROUTES = [
@@ -26,7 +26,70 @@ function isPublicRoute(pathname: string): boolean {
   );
 }
 
-export function middleware(req: NextRequest) {
+// ---------------------------------------------------------------------------
+// Server-side pageview counting (mig 204 — GTM P3, /admin/growth "Top pages").
+// PHI posture: path-only daily aggregates via increment_pageview() — NO user
+// linkage, no cookie, no IP/UA stored. This is NOT client analytics (S199):
+// nothing loads in the browser. Fail-open: fired via event.waitUntil with all
+// errors swallowed — a missing table/function/env costs nothing and adds no
+// latency to the response.
+// ---------------------------------------------------------------------------
+const NON_PAGE_FILES = new Set([
+  "/sitemap.xml",
+  "/robots.txt",
+  "/llms.txt",
+  "/logo.png",
+  "/apple-touch-icon.png",
+]);
+
+function isCountablePage(pathname: string): boolean {
+  return (
+    !pathname.startsWith("/api/") &&
+    !pathname.startsWith("/_next") &&
+    !pathname.startsWith("/favicon") &&
+    !pathname.startsWith("/opengraph-image") &&
+    !pathname.startsWith("/twitter-image") &&
+    !pathname.startsWith("/dev") &&
+    // Path counts carry no user linkage (by design), so admin traffic can't be
+    // filtered by account — exclude the admin surface itself instead (it's
+    // founder-only; counting it is pure noise in "top pages").
+    !pathname.startsWith("/admin") &&
+    !NON_PAGE_FILES.has(pathname)
+  );
+}
+
+function countPageview(req: NextRequest, event: NextFetchEvent, pathname: string): void {
+  if (req.method !== "GET" || !isCountablePage(pathname)) return;
+  // Skip router prefetches (would inflate counts) and obvious crawlers (their
+  // visits are tracked where they belong — GSC/Bing, not user pageviews).
+  const isPrefetch =
+    req.headers.get("next-router-prefetch") !== null ||
+    req.headers.get("purpose") === "prefetch" ||
+    (req.headers.get("sec-purpose") ?? "").includes("prefetch");
+  if (isPrefetch) return;
+  const ua = req.headers.get("user-agent") ?? "";
+  if (/bot|crawl|spider|slurp|preview|externalhit/i.test(ua)) return;
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceKey) return;
+  event.waitUntil(
+    fetch(`${supabaseUrl}/rest/v1/rpc/increment_pageview`, {
+      method: "POST",
+      headers: {
+        apikey: serviceKey,
+        Authorization: `Bearer ${serviceKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ p_path: pathname.slice(0, 160) }),
+    }).then(
+      () => undefined,
+      () => undefined, // fail-open — counting must never affect a request
+    ),
+  );
+}
+
+export function middleware(req: NextRequest, event: NextFetchEvent) {
   const { pathname } = req.nextUrl;
 
   // ---------------------------------------------------------------------------
@@ -54,6 +117,7 @@ export function middleware(req: NextRequest) {
     pathname.startsWith("/twitter-image")
   ) {
     response = NextResponse.next();
+    countPageview(req, event, pathname); // served page → count (mig 204)
   } else {
     // For protected routes, check for Firebase auth cookie/token
     // Note: Full auth verification happens in individual API routes via Firebase Admin SDK.
@@ -63,11 +127,14 @@ export function middleware(req: NextRequest) {
     const sessionIndicator = req.cookies.get("candid_session");
 
     if (!sessionIndicator) {
+      // Redirected to / — not a served view of `pathname`; the landing on /
+      // counts via its own request.
       const loginUrl = new URL("/", req.url);
       loginUrl.searchParams.set("redirect", pathname);
       response = NextResponse.redirect(loginUrl);
     } else {
       response = NextResponse.next();
+      countPageview(req, event, pathname); // served page → count (mig 204)
     }
   }
 
