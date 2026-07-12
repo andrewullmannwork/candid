@@ -47,6 +47,7 @@ export function middleware(req: NextRequest) {
     pathname.startsWith("/api/") ||
     pathname === "/sitemap.xml" ||
     pathname === "/robots.txt" ||
+    pathname === "/llms.txt" ||
     pathname === "/logo.png" ||
     pathname === "/apple-touch-icon.png" ||
     pathname.startsWith("/opengraph-image") ||
