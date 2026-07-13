@@ -48,6 +48,8 @@ const MOCK: GrowthMetrics = {
     { path: "/claim", views: 44 },
     { path: "/terms", views: 12 },
   ],
+  signupGates: { attempted: 11, phoneBlocked: 4, created: 7 },
+  funnel: { signups: 36, withPlan: 21, withCard: 12, withClaimDoc: 15 },
   weekly: [
     { weekStart: "2026-05-25", signups: 1, uploads: 0, topSource: "(direct / untagged)" },
     { weekStart: "2026-06-01", signups: 2, uploads: 1, topSource: "(direct / untagged)" },

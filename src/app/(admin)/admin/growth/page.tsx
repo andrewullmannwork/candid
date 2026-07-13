@@ -42,6 +42,10 @@ export interface GrowthMetrics {
   weekly: { weekStart: string; signups: number; uploads: number; topSource: string }[];
   topLanding: { landing: string; signups: number }[];
   topPages: { path: string; views: number }[];
+  /** Pre-account gate steps (mig 206) — people, deduped; recording starts at deploy. */
+  signupGates: { attempted: number; phoneBlocked: number; created: number };
+  /** Onboarding-step completion for signups in the window (derived from artifacts; backfills). */
+  funnel: { signups: number; withPlan: number; withCard: number; withClaimDoc: number };
 }
 
 const WINDOWS: { key: GrowthMetrics["window"]; label: string }[] = [
@@ -136,6 +140,67 @@ export function GrowthMetricsView({
           value={`${data.totals.attributedPct}%`}
           sub={`${data.totals.attributedSignups} of ${data.totals.signups} signups tagged`}
         />
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <div className="rounded-2xl border border-gray-200 bg-white">
+          <div className="border-b border-gray-100 px-5 py-3">
+            <h2 className="text-sm font-semibold text-gray-900">Account-creation gates</h2>
+            <p className="mt-0.5 text-[12px] text-gray-500">
+              Where people stall before an account exists. Counts are people (retries
+              deduped), admin/test excluded; recording began 2026-07-13.
+            </p>
+          </div>
+          <table className="w-full text-sm">
+            <tbody className="divide-y divide-gray-50">
+              {(
+                [
+                  ["Reached signup (passed bot check)", data.signupGates.attempted, null],
+                  ["Blocked at phone verify", data.signupGates.phoneBlocked, data.signupGates.attempted],
+                  ["Account created", data.signupGates.created, data.signupGates.attempted],
+                ] as const
+              ).map(([label, n, denom]) => (
+                <tr key={label} className="text-gray-700">
+                  <td className="px-5 py-2.5">{label}</td>
+                  <td className="px-3 py-2.5 text-right font-medium tabular-nums text-gray-900">{n}</td>
+                  <td className="w-24 px-5 py-2.5 text-right tabular-nums text-gray-500">
+                    {denom === null ? "—" : pct(n, denom)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="rounded-2xl border border-gray-200 bg-white">
+          <div className="border-b border-gray-100 px-5 py-3">
+            <h2 className="text-sm font-semibold text-gray-900">Onboarding steps</h2>
+            <p className="mt-0.5 text-[12px] text-gray-500">
+              Of the {data.funnel.signups} signups in this window — share who ever completed
+              each step. Card scan is one optional plan-setup path; “plan on file” is the
+              step that matters.
+            </p>
+          </div>
+          <table className="w-full text-sm">
+            <tbody className="divide-y divide-gray-50">
+              {(
+                [
+                  ["Plan on file", data.funnel.withPlan],
+                  ["Insurance card scanned", data.funnel.withCard],
+                  ["First bill or EOB uploaded", data.funnel.withClaimDoc],
+                ] as const
+              ).map(([label, n]) => (
+                <tr key={label} className="text-gray-700">
+                  <td className="px-5 py-2.5">{label}</td>
+                  <td className="px-3 py-2.5 text-right font-medium tabular-nums text-gray-900">{n}</td>
+                  <td className="w-24 px-5 py-2.5 text-right tabular-nums text-gray-500">
+                    {pct(n, data.funnel.signups)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div className="rounded-2xl border border-gray-200 bg-white">
