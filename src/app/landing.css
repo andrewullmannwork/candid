@@ -92,6 +92,7 @@
   color: var(--info-ink);
   font-size: 13px; font-weight: var(--weight-semibold);
   border: 1px solid var(--candid-blue-100);
+  margin-bottom: 20px;
 }
 .eyebrow-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--candid-blue-600); }
 
