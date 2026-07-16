@@ -32,6 +32,26 @@ export type AssignUnmappedResult =
   | { ok: true; updatedCount: number; identityId: string | null; backfillUpdated: number }
   | { ok: false; status: number; error: string };
 
+/**
+ * Cross-user read of null-slug line items for the admin surface. Lives HERE
+ * (not in the route) per the B9 B1 discipline: routes never hold a raw
+ * user-table `.from()`; deliberate cross-user access sits in a named lib module
+ * with its authority documented (same placement as backfillCorroboratedMapping).
+ * Caller MUST be behind requireAdmin — this module never sees end-user ids.
+ */
+export async function fetchUnmappedLineItemRows(
+  supabase: SupabaseClient,
+  limit: number,
+): Promise<{ rows: { id: string; billing_code: string | null; billing_code_type: string | null; description: string | null }[] | null; error: string | null }> {
+  const { data, error } = await supabase
+    .from("claim_line_items")
+    .select("id, billing_code, billing_code_type, description")
+    .is("service_slug", null)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  return { rows: data ?? null, error: error?.message ?? null };
+}
+
 export async function assignUnmappedGroup(
   supabase: SupabaseClient,
   input: AssignUnmappedInput,

@@ -228,6 +228,9 @@ const eslintConfig = defineConfig([
       // ── TIER 1 — PERMANENT-EXEMPT (service-role; never user-request-scoped) ──
       // parser pipeline + id-block cross-user aggregates:
       "src/lib/parser/**",
+      // admin-authority accessors: cross-user BY DESIGN, reachable only behind
+      // requireAdmin routes (same class as the parser promotion backfill):
+      "src/lib/admin/unmapped-assign.ts",
       // claim-processing engine (runs during parse/persist; no request id):
       "src/lib/claims/**",
       // the ownership layer itself (holds the one legitimate raw `.from`):

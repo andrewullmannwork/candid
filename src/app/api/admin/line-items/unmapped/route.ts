@@ -24,7 +24,7 @@ import {
   UNMAPPED_FETCH_CAP,
   type UnmappedLineItemRow,
 } from "@/lib/admin/unmapped-line-items";
-import { assignUnmappedGroup } from "@/lib/admin/unmapped-assign";
+import { assignUnmappedGroup, fetchUnmappedLineItemRows } from "@/lib/admin/unmapped-assign";
 
 /** GET — grouped null-slug line items for the admin pipeline surface. */
 export async function GET(req: NextRequest) {
@@ -32,14 +32,10 @@ export async function GET(req: NextRequest) {
   if (!admin.ok) return admin.response;
 
   const supabase = createServerClient();
-  const { data, error } = await supabase
-    .from("claim_line_items")
-    .select("id, billing_code, billing_code_type, description")
-    .is("service_slug", null)
-    .order("created_at", { ascending: false })
-    .limit(UNMAPPED_FETCH_CAP);
+  // Cross-user read lives in the lib accessor (B9 B1: no raw user-table .from in routes)
+  const { rows: data, error } = await fetchUnmappedLineItemRows(supabase, UNMAPPED_FETCH_CAP);
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) return NextResponse.json({ error }, { status: 500 });
 
   const rows = (data ?? []) as UnmappedLineItemRow[];
   const groups = groupUnmappedLineItems(rows);
