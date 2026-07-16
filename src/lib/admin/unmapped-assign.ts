@@ -14,14 +14,17 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { ProcedureCodeType } from "@/lib/billing/types";
 import { normalizeDescriptionSignature, proposeNewSignature } from "@/lib/parser/code-identity";
+import { toIdentityCodeType } from "@/lib/admin/unmapped-line-items";
 import { backfillCorroboratedMapping } from "@/lib/parser/code-identity-promotion";
 import { cacheLearnedMapping } from "@/lib/claims/service-resolver";
 
 export interface AssignUnmappedInput {
   billingCode: string | null;
-  codeType: ProcedureCodeType | null;
+  /** RAW type as stored on claim_line_items ('HCPCS', 'NDC', …) — used verbatim
+   *  for the row UPDATE match + the resolver cache key (future line lookups hit);
+   *  the flywheel identity write derives its own vocabulary via toIdentityCodeType. */
+  codeType: string | null;
   description: string;
   serviceSlug: string;
   /** users.id of the acting admin — recorded by the promotion RPC. */
@@ -72,11 +75,16 @@ export async function assignUnmappedGroup(
   let identityId: string | null = null;
   let backfillUpdated = 0;
 
-  if (billingCode && codeType) {
+  const identityCodeType = toIdentityCodeType(codeType, billingCode);
+  if (billingCode && codeType && !identityCodeType) {
+    return { ok: false, status: 400, error: `Unknown billing code type: ${codeType}` };
+  }
+
+  if (billingCode && identityCodeType) {
     const signature = normalizeDescriptionSignature(description, billingCode);
     const identity = await proposeNewSignature({
       code: billingCode,
-      codeType,
+      codeType: identityCodeType,
       signature,
       rawDescription: description,
       proposedSlug: null, // slug lands atomically inside promote_with_slug below

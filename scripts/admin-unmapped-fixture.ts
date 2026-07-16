@@ -15,6 +15,8 @@ import {
   groupUnmappedLineItems,
   unmappedGroupKey,
   isProcedureCodeType,
+  isAssignableCodeType,
+  toIdentityCodeType,
   UNMAPPED_GROUP_CAP,
   type UnmappedLineItemRow,
 } from "../src/lib/admin/unmapped-line-items";
@@ -106,6 +108,18 @@ console.log("\n— code-type guard (mirrors mig 087 CHECK) —");
   assert("lowercase rejected", !isProcedureCodeType("ndc"));
   assert("unknown rejected", !isProcedureCodeType("ICD10"));
   assert("null/empty rejected", !isProcedureCodeType(null) && !isProcedureCodeType(""));
+}
+
+console.log("\n— vocabulary bridge (line vocab ↔ identity vocab; the 2026-07-16 PROD failure) —");
+{
+  assert("bare HCPCS assignable", isAssignableCodeType("HCPCS"));
+  assert("NDC assignable", isAssignableCodeType("NDC"));
+  assert("garbage not assignable", !isAssignableCodeType("ICD10"));
+  assert("HCPCS + J-code → HCPCS_L2 (the real PROD rows)", toIdentityCodeType("HCPCS", "J2704") === "HCPCS_L2");
+  assert("HCPCS + G-code → G_CODE (format arbiter wins)", toIdentityCodeType("HCPCS", "G0008") === "G_CODE");
+  assert("HCPCS + unrecognized format → HCPCS_L2 fallback", toIdentityCodeType("HCPCS", "ZZZZZZ") === "HCPCS_L2");
+  assert("identity-vocab types pass through", toIdentityCodeType("NDC", "63323-486-02") === "NDC" && toIdentityCodeType("CPT", "99213") === "CPT");
+  assert("unknown type → null", toIdentityCodeType("ICD10", "X") === null);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

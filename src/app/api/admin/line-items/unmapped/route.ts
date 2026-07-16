@@ -20,7 +20,7 @@ import { requireAdmin } from "@/lib/admin/require-admin";
 import { logAdminAction } from "@/lib/admin/audit-log";
 import {
   groupUnmappedLineItems,
-  isProcedureCodeType,
+  isAssignableCodeType,
   UNMAPPED_FETCH_CAP,
   type UnmappedLineItemRow,
 } from "@/lib/admin/unmapped-line-items";
@@ -71,10 +71,10 @@ export async function POST(req: NextRequest) {
   if (!description || !serviceSlug) {
     return NextResponse.json({ error: "description and serviceSlug required" }, { status: 400 });
   }
-  if (billingCode && codeTypeRaw && !isProcedureCodeType(codeTypeRaw)) {
+  if (billingCode && codeTypeRaw && !isAssignableCodeType(codeTypeRaw)) {
     return NextResponse.json({ error: `Unknown billing code type: ${codeTypeRaw}` }, { status: 400 });
   }
-  const codeType = isProcedureCodeType(codeTypeRaw) ? codeTypeRaw : null;
+  const codeType = isAssignableCodeType(codeTypeRaw) ? codeTypeRaw : null;
 
   const supabase = createServerClient();
   const result = await assignUnmappedGroup(supabase, {

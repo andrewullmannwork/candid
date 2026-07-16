@@ -361,7 +361,7 @@ Return ONLY this JSON (no markdown, no commentary):
 
 /** Gated into the Rules block ONLY when ndc_default_enabled is on — the config
  *  key gates the PROMPT too (S184 lesson), so OFF stays byte-identical. */
-const NDC_GUIDANCE_RULE = `- NDC-coded lines are DRUGS. Retail pharmacy fills (tier wording, 30/90-day supply, retail pharmacy context) → the matching rx tier slug. Drugs ADMINISTERED during care (IV solutions/fluids, anesthetics, injectables, contrast) → prescription_drugs.`;
+const NDC_GUIDANCE_RULE = `- NDC-coded lines and HCPCS J-codes (J0000–J9999) are DRUGS. Retail pharmacy fills (tier wording, 30/90-day supply, retail pharmacy context) → the matching rx tier slug. Drugs ADMINISTERED during care (IV solutions/fluids, anesthetics, injectables, contrast) → prescription_drugs.`;
 
 /**
  * Build the batched resolver prompt. The rich catalog is the cacheable system
@@ -835,6 +835,17 @@ const NDC_DEFAULT_SLUG = "prescription_drugs";
  * disabled/non-NDC/slug-absent-from-catalog so the caller keeps today's behavior.
  * Never written to the learned cache (it is a default, not a learned mapping).
  */
+/** Drug-coded line: NDC, or an HCPCS J-code (J0000–J9999 = drugs administered
+ *  other than oral method — the vocabulary real facility bills carry; the
+ *  2026-07-16 PROD rows were J2003/J2704/J7120 with NDCs only in description). */
+function isDrugCodedLine(l: ResolveLineInput): boolean {
+  if (l.billingCodeType === "NDC") return true;
+  if ((l.billingCodeType === "HCPCS" || l.billingCodeType === "HCPCS_L2") && l.billingCode) {
+    return /^J\d{4}$/i.test(l.billingCode.trim());
+  }
+  return false;
+}
+
 function ndcDefaultResolution(
   l: ResolveLineInput,
   config: ResolverConfig,
@@ -842,7 +853,7 @@ function ndcDefaultResolution(
   conceptBySlug: Map<string, string | null>,
 ): ServiceResolution | null {
   if (!config.ndcDefaultEnabled) return null;
-  if (l.billingCodeType !== "NDC") return null;
+  if (!isDrugCodedLine(l)) return null;
   if (!validSlugs.has(NDC_DEFAULT_SLUG)) return null;
   return mkResolution(l.lineNumber, NDC_DEFAULT_SLUG, config.ndcDefaultConfidence, "ndc_default", conceptBySlug, config);
 }

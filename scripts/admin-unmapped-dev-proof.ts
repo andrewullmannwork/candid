@@ -26,7 +26,8 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const PROD_REF = "viahlyugpuviaskpdvce";
 
-const SYNTH_CODE = "99999-999-99"; // NDC-shaped, unmistakably synthetic
+const SYNTH_CODE = "J9999"; // HCPCS J-code shaped (the REAL PROD row shape), synthetic
+const SYNTH_TYPE = "HCPCS"; // bare line vocabulary — identity write must land HCPCS_L2
 const SYNTH_DESC = "Dev Proof Synthetic Drug (99999-999-99)";
 // prescription_drugs = the Pattern-S-clean target for drug lines (the slug stays the
 // pure service; facility-administered context lives in place_of_service, not the slug).
@@ -77,7 +78,7 @@ async function main() {
       claim_id: claim.id,
       line_number: 999,
       billing_code: SYNTH_CODE,
-      billing_code_type: "NDC",
+      billing_code_type: SYNTH_TYPE,
       description: SYNTH_DESC,
       service_slug: null,
       billed_amount: 1,
@@ -97,7 +98,7 @@ async function main() {
   // ── Run the exact assign sequence the route uses ──
   const result = await assignUnmappedGroup(supabase, {
     billingCode: SYNTH_CODE,
-    codeType: "NDC",
+    codeType: SYNTH_TYPE,
     description: SYNTH_DESC,
     serviceSlug: TARGET_SLUG,
     actorUserId: adminUser.id,
@@ -125,13 +126,13 @@ async function main() {
     : { data: null };
   assert("identity admin_verified", ident?.promotion_state === "admin_verified", `got ${ident?.promotion_state}`);
   assert("identity slug set", ident?.service_slug === TARGET_SLUG, `got ${ident?.service_slug}`);
-  assert("identity type NDC", ident?.billing_code_type === "NDC");
+  assert("identity type HCPCS_L2 (bridged from bare HCPCS)", ident?.billing_code_type === "HCPCS_L2", `got ${ident?.billing_code_type}`);
 
   const { data: cache } = await supabase
     .from("billing_code_mappings")
     .select("service_slug, confidence")
     .eq("billing_code", SYNTH_CODE)
-    .eq("billing_code_type", "NDC")
+    .eq("billing_code_type", SYNTH_TYPE) // cache keyed by the RAW line vocabulary
     .eq("service_slug", TARGET_SLUG)
     .maybeSingle();
   assert("resolver cache row written", !!cache, "billing_code_mappings row missing");
@@ -142,7 +143,7 @@ async function main() {
   } else {
     console.log("\nCleaning up…");
     await supabase.from("claim_line_items").delete().eq("id", seeded.id);
-    await supabase.from("billing_code_mappings").delete().eq("billing_code", SYNTH_CODE).eq("billing_code_type", "NDC");
+    await supabase.from("billing_code_mappings").delete().eq("billing_code", SYNTH_CODE);
     if (identityId) {
       const { error: identDelErr } = await supabase.from("billing_code_identity").delete().eq("id", identityId);
       if (identDelErr) console.log(`  (identity row kept — ${identDelErr.message}; synthetic + harmless on dev)`);
