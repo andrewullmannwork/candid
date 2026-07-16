@@ -1,23 +1,33 @@
 /**
  * Backfill service_slug on claim_line_items that have null slugs.
  *
- * Queries all claim_line_items WHERE service_slug IS NULL AND description IS NOT NULL,
- * batches them through the Haiku service mapper, and updates the rows.
+ * Queries claim_line_items WHERE service_slug IS NULL AND description IS NOT NULL
+ * and resolves them through the LIVE service resolver (service-resolver.ts:
+ * catalog + learned cache + one batched Haiku call) — the same path uploads use.
+ * Previously this script used the legacy hardcoded-list mapper, which could never
+ * emit a newly-added catalog slug; swapped per plans/unmapped_line_items_admin_fix.md
+ * (Scope B) so "add the service to the catalog, then run the backfill" is true.
  *
  * Usage: npx tsx scripts/backfill-service-slugs.ts [--dry-run] [--limit N]
  *
  * Run after:
  *   - Adding new services to service_catalog
- *   - Fixing the service mapper
- *   - Initial deployment of T0.5
+ *   - Admin-assigning unmapped groups (/admin/pipeline#unmapped) — cached codes resolve free
+ *   - Fixing the service resolver
  */
 
+import { config } from "dotenv";
+import { resolve } from "path";
+config({ path: resolve(__dirname, "../.env.local"), override: true });
+
 import { createClient } from "@supabase/supabase-js";
-import { mapLineItemsToServices, inferBillingCodeType } from "../src/lib/claims/service-mapper";
+import { resolveServices, type ResolveLineInput } from "../src/lib/claims/service-resolver";
+import { inferBillingCodeType } from "../src/lib/claims/service-mapper";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-const BATCH_SIZE = 20; // Line items per Haiku call
+const BATCH_SIZE = 50; // resolver batches its Haiku call internally
+const WRITE_CONFIDENCE_FLOOR = 0.7; // parity with the resolver's haiku_confidence_floor default
 
 async function main() {
   const args = process.argv.slice(2);
@@ -32,14 +42,13 @@ async function main() {
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-  console.log(`\nBackfill service_slug on claim_line_items`);
+  console.log(`\nBackfill service_slug on claim_line_items (live resolver)`);
   console.log(`  Mode: ${dryRun ? "DRY RUN" : "LIVE"}`);
   console.log(`  Limit: ${limit} rows\n`);
 
-  // Fetch null-slug line items
   const { data: items, error } = await supabase
     .from("claim_line_items")
-    .select("id, line_number, billing_code, description")
+    .select("id, line_number, billing_code, billing_code_type, description")
     .is("service_slug", null)
     .not("description", "is", null)
     .order("created_at", { ascending: false })
@@ -60,34 +69,36 @@ async function main() {
   let mapped = 0;
   let failed = 0;
 
-  // Process in batches
   for (let i = 0; i < items.length; i += BATCH_SIZE) {
     const batch = items.slice(i, i + BATCH_SIZE);
     console.log(`Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(items.length / BATCH_SIZE)} (${batch.length} items)...`);
 
-    const inputs = batch.map((item, idx) => ({
+    const inputs: ResolveLineInput[] = batch.map((item, idx) => ({
       lineNumber: idx + 1,
       description: item.description || "",
-      billingCode: item.billing_code || undefined,
-      billingCodeType: item.billing_code ? inferBillingCodeType(item.billing_code) : undefined,
+      billingCode: item.billing_code || null,
+      billingCodeType:
+        item.billing_code_type || (item.billing_code ? inferBillingCodeType(item.billing_code) : null),
     }));
 
-    const mappings = await mapLineItemsToServices(inputs);
-    const mappingMap = new Map(mappings.map((m) => [m.lineNumber, m]));
+    // userId "" = the spend-guard's documented admin-driven bypass (no per-user cap);
+    // this script runs under operator control with an explicit --limit.
+    const resolutions = await resolveServices(inputs, { supabase, userId: "" });
 
     for (let j = 0; j < batch.length; j++) {
       const item = batch[j];
-      const mapping = mappingMap.get(j + 1);
+      const res = resolutions.get(j + 1);
 
-      if (mapping && mapping.confidence >= 0.3) {
+      if (res?.slug && res.confidence >= WRITE_CONFIDENCE_FLOOR) {
         if (dryRun) {
-          console.log(`  [DRY] ${item.id.slice(0, 8)} → ${mapping.serviceSlug} (${Math.round(mapping.confidence * 100)}%) | "${item.description?.slice(0, 50)}"`);
+          console.log(`  [DRY] ${item.id.slice(0, 8)} → ${res.slug} (${Math.round(res.confidence * 100)}%, ${res.source}) | "${item.description?.slice(0, 50)}"`);
+          mapped++;
         } else {
           const { error: updateErr } = await supabase
             .from("claim_line_items")
             .update({
-              service_slug: mapping.serviceSlug,
-              metadata: { serviceMapping: { slug: mapping.serviceSlug, confidence: mapping.confidence, source: "backfill" } },
+              service_slug: res.slug,
+              metadata: { serviceMapping: { slug: res.slug, confidence: res.confidence, source: "backfill_resolver" } },
             })
             .eq("id", item.id);
 
@@ -99,12 +110,12 @@ async function main() {
           }
         }
       } else {
-        console.log(`  SKIP ${item.id.slice(0, 8)} — no confident match | "${item.description?.slice(0, 50)}"`);
+        console.log(`  SKIP ${item.id.slice(0, 8)} — ${res?.slug ? `low confidence ${Math.round((res.confidence ?? 0) * 100)}%` : "no match"} | "${item.description?.slice(0, 50)}"`);
       }
     }
   }
 
-  console.log(`\nDone. ${dryRun ? "Would have mapped" : "Mapped"}: ${mapped} | Skipped/failed: ${items.length - mapped}`);
+  console.log(`\nDone. ${dryRun ? "Would have mapped" : "Mapped"}: ${mapped} | Skipped: ${items.length - mapped - failed} | Write failures: ${failed}`);
 }
 
 main().catch(console.error);

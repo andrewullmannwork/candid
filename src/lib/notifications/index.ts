@@ -229,8 +229,8 @@ export async function notifyUnmappedLineItems(
         elements: [
           {
             type: "button",
-            text: { type: "plain_text", text: "Service Catalog" },
-            url: `${APP_URL}/admin/pipeline#services`,
+            text: { type: "plain_text", text: "Classify Items" },
+            url: `${APP_URL}/admin/pipeline#unmapped`,
           },
         ],
       },
