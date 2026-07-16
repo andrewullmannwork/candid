@@ -15,7 +15,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { normalizeDescriptionSignature, proposeNewSignature } from "@/lib/parser/code-identity";
-import { toIdentityCodeType } from "@/lib/admin/unmapped-line-items";
+import { toIdentityCodeType } from "@/lib/billing/code-type-inference";
 import { backfillCorroboratedMapping } from "@/lib/parser/code-identity-promotion";
 import { cacheLearnedMapping } from "@/lib/claims/service-resolver";
 
@@ -142,7 +142,9 @@ export async function assignUnmappedGroup(
   try {
     await cacheLearnedMapping(supabase, {
       code: coded ? billingCode : null,
-      codeType: coded ? codeType : null,
+      // FINE vocabulary — parse-time cache lookups key on the parser's emission
+      // (HCPCS_L2), not the stored coarse row value; a raw-keyed row never hits.
+      codeType: coded ? identityCodeType : null,
       signature: coded ? null : normalizeDescriptionSignature(description, ""),
       slug: serviceSlug,
       confidence: 0.95,

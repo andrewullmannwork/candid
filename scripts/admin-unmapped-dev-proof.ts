@@ -132,7 +132,7 @@ async function main() {
     .from("billing_code_mappings")
     .select("service_slug, confidence")
     .eq("billing_code", SYNTH_CODE)
-    .eq("billing_code_type", SYNTH_TYPE) // cache keyed by the RAW line vocabulary
+    .eq("billing_code_type", "HCPCS_L2") // cache keyed by the FINE vocabulary (parse-time lookups)
     .eq("service_slug", TARGET_SLUG)
     .maybeSingle();
   assert("resolver cache row written", !!cache, "billing_code_mappings row missing");

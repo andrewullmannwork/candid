@@ -8,7 +8,6 @@
  */
 
 import type { ProcedureCodeType } from "@/lib/billing/types";
-import { inferProcedureCodeType } from "@/lib/billing/code-type-inference";
 
 /** Defensive cap on rows fetched for grouping — well above any realistic backlog. */
 export const UNMAPPED_FETCH_CAP = 1000;
@@ -92,32 +91,6 @@ export function isProcedureCodeType(value: string | null | undefined): value is 
   return !!value && (PROCEDURE_CODE_TYPES as readonly string[]).includes(value);
 }
 
-/**
- * claim_line_items stores the LINE vocabulary ('CPT','HCPCS','NDC','REV','DRG' —
- * mig 019), while billing_code_identity uses the ProcedureCodeType vocabulary
- * ('HCPCS_L2', 'G_CODE', … — mig 087). Bare "HCPCS" is valid on rows but not on
- * identities — the 2026-07-16 PROD assign failure ("Unknown billing code type:
- * HCPCS" on J-code drug lines). These helpers bridge the two vocabularies.
- */
-export function isAssignableCodeType(value: string | null | undefined): boolean {
-  return !!value && (isProcedureCodeType(value) || value === "HCPCS");
-}
-
-/**
- * Identity-vocabulary type for a raw stored (type, code) pair. Bare "HCPCS"
- * resolves via the codebase's format arbiter (inferProcedureCodeType — J2003 →
- * HCPCS_L2, G0008 → G_CODE), falling back to HCPCS_L2 when the format is
- * unrecognized. Returns null for types neither vocabulary knows.
- */
-export function toIdentityCodeType(
-  rawType: string | null | undefined,
-  code: string | null | undefined,
-): ProcedureCodeType | null {
-  if (!rawType) return null;
-  if (isProcedureCodeType(rawType)) return rawType;
-  if (rawType === "HCPCS") {
-    const inferred = code ? inferProcedureCodeType(code) : undefined;
-    return inferred ?? "HCPCS_L2";
-  }
-  return null;
-}
+// The line↔identity vocabulary bridge lives in the canonical vocabulary module
+// (code-type-inference.ts) — re-exported here for the admin surface's callers.
+export { toIdentityCodeType, isAssignableCodeType } from "@/lib/billing/code-type-inference";

@@ -33,7 +33,7 @@ import {
   type CorrectionReason,
   type RecordCorrectionResult,
 } from "@/lib/parser/code-identity-promotion";
-import type { ProcedureCodeType } from "@/lib/billing/types";
+import { toIdentityCodeType } from "@/lib/billing/code-type-inference";
 import {
   userScoped,
   selectOwnedChildren,
@@ -178,8 +178,11 @@ export async function POST(
   }
 
   const billingCode = (lineItem.billing_code as string | null) ?? "";
+  // Bridge the stored COARSE line vocabulary into the FINE identity vocabulary
+  // (a bare "HCPCS" J-code force-cast here used to violate mig 087's CHECK on
+  // the flywheel insert — same root as the 2026-07-16 admin-assign failure).
   const billingCodeType =
-    (lineItem.billing_code_type as ProcedureCodeType | null) ?? undefined;
+    toIdentityCodeType(lineItem.billing_code_type as string | null, billingCode) ?? undefined;
   const description = (lineItem.description as string | null) ?? "";
 
   // S153 — a description is always required (signature input + label). A billing
