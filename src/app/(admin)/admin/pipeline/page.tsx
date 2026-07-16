@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useAdminQuery } from "@/lib/admin/use-admin-query";
+import type { UnmappedGroup } from "@/lib/admin/unmapped-line-items";
 
 interface ServiceCatalogItem {
   id: string;
@@ -146,13 +147,66 @@ export default function PipelinePage() {
   const [mergeResult, setMergeResult] = useState<string | null>(null);
   const [processingStats, setProcessingStats] = useState<ProcessingStats | null>(null);
   const [processingAction, setProcessingAction] = useState(false);
+  // Unmapped bill line items (service_slug = null) — the Slack alert's target surface
+  const [unmappedGroups, setUnmappedGroups] = useState<UnmappedGroup[]>([]);
+  const [unmappedLoading, setUnmappedLoading] = useState(false);
+  const [unmappedSlugPicks, setUnmappedSlugPicks] = useState<Record<string, string>>({});
+  const [assigningUnmappedKey, setAssigningUnmappedKey] = useState<string | null>(null);
 
   useEffect(() => {
-    if (typeof window !== "undefined" && window.location.hash === "#services") {
+    if (typeof window !== "undefined" && (window.location.hash === "#services" || window.location.hash === "#unmapped")) {
       setTab("services");
     }
     loadData();
+    loadUnmapped();
   }, []);
+
+  async function loadUnmapped() {
+    setUnmappedLoading(true);
+    try {
+      const token = await user?.firebaseUser.getIdToken();
+      if (!token) return;
+      const res = await fetch("/api/admin/line-items/unmapped", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const { groups } = await res.json();
+        setUnmappedGroups(groups || []);
+      }
+    } catch {
+      // Non-fatal — the section shows its empty state
+    } finally {
+      setUnmappedLoading(false);
+    }
+  }
+
+  async function assignUnmapped(group: UnmappedGroup) {
+    const slug = unmappedSlugPicks[group.key];
+    if (!slug) return;
+    setAssigningUnmappedKey(group.key);
+    try {
+      const token = await user?.firebaseUser.getIdToken();
+      if (!token) return;
+      const res = await fetch("/api/admin/line-items/unmapped", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          billingCode: group.billingCode,
+          billingCodeType: group.billingCodeType,
+          description: group.description,
+          serviceSlug: slug,
+        }),
+      });
+      if (res.ok) {
+        setUnmappedGroups((prev) => prev.filter((g) => g.key !== group.key));
+      } else {
+        const { error } = await res.json().catch(() => ({ error: "Assignment failed" }));
+        alert(error || "Assignment failed");
+      }
+    } finally {
+      setAssigningUnmappedKey(null);
+    }
+  }
 
   async function loadData() {
     setLoading(true);
@@ -586,6 +640,66 @@ export default function PipelinePage() {
       {/* Services Tab */}
       {tab === "services" && (
         <div>
+          {/* Unmapped bill line items — the Slack alert's landing surface (#unmapped) */}
+          <div id="unmapped" className="mb-6 bg-white border border-gray-200 rounded-xl p-4">
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="text-sm font-semibold text-gray-900">
+                Unmapped Bill Items
+                {unmappedGroups.length > 0 && (
+                  <span className="ml-2 px-2 py-0.5 text-xs font-medium bg-red-100 text-red-700 rounded-full">
+                    {unmappedGroups.length}
+                  </span>
+                )}
+              </h3>
+              <button
+                onClick={loadUnmapped}
+                className="text-xs text-gray-500 hover:text-gray-700"
+              >
+                Refresh
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mb-3">
+              Bill line items the parser couldn&apos;t classify to a service. Assigning a service here
+              also teaches the classifier, so the same code maps automatically next time.
+            </p>
+            {unmappedLoading ? (
+              <div className="text-xs text-gray-400 py-2">Loading…</div>
+            ) : unmappedGroups.length === 0 ? (
+              <div className="text-xs text-gray-400 py-2">Nothing unmapped — all line items are classified.</div>
+            ) : (
+              <div className="space-y-2">
+                {unmappedGroups.map((group) => (
+                  <div key={group.key} className="flex items-center gap-3 p-2 bg-gray-50 rounded-lg">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm text-gray-900 truncate">{group.description}</div>
+                      <div className="text-xs text-gray-500">
+                        {group.billingCode ? `${group.billingCodeType} ${group.billingCode}` : "no billing code"}
+                        {" · "}
+                        {group.count} line item{group.count === 1 ? "" : "s"}
+                      </div>
+                    </div>
+                    <select
+                      value={unmappedSlugPicks[group.key] || ""}
+                      onChange={(e) => setUnmappedSlugPicks((prev) => ({ ...prev, [group.key]: e.target.value }))}
+                      className="px-2 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-[220px]"
+                    >
+                      <option value="">Pick a service…</option>
+                      {services.map((s) => (
+                        <option key={s.slug} value={s.slug}>{s.name}</option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={() => assignUnmapped(group)}
+                      disabled={!unmappedSlugPicks[group.key] || assigningUnmappedKey === group.key}
+                      className="px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {assigningUnmappedKey === group.key ? "Assigning…" : "Assign"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           <div className="flex items-center gap-2 mb-4">
             <button
               onClick={() => setServiceFilter("other")}
