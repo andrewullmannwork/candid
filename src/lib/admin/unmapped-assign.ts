@@ -75,10 +75,11 @@ export async function assignUnmappedGroup(
   let identityId: string | null = null;
   let backfillUpdated = 0;
 
+  // Bridged (fine) type for the flywheel; null for stored 'ICD10'/'unknown' —
+  // those groups still assign (row stamp + resolver cache), just without an
+  // identity row (mig 087's vocabulary can't hold them). Review finding
+  // 2026-07-16: the previous 400 made such groups visible-but-unassignable.
   const identityCodeType = toIdentityCodeType(codeType, billingCode);
-  if (billingCode && codeType && !identityCodeType) {
-    return { ok: false, status: 400, error: `Unknown billing code type: ${codeType}` };
-  }
 
   if (billingCode && identityCodeType) {
     const signature = normalizeDescriptionSignature(description, billingCode);
@@ -119,22 +120,42 @@ export async function assignUnmappedGroup(
   // billing_code_identity_id, which is NULL for rows the parser never engaged —
   // this direct update is what actually clears the group (and links coded rows
   // to the identity so future flows treat them as flywheel-resolved).
-  let update = supabase
+  // Description matching is CASE-INSENSITIVE to mirror the GET's grouping key
+  // (review finding 2026-07-16: a group aggregating case-variants previously
+  // updated only the exact-case rows, leaving silent residue): select candidate
+  // ids, filter by lowercased description, update by id.
+  let candidateQuery = supabase
     .from("claim_line_items")
-    .update(
-      identityId
-        ? { service_slug: serviceSlug, billing_code_identity_id: identityId }
-        : { service_slug: serviceSlug },
-    )
+    .select("id, description")
     .is("service_slug", null)
-    .is("user_correction_locked_at", null)
-    .eq("description", description);
-  update = coded
-    ? update.eq("billing_code", billingCode!).eq("billing_code_type", codeType!)
-    : update.is("billing_code", null);
-  const { data: updatedRows, error: updateErr } = await update.select("id");
-  if (updateErr) {
-    return { ok: false, status: 500, error: updateErr.message };
+    .is("user_correction_locked_at", null);
+  candidateQuery = coded
+    ? candidateQuery.eq("billing_code", billingCode!).eq("billing_code_type", codeType!)
+    : candidateQuery.is("billing_code", null);
+  const { data: candidates, error: candErr } = await candidateQuery.limit(1000);
+  if (candErr) {
+    return { ok: false, status: 500, error: candErr.message };
+  }
+  const wanted = description.trim().toLowerCase();
+  const matchIds = (candidates ?? [])
+    .filter((r) => ((r.description as string | null) ?? "").trim().toLowerCase() === wanted)
+    .map((r) => r.id as string);
+
+  let updatedRows: { id: string }[] | null = [];
+  if (matchIds.length > 0) {
+    const { data, error: updateErr } = await supabase
+      .from("claim_line_items")
+      .update(
+        identityId
+          ? { service_slug: serviceSlug, billing_code_identity_id: identityId }
+          : { service_slug: serviceSlug },
+      )
+      .in("id", matchIds)
+      .select("id");
+    if (updateErr) {
+      return { ok: false, status: 500, error: updateErr.message };
+    }
+    updatedRows = data;
   }
 
   // Teach the resolver stage too (mirrors correct-category: coded rows cache by
@@ -142,9 +163,11 @@ export async function assignUnmappedGroup(
   try {
     await cacheLearnedMapping(supabase, {
       code: coded ? billingCode : null,
-      // FINE vocabulary — parse-time cache lookups key on the parser's emission
-      // (HCPCS_L2), not the stored coarse row value; a raw-keyed row never hits.
-      codeType: coded ? identityCodeType : null,
+      // COARSE (raw stored) vocabulary — the resolver's parse-time cache lookups
+      // key on inferBillingCodeType(code) (preflight resolver stage), which equals
+      // the stored row value by construction (persist stamps the same inference).
+      // Only the flywheel identity write above uses the FINE bridged vocabulary.
+      codeType: coded ? codeType : null,
       signature: coded ? null : normalizeDescriptionSignature(description, ""),
       slug: serviceSlug,
       confidence: 0.95,

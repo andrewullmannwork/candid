@@ -86,7 +86,18 @@ async function main() {
     .select("id")
     .single();
   if (seedErr || !seeded) { console.error("Seed insert failed:", seedErr?.message); process.exit(1); }
-  console.log(`Seeded line item ${seeded.id} on claim ${claim.id.slice(0, 8)}…\n`);
+  // Case-variant peer (same code+type, uppercased description) — one assign must cover both
+  const { data: seededVariant } = await supabase
+    .from("claim_line_items")
+    .insert({ claim_id: claim.id, line_number: 998, billing_code: SYNTH_CODE, billing_code_type: SYNTH_TYPE, description: SYNTH_DESC.toUpperCase(), service_slug: null, billed_amount: 1 })
+    .select("id").single();
+  // Unbridgeable-type row ('unknown' — real inferBillingCodeType output) — must still assign, sans flywheel
+  const { data: seededUnknown } = await supabase
+    .from("claim_line_items")
+    .insert({ claim_id: claim.id, line_number: 997, billing_code: "XX-DEV-1", billing_code_type: "unknown", description: "Dev Proof Unbridgeable Item", service_slug: null, billed_amount: 1 })
+    .select("id").single();
+  if (!seededVariant || !seededUnknown) { console.error("Extra seeds failed"); process.exit(1); }
+  console.log(`Seeded line items ${seeded.id} + variant + unbridgeable on claim ${claim.id.slice(0, 8)}…\n`);
 
   if (seedOnly) {
     console.log("--seed-only: row left UNASSIGNED for the browser E2E.");
@@ -107,8 +118,24 @@ async function main() {
   console.log("— assign result —");
   assert("assign ok", result.ok, !result.ok ? `${result.status}: ${result.error}` : undefined);
   if (result.ok) {
-    assert("updatedCount ≥ 1", result.updatedCount >= 1, `got ${result.updatedCount}`);
+    assert("updatedCount = 2 (case-variant peer covered)", result.updatedCount === 2, `got ${result.updatedCount}`);
     assert("identityId returned", !!result.identityId);
+  }
+  const { data: variantRow } = await supabase.from("claim_line_items").select("service_slug").eq("id", seededVariant.id).single();
+  assert("case-variant peer stamped", variantRow?.service_slug === TARGET_SLUG, `got ${variantRow?.service_slug}`);
+
+  console.log("\n— unbridgeable-type assign (stored 'unknown') —");
+  const unb = await assignUnmappedGroup(supabase, {
+    billingCode: "XX-DEV-1",
+    codeType: "unknown",
+    description: "Dev Proof Unbridgeable Item",
+    serviceSlug: TARGET_SLUG,
+    actorUserId: adminUser.id,
+  });
+  assert("unbridgeable assign ok (degrades, no 400)", unb.ok, !unb.ok ? `${unb.status}: ${unb.error}` : undefined);
+  if (unb.ok) {
+    assert("unbridgeable: no identity row (flywheel skipped)", unb.identityId === null);
+    assert("unbridgeable: row stamped", unb.updatedCount === 1, `got ${unb.updatedCount}`);
   }
 
   console.log("\n— DB state after assign —");
@@ -132,7 +159,7 @@ async function main() {
     .from("billing_code_mappings")
     .select("service_slug, confidence")
     .eq("billing_code", SYNTH_CODE)
-    .eq("billing_code_type", "HCPCS_L2") // cache keyed by the FINE vocabulary (parse-time lookups)
+    .eq("billing_code_type", SYNTH_TYPE) // cache keyed RAW/coarse — matches parse-time inferBillingCodeType lookups
     .eq("service_slug", TARGET_SLUG)
     .maybeSingle();
   assert("resolver cache row written", !!cache, "billing_code_mappings row missing");
@@ -142,7 +169,8 @@ async function main() {
     console.log("\n--keep: leaving seeded rows for UI inspection (delete the line item + identity + cache row after).");
   } else {
     console.log("\nCleaning up…");
-    await supabase.from("claim_line_items").delete().eq("id", seeded.id);
+    await supabase.from("claim_line_items").delete().in("id", [seeded.id, seededVariant.id, seededUnknown.id]);
+    await supabase.from("billing_code_mappings").delete().eq("billing_code", "XX-DEV-1");
     await supabase.from("billing_code_mappings").delete().eq("billing_code", SYNTH_CODE);
     if (identityId) {
       const { error: identDelErr } = await supabase.from("billing_code_identity").delete().eq("id", identityId);

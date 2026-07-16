@@ -181,8 +181,9 @@ export async function POST(
   // Bridge the stored COARSE line vocabulary into the FINE identity vocabulary
   // (a bare "HCPCS" J-code force-cast here used to violate mig 087's CHECK on
   // the flywheel insert — same root as the 2026-07-16 admin-assign failure).
+  const rawBillingCodeType = (lineItem.billing_code_type as string | null) ?? null;
   const billingCodeType =
-    toIdentityCodeType(lineItem.billing_code_type as string | null, billingCode) ?? undefined;
+    toIdentityCodeType(rawBillingCodeType, billingCode) ?? undefined;
   const description = (lineItem.description as string | null) ?? "";
 
   // S153 — a description is always required (signature input + label). A billing
@@ -205,7 +206,12 @@ export async function POST(
   // (recordUserCorrection updates the user row + casts the vote); code-less
   // lines update the user-owned row directly (no billing_code_identity exists).
   let result: RecordCorrectionResult;
-  if (billingCode) {
+  // billingCodeType is the BRIDGED fine type; null for stored 'ICD10'/'unknown'.
+  // Those lines cannot enter the flywheel (mig 087 vocabulary) but the user's own
+  // row MUST still update (Pattern 1 #14) — they take the direct path below,
+  // exactly like code-less lines. Review finding 2026-07-16: the bridged-null +
+  // recordUserCorrection guard combination silently dropped the correction.
+  if (billingCode && billingCodeType) {
     result = await recordUserCorrection({
       lineItemId: lineId,
       userId: user.id,
@@ -233,7 +239,11 @@ export async function POST(
     );
     result = updated === 0
       ? { ok: false, contributedToFlywheel: false, reason: "user_row_update_failed" }
-      : { ok: true, contributedToFlywheel: false, reason: "code_less_user_correction" };
+      : {
+          ok: true,
+          contributedToFlywheel: false,
+          reason: billingCode ? "unbridgeable_code_type_user_correction" : "code_less_user_correction",
+        };
   }
 
   // S153 — write the correction to the learned cache so it is served first on
@@ -247,7 +257,10 @@ export async function POST(
       );
       await cacheLearnedMapping(supabase, {
         code: billingCode || null,
-        codeType: billingCode ? (billingCodeType ?? null) : null,
+        // RAW stored (coarse) vocabulary — parse-time resolver lookups key on
+        // inferBillingCodeType(code), which matches the stored value; the FINE
+        // bridged type above is for the flywheel identity flow only.
+        codeType: billingCode ? rawBillingCodeType : null,
         signature: billingCode
           ? null
           : normalizeDescriptionSignature(description, ""),
