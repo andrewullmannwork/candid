@@ -14,7 +14,7 @@
  */
 
 export type DocType = "sbc" | "eoc" | "plan_document";
-export type ResolutionSource = "code_cache" | "signature_cache" | "trigram_exact" | "haiku" | "none";
+export type ResolutionSource = "code_cache" | "signature_cache" | "trigram_exact" | "haiku" | "ndc_default" | "none";
 
 /** One human-identifiable source service in a GT document, with its adjudicated truth. */
 export interface GtService {

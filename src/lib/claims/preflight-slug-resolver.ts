@@ -39,7 +39,7 @@ import { reconcileHaikuCodeType } from "@/lib/billing/code-type-inference";
 export interface ResolvedLineSlug {
   lineNumber: number;
   slug: string | null;
-  source: "cached_mapping" | "service_mapper" | "flywheel_identity" | "resolver" | null;
+  source: "cached_mapping" | "service_mapper" | "flywheel_identity" | "resolver" | "resolver:ndc_default" | null;
   identityId: string | null;
   confidence: number;
   needsReview: boolean;
@@ -157,7 +157,11 @@ export async function resolveLineItemSlugs(
             out.set(item.lineNumber, {
               lineNumber: item.lineNumber,
               slug: r.slug,
-              source: "resolver",
+              // ndc_default stays granular: it lands in line metadata (week-1
+              // audit hook) AND structurally never matches the persist-side
+              // source==="resolver" corroboration-vote gate — a deterministic
+              // default is not observation evidence and must never self-vote.
+              source: r.source === "ndc_default" ? "resolver:ndc_default" : "resolver",
               identityId: prior?.identityId ?? null,
               confidence: r.confidence,
               needsReview: r.needsReview,

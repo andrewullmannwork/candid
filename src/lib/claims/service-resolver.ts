@@ -55,6 +55,7 @@ export type ResolutionSource =
   | "signature_cache"
   | "trigram_exact"
   | "haiku"
+  | "ndc_default"
   | "none";
 
 /** Pattern-S service component (who bills): facility (UB-04 / TC), professional (CMS-1500 / 26), or global (no split). */
@@ -110,6 +111,13 @@ export interface ResolverConfig {
   reviewConfidenceFloor: number;
   trigramShortcircuitThreshold: number;
   cacheMinConfidence: number;
+  /** NDC drug-line default (plans/unmapped_line_items_admin_fix.md PR-2): when a
+   *  Haiku-unresolved line carries an NDC code, fall back to prescription_drugs
+   *  instead of null (facility-administered context lives in place_of_service,
+   *  Hard Rule #17). OFF by default = byte-identical, incl. the prompt. Flip via
+   *  the service_resolver_v1 config key ndc_default_enabled (no deploy). */
+  ndcDefaultEnabled: boolean;
+  ndcDefaultConfidence: number;
 }
 
 export const DEFAULT_RESOLVER_CONFIG: ResolverConfig = {
@@ -118,6 +126,8 @@ export const DEFAULT_RESOLVER_CONFIG: ResolverConfig = {
   reviewConfidenceFloor: 0.6,
   trigramShortcircuitThreshold: 0.86,
   cacheMinConfidence: 0.8,
+  ndcDefaultEnabled: false,
+  ndcDefaultConfidence: 0.75,
 };
 
 export interface ResolveLineInput {
@@ -146,6 +156,8 @@ export function parseResolverConfig(raw: unknown): ResolverConfig {
   out.reviewConfidenceFloor = num(r.review_confidence_floor) ?? out.reviewConfidenceFloor;
   out.trigramShortcircuitThreshold = num(r.trigram_shortcircuit_threshold) ?? out.trigramShortcircuitThreshold;
   out.cacheMinConfidence = num(r.cache_min_confidence) ?? out.cacheMinConfidence;
+  if (typeof r.ndc_default_enabled === "boolean") out.ndcDefaultEnabled = r.ndc_default_enabled;
+  out.ndcDefaultConfidence = num(r.ndc_default_confidence) ?? out.ndcDefaultConfidence;
   return out;
 }
 
@@ -347,6 +359,10 @@ Rules:
 Return ONLY this JSON (no markdown, no commentary):
 {"matches":[{"lineNumber":1,"slug":"<slug_or_null>","confidence":0.0}]}`;
 
+/** Gated into the Rules block ONLY when ndc_default_enabled is on — the config
+ *  key gates the PROMPT too (S184 lesson), so OFF stays byte-identical. */
+const NDC_GUIDANCE_RULE = `- NDC-coded lines are DRUGS. Retail pharmacy fills (tier wording, 30/90-day supply, retail pharmacy context) → the matching rx tier slug. Drugs ADMINISTERED during care (IV solutions/fluids, anesthetics, injectables, contrast) → prescription_drugs.`;
+
 /**
  * Build the batched resolver prompt. The rich catalog is the cacheable system
  * prefix (≥4K tokens unlocks Haiku prompt caching across the batch); the lines
@@ -355,6 +371,7 @@ Return ONLY this JSON (no markdown, no commentary):
 export function buildResolverPrompt(
   catalog: CatalogEntry[],
   lines: ResolveLineInput[],
+  ndcGuidance = false,
 ): { systemPrompt: string; userContent: string } {
   const catalogBlock = catalog
     .map(
@@ -362,7 +379,10 @@ export function buildResolverPrompt(
         `- slug=${e.slug} · name="${e.name}"${e.category ? ` · category=${e.category}` : ""}${e.description ? ` · ${e.description.slice(0, 160)}` : ""}`,
     )
     .join("\n");
-  const systemPrompt = `${RESOLVER_INSTRUCTIONS}\n\n## CATALOG\n${catalogBlock}\n\n## LINES TO MATCH:\n`;
+  const instructions = ndcGuidance
+    ? RESOLVER_INSTRUCTIONS.replace("\nRules:\n", `\nRules:\n${NDC_GUIDANCE_RULE}\n`)
+    : RESOLVER_INSTRUCTIONS;
+  const systemPrompt = `${instructions}\n\n## CATALOG\n${catalogBlock}\n\n## LINES TO MATCH:\n`;
   const userContent = lines
     .map(
       (l) =>
@@ -717,7 +737,7 @@ export async function resolveServices(
 
   // ─── Tier 3 — ONE batched Haiku call for the leftovers ───────────────────
   if (unresolved.length > 0 && !opts.skipHaiku) {
-    const { systemPrompt, userContent } = buildResolverPrompt(catalog, unresolved);
+    const { systemPrompt, userContent } = buildResolverPrompt(catalog, unresolved, config.ndcDefaultEnabled);
     let parsed: Map<number, { slug: string; confidence: number }> = new Map();
     try {
       if (opts.haikuCall) {
@@ -769,13 +789,21 @@ export async function resolveServices(
           );
         }
       } else {
-        results.set(l.lineNumber, mkResolution(l.lineNumber, null, hit?.confidence ?? 0, "none", conceptBySlug, config));
+        results.set(
+          l.lineNumber,
+          ndcDefaultResolution(l, config, validSlugs, conceptBySlug) ??
+            mkResolution(l.lineNumber, null, hit?.confidence ?? 0, "none", conceptBySlug, config),
+        );
       }
     }
     await Promise.all(writebacks);
   } else {
     for (const l of unresolved) {
-      results.set(l.lineNumber, mkResolution(l.lineNumber, null, 0, "none", conceptBySlug, config));
+      results.set(
+        l.lineNumber,
+        ndcDefaultResolution(l, config, validSlugs, conceptBySlug) ??
+          mkResolution(l.lineNumber, null, 0, "none", conceptBySlug, config),
+      );
     }
   }
 
@@ -794,6 +822,29 @@ export async function resolveServices(
     }
   }
   return results;
+}
+
+/** The NDC default slug — the Pattern-S-clean umbrella for drug lines (the slug
+ *  stays the pure service; facility-administered context = place_of_service). */
+const NDC_DEFAULT_SLUG = "prescription_drugs";
+
+/**
+ * Deterministic NDC drug-line fallback (PR-2). Fires ONLY when: the config key is
+ * on, the line carries an NDC code, and Haiku produced nothing above the floor —
+ * a confident Haiku tier-slug match always wins (retail fills). Returns null when
+ * disabled/non-NDC/slug-absent-from-catalog so the caller keeps today's behavior.
+ * Never written to the learned cache (it is a default, not a learned mapping).
+ */
+function ndcDefaultResolution(
+  l: ResolveLineInput,
+  config: ResolverConfig,
+  validSlugs: Set<string>,
+  conceptBySlug: Map<string, string | null>,
+): ServiceResolution | null {
+  if (!config.ndcDefaultEnabled) return null;
+  if (l.billingCodeType !== "NDC") return null;
+  if (!validSlugs.has(NDC_DEFAULT_SLUG)) return null;
+  return mkResolution(l.lineNumber, NDC_DEFAULT_SLUG, config.ndcDefaultConfidence, "ndc_default", conceptBySlug, config);
 }
 
 function mkResolution(
