@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
+import { createHash } from "crypto";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
@@ -34,6 +35,28 @@ function sanitizeFirstTouch(input: unknown): Record<string, string> | null {
     if (typeof value === "string" && value.length > 0) out[key] = value.slice(0, 160);
   }
   return Object.keys(out).length > 0 ? out : null;
+}
+
+// Signup-funnel step markers (mig 206) — records which gate each PERSON
+// reached, deduped by a one-way sha256 of the Firebase uid (no PII; retries
+// collapse via ON CONFLICT DO NOTHING). Steps: attempted / phone_blocked /
+// created. Decoupled via after() (zero added latency) and fail-open — funnel
+// telemetry must never affect auth.
+type SignupStep = "attempted" | "phone_blocked" | "created";
+
+function recordSignupStep(
+  supabase: ReturnType<typeof createServerClient>,
+  uid: string,
+  step: SignupStep,
+): void {
+  const uidHash = createHash("sha256").update(uid).digest("hex");
+  after(async () => {
+    try {
+      await supabase.rpc("record_signup_step", { p_uid_hash: uidHash, p_step: step });
+    } catch {
+      /* fail-open */
+    }
+  });
 }
 
 // User-initiated auth actions that must satisfy the Turnstile gate (S68).
@@ -135,9 +158,12 @@ export async function POST(req: NextRequest) {
     // Q-S69-5: signin path NOT gated for existing users without phone — they
     // can sign in but won't contribute to corroboration (phone_verified=FALSE).
     const isSignupAction = userAction === "signup" || isNewUser;
+    // Funnel (mig 206): an authenticated signup reached the gates.
+    if (isSignupAction) recordSignupStep(supabase, uid, "attempted");
     if (isSignupAction) {
       const phoneOtpEnforced = await isFeatureEnabled("phone_otp_enforcement_v1");
       if (phoneOtpEnforced && !phoneE164) {
+        recordSignupStep(supabase, uid, "phone_blocked");
         console.warn(
           "[auth/sync] Phone-OTP gate rejected userAction=" +
             (userAction ?? "(undefined)") +
@@ -215,6 +241,8 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: `Failed to upsert user: ${upsertError?.message || "unknown"}` }, { status: 500 });
       }
       userId = upsertedUser.id;
+      // Funnel (mig 206): a brand-new account exists.
+      if (isNewUser) recordSignupStep(supabase, uid, "created");
       console.log("[auth/sync] Step 2 OK — user:", userId, "(email_verified=" + emailVerified + ", phone_verified=" + phoneVerified + ")");
     }
 
