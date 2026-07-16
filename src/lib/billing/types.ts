@@ -123,6 +123,7 @@ export interface BillLineItem {
     | "flywheel_identity"
     | "resolver"
     | "persisted"
+    | "resolver:ndc_default"
     | null;
   billingCodeIdentityId?: string | null;
   // S153 — confidence from the unified resolver (service-resolver.ts). Threaded
