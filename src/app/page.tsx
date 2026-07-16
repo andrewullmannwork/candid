@@ -112,7 +112,7 @@ function Hero({ loggedIn }: { loggedIn: boolean }) {
               : "Free bill audit — no credit card required"}
           </span>
           <h1 className="h-hero">
-            Healthcare should make you healthy, <span className="accent">not broke.</span>
+            What is the healthcare industry <span className="accent">hiding from you?</span>
           </h1>
           <p className="hero-sub">
             {freeStart
