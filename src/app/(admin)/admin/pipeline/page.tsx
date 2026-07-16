@@ -684,9 +684,22 @@ export default function PipelinePage() {
                       className="px-2 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-[220px]"
                     >
                       <option value="">Pick a service…</option>
-                      {services.map((s) => (
-                        <option key={s.slug} value={s.slug}>{s.name}</option>
-                      ))}
+                      {Object.entries(
+                        services.reduce<Record<string, ServiceCatalogItem[]>>((acc, s) => {
+                          (acc[s.category] ||= []).push(s);
+                          return acc;
+                        }, {}),
+                      )
+                        .sort(([a], [b]) => (categoryLabels[a] || a).localeCompare(categoryLabels[b] || b))
+                        .map(([cat, list]) => (
+                          <optgroup key={cat} label={categoryLabels[cat] || cat}>
+                            {[...list]
+                              .sort((a, b) => a.name.localeCompare(b.name))
+                              .map((s) => (
+                                <option key={s.slug} value={s.slug}>{s.name}</option>
+                              ))}
+                          </optgroup>
+                        ))}
                     </select>
                     <button
                       onClick={() => assignUnmapped(group)}
