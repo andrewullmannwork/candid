@@ -115,9 +115,7 @@ function Hero({ loggedIn }: { loggedIn: boolean }) {
             What is the healthcare industry <span className="accent">hiding from you?</span>
           </h1>
           <p className="hero-sub">
-            {freeStart
-              ? "Find overcharges, then draft your first dispute letter free — upgrade to escalate."
-              : "Find out if you were overcharged. Find out what your insurance actually covers. In under five minutes."}
+            Catch billing errors. Find hidden benefits. Compare plans.
           </p>
           <div className="hero-ctas">
             <Link
