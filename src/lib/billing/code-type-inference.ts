@@ -37,6 +37,40 @@ export function inferProcedureCodeType(rawCode: string): ProcedureCodeType | und
   return undefined;
 }
 
+const PROCEDURE_CODE_TYPE_SET = new Set<string>([
+  "CPT", "HCPCS_L2", "REV", "DRG", "NDC", "G_CODE", "CAT_II",
+]);
+
+/**
+ * The line↔identity vocabulary bridge. claim_line_items stores the COARSE line
+ * vocabulary ('CPT','HCPCS','NDC','REV','DRG' — mig 019 / Rule #3), while
+ * billing_code_identity + the resolver learned-cache run on the FINE
+ * ProcedureCodeType vocabulary ('HCPCS_L2','G_CODE',… — mig 087; parse-time
+ * flows carry the parser's fine emission). EVERY read-back of a stored
+ * billing_code_type into an identity/cache context must bridge through here —
+ * a stored bare "HCPCS" resolves by code format (J2704 → HCPCS_L2, G0008 →
+ * G_CODE), falling back to HCPCS_L2. Root history: the 2026-07-16 PROD
+ * admin-assign 400 + the latent correct-category/reaudit force-casts this
+ * replaced.
+ */
+export function toIdentityCodeType(
+  rawType: string | null | undefined,
+  code: string | null | undefined,
+): ProcedureCodeType | null {
+  if (!rawType) return null;
+  if (PROCEDURE_CODE_TYPE_SET.has(rawType)) return rawType as ProcedureCodeType;
+  if (rawType === "HCPCS") {
+    const inferred = code ? inferProcedureCodeType(code) : undefined;
+    return inferred ?? "HCPCS_L2";
+  }
+  return null;
+}
+
+/** Accepts both vocabularies (identity union + bare line-vocab "HCPCS"). */
+export function isAssignableCodeType(value: string | null | undefined): boolean {
+  return !!value && (PROCEDURE_CODE_TYPE_SET.has(value) || value === "HCPCS");
+}
+
 // S74.5c §2.4 — Reconcile Haiku's emitted procedureCodeType with format-based
 // inference. The Haiku Rule #12 prompt orders "letter+4digit = HCPCS_L2"
 // before "G+4digit = G_CODE" + "4-digit ending in F = CAT_II"; Haiku may match

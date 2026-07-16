@@ -90,3 +90,7 @@ export function groupUnmappedLineItems(rows: UnmappedLineItemRow[]): UnmappedGro
 export function isProcedureCodeType(value: string | null | undefined): value is ProcedureCodeType {
   return !!value && (PROCEDURE_CODE_TYPES as readonly string[]).includes(value);
 }
+
+// The line↔identity vocabulary bridge lives in the canonical vocabulary module
+// (code-type-inference.ts) — re-exported here for the admin surface's callers.
+export { toIdentityCodeType, isAssignableCodeType } from "@/lib/billing/code-type-inference";

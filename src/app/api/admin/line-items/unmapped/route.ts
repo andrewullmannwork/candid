@@ -20,7 +20,6 @@ import { requireAdmin } from "@/lib/admin/require-admin";
 import { logAdminAction } from "@/lib/admin/audit-log";
 import {
   groupUnmappedLineItems,
-  isProcedureCodeType,
   UNMAPPED_FETCH_CAP,
   type UnmappedLineItemRow,
 } from "@/lib/admin/unmapped-line-items";
@@ -71,10 +70,10 @@ export async function POST(req: NextRequest) {
   if (!description || !serviceSlug) {
     return NextResponse.json({ error: "description and serviceSlug required" }, { status: 400 });
   }
-  if (billingCode && codeTypeRaw && !isProcedureCodeType(codeTypeRaw)) {
-    return NextResponse.json({ error: `Unknown billing code type: ${codeTypeRaw}` }, { status: 400 });
-  }
-  const codeType = isProcedureCodeType(codeTypeRaw) ? codeTypeRaw : null;
+  // Any stored type is accepted: bridgeable types feed the flywheel; stored
+  // 'ICD10'/'unknown' degrade to row-stamp + cache (assignUnmappedGroup) — a
+  // GET-visible group is always assignable (review finding 2026-07-16).
+  const codeType = codeTypeRaw || null;
 
   const supabase = createServerClient();
   const result = await assignUnmappedGroup(supabase, {

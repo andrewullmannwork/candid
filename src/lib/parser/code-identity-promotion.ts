@@ -33,7 +33,7 @@ import {
   proposeNewSignature,
   normalizeDescriptionSignature,
 } from "./code-identity";
-import { inferProcedureCodeType } from "../billing/code-type-inference";
+import { toIdentityCodeType, inferProcedureCodeType } from "../billing/code-type-inference";
 import type { ProcedureCodeType } from "../billing/types";
 import * as crypto from "crypto";
 
@@ -813,7 +813,9 @@ export async function recordDisputeWonRecoding(opts: {
 
   const codeType = (
     typeof opts.recodedAsCodeType === "string"
-      ? inferProcedureCodeType(opts.recodedAsCode) ?? (opts.recodedAsCodeType as ProcedureCodeType)
+      ? inferProcedureCodeType(opts.recodedAsCode) ??
+        toIdentityCodeType(opts.recodedAsCodeType, opts.recodedAsCode) ??
+        undefined
       : opts.recodedAsCodeType
   ) as ProcedureCodeType | undefined;
   if (!codeType) {

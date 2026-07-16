@@ -56,6 +56,9 @@ const FACILITY_NDC: ResolveLineInput[] = [
   { lineNumber: 4, description: "Sodium Chloride 0.9% IV Soln (88888-888-88)", billingCode: "88888-888-88", billingCodeType: "NDC" },
 ];
 const RETAIL_NDC: ResolveLineInput = { lineNumber: 5, description: "ATORVASTATIN 20MG 30-DAY SUPPLY (77777-777-77)", billingCode: "77777-777-77", billingCodeType: "NDC" };
+// The REAL PROD shape (2026-07-16): HCPCS J-codes with NDCs only in the description
+const JCODE_FACILITY: ResolveLineInput = { lineNumber: 8, description: "Propofol 10 Mg (25021-608-20)", billingCode: "J2704", billingCodeType: "HCPCS" };
+const HCPCS_NON_DRUG: ResolveLineInput = { lineNumber: 9, description: "WHEELCHAIR RENTAL STANDARD", billingCode: "K0001", billingCodeType: "HCPCS" };
 const NON_NDC: ResolveLineInput = { lineNumber: 6, description: "MYSTERY UNMATCHABLE THING XZQ", billingCode: "99999", billingCodeType: "CPT" };
 
 const haikuNull = async () => ({ matches: [] });
@@ -83,7 +86,7 @@ async function main() {
     const on = buildResolverPrompt(CATALOG, FACILITY_NDC, true).systemPrompt;
     assert("OFF prompt has no NDC guidance", !off.includes("NDC-coded lines"));
     assert("omitted param === false param (byte-identical)", off === offDefault);
-    assert("ON prompt carries the guidance inside Rules", on.includes("NDC-coded lines are DRUGS"));
+    assert("ON prompt carries the guidance inside Rules", on.includes("NDC-coded lines and HCPCS J-codes (J0000–J9999) are DRUGS"));
   }
 
   console.log("\n— OFF = byte-identical resolutions —");
@@ -131,6 +134,16 @@ async function main() {
     const thinCatalog = CATALOG.filter((c) => c.slug !== "prescription_drugs");
     const res = await resolveServices([FACILITY_NDC[0]], { ...base, config: ON, catalog: thinCatalog, haikuCall: haikuNull });
     assert("missing slug → null, no throw", res.get(1)?.slug === null);
+  }
+
+  console.log("\n— ON: HCPCS J-code (the REAL PROD shape) —");
+  {
+    const res = await resolveServices([JCODE_FACILITY, HCPCS_NON_DRUG], { ...base, config: ON, haikuCall: haikuNull });
+    const j = res.get(8), k = res.get(9);
+    assert("J-code drug line → prescription_drugs via ndc_default", j?.slug === "prescription_drugs" && j.source === "ndc_default");
+    assert("non-J HCPCS (DME) NOT defaulted", k?.slug === null && k?.source === "none");
+    const off = await resolveServices([JCODE_FACILITY], { ...base, config: OFF, haikuCall: haikuNull });
+    assert("J-code OFF stays null (byte-identical)", off.get(8)?.slug === null);
   }
 
   console.log("\n— ON + skipHaiku path —");

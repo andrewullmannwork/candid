@@ -28,7 +28,7 @@ import type {
   ClaimLevelFindingMeta,
   ProcedureCodeType,
 } from "../billing/types";
-import { inferProcedureCodeType } from "../billing/code-type-inference";
+import { toIdentityCodeType, inferProcedureCodeType } from "../billing/code-type-inference";
 
 const ONE_MINUTE_MS = 60 * 1000;
 const DAILY_CAP = 5;
@@ -432,7 +432,7 @@ function reconstructParsedBill(claim: ClaimRow, lineItems: LineItemRow[]): Parse
     // Run the D0 inference so D13 + downstream consumers see the right
     // type even if the column stored a legacy variant.
     const codeType: ProcedureCodeType | undefined =
-      (li.billing_code_type as ProcedureCodeType | null) ??
+      toIdentityCodeType(li.billing_code_type as string | null, code) ??
       inferProcedureCodeType(code);
     return {
       lineNumber: li.line_number,
