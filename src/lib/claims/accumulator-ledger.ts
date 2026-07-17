@@ -70,6 +70,16 @@ export interface AccumulatorLedgerLine {
   isRx: boolean;
 }
 
+/** One `claim_accumulators` row — the insurer's OWN reported YTD block off this EOB. */
+export interface InsurerAccumulatorRow {
+  networkTier: string;
+  /** 'medical' | 'rx' | 'combined' | 'dental' | 'vision' | 'mental_health'. */
+  accumulatorType: string;
+  isIndividual: boolean;
+  deductibleApplied: number | null;
+  oopApplied: number | null;
+}
+
 export interface AccumulatorLedgerClaim {
   claimId: string;
   serviceDate: string;
@@ -79,6 +89,8 @@ export interface AccumulatorLedgerClaim {
   memberKey: string;
   /** provider identity for best-effort dedup (§5b); null when unknown. */
   providerKey?: string | null;
+  /** the EOB's own accumulator block(s) — what the INSURER claims (§2 step 6). */
+  insurerAccumulators?: InsurerAccumulatorRow[];
   lines: AccumulatorLedgerLine[];
 }
 
@@ -91,6 +103,30 @@ export interface AccumulatorLedgerInput {
   /** Rx deductible denominators (mig 211; in-network; omit/null when not on file). */
   rxDeductibleIndividual?: number | null;
   rxDeductibleFamily?: number | null;
+  /** divergence materiality gate (§9); admin-tunable — defaults to DEFAULT_MATERIALITY. */
+  materiality?: Materiality;
+}
+
+/** Divergence materiality gate (§9) — admin-tunable; never a hardcoded call-site constant. */
+export interface Materiality {
+  dollars: number;
+  pct: number;
+}
+export const DEFAULT_MATERIALITY: Materiality = { dollars: 25, pct: 0.02 };
+
+export type BucketConfidence = "adjudicated" | "estimated";
+export type DivergenceDirection = "match" | "insurer_behind" | "insurer_ahead";
+
+/** Candid's tally vs the insurer's OWN reported accumulator for the same bucket (§9). */
+export interface BucketDivergence {
+  insurerApplied: number;
+  /** candidApplied − insurerApplied. positive → the insurer is BEHIND us. */
+  gap: number;
+  direction: DivergenceDirection;
+  /** material AND like-for-like AND our tally is adjudicated AND not mere insurer lag. */
+  flagged: boolean;
+  /** why a material gap was NOT flagged — a suppressed gap is recorded, never silent. */
+  suppressedReason?: "type_mismatch" | "estimated_tally" | "insurer_not_current";
 }
 
 export interface LedgerBucket {
@@ -102,6 +138,10 @@ export interface LedgerBucket {
   remaining: number | null;
   /** true once candidApplied has reached the plan limit. */
   met: boolean;
+  /** engine-derived honesty: any ungrounded contributing line → 'estimated' (§8). */
+  confidence: BucketConfidence;
+  /** present only when the insurer reported a comparable accumulator for this bucket. */
+  divergence?: BucketDivergence;
 }
 
 export interface NetworkBuckets {
@@ -173,13 +213,20 @@ function oopContribution(result: CostShareV2Result): number {
   return result.shouldOwe;
 }
 
-function makeBucket(applied: number, max: number | null): LedgerBucket {
+function makeBucket(
+  applied: number,
+  max: number | null,
+  estimated = false,
+  divergence?: BucketDivergence,
+): LedgerBucket {
   const a = round2(applied);
   return {
     candidApplied: a,
     max,
     remaining: max == null ? null : Math.max(0, round2(max - a)),
     met: max != null && a >= max,
+    confidence: estimated ? "estimated" : "adjudicated",
+    ...(divergence ? { divergence } : {}),
   };
 }
 
@@ -198,7 +245,7 @@ function scoreLine(
   oopApplied: number,
   oopMax: number | null,
   plan: PlanCostShareParams,
-): { ded: number; oop: number } {
+): { ded: number; oop: number; grounded: boolean } {
   const snapshot: AccumulatorSnapshot = {
     deductibleApplied: dedApplied,
     deductibleMax: dedMax,
@@ -228,6 +275,7 @@ function scoreLine(
   return {
     ded: Math.min(result.deductibleConsumed, remDed),
     oop: Math.min(oopContribution(result), remOop),
+    grounded: result.shouldOweGrounded,
   };
 }
 
@@ -273,12 +321,87 @@ export function dedupeClaims(
   return { deduped: [...seen.values()], droppedDuplicates: dropped };
 }
 
+/** The insurer's own reported accumulator for one network, as of one EOB. */
+interface InsurerSnap {
+  deductibleApplied: number | null;
+  oopApplied: number | null;
+  /** service date of the claim this block came from — their as-of. */
+  asOf: string;
+  /** accumulator_type === 'medical' — a 'combined' block is NOT like-for-like (§18). */
+  typeMatched: boolean;
+}
+
+/**
+ * Capture what the INSURER claims: the LATEST EOB accumulator block per network
+ * (claims arrive ordered by service date, so last write wins). Individual-grain,
+ * medical-first. A 'combined' (medical+Rx) block is still captured — but marked
+ * typeMatched=false so a gap is recorded-and-suppressed rather than compared
+ * apples-to-oranges against our medical-only tally (§18 like-for-like rule).
+ */
+function captureInsurer(ordered: AccumulatorLedgerClaim[]): Record<NetKey, InsurerSnap | null> {
+  const out: Record<NetKey, InsurerSnap | null> = { in: null, out: null };
+  for (const claim of ordered) {
+    for (const row of claim.insurerAccumulators ?? []) {
+      if (!row.isIndividual) continue;
+      if (row.accumulatorType !== "medical" && row.accumulatorType !== "combined") continue;
+      const key: NetKey = coerceNetworkTier(row.networkTier) === "out_of_network" ? "out" : "in";
+      const typeMatched = row.accumulatorType === "medical";
+      const prev = out[key];
+      // within one EOB, an exact 'medical' block beats a 'combined' one.
+      if (prev && prev.asOf === claim.serviceDate && prev.typeMatched && !typeMatched) continue;
+      out[key] = {
+        deductibleApplied: row.deductibleApplied,
+        oopApplied: row.oopApplied,
+        asOf: claim.serviceDate,
+        typeMatched,
+      };
+    }
+  }
+  return out;
+}
+
+/**
+ * Compare our tally to the insurer's for one bucket and decide whether it's worth the
+ * user's attention (§9). Three gates stand between "a gap exists" and "we flag it":
+ *   - like-for-like  — never compare our medical-only tally to a combined block.
+ *   - confidence     — an `estimated` tally of ours can't accuse anyone.
+ *   - timing         — the insurer being behind on a bill they haven't processed yet
+ *                      is expected lag, not an error.
+ * A material-but-suppressed gap is still returned (with the reason) so it's auditable.
+ */
+function computeDivergence(
+  candidApplied: number,
+  insurerApplied: number | null,
+  confidence: BucketConfidence,
+  snap: InsurerSnap,
+  bucketLastDate: string | null,
+  mat: Materiality,
+  max: number | null,
+): BucketDivergence | undefined {
+  if (insurerApplied == null) return undefined;
+  const gap = round2(candidApplied - insurerApplied);
+  const threshold = Math.max(mat.dollars, max != null ? round2(max * mat.pct) : 0);
+  if (Math.abs(gap) < threshold) return { insurerApplied, gap, direction: "match", flagged: false };
+
+  const direction: DivergenceDirection = gap > 0 ? "insurer_behind" : "insurer_ahead";
+  if (!snap.typeMatched) return { insurerApplied, gap, direction, flagged: false, suppressedReason: "type_mismatch" };
+  if (confidence === "estimated") {
+    return { insurerApplied, gap, direction, flagged: false, suppressedReason: "estimated_tally" };
+  }
+  if (direction === "insurer_behind" && bucketLastDate != null && snap.asOf < bucketLastDate) {
+    return { insurerApplied, gap, direction, flagged: false, suppressedReason: "insurer_not_current" };
+  }
+  return { insurerApplied, gap, direction, flagged: true };
+}
+
 /** individual OR family_aggregate: one accumulator; denominators differ (ind vs family). */
 function computeSingle(
   plan: PlanCostShareParams,
   claims: AccumulatorLedgerClaim[],
   useFamily: boolean,
   rx: RxSink,
+  insurer: Record<NetKey, InsurerSnap | null> | null,
+  mat: Materiality,
 ): NetworkPair {
   const maxes: Record<NetKey, Applied & { dedMax: number | null; oopMax: number | null }> = {
     in: {
@@ -294,6 +417,16 @@ function computeSingle(
       oopMax: useFamily ? plan.outOopMaxFamily : plan.outOopMaxIndividual,
     },
   };
+  const meta: Record<NetKey, { estimated: boolean; lastDate: string | null }> = {
+    in: { estimated: false, lastDate: null },
+    out: { estimated: false, lastDate: null },
+  };
+  const touch = (k: NetKey, line: AccumulatorLedgerLine, claim: AccumulatorLedgerClaim, grounded: boolean) => {
+    if (!grounded) meta[k].estimated = true;
+    const d = line.serviceDate || claim.serviceDate;
+    const cur = meta[k].lastDate;
+    if (cur == null || d > cur) meta[k].lastDate = d;
+  };
   for (const claim of claims) {
     for (const line of claim.lines) {
       const { net, key } = netKey(line);
@@ -302,18 +435,28 @@ function computeSingle(
         const c = scoreLine(line, claim, "in_network", rx.applied, rx.max, maxes.in.oop, maxes.in.oopMax, plan);
         rx.applied += c.ded;
         maxes.in.oop += c.oop;
+        touch("in", line, claim, c.grounded);
         continue;
       }
       const b = maxes[key];
       const c = scoreLine(line, claim, net, b.deductible, b.dedMax, b.oop, b.oopMax, plan);
       b.deductible += c.ded;
       b.oop += c.oop;
+      touch(key, line, claim, c.grounded);
     }
   }
-  const pair = (k: NetKey): NetworkBuckets => ({
-    deductible: makeBucket(maxes[k].deductible, maxes[k].dedMax),
-    oop: makeBucket(maxes[k].oop, maxes[k].oopMax),
-  });
+  const pair = (k: NetKey): NetworkBuckets => {
+    const b = maxes[k];
+    const snap = insurer?.[k] ?? null;
+    const est = meta[k].estimated;
+    const conf: BucketConfidence = est ? "estimated" : "adjudicated";
+    const div = (applied: number, insurerApplied: number | null, max: number | null) =>
+      snap ? computeDivergence(round2(applied), insurerApplied, conf, snap, meta[k].lastDate, mat, max) : undefined;
+    return {
+      deductible: makeBucket(b.deductible, b.dedMax, est, div(b.deductible, snap?.deductibleApplied ?? null, b.dedMax)),
+      oop: makeBucket(b.oop, b.oopMax, est, div(b.oop, snap?.oopApplied ?? null, b.oopMax)),
+    };
+  };
   return { in: pair("in"), out: pair("out") };
 }
 
@@ -420,7 +563,11 @@ export function computeAccumulatorLedger(input: AccumulatorLedgerInput): Accumul
   if (scope === "family_embedded") {
     core = { ...base, familyEmbedded: computeEmbedded(plan, ordered, rx) };
   } else {
-    const pair = computeSingle(plan, ordered, scope === "family_aggregate", rx);
+    // Divergence compares like-for-like at the INDIVIDUAL grain — the insurer's family
+    // blocks need the same member alignment we defer at family scope (§4b follow-up).
+    const insurer = scope === "individual" ? captureInsurer(ordered) : null;
+    const mat = input.materiality ?? DEFAULT_MATERIALITY;
+    const pair = computeSingle(plan, ordered, scope === "family_aggregate", rx, insurer, mat);
     core = scope === "family_aggregate" ? { ...base, familyAggregate: pair } : { ...base, individual: pair };
   }
   // Include the Rx bucket when the plan has an Rx deductible or there is Rx spend.

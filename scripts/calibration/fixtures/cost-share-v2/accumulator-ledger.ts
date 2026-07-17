@@ -17,6 +17,7 @@ import {
   UNASSIGNED_MEMBER,
   type AccumulatorLedgerClaim,
   type LedgerMember,
+  type InsurerAccumulatorRow,
 } from "../../../../src/lib/claims/accumulator-ledger";
 import type {
   PlanCostShareParams,
@@ -44,7 +45,14 @@ function claim(
   id: string,
   date: string,
   amount: number,
-  opts: { network?: string; member?: string; rx?: boolean; provider?: string } = {},
+  opts: {
+    network?: string;
+    member?: string;
+    rx?: boolean;
+    provider?: string;
+    service?: ServiceCostShare;
+    insurer?: InsurerAccumulatorRow[];
+  } = {},
 ): AccumulatorLedgerClaim {
   return {
     claimId: id,
@@ -52,6 +60,7 @@ function claim(
     claimInsurerPaidZero: false,
     memberKey: opts.member ?? "holder",
     providerKey: opts.provider ?? null,
+    insurerAccumulators: opts.insurer,
     lines: [
       {
         serviceDate: date,
@@ -61,7 +70,7 @@ function claim(
         patientPaid: 0,
         patientResponsibility: 0,
         networkStatus: opts.network ?? "in_network",
-        service: COVERED_20,
+        service: opts.service ?? COVERED_20,
         insurer: NO_INSURER,
         isPreventive: false,
         isRx: opts.rx ?? false,
@@ -69,6 +78,19 @@ function claim(
     ],
   };
 }
+
+const insMed = (
+  ded: number | null,
+  oop: number | null,
+  net = "in_network",
+  type = "medical",
+): InsurerAccumulatorRow => ({
+  networkTier: net,
+  accumulatorType: type,
+  isIndividual: true,
+  deductibleApplied: ded,
+  oopApplied: oop,
+});
 
 // ── A. Maya (solo / individual) ──────────────────────────────────────────────
 const MAYA_PLAN: PlanCostShareParams = {
@@ -242,6 +264,85 @@ const dedupLedger = computeAccumulatorLedger({
 eq("dedup — droppedDuplicates", dedupLedger.droppedDuplicates, 1);
 eq("dedup — billsCounted after collapse", dedupLedger.billsCounted, 2);
 eq("dedup — deductible counts 2×$400 not 3×", dedupLedger.individual!.in.deductible.candidApplied, 800);
+
+// ── H. Divergence — Candid's tally vs the insurer's reported accumulator (§9) ──
+// threshold on the $2,000 deductible = max($25, 2%·$2,000=$40) = $40.
+const dedDiv = (l: ReturnType<typeof computeAccumulatorLedger>) => l.individual!.in.deductible.divergence;
+
+// H1 — insurer BEHIND, current EOB, grounded tally → flagged.
+const h1 = computeAccumulatorLedger({
+  plan: MAYA_PLAN,
+  planYear: 2026,
+  hasDependents: false,
+  claims: [claim("h1", "2026-01-15", 300, { insurer: [insMed(0, 300)] })],
+});
+eq("H1 direction insurer_behind", dedDiv(h1)?.direction, "insurer_behind");
+eq("H1 gap $300", dedDiv(h1)?.gap, 300);
+eq("H1 flagged", dedDiv(h1)?.flagged, true);
+
+// H2 — insurer AHEAD (they processed bills we haven't got) → nudge, flagged, no timing gate.
+const h2 = computeAccumulatorLedger({
+  plan: MAYA_PLAN,
+  planYear: 2026,
+  hasDependents: false,
+  claims: [claim("h2", "2026-02-01", 300, { insurer: [insMed(1200, 1200)] })],
+});
+eq("H2 direction insurer_ahead", dedDiv(h2)?.direction, "insurer_ahead");
+eq("H2 flagged", dedDiv(h2)?.flagged, true);
+
+// H3 — sub-threshold ($10 < $40) → match, not flagged.
+const h3 = computeAccumulatorLedger({
+  plan: MAYA_PLAN,
+  planYear: 2026,
+  hasDependents: false,
+  claims: [claim("h3", "2026-01-15", 300, { insurer: [insMed(290, 300)] })],
+});
+eq("H3 direction match", dedDiv(h3)?.direction, "match");
+eq("H3 not flagged", dedDiv(h3)?.flagged, false);
+
+// H4 — insurer reports only a COMBINED block → not like-for-like → suppressed.
+const h4 = computeAccumulatorLedger({
+  plan: MAYA_PLAN,
+  planYear: 2026,
+  hasDependents: false,
+  claims: [claim("h4", "2026-01-15", 300, { insurer: [insMed(0, 300, "in_network", "combined")] })],
+});
+eq("H4 combined not flagged", dedDiv(h4)?.flagged, false);
+eq("H4 reason type_mismatch", dedDiv(h4)?.suppressedReason, "type_mismatch");
+
+// H5 — insurer behind but only current through an EARLIER bill (no accumulator on the
+// newer bill) → expected lag, not an error → suppressed.
+const h5 = computeAccumulatorLedger({
+  plan: MAYA_PLAN,
+  planYear: 2026,
+  hasDependents: false,
+  claims: [
+    claim("h5a", "2026-01-15", 300, { insurer: [insMed(300, 300)] }),
+    claim("h5b", "2026-03-10", 300), // newer bill, no insurer accumulator
+  ],
+});
+eq("H5 gap $300 (candid $600 vs insurer $300)", dedDiv(h5)?.gap, 300);
+eq("H5 direction insurer_behind", dedDiv(h5)?.direction, "insurer_behind");
+eq("H5 suppressed insurer_not_current", dedDiv(h5)?.suppressedReason, "insurer_not_current");
+eq("H5 not flagged", dedDiv(h5)?.flagged, false);
+
+// H6 — our OWN tally is an estimate (post-deductible line whose share the plan can't
+// pin down: unknown service coinsurance AND no plan coinsurance default) → we can't
+// accuse the insurer → suppressed.
+const UNKNOWN_SVC: ServiceCostShare = { covered: true, copay: null, coinsurance: null, deductibleApplies: true };
+const NO_DEFAULT_PLAN: PlanCostShareParams = { ...MAYA_PLAN, inCoinsuranceDefault: null };
+const h6 = computeAccumulatorLedger({
+  plan: NO_DEFAULT_PLAN,
+  planYear: 2026,
+  hasDependents: false,
+  claims: [
+    claim("h6a", "2026-02-01", 2000), // meets the deductible (grounded)
+    claim("h6b", "2026-06-01", 5000, { service: UNKNOWN_SVC, insurer: [insMed(2000, 2000)] }),
+  ],
+});
+eq("H6 oop tally estimated", h6.individual!.in.oop.confidence, "estimated");
+eq("H6 oop divergence suppressed estimated_tally", h6.individual!.in.oop.divergence?.suppressedReason, "estimated_tally");
+eq("H6 oop not flagged", h6.individual!.in.oop.divergence?.flagged, false);
 
 console.log(`\naccumulator-ledger fixture: ${pass} passed, ${fails.length} failed`);
 if (fails.length) {
