@@ -77,6 +77,8 @@ export interface AccumulatorLedgerClaim {
   claimInsurerPaidZero: boolean;
   /** attributed member (loader): the account holder key, a dependent key, or UNASSIGNED_MEMBER. */
   memberKey: string;
+  /** provider identity for best-effort dedup (§5b); null when unknown. */
+  providerKey?: string | null;
   lines: AccumulatorLedgerLine[];
 }
 
@@ -121,7 +123,10 @@ export type LedgerScope = "individual" | "family_aggregate" | "family_embedded";
 
 export interface AccumulatorLedger {
   planYear: number;
+  /** distinct claims counted (after best-effort dedup). */
   billsCounted: number;
+  /** exact-duplicate claims dropped by dedup (§5b). */
+  droppedDuplicates: number;
   scope: LedgerScope;
   /** scope === 'individual' — the account holder (D_ind / OOP_ind). */
   individual?: NetworkPair;
@@ -236,6 +241,36 @@ function orderClaims(claims: AccumulatorLedgerClaim[]): AccumulatorLedgerClaim[]
     const c = a.serviceDate.localeCompare(b.serviceDate);
     return c !== 0 ? c : a.claimId.localeCompare(b.claimId);
   });
+}
+
+/** Sum of a claim's line billed charges — the amount component of the dedup key. */
+function claimTotal(claim: AccumulatorLedgerClaim): number {
+  return round2(claim.lines.reduce((s, l) => s + l.billed, 0));
+}
+
+/**
+ * Best-effort claim dedup (§5b): Candid has no claim-level dedup/supersession at ingest,
+ * so the same bill uploaded twice yields two `claims` rows that would double-count in a
+ * cross-claim sum. Collapse EXACT duplicates by (service_date, total billed, provider) —
+ * mirroring scripts/merge-duplicate-claims.ts — keeping one per key (deterministic by
+ * claim id). Corrected EOBs (different amounts, same underlying claim) are NOT collapsed:
+ * that needs a claim identity we don't persist (documented limitation). The loader must
+ * pre-filter `deleted_at IS NULL`.
+ */
+export function dedupeClaims(
+  claims: AccumulatorLedgerClaim[],
+): { deduped: AccumulatorLedgerClaim[]; droppedDuplicates: number } {
+  const seen = new Map<string, AccumulatorLedgerClaim>();
+  let dropped = 0;
+  for (const c of [...claims].sort((a, b) => a.claimId.localeCompare(b.claimId))) {
+    const key = `${c.serviceDate}|${claimTotal(c)}|${c.providerKey ?? ""}`;
+    if (seen.has(key)) {
+      dropped++;
+      continue;
+    }
+    seen.set(key, c);
+  }
+  return { deduped: [...seen.values()], droppedDuplicates: dropped };
 }
 
 /** individual OR family_aggregate: one accumulator; denominators differ (ind vs family). */
@@ -370,8 +405,9 @@ export function computeAccumulatorLedger(input: AccumulatorLedgerInput): Accumul
     : plan.deductibleCalcMethod === "embedded"
       ? "family_embedded"
       : "family_aggregate";
-  const ordered = orderClaims(claims);
-  const base = { planYear, billsCounted: claims.length, scope };
+  const { deduped, droppedDuplicates } = dedupeClaims(claims);
+  const ordered = orderClaims(deduped);
+  const base = { planYear, billsCounted: deduped.length, scope, droppedDuplicates };
 
   // Rx deductible — a single in-network track (family denominator when there are
   // dependents; individual otherwise). Rx OOP folds into the shared OOP (§4c).

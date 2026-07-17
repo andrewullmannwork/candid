@@ -44,13 +44,14 @@ function claim(
   id: string,
   date: string,
   amount: number,
-  opts: { network?: string; member?: string; rx?: boolean } = {},
+  opts: { network?: string; member?: string; rx?: boolean; provider?: string } = {},
 ): AccumulatorLedgerClaim {
   return {
     claimId: id,
     serviceDate: date,
     claimInsurerPaidZero: false,
     memberKey: opts.member ?? "holder",
+    providerKey: opts.provider ?? null,
     lines: [
       {
         serviceDate: date,
@@ -226,6 +227,21 @@ eq("rx — Rx denominator", rxLedger.rxDeductible!.max, 200);
 eq("rx — shared OOP (medical + Rx)", rxLedger.individual!.in.oop.candidApplied, 1230);
 const noRx = computeAccumulatorLedger({ plan: MAYA_PLAN, planYear: 2026, claims: [JAN], hasDependents: false });
 eq("no-rx → rxDeductible omitted", noRx.rxDeductible, undefined);
+
+// ── G. Dedup — exact-duplicate claims collapse; different provider kept ────────
+const dedupLedger = computeAccumulatorLedger({
+  plan: MAYA_PLAN,
+  planYear: 2026,
+  hasDependents: false,
+  claims: [
+    claim("dup-a", "2026-05-01", 400),
+    claim("dup-b", "2026-05-01", 400), // exact dup of dup-a → dropped
+    claim("dup-c", "2026-05-01", 400, { provider: "other" }), // different provider → kept
+  ],
+});
+eq("dedup — droppedDuplicates", dedupLedger.droppedDuplicates, 1);
+eq("dedup — billsCounted after collapse", dedupLedger.billsCounted, 2);
+eq("dedup — deductible counts 2×$400 not 3×", dedupLedger.individual!.in.deductible.candidApplied, 800);
 
 console.log(`\naccumulator-ledger fixture: ${pass} passed, ${fails.length} failed`);
 if (fails.length) {
