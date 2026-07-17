@@ -86,6 +86,9 @@ export interface AccumulatorLedgerInput {
   claims: AccumulatorLedgerClaim[];
   /** profile.dependents.length > 0 → family scope. */
   hasDependents: boolean;
+  /** Rx deductible denominators (mig 211; in-network; omit/null when not on file). */
+  rxDeductibleIndividual?: number | null;
+  rxDeductibleFamily?: number | null;
 }
 
 export interface LedgerBucket {
@@ -126,12 +129,23 @@ export interface AccumulatorLedger {
   familyAggregate?: NetworkPair;
   /** scope === 'family_embedded' — per-member individuals under a family cap. */
   familyEmbedded?: { cap: NetworkPair; members: LedgerMember[] };
+  /**
+   * Rx (prescription) deductible — a SEPARATE in-network track; present when the plan
+   * has an Rx deductible or the user has Rx spend. Rx cost-share still counts toward the
+   * shared OOP above (§4c). null `max` → "add your Rx deductible" prompt.
+   */
+  rxDeductible?: LedgerBucket;
 }
 
 type NetKey = "in" | "out";
 interface Applied {
   deductible: number;
   oop: number;
+}
+/** Rx deductible running state — a single in-network track (§4c). */
+interface RxSink {
+  applied: number;
+  max: number | null;
 }
 
 function round2(n: number): number {
@@ -229,6 +243,7 @@ function computeSingle(
   plan: PlanCostShareParams,
   claims: AccumulatorLedgerClaim[],
   useFamily: boolean,
+  rx: RxSink,
 ): NetworkPair {
   const maxes: Record<NetKey, Applied & { dedMax: number | null; oopMax: number | null }> = {
     in: {
@@ -247,6 +262,13 @@ function computeSingle(
   for (const claim of claims) {
     for (const line of claim.lines) {
       const { net, key } = netKey(line);
+      if (line.isRx) {
+        // Rx deductible → separate Rx track; Rx OOP → the in-network shared OOP (§4c).
+        const c = scoreLine(line, claim, "in_network", rx.applied, rx.max, maxes.in.oop, maxes.in.oopMax, plan);
+        rx.applied += c.ded;
+        maxes.in.oop += c.oop;
+        continue;
+      }
       const b = maxes[key];
       const c = scoreLine(line, claim, net, b.deductible, b.dedMax, b.oop, b.oopMax, plan);
       b.deductible += c.ded;
@@ -264,6 +286,7 @@ function computeSingle(
 function computeEmbedded(
   plan: PlanCostShareParams,
   claims: AccumulatorLedgerClaim[],
+  rx: RxSink,
 ): { cap: NetworkPair; members: LedgerMember[] } {
   const capMax: Record<NetKey, { ded: number | null; oop: number | null }> = {
     in: { ded: plan.inDeductibleFamily, oop: plan.inOopMaxFamily },
@@ -291,6 +314,13 @@ function computeEmbedded(
   for (const claim of claims) {
     for (const line of claim.lines) {
       const { net, key } = netKey(line);
+      if (line.isRx) {
+        // Rx deductible → separate Rx track; Rx OOP → the family-cap in-network OOP (§4c).
+        const c = scoreLine(line, claim, "in_network", rx.applied, rx.max, cap.in.oop, capMax.in.oop, plan);
+        rx.applied += c.ded;
+        cap.in.oop += c.oop;
+        continue;
+      }
       if (claim.memberKey === UNASSIGNED_MEMBER) {
         // counts toward the family cap only — advances no individual.
         const c = scoreLine(line, claim, net, cap[key].deductible, capMax[key].ded, cap[key].oop, capMax[key].oop, plan);
@@ -343,9 +373,23 @@ export function computeAccumulatorLedger(input: AccumulatorLedgerInput): Accumul
   const ordered = orderClaims(claims);
   const base = { planYear, billsCounted: claims.length, scope };
 
+  // Rx deductible — a single in-network track (family denominator when there are
+  // dependents; individual otherwise). Rx OOP folds into the shared OOP (§4c).
+  const rx: RxSink = {
+    applied: 0,
+    max: (hasDependents ? input.rxDeductibleFamily : input.rxDeductibleIndividual) ?? null,
+  };
+
+  let core: AccumulatorLedger;
   if (scope === "family_embedded") {
-    return { ...base, familyEmbedded: computeEmbedded(plan, ordered) };
+    core = { ...base, familyEmbedded: computeEmbedded(plan, ordered, rx) };
+  } else {
+    const pair = computeSingle(plan, ordered, scope === "family_aggregate", rx);
+    core = scope === "family_aggregate" ? { ...base, familyAggregate: pair } : { ...base, individual: pair };
   }
-  const pair = computeSingle(plan, ordered, scope === "family_aggregate");
-  return scope === "family_aggregate" ? { ...base, familyAggregate: pair } : { ...base, individual: pair };
+  // Include the Rx bucket when the plan has an Rx deductible or there is Rx spend.
+  if (rx.max != null || rx.applied > 0) {
+    core.rxDeductible = makeBucket(rx.applied, rx.max);
+  }
+  return core;
 }

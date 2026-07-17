@@ -44,7 +44,7 @@ function claim(
   id: string,
   date: string,
   amount: number,
-  opts: { network?: string; member?: string } = {},
+  opts: { network?: string; member?: string; rx?: boolean } = {},
 ): AccumulatorLedgerClaim {
   return {
     claimId: id,
@@ -63,7 +63,7 @@ function claim(
         service: COVERED_20,
         insurer: NO_INSURER,
         isPreventive: false,
-        isRx: false,
+        isRx: opts.rx ?? false,
       },
     ],
   };
@@ -189,6 +189,43 @@ const unassigned = computeAccumulatorLedger({
 });
 eq("unassigned → cap deductible", unassigned.familyEmbedded!.cap.in.deductible.candidApplied, 800);
 eq("unassigned → no member rows", unassigned.familyEmbedded!.members.length, 0);
+
+// ── F. Rx bucket — separate Rx deductible; Rx OOP folds into the shared OOP ────
+const RX_PLAN: PlanCostShareParams = {
+  inDeductibleIndividual: 1000,
+  inDeductibleFamily: null,
+  outDeductibleIndividual: null,
+  outDeductibleFamily: null,
+  inOopMaxIndividual: 5000,
+  inOopMaxFamily: null,
+  outOopMaxIndividual: null,
+  outOopMaxFamily: null,
+  inCoinsuranceDefault: 0.2,
+  outCoinsuranceDefault: null,
+  deductibleCalcMethod: null,
+  combinedMedicalRxOop: true,
+  coverageTier: "individual",
+};
+const rxLedger = computeAccumulatorLedger({
+  plan: RX_PLAN,
+  planYear: 2026,
+  hasDependents: false,
+  rxDeductibleIndividual: 200,
+  claims: [
+    claim("r1", "2026-01-10", 600), // medical: $600 → med ded 600; oop 600
+    claim("r2", "2026-02-10", 150, { rx: true }), // rx: $150 → rx ded 150; oop 750
+    claim("r3", "2026-03-10", 100, { rx: true }), // rx: $50 ded (met 200) + $50@20%=$10; oop 810
+    claim("r4", "2026-04-10", 500), // medical: $400 ded (met 1000) + $100@20%=$20; oop 1230
+  ],
+});
+eq("rx — medical deductible met", rxLedger.individual!.in.deductible.candidApplied, 1000);
+eq("rx — medical deductible is met", rxLedger.individual!.in.deductible.met, true);
+eq("rx — Rx deductible met", rxLedger.rxDeductible!.candidApplied, 200);
+eq("rx — Rx deductible is met", rxLedger.rxDeductible!.met, true);
+eq("rx — Rx denominator", rxLedger.rxDeductible!.max, 200);
+eq("rx — shared OOP (medical + Rx)", rxLedger.individual!.in.oop.candidApplied, 1230);
+const noRx = computeAccumulatorLedger({ plan: MAYA_PLAN, planYear: 2026, claims: [JAN], hasDependents: false });
+eq("no-rx → rxDeductible omitted", noRx.rxDeductible, undefined);
 
 console.log(`\naccumulator-ledger fixture: ${pass} passed, ${fails.length} failed`);
 if (fails.length) {
