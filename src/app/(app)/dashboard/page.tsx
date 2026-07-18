@@ -13,6 +13,7 @@ import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { DataSourceContextLine } from "@/components/data-source-context-line";
 import { ProductHero } from "@/components/dashboard/ProductHero";
 import { RingMini } from "@/components/dashboard/RingMini";
+import { AccumulatorMini } from "@/components/dashboard/AccumulatorMini";
 import { ComparePlansVisual } from "@/components/dashboard/ComparePlansVisual";
 import {
   DashStripPlanCard,
@@ -59,6 +60,7 @@ type EnrichedPlanResult = PlanAnalysisResult & {
   insurer?: string | null;
   dataSource?: string;
   planSource?: string;
+  insurancePlanId?: string | null;
 };
 
 // ─── Dashboard component ────────────────────────────────────────────────────
@@ -388,6 +390,16 @@ export default function DashboardPage() {
           />
         )}
       </div>
+
+      {/* Compact plan-spending summary → links to the full /plan panel (gated
+          accumulator_ledger_v1; renders null when OFF / no plan / no data). */}
+      {planResult?.insurancePlanId && (
+        <AccumulatorMini
+          insurancePlanId={planResult.insurancePlanId}
+          planYear={planResult.planYear}
+          className="mb-3"
+        />
+      )}
 
       {/* ── Dash-strip (plan + upload paired cards) ─────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
