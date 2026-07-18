@@ -24,6 +24,7 @@ import { PageHeader } from "@/components/page-header";
 import { BenefitsScoreboard } from "@/components/benefits-scoreboard";
 import { DataSourceContextLine } from "@/components/data-source-context-line";
 import { PlanStat } from "@/components/plan/PlanStat";
+import { AccumulatorPanel } from "@/components/plan/AccumulatorPanel";
 import { CategoryAccordion } from "@/components/plan/CategoryAccordion";
 import { EocPriorAuthCard, EocAboutPlanCard, EocServiceCoverageDetail, type EocServiceItem } from "@/components/plan/EocCoverageRules";
 import type { EocReaderSurfaces } from "@/lib/plan/eoc-reader-resolution";
@@ -796,6 +797,14 @@ export default function CandidPlanPage() {
           onChanged={() => setReloadKey((k) => k + 1)}
         />
       )}
+
+      {/* "Your plan spending" — cross-bill deductible/OOP tally vs the insurer's
+          accumulator (gated accumulator_ledger_v1; renders null when OFF/no data). */}
+      <AccumulatorPanel
+        insurancePlanId={result.insurancePlanId}
+        planYear={result.planYear}
+        className="mt-4"
+      />
 
       {/* D-§1.C.2-E: inline profile-completeness prompt REMOVED from /plan;
           /dashboard's banner stack (B3.1) governs profile-completeness UX

@@ -317,6 +317,29 @@ export async function POST(req: NextRequest) {
           err,
         );
       }
+
+      // Surface 4 (clarity redesign) — mark-as-sent starts the reminder clock:
+      // reschedule the still-pending flat-cadence initial follow-up to
+      // sent + firstDays (or create one if none is pending). Same flag gate
+      // as follow-up creation; non-fatal like the snapshot above.
+      try {
+        const followupsEnabled = await isFeatureEnabled("dispute_feedback_loop");
+        if (followupsEnabled) {
+          const { rescheduleInitialFollowupOnSent } = await import(
+            "@/lib/disputes/followups"
+          );
+          await rescheduleInitialFollowupOnSent(supabase, {
+            disputeId,
+            userId,
+            sentDate: new Date(),
+          });
+        }
+      } catch (err) {
+        console.error(
+          "[disputes/outcome] follow-up reschedule failed (non-fatal):",
+          err,
+        );
+      }
     }
 
     return NextResponse.json({ success: true });

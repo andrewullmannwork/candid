@@ -73,30 +73,32 @@ export async function notifyDisputeFollowup(params: {
   followupType: string;
   insurerName?: string;
 }): Promise<void> {
-  const { userEmail, disputeType, amountDisputed, filedDate, followupType, insurerName } = params;
+  const { userEmail, disputeType, amountDisputed, filedDate, followupType } = params;
   const daysAgo = Math.floor((Date.now() - new Date(filedDate).getTime()) / (1000 * 60 * 60 * 24));
   const claimUrl = `${APP_URL}/claim`;
   const typeLabel = disputeType.replace(/_/g, " ");
 
-  // Email notification
-  const subject = `Your ${typeLabel} dispute — ${daysAgo} days and counting`;
+  // Email notification — deliberately generic (no amounts / insurer names in
+  // email; the details live behind login). Copy per Andrew review 2026-07-17.
+  const subject = "Your dispute is due for a follow-up";
   const html = `
     <div style="font-family: -apple-system, sans-serif; max-width: 500px; margin: 0 auto;">
-      <h2 style="color: #111827; font-size: 18px;">What happened with your dispute?</h2>
+      <h2 style="color: #111827; font-size: 18px;">Time to check on your dispute</h2>
       <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
-        Your ${typeLabel} dispute${insurerName ? ` against ${insurerName}` : ""} for
-        <strong>$${amountDisputed.toLocaleString()}</strong> was filed ${daysAgo} days ago.
+        It's been <strong>${daysAgo} days</strong> since your ${typeLabel} went out. This is the
+        window when responses usually land &mdash; and when a quick call makes the difference if
+        they haven't answered yet.
       </p>
       <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
-        Log in to Candid to update the outcome. This helps us improve our audit accuracy
-        and helps other users on your plan.
+        Open Candid to log what happened, or grab your next steps if you're still waiting.
       </p>
       <a href="${claimUrl}" style="display: inline-block; background: #2563eb; color: white; padding: 10px 20px; border-radius: 8px; text-decoration: none; font-size: 14px; font-weight: 600; margin-top: 8px;">
-        Update dispute outcome
+        Open your dispute
       </a>
       ${followupType === "final" ? `
       <p style="color: #9ca3af; font-size: 12px; margin-top: 16px;">
-        This is our last reminder. You can always update your dispute outcome from the Claim page.
+        This is our last automatic reminder for this dispute &mdash; you can always update it from
+        your Claim page.
       </p>
       ` : ""}
       <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />

@@ -11,7 +11,15 @@ import { useMinHoldLoading } from "@/lib/loading/use-min-hold";
 import { DisputeDraftOverlayProvider } from "@/lib/loading/dispute-draft-overlay";
 import { UploadFlowProvider } from "@/lib/upload/upload-flow-context";
 
-const mainItems = [
+interface NavItem {
+  href: string;
+  label: string;
+  icon: ReactNode;
+  /** Pre-launch product — dimmed with a "Soon" pill, still navigable. */
+  soon?: boolean;
+}
+
+const mainItems: NavItem[] = [
   {
     href: "/dashboard",
     label: "Dashboard",
@@ -45,6 +53,9 @@ const mainItems = [
   {
     href: "/case",
     label: "Case",
+    // Surface 1 (clarity redesign): pre-launch products stay navigable but read
+    // as dimmed + "Soon" pill so the live pipeline (Claim/Plan) owns the visual weight.
+    soon: true,
     icon: (
       <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
@@ -55,6 +66,7 @@ const mainItems = [
   {
     href: "/care",
     label: "Care",
+    soon: true,
     icon: (
       <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
@@ -64,7 +76,7 @@ const mainItems = [
   },
 ];
 
-const accountItems = [
+const accountItems: NavItem[] = [
   {
     href: "/billing",
     label: "Billing",
@@ -155,11 +167,20 @@ export default function AppLayout({ children }: { children: ReactNode }) {
               className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-[13px] font-medium transition-colors ${
                 isActive
                   ? "bg-blue-50 text-blue-700"
-                  : "text-gray-500 hover:text-gray-900 hover:bg-gray-50"
+                  : item.soon
+                    ? "text-gray-400 hover:text-gray-600 hover:bg-gray-50"
+                    : "text-gray-500 hover:text-gray-900 hover:bg-gray-50"
               }`}
             >
-              <span className={isActive ? "text-blue-600" : "text-gray-400"}>{item.icon}</span>
+              <span className={isActive ? "text-blue-600" : item.soon ? "text-gray-300" : "text-gray-400"}>
+                {item.icon}
+              </span>
               {item.label}
+              {item.soon && (
+                <span className="ml-auto rounded-full border border-gray-200 bg-gray-100 px-1.5 py-px text-[8.5px] font-bold uppercase tracking-[0.06em] text-gray-400 whitespace-nowrap">
+                  Soon
+                </span>
+              )}
             </Link>
           );
         })}

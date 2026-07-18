@@ -3,94 +3,28 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRef, useState } from "react";
 import { BillCard } from "@/components/claims/BillCard";
 import { VisitGroupCard } from "@/components/claims/VisitGroupCard";
 import { ClaimDetail } from "@/components/claims/ClaimDetail";
-import { DiscrepancyList } from "@/components/claims/DiscrepancyList";
 import { FollowupBanner } from "@/components/disputes/FollowupBanner";
 import { DisputeMetrics } from "@/components/disputes/DisputeMetrics";
 import { EscalationCard } from "@/components/disputes/EscalationCard";
-import { RecoveryHero, type RecoveryHeroStats } from "@/components/claims/RecoveryHero";
+import { RecoveryHero, type NextStepView } from "@/components/claims/RecoveryHero";
 import { ClaimPreviewEmptyState } from "@/components/claims/ClaimPreviewEmptyState";
 import { Disclaimer } from "@/components/shared/Disclaimer";
 import { PageHeader } from "@/components/page-header";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useMinHoldLoading } from "@/lib/loading/use-min-hold";
 import {
-  deriveBillState,
-  type BillState,
-  type AuditFinding,
-} from "@/lib/claims/derive-bill-state";
+  useClaimPipeline,
+  type PipelineClaimSummary,
+  type PipelineDispute,
+} from "@/lib/claims/use-claim-pipeline";
+import type { BillState } from "@/lib/claims/derive-bill-state";
 import { cn } from "@/lib/utils/cn";
 
 // ── Types ────────────────────────────────────────────────────────────────────
-
-interface Dispute {
-  id: string;
-  disputeType: string;
-  status: string;
-  amountDisputed: number;
-  amountRecovered: number;
-  filedDate: string;
-  resolutionDate: string | null;
-  claimId: string | null;
-}
-
-interface DisputeData {
-  disputes: Dispute[];
-  totalRecovered: number;
-  activeCount: number;
-}
-
-interface ClaimSummary {
-  id: string;
-  date_of_service: string | null;
-  status: string;
-  total_billed: number | null;
-  total_patient_responsibility: number | null;
-  total_insurance_adjusted?: number | null;
-  lineItemCount: number;
-  findingCount: number;
-  providerName: string;
-  created_at: string;
-  // S139 — visit-group grouping key (claim-matching.ts auto-assigns at parse
-  // time when 2+ bills share date_of_service + provider). Bills tab renders
-  // VisitGroupCard for ≥2-member groups; singletons render BillCard.
-  claim_group_id?: string | null;
-  potentialSavings?: number;
-  reviewNeededCount?: number;
-  reviewLineItems?: Array<{
-    id: string;
-    description: string | null;
-    billing_code: string | null;
-    service_slug: string | null;
-    billed_amount: number | null;
-  }>;
-  topFindings?: Array<{ title: string; estimatedOvercharge: number; billingCode?: string | null }>;
-  recovery?: {
-    billed: number;
-    alreadyPaid: number;
-    stillOutstanding: number;
-    shouldOwe: number;
-    potentialRecovery: number;
-    refundComponent: number;
-    forgivenessComponent: number;
-  };
-}
-
-interface ClaimStats {
-  totalBills: number;
-  flaggedBills: number;
-  totalBilled: number;
-  totalPatientResponsibility: number;
-  totalPotentialSavings: number;
-  totalIssuesFlagged: number;
-  totalPotentialRecovery?: number;
-  totalRefundComponent?: number;
-  totalForgivenessComponent?: number;
-  totalAlreadyPaid?: number;
-}
 
 const TYPE_LABELS: Record<string, string> = {
   internal_appeal: "Appeal to Insurer",
@@ -129,49 +63,19 @@ const STATUS_LABELS: Record<string, string> = {
   settled_on_escalation: "Settled (on escalation)",
 };
 
-type Tab = "bills" | "discrepancies" | "disputes";
+// Surface 2 — tabs renamed 1:1 with the next-steps tiles:
+// All bills / Flagged / Need your input / Letters to send.
+type Tab = "bills" | "flagged" | "input" | "letters";
+
+/** Sanitize URL tab values, mapping the retired pre-redesign tab ids. */
+function toTab(raw: string | null): Tab | null {
+  if (raw === "bills" || raw === "flagged" || raw === "input" || raw === "letters") return raw;
+  if (raw === "disputes") return "letters"; // legacy deep links
+  if (raw === "discrepancies") return "bills"; // tab retired in Surface 2
+  return null;
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Build the BillState for a single claim by translating the existing claim
- * shape into AuditFinding[] consumed by `deriveBillState()`. The derivation
- * lives in `src/lib/claims/derive-bill-state.ts` (B1.3b) so the same 4-state
- * vocab is reused by B4.2 ClaimDetail.
- */
-function buildBillState(
-  claim: ClaimSummary,
-  allDiscrepancies: Array<{ claim_id?: string; tier?: number | null; status?: string | null }>,
-  allDisputes: Dispute[],
-): BillState {
-  const claimDiscrepancies = allDiscrepancies.filter((d) => d.claim_id === claim.id);
-  const claimDisputes = allDisputes.filter((d) => d.claimId === claim.id);
-
-  const findings: AuditFinding[] = [];
-  // B4.1-FIX1: recovery math is sufficient signal for overcharge — formal audit
-  // findings are supplementary, not gating. A bill where plan-vs-bill math shows
-  // shouldOwe < billed has a real recovery opportunity regardless of whether a
-  // named audit rule fired. $10 minimum threshold filters cosmetic deltas from
-  // user-actionable overcharges.
-  const recovery = claim.recovery?.potentialRecovery ?? claim.potentialSavings ?? 0;
-  const OVERCHARGE_THRESHOLD_USD = 10;
-  if (recovery > OVERCHARGE_THRESHOLD_USD) {
-    findings.push({ severity: "overcharge", recovery_amount: recovery, confidence: 1 });
-  }
-  // Surface uncertainty when any gap row remains unresolved (billed > 0,
-  // no insurer payment, no patient assignment). Once a user resolves
-  // coverage via the modal, the resulting line is treated identically to
-  // a system-classified line — no separate uncategorized-count branch.
-  if ((claim.reviewNeededCount ?? 0) > 0) {
-    findings.push({ severity: "needs_review", confidence: 0.5 });
-  }
-
-  return deriveBillState(
-    { audit_findings: findings },
-    claimDiscrepancies.map((d) => ({ tier: d.tier ?? null, status: d.status ?? null })),
-    claimDisputes.map((d) => ({ status: d.status })),
-  );
-}
 
 function formatShortDate(iso: string | null): string {
   if (!iso) return "—";
@@ -200,159 +104,38 @@ export default function CandidClaimPage() {
   // URL-driven selected-claim state (NON-NEGOTIABLE preserve per D-§1.D.1-E).
   const urlClaimId = searchParams.get("claim");
   const urlFocusId = searchParams.get("focus");
-  const urlFromTab = (searchParams.get("from") as Tab | null) ?? null;
+  const urlFromTab = toTab(searchParams.get("from"));
 
   const [tab, setTab] = useState<Tab>(urlFromTab || "bills");
+  const tabsRef = useRef<HTMLDivElement | null>(null);
   const selectedClaimId = urlClaimId;
   const focusLineItemId = urlFocusId;
   const tabBeforeDetail: Tab = urlFromTab || "bills";
 
-  // Claims data
-  const [claims, setClaims] = useState<ClaimSummary[]>([]);
-  const [claimStats, setClaimStats] = useState<ClaimStats | null>(null);
-  const [claimsLoading, setClaimsLoading] = useState(true);
+  // Claims + discrepancies + disputes + 4-state derivation — shared with
+  // /dashboard's Claim hero via useClaimPipeline (Surface 1) so both surfaces
+  // read identical pipeline counts.
+  const pipeline = useClaimPipeline();
+  const {
+    claims,
+    disputeData,
+    billStates,
+    counts,
+    totalRecovery,
+    refetchClaims,
+    setDisputeData,
+  } = pipeline;
 
-  // Discrepancies data
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [discrepancies, setDiscrepancies] = useState<any[]>([]);
-  const [discrepancySummary, setDiscrepancySummary] = useState({ total: 0, tier2: 0, tier3: 0, systemic: 0 });
-  const [discrepanciesLoading, setDiscrepanciesLoading] = useState(true);
+  const loading = useMinHoldLoading(pipeline.loading);
 
-  // Disputes data
-  const [disputeData, setDisputeData] = useState<DisputeData | null>(null);
-  const [disputesLoading, setDisputesLoading] = useState(true);
-
-  // S132 iter-6 Phase 1 — extracted to useCallback so ClaimDetail can trigger
-  // a list-wide refetch after the user changes a line-item category. Without
-  // this, the bill card on /claim list shows stale state (old coverageStatus,
-  // old recovery math, old unknownCoverageCount) until the page is reloaded.
-  const refetchClaims = useCallback(async () => {
-    if (!user) return;
-    try {
-      const token = await user.firebaseUser.getIdToken();
-      const headers = { Authorization: `Bearer ${token}` };
-
-      const [claimsRes, discRes] = await Promise.all([
-        fetch("/api/claims", { headers }),
-        fetch("/api/claims/discrepancies", { headers }),
-      ]);
-
-      const claimsData = claimsRes.ok ? await claimsRes.json() : { claims: [], stats: null };
-      setClaims(claimsData.claims || []);
-      setClaimStats(claimsData.stats || null);
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let persistedDiscrepancies: any[] = [];
-      if (discRes.ok) {
-        const data = await discRes.json();
-        persistedDiscrepancies = data.discrepancies || [];
-      }
-      // S132 iter-11 — frontend filter on user_corrected_at REMOVED. Root cause
-      // now fixed at /api/claims/[claimId]/line-items/[lineId]/correct-category
-      // (marks discrepancies on the line as 'resolved' on every category
-      // change). The /api/claims/discrepancies endpoint excludes 'resolved'
-      // rows from its default query, so stale entries no longer surface here.
-
-      // Synthesize "review" discrepancies client-side from claims where
-      // eob_discrepancy_detection didn't run (empty claim_discrepancies table).
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const synthesized: any[] = [];
-      for (const c of (claimsData.claims || []) as ClaimSummary[]) {
-        for (const li of c.reviewLineItems || []) {
-          const alreadyPersisted = persistedDiscrepancies.some(
-            (d) => d.claim_line_item_id === li.id,
-          );
-          if (alreadyPersisted) continue;
-          synthesized.push({
-            id: `synth-${li.id}`,
-            claim_id: c.id,
-            claim_line_item_id: li.id,
-            service_slug: li.service_slug || "unknown",
-            tier: 2,
-            field: "coverage_status",
-            expected_value: "Covered — see plan",
-            actual_value: `$${(li.billed_amount || 0).toLocaleString()} billed · $0 paid · $0 owed`,
-            expected_source: "user_plan",
-            expected_confidence: 0.5,
-            status: "flagged",
-            is_systemic: false,
-            systemic_user_count: null,
-            metadata: { synthesized: true, providerName: c.providerName, dateOfService: c.date_of_service },
-            claim_line_items: {
-              description: li.description,
-              billing_code: li.billing_code,
-              billing_code_type: null,
-              billed_amount: li.billed_amount,
-              patient_owes: 0,
-            },
-          });
-        }
-      }
-
-      const allDiscrepancies = [...persistedDiscrepancies, ...synthesized];
-      setDiscrepancies(allDiscrepancies);
-      setDiscrepancySummary({
-        total: allDiscrepancies.length,
-        tier2: allDiscrepancies.filter((d) => d.tier === 2).length,
-        tier3: allDiscrepancies.filter((d) => d.tier === 3).length,
-        systemic: allDiscrepancies.filter((d) => d.is_systemic).length,
-      });
-    } catch (err) {
-      console.error("Failed to load data:", err);
-    }
-    setClaimsLoading(false);
-    setDiscrepanciesLoading(false);
-  }, [user]);
-
-  useEffect(() => {
-    if (!user) return;
-
-    // Load disputes. S74 (PR #66) hardened the endpoint to require a Firebase
-    // bearer token + derive userId from the decoded claims.
-    (async () => {
-      try {
-        const token = await user.firebaseUser.getIdToken();
-        const res = await fetch(`/api/disputes/outcome`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (res.ok) {
-          const result = await res.json();
-          if (result && Array.isArray(result.disputes)) {
-            setDisputeData(result);
-          }
-        }
-      } catch (err) {
-        console.error("Failed to load disputes:", err);
-      } finally {
-        setDisputesLoading(false);
-      }
-    })();
-
-    refetchClaims();
-  }, [user, refetchClaims]);
-
-  const dataLoading = claimsLoading || disputesLoading || discrepanciesLoading;
-  const loading = useMinHoldLoading(dataLoading);
-
-  // Derive per-claim BillState in one pass; reused by Bills list + Disputes tab + hero stats.
-  const billStates = useMemo(() => {
-    const map = new Map<string, BillState>();
-    for (const c of claims) {
-      map.set(c.id, buildBillState(c, discrepancies, disputeData?.disputes ?? []));
-    }
-    return map;
-  }, [claims, discrepancies, disputeData]);
-
-  // S139 — group claims by claim_group_id for VisitGroupCard rendering on
-  // Bills tab. Singletons (group_id null OR group of 1) render as BillCard;
-  // ≥2-member groups render as VisitGroupCard. Preserves original sort order
-  // via first-seen anchor per group. Disputes tab unchanged — drafted
-  // disputes render as individual BillCards intentionally (per-letter focus).
-  const renderUnits = useMemo(() => {
-    type Unit =
-      | { kind: "singleton"; claim: ClaimSummary }
-      | { kind: "group"; groupId: string; bills: ClaimSummary[] };
-    const groupBuckets = new Map<string, ClaimSummary[]>();
+  // S139 — group claims by claim_group_id for VisitGroupCard rendering on the
+  // All-bills tab. Singletons render BillCard; ≥2-member groups render
+  // VisitGroupCard. Preserves original sort order via first-seen anchor.
+  type Unit =
+    | { kind: "singleton"; claim: PipelineClaimSummary }
+    | { kind: "group"; groupId: string; bills: PipelineClaimSummary[] };
+  const renderUnits: Unit[] = (() => {
+    const groupBuckets = new Map<string, PipelineClaimSummary[]>();
     const order: Array<{ key: string; isGroup: boolean }> = [];
     for (const c of claims) {
       if (c.claim_group_id) {
@@ -372,7 +155,6 @@ export default function CandidClaimPage() {
         if (bills.length >= 2) {
           units.push({ kind: "group", groupId: entry.key, bills });
         } else {
-          // Group-of-1 (peer was deleted or never created) — render as singleton.
           units.push({ kind: "singleton", claim: bills[0] });
         }
       } else {
@@ -381,41 +163,17 @@ export default function CandidClaimPage() {
       }
     }
     return units;
-  }, [claims]);
+  })();
 
-  async function handleDiscrepancyStatusChange(discrepancyId: string, newStatus: string) {
-    try {
-      const token = await user!.firebaseUser.getIdToken();
-      const res = await fetch("/api/claims/discrepancies", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ discrepancyId, status: newStatus }),
-      });
-      if (res.ok) {
-        if (newStatus === "ignored" || newStatus === "resolved") {
-          setDiscrepancies((prev) => prev.filter((d) => d.id !== discrepancyId));
-          setDiscrepancySummary((prev) => ({ ...prev, total: Math.max(0, prev.total - 1) }));
-        } else {
-          setDiscrepancies((prev) =>
-            prev.map((d) => (d.id === discrepancyId ? { ...d, status: newStatus } : d))
-          );
-        }
-      }
-    } catch (err) {
-      console.error("Failed to update discrepancy:", err);
-    }
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  function handleDiscrepancyDispute(discrepancy: any) {
-    if (discrepancy?.claim_id) {
-      const focus = discrepancy.claim_line_item_id || "";
-      router.push(
-        `/claim?claim=${discrepancy.claim_id}&from=discrepancies${focus ? `&focus=${focus}` : ""}`,
-      );
-    } else {
-      router.push(`/upload?dispute_from=${discrepancy.claim_id}`);
-    }
+  // needs_review "Answer N questions" count — reviewNeededCount when present,
+  // else that claim's open tier-2/3 discrepancy count (min 1).
+  function questionCountFor(claim: PipelineClaimSummary): number {
+    if ((claim.reviewNeededCount ?? 0) > 0) return claim.reviewNeededCount!;
+    const open = pipeline.discrepancies.filter(
+      (d) =>
+        d.claim_id === claim.id && (d.tier === 2 || d.tier === 3) && d.status !== "resolved",
+    ).length;
+    return Math.max(1, open);
   }
 
   function openClaimDetail(claimId: string, sourceTab: Tab) {
@@ -427,16 +185,24 @@ export default function CandidClaimPage() {
     router.push(`/claim?tab=${tabBeforeDetail}`);
   }
 
+  // Tile click → set the matching list filter + scroll to the tabbar.
+  // Post-commit setTimeout (~90ms) + instant scroll — smooth scroll raced the
+  // React commit in the prototype, so behavior is deliberately "auto".
+  function jumpTo(view: NextStepView) {
+    setTab(view);
+    setTimeout(() => {
+      if (!tabsRef.current) return;
+      const top = tabsRef.current.getBoundingClientRect().top + window.scrollY - 16;
+      window.scrollTo({ top, behavior: "auto" });
+    }, 90);
+  }
+
   if (loading) {
     // S132 iter-8 — unified cube loader; audit loader retired.
     return <CubeLoaderBuilding />;
   }
 
   // If viewing claim detail, render that view only (NON-NEGOTIABLE preserve per D-§1.D.1-E).
-  // S138: detail container bumped to max-w-4xl (896px) — design uses 1120px content
-  // area; the 8-col line-items grid needs ~880px minimum (488 fixed + 56 gaps + 40
-  // padding + 296 service flex). Previously at max-w-3xl (768px) the service col
-  // collapsed to 0px because fixed cols exceeded available width.
   if (selectedClaimId) {
     return (
       <div className="mx-auto max-w-4xl">
@@ -444,7 +210,7 @@ export default function CandidClaimPage() {
           claimId={selectedClaimId}
           onBack={closeClaimDetail}
           focusLineItemId={focusLineItemId}
-          backLabel={tabBeforeDetail === "discrepancies" ? "Back to discrepancies" : "Back to bills"}
+          backLabel={tabBeforeDetail === "letters" ? "Back to letters" : "Back to bills"}
           onClaimUpdated={refetchClaims}
           billState={billStates.get(selectedClaimId) ?? null}
         />
@@ -466,36 +232,15 @@ export default function CandidClaimPage() {
     ) ?? [];
   const lostDisputes = resolvedDisputes.filter((d) => d.status === "lost");
 
-  // Aggregate bill-state counts for the hero. We count BILLS (not line items),
-  // matching the design's stat semantics ("Issues flagged" = bills with overcharge,
-  // "Need your input" = bills in review state, "Disputes drafted" = bills with draft).
-  const stateCounts = { overcharge: 0, drafted: 0, review: 0 };
-  for (const c of claims) {
-    const s = billStates.get(c.id);
-    if (s === "overcharge_no_draft" || s === "overcharge_drafted") stateCounts.overcharge += 1;
-    if (s === "overcharge_drafted") stateCounts.drafted += 1;
-    if (s === "needs_review") stateCounts.review += 1;
-  }
-
-  // Ready-to-draft = flagged bills without a draft yet (state === 'overcharge_no_draft').
+  // Ready-to-draft = flagged bills without a draft yet.
   const readyToDraftClaims = claims.filter(
     (c) => billStates.get(c.id) === "overcharge_no_draft",
   );
-
-  const heroStats: RecoveryHeroStats = {
-    totalRecovery: claimStats?.totalPotentialRecovery ?? claimStats?.totalPotentialSavings ?? 0,
-    billsCount: claims.length,
-    issuesCount: stateCounts.overcharge,
-    disputesCount: stateCounts.drafted,
-    reviewCount: stateCounts.review,
-  };
-
-  // CTA destination: prefer drafted disputes tab; else surface flagged bills.
-  function handleHeroPrimary() {
-    if (stateCounts.drafted > 0 || readyToDraftClaims.length > 0) {
-      setTab("disputes");
-    }
-  }
+  const flaggedClaims = claims.filter((c) => {
+    const s = billStates.get(c.id);
+    return s === "overcharge_drafted" || s === "overcharge_no_draft";
+  });
+  const reviewClaims = claims.filter((c) => billStates.get(c.id) === "needs_review");
 
   return (
     <div className="mx-auto max-w-4xl">
@@ -519,28 +264,40 @@ export default function CandidClaimPage() {
 
       {hasBills && (
         <>
-          {/* RecoveryHero — D-§1.D.1-A */}
-          <RecoveryHero stats={heroStats} variant="calm" onPrimary={handleHeroPrimary} />
+          {/* RecoveryHero — Surface 2: "Your next steps" clickable tiles that
+              filter the bill list below. */}
+          <RecoveryHero
+            stats={{
+              totalRecovery,
+              billsCount: claims.length,
+              issuesCount: counts.flagged,
+              disputesCount: counts.drafted,
+              reviewCount: counts.review,
+            }}
+            variant="calm"
+            activeView={tab === "bills" ? null : tab}
+            onStep={jumpTo}
+          />
 
-          {/* Tabbar with top-right Upload button per design canvas line 303-318
-              + styles.css .tabs / .tab / .tab-count family.
-              S138: white bg + gray border + larger padding to match design. */}
-          <div className="mb-5 mt-8 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex w-fit gap-1 rounded-2xl border border-gray-200 bg-white p-1">
+          {/* Tabbar — Surface 2 rename: All bills / Flagged / Need your input /
+              Letters to send (1:1 with the next-steps tiles). */}
+          <div ref={tabsRef} className="mb-5 mt-8 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex w-fit flex-wrap gap-1 rounded-2xl border border-gray-200 bg-white p-1">
               <TabButton active={tab === "bills"} onClick={() => setTab("bills")}>
-                Bills
+                All bills
                 <TabCount count={claims.length} active={tab === "bills"} />
               </TabButton>
-              <TabButton
-                active={tab === "discrepancies"}
-                onClick={() => setTab("discrepancies")}
-              >
-                Discrepancies
-                <TabCount count={discrepancySummary.total} active={tab === "discrepancies"} />
+              <TabButton active={tab === "flagged"} onClick={() => setTab("flagged")}>
+                Flagged
+                <TabCount count={counts.flagged} active={tab === "flagged"} />
               </TabButton>
-              <TabButton active={tab === "disputes"} onClick={() => setTab("disputes")}>
-                Disputes
-                <TabCount count={disputeData?.disputes.length || 0} active={tab === "disputes"} />
+              <TabButton active={tab === "input"} onClick={() => setTab("input")}>
+                Need your input
+                <TabCount count={counts.review} active={tab === "input"} />
+              </TabButton>
+              <TabButton active={tab === "letters"} onClick={() => setTab("letters")}>
+                Letters to send
+                <TabCount count={counts.drafted} active={tab === "letters"} />
               </TabButton>
             </div>
 
@@ -566,18 +323,16 @@ export default function CandidClaimPage() {
             </Link>
           </div>
 
-          {/* Bills tab */}
+          {/* All bills tab — groups + singletons */}
           {tab === "bills" && (
             <div className="space-y-3">
-              {/* S139 — grouped rendering via claim_group_id. Singletons →
-                  BillCard (unchanged S138 chrome); ≥2-member groups →
-                  VisitGroupCard with MiniBillRow per member. */}
               {renderUnits.map((unit) =>
                 unit.kind === "singleton" ? (
                   <BillCard
                     key={unit.claim.id}
                     claim={unit.claim}
                     state={billStates.get(unit.claim.id) ?? "clean"}
+                    reviewQuestionCount={questionCountFor(unit.claim)}
                     onSelect={(id) => openClaimDetail(id, "bills")}
                   />
                 ) : (
@@ -603,18 +358,30 @@ export default function CandidClaimPage() {
             </div>
           )}
 
-          {/* Discrepancies tab — preserve DiscrepancyList (D-§1.D.1-J + Round 2 Item 3) */}
-          {tab === "discrepancies" && (
-            <DiscrepancyList
-              discrepancies={discrepancies}
-              summary={discrepancySummary}
-              onStatusChange={handleDiscrepancyStatusChange}
-              onDispute={handleDiscrepancyDispute}
+          {/* Flagged tab — bills with a confirmed overcharge */}
+          {tab === "flagged" && (
+            <FilteredBillList
+              claims={flaggedClaims}
+              billStates={billStates}
+              questionCountFor={questionCountFor}
+              emptyCopy="No flagged bills right now — confirmed overcharges will show up here."
+              onSelect={(id) => openClaimDetail(id, "flagged")}
             />
           )}
 
-          {/* Disputes tab — design chrome adoption (D-§1.D.1-K) */}
-          {tab === "disputes" && (
+          {/* Need your input tab — bills awaiting review answers */}
+          {tab === "input" && (
+            <FilteredBillList
+              claims={reviewClaims}
+              billStates={billStates}
+              questionCountFor={questionCountFor}
+              emptyCopy="Nothing needs your input right now."
+              onSelect={(id) => openClaimDetail(id, "input")}
+            />
+          )}
+
+          {/* Letters to send tab — drafted letters + ready to draft + outcomes */}
+          {tab === "letters" && (
             <>
               <DisputeMetrics />
 
@@ -637,7 +404,7 @@ export default function CandidClaimPage() {
 
               {activeDisputes.length > 0 && (
                 <div className="mb-6">
-                  <SectionHeader>Active disputes</SectionHeader>
+                  <SectionHeader>Letters to send</SectionHeader>
                   <div className="space-y-3">
                     {activeDisputes.map((d) => (
                       <DraftedDisputeCard
@@ -645,7 +412,7 @@ export default function CandidClaimPage() {
                         dispute={d}
                         provider={claims.find((c) => c.id === d.claimId)?.providerName ?? ""}
                         onOpen={() => {
-                          if (d.claimId) openClaimDetail(d.claimId, "disputes");
+                          if (d.claimId) openClaimDetail(d.claimId, "letters");
                         }}
                         onUpdate={(update) => handleOutcomeUpdate(d.id, update)}
                       />
@@ -664,7 +431,7 @@ export default function CandidClaimPage() {
                         key={claim.id}
                         claim={claim}
                         state="overcharge_no_draft"
-                        onSelect={(id) => openClaimDetail(id, "disputes")}
+                        onSelect={(id) => openClaimDetail(id, "letters")}
                       />
                     ))}
                   </div>
@@ -681,7 +448,7 @@ export default function CandidClaimPage() {
                         dispute={d}
                         provider={claims.find((c) => c.id === d.claimId)?.providerName ?? ""}
                         onOpen={() => {
-                          if (d.claimId) openClaimDetail(d.claimId, "disputes");
+                          if (d.claimId) openClaimDetail(d.claimId, "letters");
                         }}
                       />
                     ))}
@@ -762,6 +529,42 @@ export default function CandidClaimPage() {
 
 // ── Sub-components ───────────────────────────────────────────────────────────
 
+/** Flat filtered bill list for the Flagged / Need-your-input tabs. */
+function FilteredBillList({
+  claims,
+  billStates,
+  questionCountFor,
+  emptyCopy,
+  onSelect,
+}: {
+  claims: PipelineClaimSummary[];
+  billStates: Map<string, BillState>;
+  questionCountFor: (claim: PipelineClaimSummary) => number;
+  emptyCopy: string;
+  onSelect: (claimId: string) => void;
+}) {
+  if (claims.length === 0) {
+    return (
+      <div className="rounded-2xl border border-gray-100 bg-white p-8 text-center">
+        <p className="text-sm text-gray-500">{emptyCopy}</p>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      {claims.map((claim) => (
+        <BillCard
+          key={claim.id}
+          claim={claim}
+          state={billStates.get(claim.id) ?? "clean"}
+          reviewQuestionCount={questionCountFor(claim)}
+          onSelect={onSelect}
+        />
+      ))}
+    </div>
+  );
+}
+
 // Design .tab + .tab-count (styles.css lines 219-231):
 //   .tab { padding: 8px 14px; border-radius: 10px; font-size: 13px; font-weight: 500; color: var(--fg-4); }
 //   .tab.is-active { background: var(--bg-3); color: var(--fg-2); font-weight: 600; }
@@ -816,9 +619,8 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 /**
  * Drafted dispute card — design chrome per claim-summary.jsx lines 342-410.
  * S138 (design fidelity sweep): adopts design's blue-tinted .billcard variant
- * for active drafts (3 items would strengthen this letter copy + Open draft chev).
- * Visual chrome: icon + "Appeal to {insurer} · ${amount}" title + Ref ID monospace
- * + provider + filed/resolved date + status pill + footer with outcome capture.
+ * for active drafts. Surface 2: the "Open draft" footer action becomes a big
+ * solid-blue button matching the new bill-card buttons.
  * NON-NEGOTIABLE: preserves Session 35 T2.8 lifecycle vocab + outcome capture flows.
  */
 function DraftedDisputeCard({
@@ -827,7 +629,7 @@ function DraftedDisputeCard({
   onOpen,
   onUpdate,
 }: {
-  dispute: Dispute;
+  dispute: PipelineDispute;
   provider: string;
   onOpen?: () => void;
   onUpdate?: (update: { status: string; amountRecovered?: number }) => void;
@@ -844,8 +646,6 @@ function DraftedDisputeCard({
   const refId = dispute.id.slice(0, 8).toUpperCase();
   const filedDateLabel = formatShortDate(dispute.filedDate);
 
-  // S138 — active drafts get the blue-tinted .billcard variant per design;
-  // resolved disputes stay neutral white.
   const cardChromeCls = isActive
     ? "border-blue-100 bg-gradient-to-br from-blue-50/40 to-white hover:border-blue-200 hover:shadow-blue-100/40"
     : "border-gray-200 bg-white hover:border-gray-300";
@@ -916,7 +716,7 @@ function DraftedDisputeCard({
       {/* Footer */}
       <div
         className={cn(
-          "flex items-center justify-between gap-3 px-5 py-3",
+          "flex flex-wrap items-center justify-between gap-3 px-5 py-3",
           isActive && "bg-blue-50/30",
         )}
       >
@@ -931,11 +731,15 @@ function DraftedDisputeCard({
           <button
             type="button"
             onClick={onOpen}
-            className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 transition-all hover:gap-1.5 hover:text-blue-700"
+            className={cn(
+              isActive
+                ? "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl bg-blue-600 px-[18px] py-2.5 text-[13px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15),0_8px_32px_hsla(217,91%,60%,0.10)] transition-all hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25),0_12px_40px_hsla(217,91%,60%,0.15)]"
+                : "inline-flex items-center gap-1 text-xs font-semibold text-blue-600 transition-all hover:gap-1.5 hover:text-blue-700",
+            )}
           >
             {isActive ? "Open draft" : "Open"}
-            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={isActive ? 2.5 : 2} viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" d={isActive ? "M5 12h14M12 5l7 7-7 7" : "M9 5l7 7-7 7"} />
             </svg>
           </button>
         )}

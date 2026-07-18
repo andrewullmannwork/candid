@@ -211,7 +211,8 @@ function buildBottomRowCopy(state: BillState): { text: string; cls: string } {
       // Urgent overcharge → amber bolt icon copy.
       return { text: "Ready to draft dispute", cls: "text-amber-700" };
     case "needs_review":
-      return { text: "Questions for you", cls: "text-orange-700" };
+      // Surface 2 copy per claim-summary.jsx (was "Questions for you").
+      return { text: "Unclear from your plan", cls: "text-orange-700" };
     case "clean":
       return { text: "No issues found · plan matches bill", cls: "text-gray-600" };
   }
@@ -221,10 +222,14 @@ export function BillCard({
   claim,
   state,
   onSelect,
+  reviewQuestionCount,
 }: {
   claim: ClaimSummary;
   state: BillState;
   onSelect: (claimId: string) => void;
+  /** needs_review only — count for the "Answer N questions" button (page passes
+   *  reviewNeededCount, falling back to that claim's open discrepancy count). */
+  reviewQuestionCount?: number;
 }) {
   const config = STATE_CONFIG[state];
   const isFlagged = state === "overcharge_drafted" || state === "overcharge_no_draft";
@@ -239,6 +244,24 @@ export function BillCard({
     claim.recovery?.potentialRecovery ?? claim.potentialSavings ?? Math.max(0, billed - shouldOwe);
   const narrative = buildNarrative(state, claim, potentialRecovery, shouldOwe);
   const bottomRow = buildBottomRowCopy(state);
+
+  // Surface 2 — big state-aware footer button. Labels are built as SINGLE text
+  // nodes (a flex gap on the button would otherwise space out interpolated words).
+  const questionCount = Math.max(1, reviewQuestionCount ?? claim.reviewNeededCount ?? 1);
+  const footerButton: { label: string; kind: "primary" | "amber" } | null =
+    state === "overcharge_drafted"
+      ? { label: "Review & send letter", kind: "primary" }
+      : state === "overcharge_no_draft"
+        ? {
+            label: `Review & recover +$${formatCurrency(potentialRecovery)}`,
+            kind: "primary",
+          }
+        : state === "needs_review"
+          ? {
+              label: `Answer ${questionCount} ${questionCount === 1 ? "question" : "questions"}`,
+              kind: "amber",
+            }
+          : null;
 
   return (
     <button
@@ -386,21 +409,39 @@ export function BillCard({
         </div>
       )}
 
-      {/* Bottom row: state-specific copy + "View full breakdown" action.
+      {/* Bottom row: state-specific copy + big state-aware action button
+          (Surface 2). Clean bills keep the quiet "View full breakdown" link.
           Border inherits from card chrome family. */}
       <div
         className={cn(
-          "mt-4 flex items-center justify-between border-t px-5 py-3",
+          "mt-4 flex flex-wrap items-center justify-between gap-3 border-t px-5 py-3",
           config.footerBorderCls,
         )}
       >
         <span className={cn("text-xs font-semibold", bottomRow.cls)}>{bottomRow.text}</span>
-        <span className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 transition-all group-hover:gap-1.5 group-hover:text-blue-700">
-          View full breakdown
-          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-          </svg>
-        </span>
+        {footerButton ? (
+          <span
+            className={cn(
+              "inline-flex w-full shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-[18px] py-2.5 text-[13px] font-semibold transition-all sm:w-auto",
+              footerButton.kind === "primary" &&
+                "bg-blue-600 text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15),0_8px_32px_hsla(217,91%,60%,0.10)] group-hover:bg-blue-700 group-hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25),0_12px_40px_hsla(217,91%,60%,0.15)]",
+              footerButton.kind === "amber" &&
+                "border border-amber-300 bg-amber-50 text-amber-800 group-hover:border-amber-400 group-hover:bg-amber-100",
+            )}
+          >
+            {footerButton.label}
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M12 5l7 7-7 7" />
+            </svg>
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 transition-all group-hover:gap-1.5 group-hover:text-blue-700">
+            View full breakdown
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          </span>
+        )}
       </div>
     </button>
   );

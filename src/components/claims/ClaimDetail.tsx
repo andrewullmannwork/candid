@@ -16,7 +16,7 @@ import { BundleSuggestion } from "@/components/claims/BundleSuggestion";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useDisputeDraftOverlay } from "@/lib/loading/dispute-draft-overlay";
 import { DisputePlanChooser, type DisputePlanChooserPlan } from "@/components/disputes/DisputePlanChooser";
-import { CostShareBanner, type BannerAssumption, type CostShareVerdict, type CostShareOverrideRequest } from "@/components/claims/CostShareBanner";
+import { CostShareBanner, hasAssumptionRows, type BannerAssumption, type CostShareVerdict, type CostShareOverrideRequest } from "@/components/claims/CostShareBanner";
 import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
 import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recovery-math";
 
@@ -459,6 +459,12 @@ export function ClaimDetail({
   // Show-dismissed toggle so users can see hidden findings if they want to
   // un-dismiss (un-dismiss is a Phase 2 follow-up; for now this is read-only).
   const [showDismissed, setShowDismissed] = useState(false);
+  // Surface 3 (clarity redesign) — flagged-bill guided 4-step rail state:
+  // the plan-vs-bill diff collapses behind "Show the math"; step 3's
+  // "All services look right" / "Something looks wrong" verification pair.
+  const [showMath, setShowMath] = useState(false);
+  const [svcOk, setSvcOk] = useState(false);
+  const [svcIssue, setSvcIssue] = useState(false);
 
   // Read localStorage once on mount per claim.
   useEffect(() => {
@@ -975,6 +981,47 @@ export function ClaimDetail({
     (claim as { source_document_id?: string | null }).source_document_id,
   );
 
+  // ── Surface 3 (clarity redesign) — flagged-bill guided step rail ─────────
+  // Step 2 ("Verify our assumptions") exists only when the Cost-Share card has
+  // assumption rows to edit; later steps renumber accordingly.
+  const railHasAssumptions =
+    !!data.costShareBill &&
+    hasAssumptionRows(bannerAssumptions, data.costShareOverrides ?? null, bannerEditableCost);
+  const railStepServices = railHasAssumptions ? 3 : 2;
+  const railStepRecover = railStepServices + 1;
+
+  // Disputes list — step 4 body on flagged bills, bottom "Disputes" section
+  // otherwise. Defined once so both placements render identically.
+  const disputesListNode =
+    data.disputes.length > 0 ? (
+        <div className="mb-4">
+          <h3 className="text-sm font-semibold text-gray-900 mb-2">Disputes</h3>
+          <div className="space-y-2">
+            {data.disputes.map((d) => (
+              <DisputeRow
+                key={d.id}
+                dispute={d}
+                provider={providerName}
+                recovery={billTotals.potentialRecovery}
+                hasCostShare={!!data.costShareBill}
+              />
+            ))}
+          </div>
+          {/* T2.7 — bundle related bills into one consolidated dispute */}
+          <button
+            disabled
+            className="mt-3 w-full rounded-lg border border-dashed border-gray-200 bg-gray-50/60 px-3 py-2.5 text-left text-xs text-gray-500 cursor-not-allowed"
+            title="Coming soon — bundle related bills from the same visit into one consolidated dispute letter."
+          >
+            <span className="font-semibold text-gray-700">+ Bundle with a related bill</span>
+            <span className="ml-2 text-[10px] uppercase tracking-wider text-gray-400">Coming soon</span>
+            <span className="mt-0.5 block text-[11px] text-gray-500">
+              Group bills from the same visit (hospital + anesthesia + lab + radiology) into one dispute letter.
+            </span>
+          </button>
+        </div>
+    ) : null;
+
   return (
     <div>
       {/* Back button — B4.2 design chrome */}
@@ -1297,6 +1344,285 @@ export function ClaimDetail({
         </div>
       )}
 
+      {/* ── Surface 3 (clarity redesign): flagged bills use a numbered guided
+          step rail — 1 What you could save (recovery bar first, plan-vs-bill
+          diff collapsed behind "Show the math") · 2 Verify our assumptions
+          (Cost-Share rows) · 3 Verify the services (the line-items table) ·
+          4 Recover the money. Clean/needs-review states keep the classic
+          table-first order. */}
+      {isFlagged && (
+        <div className="mt-6">
+          <RailStep
+            n={1}
+            title="What you could save"
+            sub="Candid compared every line of this bill against your plan's policies"
+          >
+          {billTotals.potentialRecovery >= 1 && (
+            <div className="flex flex-col gap-4 rounded-2xl border border-emerald-300 bg-gradient-to-br from-emerald-50 to-teal-50/50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-3.5">
+                <div className="grid h-[42px] w-[42px] place-items-center rounded-xl bg-emerald-600 text-white">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+                <div>
+                  <div className="text-sm font-semibold text-gray-900">Recoverable from this bill</div>
+                  {(billTotals.refundComponent >= 1 || billTotals.forgivenessComponent >= 1) && (
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-gray-700">
+                      {billTotals.refundComponent >= 1 && (
+                        <span>
+                          <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong> refunded to you
+                        </span>
+                      )}
+                      {billTotals.refundComponent >= 1 && billTotals.forgivenessComponent >= 1 && (
+                        <span className="h-[3px] w-[3px] rounded-full bg-gray-400" aria-hidden />
+                      )}
+                      {billTotals.forgivenessComponent >= 1 && (
+                        <span>
+                          <strong className="font-bold tabular-nums text-emerald-700">${fmtMoney(billTotals.forgivenessComponent)}</strong> forgiven by provider
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="text-[26px] font-bold tracking-[-0.02em] tabular-nums text-emerald-700">
+                +${fmtMoney(billTotals.potentialRecovery)}
+              </div>
+            </div>
+          )}
+            <button
+              type="button"
+              onClick={() => setShowMath((v) => !v)}
+              className="mt-3 inline-flex items-center gap-1.5 text-[13px] font-semibold text-blue-600 hover:text-blue-700"
+            >
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2.5}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className={"transition-transform " + (showMath ? "rotate-90" : "")}
+                aria-hidden
+              >
+                <path d="M9 6l6 6-6 6" />
+              </svg>
+              {showMath ? "Hide the math" : "Show the math — your plan vs. this bill"}
+            </button>
+            {showMath && (
+              <>
+          <div className="mt-3.5 grid grid-cols-1 overflow-hidden rounded-[18px] border border-gray-200 bg-white md:grid-cols-[1fr_90px_1fr]">
+            {/* Plan side — green gradient */}
+            <div className="flex flex-col gap-3 bg-gradient-to-b from-emerald-50 via-emerald-50/40 to-white px-6 py-[22px]">
+              <h4 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-emerald-700">
+                Your plan says
+              </h4>
+              <span className="inline-flex items-center gap-[5px] self-start rounded-full bg-emerald-50 px-[9px] py-[3px] text-[11px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-300">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+                {isMultiLine
+                  ? `${flaggedLineCount} services — all covered`
+                  : "Covered by your plan"}
+              </span>
+              <div className="mt-0.5 flex items-baseline gap-2 text-[34px] font-bold leading-none tracking-[-0.02em] tabular-nums text-emerald-800">
+                ${fmtMoney(billTotals.shouldOwe)}
+                <span className="text-[15px] font-medium text-gray-500 whitespace-nowrap">
+                  {isMultiLine ? "your total responsibility" : "your responsibility"}
+                </span>
+              </div>
+              <div className="mt-1.5 flex flex-col gap-1.5">
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>Adjusted total billed</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">
+                    ${fmtMoney(billTotals.billedAdjusted)}
+                  </strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>Insurer should pay</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.insurerShouldHavePaid)}</strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>You pay</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.shouldOwe)}</strong>
+                </div>
+                {/* S140 — Refund row moved to RIGHT (Bill) side per Andrew's
+                    locked S139 schema. LEFT (Plan) side now ends after
+                    "You pay" — purely about what the plan says you owe. */}
+              </div>
+              {/* Cite-grade source hint per design .hint family. Generic enough
+                  to be true without per-finding field_provenance lookup at the
+                  bill level — the per-line cite chrome lives inside expansions. */}
+              <div className="mt-1 inline-flex items-center gap-[6px] text-[11px] text-gray-500">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <span>Based on your uploaded plan benefits</span>
+              </div>
+            </div>
+            {/* VS chrome (desktop only) — design .diff-mid with vertical separators */}
+            <div className="relative hidden border-l border-r border-gray-100 bg-white md:flex md:flex-col md:items-center md:justify-center">
+              <div className="absolute left-1/2 top-0 h-[calc(50%-22px)] w-px -translate-x-1/2 bg-gray-200" />
+              <div className="z-10 grid h-11 w-11 place-items-center rounded-full border border-gray-200 bg-white text-[11px] font-bold uppercase tracking-[0.06em] text-gray-500">
+                vs
+              </div>
+              <div className="absolute bottom-0 left-1/2 h-[calc(50%-22px)] w-px -translate-x-1/2 bg-gray-200" />
+            </div>
+            {/* Bill side — red gradient */}
+            <div className="flex flex-col gap-3 border-t border-gray-100 bg-gradient-to-b from-red-50 via-red-50/40 to-white px-6 py-[22px] md:border-l md:border-t-0">
+              <h4 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-red-700">
+                Your bill shows
+              </h4>
+              <span className="inline-flex items-center gap-[5px] self-start rounded-full bg-red-50 px-[9px] py-[3px] text-[11px] font-semibold text-red-700 ring-1 ring-inset ring-red-200">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.9 4h13.8c1.5 0 2.5-1.7 1.7-2.5L13.7 4c-.8-.8-2-.8-2.7 0L4.1 16.5c-.8.8.2 2.5 1.7 2.5z" />
+                </svg>
+                You&apos;re paying ${fmtMoney(billTotals.patientPaid)}
+              </span>
+              {/* S139 big-1 — bill side big number always shows patient OOP
+                  (was billedAdjusted; switched per Andrew direction for
+                  semantic consistency across single + multi-line). Visual
+                  equal on single-line bills where billedAdjusted = patientPaid;
+                  divergent only on bills with outstanding balance. */}
+              <div className="mt-0.5 flex items-baseline gap-2 text-[34px] font-bold leading-none tracking-[-0.02em] tabular-nums text-red-800">
+                ${fmtMoney(billTotals.patientPaid)}
+                <span className="text-[15px] font-medium text-gray-500 whitespace-nowrap">charged to you</span>
+              </div>
+              <div className="mt-1.5 flex flex-col gap-1.5">
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>Adjusted total billed</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">
+                    ${fmtMoney(billTotals.billedAdjusted)}
+                  </strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>Insurer paid</span>
+                  <strong className="font-semibold tabular-nums text-red-700">${fmtMoney(billTotals.insurancePaid)}</strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>You paid</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.patientPaid)} OOP</strong>
+                </div>
+                {/* S140 fix-pass H2 — Refund + Forgive: Refund row first,
+                    Forgive row second. Both always render (≥$1 gate
+                    dropped) so users see both buckets even at $0; clarifies
+                    that we tracked both possibilities. */}
+                <div className="mt-1 flex justify-between gap-3 border-t border-red-200 pt-[6px] text-xs">
+                  <span className="font-semibold text-emerald-700">Refund</span>
+                  <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs">
+                  <span className="font-semibold text-emerald-700">Provider must forgive</span>
+                  <strong className="font-bold tabular-nums text-emerald-700">${fmtMoney(billTotals.forgivenessComponent)}</strong>
+                </div>
+              </div>
+              <div className="mt-1 inline-flex items-center gap-[6px] text-[11px] text-gray-500">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <span>From {providerName} bill · {data.lineItems.length} line item{data.lineItems.length !== 1 ? "s" : ""}</span>
+              </div>
+            </div>
+          </div>
+              </>
+            )}
+          </RailStep>
+
+          {railHasAssumptions && data.costShareBill && (
+            <RailStep
+              n={2}
+              title="Verify our assumptions"
+              sub="The savings math relies on these following details. Please verify or correct each line as needed."
+            >
+              <CostShareBanner
+                variant="assumptions"
+                verdict={data.costShareBill.verdict}
+                assumptions={bannerAssumptions}
+                overrides={data.costShareOverrides ?? null}
+                recoverable={billTotals.potentialRecovery}
+                correctShare={billTotals.shouldOwe}
+                charged={billTotals.shouldOwe + billTotals.potentialRecovery}
+                fmtMoney={fmtMoney}
+                onOverride={submitCostShareOverride}
+                pendingKey={csOverridePending}
+                errorMsg={csOverrideError}
+                onShouldBeCovered={() => bannerTargetLineId && openCorrectionModal(bannerTargetLineId)}
+                onAddPlanDetails={() => {
+                  const line = bannerTargetLineId
+                    ? primaryLineItems.find((li) => li.id === bannerTargetLineId)
+                    : null;
+                  if (line?.service_slug) setAddPlanDetailsLineId(line.id);
+                  else if (bannerTargetLineId) openCorrectionModal(bannerTargetLineId);
+                }}
+                editableServiceCost={bannerEditableCost}
+                onUploadEob={() => router.push("/upload?type=eob")}
+                onBack={onBack}
+              />
+            </RailStep>
+          )}
+
+          <RailStep
+            n={railStepServices}
+            title="Verify the services"
+            done={svcOk}
+            headerOnly
+            sub={
+              svcIssue ? (
+                <span className="font-semibold text-amber-700">
+                  Tell us what&apos;s off — click a service&apos;s category below to correct it.
+                </span>
+              ) : (
+                "Make sure you actually received each service listed."
+              )
+            }
+            right={
+              <div className="flex flex-wrap gap-2">
+                {flywheelEnabled && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSvcIssue((v) => !v);
+                      setSvcOk(false);
+                    }}
+                    className="rounded-xl border border-gray-200 bg-white px-4 py-[9px] text-[13px] font-semibold text-gray-700 transition-colors hover:bg-gray-50"
+                  >
+                    {svcIssue ? "Never mind" : "Something looks wrong"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSvcOk((v) => !v);
+                    setSvcIssue(false);
+                  }}
+                  className={
+                    svcOk
+                      ? "inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-[9px] text-[13px] font-semibold text-emerald-700"
+                      : "inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-[9px] text-[13px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700"
+                  }
+                >
+                  {svcOk ? "Confirmed" : "All services look right"}
+                  {svcOk && (
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                      <path d="M5 13l4 4L19 7" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+            }
+          />
+        </div>
+      )}
+      {/* Step-3 body wrapper — indents the line-items table into the rail on
+          flagged bills; a no-op pair of divs otherwise. */}
+      <div className={isFlagged ? "relative pb-[30px]" : undefined}>
+        {isFlagged && (
+          <span className="absolute -top-4 bottom-1 left-[14px] hidden w-[1.5px] bg-gray-200 sm:block" aria-hidden />
+        )}
+        <div className={isFlagged ? "sm:ml-[43px]" : undefined}>
       {/* Session 86 round 6 — responsive layout strategy:
           • md+ (≥768px) → 7-column table with single-line headers, raw
             "Billed" amount, all numeric columns aligned. Math explained
@@ -2143,12 +2469,56 @@ export function ClaimDetail({
           );
         })}
       </div>{/* /table outer (rounded-xl) */}
+        </div>
+      </div>{/* /step-3 body wrapper */}
+
+      {/* Step 4 — Recover the money (flagged bills only). Drafted bills show
+          the real dispute cards (Open dispute letter); undrafted show the
+          recover panel + BulkDisputeButton. */}
+      {isFlagged && (
+        <RailStep
+          n={railStepRecover}
+          title="Recover the money"
+          sub="Call the billing office to verify the charge or send the appeal — many members do both."
+          last
+        >
+          {data.disputes.length > 0 ? (
+            disputesListNode
+          ) : (
+        <div className="flex flex-col gap-4 rounded-[18px] border border-blue-200 bg-gradient-to-br from-blue-50 to-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="max-w-[50ch] text-[13px] leading-[1.55] text-gray-600">
+            <div className="mb-1.5 flex items-center gap-1.5 text-sm font-bold text-blue-900">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+              Recover ${fmtMoney(billTotals.potentialRecovery)} from this bill
+            </div>
+            <p className="m-0">
+              Candid will write the appeal letter for you using your uploaded plan, the EOB, and Medicare benchmark comparisons. You review and mail it — we never send anything on your behalf.
+            </p>
+          </div>
+          <div className="sm:flex-shrink-0">
+            <BulkDisputeButton
+              claimId={claimId}
+              claim={claim}
+              primaryLineItems={primaryLineItems}
+              claimLevelFindings={visibleClaimLevelFindings}
+              showDismissed={showDismissed}
+              getAuthToken={getAuthToken}
+              onGenerated={(result) => router.push(disputeUrlForResult(result))}
+              existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
+            />
+          </div>
+        </div>
+          )}
+        </RailStep>
+      )}
 
       {/* Cost-Share v2 (W2+W3) — the §5 verdict + assumptions card. One per bill,
           below the line table (mockup placement). Carries the verdict + Verified
           stamp itself, so it replaces the legacy CleanBody/ReviewBody when the
           flag is ON; OFF → absent → today's UI. */}
-      {data.costShareBill && (
+      {data.costShareBill && !isFlagged && (
         <CostShareBanner
           verdict={data.costShareBill.verdict}
           assumptions={bannerAssumptions}
@@ -2172,166 +2542,6 @@ export function ClaimDetail({
           onUploadEob={() => router.push("/upload?type=eob")}
           onBack={onBack}
         />
-      )}
-
-      {/* B4.2 — Bill-level state body (FlaggedBody / ReviewBody / CleanBody)
-          per design's bill-detail.jsx. Aggregates plan-vs-bill totals across
-          all line items so the user sees the headline before scrolling into
-          per-line detail above. */}
-      {(billState === "overcharge_drafted" || billState === "overcharge_no_draft") && (
-        <>
-          {/* FlaggedBody — side-by-side diff card per design styles.css .diff family.
-              Grid: 1fr 90px 1fr with vertical separator chrome in the middle. */}
-          <div className="mt-[22px] grid grid-cols-1 overflow-hidden rounded-[18px] border border-gray-200 bg-white md:grid-cols-[1fr_90px_1fr]">
-            {/* Plan side — green gradient */}
-            <div className="flex flex-col gap-3 bg-gradient-to-b from-emerald-50 via-emerald-50/40 to-white px-6 py-[22px]">
-              <h4 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-emerald-700">
-                Your plan says
-              </h4>
-              <span className="inline-flex items-center gap-[5px] self-start rounded-full bg-emerald-50 px-[9px] py-[3px] text-[11px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-300">
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} aria-hidden>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                </svg>
-                {isMultiLine
-                  ? `${flaggedLineCount} services — all covered`
-                  : "Covered by your plan"}
-              </span>
-              <div className="mt-0.5 flex items-baseline gap-2 text-[34px] font-bold leading-none tracking-[-0.02em] tabular-nums text-emerald-800">
-                ${fmtMoney(billTotals.shouldOwe)}
-                <span className="text-[15px] font-medium text-gray-500 whitespace-nowrap">
-                  {isMultiLine ? "your total responsibility" : "your responsibility"}
-                </span>
-              </div>
-              <div className="mt-1.5 flex flex-col gap-1.5">
-                <div className="flex justify-between gap-3 text-xs text-gray-600">
-                  <span>Adjusted total billed</span>
-                  <strong className="font-semibold tabular-nums text-gray-900">
-                    ${fmtMoney(billTotals.billedAdjusted)}
-                  </strong>
-                </div>
-                <div className="flex justify-between gap-3 text-xs text-gray-600">
-                  <span>Insurer should pay</span>
-                  <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.insurerShouldHavePaid)}</strong>
-                </div>
-                <div className="flex justify-between gap-3 text-xs text-gray-600">
-                  <span>You pay</span>
-                  <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.shouldOwe)}</strong>
-                </div>
-                {/* S140 — Refund row moved to RIGHT (Bill) side per Andrew's
-                    locked S139 schema. LEFT (Plan) side now ends after
-                    "You pay" — purely about what the plan says you owe. */}
-              </div>
-              {/* Cite-grade source hint per design .hint family. Generic enough
-                  to be true without per-finding field_provenance lookup at the
-                  bill level — the per-line cite chrome lives inside expansions. */}
-              <div className="mt-1 inline-flex items-center gap-[6px] text-[11px] text-gray-500">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                <span>Based on your uploaded plan benefits</span>
-              </div>
-            </div>
-            {/* VS chrome (desktop only) — design .diff-mid with vertical separators */}
-            <div className="relative hidden border-l border-r border-gray-100 bg-white md:flex md:flex-col md:items-center md:justify-center">
-              <div className="absolute left-1/2 top-0 h-[calc(50%-22px)] w-px -translate-x-1/2 bg-gray-200" />
-              <div className="z-10 grid h-11 w-11 place-items-center rounded-full border border-gray-200 bg-white text-[11px] font-bold uppercase tracking-[0.06em] text-gray-500">
-                vs
-              </div>
-              <div className="absolute bottom-0 left-1/2 h-[calc(50%-22px)] w-px -translate-x-1/2 bg-gray-200" />
-            </div>
-            {/* Bill side — red gradient */}
-            <div className="flex flex-col gap-3 border-t border-gray-100 bg-gradient-to-b from-red-50 via-red-50/40 to-white px-6 py-[22px] md:border-l md:border-t-0">
-              <h4 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-red-700">
-                Your bill shows
-              </h4>
-              <span className="inline-flex items-center gap-[5px] self-start rounded-full bg-red-50 px-[9px] py-[3px] text-[11px] font-semibold text-red-700 ring-1 ring-inset ring-red-200">
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} aria-hidden>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.9 4h13.8c1.5 0 2.5-1.7 1.7-2.5L13.7 4c-.8-.8-2-.8-2.7 0L4.1 16.5c-.8.8.2 2.5 1.7 2.5z" />
-                </svg>
-                You&apos;re paying ${fmtMoney(billTotals.patientPaid)}
-              </span>
-              {/* S139 big-1 — bill side big number always shows patient OOP
-                  (was billedAdjusted; switched per Andrew direction for
-                  semantic consistency across single + multi-line). Visual
-                  equal on single-line bills where billedAdjusted = patientPaid;
-                  divergent only on bills with outstanding balance. */}
-              <div className="mt-0.5 flex items-baseline gap-2 text-[34px] font-bold leading-none tracking-[-0.02em] tabular-nums text-red-800">
-                ${fmtMoney(billTotals.patientPaid)}
-                <span className="text-[15px] font-medium text-gray-500 whitespace-nowrap">charged to you</span>
-              </div>
-              <div className="mt-1.5 flex flex-col gap-1.5">
-                <div className="flex justify-between gap-3 text-xs text-gray-600">
-                  <span>Adjusted total billed</span>
-                  <strong className="font-semibold tabular-nums text-gray-900">
-                    ${fmtMoney(billTotals.billedAdjusted)}
-                  </strong>
-                </div>
-                <div className="flex justify-between gap-3 text-xs text-gray-600">
-                  <span>Insurer paid</span>
-                  <strong className="font-semibold tabular-nums text-red-700">${fmtMoney(billTotals.insurancePaid)}</strong>
-                </div>
-                <div className="flex justify-between gap-3 text-xs text-gray-600">
-                  <span>You paid</span>
-                  <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.patientPaid)} OOP</strong>
-                </div>
-                {/* S140 fix-pass H2 — Refund + Forgive: Refund row first,
-                    Forgive row second. Both always render (≥$1 gate
-                    dropped) so users see both buckets even at $0; clarifies
-                    that we tracked both possibilities. */}
-                <div className="mt-1 flex justify-between gap-3 border-t border-red-200 pt-[6px] text-xs">
-                  <span className="font-semibold text-emerald-700">Refund</span>
-                  <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong>
-                </div>
-                <div className="flex justify-between gap-3 text-xs">
-                  <span className="font-semibold text-emerald-700">Provider must forgive</span>
-                  <strong className="font-bold tabular-nums text-emerald-700">${fmtMoney(billTotals.forgivenessComponent)}</strong>
-                </div>
-              </div>
-              <div className="mt-1 inline-flex items-center gap-[6px] text-[11px] text-gray-500">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                <span>From {providerName} bill · {data.lineItems.length} line item{data.lineItems.length !== 1 ? "s" : ""}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Recovery bar — green band */}
-          {billTotals.potentialRecovery >= 1 && (
-            <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-emerald-300 bg-gradient-to-br from-emerald-50 to-teal-50/50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-3.5">
-                <div className="grid h-[42px] w-[42px] place-items-center rounded-xl bg-emerald-600 text-white">
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                    <path d="M5 13l4 4L19 7" />
-                  </svg>
-                </div>
-                <div>
-                  <div className="text-sm font-semibold text-gray-900">Recoverable from this bill</div>
-                  {(billTotals.refundComponent >= 1 || billTotals.forgivenessComponent >= 1) && (
-                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-gray-700">
-                      {billTotals.refundComponent >= 1 && (
-                        <span>
-                          <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong> refunded to you
-                        </span>
-                      )}
-                      {billTotals.refundComponent >= 1 && billTotals.forgivenessComponent >= 1 && (
-                        <span className="h-[3px] w-[3px] rounded-full bg-gray-400" aria-hidden />
-                      )}
-                      {billTotals.forgivenessComponent >= 1 && (
-                        <span>
-                          <strong className="font-bold tabular-nums text-emerald-700">${fmtMoney(billTotals.forgivenessComponent)}</strong> forgiven by provider
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-              <div className="text-[26px] font-bold tracking-[-0.02em] tabular-nums text-emerald-700">
-                +${fmtMoney(billTotals.potentialRecovery)}
-              </div>
-            </div>
-          )}
-        </>
       )}
 
       {billState === "needs_review" && !data.costShareBill && (() => {
@@ -2419,45 +2629,9 @@ export function ClaimDetail({
         </div>
       )}
 
-      {/* B4.2 — Bill action footer per design's .bill-action chrome */}
-      {billState === "overcharge_no_draft" && data.disputes.length > 0 ? (
-        /* A dispute already exists on this bill (incl. cancelled) — suppress the
-           redundant "Draft my dispute letter" banner; the Disputes card below is
-           the single CTA (Open → redraft). Mirrors overcharge_drafted below. The
-           green "Recoverable from this bill" bar still shows the amount. */
-        null
-      ) : billState === "overcharge_no_draft" ? (
-        <div className="mt-7 flex flex-col gap-4 rounded-[18px] border border-blue-200 bg-gradient-to-br from-blue-50 to-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="max-w-[50ch] text-[13px] leading-[1.55] text-gray-600">
-            <div className="mb-1.5 flex items-center gap-1.5 text-sm font-bold text-blue-900">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                <path d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              Recover ${fmtMoney(billTotals.potentialRecovery)} from this bill
-            </div>
-            <p className="m-0">
-              Candid will write the appeal letter for you using your uploaded plan, the EOB, and Medicare benchmark comparisons. You review and mail it — we never send anything on your behalf.
-            </p>
-          </div>
-          <div className="sm:flex-shrink-0">
-            <BulkDisputeButton
-              claimId={claimId}
-              claim={claim}
-              primaryLineItems={primaryLineItems}
-              claimLevelFindings={visibleClaimLevelFindings}
-              showDismissed={showDismissed}
-              getAuthToken={getAuthToken}
-              onGenerated={(result) => router.push(disputeUrlForResult(result))}
-              existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
-            />
-          </div>
-        </div>
-      ) : billState === "overcharge_drafted" ? (
-        /* Cost-Share v2 redesign — removed the "We drafted an appeal letter"
-           footer; the Disputes card below is now the single drafted-dispute CTA
-           (one "Open dispute letter", no duplicate button). */
-        null
-      ) : billState === "needs_review" ? (
+      {/* B4.2 — Bill action footer (non-flagged states; flagged bills
+          surface their actions inside step 4 "Recover the money"). */}
+      {!isFlagged && (billState === "needs_review" ? (
         <>
           <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-gray-200 bg-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
             <div className="max-w-prose text-[13px] text-gray-500">
@@ -2513,7 +2687,7 @@ export function ClaimDetail({
           onGenerated={(result) => router.push(disputeUrlForResult(result))}
           existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
         />
-      ) : null}
+      ) : null)}
 
       {/* S139 — BundleSuggestion: peer bills in the same claim_group_id at the
           bottom of bill-detail. Replaces the legacy "Related documents (N)"
@@ -2531,35 +2705,9 @@ export function ClaimDetail({
         <QualityMeasuresSection items={qualityLineItems} />
       )}
 
-      {/* Disputes on this bill — new lifecycle vocabulary, clickable expansion */}
-      {data.disputes.length > 0 && (
-        <div className="mt-8 mb-4">
-          <h3 className="text-sm font-semibold text-gray-900 mb-2">Disputes</h3>
-          <div className="space-y-2">
-            {data.disputes.map((d) => (
-              <DisputeRow
-                key={d.id}
-                dispute={d}
-                provider={providerName}
-                recovery={billTotals.potentialRecovery}
-                hasCostShare={!!data.costShareBill}
-              />
-            ))}
-          </div>
-          {/* T2.7 — bundle related bills into one consolidated dispute */}
-          <button
-            disabled
-            className="mt-3 w-full rounded-lg border border-dashed border-gray-200 bg-gray-50/60 px-3 py-2.5 text-left text-xs text-gray-500 cursor-not-allowed"
-            title="Coming soon — bundle related bills from the same visit into one consolidated dispute letter."
-          >
-            <span className="font-semibold text-gray-700">+ Bundle with a related bill</span>
-            <span className="ml-2 text-[10px] uppercase tracking-wider text-gray-400">Coming soon</span>
-            <span className="mt-0.5 block text-[11px] text-gray-500">
-              Group bills from the same visit (hospital + anesthesia + lab + radiology) into one dispute letter.
-            </span>
-          </button>
-        </div>
-      )}
+      {/* Disputes on this bill — bottom section for non-flagged states
+          (flagged bills surface it inside step 4 "Recover the money"). */}
+      {!isFlagged && disputesListNode && <div className="mt-8">{disputesListNode}</div>}
 
       <Disclaimer variant="coverage_check" />
 
@@ -2670,6 +2818,62 @@ export function ClaimDetail({
         />
       )}
     </div>
+  );
+}
+
+// ── Surface 3 — flagged-bill guided step rail chrome ──────────────────────
+// Numbered step section per design bill-detail.jsx StepSection + styles.css
+// .bd-step family: 30px blue number circle (green ✓ when done), 1.5px
+// connector line, body indented 43px on ≥sm. `headerOnly` renders just the
+// header (the step body lives outside — the in-place line-items table);
+// `last` drops the connector + bottom padding. Exported for reuse by other
+// guided flows (and the dev preview harness).
+export function RailStep({
+  n,
+  title,
+  sub,
+  done,
+  right,
+  last,
+  headerOnly,
+  children,
+}: {
+  n: number;
+  title: string;
+  sub?: React.ReactNode;
+  done?: boolean;
+  right?: React.ReactNode;
+  last?: boolean;
+  headerOnly?: boolean;
+  children?: React.ReactNode;
+}) {
+  return (
+    <section className={!last && !headerOnly ? "relative pb-[30px]" : "relative"}>
+      {!last && !headerOnly && (
+        <span
+          className="absolute bottom-1 left-[14px] top-[34px] hidden w-[1.5px] bg-gray-200 sm:block"
+          aria-hidden
+        />
+      )}
+      <header className="mb-3.5 flex flex-wrap items-start gap-3.5">
+        <span
+          className={
+            "relative z-10 grid h-[30px] w-[30px] flex-shrink-0 place-items-center rounded-full text-sm font-bold text-white " +
+            (done
+              ? "bg-emerald-700 shadow-[0_2px_8px_rgba(4,120,87,0.25)]"
+              : "bg-blue-600 shadow-[0_2px_8px_rgba(37,99,235,0.25)]")
+          }
+        >
+          {done ? "\u2713" : n}
+        </span>
+        <div className="min-w-0 flex-1 pt-0.5">
+          <div className="text-[16.5px] font-bold tracking-[-0.005em] text-gray-900">{title}</div>
+          {sub && <div className="mt-0.5 text-[13px] leading-normal text-gray-500">{sub}</div>}
+        </div>
+        {right && <div className="w-full sm:w-auto sm:flex-shrink-0 sm:self-center">{right}</div>}
+      </header>
+      {children != null && <div className="sm:ml-[43px]">{children}</div>}
+    </section>
   );
 }
 

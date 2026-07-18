@@ -134,6 +134,53 @@ export async function createFollowups(
 }
 
 /**
+ * Surface 4 (clarity redesign) — key the flat-cadence reminder clock to the
+ * SEND, not the draft. createFollowups() schedules the initial reminder at
+ * draft time (filed_date = creation date); when the user marks the letter
+ * sent we reschedule the still-pending `initial_30d` row to sent + firstDays
+ * so "Mark it as sent — starts the clock" is literally true. If no pending
+ * initial reminder exists (pre-flag dispute or already fired), one is created
+ * keyed to the send. Deadline-anchored follow-ups (deadline engine ON) are
+ * NOT touched — their schedule keys off the governing deadline, which is
+ * already send-independent.
+ */
+export async function rescheduleInitialFollowupOnSent(
+  supabase: SupabaseClient,
+  params: { disputeId: string; userId: string; sentDate: Date },
+): Promise<void> {
+  const { disputeId, userId, sentDate } = params;
+  const { firstDays } = await readCadence(supabase);
+  const due = new Date(sentDate);
+  due.setDate(due.getDate() + firstDays);
+  const dueDate = due.toISOString().split("T")[0];
+
+  const { data: pending } = await userScoped(supabase, userId)
+    .table("dispute_followups")
+    .select("id")
+    .eq("dispute_id", disputeId)
+    .eq("followup_type", "initial_30d")
+    .eq("status", "pending")
+    .maybeSingle();
+
+  if (pending) {
+    await userScoped(supabase, userId)
+      .table("dispute_followups")
+      .update({ due_date: dueDate, updated_at: new Date().toISOString() })
+      .eq("id", pending.id);
+    console.log(`[followups] Rescheduled initial follow-up for dispute ${disputeId} to ${dueDate} (mark-sent)`);
+    return;
+  }
+
+  await userScoped(supabase, userId).table("dispute_followups").insert({
+    dispute_id: disputeId,
+    followup_type: "initial_30d",
+    due_date: dueDate,
+    status: "pending",
+  });
+  console.log(`[followups] Created sent-keyed follow-up for dispute ${disputeId}, due ${dueDate}`);
+}
+
+/**
  * dispute-letters v2 S4 — schedule the graduated deadline follow-up LETTERS (map §3.3). Each row
  * carries its rendered Appeals/Compliance/collector-addressed nudge in metadata (the existing
  * send-followups cron surfaces it; the letter itself is read on the S5/S6 case page). Reuses the

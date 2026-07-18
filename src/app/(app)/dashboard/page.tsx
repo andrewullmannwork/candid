@@ -11,9 +11,9 @@ import { PageHeader } from "@/components/page-header";
 import { Banner } from "@/components/banner";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { DataSourceContextLine } from "@/components/data-source-context-line";
-import { ProductHero } from "@/components/dashboard/ProductHero";
-import { RingMini } from "@/components/dashboard/RingMini";
-import { ComparePlansVisual } from "@/components/dashboard/ComparePlansVisual";
+import { ClaimHero, PlanHero, CompareBand } from "@/components/dashboard/DashDuo";
+import { useClaimPipeline } from "@/lib/claims/use-claim-pipeline";
+import { useAccumulatorLedger } from "@/components/plan/use-accumulator-ledger";
 import {
   DashStripPlanCard,
   DashStripUploadCard,
@@ -59,6 +59,7 @@ type EnrichedPlanResult = PlanAnalysisResult & {
   insurer?: string | null;
   dataSource?: string;
   planSource?: string;
+  insurancePlanId?: string | null;
 };
 
 // ─── Dashboard component ────────────────────────────────────────────────────
@@ -71,6 +72,8 @@ export default function DashboardPage() {
   const [currentYear] = useState(() => new Date().getFullYear());
   const [yearRolloverEnabled, setYearRolloverEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
+  // Claim pipeline (Surface 1 dash-duo) — same derived counts as /claim.
+  const pipeline = useClaimPipeline();
   const [usedBenefits] = useState<Set<string>>(() => {
     if (typeof window === "undefined") return new Set();
     try {
@@ -189,7 +192,27 @@ export default function DashboardPage() {
     return () => clearInterval(pollInterval);
   }, [user]);
 
-  if (loading) {
+  // Plan-hero tracker rows — the shared accumulator-ledger hook (merged from
+  // candid/backend-accumulator-ledger-v1). GET /api/plan/accumulators is gated
+  // by accumulator_ledger_v1 and self-resolves the active plan; the hook
+  // returns null (→ tracker rows hidden) when the flag is off, the plan is
+  // missing, or there's no ledger yet.
+  const ledger = useAccumulatorLedger(planResult?.insurancePlanId, planResult?.planYear);
+  const ledgerPair = ledger
+    ? (ledger.individual ?? ledger.familyAggregate ?? ledger.familyEmbedded?.cap ?? null)
+    : null;
+  // max = 0 is a REAL limit (e.g. $0-deductible platinum plans) — the row
+  // renders "$0 of $0" with a full bar (met by definition), not hidden.
+  const toTracker = (bucket: { candidApplied: number; max: number | null } | undefined) =>
+    bucket && bucket.max != null
+      ? { applied: bucket.candidApplied ?? 0, max: bucket.max }
+      : null;
+  const trackers = {
+    deductible: toTracker(ledgerPair?.in?.deductible),
+    oopMax: toTracker(ledgerPair?.in?.oop),
+  };
+
+  if (loading || pipeline.loading) {
     return <CubeLoaderBuilding />;
   }
 
@@ -208,12 +231,6 @@ export default function DashboardPage() {
   const totalFields = 6;
   const profileComplete = filledFields >= 2;
   const hasDocuments = documents.length > 0;
-  const hasBills = documents.some(
-    (d) => d.doc_type === "eob" || d.doc_type === "itemized_bill",
-  );
-  const billsCount = documents.filter(
-    (d) => d.doc_type === "eob" || d.doc_type === "itemized_bill",
-  ).length;
   const processingPlanDocs = documents.filter(
     (d) =>
       (d.status === "processing" || d.status === "queued") &&
@@ -275,7 +292,6 @@ export default function DashboardPage() {
   const benefitsTiles = buildBenefitsTiles(benefits, usedBenefits);
   const hsaCount = benefits.filter((b) => b.benefit.hsaFsaEligible).length;
   const usedCount = usedBenefits.size;
-  const remainingCount = Math.max(0, totalBenefits - usedCount);
 
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
@@ -314,80 +330,29 @@ export default function DashboardPage() {
         />
       )}
 
-      {/* ── Dash-trio (3 ProductHero) ───────────────────────────────── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        <ProductHero
-          variant="compare"
-          status={{ kind: "new", label: "NEW" }}
-          name="Candid Compare"
-          headline="Stack your plan against others"
-          metric={<ComparePlansVisual />}
-          body="Premiums, deductibles, OOP max, service breadth — every number traced back to the source. Up to 3 plans side by side."
-          cta="Open Compare"
-          href="/compare"
-        />
-
-        {hasBills ? (
-          <ProductHero
-            variant="claim"
-            status={{ kind: "live", label: "LIVE" }}
-            name="Candid Claim"
-            headline="Audit your bills for errors"
-            metric={<span className="text-[38px]">{billsCount}</span>}
-            body={
-              <>
-                <strong>{billsCount}</strong> bill{billsCount === 1 ? "" : "s"} on file. Open Claim
-                to review findings and disputes.
-              </>
-            }
-            cta="Open Claim"
-            href="/claim"
-            highlight
+      {/* ── Dash-duo (Claim + Plan heroes) + Compare band — Surface 1 ── */}
+      <div className="space-y-3.5">
+        <div className="grid grid-cols-1 lg:grid-cols-[1.3fr_1fr] gap-4">
+          <ClaimHero
+            billsCount={pipeline.claims.length}
+            totalRecovery={pipeline.totalRecovery}
+            counts={pipeline.counts}
           />
-        ) : (
-          <ProductHero
-            variant="claim"
-            status={{ kind: "live", label: "LIVE" }}
-            name="Candid Claim"
-            headline="Audit your first bill"
-            metric={<EmptyHeroMetric kind="claim" />}
-            body="Upload an EOB or itemized bill — we'll find billing errors and overcharges in about a minute."
-            cta="Upload bill"
-            href="/upload"
-            highlight
+          <PlanHero
+            totalBenefits={planResult ? totalBenefits : 0}
+            usedCount={usedCount}
+            hsaCount={hsaCount}
+            verified={planState === "verified"}
+            deductible={trackers.deductible}
+            oopMax={trackers.oopMax}
           />
-        )}
-
-        {planResult && totalBenefits > 0 ? (
-          <ProductHero
-            variant="benefits"
-            status={{ kind: "live", label: "LIVE" }}
-            name="Candid Plan"
-            headline="Benefits you haven't used yet"
-            metric={<RingMini used={usedCount} total={totalBenefits} />}
-            body={
-              <>
-                <strong>{remainingCount}</strong> covered benefit{remainingCount === 1 ? "" : "s"}{" "}
-                you may not be using yet
-                {hsaCount > 0 ? `, ${hsaCount} HSA/FSA eligible` : ""}.
-              </>
-            }
-            cta="Open Plan"
-            href="/plan"
-          />
-        ) : (
-          <ProductHero
-            variant="benefits"
-            status={{ kind: "live", label: "LIVE" }}
-            name="Candid Plan"
-            headline="See what your plan covers"
-            metric={<EmptyHeroMetric kind="benefits" />}
-            body="Add your plan to surface covered benefits and see which ones you haven't used yet."
-            cta="Upload plan"
-            href="/upload"
-          />
-        )}
+        </div>
+        <CompareBand />
       </div>
+
+      {/* AccumulatorMini's standalone dashboard mount is retired — the Plan
+          hero's deductible/OOP tracker rows (same ledger hook) own that
+          surface now. The full spending panel remains on /plan. */}
 
       {/* ── Dash-strip (plan + upload paired cards) ─────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
@@ -576,25 +541,6 @@ export default function DashboardPage() {
 
       {/* ── ShareWithFriend soft embed (un-gated per S124 close opportunity) ─ */}
       <ShareWithFriend variant="soft" surface="dashboard" />
-    </div>
-  );
-}
-
-// ─── Empty-state metric (Plan / Claim heroes) ───────────────────────────────
-
-function EmptyHeroMetric({ kind }: { kind: "claim" | "benefits" }) {
-  const tint =
-    kind === "claim"
-      ? { bg: "bg-blue-100", ink: "text-blue-700" }
-      : { bg: "bg-cyan-100", ink: "text-cyan-700" };
-  return (
-    <div
-      className={`w-[58px] h-[58px] rounded-2xl ${tint.bg} ${tint.ink} flex items-center justify-center`}
-      aria-hidden="true"
-    >
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-      </svg>
     </div>
   );
 }
