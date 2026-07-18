@@ -292,3 +292,9 @@ html {
 .admin-ops-prose table { width: 100%; border-collapse: collapse; margin: var(--space-3) 0; font-size: var(--text-sm); }
 .admin-ops-prose th, .admin-ops-prose td { border: 1px solid var(--border-2); padding: var(--space-2) var(--space-3); text-align: left; }
 .admin-ops-prose th { background: var(--bg-2); color: var(--fg-2); font-weight: var(--weight-semibold); }
+
+/* ── Simplified onboarding (S285) — indeterminate slide bar ───────────── */
+@keyframes obload {
+  0% { margin-left: -40%; }
+  100% { margin-left: 100%; }
+}

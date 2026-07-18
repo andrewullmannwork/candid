@@ -52,7 +52,10 @@ function recordSignupStep(
   const uidHash = createHash("sha256").update(uid).digest("hex");
   after(async () => {
     try {
-      await supabase.rpc("record_signup_step", { p_uid_hash: uidHash, p_step: step });
+      const { error } = await supabase.rpc("record_signup_step", { p_uid_hash: uidHash, p_step: step });
+      // Still fail-open — but a persistent write failure should be
+      // diagnosable in logs, not an invisible wall of zeros on /admin/growth.
+      if (error) console.warn("[auth/sync] funnel step write failed:", step, error.message);
     } catch {
       /* fail-open */
     }

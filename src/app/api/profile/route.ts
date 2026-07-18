@@ -6,6 +6,7 @@ import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
 import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { PLAN_COVERED_ONCONFLICT, type PlanCoverageRow } from "@/lib/plan/coverage-targeting";
+import { OB_HOUSEHOLD, OB_SITUATIONS } from "@/lib/onboarding/simplified";
 
 /** Extract and verify the Firebase ID token from the Authorization header */
 async function getAuthUser(req: NextRequest) {
@@ -33,7 +34,7 @@ export async function GET(req: NextRequest) {
 
   const { data: user } = await supabase
     .from("users")
-    .select("id")
+    .select("id, onboarding_completed_at")
     .eq("firebase_uid", decoded.uid)
     .single();
 
@@ -68,10 +69,37 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // Simplified onboarding (mig 207): claim existence for the profile meter's
+  // "plan or claim exists" gate — one indexed 1-row read, no new endpoint.
+  const { data: claimProbe } = await userScoped(supabase, user.id)
+    .table("claims")
+    .select("id")
+    .limit(1);
+
+  // Simplified onboarding (S285): document-presence probes powering the
+  // profile-strength model (card slot / doc slot). Same derivation the
+  // mig-206 funnel uses — doc_type buckets on the documents table.
+  const { data: cardDocProbe } = await userScoped(supabase, user.id)
+    .table("documents")
+    .select("id")
+    .eq("doc_type", "insurance_card")
+    .limit(1);
+  const { data: coverageDocProbe } = await userScoped(supabase, user.id)
+    .table("documents")
+    .select("id")
+    .in("doc_type", ["sbc", "plan_document", "eoc", "itemized_bill", "eob"])
+    .limit(1);
+
   return NextResponse.json({
     profile: profile || null,
     insurancePlan,
     coveredServices,
+    // Simplified onboarding (mig 207): NULL = onboarding incomplete; drives the
+    // /onboarding entry, post-signup redirect, and the profile meter.
+    onboardingCompletedAt: user.onboarding_completed_at ?? null,
+    hasClaims: (claimProbe?.length ?? 0) > 0,
+    hasCard: (cardDocProbe?.length ?? 0) > 0,
+    hasPlanOrBill: (coverageDocProbe?.length ?? 0) > 0,
   });
 }
 
@@ -145,6 +173,9 @@ export async function POST(req: NextRequest) {
     zip_code,
     county_fips,
     county_name,
+    // Simplified onboarding (mig 208)
+    household,
+    situation_tags,
     // Plan switch override (card scan mismatch confirmed by user)
     force_plan_switch,
   } = body;
@@ -303,6 +334,32 @@ export async function POST(req: NextRequest) {
     update.date_of_birth = date_of_birth || null;
   }
   if (sex !== undefined) update.sex = sex || null;
+  // Simplified onboarding (mig 208): household tiles + situation chips.
+  // NOTE deliberately NO zip_code format 400 here yet — the legacy About You
+  // step posts partial ZIPs (its client check is non-blocking) and would break
+  // on a hard reject. Server-side ZIP validation lands in the wizard-cleanup
+  // PR once the legacy step is deleted; until then the /onboarding Finish
+  // gate enforces the 5-digit rule client-side.
+  if (household !== undefined) {
+    if (household && !OB_HOUSEHOLD.some((h) => h.id === household)) {
+      return NextResponse.json({ error: "Invalid household value" }, { status: 400 });
+    }
+    update.household = household || null;
+  }
+  if (situation_tags !== undefined) {
+    if (situation_tags !== null && situation_tags !== "" && !Array.isArray(situation_tags)) {
+      return NextResponse.json({ error: "situation_tags must be an array" }, { status: 400 });
+    }
+    const tags = Array.isArray(situation_tags)
+      ? situation_tags.filter((t): t is string => typeof t === "string")
+      : [];
+    if (tags.some((t) => !OB_SITUATIONS.some((s) => s.id === t))) {
+      return NextResponse.json({ error: "Invalid situation tag" }, { status: 400 });
+    }
+    // Empty selection stores NULL — declining is an answer we don't persist
+    // (mig 208 column comment).
+    update.situation_tags = tags.length > 0 ? tags : null;
+  }
   if (phone !== undefined) update.phone = phone || null;
   if (matched_plan_id !== undefined) update.matched_plan_id = matched_plan_id || null;
   if (plan_source !== undefined) update.plan_source = plan_source || null;

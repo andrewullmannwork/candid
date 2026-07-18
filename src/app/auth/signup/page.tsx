@@ -9,8 +9,36 @@ import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { TurnstileWidget } from "@/components/security/TurnstileWidget";
 import { PhoneOTPStep } from "@/components/auth/PhoneOTPStep";
 import { AuthErrorMessage } from "@/components/auth/PhoneAlreadyLinkedError";
+import { SIMPLIFIED_ONBOARDING_FLAG } from "@/lib/onboarding/simplified";
 
 type SignUpMode = "form" | "otp-email" | "otp-google";
+
+/**
+ * Simplified onboarding (S285, flag `onboarding_simplified_v1`): resolve where
+ * a finished signup lands. Flag ON → the 3-step /onboarding flow, with the
+ * phone/dob prefill params carried over. Flag OFF — or ANY flag-read failure —
+ * → today's wizard URL, byte-identical to the pre-flag behavior. Client flag
+ * reads go through the public endpoint only (never browser-Supabase).
+ */
+async function resolvePostSignupDest(extras: { phone?: string; dob?: string }): Promise<string> {
+  const legacy = new URLSearchParams({ onboarding: "true" });
+  if (extras.phone) legacy.set("phone", extras.phone);
+  if (extras.dob) legacy.set("dob", extras.dob);
+  try {
+    const res = await fetch(`/api/feature-flags/${SIMPLIFIED_ONBOARDING_FLAG}`);
+    const flag = (await res.json()) as { enabled?: boolean };
+    if (flag?.enabled === true) {
+      const p = new URLSearchParams();
+      if (extras.phone) p.set("phone", extras.phone);
+      if (extras.dob) p.set("dob", extras.dob);
+      const qs = p.toString();
+      return qs ? `/onboarding?${qs}` : "/onboarding";
+    }
+  } catch {
+    /* fail closed to the legacy wizard */
+  }
+  return `/profile?${legacy.toString()}`;
+}
 
 interface SignUpProgress {
   firebaseUser: FirebaseUser;
@@ -248,7 +276,7 @@ export default function SignUpPage() {
       if (firebaseUser.phoneNumber) {
         // Google account already has a linked phone — finish straight away.
         await signUpFinish(firebaseUser, consents, turnstileToken);
-        router.push("/profile?onboarding=true");
+        router.push(await resolvePostSignupDest({}));
         return;
       }
       // Need phone OTP step before sync. Prompt for phone inline.
@@ -314,12 +342,14 @@ export default function SignUpPage() {
       // Email/password path includes phone+DOB params for the onboarding flow;
       // Google path goes straight to onboarding (no extra params).
       if (mode === "otp-email") {
-        const params = new URLSearchParams({ onboarding: "true" });
-        params.set("phone", progress.phoneE164.replace(/^\+1/, ""));
-        if (dateOfBirth) params.set("dob", dateOfBirth);
-        router.push(`/profile?${params.toString()}`);
+        router.push(
+          await resolvePostSignupDest({
+            phone: progress.phoneE164.replace(/^\+1/, ""),
+            dob: dateOfBirth || undefined,
+          }),
+        );
       } else {
-        router.push("/profile?onboarding=true");
+        router.push(await resolvePostSignupDest({}));
       }
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code;
