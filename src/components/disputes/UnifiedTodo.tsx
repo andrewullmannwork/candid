@@ -1,43 +1,108 @@
 "use client";
 
 /**
- * UnifiedTodo — "What you need to do" (Surface 4, clarity redesign v3).
+ * UnifiedTodo — "What you need to do" (Surface 4, clarity redesign v3;
+ * extended into the unified case timeline, S286).
  *
- * One continuously-numbered checklist above the letter, merging the prep
- * signals ("What we need from you"), the send steps, and the after-sent
- * guidance into three groups:
+ * ONE continuous spine for the whole case, merging the prep signals
+ * ("What we need from you"), the send steps, the after-sent CASE TIMELINE
+ * (previously the separate "The case" CaseSummary card, retired in v3), and
+ * the claim's other letters (the escalation ladder):
  *
- *   GET IT READY   — provider mailing address (real ProviderAddressModal via
- *                    onAddProviderAddress), patient-identity confirm (inline
- *                    two-choice expansion → real confirm-patient-identity POST
- *                    or edit-the-letter), "Confirm the claim details" (inline
- *                    expansion embedding the REAL CaseNeedsPanel via children),
- *                    and the optional read-through.
- *   SEND IT        — Download & sign (real download) → Mail it certified
- *                    (check-off) → Mark it as sent (inline confirm → real
- *                    mark-sent POST).
- *   AFTER IT'S SENT — watch / follow up / escalate guidance rows; locked until
- *                    sent, then checkable.
+ *   [earlier letters]  — one segment per previously-created letter: micro-label
+ *                        + "Go back to this letter" link + its steps rendered
+ *                        checked/un-numbered + a timer summary row ("closed —
+ *                        denied Sep 4"). A still-LIVE earlier letter keeps its
+ *                        live "Awaiting response" rung (never hide a running
+ *                        clock). Only the immediately-previous letter expands
+ *                        by default; older ones collapse to their label row.
+ *   GET IT READY       — provider/insurer mailing address, patient-identity
+ *                        confirm, "Confirm the claim details" (embeds the REAL
+ *                        CaseNeedsPanel via children), optional read-through.
+ *   SEND IT            — Download & sign → Mail it certified → Mark it as sent.
+ *   AFTER IT'S SENT    — before send: locked static guidance (unchanged).
+ *                        Once sent (deadline engine on): the REAL schedule —
+ *                        Awaiting response · response due date, scheduled
+ *                        follow-ups + final notice (from followupPlan), and the
+ *                        locked External review rung — with the guidance copy
+ *                        carried verbatim as sub-lines. The stage-action bar
+ *                        (Report the result / Sent to collections / escalate /
+ *                        undo) renders at the bottom, driven by computeCaseStage.
+ *   [later letters]    — when viewing an earlier letter: compact pointers to
+ *                        the newer letters ("Go to this letter").
  *
- * Data rules: every state shown is derived from live dispute data (address on
- * file, name mismatch, sent status, response-due date). Check-offs that have
- * no backing store (mailed-it, after-sent guidance, read-through, details
- * confirmation) are session-local, exactly like the prototype.
+ * Data rules: every state shown derives from live dispute data. Check-offs
+ * that have no dedicated column (mailed-it, read-through, details confirmation,
+ * follow-up done marks) persist via POST /api/disputes/[id]/checklist into
+ * dispute.metadata.checklist (user-scoped) — previously session-local.
  */
 
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils/cn";
+import { computeCaseStage, stageActions } from "@/lib/disputes/case-stage";
 
 // ── Types ───────────────────────────────────────────────────────────────────
+
+/** Real post-sent schedule for the viewed letter (null → deadline engine off →
+ *  static guidance fallback, byte-identical to the pre-S286 behavior). */
+export interface CaseTimelineEvents {
+  /** deadlineWarning.severity === "past" — the response window elapsed. */
+  windowPassed: boolean;
+  windowPassedNextStep: string | null;
+  /** deadlineWarning.daysRemaining (present only when the guard is urgent). */
+  daysRemaining: number | null;
+  /** Formatted governing-deadline date ("Sep 15, 2026"). */
+  responseDueDateLabel: string | null;
+  followups: Array<{ dueDate: string; dateLabel: string; kind: string }>;
+  /** insurance_appeal track — the locked External review rung. */
+  externalReviewLocked: boolean;
+}
+
+/** One letter in the claim's ladder (viewed letter included). */
+export interface CaseLetterSummary {
+  id: string;
+  /** 1-based chronological position. */
+  ordinal: number;
+  /** "Provider dispute", "Insurance appeal", … */
+  label: string;
+  viewed: boolean;
+  latest: boolean;
+  sentDateLabel: string | null;
+  /** "closed — denied Sep 4, 2026" (terminal) | null. */
+  statusLine: string | null;
+  /** Short outcome word for the viewing-past banner ("denied"). */
+  outcomeWord: string | null;
+  /** Sent + not terminal — its clock is still running. */
+  live: boolean;
+  liveDueLabel: string | null;
+  href: string;
+  /** Standard step set rendered checked/un-numbered for earlier letters. */
+  steps: Array<{ title: string; done: boolean }>;
+}
+
+/** Draft-stage filing-deadline guard (absorbed from the retired CaseSummary
+ *  countdown tile; amber, never red, per the style fence). */
+export interface FilingWarning {
+  passed: boolean;
+  /** "Appeal window" / "Validation window" / "Deadline". */
+  label: string;
+  daysRemaining: number | null;
+  dateLabel: string | null;
+  nextStep: string | null;
+}
 
 export interface UnifiedTodoProps {
   /** "$775.00" — used in "Finish this list to get your $X moving." */
   amountLabel: string | null;
   sent: boolean;
-  /** Formatted sent date ("Jul 3, 2026") — shown once sent. */
+  /** Formatted sent date — prefers sent_at over filed_date (S286). */
   sentDateLabel: string | null;
   /** Formatted response-due date — governing deadline, else sent + 30 days. */
   responseDueLabel: string | null;
+  /** Dispute status — drives the stage-action bar + terminal rendering. */
+  status?: string | null;
+  /** "closed — denied Sep 4, 2026" for the viewed letter when terminal. */
+  outcomeLine?: string | null;
 
   /** Who this letter mails to (letterRecipientKind) — drives the mailing-
    *  address needed row (insurer appeals address vs provider address) and the
@@ -70,6 +135,28 @@ export interface UnifiedTodoProps {
   onDownload: () => void;
   onMarkSent: () => void;
   markingSent: boolean;
+
+  // ── Unified case timeline (S286) ──────────────────────────────────────────
+  /** Persisted check-offs from dispute.metadata.checklist. */
+  initialChecks?: Record<string, boolean>;
+  /** Persist one check-off (fire-and-forget; local state is optimistic). */
+  onPersistCheck?: (key: string, done: boolean) => void;
+  /** Real schedule once sent; null → static guidance fallback. */
+  caseEvents?: CaseTimelineEvents | null;
+  /** The claim's ladder (chronological, viewed letter included). Empty/single
+   *  → no segment chrome (single-letter case renders exactly as before). */
+  letters?: CaseLetterSummary[];
+  /** Draft-stage filing-deadline guard. */
+  filingWarning?: FilingWarning | null;
+  // Stage-action bar (transplanted from the retired CaseSummary; handlers
+  // live on the page). Omitted handlers hide their action.
+  nextStepLabel?: string | null;
+  escalating?: boolean;
+  onReportOutcome?: () => void;
+  onCollections?: () => void;
+  onEscalateNext?: () => void;
+  onUndoSent?: () => void;
+  onUndoOutcome?: () => void;
 }
 
 type RowState = "todo" | "done" | "locked" | "skipped";
@@ -96,6 +183,23 @@ function PlusIcon() {
   return (
     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" aria-hidden>
       <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function PlayIcon() {
+  return (
+    <svg width="9" height="9" viewBox="0 0 24 24" fill="#2563eb" aria-hidden>
+      <path d="M8 5v14l11-7z" />
+    </svg>
+  );
+}
+
+function ClockIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
     </svg>
   );
 }
@@ -139,6 +243,25 @@ function TodoDot({
   );
 }
 
+/** Case-EVENT dot — same 22px chrome as TodoDot, icon vocabulary carried from
+ *  the retired CaseSummary timeline: done ✓ / current ▶ / scheduled 🕐 / locked. */
+function EventDot({ kind }: { kind: "done" | "current" | "scheduled" | "locked" }) {
+  return (
+    <span
+      className={cn(
+        "mt-0.5 grid h-[22px] w-[22px] flex-shrink-0 place-items-center rounded-full",
+        kind === "done" && "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-300",
+        kind === "current" && "bg-blue-50 ring-1 ring-inset ring-blue-200",
+        kind === "scheduled" && "bg-amber-50 text-amber-600 ring-1 ring-inset ring-amber-200",
+        kind === "locked" && "bg-white text-gray-400 ring-[1.5px] ring-inset ring-gray-200",
+      )}
+      aria-hidden
+    >
+      {kind === "done" ? <CheckIcon /> : kind === "current" ? <PlayIcon /> : kind === "scheduled" ? <ClockIcon /> : <LockIcon />}
+    </span>
+  );
+}
+
 interface RowDef {
   id: string;
   title: string;
@@ -154,6 +277,25 @@ interface RowDef {
   confirm?: boolean;
 }
 
+/** One case-timeline event row (post-sent real schedule). */
+interface EventRowDef {
+  key: string;
+  kind: "done" | "current" | "scheduled" | "locked";
+  title: string;
+  sub?: ReactNode;
+  /** Persisted-check key → renders a "Mark done" affordance. */
+  checkKey?: string;
+}
+
+const TERMINAL = new Set([
+  "won",
+  "lost",
+  "settled",
+  "withdrawn",
+  "won_on_escalation",
+  "settled_on_escalation",
+]);
+
 // ── Component ───────────────────────────────────────────────────────────────
 
 export function UnifiedTodo({
@@ -161,6 +303,8 @@ export function UnifiedTodo({
   sent,
   sentDateLabel,
   responseDueLabel,
+  status = null,
+  outcomeLine = null,
   recipientKind,
   providerAddressOnFile,
   onAddProviderAddress,
@@ -174,15 +318,42 @@ export function UnifiedTodo({
   onDownload,
   onMarkSent,
   markingSent,
+  initialChecks,
+  onPersistCheck,
+  caseEvents = null,
+  letters = [],
+  filingWarning = null,
+  nextStepLabel = null,
+  escalating = false,
+  onReportOutcome,
+  onCollections,
+  onEscalateNext,
+  onUndoSent,
+  onUndoOutcome,
 }: UnifiedTodoProps) {
   const [expanded, setExpanded] = useState<"patient" | "details" | null>(null);
   const [who, setWho] = useState<"me" | "dependent" | "wrong">("me");
   const [correctedName, setCorrectedName] = useState("");
-  const [detailsDone, setDetailsDone] = useState(false);
-  const [readState, setReadState] = useState<"todo" | "done" | "skipped">("todo");
   const [checks, setChecks] = useState<Record<string, boolean>>({});
   const [asking, setAsking] = useState(false);
-  const toggleCheck = (id: string) => setChecks((c) => ({ ...c, [id]: !c[id] }));
+  // Earlier-letter segments — the immediately-previous letter expands by
+  // default; older ones collapse to their label row (3+ letter cases).
+  const [prevExpanded, setPrevExpanded] = useState<Record<string, boolean>>({});
+
+  // Server-persisted checks fill the base; local optimistic toggles win.
+  const effChecks: Record<string, boolean> = { ...(initialChecks ?? {}), ...checks };
+  const setCheck = (id: string, v: boolean) => {
+    setChecks((c) => ({ ...c, [id]: v }));
+    onPersistCheck?.(id, v);
+  };
+  const toggleCheck = (id: string) => setCheck(id, !effChecks[id]);
+
+  const detailsDone = effChecks.details === true;
+  const readState: "todo" | "done" | "skipped" = effChecks.read
+    ? "done"
+    : effChecks.read_skipped
+      ? "skipped"
+      : "todo";
 
   const lockIfSent = (s: RowState): RowState => (sent && s === "todo" ? "locked" : s);
 
@@ -225,7 +396,12 @@ export function UnifiedTodo({
     {
       id: "details",
       title: "Confirm the claim details",
-      sub: "Addresses, EOB, plan costs, and the insurance this letter uses.",
+      // Approved copy (2026-07-18) — carried-forward acknowledgment when this
+      // letter follows an earlier one on the same claim.
+      sub:
+        letters.some((l) => l.viewed && l.ordinal > 1)
+          ? "Already on file from your last letter — confirm it still looks right."
+          : "Addresses, EOB, plan costs, and the insurance this letter uses.",
       state: lockIfSent(detailsDone ? "done" : "todo"),
       required: true,
       cta: expanded === "details" ? "Close" : "Confirm details",
@@ -240,9 +416,9 @@ export function UnifiedTodo({
       cta: "Open letter",
       onDo: () => {
         onOpenLetter();
-        setReadState("done");
+        setCheck("read", true);
       },
-      onSkip: () => setReadState("skipped"),
+      onSkip: () => setCheck("read_skipped", true),
     },
   ];
 
@@ -252,12 +428,12 @@ export function UnifiedTodo({
       id: "download",
       title: "Download & sign the letter",
       sub: "Print it, sign in ink, keep a copy.",
-      state: sent || checks.download ? "done" : "todo",
+      state: sent || effChecks.download ? "done" : "todo",
       required: true,
       cta: "Download",
       onDo: () => {
         onDownload();
-        setChecks((c) => ({ ...c, download: true }));
+        setCheck("download", true);
       },
       checkable: true,
     },
@@ -265,7 +441,7 @@ export function UnifiedTodo({
       id: "mailcert",
       title: "Mail it certified",
       sub: "USPS Form 3811 (return receipt) — your proof of delivery.",
-      state: sent || checks.mailcert ? "done" : "todo",
+      state: sent || effChecks.mailcert ? "done" : "todo",
       required: true,
       cta: "Done — I mailed it",
       onDo: () => toggleCheck("mailcert"),
@@ -284,41 +460,139 @@ export function UnifiedTodo({
   ];
 
   // AFTER IT'S SENT — guidance copy follows the recipient (appeal to the
-  // insurer vs a provider/collector-directed dispute).
-  const afterRows: RowDef[] = [
-    {
-      id: "watch",
-      title: "Watch for a reply",
-      sub: insurerMailing
-        ? "Most insurers must respond within 30 days of receipt."
-        : "Providers and collectors typically respond within 30 days.",
-    },
-    {
-      id: "followup",
-      title: "Follow up at day 30",
-      sub: insurerMailing
-        ? "No response? Call the appeals line with your tracking number."
-        : "No response? Call the billing office with your tracking number.",
-    },
-    {
-      id: "escalate",
-      title: "Escalate if unresolved",
-      sub: insurerMailing
-        ? "Your state Insurance Commissioner or a healthcare attorney can step in."
-        : "Your state Attorney General's consumer division or a healthcare attorney can step in.",
-    },
+  // insurer vs a provider/collector-directed dispute). Copy carried VERBATIM
+  // into the event rungs below when the real schedule renders.
+  const watchGuidance = insurerMailing
+    ? "Most insurers must respond within 30 days of receipt."
+    : "Providers and collectors typically respond within 30 days.";
+  const followupGuidance = insurerMailing
+    ? "No response? Call the appeals line with your tracking number."
+    : "No response? Call the billing office with your tracking number.";
+  const escalateGuidance = insurerMailing
+    ? "Your state Insurance Commissioner or a healthcare attorney can step in."
+    : "Your state Attorney General's consumer division or a healthcare attorney can step in.";
+
+  // Static guidance fallback — pre-send (locked) AND sent-with-engine-off.
+  const staticAfterRows: RowDef[] = [
+    { id: "watch", title: "Watch for a reply", sub: watchGuidance },
+    { id: "followup", title: "Follow up at day 30", sub: followupGuidance },
+    { id: "escalate", title: "Escalate if unresolved", sub: escalateGuidance },
   ].map((r) => ({
     ...r,
     required: true,
     checkable: true,
     cta: "Mark done",
-    state: (!sent ? "locked" : checks[r.id] ? "done" : "todo") as RowState,
+    state: (!sent ? "locked" : effChecks[r.id] ? "done" : "todo") as RowState,
     onDo: () => {
       if (sent) toggleCheck(r.id);
     },
   }));
 
-  const all = [...prepRows, ...sendRows, ...afterRows];
+  const terminal = TERMINAL.has(status ?? "");
+  // Real-schedule mode: sent + deadline engine data present. Terminal letters
+  // also use it (summary rung), even when events are sparse.
+  const eventMode = sent && (caseEvents != null || terminal);
+
+  // The real case-timeline rungs (eventMode only).
+  const eventRows: EventRowDef[] = [];
+  if (eventMode) {
+    if (terminal) {
+      eventRows.push({
+        key: "response",
+        kind: "done",
+        title: "Awaiting response",
+        sub: outcomeLine ?? undefined,
+      });
+    } else if (caseEvents?.windowPassed) {
+      eventRows.push({
+        key: "past",
+        kind: "current",
+        title: "Response window has passed",
+        sub: caseEvents.windowPassedNextStep ?? undefined,
+      });
+    } else {
+      eventRows.push({
+        key: "awaiting",
+        kind: "current",
+        title: "Awaiting response",
+        sub: (
+          <>
+            {caseEvents?.responseDueDateLabel ? (
+              <span className="font-medium text-gray-700">
+                Response due {caseEvents.responseDueDateLabel}
+                {caseEvents.daysRemaining != null
+                  ? ` · ${caseEvents.daysRemaining} ${caseEvents.daysRemaining === 1 ? "day" : "days"} left`
+                  : ""}
+              </span>
+            ) : null}
+            {caseEvents?.responseDueDateLabel ? <br /> : null}
+            {watchGuidance}
+          </>
+        ),
+      });
+    }
+    if (!terminal) {
+      (caseEvents?.followups ?? []).forEach((f, i) => {
+        const checkKey = `after-fu-${f.dueDate}-${f.kind}`;
+        eventRows.push({
+          key: checkKey,
+          kind: effChecks[checkKey] ? "done" : "scheduled",
+          title: f.kind === "deadline_final" ? "Final notice" : "Follow-up",
+          sub: (
+            <>
+              Scheduled {f.dateLabel}
+              {i === 0 ? (
+                <>
+                  <br />
+                  {followupGuidance}
+                </>
+              ) : null}
+            </>
+          ),
+          checkKey,
+        });
+      });
+      if (caseEvents?.externalReviewLocked) {
+        eventRows.push({
+          key: "external",
+          kind: "locked",
+          title: "External review",
+          sub: "Unlocks after a final internal denial.",
+        });
+      }
+    }
+  }
+
+  // Stage-action bar (transplanted from the retired CaseSummary). mark_sent is
+  // excluded — the SEND IT step + inline confirm owns that action in this card.
+  const stage = computeCaseStage({
+    status,
+    isSent: sent,
+    hasNextStep: !!nextStepLabel,
+  });
+  const barActions = stageActions(stage).filter((a) => a !== "mark_sent");
+  const showActionBar =
+    sent && (barActions.length > 0 || (stage === "resolved" && !!onUndoOutcome));
+  const actionCls = (primary: boolean) =>
+    primary
+      ? "inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700 disabled:opacity-60"
+      : "inline-flex items-center rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 disabled:opacity-60";
+
+  // Ladder partition — earlier letters render above the viewed letter's steps,
+  // later ones (visible only when viewing an old letter) below the action bar.
+  const viewedLetter = letters.find((l) => l.viewed) ?? null;
+  const earlierLetters = viewedLetter
+    ? letters.filter((l) => l.ordinal < viewedLetter.ordinal)
+    : [];
+  const laterLetters = viewedLetter
+    ? letters.filter((l) => l.ordinal > viewedLetter.ordinal)
+    : [];
+  const latestLetter = letters.find((l) => l.latest) ?? null;
+  const viewingPast = viewedLetter != null && !viewedLetter.latest;
+  const isPrevExpanded = (l: CaseLetterSummary) =>
+    prevExpanded[l.id] ?? (viewedLetter != null && l.ordinal === viewedLetter.ordinal - 1);
+
+  const all = [...prepRows, ...sendRows, ...(eventMode ? [] : staticAfterRows)];
   const required = all.filter((r) => r.required);
   const reqDone = required.filter((r) => r.state === "done").length;
   const current = all.find((r) => r.required && r.state === "todo") ?? null;
@@ -327,18 +601,43 @@ export function UnifiedTodo({
   const groups: Array<{ id: string; label: string; rows: RowDef[] }> = [
     { id: "ready", label: "Get it ready", rows: prepRows },
     { id: "send", label: "Send it", rows: sendRows },
-    { id: "after", label: "After it's sent", rows: afterRows },
+    ...(eventMode ? [] : [{ id: "after", label: "After it's sent", rows: staticAfterRows }]),
   ];
+
+  const microLabel = (l: CaseLetterSummary) => `Letter ${l.ordinal} · ${l.label}`;
 
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
+      {/* Viewing-past banner — approved copy (2026-07-18). */}
+      {viewingPast && latestLetter && viewedLetter && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-blue-200 bg-blue-50 px-3.5 py-2.5 text-[12.5px] text-blue-900">
+          <span>
+            You&rsquo;re viewing an earlier letter
+            {viewedLetter.sentDateLabel ? ` — sent ${viewedLetter.sentDateLabel}` : ""}
+            {viewedLetter.outcomeWord ? ` · ${viewedLetter.outcomeWord}` : ""}.
+          </span>
+          <a
+            href={latestLetter.href}
+            className="font-semibold text-blue-700 hover:underline"
+          >
+            Go to your current letter →
+          </a>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="text-[15px] font-bold tracking-[-0.005em] text-gray-900">What you need to do</h3>
           <p className="mt-0.5 text-[12.5px] text-gray-500">
             {sent
-              ? `Sent${sentDateLabel ? ` ${sentDateLabel}` : ""}${responseDueLabel ? ` · response due by ${responseDueLabel}` : ""}`
+              ? `Sent${sentDateLabel ? ` ${sentDateLabel}` : ""}${
+                  terminal && outcomeLine
+                    ? ` · ${outcomeLine}`
+                    : responseDueLabel
+                      ? ` · response due by ${responseDueLabel}`
+                      : ""
+                }`
               : amountLabel
                 ? `Finish this list to get your ${amountLabel} moving.`
                 : "Finish this list to get your appeal moving."}
@@ -348,6 +647,118 @@ export function UnifiedTodo({
           {reqDone}/{required.length}
         </span>
       </div>
+
+      {/* Draft-stage filing-deadline guard — absorbed from the retired
+          CaseSummary countdown tile (amber, never red). */}
+      {!sent && filingWarning && (
+        <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-[12px] leading-snug text-amber-800">
+          {filingWarning.passed ? (
+            <>
+              <span className="font-medium">This filing window has passed.</span>
+              {filingWarning.nextStep ? (
+                <span className="ml-1 text-amber-700">{filingWarning.nextStep}</span>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <span className="font-medium">
+                {filingWarning.label}
+                {filingWarning.daysRemaining != null
+                  ? `: ${filingWarning.daysRemaining} ${filingWarning.daysRemaining === 1 ? "day" : "days"} left`
+                  : ""}
+              </span>
+              {filingWarning.dateLabel ? (
+                <span className="ml-1 text-amber-700">— file before {filingWarning.dateLabel}</span>
+              ) : null}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Earlier letters — un-numbered, checked history (approved: items stay
+          visible; only the immediately-previous letter expands by default). */}
+      {earlierLetters.map((l) => {
+        const open = isPrevExpanded(l);
+        return (
+          <div key={l.id} className="mt-1.5">
+            <div className="mb-1 mt-3 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setPrevExpanded((m) => ({ ...m, [l.id]: !open }))}
+                className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-gray-400"
+                aria-expanded={open}
+              >
+                <svg
+                  width="9"
+                  height="9"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={3}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className={cn("transition-transform", open && "rotate-90")}
+                  aria-hidden
+                >
+                  <path d="M9 6l6 6-6 6" />
+                </svg>
+                {microLabel(l)}
+              </button>
+              {/* Approved copy (2026-07-18). */}
+              <a href={l.href} className="flex-shrink-0 text-[12px] font-semibold text-blue-600 hover:underline">
+                Go back to this letter
+              </a>
+            </div>
+            {open ? (
+              <>
+                {l.steps.map((s, i) => (
+                  <div key={`${l.id}-s${i}`} className="flex items-start gap-2.5 rounded-xl px-2 py-1">
+                    <EventDot kind={s.done ? "done" : "locked"} />
+                    <div className="min-w-0 flex-1 pt-0.5 text-[13px] font-semibold leading-snug text-gray-400">
+                      {s.title}
+                    </div>
+                  </div>
+                ))}
+                {/* Timer summary — collapses to the resolution once closed; a
+                    still-LIVE clock keeps its live rung (never hidden). */}
+                <div className="flex items-start gap-2.5 rounded-xl px-2 py-1">
+                  <EventDot kind={l.live ? "current" : "done"} />
+                  <div className="min-w-0 flex-1 pt-0.5">
+                    <div className={cn("text-[13px] font-semibold leading-snug", l.live ? "text-gray-900" : "text-gray-400")}>
+                      Awaiting response
+                    </div>
+                    <div className="mt-0.5 text-[11.5px] leading-relaxed text-gray-500">
+                      {l.live
+                        ? l.liveDueLabel
+                          ? `Response due ${l.liveDueLabel}`
+                          : "Response window open"
+                        : (l.statusLine ?? "closed")}
+                    </div>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="px-2 pb-1 text-[11.5px] leading-relaxed text-gray-500">
+                {l.sentDateLabel ? `Sent ${l.sentDateLabel}` : "Not sent"}
+                {l.live
+                  ? l.liveDueLabel
+                    ? ` · response due ${l.liveDueLabel}`
+                    : " · response window open"
+                  : l.statusLine
+                    ? ` · ${l.statusLine}`
+                    : ""}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* Viewed-letter micro-label (multi-letter cases only). */}
+      {viewedLetter && letters.length > 1 && (
+        <div className="mb-0.5 mt-3 text-[10px] font-bold uppercase tracking-[0.1em] text-blue-600">
+          {microLabel(viewedLetter)}
+        </div>
+      )}
 
       {groups.map((g) => (
         <div key={g.id} className="mt-1.5">
@@ -541,7 +952,7 @@ export function UnifiedTodo({
                         <button
                           type="button"
                           onClick={() => {
-                            setDetailsDone(true);
+                            setCheck("details", true);
                             setExpanded(null);
                           }}
                           className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-[12.5px] font-semibold text-white hover:bg-blue-700"
@@ -582,6 +993,133 @@ export function UnifiedTodo({
               </div>
             );
           })}
+        </div>
+      ))}
+
+      {/* AFTER IT'S SENT — the REAL case timeline (replaces the static guidance
+          trio once sent; the retired "The case" card's rungs live here now). */}
+      {eventMode && (
+        <div className="mt-1.5">
+          <div className="mb-1 mt-3 text-[10px] font-bold uppercase tracking-[0.1em] text-gray-400">
+            After it&apos;s sent
+          </div>
+          {eventRows.map((row) => (
+            <div
+              key={row.key}
+              className={cn(
+                "flex flex-wrap items-start gap-2.5 rounded-xl px-2 py-2 sm:flex-nowrap",
+                row.kind === "current" && "bg-blue-50 ring-1 ring-inset ring-blue-200",
+              )}
+            >
+              <EventDot kind={row.kind} />
+              <div className="min-w-0 flex-1 pt-0.5">
+                <div
+                  className={cn(
+                    "text-[13px] font-semibold leading-snug",
+                    row.kind === "done" ? "text-gray-400" : row.kind === "locked" ? "text-gray-500" : "text-gray-900",
+                  )}
+                >
+                  {row.title}
+                </div>
+                {row.sub ? (
+                  <div className="mt-0.5 text-[11.5px] leading-relaxed text-gray-500">{row.sub}</div>
+                ) : null}
+              </div>
+              {row.checkKey && row.kind === "scheduled" && (
+                <button
+                  type="button"
+                  onClick={() => toggleCheck(row.checkKey!)}
+                  className="flex-shrink-0 self-center rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-700 transition-colors hover:bg-gray-50 max-sm:basis-full"
+                >
+                  Mark done
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Stage-action bar — Report the result / Sent to collections / escalate /
+          undo (verbatim semantics from the retired CaseSummary; mark_sent is
+          owned by the SEND IT step above). */}
+      {showActionBar && (
+        <div className="mt-5 border-t border-gray-100 pt-4">
+          <div className="flex flex-wrap items-center gap-2">
+            {barActions.map((key, i) => {
+              const primary = i === 0;
+              if (key === "report_result" && onReportOutcome) {
+                return (
+                  <button key={key} type="button" onClick={onReportOutcome} className={actionCls(primary)}>
+                    {stage === "next" ? "Report a different result" : "Report the result"}
+                  </button>
+                );
+              }
+              if (key === "collections" && onCollections) {
+                return (
+                  <button key={key} type="button" onClick={onCollections} className={actionCls(primary)}>
+                    Sent to collections
+                  </button>
+                );
+              }
+              if (key === "escalate_next" && onEscalateNext) {
+                return (
+                  <button key={key} type="button" onClick={onEscalateNext} disabled={escalating} className={actionCls(primary)}>
+                    {escalating ? "Creating…" : (nextStepLabel ?? "Take the next step")}
+                  </button>
+                );
+              }
+              return null;
+            })}
+          </div>
+          {stage === "next" && nextStepLabel ? (
+            // Approved copy (2026-07-18) — signals the CTA creates a NEW letter.
+            <p className="mt-2 text-[12px] leading-snug text-gray-500">
+              Based on what you reported, this is the usual next step. It creates a new letter and continues this timeline.
+            </p>
+          ) : null}
+          {/* Undo (S266) — a quiet escape hatch for a mis-click (no confirm dialog). */}
+          {stage === "awaiting" && onUndoSent ? (
+            <button
+              type="button"
+              onClick={onUndoSent}
+              className="mt-3 text-[12px] font-medium text-gray-400 underline-offset-2 hover:text-gray-600 hover:underline"
+            >
+              Mark as not sent
+            </button>
+          ) : null}
+          {(stage === "next" || stage === "resolved") && onUndoOutcome ? (
+            <button
+              type="button"
+              onClick={onUndoOutcome}
+              className="mt-3 block text-[12px] font-medium text-gray-400 underline-offset-2 hover:text-gray-600 hover:underline"
+            >
+              Undo this result
+            </button>
+          ) : null}
+        </div>
+      )}
+
+      {/* Later letters — visible only when viewing an earlier letter. */}
+      {laterLetters.map((l) => (
+        <div key={l.id} className="mt-3 border-t border-gray-100 pt-3">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-gray-400">
+              {microLabel(l)}
+            </span>
+            <a href={l.href} className="flex-shrink-0 text-[12px] font-semibold text-blue-600 hover:underline">
+              Go to this letter
+            </a>
+          </div>
+          <div className="mt-0.5 px-0.5 text-[11.5px] leading-relaxed text-gray-500">
+            {l.sentDateLabel ? `Sent ${l.sentDateLabel}` : "Drafting"}
+            {l.live
+              ? l.liveDueLabel
+                ? ` · response due ${l.liveDueLabel}`
+                : " · response window open"
+              : l.statusLine
+                ? ` · ${l.statusLine}`
+                : ""}
+          </div>
         </div>
       ))}
     </section>
