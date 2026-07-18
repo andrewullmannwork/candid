@@ -43,11 +43,13 @@ export interface UnifiedTodoProps {
   providerAddressOnFile: boolean;
   onAddProviderAddress: () => void;
 
-  // GET IT READY — patient identity row (renders only when a mismatch exists)
+  // GET IT READY — patient identity row (renders only when a mismatch exists).
+  // "me" → letter name becomes the account name; "dependent" → keeps the bill
+  // name; "wrong" → correctedName fills the letter. All three resolve the
+  // mismatch via the real confirm-patient-identity flow in the parent.
   nameMismatch: { billName: string; profileName: string } | null;
   nameResolved: boolean;
-  onConfirmPatient: () => void;
-  onEditLetterName: () => void;
+  onResolvePatient: (choice: "me" | "dependent" | "wrong", correctedName?: string) => void;
 
   // GET IT READY — claim-details expansion (embeds the real CaseNeedsPanel)
   children?: ReactNode;
@@ -154,8 +156,7 @@ export function UnifiedTodo({
   onAddProviderAddress,
   nameMismatch,
   nameResolved,
-  onConfirmPatient,
-  onEditLetterName,
+  onResolvePatient,
   children,
   onOpenLetter,
   onDownload,
@@ -163,7 +164,8 @@ export function UnifiedTodo({
   markingSent,
 }: UnifiedTodoProps) {
   const [expanded, setExpanded] = useState<"patient" | "details" | null>(null);
-  const [who, setWho] = useState<"same" | "wrong">("same");
+  const [who, setWho] = useState<"me" | "dependent" | "wrong">("me");
+  const [correctedName, setCorrectedName] = useState("");
   const [detailsDone, setDetailsDone] = useState(false);
   const [readState, setReadState] = useState<"todo" | "done" | "skipped">("todo");
   const [checks, setChecks] = useState<Record<string, boolean>>({});
@@ -253,7 +255,7 @@ export function UnifiedTodo({
     {
       id: "marksent",
       title: "Mark it as sent",
-      sub: "Starts the response clock and your follow-up reminders.",
+      sub: "Starts the clock on their response and schedules your follow-up reminders.",
       state: sent ? "done" : "todo",
       required: true,
       cta: "Mark as sent",
@@ -401,7 +403,9 @@ export function UnifiedTodo({
                   )}
                 </div>
 
-                {/* Inline expansion — patient identity (real confirm/edit flows) */}
+                {/* Inline expansion — patient identity (three choices, all
+                    resolving through the real confirm-patient-identity flow;
+                    "me"/"wrong" also fill the letter name in the parent). */}
                 {row.id === "patient" && expanded === "patient" && row.state === "todo" && nameMismatch && (
                   <div className="animate-fade-in mx-2 mb-2.5 ml-8 rounded-[14px] border border-blue-200 bg-white p-4 shadow-[0_14px_30px_-20px_rgba(37,99,235,0.35)]">
                     <div className="mb-3 text-[13px] leading-relaxed text-gray-600">
@@ -410,20 +414,37 @@ export function UnifiedTodo({
                     </div>
                     <div className="space-y-2">
                       <ChoiceCard
-                        selected={who === "same"}
+                        selected={who === "me"}
                         tone="good"
-                        title="That's me — the name on the bill refers to me"
-                        desc="Small differences (nicknames, middle or maiden names) are fine — the letter stays under your name."
-                        onSelect={() => setWho("same")}
+                        title="That's me"
+                        desc={`The bill means you — the letter will use your account name, ${nameMismatch.profileName}.`}
+                        onSelect={() => setWho("me")}
+                      />
+                      <ChoiceCard
+                        selected={who === "dependent"}
+                        tone="good"
+                        title="That's right — it's one of my dependents"
+                        desc={`The visit was for ${nameMismatch.billName}, covered on your plan. The letter keeps their name.`}
+                        onSelect={() => setWho("dependent")}
                       />
                       <ChoiceCard
                         selected={who === "wrong"}
                         tone="warn"
                         title="That name is wrong"
-                        desc={`The bill mislabels the patient — edit the letter to correct who the visit was for.`}
+                        desc="Type the patient's correct name and we'll fill the letter."
                         onSelect={() => setWho("wrong")}
                       />
                     </div>
+                    {who === "wrong" && (
+                      <input
+                        type="text"
+                        value={correctedName}
+                        onChange={(e) => setCorrectedName(e.target.value)}
+                        placeholder="Patient's full name"
+                        autoFocus
+                        className="mt-2.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-[13px] text-gray-900 placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                      />
+                    )}
                     <div className="mt-3 flex justify-end gap-2">
                       <button
                         type="button"
@@ -434,23 +455,14 @@ export function UnifiedTodo({
                       </button>
                       <button
                         type="button"
+                        disabled={who === "wrong" && correctedName.trim().length === 0}
                         onClick={() => {
-                          if (who === "same") {
-                            onConfirmPatient();
-                          } else {
-                            onEditLetterName();
-                          }
+                          onResolvePatient(who, who === "wrong" ? correctedName.trim() : undefined);
                           setExpanded(null);
                         }}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-[12.5px] font-semibold text-white hover:bg-blue-700"
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-[12.5px] font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        {who === "same" ? (
-                          <>
-                            <CheckIcon size={12} /> Confirm
-                          </>
-                        ) : (
-                          "Edit the letter"
-                        )}
+                        <CheckIcon size={12} /> Confirm
                       </button>
                     </div>
                   </div>

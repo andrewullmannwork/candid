@@ -1560,12 +1560,33 @@ function DisputesContent() {
       onAddProviderAddress={() => setProviderAddressOpen(true)}
       nameMismatch={nameMismatch}
       nameResolved={patientIdentityResolved}
-      onConfirmPatient={() => handleResolvePatientIdentity(true)}
-      onEditLetterName={() => {
-        setIsEditing(true);
-        document
-          .getElementById("dispute-letter-article")
-          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      onResolvePatient={async (choice, correctedName) => {
+        // "me" → letter uses the account name; "wrong" → the typed name;
+        // "dependent" keeps the bill name. All three resolve the mismatch via
+        // the real confirm-patient-identity endpoint. The name fill edits the
+        // letter body like a manual edit (flows into copy/download) and is
+        // applied AFTER the resolve refetch — fetchDispute resets editedBody
+        // from the server, so filling first would be wiped. Mismatch is
+        // captured pre-await (the refetch nulls it once resolved).
+        const mismatch = nameMismatch;
+        const to =
+          mismatch == null
+            ? null
+            : choice === "me"
+              ? mismatch.profileName
+              : choice === "wrong"
+                ? (correctedName ?? "").trim()
+                : null;
+        await handleResolvePatientIdentity(true);
+        if (mismatch && to && to !== mismatch.billName) {
+          setEditedBody((body: string) =>
+            body
+              .split(mismatch.billName)
+              .join(to)
+              .split(mismatch.billName.toUpperCase())
+              .join(to.toUpperCase()),
+          );
+        }
       }}
       onOpenLetter={() =>
         document

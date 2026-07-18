@@ -364,7 +364,7 @@ export default function CandidClaimPage() {
               claims={flaggedClaims}
               billStates={billStates}
               questionCountFor={questionCountFor}
-              emptyCopy="No flagged bills right now — overcharges we confirm will show up here."
+              emptyCopy="No flagged bills right now — confirmed overcharges will show up here."
               onSelect={(id) => openClaimDetail(id, "flagged")}
             />
           )}
