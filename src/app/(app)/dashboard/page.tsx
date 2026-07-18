@@ -201,8 +201,10 @@ export default function DashboardPage() {
   const ledgerPair = ledger
     ? (ledger.individual ?? ledger.familyAggregate ?? ledger.familyEmbedded?.cap ?? null)
     : null;
+  // max = 0 is a REAL limit (e.g. $0-deductible platinum plans) — the row
+  // renders "$0 of $0" with a full bar (met by definition), not hidden.
   const toTracker = (bucket: { candidApplied: number; max: number | null } | undefined) =>
-    bucket && bucket.max != null && bucket.max > 0
+    bucket && bucket.max != null
       ? { applied: bucket.candidApplied ?? 0, max: bucket.max }
       : null;
   const trackers = {

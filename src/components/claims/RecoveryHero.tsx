@@ -152,14 +152,12 @@ export function RecoveryHero({
                     isActive ? "border-blue-400 bg-blue-50" : "border-gray-200",
                   )}
                 >
+                  {/* Count color per Andrew review: >0 = candid red (needs
+                      handling), 0 = green (nothing to handle). */}
                   <span
                     className={cn(
                       "text-[30px] font-bold leading-none tracking-[-0.02em] tabular-nums",
-                      s.tone === "attn"
-                        ? "text-amber-700"
-                        : s.tone === "ready"
-                          ? "text-blue-700"
-                          : "text-gray-900",
+                      s.count > 0 ? "text-red-600" : "text-green-600",
                     )}
                   >
                     {s.count}

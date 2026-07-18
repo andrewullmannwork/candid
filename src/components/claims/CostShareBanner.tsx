@@ -334,7 +334,15 @@ export function CostShareBanner({
         )}
 
         {sectionOpen && (
-          <div className={assumptionsOnly ? "px-5 pb-4 pt-1" : "px-5 pb-4"}>
+          <div
+            className={
+              assumptionsOnly
+                ? // First row's border-t would read as a stray card edge right
+                  // under the container's own border — suppress it.
+                  "px-5 pb-4 pt-1.5 [&>div:first-child]:border-t-0"
+                : "px-5 pb-4"
+            }
+          >
             {!assumptionsOnly && (
               <div className="border-t border-gray-100 pt-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-gray-400">What we assumed</div>
             )}

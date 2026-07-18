@@ -10,6 +10,7 @@ import { LockedOverlay } from "@/components/shared/LockedOverlay";
 import { InlineSubscribePanel } from "@/components/billing/InlineSubscribePanel";
 import { downloadCaseFile } from "@/lib/casefile";
 import { disputeUrlForResult } from "@/lib/disputes/url";
+import { letterRecipientKind } from "@/lib/disputes";
 import { DisputeLetterHero } from "@/components/disputes/DisputeLetterHero";
 import { EvidenceStrengthModal } from "@/components/disputes/EvidenceStrengthModal";
 import { DisputeRecipientCard } from "@/components/disputes/DisputeRecipientCard";
@@ -1557,8 +1558,11 @@ function DisputesContent() {
       sent={alreadySent}
       sentDateLabel={disputeFiledDate ? formatFiledDate(disputeFiledDate) : null}
       responseDueLabel={responseDueLabel}
+      recipientKind={letterRecipientKind(letter.letterType)}
       providerAddressOnFile={zone1ProviderAddressOnFile}
       onAddProviderAddress={() => setProviderAddressOpen(true)}
+      insurerAddressOnFile={zone1InsurerAddressOnFile}
+      onAddInsurerAddress={() => setInsurerCorrectionOpen(true)}
       nameMismatch={nameMismatch}
       nameResolved={patientIdentityResolved}
       onResolvePatient={async (choice, correctedName) => {
@@ -1606,16 +1610,14 @@ function DisputesContent() {
     <div className={v3DesignOn ? "mx-auto max-w-6xl space-y-5" : "max-w-4xl mx-auto space-y-5"}>
       {/* S109 PR #2 — Back link to claim view. Uses letter.auditReportId
           (set from data.claimId in fetchDispute) so the user always has a
-          path back to the source bill / claim list. Hidden when claim id
-          is absent (e.g., legacy disputes that weren't linked to a claim). */}
-      {letter.auditReportId && (
-        <a
-          href={`/claim?claim=${letter.auditReportId}`}
-          className="inline-flex items-center gap-1 text-sm font-medium text-blue-600 hover:text-blue-700"
-        >
-          <span aria-hidden>←</span> Back to claim
-        </a>
-      )}
+          path back to the source bill; legacy disputes without a linked claim
+          fall back to the claim list so the user is never stranded. */}
+      <a
+        href={letter.auditReportId ? `/claim?claim=${letter.auditReportId}` : "/claim"}
+        className="inline-flex items-center gap-1 text-sm font-medium text-blue-600 hover:text-blue-700"
+      >
+        <span aria-hidden>←</span> Back to claim
+      </a>
 
       {/* Dispute Letters v2 — Zone-1 "What we need from you" + Zone-2 "The
           case". Legacy layout keeps them here; v3 relocates Zone-1 inside the

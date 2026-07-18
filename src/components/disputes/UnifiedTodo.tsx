@@ -39,9 +39,18 @@ export interface UnifiedTodoProps {
   /** Formatted response-due date — governing deadline, else sent + 30 days. */
   responseDueLabel: string | null;
 
-  // GET IT READY — provider address row
+  /** Who this letter mails to (letterRecipientKind) — drives the mailing-
+   *  address needed row (insurer appeals address vs provider address) and the
+   *  after-sent guidance copy (appeals line vs billing office). Collector
+   *  letters follow the provider branch. */
+  recipientKind: "insurer" | "provider" | "collector";
+
+  // GET IT READY — mailing-address rows (which one is REQUIRED depends on
+  // recipientKind; the other stays available inside claim details).
   providerAddressOnFile: boolean;
   onAddProviderAddress: () => void;
+  insurerAddressOnFile: boolean;
+  onAddInsurerAddress: () => void;
 
   // GET IT READY — patient identity row (renders only when a mismatch exists).
   // "me" → letter name becomes the account name; "dependent" → keeps the bill
@@ -152,8 +161,11 @@ export function UnifiedTodo({
   sent,
   sentDateLabel,
   responseDueLabel,
+  recipientKind,
   providerAddressOnFile,
   onAddProviderAddress,
+  insurerAddressOnFile,
+  onAddInsurerAddress,
   nameMismatch,
   nameResolved,
   onResolvePatient,
@@ -174,16 +186,23 @@ export function UnifiedTodo({
 
   const lockIfSent = (s: RowState): RowState => (sent && s === "todo" ? "locked" : s);
 
-  // GET IT READY
+  // GET IT READY — the REQUIRED mailing-address row targets whoever this
+  // letter actually mails to; the other address stays editable inside the
+  // claim-details expansion.
+  const insurerMailing = recipientKind === "insurer";
   const prepRows: RowDef[] = [
     {
       id: "address",
-      title: "Add the provider's mailing address",
-      sub: "The appeal has nowhere to be mailed without it.",
-      state: lockIfSent(providerAddressOnFile ? "done" : "todo"),
+      title: insurerMailing
+        ? "Add your insurer's appeals address"
+        : "Add the provider's mailing address",
+      sub: insurerMailing
+        ? "The appeal has nowhere to be mailed without it."
+        : "The letter has nowhere to be mailed without it.",
+      state: lockIfSent((insurerMailing ? insurerAddressOnFile : providerAddressOnFile) ? "done" : "todo"),
       required: true,
       cta: "Add address",
-      onDo: onAddProviderAddress,
+      onDo: insurerMailing ? onAddInsurerAddress : onAddProviderAddress,
     },
     ...(nameMismatch
       ? [
@@ -264,11 +283,30 @@ export function UnifiedTodo({
     },
   ];
 
-  // AFTER IT'S SENT
+  // AFTER IT'S SENT — guidance copy follows the recipient (appeal to the
+  // insurer vs a provider/collector-directed dispute).
   const afterRows: RowDef[] = [
-    { id: "watch", title: "Watch for a reply", sub: "Most insurers must respond within 30 days of receipt." },
-    { id: "followup", title: "Follow up at day 30", sub: "No response? Call the appeals line with your tracking number." },
-    { id: "escalate", title: "Escalate if unresolved", sub: "Your state Insurance Commissioner or a healthcare attorney can step in." },
+    {
+      id: "watch",
+      title: "Watch for a reply",
+      sub: insurerMailing
+        ? "Most insurers must respond within 30 days of receipt."
+        : "Providers and collectors typically respond within 30 days.",
+    },
+    {
+      id: "followup",
+      title: "Follow up at day 30",
+      sub: insurerMailing
+        ? "No response? Call the appeals line with your tracking number."
+        : "No response? Call the billing office with your tracking number.",
+    },
+    {
+      id: "escalate",
+      title: "Escalate if unresolved",
+      sub: insurerMailing
+        ? "Your state Insurance Commissioner or a healthcare attorney can step in."
+        : "Your state Attorney General's consumer division or a healthcare attorney can step in.",
+    },
   ].map((r) => ({
     ...r,
     required: true,
@@ -320,11 +358,15 @@ export function UnifiedTodo({
             if (row.required) n += 1;
             const num = row.required ? n : null;
             const isCurrent = current?.id === row.id;
+            // Prep rows stay re-editable after completion until the letter is
+            // marked sent (the milestone that locks them).
+            const updatable =
+              !sent && row.state === "done" && ["address", "patient", "details"].includes(row.id);
             return (
               <div key={row.id}>
                 <div
                   className={cn(
-                    "flex items-start gap-2.5 rounded-xl px-2 py-2",
+                    "flex flex-wrap items-start gap-2.5 rounded-xl px-2 py-2 sm:flex-nowrap",
                     isCurrent && "bg-blue-50 ring-1 ring-inset ring-blue-200",
                     row.state === "locked" && "opacity-55",
                   )}
@@ -361,6 +403,7 @@ export function UnifiedTodo({
                       onClick={row.onDo}
                       className={cn(
                         "flex-shrink-0 self-center rounded-lg px-3 py-1.5 text-[12.5px] font-semibold transition-colors",
+                        "max-sm:basis-full",
                         isCurrent
                           ? "bg-blue-600 text-white hover:bg-blue-700"
                           : "border border-gray-200 bg-white text-gray-700 hover:bg-gray-50",
@@ -375,6 +418,7 @@ export function UnifiedTodo({
                       onClick={row.onDo}
                       className={cn(
                         "flex-shrink-0 self-center rounded-lg px-3 py-1.5 text-[12.5px] font-semibold transition-colors",
+                        "max-sm:basis-full",
                         isCurrent
                           ? "bg-blue-600 text-white hover:bg-blue-700"
                           : "border border-gray-200 bg-white text-gray-700 hover:bg-gray-50",
@@ -383,8 +427,18 @@ export function UnifiedTodo({
                       {row.cta}
                     </button>
                   )}
+                  {/* Re-open affordance — done prep rows stay editable until sent. */}
+                  {updatable && (
+                    <button
+                      type="button"
+                      onClick={row.onDo}
+                      className="flex-shrink-0 self-center text-[12px] font-semibold text-blue-600 hover:underline"
+                    >
+                      Update
+                    </button>
+                  )}
                   {row.state === "todo" && !row.required && (
-                    <span className="flex flex-shrink-0 items-center gap-2.5 self-center">
+                    <span className="flex flex-shrink-0 items-center gap-2.5 self-center max-sm:basis-full">
                       <button
                         type="button"
                         onClick={row.onDo}
@@ -405,9 +459,10 @@ export function UnifiedTodo({
 
                 {/* Inline expansion — patient identity (three choices, all
                     resolving through the real confirm-patient-identity flow;
-                    "me"/"wrong" also fill the letter name in the parent). */}
-                {row.id === "patient" && expanded === "patient" && row.state === "todo" && nameMismatch && (
-                  <div className="animate-fade-in mx-2 mb-2.5 ml-8 rounded-[14px] border border-blue-200 bg-white p-4 shadow-[0_14px_30px_-20px_rgba(37,99,235,0.35)]">
+                    "me"/"wrong" also fill the letter name in the parent).
+                    Re-openable after completion until the letter is sent. */}
+                {row.id === "patient" && expanded === "patient" && !sent && nameMismatch && (
+                  <div className="animate-fade-in mx-2 mb-2.5 rounded-[14px] border border-blue-200 bg-white p-4 shadow-[0_14px_30px_-20px_rgba(37,99,235,0.35)] sm:ml-8">
                     <div className="mb-3 text-[13px] leading-relaxed text-gray-600">
                       The bill lists <strong className="text-gray-900">&ldquo;{nameMismatch.billName}&rdquo;</strong>;
                       your account is <strong className="text-gray-900">{nameMismatch.profileName}</strong>. Which is right?
@@ -472,7 +527,7 @@ export function UnifiedTodo({
                     CaseNeedsPanel and this wrapper read as ONE card; the
                     wrapper owns the border, padding, and footer actions. */}
                 {row.id === "details" && expanded === "details" && (
-                  <div className="animate-fade-in mx-2 mb-2.5 ml-8 rounded-[14px] border border-blue-200 bg-white p-4 shadow-[0_14px_30px_-20px_rgba(37,99,235,0.35)] sm:p-5">
+                  <div className="animate-fade-in mx-2 mb-2.5 rounded-[14px] border border-blue-200 bg-white p-4 shadow-[0_14px_30px_-20px_rgba(37,99,235,0.35)] sm:ml-8 sm:p-5">
                     {children}
                     <div className="mt-3 flex justify-end gap-2 border-t border-gray-100 pt-3">
                       <button
@@ -500,7 +555,7 @@ export function UnifiedTodo({
 
                 {/* Inline confirm — Mark as sent */}
                 {row.id === "marksent" && asking && !sent && (
-                  <div className="animate-fade-in mx-2 mb-2 ml-8 flex flex-wrap items-center justify-between gap-2.5 rounded-[10px] border border-blue-200 bg-blue-50 px-3 py-2.5 text-[12.5px] font-semibold text-blue-900">
+                  <div className="animate-fade-in mx-2 mb-2 flex flex-wrap items-center justify-between gap-2.5 rounded-[10px] border border-blue-200 bg-blue-50 px-3 py-2.5 text-[12.5px] font-semibold text-blue-900 sm:ml-8">
                     <span>Did you actually mail it?</span>
                     <span className="flex gap-2">
                       <button

@@ -210,7 +210,7 @@ export default function CandidClaimPage() {
           claimId={selectedClaimId}
           onBack={closeClaimDetail}
           focusLineItemId={focusLineItemId}
-          backLabel="Back to bills"
+          backLabel={tabBeforeDetail === "letters" ? "Back to letters" : "Back to bills"}
           onClaimUpdated={refetchClaims}
           billState={billStates.get(selectedClaimId) ?? null}
         />

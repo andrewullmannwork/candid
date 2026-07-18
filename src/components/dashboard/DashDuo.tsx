@@ -333,7 +333,8 @@ export function PlanHero({
 }
 
 function TrackRow({ label, applied, max }: { label: string; applied: number; max: number }) {
-  const pct = max > 0 ? Math.min(100, Math.round((applied / max) * 100)) : 0;
+  // max = 0 → the limit is met by definition ($0-deductible plans): full bar.
+  const pct = max > 0 ? Math.min(100, Math.round((applied / max) * 100)) : 100;
   return (
     <div className="flex flex-col gap-[5px]">
       <div className="flex justify-between items-baseline gap-2">

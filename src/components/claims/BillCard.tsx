@@ -422,7 +422,7 @@ export function BillCard({
         {footerButton ? (
           <span
             className={cn(
-              "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-[18px] py-2.5 text-[13px] font-semibold transition-all",
+              "inline-flex w-full shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-[18px] py-2.5 text-[13px] font-semibold transition-all sm:w-auto",
               footerButton.kind === "primary" &&
                 "bg-blue-600 text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15),0_8px_32px_hsla(217,91%,60%,0.10)] group-hover:bg-blue-700 group-hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25),0_12px_40px_hsla(217,91%,60%,0.15)]",
               footerButton.kind === "amber" &&
