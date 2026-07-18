@@ -7,14 +7,21 @@ import { useConsent } from "@/lib/consent/use-consent";
 import {
   OB_COPY,
   OB_STEP_NAMES,
+  chipsFromClaimSummary,
+  chipsFromPlanAnalyze,
   obDobOk,
   obDobFromIso,
   obDobToIso,
+  obFmtMoney,
   obZipOk,
+  type ClaimChipSource,
   type HouseholdId,
   type ObChip,
+  type PlanAnalyzeChipSource,
+  type RecentCoverageDoc,
   type SituationId,
 } from "@/lib/onboarding/simplified";
+import { getDocTypeClass, type DocType } from "@/lib/classifier/doc-type-vocabulary";
 import { OnboardingCardStep, type CardSlotValue } from "./OnboardingCardStep";
 import { OnboardingDocStep, type DocSlotValue } from "./OnboardingDocStep";
 import { OnboardingAboutStep, type AboutState } from "./OnboardingAboutStep";
@@ -24,18 +31,14 @@ const fmtPhone = (digits: string): string =>
     ? `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`
     : digits;
 
-const fmtMoney = (n: unknown): string | null => {
-  const v = typeof n === "number" ? n : typeof n === "string" ? parseFloat(n) : NaN;
-  if (!isFinite(v)) return null;
-  return `$${Math.round(v).toLocaleString()}`;
-};
-
 /**
  * Simplified onboarding — the guided 3-step flow (2026-07-17 design handoff).
  * Full-screen shell (no app sidebar), 3 segment-bar progress, every step
- * skippable, "I'll do this later →" always available. Finish AND skip both
- * stamp completion (Q4: skips count as done) and land on /dashboard, where
- * the profile meter carries whatever's missing.
+ * skippable. "I'll do this later →" shows on steps 1 and 3 (S286 — on step 2
+ * it duplicated the in-step skip; on step 3 it's the Q4 dismiss for users who
+ * decline the required fields — decision ⑪, DOB-less stamped accounts).
+ * Finish AND skip both stamp completion (Q4: skips count as done) and land on
+ * /dashboard, where the profile meter carries whatever's missing.
  *
  * State hydrates from GET /api/profile (returning users see their done
  * states) and writes through to the same profile store the dashboard reads.
@@ -99,6 +102,8 @@ export function OnboardingFlow() {
           } | null;
           hasCard?: boolean;
           hasPlanOrBill?: boolean;
+          recentCoverageDocs?: RecentCoverageDoc[];
+          coverageDocCount?: number;
         };
         if (cancelled) return;
         const prof = data.profile;
@@ -112,13 +117,57 @@ export function OnboardingFlow() {
         }
 
         if (data.hasPlanOrBill === true) {
-          const chips: ObChip[] = [];
-          const src = data.insurancePlan ?? prof;
-          const ded = fmtMoney(src?.in_deductible_individual);
-          const oop = fmtMoney(src?.in_oop_max_individual);
-          if (ded) chips.push({ label: "Deductible", value: ded, verified: true });
-          if (oop) chips.push({ label: "OOP max", value: oop, verified: true });
-          setDoc({ kind: "plan", fileName: null, chips });
+          // S286 restore fidelity: rebuild the slot from the ACTUAL newest
+          // coverage docs — real filename(s), right kind, in-flight vs parsed —
+          // instead of a generic "plan" card. Chips re-fetch through the same
+          // shaping the live path uses (chips pop in; hydration stays fast).
+          const docs = data.recentCoverageDocs ?? [];
+          const primary = docs[0];
+          if (primary) {
+            const extraFiles = docs.slice(1, 4).map((d) => d.file_name || "Document");
+            const moreCount = Math.max(0, (data.coverageDocCount ?? docs.length) - docs.length);
+            if (primary.status !== "processed") {
+              setDoc({ kind: "background", fileName: primary.file_name, chips: [], extraFiles, moreCount });
+            } else {
+              const kind =
+                getDocTypeClass((primary.doc_type ?? "plan_document") as DocType) === "bill" ? "bill" : "plan";
+              setDoc({ kind, fileName: primary.file_name, chips: [], extraFiles, moreCount });
+              void (async () => {
+                try {
+                  let chips: ObChip[] = [];
+                  if (kind === "bill") {
+                    const cr = await fetch(`/api/claims?documentId=${encodeURIComponent(primary.id)}&limit=1`, {
+                      headers: { Authorization: `Bearer ${idToken}` },
+                    });
+                    const cd = (await cr.json().catch(() => ({}))) as { claims?: ClaimChipSource[] };
+                    chips = chipsFromClaimSummary(cd.claims?.[0]);
+                  } else {
+                    const ar = await fetch("/api/plan/analyze", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+                      body: JSON.stringify({}),
+                    });
+                    const ad = (await ar.json().catch(() => ({}))) as PlanAnalyzeChipSource;
+                    chips = chipsFromPlanAnalyze(ad);
+                  }
+                  if (!cancelled && chips.length > 0) {
+                    setDoc((prev) => (prev ? { ...prev, chips } : prev));
+                  }
+                } catch {
+                  /* chips are decorative — the card stands without them */
+                }
+              })();
+            }
+          } else {
+            // Legacy fallback (older API body without recentCoverageDocs).
+            const chips: ObChip[] = [];
+            const src = data.insurancePlan ?? prof;
+            const ded = obFmtMoney(src?.in_deductible_individual);
+            const oop = obFmtMoney(src?.in_oop_max_individual);
+            if (ded) chips.push({ label: "Deductible", value: ded, verified: true });
+            if (oop) chips.push({ label: "OOP max", value: oop, verified: true });
+            setDoc({ kind: "plan", fileName: null, chips });
+          }
         }
 
         // DOB source of truth: profiles.date_of_birth; else the signup ?dob=
@@ -272,12 +321,16 @@ export function OnboardingFlow() {
             </div>
             <span className="text-[15px] font-bold tracking-tight text-gray-900">Candid</span>
           </div>
-          <button
-            onClick={handleLater}
-            className="rounded-[10px] px-2.5 py-2 text-[13px] font-medium text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
-          >
-            {OB_COPY.later} →
-          </button>
+          {/* S286: hidden on the doc step (its in-step skip covers it); kept on
+              step 1 (clean full-exit) + step 3 (the Q4 dismiss — decision ⑪). */}
+          {step !== 1 && (
+            <button
+              onClick={handleLater}
+              className="rounded-[10px] px-2.5 py-2 text-[13px] font-medium text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+            >
+              {OB_COPY.later} →
+            </button>
+          )}
         </div>
 
         {/* Column */}
@@ -362,7 +415,21 @@ export function OnboardingFlow() {
                   <p className="mb-6 text-[14.5px] leading-relaxed text-gray-500">{OB_COPY.s2Sub}</p>
                   <OnboardingDocStep
                     value={doc}
-                    onDone={setDoc}
+                    onDone={(v) =>
+                      setDoc((prev) => {
+                        // S286: a fresh upload becomes the primary row; prior
+                        // docs stay visible as history under it (≤3 names).
+                        if (!prev) return v;
+                        const prevNames = [prev.fileName, ...(prev.extraFiles ?? [])].filter(
+                          (x): x is string => !!x && x !== v.fileName,
+                        );
+                        return {
+                          ...v,
+                          extraFiles: prevNames.slice(0, 3),
+                          moreCount: (prev.moreCount ?? 0) + Math.max(0, prevNames.length - 3),
+                        };
+                      })
+                    }
                     onReplace={() => setDoc(null)}
                     hasConsented={hasConsented}
                     grantConsent={grantConsent}

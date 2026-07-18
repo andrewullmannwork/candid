@@ -33,7 +33,12 @@ import {
   obStrength,
   obZipOk,
   slotsFromProfile,
+  unwrapDecorated,
+  obFmtMoney,
+  chipsFromPlanAnalyze,
+  chipsFromClaimSummary,
 } from "../src/lib/onboarding/simplified";
+import { applyDocSupplementMerge, valuesMatch } from "../src/lib/plan/plan-merge";
 
 let passed = 0;
 let failed = 0;
@@ -270,6 +275,228 @@ eq(
   }),
   { card: true, doc: true, household: true, zip: true, dob: true, sex: true, situation: true },
 );
+
+/* ── 7. Decorated-value unwrap (S286 crash guard) ────────────────────────────
+   /api/plan/analyze returns display-state objects ({value,state,reason,…}) for
+   matched/active plans; the doc-step chips must unwrap to the scalar or a raw
+   object leaks into a React child and crashes the flow. */
+const decoratedNum = { value: 1500, state: "user_verified", reason: "from_user_document_cite_grade", hasExcerpt: true, excerpt: "$1,500", searchedSectionsCount: 3 };
+const decoratedStr = { value: "PPO", state: "user_verified", reason: "from_user_document_cite_grade", hasExcerpt: false, excerpt: null };
+eq("unwrap decorated number", unwrapDecorated(decoratedNum), 1500);
+eq("unwrap decorated string", unwrapDecorated(decoratedStr), "PPO");
+eq("unwrap decorated null value", unwrapDecorated({ value: null, state: "missing", reason: "not_found", hasExcerpt: false, excerpt: null }), null);
+eq("unwrap raw number passthrough", unwrapDecorated(1500), 1500);
+eq("unwrap raw string passthrough", unwrapDecorated("PPO"), "PPO");
+eq("unwrap null passthrough", unwrapDecorated(null), null);
+eq("unwrap undefined passthrough", unwrapDecorated(undefined), undefined);
+
+/* ── 8. Supplement-merge matrix (S286 — Andrew-approved policy) ──────────────
+   process-plan's mergeIntoExistingPlan branch: each subsequent doc parse
+   SUPPLEMENTS the row — fill gaps · never erase · weak (manual/uncited)
+   incumbents yield to a cited parse · matches CONFIRM (corroboration
+   recorded) · conflicts resolve per DOCUMENT (more complete wins, tie →
+   newest). */
+eq("doc.settling copy", OB_DOC_COPY.settling, "Pulling in your results…");
+
+eq("valuesMatch: numeric string vs number", valuesMatch("3000", 3000), true);
+eq("valuesMatch: case/whitespace-insensitive", valuesMatch("PPO ", "ppo"), true);
+eq("valuesMatch: zero is a real value", valuesMatch(0, "0"), true);
+eq("valuesMatch: different numbers", valuesMatch(3000, 6000), false);
+eq("valuesMatch: null never matches", valuesMatch(null, null), false);
+
+{
+  // Fill + weak-incumbent + never-erase in one pass (the S286 chimera shape).
+  const r = applyDocSupplementMerge({
+    base: { source: "sbc_upload", is_active: true },
+    docFields: {
+      in_oop_max_family: 6000, // existing empty → fill
+      insurer_name: "Cigna", // existing "Test", uncited → doc wins
+      plan_type: null, // this parse didn't extract → never erase
+    },
+    existingRow: { in_oop_max_family: null, insurer_name: "Test", plan_type: "HMO" },
+    existingProvenance: {},
+    parseProvenance: {
+      in_oop_max_family: { source: "doc_extraction" },
+      insurer_name: { source: "doc_extraction" },
+    },
+    documentId: "doc-1",
+  });
+  eq("supplement: fill lands", r.update.in_oop_max_family, 6000);
+  eq("supplement: uncited incumbent yields to cited parse", r.update.insurer_name, "Cigna");
+  eq("supplement: parsed-null never erases", "plan_type" in r.update, false);
+  eq("supplement: no conflict resolution triggered", r.conflictWinner, null);
+  eq("supplement: base fields preserved", r.update.source, "sbc_upload");
+  eq("supplement: fill action", r.actions.in_oop_max_family, "fill");
+  eq("supplement: weak action", r.actions.insurer_name, "doc_wins_weak");
+  eq(
+    "supplement: parse provenance adopted for fill + weak",
+    r.update.field_provenance,
+    {
+      in_oop_max_family: { source: "doc_extraction" },
+      insurer_name: { source: "doc_extraction" },
+    },
+  );
+}
+
+{
+  // Manual-source incumbent yields to doc (CF-25); no parse provenance → no map churn.
+  const r = applyDocSupplementMerge({
+    base: {},
+    docFields: { in_deductible_individual: 500 },
+    existingRow: { in_deductible_individual: 1000 },
+    existingProvenance: { in_deductible_individual: { source: "manual" } },
+    parseProvenance: {},
+    documentId: "doc-1",
+  });
+  eq("supplement: manual incumbent yields to doc", r.update.in_deductible_individual, 500);
+  eq("supplement: manual-loses action", r.actions.in_deductible_individual, "doc_wins_weak");
+  eq("supplement: no prov change → no field_provenance write", "field_provenance" in r.update, false);
+}
+
+{
+  // Confirm — two documents agree: keep value + original citation, record corroboration.
+  const r = applyDocSupplementMerge({
+    base: {},
+    docFields: { in_deductible_individual: "3000" },
+    existingRow: { in_deductible_individual: 3000 },
+    existingProvenance: {
+      in_deductible_individual: { source: "doc_extraction", source_excerpt: "original" },
+    },
+    parseProvenance: {
+      in_deductible_individual: { source: "doc_extraction", source_excerpt: "second read" },
+    },
+    documentId: "doc-2",
+  });
+  eq("confirm: value not rewritten", "in_deductible_individual" in r.update, false);
+  eq("confirm: action", r.actions.in_deductible_individual, "confirm");
+  eq(
+    "confirm: original citation kept + corroboration recorded",
+    r.update.field_provenance,
+    {
+      in_deductible_individual: {
+        source: "doc_extraction",
+        source_excerpt: "original",
+        corroborated_by: ["doc-2"],
+      },
+    },
+  );
+  // Same doc confirming again is a no-op (dedup).
+  const r2 = applyDocSupplementMerge({
+    base: {},
+    docFields: { in_deductible_individual: 3000 },
+    existingRow: { in_deductible_individual: 3000 },
+    existingProvenance: {
+      in_deductible_individual: { source: "doc_extraction", corroborated_by: ["doc-2"] },
+    },
+    parseProvenance: {},
+    documentId: "doc-2",
+  });
+  eq("confirm: corroboration dedups", "field_provenance" in r2.update, false);
+}
+
+{
+  // Conflict, new parse more complete → conflicting fields flip TOGETHER; fills still apply.
+  const r = applyDocSupplementMerge({
+    base: {},
+    docFields: { plan_name: "OAP Buy Up", plan_type: "OAP", plan_year: 2026, in_deductible_individual: 0 },
+    existingRow: { plan_name: "Kaiser Gold", plan_type: "HMO", plan_year: null, in_deductible_individual: null },
+    existingProvenance: {
+      plan_name: { source: "doc_extraction" },
+      plan_type: { source: "doc_extraction" },
+    },
+    parseProvenance: { plan_name: { source: "doc_extraction" } },
+    documentId: "doc-3",
+  });
+  eq("conflict: new more complete — plan_name flips", r.update.plan_name, "OAP Buy Up");
+  eq("conflict: per-document — plan_type flips with it", r.update.plan_type, "OAP");
+  eq("conflict: winner recorded", r.conflictWinner, "new");
+  eq("conflict: fills apply alongside", r.update.plan_year, 2026);
+  eq("conflict: zero-value fill applies", r.update.in_deductible_individual, 0);
+  eq("conflict: action", r.actions.plan_name, "conflict_new_wins");
+}
+
+{
+  // Conflict, incumbent more complete → incumbent kept (whole document loses).
+  const r = applyDocSupplementMerge({
+    base: {},
+    docFields: { plan_name: "Sparse Doc" },
+    existingRow: {
+      plan_name: "Rich Plan",
+      plan_type: "PPO",
+      in_deductible_individual: 1000,
+      in_oop_max_individual: 5000,
+    },
+    existingProvenance: {
+      plan_name: { source: "doc_extraction" },
+      plan_type: { source: "doc_extraction" },
+      in_deductible_individual: { source: "doc_extraction" },
+      in_oop_max_individual: { source: "doc_extraction" },
+    },
+    parseProvenance: { plan_name: { source: "doc_extraction" } },
+    documentId: "doc-4",
+  });
+  eq("conflict: incumbent more complete → kept", "plan_name" in r.update, false);
+  eq("conflict: winner recorded existing", r.conflictWinner, "existing");
+  eq("conflict: kept action", r.actions.plan_name, "conflict_existing_kept");
+}
+
+{
+  // Equal completeness → newest (this parse) wins.
+  const r = applyDocSupplementMerge({
+    base: {},
+    docFields: { plan_name: "New Name" },
+    existingRow: { plan_name: "Old Name" },
+    existingProvenance: { plan_name: { source: "doc_extraction" } },
+    parseProvenance: {},
+    documentId: "doc-5",
+  });
+  eq("conflict: equal completeness → newest wins", r.update.plan_name, "New Name");
+  eq("conflict: tie winner recorded", r.conflictWinner, "new");
+}
+
+/* ── 9. Result-chip builders (S286 — ONE shaping for live path + restore) ─── */
+
+eq("fmtMoney: number", obFmtMoney(1500), "$1,500");
+eq("fmtMoney: numeric string", obFmtMoney("250.4"), "$250");
+eq("fmtMoney: zero is real", obFmtMoney(0), "$0");
+eq("fmtMoney: garbage", obFmtMoney("abc"), null);
+eq("fmtMoney: null", obFmtMoney(null), null);
+
+eq(
+  "plan chips: decorated values unwrap + full set",
+  chipsFromPlanAnalyze({
+    totalBenefits: 38,
+    planSummary: {
+      inDeductible: { value: 1500, state: "user_verified", reason: "x", hasExcerpt: false, excerpt: null },
+      inOopMax: 5000,
+      planType: { value: "PPO", state: "user_verified", reason: "x", hasExcerpt: false, excerpt: null },
+    },
+  }),
+  [
+    { label: "Deductible", value: "$1,500", verified: true },
+    { label: "OOP max", value: "$5,000", verified: true },
+    { label: "Plan type", value: "PPO" },
+    { label: "Covered services", value: "38 indexed" },
+  ],
+);
+eq("plan chips: empty analyze → no chips", chipsFromPlanAnalyze({}), []);
+
+eq(
+  "bill chips: full claim",
+  chipsFromClaimSummary({
+    lineItemCount: 5,
+    findingCount: 2,
+    providerName: "Mercy",
+    recovery: { potentialRecovery: 703.52 },
+  }),
+  [
+    { label: "Potential recovery", value: "$704", verified: true },
+    { label: "Line items", value: "5" },
+    { label: "Findings", value: "2" },
+    { label: "Provider", value: "Mercy" },
+  ],
+);
+eq("bill chips: no claim → empty", chipsFromClaimSummary(null), []);
 
 /* ── Result ──────────────────────────────────────────────────────────────── */
 

@@ -5,7 +5,15 @@ import { useDropzone } from "react-dropzone";
 import { useAuth } from "@/lib/auth/auth-context";
 import { TurnstileWidget, type TurnstileWidgetHandle } from "@/components/security/TurnstileWidget";
 import { getDocTypeClass, type DocType, type DocTypeConfirmation } from "@/lib/classifier/doc-type-vocabulary";
-import { OB_DOC_COPY, type ObChip } from "@/lib/onboarding/simplified";
+import {
+  OB_DOC_COPY,
+  chipsFromClaimSummary,
+  chipsFromPlanAnalyze,
+  type ClaimChipSource,
+  type ObChip,
+  type PlanAnalyzeChipSource,
+} from "@/lib/onboarding/simplified";
+import { UnifiedParseScreen, derivePhase, type ParseDoc } from "@/components/parsing/UnifiedParseScreen";
 import { HealthConsentModal } from "./HealthConsentModal";
 
 /** What step 2 stores in flow state. */
@@ -13,13 +21,11 @@ export interface DocSlotValue {
   kind: "plan" | "bill" | "background";
   fileName: string | null;
   chips: ObChip[];
+  /** S286: further coverage docs on file (names) — restore + session history. */
+  extraFiles?: string[];
+  /** S286: coverage docs beyond the displayed names. */
+  moreCount?: number;
 }
-
-const fmtMoney = (n: unknown): string | null => {
-  const v = typeof n === "number" ? n : typeof n === "string" ? parseFloat(n) : NaN;
-  if (!isFinite(v)) return null;
-  return `$${Math.round(v).toLocaleString()}`;
-};
 
 /**
  * Step 2 — plan document or bill. Single dropzone (design: quiet doc-type
@@ -62,6 +68,8 @@ export function OnboardingDocStep({
   const [uploadProgress, setUploadProgress] = useState(0);
   const [processing, setProcessing] = useState(false);
   const [progressPages, setProgressPages] = useState<{ done: number; total: number } | null>(null);
+  const [parseStep, setParseStep] = useState<string | null>(null);
+  const [parseSmartSkip, setParseSmartSkip] = useState<string | null>(null);
   const [summarizing, setSummarizing] = useState(false);
   const [fileName, setFileName] = useState("");
   const [error, setError] = useState("");
@@ -100,20 +108,10 @@ export function OnboardingDocStep({
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
         body: JSON.stringify({}),
       });
-      const data = (await res.json().catch(() => ({}))) as {
-        totalBenefits?: number;
-        planSummary?: { inDeductible?: unknown; inOopMax?: unknown; planType?: string | null };
-      };
-      const chips: ObChip[] = [];
-      const ded = fmtMoney(data.planSummary?.inDeductible);
-      const oop = fmtMoney(data.planSummary?.inOopMax);
-      if (ded) chips.push({ label: "Deductible", value: ded, verified: true });
-      if (oop) chips.push({ label: "OOP max", value: oop, verified: true });
-      if (data.planSummary?.planType) chips.push({ label: "Plan type", value: data.planSummary.planType });
-      if (typeof data.totalBenefits === "number" && data.totalBenefits > 0) {
-        chips.push({ label: "Covered services", value: `${data.totalBenefits} indexed` });
-      }
-      onDone({ kind: "plan", fileName: file, chips });
+      const data = (await res.json().catch(() => ({}))) as PlanAnalyzeChipSource;
+      // Shared shaping (chipsFromPlanAnalyze) unwraps display-state-decorated
+      // values — a raw decorated object as a React child crashes the flow (S286).
+      onDone({ kind: "plan", fileName: file, chips: chipsFromPlanAnalyze(data) });
     } catch {
       // Parse landed; the summary read is decorative — still mark done.
       onDone({ kind: "plan", fileName: file, chips: [] });
@@ -131,26 +129,8 @@ export function OnboardingDocStep({
         const res = await fetch(`/api/claims?documentId=${encodeURIComponent(docId)}&limit=1`, {
           headers: { Authorization: `Bearer ${idToken}` },
         });
-        const data = (await res.json().catch(() => ({}))) as {
-          claims?: {
-            lineItemCount?: number;
-            findingCount?: number;
-            providerName?: string | null;
-            recovery?: { potentialRecovery?: number };
-          }[];
-        };
-        const claim = data.claims?.[0];
-        const chips: ObChip[] = [];
-        const rec = fmtMoney(claim?.recovery?.potentialRecovery);
-        if (rec) chips.push({ label: "Potential recovery", value: rec, verified: true });
-        if (typeof claim?.lineItemCount === "number") {
-          chips.push({ label: "Line items", value: String(claim.lineItemCount) });
-        }
-        if (typeof claim?.findingCount === "number") {
-          chips.push({ label: "Findings", value: String(claim.findingCount) });
-        }
-        if (claim?.providerName) chips.push({ label: "Provider", value: claim.providerName });
-        onDone({ kind: "bill", fileName: file, chips });
+        const data = (await res.json().catch(() => ({}))) as { claims?: ClaimChipSource[] };
+        onDone({ kind: "bill", fileName: file, chips: chipsFromClaimSummary(data.claims?.[0]) });
       } catch {
         onDone({ kind: "bill", fileName: file, chips: [] });
       } finally {
@@ -302,12 +282,16 @@ export function OnboardingDocStep({
         if (!res.ok || !active) return;
         const data = (await res.json()) as {
           status?: string;
+          step?: string | null;
           totalPages?: number;
           completedPages?: number;
           isStuck?: boolean;
           needsTrigger?: boolean;
+          smartSkipOutcome?: string | null;
           insurerMismatch?: { pending_canonical_match?: typeof canonicalMatch };
         };
+        setParseStep(data.step ?? null);
+        if (data.smartSkipOutcome) setParseSmartSkip(data.smartSkipOutcome);
         if (typeof data.totalPages === "number" && data.totalPages > 0) {
           setProgressPages({ done: data.completedPages ?? 0, total: data.totalPages });
         }
@@ -531,9 +515,47 @@ export function OnboardingDocStep({
             ))}
           </div>
         )}
+        {((value.extraFiles?.length ?? 0) > 0 || (value.moreCount ?? 0) > 0) && (
+          /* S286: the rest of the user's coverage docs, so the card answers
+             "which document(s)" — not just the latest upload. */
+          <div className="mt-3 border-t border-gray-100 pt-2.5">
+            <p className="text-[10.5px] font-bold tracking-[0.09em] text-gray-400">ALSO ON FILE</p>
+            {value.extraFiles?.map((f, i) => (
+              <p key={i} className="mt-1 truncate text-xs text-gray-500">
+                {f}
+              </p>
+            ))}
+            {(value.moreCount ?? 0) > 0 && (
+              <p className="mt-1 text-xs text-gray-400">
+                +{value.moreCount} more document{value.moreCount === 1 ? "" : "s"}
+              </p>
+            )}
+          </div>
+        )}
       </div>
     );
   }
+
+  // Reuse the /upload parse animation (doc-stack chrome + rotating microcopy +
+  // page counter) for the in-step processing state (S286, Andrew #1). Driven by
+  // the same poll state; the existing settle logic unmounts it on `processed`.
+  const parseDoc: ParseDoc = {
+    id: documentId ?? "onboarding-doc",
+    label: "Your document",
+    fileName: fileName || "Your document",
+    phase: derivePhase({
+      uploadStatus: uploading ? "uploading" : "auto_processed",
+      // Always "processing" — the settle branch below owns the summarizing
+      // window, so the parse screen never renders for it (S286 flash fix).
+      processingProgress: { status: "processing", totalPages: progressPages?.total ?? 0 },
+      uploadProgress,
+    }),
+    uploadProgress,
+    totalPages: progressPages?.total ?? null,
+    step: parseStep,
+    realCompletedPages: progressPages?.done ?? null,
+    smartSkipOutcome: parseSmartSkip,
+  };
 
   return (
     <>
@@ -599,34 +621,21 @@ export function OnboardingDocStep({
             </button>
           </div>
         </div>
-      ) : uploading || processing || summarizing ? (
-        <div className="rounded-[18px] border-2 border-dashed border-gray-300 bg-gradient-to-b from-white to-gray-50 p-8 text-center">
-          <div className="mx-auto mb-3 grid h-[46px] w-[46px] place-items-center rounded-full bg-blue-100 text-blue-600">
-            <div className="h-[22px] w-[22px] animate-spin rounded-full border-[3px] border-current border-t-transparent opacity-70" />
+      ) : summarizing ? (
+        /* Post-parse settle (S286 flash fix): the summary read after a parse or
+           canonical-match resolve is sub-second — re-mounting the full parse
+           screen for it flashed like a bug. Quiet done-card-chrome interim
+           instead; transitions straight into the chips card. */
+        <div className="rounded-[18px] border border-gray-200 bg-white p-5 shadow-sm">
+          <div className="flex items-center gap-2.5">
+            <span className="inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-600">
+              <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+            </span>
+            <p className="text-sm font-semibold text-gray-900">{OB_DOC_COPY.settling}</p>
           </div>
-          <p className="text-[15px] font-semibold text-gray-900">
-            {uploading ? `Uploading… ${uploadProgress}%` : "Reading your document…"}
-          </p>
-          <div className="mx-auto mt-3.5 h-1 max-w-[280px] overflow-hidden rounded-full bg-gray-200">
-            {uploading || (progressPages && progressPages.total > 0) ? (
-              <div
-                className="h-full rounded-full bg-blue-500 transition-all"
-                style={{
-                  width: uploading
-                    ? `${uploadProgress}%`
-                    : `${Math.round(((progressPages?.done ?? 0) / (progressPages?.total ?? 1)) * 100)}%`,
-                }}
-              />
-            ) : (
-              <div className="h-full w-2/5 animate-[obload_1.4s_ease-in-out_infinite] rounded-full bg-blue-500" />
-            )}
-          </div>
-          <p className="mt-2.5 text-xs text-gray-400">
-            {progressPages && progressPages.total > 0 && !uploading
-              ? `Reading page ${Math.min(progressPages.done + 1, progressPages.total)} of ${progressPages.total}`
-              : OB_DOC_COPY.parseNote}
-          </p>
         </div>
+      ) : uploading || processing ? (
+        <UnifiedParseScreen docs={[parseDoc]} title="Reading your document" loaderVariant="stackV3" />
       ) : (
         <div
           {...getRootProps()}

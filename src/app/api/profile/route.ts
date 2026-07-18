@@ -79,16 +79,23 @@ export async function GET(req: NextRequest) {
   // Simplified onboarding (S285): document-presence probes powering the
   // profile-strength model (card slot / doc slot). Same derivation the
   // mig-206 funnel uses — doc_type buckets on the documents table.
+  // S286: rejected/error docs no longer count (a junk PDF must not tick the
+  // meter), and the coverage probe returns the newest rows + exact count so
+  // the /onboarding doc card can restore truthfully after a reload (which
+  // document(s), right kind, in-flight vs parsed).
   const { data: cardDocProbe } = await userScoped(supabase, user.id)
     .table("documents")
     .select("id")
     .eq("doc_type", "insurance_card")
+    .not("status", "in", "(rejected,error)")
     .limit(1);
-  const { data: coverageDocProbe } = await userScoped(supabase, user.id)
+  const { data: coverageDocs, count: coverageDocCount } = await userScoped(supabase, user.id)
     .table("documents")
-    .select("id")
+    .select("id, file_name, doc_type, status", { count: "exact" })
     .in("doc_type", ["sbc", "plan_document", "eoc", "itemized_bill", "eob"])
-    .limit(1);
+    .not("status", "in", "(rejected,error)")
+    .order("created_at", { ascending: false })
+    .limit(4);
 
   return NextResponse.json({
     profile: profile || null,
@@ -99,7 +106,11 @@ export async function GET(req: NextRequest) {
     onboardingCompletedAt: user.onboarding_completed_at ?? null,
     hasClaims: (claimProbe?.length ?? 0) > 0,
     hasCard: (cardDocProbe?.length ?? 0) > 0,
-    hasPlanOrBill: (coverageDocProbe?.length ?? 0) > 0,
+    hasPlanOrBill: (coverageDocs?.length ?? 0) > 0,
+    // S286 additive: newest coverage docs (≤4) + exact total for the
+    // /onboarding restore card. Older API consumers simply ignore these.
+    recentCoverageDocs: coverageDocs ?? [],
+    coverageDocCount: coverageDocCount ?? coverageDocs?.length ?? 0,
   });
 }
 

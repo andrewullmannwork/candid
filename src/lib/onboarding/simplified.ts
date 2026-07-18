@@ -8,6 +8,8 @@
  * what counts as done. Pure module — no React, safe to import from fixtures.
  */
 
+import { isDecoratedValue } from "../parser/consumer-read";
+
 /** Flag gating the whole feature (seeded OFF by mig 207). */
 export const SIMPLIFIED_ONBOARDING_FLAG = "onboarding_simplified_v1";
 
@@ -61,6 +63,7 @@ export const OB_DOC_COPY = {
   parseNote: "OCR · extracting benefits · indexing covered services",
   parsedPlan: "Parsed — coverage set up",
   parsedBill: "Audited — here's what we found",
+  settling: "Pulling in your results…",
   explainer: [
     { tag: "PLAN DOC", items: "Deductibles · OOP max · covered services" },
     { tag: "BILL · EOB", items: "Line-item overcharge audit, on the spot" },
@@ -263,6 +266,9 @@ export interface OnboardingProfileShape {
   hasClaims?: boolean;
   hasCard?: boolean;
   hasPlanOrBill?: boolean;
+  /** S286 additive: newest coverage docs (≤4) + exact total, for the doc-card restore. */
+  recentCoverageDocs?: RecentCoverageDoc[];
+  coverageDocCount?: number;
   profile?: {
     member_id?: string | null;
     insurer?: string | null;
@@ -289,4 +295,77 @@ export function slotsFromProfile(p: OnboardingProfileShape): StrengthSlots {
     sex: !!prof?.sex,
     situation: (prof?.situation_tags?.length ?? 0) > 0,
   };
+}
+
+/**
+ * Unwrap a possibly display-state-decorated value to its scalar. `/api/plan/analyze`
+ * returns `DecoratedValue<T>` ({ value, state, reason, … }) for matched/active plans
+ * (consumer-read Pattern P-8); the onboarding result chips need the raw scalar. Raw
+ * (already-scalar) values pass through unchanged. Fixture-guarded — a decorated object
+ * rendered directly as a React child crashes the flow (S286).
+ */
+export function unwrapDecorated<T>(x: unknown): T {
+  return isDecoratedValue<T>(x) ? x.value : (x as T);
+}
+
+/** "$1,500" from a number-ish value; null when not a finite number. */
+export function obFmtMoney(n: unknown): string | null {
+  const v = typeof n === "number" ? n : typeof n === "string" ? parseFloat(n) : NaN;
+  if (!isFinite(v)) return null;
+  return `$${Math.round(v).toLocaleString()}`;
+}
+
+/* ── Result-chip builders — ONE shaping for live parses AND mount-restore ──
+   (S286: the reload/restore path previously rebuilt the doc card generically —
+   wrong kind, no filename, no chips. Both paths now share these.) */
+
+/** Response slice of POST /api/plan/analyze the plan chips read. */
+export interface PlanAnalyzeChipSource {
+  totalBenefits?: number;
+  planSummary?: { inDeductible?: unknown; inOopMax?: unknown; planType?: unknown } | null;
+}
+
+export function chipsFromPlanAnalyze(data: PlanAnalyzeChipSource): ObChip[] {
+  const chips: ObChip[] = [];
+  const ded = obFmtMoney(unwrapDecorated(data.planSummary?.inDeductible));
+  const oop = obFmtMoney(unwrapDecorated(data.planSummary?.inOopMax));
+  if (ded) chips.push({ label: "Deductible", value: ded, verified: true });
+  if (oop) chips.push({ label: "OOP max", value: oop, verified: true });
+  const planType = unwrapDecorated<string | null>(data.planSummary?.planType ?? null);
+  if (planType) chips.push({ label: "Plan type", value: String(planType) });
+  if (typeof data.totalBenefits === "number" && data.totalBenefits > 0) {
+    chips.push({ label: "Covered services", value: `${data.totalBenefits} indexed` });
+  }
+  return chips;
+}
+
+/** Response slice of GET /api/claims?documentId= the bill chips read. */
+export interface ClaimChipSource {
+  lineItemCount?: number;
+  findingCount?: number;
+  providerName?: string | null;
+  recovery?: { potentialRecovery?: number } | null;
+}
+
+export function chipsFromClaimSummary(claim: ClaimChipSource | null | undefined): ObChip[] {
+  const chips: ObChip[] = [];
+  if (!claim) return chips;
+  const rec = obFmtMoney(claim.recovery?.potentialRecovery);
+  if (rec) chips.push({ label: "Potential recovery", value: rec, verified: true });
+  if (typeof claim.lineItemCount === "number") {
+    chips.push({ label: "Line items", value: String(claim.lineItemCount) });
+  }
+  if (typeof claim.findingCount === "number") {
+    chips.push({ label: "Findings", value: String(claim.findingCount) });
+  }
+  if (claim.providerName) chips.push({ label: "Provider", value: claim.providerName });
+  return chips;
+}
+
+/** One row of GET /api/profile's `recentCoverageDocs` (S286 additive field). */
+export interface RecentCoverageDoc {
+  id: string;
+  file_name: string | null;
+  doc_type: string | null;
+  status: string | null;
 }
