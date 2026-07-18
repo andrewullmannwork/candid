@@ -61,6 +61,36 @@ interface CostShareBannerProps {
   editableServiceCost?: { serviceLabel: string; copay: number | null; coinsurancePercent: number | null } | null;
   onUploadEob: () => void;
   onBack: () => void;
+  /** Surface 3 (clarity redesign) — "assumptions" renders ONLY the editable
+   *  "What we assumed" rows (no verdict header, no clean-state outro): the
+   *  flagged-bill step rail carries the verdict in step 1, so step 2 embeds
+   *  just this card. Default "full" is the standalone verdict card. */
+  variant?: "full" | "assumptions";
+}
+
+/**
+ * True when the banner has ANY assumption content to edit — open rows,
+ * already-resolved overrides (re-editable via "Update assumptions"), or the
+ * user's own editable service cost. The flagged step rail uses this to decide
+ * whether the "Verify our assumptions" step exists at all.
+ */
+export function hasAssumptionRows(
+  assumptions: CostShareAssumption[],
+  overrides: CostShareOverrides | null,
+  editableServiceCost?: { serviceLabel: string } | null,
+): boolean {
+  const has = (field: string) => assumptions.some((a) => a.field === field);
+  return (
+    has("network") ||
+    has("deductible_met") ||
+    has("oop_met") ||
+    has("aca_preventive") ||
+    has("service_cost") ||
+    overrides?.userNetworkOverride != null ||
+    overrides?.deductibleMet != null ||
+    overrides?.oopMet != null ||
+    !!editableServiceCost
+  );
 }
 
 function fmtDate(iso: string | null): string {
@@ -143,7 +173,9 @@ export function CostShareBanner({
   editableServiceCost,
   onUploadEob,
   onBack,
+  variant = "full",
 }: CostShareBannerProps) {
+  const assumptionsOnly = variant === "assumptions";
   const [acaDismissed, setAcaDismissed] = useState(false);
   const [editAll, setEditAll] = useState(false); // "Update assumptions" re-opens resolved rows for re-edit
   const [dismissed, setDismissed] = useState(false); // "Done" collapses the section (accept as-is)
@@ -277,25 +309,35 @@ export function CostShareBanner({
 
   return (
     <>
-      <div className="mt-6 overflow-hidden rounded-2xl border border-gray-200 bg-white">
-        <div className="flex items-start justify-between gap-3 px-5 py-4">
-          <div className="flex items-start gap-3.5">
-            <div className={`grid h-[42px] w-[42px] flex-none place-items-center rounded-xl ${headChipBg[verdict]}`}>{headChip[verdict]}</div>
-            <div>
-              <div className="text-[17px] font-semibold tracking-[-0.01em] text-gray-900">{headline}</div>
-              <div className="mt-1 max-w-[60ch] text-[13px] leading-relaxed text-gray-600">{body}</div>
+      <div
+        className={
+          assumptionsOnly
+            ? "overflow-hidden rounded-[18px] border border-gray-200 bg-white"
+            : "mt-6 overflow-hidden rounded-2xl border border-gray-200 bg-white"
+        }
+      >
+        {!assumptionsOnly && (
+          <div className="flex items-start justify-between gap-3 px-5 py-4">
+            <div className="flex items-start gap-3.5">
+              <div className={`grid h-[42px] w-[42px] flex-none place-items-center rounded-xl ${headChipBg[verdict]}`}>{headChip[verdict]}</div>
+              <div>
+                <div className="text-[17px] font-semibold tracking-[-0.01em] text-gray-900">{headline}</div>
+                <div className="mt-1 max-w-[60ch] text-[13px] leading-relaxed text-gray-600">{body}</div>
+              </div>
             </div>
+            {isClean && (
+              <div className="flex flex-none items-center gap-1 rounded-full border border-emerald-300 px-2.5 py-1 text-[12px] font-semibold text-emerald-700">
+                <CheckGlyph small /> Verified
+              </div>
+            )}
           </div>
-          {isClean && (
-            <div className="flex flex-none items-center gap-1 rounded-full border border-emerald-300 px-2.5 py-1 text-[12px] font-semibold text-emerald-700">
-              <CheckGlyph small /> Verified
-            </div>
-          )}
-        </div>
+        )}
 
         {sectionOpen && (
-          <div className="px-5 pb-4">
-            <div className="border-t border-gray-100 pt-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-gray-400">What we assumed</div>
+          <div className={assumptionsOnly ? "px-5 pb-4 pt-1" : "px-5 pb-4"}>
+            {!assumptionsOnly && (
+              <div className="border-t border-gray-100 pt-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-gray-400">What we assumed</div>
+            )}
 
             {showNetwork && (
               <Row
@@ -403,7 +445,7 @@ export function CostShareBanner({
         )}
       </div>
 
-      {isClean && (
+      {isClean && !assumptionsOnly && (
         <div className="mt-4 flex flex-col gap-3 rounded-2xl border border-gray-200 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <p className="max-w-[60ch] text-[13px] leading-relaxed text-gray-500">
             Nothing to do here. We&apos;ll keep watching this bill in case the EOB updates or new plan info changes the picture.
