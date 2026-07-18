@@ -6,28 +6,16 @@ import { cn } from "@/lib/utils/cn";
  * Recovery hero — top-of-page hero on `/claim` summarizing potential recovery
  * across the user's audited bills.
  *
- * S138 (B4.2 design fidelity sweep) — adopts design's full chrome per
- * `/Users/andrewullmann/Downloads/styles.css` lines 110-211:
- *   - 32px padding (was ~20-24px) per --hero-pad
- *   - Big-fig: clamp(48px, 7vw, 76px) per .rec-bigfig
- *   - 4-stat grid with vertical divider rules between stats (.rec-stat + .rec-stat::before)
- *   - Border-top above the stat row + 22px padding-top
+ * Clarity redesign Surface 2 (design_handoff_clarity_redesign README §2 +
+ * claim-summary.jsx RecoveryHero): the S138 4-stat row + top-right CTA are
+ * replaced by the "Your next steps" strip — three CLICKABLE stat tiles
+ * (flagged / awaiting input / letters ready) that set the matching bill-list
+ * filter below and scroll to it. Context copy ends "Complete the steps below
+ * to get started."
  *
- * Per Phase 1 §1.D.1 + D-§1.D.1-A:
- *   - "calm" variant default (rail-accent visual; rendered with left blue rail)
- *   - "ink" variant deferred to Phase 2 fast-follow
- *
- * Design source-of-truth:
- *   plans/findings/design-handoffs/s112-full-refresh/project/claim-summary.jsx
- *   (RecoveryHero + Stat components, lines 1-50)
- *   + /Users/andrewullmann/Downloads/styles.css .rec / .rec-stat family.
- *
- * Composes:
- *   eyebrow "Potential recovery"
- *   bigfig with ↑ + $totalRecovery
- *   context paragraph
- *   CTA "Review Dispute Letter →" + hint "{disputesCount} dispute ready · {reviewCount} need your input"
- *   4-stat row: Bills analyzed / Issues flagged / Need your input / Disputes drafted (last emph)
+ * Tiles: white card, border, hover lift; 30px count; pill action button that
+ * fills solid on hover; active tile stays highlighted. Tone: amber for
+ * needs-input (when >0), blue for letters-ready.
  */
 
 export interface RecoveryHeroStats {
@@ -35,7 +23,7 @@ export interface RecoveryHeroStats {
   totalRecovery: number;
   /** Total bills audited. */
   billsCount: number;
-  /** Confirmed overcharge count. */
+  /** Confirmed overcharge count (drafted or not). */
   issuesCount: number;
   /** Drafted-dispute count. */
   disputesCount: number;
@@ -43,13 +31,16 @@ export interface RecoveryHeroStats {
   reviewCount: number;
 }
 
+/** The three next-step list filters (matches /claim tab ids minus "bills"). */
+export type NextStepView = "flagged" | "input" | "letters";
+
 interface RecoveryHeroProps {
   stats: RecoveryHeroStats;
   variant?: "calm" | "ink";
-  /** Click handler for the primary CTA. */
-  onPrimary?: () => void;
-  /** Override CTA label (defaults to "Review Dispute Letter" or "Draft a dispute" when no drafts exist). */
-  primaryLabel?: string;
+  /** Currently-active list filter (null when the unfiltered All-bills tab is shown). */
+  activeView?: NextStepView | null;
+  /** Tile click → set the matching list filter + scroll to the list. */
+  onStep?: (view: NextStepView) => void;
 }
 
 function formatCurrency(n: number): string {
@@ -62,32 +53,41 @@ function formatCurrency(n: number): string {
 export function RecoveryHero({
   stats,
   variant = "calm",
-  onPrimary,
-  primaryLabel,
+  activeView = null,
+  onStep,
 }: RecoveryHeroProps) {
   const { totalRecovery, billsCount, issuesCount, disputesCount, reviewCount } = stats;
   const isCalm = variant === "calm";
 
-  // CTA label adapts to whether the user has draft disputes ready vs. only
-  // flagged-but-undrafted bills. When neither, default to a soft "Review bills".
-  const ctaLabel =
-    primaryLabel ??
-    (disputesCount > 0
-      ? "Review Dispute Letter"
-      : issuesCount > 0
-        ? "Draft a dispute"
-        : "Review bills");
-
-  // Hint copy mirrors the design canvas literal: "{n} dispute ready · {m} need your input".
-  // Both clauses are conditional so we don't render "0 dispute ready" awkwardness.
-  const hintParts: string[] = [];
-  if (disputesCount > 0) {
-    hintParts.push(`${disputesCount} dispute${disputesCount === 1 ? "" : "s"} ready`);
-  }
-  if (reviewCount > 0) {
-    hintParts.push(`${reviewCount} need${reviewCount === 1 ? "s" : ""} your input`);
-  }
-  const hint = hintParts.join(" · ");
+  const steps: Array<{
+    id: NextStepView;
+    count: number;
+    tone: "flag" | "attn" | "ready" | "none";
+    label: string;
+    verb: string;
+  }> = [
+    {
+      id: "flagged",
+      count: issuesCount,
+      tone: "flag",
+      label: issuesCount === 1 ? "Bill flagged for review" : "Bills flagged for review",
+      verb: "Review them",
+    },
+    {
+      id: "input",
+      count: reviewCount,
+      tone: reviewCount > 0 ? "attn" : "none",
+      label: reviewCount === 1 ? "Bill awaiting your input" : "Bills awaiting your input",
+      verb: "Answer now",
+    },
+    {
+      id: "letters",
+      count: disputesCount,
+      tone: disputesCount > 0 ? "ready" : "none",
+      label: disputesCount === 1 ? "Dispute ready to send" : "Disputes ready to send",
+      verb: "Open letters",
+    },
+  ];
 
   return (
     <div
@@ -105,154 +105,104 @@ export function RecoveryHero({
       )}
 
       <div className={cn("relative", isCalm && "pl-3")}>
-        {/* Head row: bigfig + context (left) + CTA + hint (right) */}
-        <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0 flex-1">
-            <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-blue-600">
-              Potential recovery
-            </div>
-            <div className="mt-3.5 flex items-baseline gap-2">
-              <span
-                className="font-bold text-emerald-600"
-                style={{ fontSize: "clamp(24px, 3.5vw, 38px)", lineHeight: 1 }}
-              >
-                ↑
-              </span>
-              <span
-                className="font-bold tracking-[-0.035em] text-gray-900 tabular-nums"
-                style={{ fontSize: "clamp(48px, 7vw, 76px)", lineHeight: 1 }}
-              >
-                ${formatCurrency(totalRecovery)}
-              </span>
-            </div>
-            <p className="mt-3 max-w-[52ch] text-sm leading-[1.55] text-gray-600">
-              Across {billsCount} {billsCount === 1 ? "bill" : "bills"} you uploaded, Candid found{" "}
-              <strong className="font-semibold text-gray-900">
-                ${formatCurrency(totalRecovery)} you can recover
-              </strong>{" "}
-              — refunds and overcharges to dispute with your insurer and providers.
-            </p>
+        {/* Head: eyebrow + bigfig + context */}
+        <div className="min-w-0">
+          <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-blue-600">
+            Potential recovery
           </div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span
+              className="font-bold text-emerald-600"
+              style={{ fontSize: "clamp(24px, 3.5vw, 38px)", lineHeight: 1 }}
+            >
+              ↑
+            </span>
+            <span
+              className="font-bold tracking-[-0.035em] text-gray-900 tabular-nums"
+              style={{ fontSize: "clamp(48px, 7vw, 76px)", lineHeight: 1 }}
+            >
+              ${formatCurrency(totalRecovery)}
+            </span>
+          </div>
+          <p className="mt-2.5 max-w-[66ch] text-sm leading-[1.55] text-gray-600">
+            Across {billsCount} {billsCount === 1 ? "bill" : "bills"} you uploaded, Candid found{" "}
+            <strong className="font-semibold text-gray-900">
+              ${formatCurrency(totalRecovery)} you can recover
+            </strong>
+            . Complete the steps below to get started.
+          </p>
+        </div>
 
-          {/* CTA column — only renders if there's an actionable next step */}
-          {(disputesCount > 0 || issuesCount > 0) && (
-            <div className="flex flex-col items-stretch gap-2 sm:items-end">
-              <button
-                type="button"
-                onClick={onPrimary}
-                className={cn(
-                  "inline-flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-[13px] font-semibold transition-all hover:-translate-y-px",
-                  isCalm
-                    ? "bg-gray-900 text-white hover:bg-gray-800"
-                    : "bg-blue-600 text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)]",
-                )}
-              >
-                {ctaLabel}
-                <svg
-                  className="h-4 w-4"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                  aria-hidden="true"
+        {/* "Your next steps" strip — 3 clickable tiles that filter the list below. */}
+        <div className="mt-5 border-t border-gray-100 pt-4">
+          <div className="mb-2.5 text-[10.5px] font-bold uppercase tracking-[0.1em] text-gray-400">
+            Your next steps
+          </div>
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+            {steps.map((s) => {
+              const isActive = activeView === s.id;
+              return (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => onStep?.(s.id)}
+                  className={cn(
+                    "group flex flex-col items-center gap-1.5 rounded-[14px] border bg-white px-3.5 pb-3.5 pt-4 text-center transition-all",
+                    "hover:-translate-y-px hover:border-blue-300 hover:shadow-[0_4px_14px_-6px_rgba(37,99,235,0.18)]",
+                    isActive ? "border-blue-400 bg-blue-50" : "border-gray-200",
+                  )}
                 >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M17 8l4 4m0 0l-4 4m4-4H3"
-                  />
-                </svg>
-              </button>
-              {hint && (
-                <div className="text-[11px] text-gray-500 sm:text-right">{hint}</div>
-              )}
-            </div>
-          )}
+                  <span
+                    className={cn(
+                      "text-[30px] font-bold leading-none tracking-[-0.02em] tabular-nums",
+                      s.tone === "attn"
+                        ? "text-amber-700"
+                        : s.tone === "ready"
+                          ? "text-blue-700"
+                          : "text-gray-900",
+                    )}
+                  >
+                    {s.count}
+                  </span>
+                  <span className="text-[13px] font-semibold leading-[1.3] text-gray-700">
+                    {s.label}
+                  </span>
+                  <span
+                    className={cn(
+                      "mt-1 inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-[12.5px] font-semibold transition-all group-hover:gap-1.5",
+                      s.tone === "attn"
+                        ? cn(
+                            "bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-300",
+                            "group-hover:bg-amber-600 group-hover:text-white group-hover:ring-0",
+                            isActive && "bg-amber-600 text-white ring-0",
+                          )
+                        : cn(
+                            "bg-blue-50 text-blue-600 ring-1 ring-inset ring-blue-200",
+                            "group-hover:bg-blue-600 group-hover:text-white group-hover:ring-0",
+                            isActive && "bg-blue-600 text-white ring-0",
+                          ),
+                    )}
+                  >
+                    {s.verb}
+                    <svg
+                      className="h-3 w-3"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={2.5}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M5 12h14M12 5l7 7-7 7" />
+                    </svg>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
-
-        {/* 4-stat row — design uses grid w/ vertical divider rules between stats. */}
-        <div className="mt-6 grid grid-cols-2 gap-x-0 gap-y-4 border-t border-gray-100 pt-5 sm:grid-cols-4">
-          <Stat
-            label="Bills analyzed"
-            value={billsCount}
-            sub="Uploaded"
-            divider={false}
-          />
-          <Stat
-            label="Issues flagged"
-            value={issuesCount}
-            sub={issuesCount === 1 ? "Overcharge" : "Overcharges"}
-            color={issuesCount > 0 ? "red" : "default"}
-            divider
-          />
-          <Stat
-            label="Need your input"
-            value={reviewCount}
-            sub="Unclear from plan"
-            color={reviewCount > 0 ? "amber" : "default"}
-            divider
-          />
-          <Stat
-            label="Disputes drafted"
-            value={disputesCount}
-            sub="Ready to send"
-            color={disputesCount > 0 ? "blue" : "default"}
-            emph
-            divider
-          />
-        </div>
       </div>
-    </div>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  sub,
-  color = "default",
-  emph = false,
-  divider = false,
-}: {
-  label: string;
-  value: number;
-  sub: string;
-  color?: "default" | "amber" | "blue" | "red";
-  emph?: boolean;
-  divider?: boolean;
-}) {
-  const valueColor =
-    color === "red"
-      ? "text-red-600"
-      : color === "amber"
-        ? "text-amber-600"
-        : color === "blue"
-          ? "text-blue-700"
-          : "text-gray-900";
-
-  return (
-    <div
-      className={cn(
-        "relative px-0 sm:px-5",
-        // First stat: no left padding (matches design .rec-stat:first-child).
-        "sm:first:pl-0",
-        // Vertical divider rule between stats — design .rec-stat + .rec-stat::before.
-        divider && "sm:before:absolute sm:before:left-0 sm:before:top-1.5 sm:before:bottom-1.5 sm:before:w-px sm:before:bg-gray-200 sm:before:content-['']",
-      )}
-    >
-      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
-        {label}
-      </div>
-      <div
-        className={cn(
-          "mt-1.5 font-bold tracking-[-0.02em] tabular-nums",
-          emph ? "text-[22px]" : "text-[22px]",
-          valueColor,
-        )}
-      >
-        {value}
-      </div>
-      <div className="mt-0.5 text-[11px] font-medium text-gray-500">{sub}</div>
     </div>
   );
 }
