@@ -148,7 +148,7 @@ export function GrowthMetricsView({
             <h2 className="text-sm font-semibold text-gray-900">Account-creation gates</h2>
             <p className="mt-0.5 text-[12px] text-gray-500">
               Where people stall before an account exists. Counts are people (retries
-              deduped), admin/test excluded; recording began 2026-07-13.
+              deduped), admin/test excluded; recording began 2026-07-16.
             </p>
           </div>
           <table className="w-full text-sm">

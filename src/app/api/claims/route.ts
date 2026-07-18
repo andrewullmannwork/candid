@@ -140,6 +140,10 @@ export async function GET(req: NextRequest) {
   const page = parseInt(req.nextUrl.searchParams.get("page") || "1", 10);
   const limit = Math.min(parseInt(req.nextUrl.searchParams.get("limit") || "20", 10), 50);
   const offset = (page - 1) * limit;
+  // Simplified onboarding (S285): optional filter to the claim(s) born from a
+  // specific uploaded document — powers the in-step bill-audit result on
+  // /onboarding step 2. Additive; absent param = existing behavior.
+  const documentId = req.nextUrl.searchParams.get("documentId");
 
   // Fetch claims. We deliberately over-fetch (no `.range()` cap on raw rows)
   // so the dedup pass below can collapse re-uploads of the same bill before
@@ -149,11 +153,16 @@ export async function GET(req: NextRequest) {
   // lives at the ingestion layer + needs migration to merge existing dupes).
   // S74.5 D11 — exclude soft-deleted claims (merge losers + future
   // user-requested erasures). Filter is partial-index-backed (idx_claims_user_live).
-  const { data: rawClaims, error } = await userScoped(supabase, user.id)
+  let claimsQuery = userScoped(supabase, user.id)
     .table("claims")
     .select("*")
-    .is("deleted_at", null)
-    .order("created_at", { ascending: false });
+    .is("deleted_at", null);
+  if (documentId) {
+    claimsQuery = claimsQuery.eq("source_document_id", documentId);
+  }
+  const { data: rawClaims, error } = await claimsQuery.order("created_at", {
+    ascending: false,
+  });
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });

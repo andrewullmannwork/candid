@@ -123,6 +123,9 @@ export interface ProfileRow {
   zip_code: string | null;
   county_fips: string | null;
   county_name: string | null;
+  // Simplified onboarding (migration 208)
+  household: "just_me" | "me_spouse" | "me_kids" | "me_spouse_kids" | null;
+  situation_tags: string[] | null;
   // Plan matching (deprecated — use insurance_plans)
   matched_plan_id: string | null;
   plan_source: string | null;

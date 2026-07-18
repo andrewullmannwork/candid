@@ -26,6 +26,7 @@ import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { routePlanDocServices } from "@/lib/plan_doc/thesaurus-routing";
 import type { RawService } from "@/lib/plan_doc/haiku-prompts/services-cost-sharing";
 import { applyPlanCoverageCell, mergeServiceCoverageRules, coerceComponent } from "@/lib/plan/coverage-targeting";
+import { applyDocSupplementMerge } from "@/lib/plan/plan-merge";
 import { derivePlanTierLabel } from "@/lib/claims/service-resolver";
 import { votedParseSBC } from "@/lib/sbc/voted-parser";
 import type { VotedParseSBCResult } from "@/lib/sbc/voted-parser";
@@ -855,22 +856,61 @@ export async function processPlanDocumentData(
       // Phase 3.2.1 — also propagate field_provenance from this upload's parse so
       // Pattern P-8 cite chain stays current. Plan_document path skips since
       // planIdentityProvenance is null there.
-      await supabase.from("insurance_plans").update({
-        source: (isFullPlanDoc ? "plan_doc_upload" : "sbc_upload") as string,
-        source_document_id: documentId,
-        is_active: true,
-        verification_status: "document_verified" as const,
-        in_deductible_individual: planInsert.in_deductible_individual,
-        in_oop_max_individual: planInsert.in_oop_max_individual,
-        out_deductible_individual: planInsert.out_deductible_individual,
-        out_oop_max_individual: planInsert.out_oop_max_individual,
-        ...(planIdentityProvenance ? { field_provenance: planIdentityProvenance } : {}),
-        // S74.6 D1 — propagate ACA columns only when THIS parse extracted a
-        // signal. When Haiku found nothing, preserve the plan's prior ACA value
-        // (don't overwrite a previously-extracted basis with 'unknown' just
-        // because this re-parse chunk lacked the phrase).
-        ...(extractedAca ?? {}),
-      }).eq("id", targetPlanId);
+      //
+      // S286 supplement-merge (Andrew-approved matrix; policy + fixture in
+      // src/lib/plan/plan-merge.ts): every subsequent doc parse SUPPLEMENTS the
+      // existing row — fill gaps, never erase, confirm matches (corroboration
+      // recorded), and resolve conflicts per DOCUMENT (more complete parse wins,
+      // tie → newest). Weak incumbents (manual / uncited values) always yield to
+      // a cited parse (CF-25: docs are the authority; manual is provisional).
+      const { data: mergeTargetRow } = await supabase
+        .from("insurance_plans")
+        .select("*")
+        .eq("id", targetPlanId)
+        .single();
+      // Document data only: strip housekeeping + ACA (extractedAca keeps its own
+      // only-write-when-extracted semantics per S74.6 D1) from the doc payload…
+      const mergeDocFields: Record<string, unknown> = { ...planInsert };
+      for (const k of [
+        "user_id",
+        "source",
+        "source_document_id",
+        "is_active",
+        "verification_status",
+        "field_provenance",
+        ...Object.keys(acaForInsert),
+      ]) {
+        delete mergeDocFields[k];
+      }
+      // …and undo the create-branch profile fallbacks (703-704): a profile-typed
+      // number is not "the document found it" — supplement merges carry parse
+      // evidence only.
+      if (parseResult.plan.in_deductible_individual == null) delete mergeDocFields.in_deductible_individual;
+      if (parseResult.plan.in_oop_max_individual == null) delete mergeDocFields.in_oop_max_individual;
+      const supplementMerge = applyDocSupplementMerge({
+        base: {
+          source: (isFullPlanDoc ? "plan_doc_upload" : "sbc_upload") as string,
+          source_document_id: documentId,
+          is_active: true,
+          verification_status: "document_verified" as const,
+          // S74.6 D1 — propagate ACA columns only when THIS parse extracted a
+          // signal. When Haiku found nothing, preserve the plan's prior ACA value
+          // (don't overwrite a previously-extracted basis with 'unknown' just
+          // because this re-parse chunk lacked the phrase).
+          ...(extractedAca ?? {}),
+        },
+        docFields: mergeDocFields,
+        existingRow: (mergeTargetRow ?? {}) as Record<string, unknown>,
+        existingProvenance:
+          ((mergeTargetRow as Record<string, unknown> | null)?.field_provenance as Record<string, unknown> | null) ?? null,
+        parseProvenance: planIdentityProvenance as Record<string, unknown> | null,
+        documentId,
+      });
+      console.log(
+        `[process-plan] supplement-merge (${targetPlanId}): ${JSON.stringify(supplementMerge.actions)}` +
+          (supplementMerge.conflictWinner ? ` — conflicts → ${supplementMerge.conflictWinner}` : ""),
+      );
+      await supabase.from("insurance_plans").update(supplementMerge.update).eq("id", targetPlanId);
       // Ensure profile points to this plan and back-populate plan info
       const profileUpdate: Record<string, unknown> = { active_insurance_plan_id: targetPlanId };
       if (planInsert.insurer_name) profileUpdate.insurer = planInsert.insurer_name;

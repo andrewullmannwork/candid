@@ -10,6 +10,7 @@ const CHD_DISALLOW = [
   "/api",
   "/dashboard",
   "/profile",
+  "/onboarding",
   "/settings",
   "/upload",
   "/audit",

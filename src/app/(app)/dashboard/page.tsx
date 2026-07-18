@@ -8,6 +8,8 @@ import type { PlanAnalysisResult, AnalyzedBenefit } from "@/lib/plan/analyzer";
 import { FollowupBanner } from "@/components/disputes/FollowupBanner";
 import { ShareWithFriend } from "@/components/share/share-with-friend";
 import { PageHeader } from "@/components/page-header";
+import { ProfileMeter } from "@/components/onboarding/ProfileMeter";
+import { SIMPLIFIED_ONBOARDING_FLAG } from "@/lib/onboarding/simplified";
 import { Banner } from "@/components/banner";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { DataSourceContextLine } from "@/components/data-source-context-line";
@@ -71,6 +73,9 @@ export default function DashboardPage() {
   const [planResult, setPlanResult] = useState<EnrichedPlanResult | null>(null);
   const [currentYear] = useState(() => new Date().getFullYear());
   const [yearRolloverEnabled, setYearRolloverEnabled] = useState(false);
+  // Simplified onboarding (S285): profile meter gate — replaces the legacy
+  // complete-profile banner when ON (never both).
+  const [meterOn, setMeterOn] = useState(false);
   const [loading, setLoading] = useState(true);
   // Claim pipeline (Surface 1 dash-duo) — same derived counts as /claim.
   const pipeline = useClaimPipeline();
@@ -138,6 +143,18 @@ export default function DashboardPage() {
         .then(({ data }) => {
           if (data?.enabled) setYearRolloverEnabled(true);
         });
+
+      // Simplified onboarding (S285): meter flag via the public endpoint,
+      // fetched per mount — no module-scope cache (the v7 banner cached a
+      // flag read for the whole SPA session; mid-session flips were
+      // invisible until hard reload). Fail-closed: errors leave the meter
+      // off and the legacy banner in place.
+      fetch(`/api/feature-flags/${SIMPLIFIED_ONBOARDING_FLAG}`)
+        .then((r) => r.json())
+        .then((j: { enabled?: boolean }) => {
+          if (j?.enabled === true) setMeterOn(true);
+        })
+        .catch(() => {});
 
       setLoading(false);
     }
@@ -303,12 +320,18 @@ export default function DashboardPage() {
         sub="Here's everything Candid knows about your healthcare — your money, your plan, your next moves."
       />
 
+      {/* Simplified onboarding (S285): the profile-strength meter replaces
+          the legacy complete-profile banner below when the flag is ON —
+          never render both. */}
+      {meterOn && <ProfileMeter />}
+
       {/* ── Action-required banner stack (max 2 above dash-trio) ───── */}
       {/* Followup banner self-gates on dispute follow-up presence. */}
       <FollowupBanner />
 
-      {/* Profile completeness banner — D-§1.C.1-I via S113 Banner primitive. */}
-      {!profileComplete && (
+      {/* Profile completeness banner — D-§1.C.1-I via S113 Banner primitive.
+          Suppressed while the profile meter is on (S285: never both). */}
+      {!meterOn && !profileComplete && (
         <Banner
           tone="info"
           shape="card"

@@ -2,6 +2,7 @@
 
 import { Suspense, useState, useEffect, useRef, memo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { SIMPLIFIED_ONBOARDING_FLAG } from "@/lib/onboarding/simplified";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
 import type { InsuranceCardFields } from "@/app/api/profile/scan-card/route";
@@ -300,6 +301,45 @@ function ProfileContent() {
   const [savedGlobal, setSavedGlobal] = useState(false);
   const [editMode, setEditMode] = useState(isOnboarding);
   const [hasExistingProfile, setHasExistingProfile] = useState(false);
+
+  // Simplified onboarding (S285, flag `onboarding_simplified_v1`): when the
+  // flag is ON and this account hasn't completed onboarding, ?onboarding=true
+  // belongs to the new 3-step /onboarding flow — including stale links (the
+  // welcome email hardcodes this URL) and the legacy post-signup redirect.
+  // Flag OFF, account already complete, or ANY failure → the legacy wizard
+  // renders exactly as today. Runtime (not next.config) because the decision
+  // depends on flag + completion state.
+  const [simplifiedRedirect, setSimplifiedRedirect] = useState(false);
+  useEffect(() => {
+    if (!isOnboarding || !user) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const flagRes = await fetch(`/api/feature-flags/${SIMPLIFIED_ONBOARDING_FLAG}`);
+        const flag = (await flagRes.json()) as { enabled?: boolean };
+        if (!flag?.enabled || cancelled) return;
+        const idToken = await user.firebaseUser.getIdToken();
+        const profRes = await fetch("/api/profile", {
+          headers: { Authorization: `Bearer ${idToken}` },
+        });
+        const prof = (await profRes.json()) as { onboardingCompletedAt?: string | null };
+        if (cancelled) return;
+        if ("onboardingCompletedAt" in prof && prof.onboardingCompletedAt === null) {
+          setSimplifiedRedirect(true);
+          const p = new URLSearchParams();
+          if (prefillPhone) p.set("phone", prefillPhone);
+          if (prefillDob) p.set("dob", prefillDob);
+          const qs = p.toString();
+          router.replace(qs ? `/onboarding?${qs}` : "/onboarding");
+        }
+      } catch {
+        /* legacy wizard */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOnboarding, user, prefillPhone, prefillDob, router]);
 
   // S121 B2.1 — profile_dashboard_v1 rollout flag. `null` while fetching;
   // default ON when row missing per Andrew direction at S121. Network error or
@@ -664,7 +704,9 @@ function ProfileContent() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   const showCubeLoader = useMinHoldLoading(loading);
-  if (showCubeLoader) {
+  if (showCubeLoader || simplifiedRedirect) {
+    // simplifiedRedirect: hold the loader through the router.replace to
+    // /onboarding so the legacy wizard never flashes underneath it.
     return <CubeLoaderBuilding />;
   }
 
