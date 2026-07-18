@@ -119,7 +119,9 @@ function DivergedMeter({ label, bucket }: { label: string; bucket: LedgerBucket 
       <p className="text-[13px] text-gray-900 leading-relaxed mt-3 mb-3">
         A <span className="font-medium text-red-600 tabular-nums">{fmt(Math.abs(d.gap))}</span> gap.{" "}
         {behind
-          ? `Your insurer shows your ${lower} isn't met — but your Candid-uploaded bills say it is. You may be paying toward a ${lower} you've already met.`
+          ? bucket.met
+            ? `Your insurer shows your ${lower} isn't met — but your Candid-uploaded bills say it is. You may be paying toward a ${lower} you've already met.`
+            : `Your insurer shows ${fmt(d.insurerApplied)} applied, but your Candid-uploaded bills add up to ${fmt(bucket.candidApplied)}. Your insurer may be behind — you could be paying toward a ${lower} you've already partly covered.`
           : "Your insurer shows more than your uploaded bills do — you may have bills you haven't added yet."}
       </p>
       {behind && (
