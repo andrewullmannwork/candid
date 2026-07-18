@@ -18,8 +18,8 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
-import { notFound } from "next/navigation";
+import { Suspense } from "react";
+import { notFound, useSearchParams } from "next/navigation";
 import {
   UnifiedTodo,
   type CaseLetterSummary,
@@ -112,12 +112,20 @@ function Panel({
   );
 }
 
-export default function UnifiedTimelinePreview() {
-  const [only, setOnly] = useState<number | null>(null);
-  useEffect(() => {
-    const v = new URLSearchParams(window.location.search).get("state");
-    setOnly(v ? Number(v) || null : null);
-  }, []);
+// useSearchParams requires a Suspense boundary at the page level (same
+// pattern as the disputes page).
+export default function UnifiedTimelinePreviewPage() {
+  return (
+    <Suspense>
+      <UnifiedTimelinePreview />
+    </Suspense>
+  );
+}
+
+function UnifiedTimelinePreview() {
+  const searchParams = useSearchParams();
+  const stateParam = searchParams.get("state");
+  const only = stateParam ? Number(stateParam) || null : null;
   if (process.env.NODE_ENV === "production") notFound();
 
   const shared = {
