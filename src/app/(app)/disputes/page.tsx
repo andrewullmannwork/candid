@@ -33,6 +33,7 @@ import { CollectorModal } from "@/components/disputes/CollectorModal";
 import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestModal";
 import { suggestNextStep, isOutcomeDetail, mapOutcomeToStatus, type NextStepSuggestion } from "@/lib/disputes/outcome-taxonomy";
 import { CaseNeedsPanel, type PlanCostService } from "@/components/disputes/CaseNeedsPanel";
+import { UnifiedTodo } from "@/components/disputes/UnifiedTodo";
 import { CaseSummary } from "@/components/disputes/CaseSummary";
 import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
@@ -292,6 +293,9 @@ function DisputesContent() {
   const [providerAddressOpen, setProviderAddressOpen] = useState(false);
   // S74 — Mark-sent button state + transient toast.
   const [markingSent, setMarkingSent] = useState(false);
+  // Surface 4 (clarity redesign) — the letter-card footer "I've sent this"
+  // inline confirm; shares the same mark-sent flow as the UnifiedTodo row.
+  const [footerConfirming, setFooterConfirming] = useState(false);
   const [markSentToast, setMarkSentToast] = useState<string | null>(null);
   // S74.6 D5 §E.2 — outcome reporting modal state.
   const [outcomeModalOpen, setOutcomeModalOpen] = useState(false);
@@ -1242,7 +1246,7 @@ function DisputesContent() {
   );
 
   const articleNode = (
-    <article className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+    <article id="dispute-letter-article" className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
       {isEditing ? (
         <div className="relative">
           <div className="absolute right-4 top-3 text-[11px] font-medium text-slate-400">
@@ -1266,6 +1270,71 @@ function DisputesContent() {
           Legal basis referenced: <span className="text-slate-700">{letter.legalBasis}</span>
         </div>
       ) : null}
+      {/* Surface 4 — letter footer bar (v3 only): download + "I've sent this"
+          sharing the same sent state as the UnifiedTodo. No draft lock —
+          editing stays available post-send (existing behavior preserved). */}
+      {v3DesignOn && (
+        <div className="border-t border-slate-100 bg-slate-50/50 px-6 py-4 md:px-8">
+          {alreadySent ? (
+            <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-500">
+              <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[12px] font-semibold text-emerald-700">
+                <SentCheckIcon />
+                Marked as sent{disputeFiledDate ? ` · ${formatFiledDate(disputeFiledDate)}` : ""}
+              </span>
+              <span>Track the response and report the outcome in &ldquo;The case&rdquo; above.</span>
+            </div>
+          ) : footerConfirming ? (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span className="text-[13px] text-slate-600">
+                <strong className="font-semibold text-slate-900">Did you actually mail it?</strong>{" "}
+                Confirming starts the response clock and your follow-up reminders.
+              </span>
+              <span className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setFooterConfirming(false)}
+                  className="rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Not yet
+                </button>
+                <button
+                  type="button"
+                  disabled={markingSent}
+                  onClick={() => {
+                    setFooterConfirming(false);
+                    handleMarkSent();
+                  }}
+                  className="rounded-lg bg-blue-600 px-3.5 py-2 text-[13px] font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {markingSent ? "Saving…" : "Yes — start the clock"}
+                </button>
+              </span>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span className="text-xs text-slate-500">
+                Send by certified mail (USPS Form 3811) so you keep a paper trail.
+              </span>
+              <span className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleDownload}
+                  className="rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Download letter
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFooterConfirming(true)}
+                  className="rounded-lg bg-blue-600 px-3.5 py-2 text-[13px] font-semibold text-white shadow-sm hover:bg-blue-700"
+                >
+                  I&rsquo;ve sent this
+                </button>
+              </span>
+            </div>
+          )}
+        </div>
+      )}
     </article>
   );
 
@@ -1373,6 +1442,144 @@ function DisputesContent() {
     (g) => g.kind === "audit_findings_missing",
   );
 
+  // ── Surface 4 (clarity redesign) — node consts shared by both layouts ─────
+  // Zone-1 panel: standalone card in the legacy layout; embedded inside the
+  // UnifiedTodo "Confirm the claim details" expansion in v3.
+  const caseNeedsPanelNode = (
+    <CaseNeedsPanel
+      letterType={letter.letterType}
+      planServices={zone1Services}
+      nameMismatch={nameMismatch != null}
+      nameResolved={patientIdentityResolved}
+      billName={nameMismatch?.billName ?? null}
+      profileName={nameMismatch?.profileName ?? null}
+      attestationReviewed={serviceAttestationReviewed}
+      hasInsurer={zone1HasInsurer}
+      providerAddressOnFile={zone1ProviderAddressOnFile}
+      insurerAddressOnFile={zone1InsurerAddressOnFile}
+      eobPresent={zone1EobPresent}
+      userPatientPaid={userPatientPaid}
+      denialNoticeDate={deadlineInputs.denialNoticeDate}
+      collectorFirstContactDate={deadlineInputs.collectorFirstContactDate}
+      planLabel={planLabel}
+      showInsuranceRow={zone1ShowInsuranceRow}
+      canChangePlan={planPinningEnabled}
+      readiness={strength?.readiness ?? null}
+      coverageVerifyGaps={coverageVerifyGaps}
+      onCoverageVerify={handleCoverageVerify}
+      rerunAuditEnabled={false}
+      auditFindingsMissing={auditFindingsMissing}
+      onAuditRerun={handleAuditRerun}
+      onAddPlanDetails={(svc) =>
+        setAddPlanModal({
+          serviceSlug: svc.serviceSlug,
+          serviceLabel: svc.serviceLabel,
+          initialCopay: svc.copay,
+          initialCoinsurancePercent: svc.coinsurancePercent,
+        })
+      }
+      onConfirmName={() => handleResolvePatientIdentity(true)}
+      onEditLetter={() => setIsEditing(true)}
+      onReviewAttestation={() =>
+        document
+          .getElementById("dispute-evidence")
+          ?.scrollIntoView({ behavior: "smooth", block: "center" })
+      }
+      onAddProviderAddress={() => setProviderAddressOpen(true)}
+      onAddInsurerAddress={() => setInsurerCorrectionOpen(true)}
+      onUploadEob={() => window.location.assign("/upload")}
+      onSaveAmountPaid={handleSaveAmountPaid}
+      onChangePlan={async () => {
+        if (!user || !planContext?.plan?.planYear) return;
+        const token = await user.firebaseUser.getIdToken();
+        const qp = new URLSearchParams({ year: String(planContext.plan.planYear) });
+        if (planContext.plan.id) qp.set("pin", planContext.plan.id);
+        const res = await fetch(`/api/plan/by-year?${qp.toString()}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const { plans } = (await res.json()) as { plans: DisputePlanChooserPlan[] };
+          setRebindPlans(plans ?? []);
+          setRebindOpen(true);
+        }
+      }}
+      onSaveDeadlineDate={handleSaveDeadlineDate}
+    />
+  );
+
+  // Zone-2 "The case" — status/outcome tracker (deadline countdown, timeline,
+  // Mark as sent / Report the result / collections / escalation / undo). In v3
+  // it sits directly under the UnifiedTodo (Option A: always visible).
+  const caseSummaryNode = (
+    <CaseSummary
+      letterType={letter.letterType}
+      status={disputeStatus}
+      isSent={alreadySent}
+      filedDate={disputeFiledDate}
+      recoveryAmount={amountDisputed}
+      deadlineWarning={deadlineData?.deadlineWarning ?? null}
+      governingDeadlineDate={deadlineData?.governingDeadlineDate ?? null}
+      deadlineType={deadlineData?.deadlineType ?? null}
+      filingDeadlineDate={deadlineData?.filingDeadlineDate ?? null}
+      followups={deadlineData?.followups ?? []}
+      followupPlan={deadlineData?.followupPlan ?? []}
+      onMarkSent={handleMarkSent}
+      onReportOutcome={() => setOutcomeModalOpen(true)}
+      onCollections={() => setCollectorModalOpen(true)}
+      onEscalateNext={handleSuggestedNextStep}
+      onUndoSent={handleUndoSent}
+      onUndoOutcome={handleUndoOutcome}
+      markingSent={markingSent}
+      escalating={escalating}
+      nextStepLabel={suggestedNextStep?.ctaLabel ?? null}
+    />
+  );
+
+  // "What you need to do" — the v3 unified checklist above the letter. The
+  // claim-details expansion embeds the real CaseNeedsPanel (children).
+  const responseDueLabel = deadlineData?.governingDeadlineDate
+    ? formatFiledDate(deadlineData.governingDeadlineDate)
+    : disputeFiledDate
+      ? formatFiledDate(
+          new Date(new Date(disputeFiledDate).getTime() + 30 * 86400000)
+            .toISOString()
+            .slice(0, 10),
+        )
+      : null;
+  const unifiedTodoNode = (
+    <UnifiedTodo
+      amountLabel={
+        amountDisputed != null
+          ? `$${amountDisputed.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+          : null
+      }
+      sent={alreadySent}
+      sentDateLabel={disputeFiledDate ? formatFiledDate(disputeFiledDate) : null}
+      responseDueLabel={responseDueLabel}
+      providerAddressOnFile={zone1ProviderAddressOnFile}
+      onAddProviderAddress={() => setProviderAddressOpen(true)}
+      nameMismatch={nameMismatch}
+      nameResolved={patientIdentityResolved}
+      onConfirmPatient={() => handleResolvePatientIdentity(true)}
+      onEditLetterName={() => {
+        setIsEditing(true);
+        document
+          .getElementById("dispute-letter-article")
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }}
+      onOpenLetter={() =>
+        document
+          .getElementById("dispute-letter-article")
+          ?.scrollIntoView({ behavior: "smooth", block: "start" })
+      }
+      onDownload={handleDownload}
+      onMarkSent={handleMarkSent}
+      markingSent={markingSent}
+    >
+      {caseNeedsPanelNode}
+    </UnifiedTodo>
+  );
+
   return (
     <div className={v3DesignOn ? "mx-auto max-w-6xl space-y-5" : "max-w-4xl mx-auto space-y-5"}>
       {/* S109 PR #2 — Back link to claim view. Uses letter.auditReportId
@@ -1388,92 +1595,12 @@ function DisputesContent() {
         </a>
       )}
 
-      {/* Dispute Letters v2 — Zone-1 "What we need from you" (map §6). Delegates to the
-          existing handlers/modals; owns only the counter + the 3 inline inputs. */}
-      <CaseNeedsPanel
-        letterType={letter.letterType}
-        planServices={zone1Services}
-        nameMismatch={nameMismatch != null}
-        nameResolved={patientIdentityResolved}
-        billName={nameMismatch?.billName ?? null}
-        profileName={nameMismatch?.profileName ?? null}
-        attestationReviewed={serviceAttestationReviewed}
-        hasInsurer={zone1HasInsurer}
-        providerAddressOnFile={zone1ProviderAddressOnFile}
-        insurerAddressOnFile={zone1InsurerAddressOnFile}
-        eobPresent={zone1EobPresent}
-        userPatientPaid={userPatientPaid}
-        denialNoticeDate={deadlineInputs.denialNoticeDate}
-        collectorFirstContactDate={deadlineInputs.collectorFirstContactDate}
-        planLabel={planLabel}
-        showInsuranceRow={zone1ShowInsuranceRow}
-        canChangePlan={planPinningEnabled}
-        readiness={strength?.readiness ?? null}
-        coverageVerifyGaps={coverageVerifyGaps}
-        onCoverageVerify={handleCoverageVerify}
-        rerunAuditEnabled={false}
-        auditFindingsMissing={auditFindingsMissing}
-        onAuditRerun={handleAuditRerun}
-        onAddPlanDetails={(svc) =>
-          setAddPlanModal({
-            serviceSlug: svc.serviceSlug,
-            serviceLabel: svc.serviceLabel,
-            initialCopay: svc.copay,
-            initialCoinsurancePercent: svc.coinsurancePercent,
-          })
-        }
-        onConfirmName={() => handleResolvePatientIdentity(true)}
-        onEditLetter={() => setIsEditing(true)}
-        onReviewAttestation={() =>
-          document
-            .getElementById("dispute-evidence")
-            ?.scrollIntoView({ behavior: "smooth", block: "center" })
-        }
-        onAddProviderAddress={() => setProviderAddressOpen(true)}
-        onAddInsurerAddress={() => setInsurerCorrectionOpen(true)}
-        onUploadEob={() => window.location.assign("/upload")}
-        onSaveAmountPaid={handleSaveAmountPaid}
-        onChangePlan={async () => {
-          if (!user || !planContext?.plan?.planYear) return;
-          const token = await user.firebaseUser.getIdToken();
-          const qp = new URLSearchParams({ year: String(planContext.plan.planYear) });
-          if (planContext.plan.id) qp.set("pin", planContext.plan.id);
-          const res = await fetch(`/api/plan/by-year?${qp.toString()}`, {
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          if (res.ok) {
-            const { plans } = (await res.json()) as { plans: DisputePlanChooserPlan[] };
-            setRebindPlans(plans ?? []);
-            setRebindOpen(true);
-          }
-        }}
-        onSaveDeadlineDate={handleSaveDeadlineDate}
-      />
-
-      {/* Dispute Letters v2 — Zone-2 "The case" (map §6). Render-when-present; the deadline
-          fields are null when dispute_deadline_engine_v1 is OFF. */}
-      <CaseSummary
-        letterType={letter.letterType}
-        status={disputeStatus}
-        isSent={alreadySent}
-        filedDate={disputeFiledDate}
-        recoveryAmount={amountDisputed}
-        deadlineWarning={deadlineData?.deadlineWarning ?? null}
-        governingDeadlineDate={deadlineData?.governingDeadlineDate ?? null}
-        deadlineType={deadlineData?.deadlineType ?? null}
-        filingDeadlineDate={deadlineData?.filingDeadlineDate ?? null}
-        followups={deadlineData?.followups ?? []}
-        followupPlan={deadlineData?.followupPlan ?? []}
-        onMarkSent={handleMarkSent}
-        onReportOutcome={() => setOutcomeModalOpen(true)}
-        onCollections={() => setCollectorModalOpen(true)}
-        onEscalateNext={handleSuggestedNextStep}
-        onUndoSent={handleUndoSent}
-        onUndoOutcome={handleUndoOutcome}
-        markingSent={markingSent}
-        escalating={escalating}
-        nextStepLabel={suggestedNextStep?.ctaLabel ?? null}
-      />
+      {/* Dispute Letters v2 — Zone-1 "What we need from you" + Zone-2 "The
+          case". Legacy layout keeps them here; v3 relocates Zone-1 inside the
+          UnifiedTodo claim-details expansion and Zone-2 into the left column
+          under the checklist (Option A — always visible). */}
+      {!v3DesignOn && caseNeedsPanelNode}
+      {!v3DesignOn && caseSummaryNode}
 
       {addPlanModal && letter.auditReportId && (
         <AddPlanDetailsModal
@@ -1699,8 +1826,10 @@ function DisputesContent() {
           one of the user's own plans. Draft-only; flag-gated; pin wins over a
           canonical-bind (R4). The chooser's "search library / upload" link
           routes to the existing PlanSearchModal — one "change plan" entry,
-          own-plans primary + library/upload fallback. */}
-      {planPinningEnabled && !alreadySent && disputeId && planContext?.plan?.id && planContext?.plan?.planYear && (
+          own-plans primary + library/upload fallback. Legacy layout only —
+          in v3 the UnifiedTodo claim-details "Insurance for this claim" row
+          owns the same Change action (same chooser). */}
+      {!v3DesignOn && planPinningEnabled && !alreadySent && disputeId && planContext?.plan?.id && planContext?.plan?.planYear && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm">
           <span className="min-w-0 text-slate-600">
             This letter uses{" "}
@@ -1781,25 +1910,30 @@ function DisputesContent() {
           NEW (flag ON): two-column reskin (letter-stack + rail) + 3 readouts
           (data-trust banner + evidence band in hero + readiness rail). */}
       {v3DesignOn ? (
+        /* Surface 4 (clarity redesign) — two-column: LEFT = ① UnifiedTodo
+           ② "The case" (Option A) ③ orientation (hero + recipient) ④ letter
+           (toolbar + article w/ footer bar); RIGHT rail (sticky, scrollable) =
+           "Why this should be covered" evidence + case-file download. The old
+           "What to do next" list is superseded by the UnifiedTodo. */
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]">
           <div className="min-w-0 space-y-5">
             {staleBannerNode}
             {strengthenPromptNode}
             {dataTrustBannerNode}
+            {unifiedTodoNode}
+            {caseSummaryNode}
             {heroNode}
             {recipientNode}
             {toolbarNode}
             {articleNode}
-            {evidenceNode}
           </div>
           {/* Block C2 — the rail is taller than the viewport on most letters;
               cap its height to the viewport and let it scroll its OWN overflow so
-              hovering + wheeling over the rail reaches the lower cards (provider
-              address form, next steps, case file) instead of being scroll-trapped
-              until the left column catches up. */}
+              hovering + wheeling over the rail reaches the lower cards (evidence,
+              case file) instead of being scroll-trapped until the left column
+              catches up. */}
           <aside className="space-y-5 lg:sticky lg:top-4 lg:self-start lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
-
-            {nextStepsNode}
+            {evidenceNode}
             {caseFileNode}
           </aside>
         </div>
