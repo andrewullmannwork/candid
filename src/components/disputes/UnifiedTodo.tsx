@@ -462,7 +462,7 @@ export function UnifiedTodo({
                     "me"/"wrong" also fill the letter name in the parent).
                     Re-openable after completion until the letter is sent. */}
                 {row.id === "patient" && expanded === "patient" && !sent && nameMismatch && (
-                  <div className="animate-fade-in mx-2 mb-2.5 rounded-[14px] border border-blue-200 bg-white p-4 shadow-[0_14px_30px_-20px_rgba(37,99,235,0.35)] sm:ml-8">
+                  <div className="animate-fade-in mt-2 mb-2.5 rounded-[14px] border border-blue-200 bg-white p-4 shadow-[0_14px_30px_-20px_rgba(37,99,235,0.35)]">
                     <div className="mb-3 text-[13px] leading-relaxed text-gray-600">
                       The bill lists <strong className="text-gray-900">&ldquo;{nameMismatch.billName}&rdquo;</strong>;
                       your account is <strong className="text-gray-900">{nameMismatch.profileName}</strong>. Which is right?
@@ -527,7 +527,7 @@ export function UnifiedTodo({
                     CaseNeedsPanel and this wrapper read as ONE card; the
                     wrapper owns the border, padding, and footer actions. */}
                 {row.id === "details" && expanded === "details" && (
-                  <div className="animate-fade-in mx-2 mb-2.5 rounded-[14px] border border-blue-200 bg-white p-4 shadow-[0_14px_30px_-20px_rgba(37,99,235,0.35)] sm:ml-8 sm:p-5">
+                  <div className="animate-fade-in mt-2 mb-2.5 rounded-[14px] border border-blue-200 bg-white p-4 shadow-[0_14px_30px_-20px_rgba(37,99,235,0.35)] sm:p-5">
                     {children}
                     <div className="mt-3 flex justify-end gap-2 border-t border-gray-100 pt-3">
                       <button
@@ -555,7 +555,7 @@ export function UnifiedTodo({
 
                 {/* Inline confirm — Mark as sent */}
                 {row.id === "marksent" && asking && !sent && (
-                  <div className="animate-fade-in mx-2 mb-2 flex flex-wrap items-center justify-between gap-2.5 rounded-[10px] border border-blue-200 bg-blue-50 px-3 py-2.5 text-[12.5px] font-semibold text-blue-900 sm:ml-8">
+                  <div className="animate-fade-in mt-2 mb-2 flex flex-wrap items-center justify-between gap-2.5 rounded-[10px] border border-blue-200 bg-blue-50 px-3 py-2.5 text-[12.5px] font-semibold text-blue-900">
                     <span>Did you actually mail it?</span>
                     <span className="flex gap-2">
                       <button
