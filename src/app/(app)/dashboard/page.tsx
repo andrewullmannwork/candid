@@ -11,8 +11,9 @@ import { PageHeader } from "@/components/page-header";
 import { Banner } from "@/components/banner";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { DataSourceContextLine } from "@/components/data-source-context-line";
-import { ClaimHero, PlanHero, CompareBand, type PlanTracker } from "@/components/dashboard/DashDuo";
+import { ClaimHero, PlanHero, CompareBand } from "@/components/dashboard/DashDuo";
 import { useClaimPipeline } from "@/lib/claims/use-claim-pipeline";
+import { useAccumulatorLedger } from "@/components/plan/use-accumulator-ledger";
 import {
   DashStripPlanCard,
   DashStripUploadCard,
@@ -58,6 +59,7 @@ type EnrichedPlanResult = PlanAnalysisResult & {
   insurer?: string | null;
   dataSource?: string;
   planSource?: string;
+  insurancePlanId?: string | null;
 };
 
 // ─── Dashboard component ────────────────────────────────────────────────────
@@ -72,11 +74,6 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   // Claim pipeline (Surface 1 dash-duo) — same derived counts as /claim.
   const pipeline = useClaimPipeline();
-  // Accumulator trackers for the Plan hero (deductible / OOP-max progress).
-  const [trackers, setTrackers] = useState<{
-    deductible: PlanTracker | null;
-    oopMax: PlanTracker | null;
-  }>({ deductible: null, oopMax: null });
   const [usedBenefits] = useState<Set<string>>(() => {
     if (typeof window === "undefined") return new Set();
     try {
@@ -195,45 +192,23 @@ export default function DashboardPage() {
     return () => clearInterval(pollInterval);
   }, [user]);
 
-  // Plan-hero tracker rows — read the accumulator ledger (accumulator_ledger_v1
-  // surface; endpoint self-resolves the active plan). Until that API ships and
-  // the flag is ON, the fetch returns non-OK → trackers stay hidden and the
-  // Plan hero renders without progress bars. Contract mirrors
-  // use-accumulator-ledger on candid/backend-accumulator-ledger-v1 so this
-  // consolidates into that hook when the ledger branch lands.
-  useEffect(() => {
-    if (!user) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const idToken = await user.firebaseUser.getIdToken();
-        const res = await fetch("/api/plan/accumulators", {
-          headers: { Authorization: `Bearer ${idToken}` },
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        const ledger = data?.enabled ? data.ledger : null;
-        if (!ledger) return;
-        const pair = ledger.individual ?? ledger.familyAggregate ?? ledger.familyEmbedded?.cap;
-        if (!pair?.in) return;
-        const toTracker = (bucket: { candidApplied?: number; max?: number | null } | undefined) =>
-          bucket && bucket.max != null && bucket.max > 0
-            ? { applied: bucket.candidApplied ?? 0, max: bucket.max }
-            : null;
-        if (!cancelled) {
-          setTrackers({
-            deductible: toTracker(pair.in.deductible),
-            oopMax: toTracker(pair.in.oop),
-          });
-        }
-      } catch {
-        // Ledger unavailable — trackers stay hidden.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [user]);
+  // Plan-hero tracker rows — the shared accumulator-ledger hook (merged from
+  // candid/backend-accumulator-ledger-v1). GET /api/plan/accumulators is gated
+  // by accumulator_ledger_v1 and self-resolves the active plan; the hook
+  // returns null (→ tracker rows hidden) when the flag is off, the plan is
+  // missing, or there's no ledger yet.
+  const ledger = useAccumulatorLedger(planResult?.insurancePlanId, planResult?.planYear);
+  const ledgerPair = ledger
+    ? (ledger.individual ?? ledger.familyAggregate ?? ledger.familyEmbedded?.cap ?? null)
+    : null;
+  const toTracker = (bucket: { candidApplied: number; max: number | null } | undefined) =>
+    bucket && bucket.max != null && bucket.max > 0
+      ? { applied: bucket.candidApplied ?? 0, max: bucket.max }
+      : null;
+  const trackers = {
+    deductible: toTracker(ledgerPair?.in?.deductible),
+    oopMax: toTracker(ledgerPair?.in?.oop),
+  };
 
   if (loading || pipeline.loading) {
     return <CubeLoaderBuilding />;
@@ -372,6 +347,10 @@ export default function DashboardPage() {
         </div>
         <CompareBand />
       </div>
+
+      {/* AccumulatorMini's standalone dashboard mount is retired — the Plan
+          hero's deductible/OOP tracker rows (same ledger hook) own that
+          surface now. The full spending panel remains on /plan. */}
 
       {/* ── Dash-strip (plan + upload paired cards) ─────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
