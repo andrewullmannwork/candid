@@ -21,15 +21,19 @@ export function useAccumulatorLedger(
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
-      if (!user || !insurancePlanId) {
+      if (!user) {
         if (!cancelled) setLedger(null);
         return;
       }
       try {
         const idToken = await user.firebaseUser.getIdToken();
-        const params = new URLSearchParams({ planId: insurancePlanId });
+        // planId optional — the endpoint self-resolves the active plan when we don't have
+        // one from analyze (generic plan-type view). Panel still renders when a ledger returns.
+        const params = new URLSearchParams();
+        if (insurancePlanId) params.set("planId", insurancePlanId);
         if (planYear) params.set("year", String(planYear));
-        const res = await fetch(`/api/plan/accumulators?${params.toString()}`, {
+        const qs = params.toString();
+        const res = await fetch(`/api/plan/accumulators${qs ? `?${qs}` : ""}`, {
           headers: { Authorization: `Bearer ${idToken}` },
         });
         if (!res.ok) {

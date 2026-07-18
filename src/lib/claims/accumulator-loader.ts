@@ -101,18 +101,31 @@ async function loadMateriality(supabase: SupabaseClient): Promise<Materiality> {
 export async function loadAccumulatorLedger(
   supabase: SupabaseClient,
   userId: string,
-  insurancePlanId: string,
-  planYear: number,
+  insurancePlanId: string | null,
+  planYear?: number | null,
 ): Promise<AccumulatorLedger | null> {
-  // B9 — ownership-check the plan before reading its terms (no cross-user leak).
+  // Profile drives BOTH the family scope (dependents) and the self-resolve fallback:
+  // the /plan panel has no insurancePlanId in the generic plan-type view, so fall back
+  // to the user's active plan. Keeps every user-table read owner-scoped here.
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("dependents, active_insurance_plan_id")
+    .eq("user_id", userId)
+    .maybeSingle();
+  const planId = insurancePlanId ?? (profile?.active_insurance_plan_id as string | null) ?? null;
+  if (!planId) return null;
+
+  // B9 — ownership-check the plan before reading its terms (no cross-user leak); grab
+  // plan_year so the caller can omit it (self-resolve the benefit year from the plan).
   const { data: ownedPlan } = await userScoped(supabase, userId)
     .table("insurance_plans")
-    .select("id")
-    .eq("id", insurancePlanId)
+    .select("id, plan_year")
+    .eq("id", planId)
     .maybeSingle();
   if (!ownedPlan) return null;
+  const year = planYear ?? (ownedPlan.plan_year as number | null) ?? new Date().getUTCFullYear();
 
-  const plan = await loadPlanCostShareParams(supabase, insurancePlanId);
+  const plan = await loadPlanCostShareParams(supabase, planId);
   if (!plan) return null;
 
   // Claims for this plan, filtered to the benefit year (no row cap — see §10).
@@ -120,25 +133,20 @@ export async function loadAccumulatorLedger(
     .table("claims")
     .select("*")
     .is("deleted_at", null)
-    .eq("insurance_plan_id", insurancePlanId);
+    .eq("insurance_plan_id", planId);
   if (error) return null;
   const claimsForYear = (rawClaims ?? []).filter((c) => {
     const dos = (c as Record<string, unknown>).date_of_service as string | null;
-    return dos != null && new Date(dos).getUTCFullYear() === planYear;
+    return dos != null && new Date(dos).getUTCFullYear() === year;
   });
 
   // Dependents → family scope + attribution (only those on the same plan count).
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("dependents")
-    .eq("user_id", userId)
-    .maybeSingle();
   const onPlanDeps = parseDependents(profile?.dependents).filter((d) => d.onSamePlan);
   const hasDependents = onPlanDeps.length > 0;
   const depNames = new Set(onPlanDeps.map((d) => normalizeName(d.name)));
 
   // Per-plan prep (batched once).
-  const planMeta = (await loadPlanCoverageMeta(supabase, [insurancePlanId])).get(insurancePlanId);
+  const planMeta = (await loadPlanCoverageMeta(supabase, [planId])).get(planId);
   const coverageMap = planMeta?.coverageMap ?? new Map();
   const secondaryV2 = await isFeatureEnabled("secondary_coverage_v2");
   const secondaryGate = secondaryV2 ? await loadSecondaryGate(supabase) : DEFAULT_SECONDARY_GATE;
@@ -191,7 +199,7 @@ export async function loadAccumulatorLedger(
     });
     const acaFallback = await buildAcaCoverageFallback({
       supabase,
-      planId: insurancePlanId,
+      planId,
       userId,
       patientName,
       lineItems: liForAca,
@@ -263,7 +271,7 @@ export async function loadAccumulatorLedger(
 
   return computeAccumulatorLedger({
     plan,
-    planYear,
+    planYear: year,
     claims: ledgerClaims,
     hasDependents,
     materiality,

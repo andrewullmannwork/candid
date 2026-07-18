@@ -46,13 +46,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ enabled: false });
   }
 
+  // planId optional — the loader self-resolves the user's active plan when omitted (the
+  // /plan panel has no insurancePlanId in the generic plan-type view); year likewise
+  // falls back to the plan's plan_year inside the loader.
   const planId = req.nextUrl.searchParams.get("planId");
-  if (!planId) {
-    return NextResponse.json({ error: "planId is required" }, { status: 400 });
-  }
   const yearRaw = req.nextUrl.searchParams.get("year");
-  const year = yearRaw ? parseInt(yearRaw, 10) : new Date().getUTCFullYear();
-  if (!Number.isFinite(year)) {
+  const year = yearRaw ? parseInt(yearRaw, 10) : null;
+  if (year != null && !Number.isFinite(year)) {
     return NextResponse.json({ error: "invalid year" }, { status: 400 });
   }
 
