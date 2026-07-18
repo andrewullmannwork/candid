@@ -34,7 +34,7 @@ import { CollectorModal } from "@/components/disputes/CollectorModal";
 import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestModal";
 import { suggestNextStep, isOutcomeDetail, mapOutcomeToStatus, type NextStepSuggestion } from "@/lib/disputes/outcome-taxonomy";
 import { CaseNeedsPanel, type PlanCostService } from "@/components/disputes/CaseNeedsPanel";
-import { UnifiedTodo } from "@/components/disputes/UnifiedTodo";
+import { UnifiedTodo, type CaseLetterSummary } from "@/components/disputes/UnifiedTodo";
 import { CaseSummary } from "@/components/disputes/CaseSummary";
 import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
@@ -336,6 +336,12 @@ function DisputesContent() {
     initialCopay: number | null;
     initialCoinsurancePercent: number | null;
   } | null>(null);
+  // Unified case timeline (S286) — raw sent_at (preferred over filed_date for
+  // every "Sent {date}" readout), the claim's dispute ladder, and the persisted
+  // checklist check-offs. All hydrated from the GET.
+  const [disputeSentAt, setDisputeSentAt] = useState<string | null>(null);
+  const [siblings, setSiblings] = useState<SiblingLetter[]>([]);
+  const [checklist, setChecklist] = useState<Record<string, boolean>>({});
   const disputeId = searchParams.get("dispute");
   // Stretch 2 — enriched Case File rollout flag (case_file_enriched_v1), read
   // via /api/feature-flags (a browser-Supabase read returns [] under Firebase auth).
@@ -414,6 +420,14 @@ function DisputesContent() {
     setGateUnverified(!!data.gateUnverified);
     setDisputeStatus(typeof data.status === "string" ? data.status : null);
     setDisputeFiledDate(typeof data.filedDate === "string" ? data.filedDate : null);
+    // Unified case timeline (S286) — sent_at + ladder + persisted checks.
+    setDisputeSentAt(typeof data.sentAt === "string" ? data.sentAt : null);
+    setSiblings(Array.isArray(data.siblings) ? (data.siblings as SiblingLetter[]) : []);
+    setChecklist(
+      data.checklist && typeof data.checklist === "object" && !Array.isArray(data.checklist)
+        ? (data.checklist as Record<string, boolean>)
+        : {},
+    );
     // S109 PR #2 (Chunk B) — banner visibility + letter framing both gated
     // on this state. API normalizes to 'yes' | 'no' | 'not_sure' | null.
     setUserConfirmedSamePlan(
@@ -957,6 +971,29 @@ function DisputesContent() {
     [user, disputeId, fetchDispute],
   );
 
+  // Unified case timeline (S286) — persist a checklist check-off. Optimistic
+  // local update; fire-and-forget POST (a lost write only regresses a cosmetic
+  // check on next load, never blocks the flow).
+  const handlePersistCheck = useCallback(
+    (key: string, done: boolean) => {
+      setChecklist((prev) => ({ ...prev, [key]: done }));
+      if (!user || !disputeId) return;
+      void (async () => {
+        try {
+          const token = await user.firebaseUser.getIdToken();
+          await fetch(`/api/disputes/${disputeId}/checklist`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ key, done }),
+          });
+        } catch (err) {
+          console.error("[dispute-checklist] persist failed:", err);
+        }
+      })();
+    },
+    [user, disputeId],
+  );
+
   // S74 — InsurerAddressCorrectionModal callbacks. (S265 Z1 refine d — the recipient card
   // no longer proposes corrections; Zone-1's onAddInsurerAddress opens the modal directly.)
   const refetchAfterChange = async () => {
@@ -1217,7 +1254,8 @@ function DisputesContent() {
           {alreadySent ? (
             <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-700">
               <SentCheckIcon />
-              Sent{disputeFiledDate ? ` ${formatFiledDate(disputeFiledDate)}` : ""}
+              {/* S286 — prefer sent_at (real send) over filed_date (draft time). */}
+              Sent{(disputeSentAt ?? disputeFiledDate) ? ` ${formatFiledDate((disputeSentAt ?? disputeFiledDate) as string)}` : ""}
             </span>
           ) : null}
         </div>
@@ -1280,7 +1318,7 @@ function DisputesContent() {
             <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-500">
               <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[12px] font-semibold text-emerald-700">
                 <SentCheckIcon />
-                Marked as sent{disputeFiledDate ? ` · ${formatFiledDate(disputeFiledDate)}` : ""}
+                Marked as sent{(disputeSentAt ?? disputeFiledDate) ? ` · ${formatFiledDate((disputeSentAt ?? disputeFiledDate) as string)}` : ""}
               </span>
               <span>Track the response and report the outcome in &ldquo;The case&rdquo; above.</span>
             </div>
@@ -1537,27 +1575,141 @@ function DisputesContent() {
     />
   );
 
-  // "What you need to do" — the v3 unified checklist above the letter. The
+  // "What you need to do" — the v3 unified case timeline (S286): checklist +
+  // real after-sent schedule + the claim's letter ladder in ONE spine. The
   // claim-details expansion embeds the real CaseNeedsPanel (children).
+  //
+  // Dates: sent_at preferred over filed_date everywhere (filed_date is set at
+  // DRAFT time — it's why letters showed "Sent Jun 2" when the user actually
+  // marked sent Jul 17). The +30d response fallback anchors to the same value.
+  const sentAnchorIso = disputeSentAt ?? disputeFiledDate;
+  const sentDateLabel = sentAnchorIso ? formatFiledDate(sentAnchorIso) : null;
   const responseDueLabel = deadlineData?.governingDeadlineDate
     ? formatFiledDate(deadlineData.governingDeadlineDate)
-    : disputeFiledDate
+    : sentAnchorIso
       ? formatFiledDate(
-          new Date(new Date(disputeFiledDate).getTime() + 30 * 86400000)
+          new Date(new Date(sentAnchorIso).getTime() + 30 * 86400000)
             .toISOString()
             .slice(0, 10),
         )
       : null;
+
+  // The claim's ladder → CaseLetterSummary[] (segments render only for
+  // multi-letter cases; single-letter/no-claim disputes degrade to []).
+  const caseLetters: CaseLetterSummary[] = (() => {
+    if (!disputeId || siblings.length <= 1) return [];
+    return siblings.map((s, i) => {
+      const term = SIBLING_TERMINAL.has(s.status ?? "");
+      const sentish = isSentStatus(s.status);
+      const sentIso = s.sentAt ?? s.filedDate;
+      const outcomeWord = OUTCOME_WORDS[s.status ?? ""] ?? null;
+      const resLabel = s.resolutionDate ? formatFiledDate(s.resolutionDate) : null;
+      return {
+        id: s.id,
+        ordinal: i + 1,
+        label:
+          LETTER_TYPE_LABELS[s.letterType as DisputeLetter["letterType"]] ?? s.letterType,
+        viewed: s.id === disputeId,
+        latest: i === siblings.length - 1,
+        sentDateLabel: sentish && sentIso ? formatFiledDate(sentIso) : null,
+        // Approved pattern (2026-07-18): "closed — {outcome} {date}".
+        statusLine:
+          term && outcomeWord
+            ? `closed — ${outcomeWord}${resLabel ? ` ${resLabel}` : ""}`
+            : null,
+        outcomeWord,
+        live: sentish && !term,
+        liveDueLabel: s.governingDeadlineDate
+          ? formatFiledDate(s.governingDeadlineDate)
+          : null,
+        href: `/disputes?dispute=${s.id}`,
+        // Standard step set for the segment history — which address row it had
+        // depends on where that letter mails.
+        steps: [
+          letterRecipientKind(s.letterType as DisputeLetter["letterType"]) === "insurer"
+            ? "Add your insurer's appeals address"
+            : "Add the provider's mailing address",
+          "Confirm the claim details",
+          "Download & sign the letter",
+          "Mail it certified",
+          "Mark it as sent",
+        ].map((t) => ({ title: t, done: sentish })),
+      };
+    });
+  })();
+
+  // Viewed letter's terminal summary line ("closed — denied Sep 4, 2026").
+  const viewedOutcomeLine = (() => {
+    const w = OUTCOME_WORDS[disputeStatus ?? ""];
+    if (!w) return null;
+    const own = siblings.find((s) => s.id === disputeId);
+    const resLabel = own?.resolutionDate ? formatFiledDate(own.resolutionDate) : null;
+    return `closed — ${w}${resLabel ? ` ${resLabel}` : ""}`;
+  })();
+
+  // Real after-sent schedule. Null when the deadline engine contributed
+  // nothing (flag OFF / legacy rows) → UnifiedTodo falls back to the static
+  // guidance trio, byte-identical to pre-S286 (§R.5 graceful degradation).
+  const hasEngineData =
+    deadlineData != null &&
+    (deadlineData.governingDeadlineDate != null ||
+      deadlineData.deadlineWarning != null ||
+      deadlineData.followups.length > 0 ||
+      deadlineData.followupPlan.length > 0);
+  const caseEvents = hasEngineData
+    ? {
+        windowPassed: deadlineData.deadlineWarning?.severity === "past",
+        windowPassedNextStep: deadlineData.deadlineWarning?.nextStep ?? null,
+        daysRemaining:
+          deadlineData.deadlineWarning?.severity === "urgent"
+            ? deadlineData.deadlineWarning.daysRemaining
+            : null,
+        responseDueDateLabel: deadlineData.governingDeadlineDate
+          ? formatFiledDate(deadlineData.governingDeadlineDate)
+          : responseDueLabel,
+        followups: (deadlineData.followups.length > 0
+          ? deadlineData.followups
+          : deadlineData.followupPlan
+        ).map((f) => ({
+          dueDate: f.dueDate,
+          dateLabel: formatFiledDate(f.dueDate),
+          kind: f.kind,
+        })),
+        externalReviewLocked:
+          letter.letterType === "insurance_appeal" &&
+          deadlineData.deadlineWarning?.severity !== "past",
+      }
+    : null;
+
+  // Draft-stage filing guard (absorbed from the retired CaseSummary tiles).
+  const filingWarning =
+    !alreadySent && deadlineData?.deadlineWarning
+      ? {
+          passed: deadlineData.deadlineWarning.severity === "past",
+          label: deadlineLabelText(deadlineData.deadlineWarning.deadlineType),
+          daysRemaining: deadlineData.deadlineWarning.daysRemaining,
+          dateLabel: deadlineData.filingDeadlineDate
+            ? formatFiledDate(deadlineData.filingDeadlineDate)
+            : deadlineData.governingDeadlineDate
+              ? formatFiledDate(deadlineData.governingDeadlineDate)
+              : null,
+          nextStep: deadlineData.deadlineWarning.nextStep,
+        }
+      : null;
+
   const unifiedTodoNode = (
     <UnifiedTodo
+      key={disputeId ?? "letter"}
       amountLabel={
         amountDisputed != null
           ? `$${amountDisputed.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
           : null
       }
       sent={alreadySent}
-      sentDateLabel={disputeFiledDate ? formatFiledDate(disputeFiledDate) : null}
+      sentDateLabel={sentDateLabel}
       responseDueLabel={responseDueLabel}
+      status={disputeStatus}
+      outcomeLine={viewedOutcomeLine}
       recipientKind={letterRecipientKind(letter.letterType)}
       providerAddressOnFile={zone1ProviderAddressOnFile}
       onAddProviderAddress={() => setProviderAddressOpen(true)}
@@ -1601,6 +1753,18 @@ function DisputesContent() {
       onDownload={handleDownload}
       onMarkSent={handleMarkSent}
       markingSent={markingSent}
+      initialChecks={checklist}
+      onPersistCheck={handlePersistCheck}
+      caseEvents={caseEvents}
+      letters={caseLetters}
+      filingWarning={filingWarning}
+      nextStepLabel={suggestedNextStep?.ctaLabel ?? null}
+      escalating={escalating}
+      onReportOutcome={() => setOutcomeModalOpen(true)}
+      onCollections={() => setCollectorModalOpen(true)}
+      onEscalateNext={handleSuggestedNextStep}
+      onUndoSent={handleUndoSent}
+      onUndoOutcome={handleUndoOutcome}
     >
       {renderCaseNeedsPanel(true)}
     </UnifiedTodo>
@@ -1944,8 +2108,10 @@ function DisputesContent() {
             {staleBannerNode}
             {strengthenPromptNode}
             {dataTrustBannerNode}
+            {/* S286 — "The case" card retired in v3: its timeline, countdown,
+                and stage actions live INSIDE the UnifiedTodo spine now. The
+                legacy (flag-OFF) layout keeps CaseSummary unchanged. */}
             {unifiedTodoNode}
-            {caseSummaryNode}
             {heroNode}
             {recipientNode}
             {toolbarNode}
@@ -2099,7 +2265,13 @@ function isSentStatus(status: string | null | undefined): boolean {
 
 function formatFiledDate(iso: string): string {
   try {
-    return new Date(iso).toLocaleDateString("en-US", {
+    // S286 — date-only strings ("2026-06-02") parse as UTC midnight, which
+    // renders as the PREVIOUS day in US timezones (the on-page "Sent Jun 1"
+    // vs "Sent Jun 2" disagreement between the checklist and the old case
+    // card). Pin date-only values to LOCAL midnight; full ISO timestamps
+    // (sent_at) parse natively. Single formatter = one date truth per page.
+    const d = /^\d{4}-\d{2}-\d{2}$/.test(iso) ? new Date(`${iso}T00:00:00`) : new Date(iso);
+    return d.toLocaleDateString("en-US", {
       month: "short",
       day: "numeric",
       year: "numeric",
@@ -2151,6 +2323,57 @@ const LETTER_TYPE_LABELS: Record<DisputeLetter["letterType"], string> = {
   external_review: "External Review Request",
   debt_validation: "Debt Validation",
 };
+
+// ── Unified case timeline (S286) helpers ─────────────────────────────────────
+
+/** One row of the claim's dispute ladder from the GET's `siblings` array. */
+interface SiblingLetter {
+  id: string;
+  letterType: string;
+  status: string | null;
+  filedDate: string | null;
+  sentAt: string | null;
+  resolutionDate: string | null;
+  governingDeadlineDate: string | null;
+  createdAt: string | null;
+}
+
+/** Terminal statuses (matches UnifiedTodo's TERMINAL + cancelled). */
+const SIBLING_TERMINAL = new Set([
+  "won",
+  "lost",
+  "settled",
+  "withdrawn",
+  "won_on_escalation",
+  "settled_on_escalation",
+  "cancelled",
+]);
+
+/** Short outcome words for segment summary lines + the viewing-past banner
+ *  ("closed — denied Sep 4" pattern, approved 2026-07-18). */
+const OUTCOME_WORDS: Record<string, string> = {
+  won: "resolved in your favor",
+  won_on_escalation: "resolved in your favor",
+  lost: "denied",
+  settled: "settled",
+  settled_on_escalation: "settled",
+  withdrawn: "withdrawn",
+  cancelled: "cancelled",
+};
+
+/** deadline_type → friendly window label (carried from the retired CaseSummary). */
+function deadlineLabelText(t: string | null | undefined): string {
+  switch (t) {
+    case "erisa_appeal_180":
+      return "Appeal window";
+    case "plan_response":
+      return "Response window";
+    case "fdcpa_validation_30":
+      return "Validation window";
+    default:
+      return "Deadline";
+  }
+}
 
 function buildAskSummary(letter: DisputeLetter, recovery: number | null): string | null {
   if (letter.requestedAction) return letter.requestedAction;

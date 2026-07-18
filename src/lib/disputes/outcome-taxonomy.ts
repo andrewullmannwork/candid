@@ -125,7 +125,9 @@ export function suggestNextStep(
   if (detail === "collections") {
     return {
       nextLetterType: "debt_validation",
-      ctaLabel: "Send a debt-validation letter",
+      // Unified case timeline — CTA copy signals a NEW letter is created
+      // (Andrew-approved strings, 2026-07-18).
+      ctaLabel: "Start the next letter — debt validation",
       note: "FDCPA §1692g — strongest within 30 days of first contact.",
     };
   }
@@ -143,7 +145,7 @@ export function suggestNextStep(
     if (currentLetterType === "external_review") return null; // insurer track exhausted
     return {
       nextLetterType: "external_review",
-      ctaLabel: "Request an external review",
+      ctaLabel: "Start the next letter — external review",
       note: "Requires a final internal denial.",
     };
   }
@@ -151,7 +153,7 @@ export function suggestNextStep(
     if (currentLetterType === "final_notice") return null; // provider track exhausted
     return {
       nextLetterType: "final_notice",
-      ctaLabel: "Send a final escalation notice",
+      ctaLabel: "Start the next letter — final notice",
     };
   }
   return null;

@@ -146,6 +146,42 @@ export async function GET(
   // recipient block from regressing for legacy dispute_type vocab.
   const resolvedLetterType = resolveLetterTypeFromDispute(dispute);
 
+  // Unified case timeline (S286) — the claim's full dispute ladder, chronological.
+  // Read-only rows so the "What you need to do" spine can render previous/next
+  // letters as segments. Additive: [] when the dispute has no linked claim
+  // (legacy rows) — the client degrades to a single-letter spine.
+  let siblings: Array<{
+    id: string;
+    letterType: string;
+    status: string | null;
+    filedDate: string | null;
+    sentAt: string | null;
+    resolutionDate: string | null;
+    governingDeadlineDate: string | null;
+    createdAt: string | null;
+  }> = [];
+  if (dispute.claim_id) {
+    const { data: sibRows } = await userScoped(supabase, user.id)
+      .table("dispute_outcomes")
+      .select(
+        "id, dispute_type, status, filed_date, sent_at, resolution_date, governing_deadline_date, created_at, metadata",
+      )
+      .eq("claim_id", dispute.claim_id)
+      .order("created_at", { ascending: true });
+    siblings = ((sibRows ?? []) as Array<Record<string, unknown>>).map((r) => ({
+      id: r.id as string,
+      letterType: resolveLetterTypeFromDispute(
+        r as { dispute_type: string; metadata?: Record<string, unknown> | null },
+      ),
+      status: (r.status as string | null) ?? null,
+      filedDate: (r.filed_date as string | null) ?? null,
+      sentAt: (r.sent_at as string | null) ?? null,
+      resolutionDate: (r.resolution_date as string | null) ?? null,
+      governingDeadlineDate: (r.governing_deadline_date as string | null) ?? null,
+      createdAt: (r.created_at as string | null) ?? null,
+    }));
+  }
+
   // S74.5 D16 — sent_letter immutability + drift detection.
   // sent_at non-null means user clicked Mark-as-Sent; the sent_letter
   // snapshot becomes the immutable legal chain-of-custody record. We must
@@ -673,8 +709,20 @@ export async function GET(
     amountDisputed: dispute.amount_disputed,
     amountRecovered: dispute.amount_recovered,
     filedDate: dispute.filed_date,
+    // Unified case timeline (S286) — the raw Mark-as-Sent timestamp. Distinct
+    // from filed_date (set at draft time); the client prefers this for every
+    // "Sent {date}" readout so the displayed date matches the real send.
+    sentAt: (dispute.sent_at as string | null) ?? null,
     resolutionDate: dispute.resolution_date,
     claimId: dispute.claim_id,
+    // Unified case timeline (S286) — persisted checklist check-offs (previously
+    // session-local in the UnifiedTodo). {[rowKey]: boolean}.
+    checklist:
+      (((dispute.metadata as Record<string, unknown> | null)?.checklist as
+        | Record<string, boolean>
+        | undefined) ?? {}),
+    // Unified case timeline (S286) — the claim's dispute ladder (see above).
+    siblings,
     // S74.5 D16 — if sent_at is set, serve the immutable sent_letter as the
     // letter content; UI surfaces drift banner via driftState when current
     // findings differ. Block A — null when the data-trust HARD STOP fires (flag
