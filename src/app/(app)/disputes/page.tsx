@@ -1443,10 +1443,11 @@ function DisputesContent() {
   );
 
   // ── Surface 4 (clarity redesign) — node consts shared by both layouts ─────
-  // Zone-1 panel: standalone card in the legacy layout; embedded inside the
-  // UnifiedTodo "Confirm the claim details" expansion in v3.
-  const caseNeedsPanelNode = (
+  // Zone-1 panel: standalone card in the legacy layout; embedded (chromeless,
+  // one combined card) inside the UnifiedTodo claim-details expansion in v3.
+  const renderCaseNeedsPanel = (embedded: boolean) => (
     <CaseNeedsPanel
+      embedded={embedded}
       letterType={letter.letterType}
       planServices={zone1Services}
       nameMismatch={nameMismatch != null}
@@ -1597,7 +1598,7 @@ function DisputesContent() {
       onMarkSent={handleMarkSent}
       markingSent={markingSent}
     >
-      {caseNeedsPanelNode}
+      {renderCaseNeedsPanel(true)}
     </UnifiedTodo>
   );
 
@@ -1620,7 +1621,7 @@ function DisputesContent() {
           case". Legacy layout keeps them here; v3 relocates Zone-1 inside the
           UnifiedTodo claim-details expansion and Zone-2 into the left column
           under the checklist (Option A — always visible). */}
-      {!v3DesignOn && caseNeedsPanelNode}
+      {!v3DesignOn && renderCaseNeedsPanel(false)}
       {!v3DesignOn && caseSummaryNode}
 
       {addPlanModal && letter.auditReportId && (

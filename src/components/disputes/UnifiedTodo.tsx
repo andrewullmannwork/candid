@@ -468,11 +468,13 @@ export function UnifiedTodo({
                   </div>
                 )}
 
-                {/* Inline expansion — claim details (embeds the real CaseNeedsPanel) */}
+                {/* Inline expansion — claim details. The embedded (chromeless)
+                    CaseNeedsPanel and this wrapper read as ONE card; the
+                    wrapper owns the border, padding, and footer actions. */}
                 {row.id === "details" && expanded === "details" && (
-                  <div className="animate-fade-in mx-2 mb-2.5 ml-8 rounded-[14px] border border-blue-200 bg-white p-1 shadow-[0_14px_30px_-20px_rgba(37,99,235,0.35)]">
+                  <div className="animate-fade-in mx-2 mb-2.5 ml-8 rounded-[14px] border border-blue-200 bg-white p-4 shadow-[0_14px_30px_-20px_rgba(37,99,235,0.35)] sm:p-5">
                     {children}
-                    <div className="flex justify-end gap-2 px-3 pb-3">
+                    <div className="mt-3 flex justify-end gap-2 border-t border-gray-100 pt-3">
                       <button
                         type="button"
                         onClick={() => setExpanded(null)}

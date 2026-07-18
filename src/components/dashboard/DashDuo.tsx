@@ -17,7 +17,8 @@ import type { PipelineCounts } from "@/lib/claims/use-claim-pipeline";
  *     in-network deductible, OOP max) + white/teal-border CTA.
  *   - CompareBand: Compare demoted to a slim full-width band below the duo.
  *
- * CTAs bottom-align across both cards (mt-auto); count labels pluralize.
+ * CTAs bottom-align across both cards (flex-1 content blocks + fixed 18px
+ * button margin); count labels pluralize.
  * Empty states (no bills / no plan) keep the upload-first framing from the
  * previous trio cards — the prototype doesn't model empties, so those variants
  * reuse the S125 copy inside the new chrome.
@@ -192,9 +193,11 @@ function HeroCtaButton({
   return (
     <div
       className={cn(
+        // Fixed 18px gap above the CTA (prototype .ph-cta-btn margin-top).
+        // Bottom-alignment comes from the flex-1 stats/trackers/body block
+        // stretching — NOT from mt-auto, which collapses this gap to zero the
+        // moment real-data content fills the card.
         "mt-[18px] flex items-center justify-center gap-1.5 w-full px-5 py-3 rounded-[14px] text-[14px] font-semibold transition-all",
-        // Bottom-align CTAs across both duo cards.
-        "mt-auto",
         variant === "primary" &&
           "bg-blue-600 text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15),0_8px_32px_hsla(217,91%,60%,0.10)] group-hover:bg-blue-700 group-hover:-translate-y-px group-hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25),0_12px_40px_hsla(217,91%,60%,0.15)]",
         variant === "plan" &&

@@ -38,6 +38,10 @@ export interface PlanCostService {
 }
 
 export interface CaseNeedsPanelProps {
+  /** Surface 4 (clarity redesign) — true when rendered INSIDE the UnifiedTodo
+   *  "Confirm the claim details" expansion: drops the outer card chrome
+   *  (border/shadow/padding) so panel + expansion read as ONE card. */
+  embedded?: boolean;
   letterType: string;
   planServices: PlanCostService[];
   nameMismatch: boolean;
@@ -362,7 +366,7 @@ interface RowDesc {
 
 export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   const {
-    letterType, planServices, nameMismatch, nameResolved, billName, profileName,
+    embedded, letterType, planServices, nameMismatch, nameResolved, billName, profileName,
     attestationReviewed, hasInsurer, providerAddressOnFile, insurerAddressOnFile,
     eobPresent, userPatientPaid, denialNoticeDate, collectorFirstContactDate,
     planLabel, showInsuranceRow, canChangePlan, readiness,
@@ -688,7 +692,13 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   const doneDescs = descs.filter((d) => d.done && !isEditing(d));
 
   return (
-    <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm md:p-6">
+    <section
+      className={
+        embedded
+          ? "bg-transparent"
+          : "rounded-2xl border border-gray-200 bg-white p-5 shadow-sm md:p-6"
+      }
+    >
       <ReadinessHeader tier={tier} completed={completed} total={total} />
 
       <div className="mt-3">
