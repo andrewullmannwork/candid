@@ -6,6 +6,8 @@ import { userScoped } from "@/lib/security/user-scoped";
 import { getStripe } from "@/lib/stripe";
 import { sendVerificationEmail, sendWelcomeEmail } from "@/lib/email/onboarding-emails";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { getFlags } from "@/lib/config/feature-flags";
+import { isTestPhoneExempt, TEST_PHONE_EXEMPT_E164 } from "@/lib/auth/test-phone-exempt";
 import { verifyTurnstileToken, getRemoteIp } from "@/lib/security/turnstile";
 
 interface ConsentPayload {
@@ -70,13 +72,17 @@ type UserAuthAction = "signup" | "signin";
 
 export async function POST(req: NextRequest) {
   try {
-    const { idToken, consents, userAction, turnstileToken, firstTouch } =
+    const { idToken, consents, userAction, turnstileToken, firstTouch, declaredTestPhone } =
       (await req.json()) as {
         idToken: string;
         consents?: ConsentPayload[];
         userAction?: UserAuthAction;
         turnstileToken?: string;
         firstTouch?: unknown;
+        // S288 test-phone exemption: the client declares the allowlisted test
+        // number when it skipped the Firebase OTP link. Ignored unless it
+        // matches the code constant AND the KV kill switch is ON.
+        declaredTestPhone?: string;
       };
     if (!idToken) {
       return NextResponse.json({ error: "Missing idToken" }, { status: 400 });
@@ -130,7 +136,7 @@ export async function POST(req: NextRequest) {
     // Check if a user with this email already exists (possibly from a different auth method)
     const { data: existingByEmail } = await supabase
       .from("users")
-      .select("id, firebase_uid")
+      .select("id, firebase_uid, phone_e164")
       .eq("email", email)
       .maybeSingle();
 
@@ -138,7 +144,7 @@ export async function POST(req: NextRequest) {
     // this lets us detect first-time signups (used to gate transactional emails).
     const { data: existingByUid } = await supabase
       .from("users")
-      .select("id")
+      .select("id, phone_e164")
       .eq("firebase_uid", uid)
       .maybeSingle();
 
@@ -155,6 +161,32 @@ export async function POST(req: NextRequest) {
     const phoneE164 = decoded.phone_number ?? null;
     const phoneVerified = phoneE164 !== null;
 
+    // Test-phone exemption (S288, mig 209) — EXACTLY ONE allowlisted test
+    // number (TEST_PHONE_EXEMPT_E164) may exist on multiple accounts at once:
+    // signup skips the Firebase phone-link (where one-account-per-phone is
+    // enforced) and this route stamps the number as verified instead. Gated by
+    // the TEST_PHONE_EXEMPTION_ENABLED KV kill switch (/admin/settings →
+    // Testing). Two legs, same effect on the writes below:
+    //   declared — this signup declares the exempt number (client skipped OTP);
+    //   stamped  — the row was stamped by a prior exempt signup; without this
+    //              leg the token-claim mirror would null the stamp on the next
+    //              passive resync (the token never carries a claim here).
+    // Kill switch OFF → both legs false → gate + writes behave exactly as
+    // before, and a stamped account downgrades on its next sync.
+    let testPhoneExempt = false;
+    if (!phoneE164) {
+      const declaredExempt =
+        typeof declaredTestPhone === "string" && isTestPhoneExempt(declaredTestPhone);
+      const stampedExempt =
+        existingByUid?.phone_e164 === TEST_PHONE_EXEMPT_E164 ||
+        existingByEmail?.phone_e164 === TEST_PHONE_EXEMPT_E164;
+      if (declaredExempt || stampedExempt) {
+        testPhoneExempt = (await getFlags()).TEST_PHONE_EXEMPTION_ENABLED;
+      }
+    }
+    const effPhoneE164 = phoneE164 ?? (testPhoneExempt ? TEST_PHONE_EXEMPT_E164 : null);
+    const effPhoneVerified = phoneVerified || testPhoneExempt;
+
     // S69 phone-OTP gate (mig 076 phone_otp_enforcement_v1 flag). Fires for
     // explicit signup OR for a brand-new account being created via any path
     // (e.g., a /auth/signin Google attempt for a not-yet-existing account).
@@ -165,7 +197,9 @@ export async function POST(req: NextRequest) {
     if (isSignupAction) recordSignupStep(supabase, uid, "attempted");
     if (isSignupAction) {
       const phoneOtpEnforced = await isFeatureEnabled("phone_otp_enforcement_v1");
-      if (phoneOtpEnforced && !phoneE164) {
+      // effPhoneE164 (not phoneE164): the S288 test-phone exemption satisfies
+      // the gate — every other number still requires the real Firebase claim.
+      if (phoneOtpEnforced && !effPhoneE164) {
         recordSignupStep(supabase, uid, "phone_blocked");
         console.warn(
           "[auth/sync] Phone-OTP gate rejected userAction=" +
@@ -200,12 +234,13 @@ export async function POST(req: NextRequest) {
         firebase_uid: uid,
         display_name: name || undefined,
         email_verified: emailVerified,
-        phone_verified: phoneVerified,
+        phone_verified: effPhoneVerified,
       };
       // Only overwrite phone_e164 when Firebase token provides one — preserves
       // any value already on the row if a current signin happens to lack the
-      // claim (e.g., legacy session without phone-link).
-      if (phoneE164) linkUpdate.phone_e164 = phoneE164;
+      // claim (e.g., legacy session without phone-link). eff*: the S288
+      // test-phone exemption stamps/preserves the allowlisted number here.
+      if (effPhoneE164) linkUpdate.phone_e164 = effPhoneE164;
       const { error: linkError } = await supabase
         .from("users")
         .update(linkUpdate)
@@ -230,8 +265,12 @@ export async function POST(req: NextRequest) {
             email,
             display_name: name || null,
             email_verified: emailVerified,
-            phone_e164: phoneE164,
-            phone_verified: phoneVerified,
+            // eff*: S288 test-phone exemption — stamps the allowlisted number
+            // on exempt signups AND preserves an existing stamp across passive
+            // resyncs (kill switch OFF → falls back to the raw token mirror,
+            // downgrading stamped rows on their next sync).
+            phone_e164: effPhoneE164,
+            phone_verified: effPhoneVerified,
             ...(sanitizedFirstTouch ? { first_touch: sanitizedFirstTouch } : {}),
           },
           { onConflict: "firebase_uid" }
@@ -246,7 +285,7 @@ export async function POST(req: NextRequest) {
       userId = upsertedUser.id;
       // Funnel (mig 206): a brand-new account exists.
       if (isNewUser) recordSignupStep(supabase, uid, "created");
-      console.log("[auth/sync] Step 2 OK — user:", userId, "(email_verified=" + emailVerified + ", phone_verified=" + phoneVerified + ")");
+      console.log("[auth/sync] Step 2 OK — user:", userId, "(email_verified=" + emailVerified + ", phone_verified=" + effPhoneVerified + (testPhoneExempt ? ", test_phone_exempt" : "") + ")");
     }
 
     // 3. Record consent events (server-side, service role bypasses RLS)
@@ -349,8 +388,8 @@ export async function POST(req: NextRequest) {
       email,
       stripeCustomerId,
       emailVerified,
-      phoneE164,
-      phoneVerified,
+      phoneE164: effPhoneE164,
+      phoneVerified: effPhoneVerified,
     });
     response.cookies.set("candid_session", "1", {
       httpOnly: false,

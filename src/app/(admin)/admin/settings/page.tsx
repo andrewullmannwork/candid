@@ -15,6 +15,7 @@ const BOOLEAN_FLAGS = new Set([
   "AUTO_PROCESS_ON_UPLOAD",
   "CLAUDE_EXTRACTION_ENABLED",
   "ON_DEMAND_EXTRACTION_ENABLED",
+  "TEST_PHONE_EXEMPTION_ENABLED",
 ]);
 
 const FLAG_LABELS: Record<string, string> = {
@@ -29,6 +30,7 @@ const FLAG_LABELS: Record<string, string> = {
   ON_DEMAND_EXTRACTION_ENABLED: "On-Demand Plan Extraction",
   MAX_EXTRACTED_SERVICES: "Max Services per Document",
   COMPARE_FLYWHEEL_MIN_MEMBERS: "Min members for community premium",
+  TEST_PHONE_EXEMPTION_ENABLED: "Test phone exemption (+1 904-294-1389 on multiple accounts)",
 };
 
 const FLAG_GROUPS: Record<string, string[]> = {
@@ -49,6 +51,7 @@ const FLAG_GROUPS: Record<string, string[]> = {
     "UPLOAD_MAX_PER_USER",
   ],
   Compare: ["COMPARE_FLYWHEEL_MIN_MEMBERS"],
+  Testing: ["TEST_PHONE_EXEMPTION_ENABLED"],
 };
 
 export default function AdminSettingsPage() {

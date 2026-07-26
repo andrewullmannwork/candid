@@ -10,6 +10,7 @@ import { TurnstileWidget } from "@/components/security/TurnstileWidget";
 import { PhoneOTPStep } from "@/components/auth/PhoneOTPStep";
 import { AuthErrorMessage } from "@/components/auth/PhoneAlreadyLinkedError";
 import { SIMPLIFIED_ONBOARDING_FLAG } from "@/lib/onboarding/simplified";
+import { isTestPhoneExempt, TEST_PHONE_EXEMPTION_FLAG } from "@/lib/auth/test-phone-exempt";
 
 type SignUpMode = "form" | "otp-email" | "otp-google";
 
@@ -119,6 +120,45 @@ export default function SignUpPage() {
     nextMode: "otp-email" | "otp-google",
     recoveredOrphan: boolean,
   ) {
+    // Test-phone exemption (S288): EXACTLY the allowlisted test number skips
+    // the Firebase OTP link (Firebase enforces one-account-per-phone at
+    // linkWithPhoneNumber) and is stamped verified by /api/auth/sync instead —
+    // so it can exist on multiple accounts for E2E testing. The client
+    // pre-checks the kill switch (fail-strict: any error → real OTP flow)
+    // because a doomed sync attempt would burn the single-use Turnstile token;
+    // the server re-checks authoritatively and 403s if the switch raced OFF —
+    // fall through to the real OTP flow in that case.
+    if (isTestPhoneExempt(phoneE164)) {
+      let exemptionOn = false;
+      try {
+        const res = await fetch(`/api/feature-flags/${TEST_PHONE_EXEMPTION_FLAG}`);
+        const flag = (await res.json()) as { enabled?: boolean };
+        exemptionOn = flag?.enabled === true;
+      } catch {
+        exemptionOn = false;
+      }
+      if (exemptionOn) {
+        try {
+          await signUpFinish(firebaseUser, consents, token, phoneE164);
+          // Mirrors handleOtpVerified routing (email path carries phone+DOB).
+          if (nextMode === "otp-email") {
+            router.push(
+              await resolvePostSignupDest({
+                phone: phoneE164.replace(/^\+1/, ""),
+                dob: dateOfBirth || undefined,
+              }),
+            );
+          } else {
+            router.push(await resolvePostSignupDest({}));
+          }
+          return;
+        } catch (err: unknown) {
+          const code = (err as { code?: string })?.code;
+          if (code !== "auth/phone-verification-required") throw err;
+          // Kill switch raced OFF server-side — continue into the real OTP flow.
+        }
+      }
+    }
     const confirmation = await startPhoneVerification(firebaseUser, phoneE164);
     setProgress({
       firebaseUser,

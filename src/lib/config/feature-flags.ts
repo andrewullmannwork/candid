@@ -95,6 +95,10 @@ export async function getFlags() {
     // a community average premium is shown (k-anon floor, Rule #5). Adjustable in
     // /admin/settings. Consumed by the flywheel aggregation read-back (follow-up).
     COMPARE_FLYWHEEL_MIN_MEMBERS: await getFlagInt("COMPARE_FLYWHEEL_MIN_MEMBERS", 5),
+    // Test-phone exemption kill switch (S288, mig 209) — allows the ONE
+    // hardcoded test number (src/lib/auth/test-phone-exempt.ts) on multiple
+    // accounts. Default false: no DB row → strict phone behavior.
+    TEST_PHONE_EXEMPTION_ENABLED: await getFlagBool("TEST_PHONE_EXEMPTION_ENABLED", false),
   };
 }
 
@@ -116,6 +120,7 @@ export const FLAGS = {
   ON_DEMAND_EXTRACTION_ENABLED: envBool("ON_DEMAND_EXTRACTION_ENABLED", true),
   MAX_EXTRACTED_SERVICES: envInt("MAX_EXTRACTED_SERVICES", 125),
   COMPARE_FLYWHEEL_MIN_MEMBERS: envInt("COMPARE_FLYWHEEL_MIN_MEMBERS", 5),
+  TEST_PHONE_EXEMPTION_ENABLED: envBool("TEST_PHONE_EXEMPTION_ENABLED", false),
 } as const;
 
 /**
