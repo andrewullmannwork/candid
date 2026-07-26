@@ -8,6 +8,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { getFlags } from "@/lib/config/feature-flags";
 
 // Whitelist the flags exposed via this endpoint so we don't accidentally
 // leak operational flags to the browser. Add keys here as new embedded UI
@@ -26,11 +27,27 @@ const EXPOSED_FLAGS = new Set([
   "onboarding_simplified_v1", // Simplified onboarding (S285) — /onboarding route, profile meter, signup redirect
 ]);
 
+// KV-store flags exposed through this same endpoint. Two-system note: the keys
+// above live in the feature_flag_rules boolean engine (isFeatureEnabled); these
+// live in the feature_flags KV store behind /admin/settings (getFlags). Only
+// the toggle STATE is exposed — never the allowlisted number itself.
+const EXPOSED_KV_FLAGS = new Set([
+  "TEST_PHONE_EXEMPTION_ENABLED", // S288 test-phone exemption kill switch (signup pre-check)
+]);
+
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ flagKey: string }> }
 ) {
   const { flagKey } = await params;
+  if (EXPOSED_KV_FLAGS.has(flagKey)) {
+    try {
+      const kv = await getFlags();
+      return NextResponse.json({ enabled: kv.TEST_PHONE_EXEMPTION_ENABLED });
+    } catch {
+      return NextResponse.json({ enabled: false });
+    }
+  }
   if (!EXPOSED_FLAGS.has(flagKey)) {
     return NextResponse.json({ enabled: false }, { status: 404 });
   }

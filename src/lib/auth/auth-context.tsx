@@ -59,10 +59,14 @@ interface AuthContextValue {
     displayName?: string,
   ) => Promise<FirebaseUser>;
   signUpStartGoogle: () => Promise<FirebaseUser>;
+  // declaredTestPhone (S288): set ONLY by the test-phone-exemption signup path
+  // (src/lib/auth/test-phone-exempt.ts) when the OTP link was skipped for the
+  // allowlisted test number; the server validates + stamps it.
   signUpFinish: (
     firebaseUser: FirebaseUser,
     consents: ConsentPayload[],
     turnstileToken: string,
+    declaredTestPhone?: string,
   ) => Promise<CandidUser>;
 
   // Phone OTP primitive (S69). Confirmation is via the returned
@@ -95,6 +99,7 @@ async function syncWithBackend(
   consents?: ConsentPayload[],
   userAction?: UserAuthAction,
   turnstileToken?: string,
+  declaredTestPhone?: string,
 ): Promise<CandidUser> {
   let idToken: string;
   try {
@@ -118,6 +123,10 @@ async function syncWithBackend(
       userAction,
       turnstileToken,
       firstTouch: readFirstTouch(),
+      // S288 test-phone exemption — undefined (and JSON-omitted) on every
+      // normal sync; the server ignores it unless it matches the allowlisted
+      // constant AND the kill switch is ON.
+      declaredTestPhone,
     }),
   });
 
@@ -270,11 +279,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       firebaseUser: FirebaseUser,
       consents: ConsentPayload[],
       turnstileToken: string,
+      declaredTestPhone?: string,
     ): Promise<CandidUser> => {
       // Force a token refresh so the latest decoded.phone_number claim makes
       // it to the server (Firebase doesn't auto-refresh after linkWithPhoneNumber).
+      // On the S288 test-phone-exemption path there's no new claim (link was
+      // skipped) — the refresh is a harmless no-op there.
       await firebaseUser.getIdToken(true);
-      const candidUser = await syncWithBackend(firebaseUser, consents, "signup", turnstileToken);
+      const candidUser = await syncWithBackend(firebaseUser, consents, "signup", turnstileToken, declaredTestPhone);
       pendingSignupUidsRef.current.delete(firebaseUser.uid);
       setUser(candidUser);
       return candidUser;
