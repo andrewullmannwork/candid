@@ -22,6 +22,16 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { loadPlanCostShareParams } from "../src/lib/claims/cost-share-loader";
 import { OB_CARD_COPY, OB_COPY, OB_DOC_COPY } from "../src/lib/onboarding/simplified";
+import { loadCatalogIdentity } from "../src/lib/plan/catalog-identity";
+import {
+  SERVICE_CATEGORY_LABELS,
+  labelForCategory,
+  categoryToDomain,
+} from "../src/lib/plan/category-display";
+import {
+  CATEGORY_DISPLAY_ORDER,
+  sortCategoryGroups,
+} from "../src/components/compare/compare-aggregates";
 
 let pass = 0;
 let fail = 0;
@@ -174,6 +184,92 @@ const CANON_TERMS = {
     ["OB_COPY.planModeSub", OB_COPY.planModeSub],
   ] as const) {
     check(`${k} non-empty`, typeof v === "string" && v.length > 0, true);
+  }
+
+  // ── 3. S289 catalog-identity resolver (mocked service_catalog) ──────────
+  // Mock supports .in("slug", …) and .in("id", …) against a fixed catalog:
+  //   pcp_visit (live, office_visit) ← telehealth_pcp (merged, dead)
+  //   generic_rx (live, rx)
+  {
+    const CATALOG = [
+      { id: "id-pcp", slug: "pcp_visit", name: "Primary Care Visit", category: "office_visit", merged_into_id: null, concept_id: "con-pcp" },
+      { id: "id-tele", slug: "telehealth_pcp", name: "Telehealth — Primary Care", category: "office_visit", merged_into_id: "id-pcp", concept_id: "con-tele" },
+      { id: "id-rx", slug: "generic_rx", name: "Generic Drugs", category: "rx", merged_into_id: null, concept_id: "con-rx" },
+    ];
+    let queries = 0;
+    const catalogMock = {
+      from: (table: string) => ({
+        select: () => ({
+          in: async (col: string, vals: string[]) => {
+            queries++;
+            if (table !== "service_catalog") return { data: [], error: null };
+            const key = col === "slug" ? "slug" : "id";
+            return { data: CATALOG.filter((r) => vals.includes(r[key as "slug" | "id"])), error: null };
+          },
+        }),
+      }),
+    } as unknown as SupabaseClient;
+
+    const m = await loadCatalogIdentity(catalogMock, [
+      "pcp_visit", "telehealth_pcp", "generic_rx", "pcp_visit", null, "unknown_slug",
+    ]);
+    check("resolver — live slug identity", m.get("pcp_visit")?.liveSlug, "pcp_visit");
+    check("resolver — live name", m.get("pcp_visit")?.name, "Primary Care Visit");
+    check("resolver — merged slug follows chain", m.get("telehealth_pcp")?.liveSlug, "pcp_visit");
+    check("resolver — merged slug live category", m.get("telehealth_pcp")?.category, "office_visit");
+    check("resolver — merged slug live concept", m.get("telehealth_pcp")?.conceptId, "con-pcp");
+    check("resolver — live rx category", m.get("generic_rx")?.category, "rx");
+    check("resolver — unknown slug absent", m.has("unknown_slug"), false);
+    check("resolver — dedupe (5 in, 3 distinct known)", m.size, 3);
+    check("resolver — no target refetch when chain in hand", queries, 1);
+
+    const empty = await loadCatalogIdentity(catalogMock, [null, undefined]);
+    check("resolver — empty input skips query", empty.size, 0);
+  }
+
+  // ── 4. S289 display maps ────────────────────────────────────────────────
+  {
+    // Every mig-148 CHECK category has an explicit label (no titleCase fallthrough).
+    const V1 = ["office_visit","emergency","hospital","imaging","lab","rx","therapy","mental_health","maternity","dme","preventive","other","long_term_care","dental","vision","surgery","hospitalization","dialysis","family_planning"];
+    check("labels — all 19 V1 categories labeled", V1.every((c) => Boolean(SERVICE_CATEGORY_LABELS[c])), true);
+    // V1-first precedence: maternity is "Maternity" (not V2's broader label)…
+    check("labels — maternity V1-first", labelForCategory("maternity"), "Maternity");
+    check("labels — maternity V1-first (db source)", labelForCategory("maternity", "user_plan_with_canonical"), "Maternity");
+    // …except the static_catalog path, whose V2 bucket genuinely includes family planning.
+    check("labels — maternity V2 on static_catalog", labelForCategory("maternity", "static_catalog"), "Maternity & Family Planning");
+    // V2-only keys still resolve on every path.
+    check("labels — V2-only key resolves", labelForCategory("preventive_care"), "Preventive Care");
+    check("labels — unknown auto title-case", labelForCategory("some_new_thing"), "Some New Thing");
+    // categoryToDomain: the 7 previously-missing keys land on real tiles.
+    check("domain — long_term_care→ltc", categoryToDomain("long_term_care"), "ltc");
+    check("domain — hospitalization→hospital", categoryToDomain("hospitalization"), "hospital");
+    check("domain — surgery→hospital", categoryToDomain("surgery"), "hospital");
+    check("domain — dialysis→ltc", categoryToDomain("dialysis"), "ltc");
+    check("domain — family_planning→maternity", categoryToDomain("family_planning"), "maternity");
+    check("domain — dental→other (no tile)", categoryToDomain("dental"), "other");
+    check("domain — unknown→other", categoryToDomain("never_heard_of_it"), "other");
+  }
+
+  // ── 5. S289 /compare display order — keys are REAL V1 categories ────────
+  {
+    const v1Check = new Set(["office_visit","emergency","hospital","imaging","lab","rx","therapy","mental_health","maternity","dme","preventive","other","long_term_care","dental","vision","surgery","hospitalization","dialysis","family_planning"]);
+    check(
+      "compare order — every key is a real category",
+      CATEGORY_DISPLAY_ORDER.every((c) => v1Check.has(c.slug)),
+      true,
+    );
+    const sorted = sortCategoryGroups([
+      { category: "other", rows: [] },
+      { category: "rx", rows: [] },
+      { category: "office_visit", rows: [] },
+      { category: "dme", rows: [] },
+      { category: "long_term_care", rows: [] },
+    ]);
+    check("compare order — office_visit first of these", sorted[0].category, "office_visit");
+    check("compare order — office_visit labeled", sorted[0].label, "Office visits");
+    check("compare order — rx labeled Prescriptions", sorted.find((g) => g.category === "rx")?.label, "Prescriptions");
+    check("compare order — dme labeled Equipment", sorted.find((g) => g.category === "dme")?.label, "Equipment & supplies");
+    check("compare order — other sorts LAST", sorted[sorted.length - 1].category, "other");
   }
 
   console.log(`\n${pass}/${pass + fail} passed`);

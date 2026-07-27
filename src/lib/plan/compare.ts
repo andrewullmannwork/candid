@@ -11,6 +11,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { loadCatalogIdentity } from "@/lib/plan/catalog-identity";
 import { decorateFieldFromEntry } from "@/lib/parser/consumer-read";
 import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import type { DecorationContext } from "@/lib/plan/analyze-decoration";
@@ -276,26 +277,14 @@ export async function resolveCanonicalPlan(opts: {
     .eq("canonical_plan_id", canonicalPlanId);
 
   // B3.3 — enrich each service with category from service_catalog.
-  // canonical_plan_services has service_slug TEXT but NO foreign key to
-  // service_catalog (unlike plan_covered_services which has the FK + supports
-  // Supabase's inline join syntax). Do a two-query merge: collect distinct
-  // slugs, lookup categories, build slug→category map. Allows /compare to
-  // group benefits by real category instead of collapsing all to "other".
-  const slugList = Array.from(
-    new Set((services ?? []).map((s) => s.service_slug as string | null).filter(Boolean) as string[]),
+  // canonical_plan_services has service_slug TEXT (no inline-join FK until
+  // mig 213); S289 swapped the former inline two-query merge for the shared
+  // merge-chain resolver so /compare, /plan gap-fill, and the audit
+  // coverage-loader give one answer for the same stored slug.
+  const catalogIdentity = await loadCatalogIdentity(
+    supabase,
+    (services ?? []).map((s) => s.service_slug as string | null),
   );
-  const categoryBySlug = new Map<string, string>();
-  if (slugList.length > 0) {
-    const { data: catalog } = await supabase
-      .from("service_catalog")
-      .select("slug, category")
-      .in("slug", slugList);
-    for (const row of catalog ?? []) {
-      const s = row.slug as string | null;
-      const c = row.category as string | null;
-      if (s && c) categoryBySlug.set(s, c);
-    }
-  }
 
   const sourceCount = decoration?.canonicalSourceCount ?? plan.verification_count ?? 1;
   const logicalSource = "canonical_inherited";
@@ -313,7 +302,7 @@ export async function resolveCanonicalPlan(opts: {
         inferred: isSynonymInferred(s, decoration)
           ? { source: "synonym_cache" as const, matchedSlug: slug }
           : null,
-        category: categoryBySlug.get(slug) ?? "other",
+        category: catalogIdentity.get(slug)?.category ?? "other",
         title: titleCase(slug),
         costInNetworkDescription: describeCost({
           copay: s.in_copay ?? null,

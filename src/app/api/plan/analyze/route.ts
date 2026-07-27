@@ -6,6 +6,7 @@ import { loadDecorationContext, type DecorationContext } from "@/lib/plan/analyz
 import { decorateFieldFromEntry } from "@/lib/parser/consumer-read";
 import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import { resolveCanonicalSlugs } from "@/lib/parser/canonical-resolution";
+import { loadCatalogIdentity } from "@/lib/plan/catalog-identity";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
@@ -256,12 +257,10 @@ export async function POST(request: NextRequest) {
             // place-aware composite keys (slug:place_of_service) — checked before slug-only fallback
             "pcp_visit:virtual": "telehealth-primary",
             "specialist_visit:virtual": "telehealth-primary",
-            // deprecated-slug aliases (mig 183): the user-covered-services path filters these out via
-            // merged_into_id IS NULL (line ~121), but the canonical gap-fill path reads
-            // canonical_plan_services.service_slug directly (NOT merged-filtered), so a stale canonical
-            // row with a telehealth_* slug still reaches this lookup → keep the aliases live.
-            telehealth_pcp: "telehealth-primary",
-            telehealth_specialist: "telehealth-primary",
+            // (S289) the former telehealth_pcp/telehealth_specialist dead-slug aliases are gone:
+            // the gap-fill path now resolves stored slugs through loadCatalogIdentity (merge-chain
+            // aware) and keys this lookup on the LIVE slug; mig 213 also remaps the 7 stored
+            // dead-slug rows onto pcp_visit/specialist_visit @ place_of_service='virtual'.
             // legacy aliases (pre-S94 data; safe to remove once S94 backfill complete)
             physical_therapy: "physical-therapy",
             occupational_therapy: "occupational-therapy",
@@ -414,9 +413,22 @@ export async function POST(request: NextRequest) {
               .eq("canonical_plan_id", userPlan.canonical_plan_id);
 
             if (canonicalServices) {
-              const gapServices = canonicalServices.filter(
-                (cs) => cs.service_slug && !userSlugs.has(cs.service_slug)
+              // S289 — canonical_plan_services stores a bare service_slug (no FK), so
+              // category/name/merge-state come from the shared merge-chain resolver.
+              // This replaced the hardcoded category:"other" that dumped every
+              // search-selected plan's benefits into one "Other Services" bucket.
+              const gapIdentity = await loadCatalogIdentity(
+                supabase,
+                canonicalServices.map((cs) => cs.service_slug as string | null),
               );
+              // Gap = services the user doesn't already have. Compare on the LIVE
+              // slug — "does the user already have this service" is an identity
+              // question, so a stored dead slug must not slip past its live twin.
+              const gapServices = canonicalServices.filter((cs) => {
+                if (!cs.service_slug) return false;
+                const live = gapIdentity.get(cs.service_slug)?.liveSlug ?? cs.service_slug;
+                return !userSlugs.has(live);
+              });
 
               // Phase 4 Task 4-B: canonical gap-fill rows are CROSS-USER source
               // ("canonical_inherited") — subject to multi-source corroboration
@@ -427,6 +439,11 @@ export async function POST(request: NextRequest) {
               const canonicalSourceCount = decoration?.canonicalSourceCount ?? 1;
               const canonicalLogicalSource = "canonical_inherited";
               canonicalGapBenefits = gapServices.map((cs) => {
+                // S289 — live catalog identity for this stored slug (undefined
+                // only for a slug missing from service_catalog entirely; callers
+                // fall back to the old prettify/"other" behavior there).
+                const identity = cs.service_slug ? gapIdentity.get(cs.service_slug) : undefined;
+                const liveSlug = identity?.liveSlug ?? (cs.service_slug as string | null);
                 // FE→BE request resolution (feedback_benefits_prose_preserve):
                 // back-fill whyUnderutilized + howToAccess from BENEFITS_CATALOG
                 // when the canonical service slug maps to a catalog entry. Reuses
@@ -436,12 +453,16 @@ export async function POST(request: NextRequest) {
                 // item 4 (mig 183): composite key first, symmetric with the user-row path
                 // (line ~281) — a virtual pcp_visit/specialist_visit canonical row resolves to
                 // "telehealth-primary", not "annual-physical"/"cancer-screenings".
+                // S289: keyed on the LIVE slug so rows stored on a merged slug
+                // reach the same prose as their live twin.
                 const gapCatalogId =
-                  (cs.place_of_service === "virtual" && cs.service_slug
-                    ? SLUG_TO_CATALOG[`${cs.service_slug}:virtual`]
+                  (cs.place_of_service === "virtual" && liveSlug
+                    ? SLUG_TO_CATALOG[`${liveSlug}:virtual`]
                     : undefined)
-                  ?? (cs.service_slug ? SLUG_TO_CATALOG[cs.service_slug] : undefined);
+                  ?? (liveSlug ? SLUG_TO_CATALOG[liveSlug] : undefined);
                 const gapCatalogBenefit = gapCatalogId ? catalogBenefitMap.get(gapCatalogId) : undefined;
+                // S289: real category from the live catalog row (was hardcoded "other").
+                const gapCategory = identity?.category ?? "other";
                 return {
                 // S99 B5: canonical_plan_services entries should be canonical
                 // slugs per Pattern 1 #14. Pass through; surface separately
@@ -450,8 +471,14 @@ export async function POST(request: NextRequest) {
                 canonicalServiceSlug: cs.service_slug,
                 benefit: {
                   id: cs.service_slug || cs.id,
-                  category: "other",
-                  title: cleanDescription((cs.service_slug || "").replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())),
+                  category: gapCategory,
+                  // S289: display name from the live catalog row (parity with the
+                  // user-row path, which titles from service_catalog.name via its
+                  // FK join) — "Pcp Visit" → "Primary Care Visit".
+                  title: cleanDescription(
+                    identity?.name
+                      ?? (cs.service_slug || "").replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase()),
+                  ),
                   description: cs.covered === false
                     ? "Not covered under this plan."
                     : [
@@ -466,7 +493,7 @@ export async function POST(request: NextRequest) {
                   hsaFsaEligible: gapCatalogBenefit?.hsaFsaEligible || false,
                   planTypes: [userPlan.plan_type || ""],
                 },
-                categoryLabel: "other",
+                categoryLabel: gapCategory,
                 // A3 (cite-grade gate): the cold-start seed IS the plan's own official SBC (admin
                 // cold-start), so the prior "other plan members" label is the same over-claim the old
                 // "Community" badge was. Relabel ONLY for the official seed (source='admin_attested');

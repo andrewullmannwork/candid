@@ -64,6 +64,24 @@ interface Cleanup {
   canonicalIds: string[];
   cpsIds: string[];
   auditIds: string[];
+  catalogSlugs: string[];
+}
+
+/**
+ * mig 213 — canonical_plan_services.service_slug now FKs service_catalog(slug),
+ * so synthetic cps slugs must exist in the catalog first. Registered on cleanup
+ * and deleted AFTER the cps rows (FK is NO ACTION, so order matters).
+ */
+async function ensureCatalogSlug(cleanup: Cleanup, slug: string) {
+  const { error } = await sb.from("service_catalog").insert({
+    slug,
+    name: `Fixture — ${slug}`,
+    category: "other",
+  });
+  if (error && !/duplicate key/i.test(error.message)) {
+    throw new Error(`service_catalog fixture insert failed: ${error.message}`);
+  }
+  if (!error) cleanup.catalogSlugs.push(slug);
 }
 
 async function setupInsurer(): Promise<string> {
@@ -191,12 +209,17 @@ async function teardown(cleanup: Cleanup) {
     await sb.from("canonical_plan_services").delete().in("canonical_plan_id", cleanup.canonicalIds);
     await sb.from("canonical_plans").delete().in("id", cleanup.canonicalIds);
   }
-  console.log(`  cleaned ${cleanup.canonicalIds.length} canonical(s), ${cleanup.cpsIds.length} cps, ${cleanup.auditIds.length} audit row(s)`);
+  if (cleanup.catalogSlugs.length > 0) {
+    // After cps deletes — the mig-213 FK is NO ACTION, so catalog rows only
+    // delete once nothing references them.
+    await sb.from("service_catalog").delete().in("slug", cleanup.catalogSlugs);
+  }
+  console.log(`  cleaned ${cleanup.canonicalIds.length} canonical(s), ${cleanup.cpsIds.length} cps, ${cleanup.auditIds.length} audit row(s), ${cleanup.catalogSlugs.length} catalog slug(s)`);
 }
 
 async function main() {
   console.log("Path B PR #2 backfill fixture\n");
-  const cleanup: Cleanup = { canonicalIds: [], cpsIds: [], auditIds: [] };
+  const cleanup: Cleanup = { canonicalIds: [], cpsIds: [], auditIds: [], catalogSlugs: [] };
 
   try {
     const insurerId = await setupInsurer();
@@ -205,6 +228,7 @@ async function main() {
     header("Test 1: dry-run produces no PROD writes");
     const canId = await insertDriftedCanonical(cleanup, insurerId);
     const cpsSlug = `fixture_pr2_${Date.now()}`;
+    await ensureCatalogSlug(cleanup, cpsSlug);
     await insertDriftedCps(cleanup, canId, cpsSlug);
 
     const beforeCanonical = await readCanonical(canId);

@@ -135,24 +135,35 @@ export function groupBenefitsByCategory(
   return groups;
 }
 
-/** Stable display order for category accordions (slug → label). */
+/**
+ * Stable display order for category accordions (slug → label).
+ *
+ * S289: keys are service_catalog.category values (the vocabulary
+ * groupBenefitsByCategory actually receives). The original list used four
+ * invented slugs (office_visits/prescriptions/equipment/home_health) plus two
+ * that no category can hold (specialist/pediatric) — those groups fell to
+ * title-cased fallbacks ("Office Visit", "Rx", "Dme") sorted at 999, AFTER
+ * "Other covered services".
+ */
 export const CATEGORY_DISPLAY_ORDER: Array<{ slug: string; label: string }> = [
-  { slug: "office_visits", label: "Office visits" },
+  { slug: "office_visit", label: "Office visits" },
   { slug: "preventive", label: "Preventive care" },
-  { slug: "specialist", label: "Specialist care" },
   { slug: "emergency", label: "Emergency & urgent care" },
   { slug: "hospital", label: "Hospital services" },
+  { slug: "hospitalization", label: "Hospital stays" },
+  { slug: "surgery", label: "Surgery" },
   { slug: "imaging", label: "Imaging" },
   { slug: "lab", label: "Lab & diagnostics" },
-  { slug: "prescriptions", label: "Prescriptions" },
+  { slug: "rx", label: "Prescriptions" },
   { slug: "mental_health", label: "Mental health & substance use" },
   { slug: "therapy", label: "Therapy & rehab" },
+  { slug: "dialysis", label: "Dialysis" },
   { slug: "maternity", label: "Maternity & newborn" },
-  { slug: "pediatric", label: "Pediatric care" },
+  { slug: "family_planning", label: "Family planning" },
   { slug: "vision", label: "Vision" },
   { slug: "dental", label: "Dental" },
-  { slug: "equipment", label: "Equipment & supplies" },
-  { slug: "home_health", label: "Home health & long-term care" },
+  { slug: "dme", label: "Equipment & supplies" },
+  { slug: "long_term_care", label: "Home health & long-term care" },
   { slug: "other", label: "Other covered services" },
 ];
 

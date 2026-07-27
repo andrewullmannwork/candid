@@ -8,7 +8,7 @@ import { useAuth } from "@/lib/auth/auth-context";
 import { createBrowserClient } from "@/lib/supabase/client";
 import type { PlanAnalysisResult, AnalyzedBenefit } from "@/lib/plan/analyzer";
 import type { BenefitCategory } from "@/lib/plan/benefits-catalog";
-import { BENEFIT_CATEGORY_LABELS } from "@/lib/plan/benefits-catalog";
+import { labelForCategory } from "@/lib/plan/category-display";
 import {
   DisplayStateBadge,
   SourceQuote,
@@ -81,22 +81,9 @@ function MatrixVerifyTag({ state }: { state: DisplayState | null | undefined }) 
   );
 }
 
-const SERVICE_CATEGORY_LABELS: Record<string, string> = {
-  office_visit: "Office Visits",
-  emergency: "Emergency",
-  hospital: "Hospital",
-  imaging: "Imaging",
-  lab: "Lab & Testing",
-  rx: "Prescriptions",
-  therapy: "Therapy & Rehab",
-  mental_health: "Mental Health",
-  maternity: "Maternity",
-  dme: "Equipment & Supplies",
-  preventive: "Preventive Care",
-  long_term_care: "Long-Term Care",
-  other: "Other Services",
-  general: "General",
-};
+// Category labels live in src/lib/plan/category-display.ts (S289 — shared
+// with /dashboard + fixture-asserted; V1-first precedence, static_catalog
+// keeps V2-first).
 
 // ── Extended API response type ─────────────────────────────────────────────────
 
@@ -190,6 +177,14 @@ const EXTENDED_CATEGORY_ICONS: Record<string, { path: string; color: string }> =
   therapy: { path: "M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z", color: "text-orange-600 bg-orange-50" },
   dme: { path: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z", color: "text-amber-600 bg-amber-50" },
   preventive: { path: "M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z", color: "text-blue-600 bg-blue-50" },
+  // S289 — categories that previously fell to the gray DEFAULT_ICON:
+  surgery: { path: "M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z", color: "text-rose-600 bg-rose-50" },
+  hospitalization: { path: "M3 21h18M5 21V7l7-4 7 4v14M9 9h1m4 0h1M9 13h1m4 0h1M9 17h1m4 0h1", color: "text-red-600 bg-red-50" },
+  dialysis: { path: "M7.5 3.75c0 2.9-3 4.35-3 7.5a7.5 7.5 0 0015 0c0-3.15-3-4.6-3-7.5m-4.5 0v16.5m-3.75-6h7.5", color: "text-cyan-600 bg-cyan-50" },
+  family_planning: { path: "M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z M12 8v4m-2-2h4", color: "text-pink-600 bg-pink-50" },
+  dental: { path: "M12 5.5c-1.5-1.5-4-2-5.5-.5C4.5 6.5 4.5 9 5.5 11c.83 1.66 1.5 4.5 2 7 .17.83 1.33.83 1.5 0l1-4.5c.17-.83 1.83-.83 2 0l1 4.5c.17.83 1.33.83 1.5 0 .5-2.5 1.17-5.34 2-7 1-2 1-4.5-1-6-1.5-1.5-4-1-5.5.5z", color: "text-sky-600 bg-sky-50" },
+  vision: { path: "M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z", color: "text-indigo-600 bg-indigo-50" },
+  long_term_care: { path: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6", color: "text-slate-600 bg-slate-100" },
   other: DEFAULT_ICON,
   general: DEFAULT_ICON,
 };
@@ -963,7 +958,7 @@ export default function CandidPlanPage() {
           // in all visible groups) — drives the X-of-Y pill color.
           const categoryAggState = aggregateRowState(groups.flatMap((g) => g.visibleVariantDisplays.map((r) => r?.state ?? null)));
           const safeAggState = categoryAggState && isVisibleState(categoryAggState) ? categoryAggState : null;
-          const label = BENEFIT_CATEGORY_LABELS[category as BenefitCategory] || SERVICE_CATEGORY_LABELS[category] || category.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+          const label = labelForCategory(category, result?.dataSource);
           const isOpen = openCategory === category;
           // Item 2: a service is "drilled into" only when this category is open
           // AND the currently-expanded benefit belongs to it. Drives the header

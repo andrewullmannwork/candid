@@ -25,6 +25,7 @@ import {
   type BenefitsGridTile,
   type TileDomain,
 } from "@/components/dashboard/BenefitsGrid";
+import { categoryToDomain } from "@/lib/plan/category-display";
 import { MoreFromCandidCards } from "@/components/dashboard/MoreFromCandidCards";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -609,35 +610,9 @@ function labelFor(docType: string): string {
 
 // ─── BenefitsGrid mapping (AMA-clean per P5 Hard Rule #3) ──────────────────
 
-/** Map candid category strings (BenefitCategory or service_catalog) → design tile domain. */
-function categoryToDomain(category: string): TileDomain {
-  const map: Record<string, TileDomain> = {
-    // BenefitCategory enum values (benefits-catalog.ts)
-    preventive_care: "preventive",
-    mental_health: "mental",
-    nutrition: "other",
-    physical_therapy: "therapy",
-    hsa_fsa: "other",
-    telehealth: "office",
-    chronic_care: "ltc",
-    wellness: "preventive",
-    maternity: "maternity",
-    vision_dental: "other",
-    // Service catalog category values
-    imaging: "imaging",
-    emergency: "emergency",
-    office_visit: "office",
-    hospital: "hospital",
-    lab: "lab",
-    rx: "rx",
-    therapy: "therapy",
-    dme: "equip",
-    preventive: "preventive",
-    other: "other",
-    general: "other",
-  };
-  return map[category] ?? "other";
-}
+// categoryToDomain lives in src/lib/plan/category-display.ts (S289 — shared,
+// fixture-asserted; adds the 7 previously-missing service_catalog categories
+// that all fell to "other" and kept the LTC tile permanently at 0).
 
 const TILE_DEFS: Array<{ id: string; domain: TileDomain; name: string }> = [
   { id: "preventive", domain: "preventive", name: "Preventive Care" },
