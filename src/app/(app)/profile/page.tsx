@@ -701,6 +701,25 @@ function ProfileContent() {
     }
   }
 
+  // S288 plan-flow unification: every plan/about edit affordance routes into
+  // the ONE onboarding flow (trimmed mode) when onboarding_simplified_v1 is
+  // ON; flag OFF — or any read error — falls back to the legacy wizard step
+  // (the rollback path stays real). Flag read via the public endpoint only.
+  const openFlowOrWizard = async (flowMode: "plan" | "about", wizardStep: number) => {
+    try {
+      const res = await fetch(`/api/feature-flags/${SIMPLIFIED_ONBOARDING_FLAG}`);
+      const d = (await res.json().catch(() => ({}))) as { enabled?: boolean };
+      if (d?.enabled === true) {
+        router.push(`/onboarding?mode=${flowMode}&from=/profile`);
+        return;
+      }
+    } catch {
+      /* fall through to the legacy wizard */
+    }
+    setEditMode(true);
+    setStep(wizardStep);
+  };
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   const showCubeLoader = useMinHoldLoading(loading);
@@ -733,14 +752,9 @@ function ProfileContent() {
         profile={profile}
         userDocs={userDocs}
         needsCardRescan={needsCardRescan}
-        onUpdateInsurance={() => {
-          setEditMode(true);
-          setStep(1);
-        }}
-        onRescanCard={() => {
-          setEditMode(true);
-          setStep(0);
-        }}
+        onUpdateInsurance={() => void openFlowOrWizard("plan", 1)}
+        onRescanCard={() => void openFlowOrWizard("plan", 0)}
+        onEditAbout={() => void openFlowOrWizard("about", 3)}
         onSaveMemberId={async (value: string) => {
           if (!user) throw new Error("Not signed in");
           const idToken = await user.firebaseUser.getIdToken();

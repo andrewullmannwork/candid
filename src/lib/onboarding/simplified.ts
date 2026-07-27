@@ -39,6 +39,11 @@ export const OB_COPY = {
   consequence: "Without a card or plan document, Candid can't audit anything yet. That's okay — your dashboard will show exactly what's missing.",
   situationLabel: "What brings you here?",
   situationWhy: "Helps us run the right audit checks first.",
+  /* S288 mode system (plan-change / about-you edit reuse of the flow) —
+     DRAFT copy pending Andrew approval. */
+  cancel: "Cancel",
+  done: "Done",
+  saveChanges: "Save changes",
 } as const;
 
 /** Step names shown in the progress row. */
@@ -68,6 +73,17 @@ export const OB_DOC_COPY = {
     { tag: "PLAN DOC", items: "Deductibles · OOP max · covered services" },
     { tag: "BILL · EOB", items: "Line-item overcharge audit, on the spot" },
   ],
+  /* S288 plan-library search (upload's peer alternative) — DRAFT copy pending
+     Andrew approval. */
+  searchToggle: "No document handy? Search for your plan instead",
+  searchPlaceholder: "Plan name or insurer — e.g. UHC Gold Advantage",
+  searchHint:
+    "Picking your plan from Candid's library fills in your coverage like a document would. You can add the document anytime for verified details.",
+  searchEmpty: "No matches — try fewer words, or upload a document instead.",
+  searchSelecting: "Setting up your plan…",
+  searchDone: "Plan on file — from Candid's plan library",
+  searchError: "Couldn't set that plan. Please try again.",
+  searchBack: "Back to upload",
 } as const;
 
 /** Dashboard meter copy (same approval). */

@@ -4,6 +4,7 @@ import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren, upsertOwnedChildren } from "@/lib/security/user-scoped";
 import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
 import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
+import { setActiveCanonicalPlan } from "@/lib/plan/set-active-canonical";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { PLAN_COVERED_ONCONFLICT, type PlanCoverageRow } from "@/lib/plan/coverage-targeting";
 import { OB_HOUSEHOLD, OB_SITUATIONS } from "@/lib/onboarding/simplified";
@@ -398,13 +399,42 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Failed to save profile" }, { status: 500 });
   }
 
+  // ── S288 plan-flow unification: canonical search-select persists for real ──
+  // The plan-name autocomplete has returned canonical_plans ids since S107,
+  // but this route filed them under matched_catalog_plan_id (a plan_catalog
+  // slot) → analyze Priority 1 missed and the claim audit never saw the plan
+  // ("selected a plan and it disappeared"). When the submitted matched_plan_id
+  // IS a canonical row, persist through the ONE shared set-active core
+  // (canonical link + single-active + profile repoint, source='catalog_match')
+  // and skip the generic manual-row dual-write below. Non-canonical ids (true
+  // legacy plan_catalog matches) keep the old behavior.
+  let canonicalSelected = false;
+  if (typeof matched_plan_id === "string" && matched_plan_id) {
+    try {
+      const { data: canonicalRow } = await supabase
+        .from("canonical_plans")
+        .select("id")
+        .eq("id", matched_plan_id)
+        .maybeSingle();
+      if (canonicalRow) {
+        const setActive = await setActiveCanonicalPlan(supabase, user.id, matched_plan_id);
+        canonicalSelected = setActive.ok;
+        if (!setActive.ok) {
+          console.error("[profile] canonical set-active failed:", setActive.error);
+        }
+      }
+    } catch (canonicalErr) {
+      console.error("[profile] canonical set-active errored:", canonicalErr);
+    }
+  }
+
   // ── Dual-write: sync plan data to insurance_plans ─────────────────────────
   // When plan-related fields are submitted, also write to the normalized tables
   const hasPlanData = plan_name !== undefined || deductible_individual !== undefined
     || copay_primary !== undefined || coinsurance_pct !== undefined
     || matched_plan_id !== undefined || insurer !== undefined;
 
-  if (hasPlanData) {
+  if (hasPlanData && !canonicalSelected) {
     try {
       // Check if user already has an active insurance plan
       const { data: existingProfile } = await userScoped(supabase, user.id)
@@ -490,7 +520,13 @@ export async function POST(req: NextRequest) {
         // manual-form / card values do not. If user wants to override doc values they
         // use /api/plan/field (inline-edit), which writes user_correction provenance
         // with confidence=1.0 — that's the strong-signal override path.
-        const existingIsFromDoc = existingPlan?.source === "sbc_upload" || existingPlan?.source === "plan_doc_upload";
+        // S288 Gap A: catalog_match rows join the identity-preserve set — a
+        // card/manual save after a library search-select must not stomp the
+        // row's source or (via the full-write branch) its canonical linkage.
+        const existingIsFromDoc =
+          existingPlan?.source === "sbc_upload" ||
+          existingPlan?.source === "plan_doc_upload" ||
+          existingPlan?.source === "catalog_match";
         const isFormAfterDoc = existingProfile?.active_insurance_plan_id && existingIsFromDoc;
 
         let planUpdate: Record<string, unknown>;

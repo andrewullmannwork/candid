@@ -1,0 +1,143 @@
+/**
+ * setActiveCanonicalPlan — THE shared persistence core for "the user picked a
+ * plan from Candid's canonical library" (S288 plan-flow unification).
+ *
+ * Extracted verbatim from POST /api/plan/set-active (bugbash Stretch 1) so
+ * every search-select surface persists through ONE path:
+ *   - /api/plan/set-active (the original route — /plan "Change plan")
+ *   - onboarding step 2 "Search for your plan" (S288)
+ *   - /api/profile dual-write when the legacy wizard submits a canonical
+ *     matched_plan_id (S288 — replaces the dead matched_catalog_plan_id write)
+ *
+ * LINK-ONLY, USER-SCOPED. Deliberately NOT confirmCanonicalMatch(): a dropdown
+ * pick is NOT corroboration (Pattern 1 #14) — we only WRITE the user's own
+ * rows: insurance_plans (link + identity, source='catalog_match') + profiles
+ * (repoint + clear stale cost/match fields). No canonical-table writes.
+ *
+ * Cost-share terms deliberately stay OFF the user row — readers resolve them
+ * through the canonical link (coverage-loader per-service; the S288 canonical
+ * fallback in cost-share/accumulator plan-terms loaders).
+ */
+
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { userScoped } from "@/lib/security/user-scoped";
+
+export type SetActiveCanonicalResult =
+  | { ok: true; insurancePlanId: string }
+  | { ok: false; status: number; error: string };
+
+export async function setActiveCanonicalPlan(
+  supabase: SupabaseClient,
+  userId: string,
+  canonicalPlanId: string,
+): Promise<SetActiveCanonicalResult> {
+  // ── Read canonical identity (server-trusted; never trust client-sent fields).
+  // insurer name lives on insurer_catalog (canonical_plans.insurer_id FK). Two
+  // plain reads instead of a PostgREST embed to avoid 42703 typing ambiguity. ─
+  const { data: canonical } = await supabase
+    .from("canonical_plans")
+    .select("id, plan_name, plan_type, state, plan_year, insurer_id")
+    .eq("id", canonicalPlanId)
+    .maybeSingle();
+  if (!canonical) {
+    return { ok: false, status: 404, error: "Plan not found" };
+  }
+  let insurerName: string | null = null;
+  if (canonical.insurer_id) {
+    const { data: insurerRow } = await supabase
+      .from("insurer_catalog")
+      .select("name")
+      .eq("id", canonical.insurer_id)
+      .maybeSingle();
+    insurerName = (insurerRow?.name as string | null) ?? null;
+  }
+
+  // Identity written to both insurance_plans + profiles. source='catalog_match'
+  // (NOT a user-upload source) so the /plan card shows honest canonical-grade
+  // provenance — never a false "User Verified" badge.
+  const identity = {
+    canonical_plan_id: canonicalPlanId,
+    insurer_name: insurerName,
+    plan_name: canonical.plan_name,
+    plan_type: canonical.plan_type,
+    state: canonical.state,
+    plan_year: canonical.plan_year,
+    source: "catalog_match" as const,
+  };
+
+  // ── Dedup: reuse an existing owned row already linked to this canonical plan
+  // (re-selecting the same plan should reactivate, not duplicate). ────────────
+  const { data: existing } = await userScoped(supabase, userId)
+    .table("insurance_plans")
+    .select("id")
+    .eq("canonical_plan_id", canonicalPlanId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  // Single-active-plan guard: deactivate ALL the user's active rows first
+  // (mirrors /api/profile force_plan_switch + extraction-dedup).
+  const { error: deactivateErr } = await userScoped(supabase, userId)
+    .table("insurance_plans")
+    .update({ is_active: false })
+    .eq("is_active", true);
+  if (deactivateErr) {
+    console.error("[set-active-canonical] deactivate failed:", deactivateErr.message);
+    return { ok: false, status: 500, error: "Could not set plan" };
+  }
+
+  let activePlanId: string;
+  if (existing?.id) {
+    const { error: reactivateErr } = await userScoped(supabase, userId)
+      .table("insurance_plans")
+      .update({ ...identity, is_active: true })
+      .eq("id", existing.id);
+    if (reactivateErr) {
+      console.error("[set-active-canonical] reactivate failed:", reactivateErr.message);
+      return { ok: false, status: 500, error: "Could not set plan" };
+    }
+    activePlanId = existing.id as string;
+  } else {
+    const { data: inserted, error: insertErr } = await userScoped(supabase, userId)
+      .table("insurance_plans")
+      .insert({ ...identity, user_id: userId, is_active: true })
+      .select("id")
+      .single();
+    if (insertErr || !inserted) {
+      console.error("[set-active-canonical] insert failed:", insertErr?.message);
+      return { ok: false, status: 500, error: "Could not set plan" };
+    }
+    activePlanId = inserted.id as string;
+  }
+
+  // ── Repoint profile + set identity + CLEAR stale cost/match fields ─────────
+  // analyze resolves the active plan's cost-share from canonical_plan_services
+  // (via canonical_plan_id), so the profile's old per-plan cost fields must be
+  // cleared. matched_plan_id is cleared so the prior plan_catalog match can't
+  // shadow the new canonical plan in analyze Priority 1.
+  const { error: profileErr } = await userScoped(supabase, userId)
+    .table("profiles")
+    .update({
+      active_insurance_plan_id: activePlanId,
+      insurer: insurerName,
+      plan_name: canonical.plan_name,
+      plan_type: canonical.plan_type,
+      state: canonical.state,
+      plan_source: "catalog_match",
+      matched_plan_id: null,
+      group_number: null,
+      member_id: null,
+      deductible_individual: null,
+      oop_max_individual: null,
+      copay_primary: null,
+      copay_specialist: null,
+      copay_er: null,
+      coinsurance_pct: null,
+    });
+  if (profileErr) {
+    console.error("[set-active-canonical] profile repoint failed:", profileErr.message);
+    return { ok: false, status: 500, error: "Could not set plan" };
+  }
+
+  return { ok: true, insurancePlanId: activePlanId };
+}

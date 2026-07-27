@@ -50,6 +50,19 @@ export function buildServiceCostShare(coverage: PlanCoverageInput | null): Servi
 
 // ── Plan-level params (insurance_plans) ────────────────────────────────────
 
+/** The 8 plan-level numeric term columns shared by insurance_plans AND
+ *  canonical_plans (F.0 aligned names; mig 165 + mig 192 OON identity). */
+const PLAN_TERM_NUMERIC_COLS = [
+  "in_deductible_individual",
+  "in_deductible_family",
+  "out_deductible_individual",
+  "out_deductible_family",
+  "in_oop_max_individual",
+  "in_oop_max_family",
+  "out_oop_max_individual",
+  "out_oop_max_family",
+] as const;
+
 export async function loadPlanCostShareParams(
   supabase: SupabaseClient,
   insurancePlanId: string | null | undefined,
@@ -58,7 +71,7 @@ export async function loadPlanCostShareParams(
   const { data, error } = await supabase
     .from("insurance_plans")
     .select(
-      "in_deductible_individual, in_deductible_family, out_deductible_individual, out_deductible_family, in_oop_max_individual, in_oop_max_family, out_oop_max_individual, out_oop_max_family, in_coinsurance_default, out_coinsurance_default, deductible_calc_method, combined_medical_rx_oop, coverage_tier",
+      "canonical_plan_id, in_deductible_individual, in_deductible_family, out_deductible_individual, out_deductible_family, in_oop_max_individual, in_oop_max_family, out_oop_max_individual, out_oop_max_family, in_coinsurance_default, out_coinsurance_default, deductible_calc_method, combined_medical_rx_oop, coverage_tier",
     )
     .eq("id", insurancePlanId)
     .maybeSingle();
@@ -68,6 +81,35 @@ export async function loadPlanCostShareParams(
   }
   if (!data) return null;
   const d = data as Record<string, unknown>;
+
+  // ── S288 canonical fallback ───────────────────────────────────────────────
+  // A catalog-matched plan (search-select / "Change plan") is LINK-ONLY — its
+  // user row carries identity + canonical_plan_id but no numeric terms, so
+  // without this the cost-share engine ran deductible math blind ("your bill
+  // has no issues"). When any core numeric is null and the row is canonical-
+  // linked, fill the gaps from canonical_plans (aligned F.0 columns; read-time,
+  // user values always win, no writes anywhere). Fail-open: on any error the
+  // user-row values stand.
+  const canonicalId = (d.canonical_plan_id as string | null) ?? null;
+  if (canonicalId && PLAN_TERM_NUMERIC_COLS.some((k) => d[k] == null)) {
+    try {
+      const { data: canon } = await supabase
+        .from("canonical_plans")
+        .select(PLAN_TERM_NUMERIC_COLS.join(", "))
+        .eq("id", canonicalId)
+        .maybeSingle();
+      if (canon) {
+        // Dynamic select string → supabase-js can't type the row; safe by construction.
+        const c = canon as unknown as Record<string, unknown>;
+        for (const k of PLAN_TERM_NUMERIC_COLS) {
+          if (d[k] == null && c[k] != null) d[k] = c[k];
+        }
+      }
+    } catch (fallbackErr) {
+      console.warn("[cost-share-loader] canonical terms fallback failed", canonicalId, fallbackErr);
+    }
+  }
+
   const n = (k: string) => (d[k] as number | null) ?? null;
   return {
     inDeductibleIndividual: n("in_deductible_individual"),

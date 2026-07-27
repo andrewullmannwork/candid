@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { ChangePlanModal } from "@/components/plan/ChangePlanModal";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
@@ -485,6 +486,11 @@ export default function CandidPlanPage() {
   // which returns [] under Firebase auth — see feedback_candid_client_flag_reads).
   const [changePlanEnabled, setChangePlanEnabled] = useState(false);
   const [changePlanOpen, setChangePlanOpen] = useState(false);
+  // S288 plan-flow unification: when onboarding_simplified_v1 is ON, "Change
+  // plan" routes into the onboarding flow's plan mode instead of the inline
+  // picker (flag OFF keeps the legacy modal as the rollback path).
+  const [planFlowOn, setPlanFlowOn] = useState(false);
+  const router = useRouter();
   // Bump to force a re-analyze after the active plan is replaced.
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -668,6 +674,11 @@ export default function CandidPlanPage() {
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (!cancelled && d) setChangePlanEnabled(!!d.enabled); })
       .catch(() => { /* flag falls back to OFF */ });
+    // S288: route "Change plan" into the unified flow when onboarding is ON.
+    fetch("/api/feature-flags/onboarding_simplified_v1")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d) setPlanFlowOn(!!d.enabled); })
+      .catch(() => { /* falls back to the legacy inline picker */ });
     return () => { cancelled = true; };
   }, []);
 
@@ -787,7 +798,9 @@ export default function CandidPlanPage() {
         userHasDoc={userHasDoc}
         insurer={result.insurer}
         changePlanEnabled={changePlanEnabled}
-        onChangePlan={() => setChangePlanOpen(true)}
+        onChangePlan={() =>
+          planFlowOn ? router.push("/onboarding?mode=plan&from=/plan") : setChangePlanOpen(true)
+        }
       />
       {changePlanEnabled && (
         <ChangePlanModal

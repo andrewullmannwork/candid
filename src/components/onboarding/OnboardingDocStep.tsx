@@ -21,6 +21,9 @@ export interface DocSlotValue {
   kind: "plan" | "bill" | "background";
   fileName: string | null;
   chips: ObChip[];
+  /** S288: this slot was filled by the plan-library search, not an upload
+   *  (fileName then holds the "Plan name — Insurer" label). */
+  via?: "search";
   /** S286: further coverage docs on file (names) — restore + session history. */
   extraFiles?: string[];
   /** S286: coverage docs beyond the displayed names. */
@@ -49,18 +52,34 @@ export interface DocSlotValue {
  * result in-step (GET /api/claims?documentId=…). Finishing lands on the
  * dashboard, where the meter and the Claim card carry the same results.
  */
+/** /api/plan/search result row (canonical library; S107 — id IS canonical). */
+interface PlanSearchResult {
+  canonicalPlanId: string;
+  name: string;
+  type: string | null;
+  state: string | null;
+  metalLevel: string | null;
+  deductible: number | null;
+  year: number | null;
+  insurerName: string;
+}
+
 export function OnboardingDocStep({
   value,
   onDone,
   onReplace,
   hasConsented,
   grantConsent,
+  searchSeed,
 }: {
   value: DocSlotValue | null;
   onDone: (v: DocSlotValue) => void;
   onReplace: () => void;
   hasConsented: boolean;
   grantConsent: () => Promise<void>;
+  /** S288 soft fill: pre-typed search text from the card step (scanned plan
+   *  name > typed insurer). Plain editable text — never a locked filter. */
+  searchSeed?: string | null;
 }) {
   const { user } = useAuth();
 
@@ -87,6 +106,102 @@ export function OnboardingDocStep({
   const [showConsent, setShowConsent] = useState(false);
   const [consentSubmitting, setConsentSubmitting] = useState(false);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
+
+  /* ── S288: plan-library search — upload's peer alternative ──────────────── */
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<PlanSearchResult[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchSelecting, setSearchSelecting] = useState(false);
+  const [searchError, setSearchError] = useState("");
+  const searchReqRef = useRef(0);
+
+  const runSearch = useCallback(
+    async (q: string) => {
+      if (!user || q.trim().length < 2) {
+        setSearchResults([]);
+        setSearchLoading(false);
+        return;
+      }
+      const reqId = ++searchReqRef.current;
+      setSearchLoading(true);
+      try {
+        const idToken = await user.firebaseUser.getIdToken();
+        const res = await fetch("/api/plan/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+          body: JSON.stringify({ query: q.trim(), canonicalOnly: true }),
+        });
+        const data = (await res.json().catch(() => ({}))) as { plans?: PlanSearchResult[] };
+        if (searchReqRef.current === reqId) {
+          setSearchResults((data.plans ?? []).filter((p) => p.canonicalPlanId));
+        }
+      } catch {
+        if (searchReqRef.current === reqId) setSearchResults([]);
+      } finally {
+        if (searchReqRef.current === reqId) setSearchLoading(false);
+      }
+    },
+    [user],
+  );
+
+  // Debounced search-as-you-type (the seed auto-runs through this too).
+  useEffect(() => {
+    if (!searchOpen) return;
+    const t = setTimeout(() => void runSearch(searchQuery), 300);
+    return () => clearTimeout(t);
+  }, [searchOpen, searchQuery, runSearch]);
+
+  const openSearch = useCallback(() => {
+    setSearchError("");
+    setSearchOpen(true);
+    // Soft fill (S288): seed from the card step — scanned plan name > typed
+    // insurer. Plain editable text; clear it and type anything.
+    if (!searchQuery && searchSeed) setSearchQuery(searchSeed);
+  }, [searchQuery, searchSeed]);
+
+  const selectPlan = useCallback(
+    async (p: PlanSearchResult) => {
+      if (!user) return;
+      setSearchSelecting(true);
+      setSearchError("");
+      try {
+        const idToken = await user.firebaseUser.getIdToken();
+        const res = await fetch("/api/plan/set-active", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+          body: JSON.stringify({ canonicalPlanId: p.canonicalPlanId }),
+        });
+        if (!res.ok) throw new Error("set-active failed");
+        // Same in-step "it took" feedback as a successful doc parse: coverage
+        // chips from the now canonical-linked active plan.
+        let chips: ObChip[] = [];
+        try {
+          const ar = await fetch("/api/plan/analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+            body: JSON.stringify({}),
+          });
+          const ad = (await ar.json().catch(() => ({}))) as PlanAnalyzeChipSource;
+          chips = chipsFromPlanAnalyze(ad);
+        } catch {
+          /* chips are decorative — the selection stands without them */
+        }
+        onDone({
+          kind: "plan",
+          via: "search",
+          fileName: [p.name, p.insurerName].filter(Boolean).join(" — "),
+          chips,
+        });
+        setSearchOpen(false);
+      } catch {
+        setSearchError(OB_DOC_COPY.searchError);
+      } finally {
+        setSearchSelecting(false);
+      }
+    },
+    [user, onDone],
+  );
 
   const [userPickedFile, setUserPickedFile] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
@@ -450,7 +565,8 @@ export function OnboardingDocStep({
       "image/heif": [".heif"],
     },
     maxFiles: 1,
-    disabled: uploading || processing || summarizing || !!confirmation || !!canonicalMatch || !!value,
+    disabled:
+      uploading || processing || summarizing || searchSelecting || !!confirmation || !!canonicalMatch || !!value,
   });
 
   /* ── Done state ─────────────────────────────────────────────────────────── */
@@ -476,9 +592,11 @@ export function OnboardingDocStep({
             <p className="text-sm font-semibold text-gray-900">
               {isBackground
                 ? "This one will take a few minutes"
-                : value.kind === "bill"
-                  ? OB_DOC_COPY.parsedBill
-                  : OB_DOC_COPY.parsedPlan}
+                : value.via === "search"
+                  ? OB_DOC_COPY.searchDone
+                  : value.kind === "bill"
+                    ? OB_DOC_COPY.parsedBill
+                    : OB_DOC_COPY.parsedPlan}
             </p>
             <p className="truncate text-xs text-gray-400">
               {isBackground
@@ -637,28 +755,128 @@ export function OnboardingDocStep({
       ) : uploading || processing ? (
         <UnifiedParseScreen docs={[parseDoc]} title="Reading your document" loaderVariant="stackV3" />
       ) : (
-        <div
-          {...getRootProps()}
-          className={`flex min-h-[180px] cursor-pointer flex-col items-center justify-center gap-3 rounded-[18px] border-2 border-dashed p-6 text-center transition-all ${
-            isDragActive
-              ? "border-blue-400 bg-blue-50/60"
-              : "border-gray-300 bg-gradient-to-b from-white to-gray-50 hover:border-blue-300 hover:bg-blue-50/40"
-          }`}
-        >
-          <input {...getInputProps()} />
-          <span className="inline-flex h-[46px] w-[46px] items-center justify-center rounded-full bg-blue-100 text-blue-600">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 16V4m0 0l-4 4m4-4l4 4M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
-            </svg>
-          </span>
-          <div>
-            <p className="text-[15px] font-semibold text-gray-900">{OB_DOC_COPY.dropTitle}</p>
-            <p className="mt-1 text-[13px] text-gray-400">
-              or <span className="font-semibold text-blue-600">{OB_DOC_COPY.browse}</span> ·{" "}
-              {OB_DOC_COPY.dropSub}
-            </p>
+        <>
+          <div
+            {...getRootProps()}
+            className={`flex min-h-[180px] cursor-pointer flex-col items-center justify-center gap-3 rounded-[18px] border-2 border-dashed p-6 text-center transition-all ${
+              isDragActive
+                ? "border-blue-400 bg-blue-50/60"
+                : "border-gray-300 bg-gradient-to-b from-white to-gray-50 hover:border-blue-300 hover:bg-blue-50/40"
+            }`}
+          >
+            <input {...getInputProps()} />
+            <span className="inline-flex h-[46px] w-[46px] items-center justify-center rounded-full bg-blue-100 text-blue-600">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 16V4m0 0l-4 4m4-4l4 4M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
+              </svg>
+            </span>
+            <div>
+              <p className="text-[15px] font-semibold text-gray-900">{OB_DOC_COPY.dropTitle}</p>
+              <p className="mt-1 text-[13px] text-gray-400">
+                or <span className="font-semibold text-blue-600">{OB_DOC_COPY.browse}</span> ·{" "}
+                {OB_DOC_COPY.dropSub}
+              </p>
+            </div>
           </div>
-        </div>
+
+          {/* S288 — the search is upload's PEER: either establishes the plan. */}
+          {!searchOpen ? (
+            <div className="mt-4 text-center">
+              <button
+                type="button"
+                onClick={openSearch}
+                className="rounded-[10px] px-3 py-2 text-[13.5px] font-semibold text-blue-600 transition-colors hover:bg-blue-50"
+              >
+                {OB_DOC_COPY.searchToggle}
+              </button>
+            </div>
+          ) : (
+            <div className="mt-4 rounded-[18px] border border-gray-200 bg-white p-4 shadow-sm">
+              <div className="mb-2.5 flex items-center justify-between">
+                <p className="text-[10.5px] font-bold tracking-[0.09em] text-gray-400">
+                  FIND YOUR PLAN
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setSearchOpen(false)}
+                  className="rounded-lg px-2 py-1 text-xs font-semibold text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+                >
+                  {OB_DOC_COPY.searchBack}
+                </button>
+              </div>
+              <input
+                type="text"
+                autoFocus
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setSearchError("");
+                }}
+                placeholder={OB_DOC_COPY.searchPlaceholder}
+                disabled={searchSelecting}
+                className="w-full rounded-xl border border-gray-200 px-3.5 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
+              />
+              <p className="mt-2 text-xs leading-relaxed text-gray-400">{OB_DOC_COPY.searchHint}</p>
+
+              {searchError && (
+                <div className="mt-3 rounded-xl border border-red-100 bg-red-50 p-3">
+                  <p className="text-sm text-red-700">{searchError}</p>
+                </div>
+              )}
+
+              {searchSelecting ? (
+                <div className="mt-3 flex items-center gap-2.5 rounded-xl border border-gray-100 bg-gray-50 px-3.5 py-3">
+                  <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-blue-600">
+                    <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                  </span>
+                  <p className="text-sm font-medium text-gray-700">{OB_DOC_COPY.searchSelecting}</p>
+                </div>
+              ) : (
+                <>
+                  {searchResults.length > 0 && (
+                    <div className="mt-3 max-h-[320px] divide-y divide-gray-100 overflow-y-auto rounded-xl border border-gray-200">
+                      {searchResults.map((p) => (
+                        <button
+                          key={p.canonicalPlanId}
+                          type="button"
+                          onClick={() => void selectPlan(p)}
+                          className="block w-full px-3.5 py-2.5 text-left transition-colors hover:bg-blue-50/60"
+                        >
+                          <p className="text-[13.5px] font-medium leading-snug text-gray-900">
+                            {[p.insurerName, p.name].filter(Boolean).join(": ")}
+                          </p>
+                          <p className="mt-0.5 text-xs text-gray-500">
+                            {[
+                              p.type,
+                              p.metalLevel,
+                              p.state,
+                              p.deductible != null
+                                ? `$${p.deductible.toLocaleString()} deductible`
+                                : null,
+                              p.year,
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {searchLoading && (
+                    <p className="mt-3 text-center text-xs text-gray-400">Searching…</p>
+                  )}
+                  {!searchLoading &&
+                    searchQuery.trim().length >= 2 &&
+                    searchResults.length === 0 && (
+                      <p className="mt-3 text-center text-xs text-gray-400">
+                        {OB_DOC_COPY.searchEmpty}
+                      </p>
+                    )}
+                </>
+              )}
+            </div>
+          )}
+        </>
       )}
 
       {error && (

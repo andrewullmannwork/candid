@@ -81,6 +81,8 @@ interface ProfileDashboardProps {
   needsCardRescan: boolean;
   /** Called when user clicks "Update insurance info" — jumps to wizard step 1. */
   onUpdateInsurance: () => void;
+  /** S288: About-you edits route into the onboarding flow (?mode=about). */
+  onEditAbout?: () => void;
   /** Called when user clicks "Re-scan card" from member-id inline edit or banner. */
   onRescanCard: () => void;
   /** Save handler for member_id inline edit. Resolves on success; throws on failure. */
@@ -220,6 +222,7 @@ export function ProfileDashboard({
   userDocs,
   needsCardRescan,
   onUpdateInsurance,
+  onEditAbout,
   onRescanCard,
   onSaveMemberId,
 }: ProfileDashboardProps) {
@@ -468,7 +471,12 @@ export function ProfileDashboard({
       </Section>
 
       {/* About You */}
-      <Section eyebrow="ABOUT YOU" title="About you">
+      <Section
+        eyebrow="ABOUT YOU"
+        title="About you"
+        actionLabel={onEditAbout ? "Edit" : undefined}
+        onAction={onEditAbout}
+      >
         <div className="grid grid-cols-2 gap-x-6 gap-y-4">
           <KV label="Date of birth" value={profile.date_of_birth} />
           <KV label="Sex" value={formatSex(profile.sex)} />

@@ -11,6 +11,10 @@ export interface CardSlotValue {
   chips: ObChip[];
   manual: boolean;
   fileName: string | null;
+  /** S288: seeds the step-2 plan search ("soft fill") — card-scanned plan name
+   *  when a photo gave us one, else the typed insurer. Both optional. */
+  insurer?: string | null;
+  planName?: string | null;
 }
 
 interface PlanMismatchInfo {
@@ -166,7 +170,7 @@ export function OnboardingCardStep({
         ...(mId ? [{ label: "Member ID", value: mId, mono: true }] : []),
         ...(mGrp ? [{ label: "Group", value: mGrp, mono: true }] : []),
       ];
-      finishSave({ chips, manual: true, fileName: null }, result, payload);
+      finishSave({ chips, manual: true, fileName: null, insurer: mIns || null }, result, payload);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed. Please try again.");
     } finally {
@@ -210,7 +214,17 @@ export function OnboardingCardStep({
         }
         const payload = scanSavePayload(fields);
         const result = await saveProfile(payload);
-        finishSave({ chips: fieldsToChips(fields), manual: false, fileName: file.name }, result, payload);
+        finishSave(
+          {
+            chips: fieldsToChips(fields),
+            manual: false,
+            fileName: file.name,
+            insurer: fields.insurer || null,
+            planName: fields.planName || null,
+          },
+          result,
+          payload,
+        );
       } catch (err) {
         setError(err instanceof Error ? err.message : "Scan failed. Please try again.");
       } finally {
