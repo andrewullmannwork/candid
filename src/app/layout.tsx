@@ -156,7 +156,11 @@ export default function RootLayout({
                   description:
                     "Consumer medical bill audit and insurance benefits analysis tool. Upload bills to find overcharges, discover unused benefits, and draft dispute letters.",
                   foundingDate: "2026",
-                  sameAs: [],
+                  // Entity reconciliation: tells search and AI engines the
+                  // LinkedIn page and this site are the same organization. The
+                  // page name there is "Candid Claim" so it matches `name`
+                  // above — a mismatch weakens the link. X/Twitter deferred.
+                  sameAs: ["https://www.linkedin.com/company/candidclaim"],
                   knowsAbout: [
                     "Medical billing errors",
                     "Insurance benefits analysis",
