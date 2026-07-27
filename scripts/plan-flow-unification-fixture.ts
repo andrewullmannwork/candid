@@ -168,6 +168,10 @@ const CANON_TERMS = {
     ["OB_DOC_COPY.currentPlanEyebrow", OB_DOC_COPY.currentPlanEyebrow],
     ["OB_DOC_COPY.replacePlan", OB_DOC_COPY.replacePlan],
     ["OB_CARD_COPY.keptNothing", OB_CARD_COPY.keptNothing],
+    ["OB_CARD_COPY.currentCardEyebrow", OB_CARD_COPY.currentCardEyebrow],
+    ["OB_CARD_COPY.replaceCard", OB_CARD_COPY.replaceCard],
+    ["OB_COPY.planModeTitle", OB_COPY.planModeTitle],
+    ["OB_COPY.planModeSub", OB_COPY.planModeSub],
   ] as const) {
     check(`${k} non-empty`, typeof v === "string" && v.length > 0, true);
   }

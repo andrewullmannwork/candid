@@ -44,6 +44,9 @@ export const OB_COPY = {
   cancel: "Cancel",
   done: "Done",
   saveChanges: "Save changes",
+  planModeTitle: "Update your plan",
+  planModeSub:
+    "Replace your plan by uploading a document or searching Candid's plan library — or update the insurance card on file.",
 } as const;
 
 /** Step names shown in the progress row. */
@@ -62,6 +65,9 @@ export const OB_CARD_COPY = {
   /* S288 both-or-neither (DRAFT copy pending Andrew approval): a divergent
      card + "Keep current plan" writes NOTHING — this is the receipt. */
   keptNothing: "Nothing was changed — that card doesn't match the plan on file.",
+  /* S288 plan-change mode — current-card framing (DRAFT copy). */
+  currentCardEyebrow: "YOUR CURRENT CARD",
+  replaceCard: "Replace card",
 } as const;
 
 export const OB_DOC_COPY = {

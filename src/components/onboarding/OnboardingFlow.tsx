@@ -384,7 +384,7 @@ export function OnboardingFlow() {
           </div>
           {/* S286: hidden on the doc step (its in-step skip covers it); kept on
               step 1 (clean full-exit) + step 3 (the Q4 dismiss — decision ⑪). */}
-          {step !== 1 && (
+          {mode !== "plan" && step !== 1 && (
             <button
               onClick={handleLater}
               className="rounded-[10px] px-2.5 py-2 text-[13px] font-medium text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
@@ -396,7 +396,9 @@ export function OnboardingFlow() {
 
         {/* Column */}
         <div className="mx-auto w-full max-w-[640px] flex-1 px-6 pb-20 pt-7">
-          {/* Progress — 3 segment bars + STEP n OF 3 */}
+          {/* Progress — segment bars + STEP n OF N (hidden in the single-screen
+              plan-change mode — S288, Andrew: no step-before, just the cards). */}
+          {mode !== "plan" && (
           <div className="mb-7">
             <div className="mb-2.5 flex gap-2">
               {modeSteps.map((s) => (
@@ -415,9 +417,67 @@ export function OnboardingFlow() {
               <span className="text-xs text-gray-400">{OB_STEP_NAMES[step]}</span>
             </div>
           </div>
+          )}
 
           {!hydrated ? (
             <div className="py-16 text-center text-sm text-gray-400">Loading…</div>
+          ) : mode === "plan" ? (
+            /* ── Plan-change mode: ONE screen, no step-before (S288, Andrew) —
+               the prominent current-plan card and the matching current-card
+               card, each with its own Replace; Done/Cancel exit to origin. ── */
+            <div>
+              <h1 className="mb-2 text-[27px] font-bold leading-[1.15] tracking-tight text-gray-900">
+                {OB_COPY.planModeTitle}
+              </h1>
+              <p className="mb-6 text-[14.5px] leading-relaxed text-gray-500">{OB_COPY.planModeSub}</p>
+              <OnboardingDocStep
+                value={doc}
+                searchSeed={card?.planName || card?.insurer || profileSeed}
+                emphasizeCurrent
+                onDone={(v) =>
+                  setDoc((prev) => {
+                    if (!prev) return v;
+                    const prevNames = [prev.fileName, ...(prev.extraFiles ?? [])].filter(
+                      (x): x is string => !!x && x !== v.fileName,
+                    );
+                    return {
+                      ...v,
+                      extraFiles: prevNames.slice(0, 3),
+                      moreCount: (prev.moreCount ?? 0) + Math.max(0, prevNames.length - 3),
+                    };
+                  })
+                }
+                onReplace={() => setDoc(null)}
+                hasConsented={hasConsented}
+                grantConsent={grantConsent}
+              />
+              <div className="mt-6">
+                <OnboardingCardStep
+                  value={card}
+                  emphasizeCurrent
+                  onSaved={setCard}
+                  onReplace={() => setCard(null)}
+                  hasConsented={hasConsented}
+                  grantConsent={grantConsent}
+                />
+              </div>
+              <div className="mt-8 flex flex-col gap-3.5">
+                <button
+                  onClick={() => router.push(exitTo)}
+                  className="w-full rounded-[14px] bg-blue-600 px-6 py-3.5 text-[15px] font-semibold text-white transition-colors [box-shadow:var(--glow-blue)] hover:bg-blue-700 hover:[box-shadow:var(--glow-blue-hover)]"
+                >
+                  {OB_COPY.done} →
+                </button>
+                <div className="text-center">
+                  <button
+                    onClick={() => router.push(exitTo)}
+                    className="rounded-[10px] px-2.5 py-1.5 text-[13.5px] font-medium text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+                  >
+                    {OB_COPY.cancel}
+                  </button>
+                </div>
+              </div>
+            </div>
           ) : (
             <>
               {step === 0 && (
@@ -479,7 +539,6 @@ export function OnboardingFlow() {
                   <OnboardingDocStep
                     value={doc}
                     searchSeed={card?.planName || card?.insurer || profileSeed}
-                    emphasizeCurrent={mode === "plan"}
                     onDone={(v) =>
                       setDoc((prev) => {
                         // S286: a fresh upload becomes the primary row; prior
@@ -506,14 +565,14 @@ export function OnboardingFlow() {
                           onClick={advanceFromDoc}
                           className="w-full rounded-[14px] bg-blue-600 px-6 py-3.5 text-[15px] font-semibold text-white transition-colors [box-shadow:var(--glow-blue)] hover:bg-blue-700 hover:[box-shadow:var(--glow-blue-hover)]"
                         >
-                          {mode === "plan" ? OB_COPY.done : OB_COPY.continueCta} →
+                          {OB_COPY.continueCta} →
                         </button>
                         <div className="text-center">
                           <button
                             onClick={advanceFromDoc}
                             className="rounded-[10px] px-2.5 py-1.5 text-[13.5px] font-medium text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
                           >
-                            {mode === "plan" ? OB_COPY.cancel : OB_COPY.s2Skip}
+                            {OB_COPY.s2Skip}
                           </button>
                         </div>
                       </>
@@ -522,7 +581,7 @@ export function OnboardingFlow() {
                         onClick={advanceFromDoc}
                         className="w-full rounded-[14px] border border-gray-200 bg-white px-6 py-3.5 text-[15px] font-medium text-gray-400 transition-colors hover:bg-gray-50 hover:text-gray-600"
                       >
-                        {mode === "plan" ? OB_COPY.cancel : <>{OB_COPY.s2Skip} →</>}
+                        {OB_COPY.s2Skip} →
                       </button>
                     )}
                     <button

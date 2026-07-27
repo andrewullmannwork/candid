@@ -614,11 +614,29 @@ export async function POST(request: NextRequest) {
                 premiumSource ? premiumSource : "cms_marketplace";
               const premiumSourceCount =
                 premiumLogicalSource === "canonical_fallback" ? (decoration?.canonicalSourceCount ?? 1) : 1;
+              // S288: a canonical-filled value must decorate as canonical data
+              // ("canonical_inherited" + the canonical's source count — the
+              // same treatment the gap-fill benefit rows get), NOT under the
+              // row's own planSource with count 1: the consumer-read filter
+              // maps that to a non-visible state and the tiles dash out.
+              const pickTerm = (
+                own: number | null | undefined,
+                canon: number | null | undefined,
+                provKey: string,
+              ) =>
+                own == null && canon != null
+                  ? maybeDecorate<number | null>(
+                      canon,
+                      undefined,
+                      "canonical_inherited",
+                      decoration?.canonicalSourceCount ?? 1,
+                    )
+                  : maybeDecorate<number | null>(own ?? null, getProv(userPlan, provKey), planSource, 1);
               return {
-                inDeductible: maybeDecorate<number | null>(userPlan.in_deductible_individual ?? profile.deductible_individual ?? canonTerms?.deductible_individual ?? null, getProv(userPlan, "in_deductible_individual"), planSource, 1),
-                outDeductible: maybeDecorate<number | null>(userPlan.out_deductible_individual ?? canonTerms?.out_deductible_individual ?? null, getProv(userPlan, "out_deductible_individual"), planSource, 1),
-                inOopMax: maybeDecorate<number | null>(userPlan.in_oop_max_individual ?? profile.oop_max_individual ?? canonTerms?.oop_max_individual ?? null, getProv(userPlan, "in_oop_max_individual"), planSource, 1),
-                outOopMax: maybeDecorate<number | null>(userPlan.out_oop_max_individual ?? canonTerms?.out_oop_max_individual ?? null, getProv(userPlan, "out_oop_max_individual"), planSource, 1),
+                inDeductible: pickTerm(userPlan.in_deductible_individual ?? profile.deductible_individual, canonTerms?.deductible_individual, "in_deductible_individual"),
+                outDeductible: pickTerm(userPlan.out_deductible_individual, canonTerms?.out_deductible_individual, "out_deductible_individual"),
+                inOopMax: pickTerm(userPlan.in_oop_max_individual ?? profile.oop_max_individual, canonTerms?.oop_max_individual, "in_oop_max_individual"),
+                outOopMax: pickTerm(userPlan.out_oop_max_individual, canonTerms?.out_oop_max_individual, "out_oop_max_individual"),
                 planType: maybeDecorate<string | null>(userPlan.plan_type, getProv(userPlan, "plan_type"), planSource, 1),
                 verificationStatus: userPlan.verification_status,
                 premiumMonthly: maybeDecorate<number | null>(premiumMonthly, undefined, premiumLogicalSource, premiumSourceCount),

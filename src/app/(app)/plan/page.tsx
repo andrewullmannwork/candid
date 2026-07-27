@@ -296,8 +296,10 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
           <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-blue-600">
             Your plan on file
           </p>
-          <h3 className="mt-1 text-base font-semibold text-gray-900 leading-tight">
-            <span className="truncate">{displayTitle}</span>
+          <h3 className="mt-1 text-base font-semibold text-gray-900 leading-tight break-words">
+            {/* S288: no truncate — nowrap-without-width just clipped long
+                canonical names mid-word at the card edge; let them wrap. */}
+            <span>{displayTitle}</span>
             {planType.value && (
               <span className="ml-2 inline-flex align-middle text-[11px] font-semibold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded">
                 {planType.value}
