@@ -274,9 +274,21 @@ export function YearlyLensV2({
           {plans.map((p, j) => {
             const entry = premiumEntryFor(p);
             const grounded = premiumGrounded(p);
+            // S289 (Andrew) — each plan's premium is its own light sub-card in
+            // that plan's hue, so the three entries read as separate controls.
+            const subCard = cn("rounded-lg ring-1 px-2.5 py-2", planColorFor(j).tint);
             if (premEdit === j) {
               return (
-                <div key={j} className="flex items-center gap-1.5">
+                <div key={j} className={cn(subCard, "flex items-center gap-1.5")}>
+                  <span
+                    className={cn(
+                      "shrink-0 w-5 h-5 rounded text-white text-[10px] font-bold flex items-center justify-center",
+                      planColorFor(j).gradient,
+                    )}
+                    aria-hidden="true"
+                  >
+                    {letterFor(j)}
+                  </span>
                   <span className="text-[12px] text-slate-500">$</span>
                   <input
                     autoFocus
@@ -312,7 +324,7 @@ export function YearlyLensV2({
               );
             }
             return (
-              <div key={j} className="flex items-center gap-2 min-w-0">
+              <div key={j} className={cn(subCard, "flex items-center gap-2 min-w-0")}>
                 <span
                   className={cn(
                     "shrink-0 w-5 h-5 rounded text-white text-[10px] font-bold flex items-center justify-center",
