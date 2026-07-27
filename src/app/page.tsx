@@ -6,6 +6,72 @@ import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useFeatureFlag } from "@/lib/config/use-feature-flag";
 
+const ORIGIN = "https://www.candidclaim.com";
+
+/* Landing FAQ — single source of truth. Renders BOTH the visible accordion
+   (FAQSection) and the FAQPage JSON-LD below, so the markup can never drift
+   from the on-page content (Google requires they match). `href` links only
+   guides that are LIVE; entries whose guide ships in a later wave carry the
+   future slug in a comment and gain `href` when that wave publishes — a link
+   must never 404. Internal links carry NO utm params (guide→home links own
+   attribution; landing→guide must not pollute first-touch). */
+const LANDING_FAQ: { q: string; a: string; href?: string; linkLabel?: string }[] = [
+  {
+    q: "How do I know if my medical bill has errors?",
+    a: "Upload your bill to Candid Claim. We compare every charge against benchmarks and flag overcharges, duplicate codes, unbundled procedures, and balance billing — each with a severity rating and dollar estimate.",
+    href: "/learn/how-to-know-if-you-were-overcharged",
+    linkLabel: "Read the guide: How to know if you were overcharged →",
+  },
+  {
+    q: "How do I dispute a medical bill?",
+    a: "Candid generates ready-to-send dispute letters based on the errors found in your audit. You review the letter, customize it if needed, and send it yourself. You stay in control.",
+    href: "/learn/how-to-fight-a-medical-bill",
+    linkLabel: "Read the guide: How to fight a medical bill →",
+  },
+  {
+    q: "Why is my medical bill different from my EOB?",
+    a: "Your EOB shows what your insurer processed for a claim — the negotiated rate, what the plan paid, and your share. The provider's bill is what they want to collect, and the two don't always match. Candid reads both, reconciles them line by line, and flags anything the EOB says you shouldn't owe.",
+    href: "/learn/how-to-read-an-eob",
+    linkLabel: "Read the guide: How to read an EOB →",
+  },
+  {
+    // Wave E2 guide: /learn/how-to-appeal-a-denied-health-insurance-claim
+    q: "What should I do if my insurance denied my claim?",
+    a: "Start with an internal appeal — most denials can be appealed within 180 days. Candid reads your denial and your plan documents, then drafts an appeal letter citing the plan language that supports coverage. If the appeal fails, we help you escalate, up to an external review request.",
+  },
+  {
+    // Wave E2 guide: /learn/medical-bill-in-collections
+    q: "What if my medical bill was sent to collections?",
+    a: "You can demand the collector validate the debt — Candid drafts a debt-validation letter for free. Federal law gives you 30 days from the collector's first notice to request validation, and we help you keep disputing the underlying bill.",
+  },
+  {
+    q: "Does my insurance cover therapy, acupuncture, or chiropractic?",
+    a: "It depends on your plan. Candid reads your policy and shows you covered benefits in plain English — including therapy, acupuncture, chiropractic, preventive screenings, and more.",
+    href: "/learn/what-does-my-health-insurance-actually-cover",
+    linkLabel: "Read the guide: What does my health insurance actually cover →",
+  },
+  {
+    // Wave E3 guide: /learn/how-to-compare-health-insurance-plans
+    q: "How do I compare health insurance plans?",
+    a: "Candid Compare lays up to three plans side by side — premiums, deductibles, copays, and what's actually covered — with every number sourced from real plan documents.",
+  },
+  {
+    // Wave E3 guide: /learn/deductible-coinsurance-out-of-pocket-max-explained
+    q: "How do I track my deductible and out-of-pocket maximum?",
+    a: "Candid adds up what you've actually paid across your uploaded bills and shows your progress toward your deductible and out-of-pocket max — and flags it when the insurer's numbers don't match your records.",
+  },
+  {
+    q: "Is Candid Claim free?",
+    a: "Yes. Candid Claim's bill audit and benefits discovery tools are free. No credit card required.",
+  },
+  {
+    q: "Is my medical data safe with Candid?",
+    a: "Candid applies HIPAA-grade security safeguards by design (we are not a HIPAA-covered entity). Your documents are encrypted at rest and in transit. We never sell your personal health information. Every consent event is logged and you can revoke access anytime.",
+    href: "/health-data",
+    linkLabel: "Read our Health Data Privacy notice →",
+  },
+];
+
 export default function LandingPage() {
   const { user } = useAuth();
   const loggedIn = !!user;
@@ -47,48 +113,20 @@ export default function LandingPage() {
               },
               {
                 "@type": "FAQPage",
-                mainEntity: [
-                  {
-                    "@type": "Question",
-                    name: "How do I know if my medical bill has errors?",
-                    acceptedAnswer: {
-                      "@type": "Answer",
-                      text: "Upload your bill to Candid Claim. We compare every charge against benchmarks and flag overcharges, duplicate codes, unbundled procedures, and balance billing — each with a severity rating and dollar estimate.",
-                    },
+                // Generated from LANDING_FAQ — the same array the visible
+                // FAQSection renders. Linked answers embed the anchor (Google
+                // permits limited HTML, including <a>, in Answer.text).
+                mainEntity: LANDING_FAQ.map((f) => ({
+                  "@type": "Question",
+                  name: f.q,
+                  acceptedAnswer: {
+                    "@type": "Answer",
+                    text:
+                      f.href && f.linkLabel
+                        ? `${f.a} <a href="${ORIGIN}${f.href}">${f.linkLabel}</a>`
+                        : f.a,
                   },
-                  {
-                    "@type": "Question",
-                    name: "How do I dispute a medical bill?",
-                    acceptedAnswer: {
-                      "@type": "Answer",
-                      text: "Candid generates ready-to-send dispute letters based on the errors found in your audit. You review the letter, customize it if needed, and send it yourself. You stay in control.",
-                    },
-                  },
-                  {
-                    "@type": "Question",
-                    name: "Does my insurance cover therapy, acupuncture, or chiropractic?",
-                    acceptedAnswer: {
-                      "@type": "Answer",
-                      text: "It depends on your plan. Candid reads your policy and shows you covered benefits in plain English — including therapy, acupuncture, chiropractic, preventive screenings, and more.",
-                    },
-                  },
-                  {
-                    "@type": "Question",
-                    name: "Is Candid Claim free?",
-                    acceptedAnswer: {
-                      "@type": "Answer",
-                      text: "Yes. Candid Claim's bill audit and benefits discovery tools are free. No credit card required.",
-                    },
-                  },
-                  {
-                    "@type": "Question",
-                    name: "Is my medical data safe with Candid?",
-                    acceptedAnswer: {
-                      "@type": "Answer",
-                      text: "Candid applies HIPAA-grade security safeguards by design (we are not a HIPAA-covered entity). Your documents are encrypted at rest and in transit. We never sell your personal health information. Every consent event is logged and you can revoke access anytime.",
-                    },
-                  },
-                ],
+                })),
               },
             ],
           }),
@@ -100,6 +138,7 @@ export default function LandingPage() {
       <FeaturedSuite />
       <HowItWorks />
       <MinorSuite />
+      <FAQSection />
       <FinalCTASection />
       <FooterV2 />
     </div>
@@ -190,14 +229,15 @@ function Hero({ loggedIn }: { loggedIn: boolean }) {
           <span className="eyebrow-pill">
             <span className="dot" />{" "}
             {freeStart
-              ? "Free bill audit + dispute letter — no credit card required."
-              : "Free bill audit — no credit card required"}
+              ? "Free dispute letter included — no credit card required"
+              : "No credit card required"}
           </span>
           <h1 className="h-hero">
-            What is the healthcare industry <span className="accent">hiding from you?</span>
+            You pay a lot for healthcare. <span className="accent">Get the most out of it.</span>
           </h1>
           <p className="hero-sub">
-            Catch billing errors. Find hidden benefits. Compare plans.
+            Free bill audit and benefits analysis. We&apos;ll tell you if you&apos;ve been
+            overcharged and what your plan covers — in under five minutes.
           </p>
           <div className="hero-ctas">
             <Link
@@ -317,38 +357,72 @@ function HeroMockup() {
   );
 }
 
-/* Mini benefits-grid mockup for the /plan peek. */
+/* Mini discovered-benefits mockup for the /plan peek — a "3 benefits
+   discovered" banner over three concrete benefit rows (name + visits/year +
+   copay + Covered pill). Icons follow the ICON set idiom: 24-viewBox stroke
+   SVGs, currentColor, round caps. */
 function PlanMockup() {
-  const benefits = [
-    { name: "Preventive Care",  cite: "in-network", state: "verified",   detail: "$0 copay" },
-    { name: "Physical Therapy", cite: "20 visits",  state: "verified",   detail: "$30 copay" },
-    { name: "Acupuncture",      cite: "12 visits",  state: "community",  detail: "$40 copay" },
-    { name: "Specialist Visit", cite: "office",     state: "verified",   detail: "$50 copay" },
+  const discovered = [
+    {
+      name: "Acupuncture", qty: "12 visits / year", copay: "$40 copay",
+      iconBg: "var(--info-bg)", iconColor: "var(--candid-blue-600)",
+      icon: (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="5" /><circle cx="12" cy="12" r="1" />
+        </svg>
+      ),
+    },
+    {
+      name: "Physical Therapy", qty: "20 visits / year", copay: "$30 copay",
+      iconBg: "var(--success-bg)", iconColor: "var(--success-strong)",
+      icon: (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+        </svg>
+      ),
+    },
+    {
+      name: "Massage Therapy", qty: "6 visits / year", copay: "$25 copay",
+      iconBg: "#fef3c7", iconColor: "#b45309",
+      icon: (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+        </svg>
+      ),
+    },
   ];
   return (
-    <div style={{ padding: 22, background: "var(--bg-1)" }}>
+    <div style={{ padding: "18px 20px", background: "var(--bg-1)" }}>
       <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--fg-5)", marginBottom: 4 }}>Candid Plan</div>
-      <div style={{ fontSize: 17, fontWeight: 700, color: "var(--fg-1)", marginBottom: 16 }}>Benefits — Blue Shield Gold 80</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        {benefits.map((b, i) => {
-          const isVerified = b.state === "verified";
-          return (
-            <div key={i} style={{ border: "1px solid var(--border-2)", borderRadius: 14, padding: 14, background: "var(--bg-1)" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--fg-2)" }}>{b.name}</span>
-                <span style={{
-                  fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 99,
-                  background: isVerified ? "var(--verified-bg)" : "var(--verified-soft)",
-                  color: isVerified ? "#fff" : "var(--verified-ink)",
-                  border: isVerified ? "0" : "1px solid var(--verified-ring)",
-                  textTransform: "uppercase", letterSpacing: "0.04em",
-                }}>{isVerified ? "Verified" : "Community"}</span>
-              </div>
-              <div style={{ fontSize: 11, color: "var(--fg-4)" }}>{b.detail}</div>
-              <div style={{ fontSize: 10, color: "var(--fg-5)", marginTop: 4 }}>{b.cite}</div>
-            </div>
-          );
-        })}
+      <div style={{ fontSize: 17, fontWeight: 700, color: "var(--fg-1)" }}>Blue Shield Gold 80 — benefits scan</div>
+      <div style={{ background: "linear-gradient(135deg, var(--info-bg), var(--success-bg))", border: "1px solid #d1fae5", borderRadius: 12, padding: "10px 14px", margin: "12px 0 10px", display: "flex", alignItems: "center", gap: 12 }}>
+        <span style={{ fontSize: 30, fontWeight: 700, letterSpacing: "-0.03em", color: "var(--success-strong)", lineHeight: 1 }}>3</span>
+        <span style={{ minWidth: 0 }}>
+          <span style={{ display: "block", fontSize: 12.5, fontWeight: 700, color: "var(--fg-1)", lineHeight: 1.25 }}>benefits discovered</span>
+          <span style={{ display: "block", fontSize: 10.5, color: "var(--fg-4)", marginTop: 2 }}>Covered by your plan — and going unused</span>
+        </span>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {discovered.map((b) => (
+          <div key={b.name} style={{ display: "flex", alignItems: "center", gap: 10, border: "1px solid var(--border-2)", borderRadius: 10, padding: "8px 12px" }}>
+            <span style={{ width: 26, height: 26, borderRadius: 8, background: b.iconBg, color: b.iconColor, display: "grid", placeItems: "center", flexShrink: 0 }}>{b.icon}</span>
+            <span style={{ minWidth: 0 }}>
+              <span style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--fg-1)" }}>{b.name}</span>
+              <span style={{ display: "block", fontSize: 10.5, color: "var(--fg-4)" }}>{b.qty}</span>
+            </span>
+            <span style={{ marginLeft: "auto", textAlign: "right", flexShrink: 0 }}>
+              <span style={{ display: "block", fontSize: 11.5, fontWeight: 700, color: "var(--fg-2)", fontVariantNumeric: "tabular-nums" }}>{b.copay}</span>
+              <span style={{ display: "inline-block", background: "var(--success-strong)", color: "#fff", fontSize: 8.5, fontWeight: 700, padding: "2px 7px", borderRadius: 99, textTransform: "uppercase", letterSpacing: "0.04em", marginTop: 2 }}>Covered</span>
+            </span>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "var(--fg-5)", marginTop: 10 }}>
+        <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--success-strong)", flexShrink: 0 }} />
+        Verified from your plan documents
       </div>
     </div>
   );
@@ -427,9 +501,11 @@ function StatStrip() {
 
 /* ── Featured suite (3 free products) ────────────────────────────────── */
 function FeaturedSuite() {
+  // Order = message hierarchy: the hero leads with the bill audit, so Claim
+  // leads the suite. nth-child(even) CSS alternates the peek side automatically.
   const featured = [
-    { id: "plan",    name: "Candid Plan",    tagline: "Find the benefits you're already paying for.", body: "Your policy covers more than you think. We surface the screenings, therapy, and HSA-eligible perks waiting to be used.", href: "/plan",    image: "/landing/peek-plan.png",    mockup: <PlanMockup /> },
     { id: "claim",   name: "Candid Claim",   tagline: "Catch every overcharge on every bill.",         body: "Snap a photo of your bill. We check every line, flag any errors, and draft the dispute letter — so you never overpay.",          href: "/claim",   image: "/landing/peek-claim.png",   mockup: <ClaimMockup /> },
+    { id: "plan",    name: "Candid Plan",    tagline: "Find the benefits you're already paying for.", body: "Your policy covers more than you think. We surface the screenings, therapy, and HSA-eligible perks waiting to be used.", href: "/plan",    image: "/landing/peek-plan.png",    mockup: <PlanMockup /> },
     { id: "compare", name: "Candid Compare", tagline: "Pick the plan that actually fits your life.",   body: "Stack up to three plans side by side — premiums, deductibles, what's covered. Every number sourced from the real document.", href: "/compare", image: "/landing/peek-compare.png", mockup: <CompareMockup /> },
   ];
   return (
@@ -438,8 +514,8 @@ function FeaturedSuite() {
         <span className="section-eyebrow">The Candid Suite</span>
         <h2 className="section-title">Everything to stop overpaying</h2>
         <p className="section-sub">
-          Three free tools, working together to get the right plan, the most benefits, and the
-          lowest bills.
+          Three free tools, working together to lower your bills, unlock your benefits, and
+          pick the right plan.
         </p>
         <div className="suite-featured-grid">
           {featured.map((s) => (
@@ -662,16 +738,44 @@ function MinorSuite() {
   );
 }
 
+/* ── FAQ (visible; mirrors the FAQPage JSON-LD — both render LANDING_FAQ) ── */
+function FAQSection() {
+  return (
+    <section className="section section-faq" id="faq">
+      <div className="section-narrow section-center">
+        <span className="section-eyebrow">FAQ</span>
+        <h2 className="section-title">Questions, answered</h2>
+        <div className="faq-list">
+          {LANDING_FAQ.map((f) => (
+            <details className="faq-item" key={f.q}>
+              <summary>{f.q}</summary>
+              <p>
+                {f.a}
+                {f.href && f.linkLabel && (
+                  <>
+                    {" "}
+                    <Link href={f.href}>{f.linkLabel}</Link>
+                  </>
+                )}
+              </p>
+            </details>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 /* ── Final CTA ───────────────────────────────────────────────────────── */
 function FinalCTASection() {
   return (
     <section className="section">
       <div className="section-narrow">
         <div className="final-cta">
-          <h2>You pay a lot for healthcare. Get the most out of it.</h2>
+          <h2>Ready to stop overpaying?</h2>
           <p>
-            Free bill audit and benefits analysis. We&apos;ll tell you if you&apos;ve been
-            overcharged and what your plan covers — in under five minutes.
+            Upload your first bill and get your audit free — no credit card required. If
+            something&apos;s wrong, we&apos;ll draft the dispute letter for you.
           </p>
           <div style={{ display: "inline-flex", gap: 12, flexWrap: "wrap", justifyContent: "center" }}>
             <Link href="/auth/signup" className="btn btn-primary btn-xl">Sign up — it&apos;s free {ICON.chevR}</Link>
