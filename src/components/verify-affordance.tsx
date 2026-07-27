@@ -89,7 +89,7 @@ function reasonMessage(reason: DisplayStateReason, userHasDoc: boolean | undefin
     case "canonical_below_threshold":
       return userHasDoc
         ? "Other Candid users on this plan reported a value here, but your document didn't include it."
-        : "We have data on this plan from other Candid users, but we're still gathering confirmations.";
+        : "We have data on this plan from other Candid users, but uploading your plan document ensures your benefits are 100% accurate.";
     case "cms_marketplace":
       return userHasDoc
         ? "This is a public-marketplace estimate — your uploaded document didn't include this field."

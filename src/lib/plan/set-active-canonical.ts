@@ -21,6 +21,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { userScoped } from "@/lib/security/user-scoped";
+import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
 
 export type SetActiveCanonicalResult =
   | { ok: true; insurancePlanId: string; cardCleared: boolean }
@@ -94,13 +95,43 @@ export async function setActiveCanonicalPlan(
   }
   const assembly =
     priorActiveSource === null || priorActiveSource === "manual" || priorActiveSource === "insurance_card";
+  // Insurer comparison (Andrew's false-negative contingency): substring alone
+  // false-negatives on abbreviations ("UHC" vs "UnitedHealthcare Insurance
+  // Company") and would wrongly clear a same-insurer card. Decide with the
+  // alias-aware insurer_catalog resolver: resolve the prior insurer string to
+  // a catalog id and compare against the canonical's exact insurer_id. Clear
+  // ONLY on a CONFIDENT mismatch — both sides resolved AND different, with no
+  // substring agreement. Any uncertainty (unresolvable prior string, canonical
+  // without an insurer link) PRESERVES: a possibly-stale card is visible and
+  // recoverable; a destroyed member ID is data loss.
   const priorInsurerNorm = priorProfile?.insurer ? normalizeInsurer(priorProfile.insurer as string) : "";
   const newInsurerNorm = insurerName ? normalizeInsurer(insurerName) : "";
-  const insurerMatches =
+  const substringMatch =
     !!priorInsurerNorm &&
     !!newInsurerNorm &&
     (priorInsurerNorm.includes(newInsurerNorm) || newInsurerNorm.includes(priorInsurerNorm));
-  const preserveCard = assembly || insurerMatches;
+  let confidentMismatch = false;
+  if (!assembly && !substringMatch && priorProfile?.insurer) {
+    try {
+      const priorResolved = await matchInsurerCatalog(supabase, priorProfile.insurer as string);
+      if (priorResolved != null && canonical.insurer_id != null) {
+        // The catalog carries one row per legal entity (8 UnitedHealthcare
+        // rows: parent + state subsidiaries) — an alias resolves to the parent
+        // while a canonical may point at a sibling entity. Differing ids are a
+        // CONFIDENT mismatch only when the resolved row's NAME and the
+        // canonical's insurer name don't substring-match either (family test).
+        const resolvedNorm = normalizeInsurer(priorResolved.name);
+        const familyMatch =
+          !!resolvedNorm &&
+          !!newInsurerNorm &&
+          (resolvedNorm.includes(newInsurerNorm) || newInsurerNorm.includes(resolvedNorm));
+        confidentMismatch = priorResolved.id !== canonical.insurer_id && !familyMatch;
+      }
+    } catch {
+      confidentMismatch = false; // resolver failure → uncertainty → preserve
+    }
+  }
+  const preserveCard = assembly || !confidentMismatch;
   const keptMemberId = preserveCard ? ((priorProfile?.member_id as string | null) ?? null) : null;
   const keptGroupNumber = preserveCard ? ((priorProfile?.group_number as string | null) ?? null) : null;
   const cardCleared =
