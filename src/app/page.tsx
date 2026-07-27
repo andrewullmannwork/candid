@@ -12,6 +12,88 @@ export default function LandingPage() {
 
   return (
     <div className="landing dirB">
+      {/* Product HowTo + FAQPage. These describe the product, not any given
+          page, so they live here on the landing page rather than in the root
+          layout where they previously rode along on every URL (including
+          /learn articles, which carry their own FAQPage). Moved verbatim. */}
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify({
+            "@context": "https://schema.org",
+            "@graph": [
+              {
+                "@type": "HowTo",
+                name: "How to audit your medical bill with Candid Claim",
+                description:
+                  "Three steps to find overcharges and discover unused insurance benefits.",
+                step: [
+                  {
+                    "@type": "HowToStep",
+                    name: "Upload your documents",
+                    text: "Snap a photo of your insurance card and upload your bills. We scan everything automatically to fill in your plan details.",
+                  },
+                  {
+                    "@type": "HowToStep",
+                    name: "Get your audit and benefit information",
+                    text: "We compare every charge to benchmarks, flag errors, and surface covered benefits you're leaving on the table — in seconds.",
+                  },
+                  {
+                    "@type": "HowToStep",
+                    name: "Take action",
+                    text: "Dispute letters, case files, benefit guides — everything you need to fight overcharges and get the most out of your plan. You stay in control.",
+                  },
+                ],
+              },
+              {
+                "@type": "FAQPage",
+                mainEntity: [
+                  {
+                    "@type": "Question",
+                    name: "How do I know if my medical bill has errors?",
+                    acceptedAnswer: {
+                      "@type": "Answer",
+                      text: "Upload your bill to Candid Claim. We compare every charge against benchmarks and flag overcharges, duplicate codes, unbundled procedures, and balance billing — each with a severity rating and dollar estimate.",
+                    },
+                  },
+                  {
+                    "@type": "Question",
+                    name: "How do I dispute a medical bill?",
+                    acceptedAnswer: {
+                      "@type": "Answer",
+                      text: "Candid generates ready-to-send dispute letters based on the errors found in your audit. You review the letter, customize it if needed, and send it yourself. You stay in control.",
+                    },
+                  },
+                  {
+                    "@type": "Question",
+                    name: "Does my insurance cover therapy, acupuncture, or chiropractic?",
+                    acceptedAnswer: {
+                      "@type": "Answer",
+                      text: "It depends on your plan. Candid reads your policy and shows you covered benefits in plain English — including therapy, acupuncture, chiropractic, preventive screenings, and more.",
+                    },
+                  },
+                  {
+                    "@type": "Question",
+                    name: "Is Candid Claim free?",
+                    acceptedAnswer: {
+                      "@type": "Answer",
+                      text: "Yes. Candid Claim's bill audit and benefits discovery tools are free. No credit card required.",
+                    },
+                  },
+                  {
+                    "@type": "Question",
+                    name: "Is my medical data safe with Candid?",
+                    acceptedAnswer: {
+                      "@type": "Answer",
+                      text: "Candid applies HIPAA-grade security safeguards by design (we are not a HIPAA-covered entity). Your documents are encrypted at rest and in transit. We never sell your personal health information. Every consent event is logged and you can revoke access anytime.",
+                    },
+                  },
+                ],
+              },
+            ],
+          }),
+        }}
+      />
       <TopNav loggedIn={loggedIn} />
       <Hero loggedIn={loggedIn} />
       <StatStrip />
@@ -632,6 +714,7 @@ function FooterV2() {
             <div className="foot-v2-parent">An Airgetlam Labs LLC company.</div>
           </div>
           <nav className="foot-v2-links">
+            <Link href="/learn">Guides</Link>
             <Link href="/privacy">Privacy</Link>
             <Link href="/terms">Terms</Link>
             <Link href="/health-data">Health Data Privacy</Link>
