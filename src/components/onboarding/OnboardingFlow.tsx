@@ -479,6 +479,7 @@ export function OnboardingFlow() {
                   <OnboardingDocStep
                     value={doc}
                     searchSeed={card?.planName || card?.insurer || profileSeed}
+                    emphasizeCurrent={mode === "plan"}
                     onDone={(v) =>
                       setDoc((prev) => {
                         // S286: a fresh upload becomes the primary row; prior

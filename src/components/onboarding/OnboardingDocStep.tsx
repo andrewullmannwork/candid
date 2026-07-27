@@ -71,6 +71,7 @@ export function OnboardingDocStep({
   hasConsented,
   grantConsent,
   searchSeed,
+  emphasizeCurrent,
 }: {
   value: DocSlotValue | null;
   onDone: (v: DocSlotValue) => void;
@@ -80,6 +81,10 @@ export function OnboardingDocStep({
   /** S288 soft fill: pre-typed search text from the card step (scanned plan
    *  name > typed insurer). Plain editable text — never a locked filter. */
   searchSeed?: string | null;
+  /** S288 plan-change mode: render the done-card as a PROMINENT current-plan
+   *  card (eyebrow + full name + a real Replace button) so what's-on-file vs
+   *  what-you're-changing is unmistakable. */
+  emphasizeCurrent?: boolean;
 }) {
   const { user } = useAuth();
 
@@ -572,12 +577,18 @@ export function OnboardingDocStep({
   /* ── Done state ─────────────────────────────────────────────────────────── */
   if (value) {
     const isBackground = value.kind === "background";
+    const prominent = emphasizeCurrent === true && !isBackground;
     return (
       <div
-        className={`rounded-[18px] border bg-white p-5 shadow-sm ${
+        className={`rounded-[18px] border bg-white shadow-sm ${
           isBackground ? "border-blue-200" : "border-emerald-300"
-        }`}
+        } ${prominent ? "border-2 p-6" : "p-5"}`}
       >
+        {prominent && (
+          <p className="mb-2.5 text-[10.5px] font-bold tracking-[0.12em] text-emerald-700">
+            {OB_DOC_COPY.currentPlanEyebrow}
+          </p>
+        )}
         <div className="flex items-center gap-2.5">
           {isBackground ? (
             <span className="inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-600">
@@ -589,7 +600,7 @@ export function OnboardingDocStep({
             </span>
           )}
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-gray-900">
+            <p className={`font-semibold text-gray-900 ${prominent ? "text-[15px]" : "text-sm"}`}>
               {isBackground
                 ? "This one will take a few minutes"
                 : value.via === "search"
@@ -598,7 +609,13 @@ export function OnboardingDocStep({
                     ? OB_DOC_COPY.parsedBill
                     : OB_DOC_COPY.parsedPlan}
             </p>
-            <p className="truncate text-xs text-gray-400">
+            <p
+              className={
+                prominent
+                  ? "mt-0.5 text-[13px] leading-snug text-gray-600"
+                  : "truncate text-xs text-gray-400"
+              }
+            >
               {isBackground
                 ? "We're reading it in the background — we'll let you know the moment it's ready."
                 : value.fileName}
@@ -607,9 +624,13 @@ export function OnboardingDocStep({
           {!isBackground && (
             <button
               onClick={onReplace}
-              className="ml-auto rounded-lg px-2 py-1 text-xs font-semibold text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+              className={
+                prominent
+                  ? "ml-auto shrink-0 self-start rounded-xl border border-blue-200 bg-blue-50 px-3.5 py-2 text-[13px] font-bold text-blue-700 transition-colors hover:bg-blue-100"
+                  : "ml-auto rounded-lg px-2 py-1 text-xs font-semibold text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+              }
             >
-              Replace
+              {prominent ? OB_DOC_COPY.replacePlan : "Replace"}
             </button>
           )}
         </div>

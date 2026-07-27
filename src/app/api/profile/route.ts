@@ -253,6 +253,9 @@ export async function POST(req: NextRequest) {
     situation_tags,
     // Plan switch override (card scan mismatch confirmed by user)
     force_plan_switch,
+    // S288 both-or-neither: the new flow's card step opts its saves into the
+    // divergence pre-check (scan AND typed). Legacy payloads never send it.
+    divergence_check,
   } = body;
 
   const supabase = createServerClient();
@@ -272,6 +275,13 @@ export async function POST(req: NextRequest) {
   const dedInd = in_deductible_individual ?? deductible_individual;
   const oopInd = in_oop_max_individual ?? oop_max_individual;
   const isCardScanRequest = plan_source === "insurance_card";
+  // S288 both-or-neither: a TYPED insurer must get the same Keep/Switch
+  // decision a scanned one does — the typed path silently overwriting is
+  // exactly how the mixed-identity ("Blue Cross + UHC") state got written.
+  // Scan requests keep their unconditional check; other saves opt in via
+  // divergence_check so the legacy wizard (which never sends it, and doesn't
+  // handle a planMismatch response on its manual path) stays byte-identical.
+  const divergenceCheck = isCardScanRequest || divergence_check === true;
 
   let pendingCanonicalMatch: { canonicalPlanId: string; matchedPlanName: string; confidence: number; sourceCount: number; insurerName: string } | null = null;
 
@@ -300,7 +310,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  if (isCardScanRequest && !force_plan_switch && insurer) {
+  if (divergenceCheck && !force_plan_switch && insurer) {
     const { data: preCheckProfile } = await userScoped(supabase, user.id)
       .table("profiles")
       .select("active_insurance_plan_id, plan_name, group_number")

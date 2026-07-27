@@ -59,6 +59,9 @@ export const OB_CARD_COPY = {
   replace: "Replace",
   scanNote: "OCR · matching insurer · pulling IDs",
   save: "Save details",
+  /* S288 both-or-neither (DRAFT copy pending Andrew approval): a divergent
+     card + "Keep current plan" writes NOTHING — this is the receipt. */
+  keptNothing: "Nothing was changed — that card doesn't match the plan on file.",
 } as const;
 
 export const OB_DOC_COPY = {
@@ -84,6 +87,9 @@ export const OB_DOC_COPY = {
   searchDone: "Plan on file — from Candid's plan library",
   searchError: "Couldn't set that plan. Please try again.",
   searchBack: "Back to upload",
+  /* S288 plan-change mode — prominent current-plan framing (DRAFT copy). */
+  currentPlanEyebrow: "YOUR CURRENT PLAN",
+  replacePlan: "Replace plan",
 } as const;
 
 /** Dashboard meter copy (same approval). */

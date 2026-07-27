@@ -21,7 +21,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { loadPlanCostShareParams } from "../src/lib/claims/cost-share-loader";
-import { OB_COPY, OB_DOC_COPY } from "../src/lib/onboarding/simplified";
+import { OB_CARD_COPY, OB_COPY, OB_DOC_COPY } from "../src/lib/onboarding/simplified";
 
 let pass = 0;
 let fail = 0;
@@ -165,6 +165,9 @@ const CANON_TERMS = {
     ["OB_DOC_COPY.searchDone", OB_DOC_COPY.searchDone],
     ["OB_DOC_COPY.searchError", OB_DOC_COPY.searchError],
     ["OB_DOC_COPY.searchBack", OB_DOC_COPY.searchBack],
+    ["OB_DOC_COPY.currentPlanEyebrow", OB_DOC_COPY.currentPlanEyebrow],
+    ["OB_DOC_COPY.replacePlan", OB_DOC_COPY.replacePlan],
+    ["OB_CARD_COPY.keptNothing", OB_CARD_COPY.keptNothing],
   ] as const) {
     check(`${k} non-empty`, typeof v === "string" && v.length > 0, true);
   }

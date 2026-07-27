@@ -115,6 +115,9 @@ export function OnboardingCardStep({
   const [mismatch, setMismatch] = useState<
     (PlanMismatchInfo & { pendingData: Record<string, string>; pendingSlot: CardSlotValue }) | null
   >(null);
+  // S288: "Keep current plan" on a divergent card writes NOTHING — this notice
+  // is the receipt ("Nothing was changed…"). Cleared on the next save attempt.
+  const [keptNotice, setKeptNotice] = useState(false);
   const [canonicalMatch, setCanonicalMatch] = useState<PendingCanonicalMatch | null>(null);
 
   const saveProfile = useCallback(
@@ -159,12 +162,15 @@ export function OnboardingCardStep({
     if (!mIns && !mId) return;
     setSaving(true);
     setError("");
+    setKeptNotice(false);
     try {
       const payload: Record<string, string> = { plan_source: "manual" };
       if (mIns) payload.insurer = mIns;
       if (mId) payload.member_id = mId;
       if (mGrp) payload.group_number = mGrp;
-      const result = await saveProfile(payload);
+      // S288 both-or-neither: typed saves opt into the server divergence
+      // pre-check — a mismatched insurer gets Keep/Switch, never a silent write.
+      const result = await saveProfile({ ...payload, divergence_check: true });
       const chips: ObChip[] = [
         ...(mIns ? [{ label: "Insurer", value: mIns }] : []),
         ...(mId ? [{ label: "Member ID", value: mId, mono: true }] : []),
@@ -183,6 +189,7 @@ export function OnboardingCardStep({
       if (!user) return;
       setScanning(true);
       setError("");
+      setKeptNotice(false);
       try {
         const idToken = await user.firebaseUser.getIdToken();
         const formData = new FormData();
@@ -213,7 +220,7 @@ export function OnboardingCardStep({
           );
         }
         const payload = scanSavePayload(fields);
-        const result = await saveProfile(payload);
+        const result = await saveProfile({ ...payload, divergence_check: true });
         finishSave(
           {
             chips: fieldsToChips(fields),
@@ -387,21 +394,13 @@ export function OnboardingCardStep({
             Switch to {mismatch.newInsurer || "the new plan"}
           </button>
           <button
-            onClick={async () => {
-              // Keep the current plan; save only the identity fields (member
-              // ID / group #) — identity-only writes are safe post-doc (CF-25).
-              try {
-                const idOnly: Record<string, string> = {};
-                if (mismatch.pendingData.member_id) idOnly.member_id = mismatch.pendingData.member_id;
-                if (mismatch.pendingData.group_number) idOnly.group_number = mismatch.pendingData.group_number;
-                if (Object.keys(idOnly).length > 0) await saveProfile(idOnly);
-                const slot = mismatch.pendingSlot;
-                setMismatch(null);
-                onSaved(slot);
-              } catch (err) {
-                setMismatch(null);
-                setError(err instanceof Error ? err.message : "Save failed. Please try again.");
-              }
+            onClick={() => {
+              // S288 both-or-neither: a divergent card + "Keep" writes NOTHING.
+              // The old quiet member-ID/group attach is how mixed-identity
+              // states were born ("Blue Cross" insurer glued to a UHC plan).
+              // The pending card is discarded; the prior state stands whole.
+              setMismatch(null);
+              setKeptNotice(true);
             }}
             className="flex-1 rounded-xl border border-amber-300 bg-white px-3 py-2.5 text-xs font-semibold text-amber-800 transition-colors hover:bg-amber-100"
           >
@@ -431,6 +430,15 @@ export function OnboardingCardStep({
   /* ── Type-first card (manual grid + photo drop strip) ───────────────────── */
   return (
     <>
+      {keptNotice && (
+        <div className="mb-3 flex items-center gap-2.5 rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-[13px] text-gray-600">
+          <svg className="shrink-0" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M12 8v4m0 4h.01" />
+          </svg>
+          {OB_CARD_COPY.keptNothing}
+        </div>
+      )}
       <div
         className={`rounded-[18px] border bg-white p-5 shadow-sm transition-colors ${
           dragOver ? "border-blue-400 bg-blue-50/50" : "border-gray-200"
