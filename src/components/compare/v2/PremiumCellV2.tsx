@@ -128,11 +128,12 @@ export function PremiumCellV2({ entry, membersCount, isActivePlan = false, onCon
   if (entry.value == null) {
     return (
       <div className="w-full max-w-[210px] rounded-xl ring-1 ring-blue-200 bg-blue-50/40 p-2.5">
-        <div className="text-[10px] font-bold uppercase tracking-wide text-blue-600 mb-1">{isActivePlan ? "Add yours" : "Premium"}</div>
+        <div className="text-[10px] font-bold uppercase tracking-wide text-blue-600 mb-1.5">{isActivePlan ? "Add yours" : "Premium"}</div>
+        {/* S289 (Andrew) — a real button, not a text link. */}
         <button
           type="button"
           onClick={beginEdit}
-          className="inline-flex items-center gap-1 text-sm font-semibold text-blue-700 hover:text-blue-800"
+          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 transition-colors"
         >
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.2} viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14M5 12h14" />
