@@ -93,12 +93,36 @@ export interface ServiceRowAcrossPlans {
   /** S289 Phase B — unique row identity: slug + Pattern-S variant modifiers. */
   variantKey: string;
   title: string;
+  /**
+   * S289 nested rows (Andrew) — the qualifier-only label a variant renders
+   * with when nested under its service's parent row ("Facility Fees —
+   * independent facility"; the umbrella variant reads "All settings").
+   */
+  subLabel: string;
   perPlan: Array<CompareBenefit | null>;
+}
+
+/** Per-plan service-level coverage status (parent-row chips). */
+export type ServiceCoverageStatus = "covered" | "not_covered" | "not_listed";
+
+/**
+ * S289 nested rows (Andrew) — one entry per SERVICE: parent-row status per
+ * plan + the variant rows nested under it. Single-variant services render
+ * flat (multiVariant=false); the accordions iterate `services` for display
+ * while the math helpers keep consuming the flat `rows`.
+ */
+export interface ServiceEntry {
+  serviceSlug: string;
+  title: string;
+  multiVariant: boolean;
+  perPlanStatus: ServiceCoverageStatus[];
+  variants: ServiceRowAcrossPlans[];
 }
 
 export interface CategoryGroup {
   category: string;
   rows: ServiceRowAcrossPlans[];
+  services: ServiceEntry[];
 }
 
 /**
@@ -145,6 +169,17 @@ export function variantTitleParts(b: CompareBenefit): { qualifier: string; tail:
 export function variantQualifiedTitle(base: string, b: CompareBenefit): string {
   const { qualifier, tail } = variantTitleParts(b);
   return `${base}${qualifier ? ` ${qualifier}` : ""}${tail ? ` — ${tail}` : ""}`;
+}
+
+/**
+ * S289 nested rows (Andrew D2) — the label a variant sub-row renders with
+ * under its parent service row: qualifier-only, never repeating the service
+ * name. The umbrella variant (no modifiers) reads "All settings".
+ */
+export function variantRowLabel(b: CompareBenefit): string {
+  const { qualifier, tail } = variantTitleParts(b);
+  if (!qualifier && !tail) return "All settings";
+  return `${qualifier}${qualifier && tail ? " — " : ""}${tail}`;
 }
 
 function variantKeyOf(b: CompareBenefit): string {
@@ -211,6 +246,8 @@ export function groupBenefitsByCategory(
     const rows: Array<ServiceRowAcrossPlans & { baseTitle: string }> = [];
     for (const [variantKey, { serviceSlug, title, qualified, perPlan }] of rowMap) {
       const multiVariant = (variantsPerSlug.get(serviceSlug)?.size ?? 1) > 1;
+      const cells = perPlan.map((candidates) => pickRepresentativeVariant(candidates));
+      const anyBenefit = cells.find((b) => b != null) ?? null;
       rows.push({
         serviceSlug,
         variantKey,
@@ -218,10 +255,11 @@ export function groupBenefitsByCategory(
         // Variant rows: qualify only when the slug genuinely has siblings.
         // Kill-switch mode: always the clean base title.
         title: variantRows && multiVariant ? qualified : title,
+        subLabel: anyBenefit ? variantRowLabel(anyBenefit) : "All settings",
         // Variant-keyed cells hold ≤1 candidate by construction; slug-keyed
         // (kill-switch) cells hold every variant — the DEFAULT variant
         // represents (deterministic; better than the pre-S289 last-write-wins).
-        perPlan: perPlan.map((candidates) => pickRepresentativeVariant(candidates)),
+        perPlan: cells,
       });
     }
     // S289 review F8 — primary sort on the UNQUALIFIED title so a service's
@@ -231,17 +269,107 @@ export function groupBenefitsByCategory(
       (a, b) =>
         a.baseTitle.localeCompare(b.baseTitle) || a.variantKey.localeCompare(b.variantKey),
     );
-    groups.push({
-      category,
-      rows: rows.map((r) => ({
-        serviceSlug: r.serviceSlug,
-        variantKey: r.variantKey,
-        title: r.title,
-        perPlan: r.perPlan,
-      })),
-    });
+    const flatRows: ServiceRowAcrossPlans[] = rows.map((r) => ({
+      serviceSlug: r.serviceSlug,
+      variantKey: r.variantKey,
+      title: r.title,
+      subLabel: r.subLabel,
+      perPlan: r.perPlan,
+    }));
+
+    // S289 nested rows (Andrew) — service-level entries: parent status per
+    // plan + nested variants. Rows are sorted; grouping by slug in row order
+    // keeps entries and their variants in display order.
+    const entryBySlug = new Map<string, ServiceEntry>();
+    for (let i = 0; i < flatRows.length; i++) {
+      const row = flatRows[i];
+      let entry = entryBySlug.get(row.serviceSlug);
+      if (!entry) {
+        entry = {
+          serviceSlug: row.serviceSlug,
+          title: rows[i].baseTitle,
+          multiVariant: false,
+          perPlanStatus: [],
+          variants: [],
+        };
+        entryBySlug.set(row.serviceSlug, entry);
+      }
+      entry.variants.push(row);
+    }
+    const planCount = plans.length;
+    for (const entry of entryBySlug.values()) {
+      entry.multiVariant = entry.variants.length > 1;
+      entry.perPlanStatus = Array.from({ length: planCount }, (_, i) => {
+        let sawListed = false;
+        for (const v of entry.variants) {
+          const b = v.perPlan[i];
+          if (!b) continue;
+          sawListed = true;
+          if (b.covered !== false) return "covered" as const;
+        }
+        return sawListed ? ("not_covered" as const) : ("not_listed" as const);
+      });
+    }
+    groups.push({ category, rows: flatRows, services: Array.from(entryBySlug.values()) });
   }
   return groups;
+}
+
+/**
+ * S289 (Andrew) — "Variants covered": per plan, X of Y where Y = every
+ * variant listed for each service across the WHOLE comparison and X = the
+ * ones this plan covers. Two Andrew-locked rules:
+ *   - BLANKET CREDIT: a plan covering a service as one umbrella row (no
+ *     place/fee detail) covers ALL of that service's listed variants —
+ *     less-granular data is never penalized.
+ *   - EXPLICIT EXCLUSION beats the umbrella: a listed covered:false variant
+ *     is subtracted from the blanket credit.
+ * D1 (approved): the drug-tier axis is EXCLUDED from the universe — tier
+ * labels are plan-local vocabulary (Pattern S; one plan's "tier 1" is
+ * another's "preferred"), so tier gaps are naming noise, not coverage gaps.
+ * Tiers still render as sub-rows.
+ */
+export function variantCoveragePerPlan(
+  plans: ComparePlanPayload[],
+): Array<{ covered: number; total: number }> {
+  const axisKey = (b: CompareBenefit) =>
+    `${b.placeOfService ?? "any"}|${b.component ?? "global"}`;
+  const UMBRELLA = "any|global";
+  const universe = new Map<string, Set<string>>();
+  // Per plan: slug → axisKey → true when ANY benefit at that key is covered
+  // (a key holding only covered:false rows records false = explicit exclusion).
+  const listed: Array<Map<string, Map<string, boolean>>> = plans.map(() => new Map());
+  for (let i = 0; i < plans.length; i++) {
+    for (const b of plans[i].benefits) {
+      const slug = b.serviceSlug;
+      if (!slug) continue;
+      const key = axisKey(b);
+      (universe.get(slug) ?? universe.set(slug, new Set()).get(slug)!).add(key);
+      const bySlug = listed[i].get(slug) ?? listed[i].set(slug, new Map()).get(slug)!;
+      bySlug.set(key, (bySlug.get(key) ?? false) || b.covered !== false);
+    }
+  }
+  return plans.map((_, i) => {
+    let covered = 0;
+    let total = 0;
+    for (const [slug, keys] of universe) {
+      total += keys.size;
+      const mine = listed[i].get(slug);
+      if (!mine) continue;
+      if (mine.get(UMBRELLA) === true) {
+        let credit = keys.size;
+        for (const [, anyCovered] of mine) {
+          if (!anyCovered) credit -= 1;
+        }
+        covered += credit;
+      } else {
+        for (const [, anyCovered] of mine) {
+          if (anyCovered) covered += 1;
+        }
+      }
+    }
+    return { covered, total };
+  });
 }
 
 /**

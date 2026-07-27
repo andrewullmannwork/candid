@@ -35,6 +35,7 @@ import {
   distinctServiceCount,
   groupBenefitsByCategory,
   sortCategoryGroups,
+  variantCoveragePerPlan,
   variantQualifiedTitle,
   winsPerPlanInCategory,
 } from "../src/components/compare/compare-aggregates";
@@ -302,11 +303,11 @@ const CANON_TERMS = {
       true,
     );
     const sorted = sortCategoryGroups([
-      { category: "other", rows: [] },
-      { category: "rx", rows: [] },
-      { category: "office_visit", rows: [] },
-      { category: "dme", rows: [] },
-      { category: "long_term_care", rows: [] },
+      { category: "other", rows: [], services: [] },
+      { category: "rx", rows: [], services: [] },
+      { category: "office_visit", rows: [], services: [] },
+      { category: "dme", rows: [], services: [] },
+      { category: "long_term_care", rows: [], services: [] },
     ]);
     check("compare order — office_visit first of these", sorted[0].category, "office_visit");
     check("compare order — office_visit labeled", sorted[0].label, "Office visits");
@@ -581,6 +582,83 @@ const CANON_TERMS = {
       2,
     );
     check("wins — single contested row decides", JSON.stringify(single), "[1,0]");
+
+    // ── S289 nested rows (Andrew #2) ──
+    const nestedServices = groups.find((g) => g.category === "surgery")?.services ?? [];
+    check("nested — one service entry for surgery", nestedServices.length, 1);
+    check("nested — surgery entry is multiVariant", nestedServices[0]?.multiVariant, true);
+    check("nested — entry holds all 3 variant rows", nestedServices[0]?.variants.length, 3);
+    check("nested — parent title is the clean base", nestedServices[0]?.title, "Surgery");
+    check(
+      "nested — both plans read covered at the service level",
+      JSON.stringify(nestedServices[0]?.perPlanStatus),
+      '["covered","covered"]',
+    );
+    check(
+      "nested — variant subLabel is qualifier-only",
+      nestedServices[0]?.variants.find((v) => v.variantKey.includes("independent_facility"))?.subLabel,
+      "Facility Fees — independent facility",
+    );
+    check(
+      "nested — umbrella variant reads All settings",
+      nestedServices[0]?.variants.find((v) => v.variantKey.includes("|any|global|"))?.subLabel,
+      "All settings",
+    );
+    const loneEntry = lone[0]?.services[0];
+    check("nested — single-variant service stays flat", loneEntry?.multiVariant, false);
+    // Status distinctions: explicit not-covered vs absent.
+    const statusGroups = groupBenefitsByCategory([
+      { benefits: [{ ...(bene("surgery", "Surgery", "", { component: "facility" }) as object), covered: false }] } as unknown as ComparePlanPayload,
+      { benefits: [] } as unknown as ComparePlanPayload,
+    ]);
+    const statusEntry = statusGroups.find((g) => g.category === "surgery")?.services[0];
+    check(
+      "nested — not_covered vs not_listed",
+      JSON.stringify(statusEntry?.perPlanStatus),
+      '["not_covered","not_listed"]',
+    );
+    // Kill switch: one flat entry per slug.
+    const legacyServices = groupBenefitsByCategory([planA, planB], { variantRows: false })
+      .find((g) => g.category === "surgery")?.services ?? [];
+    check("nested — kill switch collapses to one flat entry", legacyServices.length === 1 && legacyServices[0].multiVariant === false, true);
+
+    // ── S289 Variants covered metric (Andrew #2) ──
+    const vc = (a: object[], b: object[]) =>
+      variantCoveragePerPlan([
+        { benefits: a } as unknown as ComparePlanPayload,
+        { benefits: b } as unknown as ComparePlanPayload,
+      ]);
+    // Umbrella credit: A covers surgery as one blanket row; B itemizes 3.
+    // Universe = umbrella key + 3 itemized = 4 → A 4/4, B 3/4.
+    const umbrella = vc(
+      [bene("surgery", "Surgery", "") as object],
+      [
+        bene("surgery", "Surgery", "", { component: "facility", pos: "independent_facility" }) as object,
+        bene("surgery", "Surgery", "", { component: "facility", pos: "outpatient_facility" }) as object,
+        bene("surgery", "Surgery", "", { component: "professional" }) as object,
+      ],
+    );
+    check("variants metric — blanket coverage credits ALL", JSON.stringify(umbrella[0]), '{"covered":4,"total":4}');
+    check("variants metric — itemized plan counts its own", JSON.stringify(umbrella[1]), '{"covered":3,"total":4}');
+    // Explicit exclusion beats the umbrella.
+    const excluded = vc(
+      [
+        bene("surgery", "Surgery", "") as object,
+        { ...(bene("surgery", "Surgery", "", { component: "facility", pos: "independent_facility" }) as object), covered: false },
+      ],
+      [bene("surgery", "Surgery", "", { component: "facility", pos: "independent_facility" }) as object],
+    );
+    check("variants metric — covered:false subtracts from blanket credit", JSON.stringify(excluded[0]), '{"covered":1,"total":2}');
+    // D1: tier axis excluded — two tier-only rows collapse to ONE variant.
+    const tiers = vc(
+      [
+        bene("generic_rx", "Generic Drugs", "", { pos: "retail_pharmacy", tier: "tier_1" }) as object,
+        bene("generic_rx", "Generic Drugs", "", { pos: "retail_pharmacy", tier: "tier_2" }) as object,
+      ],
+      [bene("generic_rx", "Generic Drugs", "", { pos: "retail_pharmacy", tier: "preferred" }) as object],
+    );
+    check("variants metric — tier axis excluded (D1)", JSON.stringify(tiers[0]), '{"covered":1,"total":1}');
+    check("variants metric — cross-plan tier naming is not a gap", JSON.stringify(tiers[1]), '{"covered":1,"total":1}');
 
     // ── Review F5: representative variant ──
     const repDefault = pickRepresentativeVariant([

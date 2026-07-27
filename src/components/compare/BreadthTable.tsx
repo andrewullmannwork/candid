@@ -8,6 +8,7 @@ import {
   bestNumericIndices,
   categoryCoveragePerPlan,
   distinctCategoriesAcrossCohort,
+  variantCoveragePerPlan,
 } from "./compare-aggregates";
 import { compareGridClass } from "./compare-grid";
 import { getCorroborationCopy } from "./compare-colors";
@@ -46,6 +47,12 @@ export function BreadthTable({ plans }: BreadthTableProps) {
   const bestCoverageIdx = new Set(
     bestNumericIndices(coveragePerPlan, (n) => n, false),
   );
+  // S289 (Andrew) — variants-covered metric (blanket coverage counts all;
+  // explicit exclusions subtract; drug-tier axis excluded).
+  const variantCoverage = variantCoveragePerPlan(plans);
+  const bestVariantIdx = new Set(
+    bestNumericIndices(variantCoverage, (v) => v.covered, false),
+  );
 
   return (
     <ComparisonSection
@@ -77,7 +84,7 @@ export function BreadthTable({ plans }: BreadthTableProps) {
         {/* Row 2: covered services count */}
         <BreadthRow
           label="Services covered"
-          sublabel="Covered = copay or coinsurance disclosed"
+          sublabel="Services covered by plan. May not include all variants."
           gridClass={gridClass}
         >
           {plans.map((plan, idx) => (
@@ -86,6 +93,26 @@ export function BreadthTable({ plans }: BreadthTableProps) {
                 {plan.coveredServiceCount}
               </span>
               {bestCoveredIdx.has(idx) && <BestBadge label="Most breadth" />}
+            </BreadthCell>
+          ))}
+        </BreadthRow>
+
+        {/* Row 3: variants covered — S289 (Andrew). */}
+        <BreadthRow
+          label="Variants covered"
+          sublabel="Service-specific conditions and their coverage."
+          gridClass={gridClass}
+        >
+          {plans.map((plan, idx) => (
+            <BreadthCell key={`${plan.ref.id}-${idx}`} plan={plan} index={idx}>
+              <span className="text-base font-semibold text-slate-900">
+                {variantCoverage[idx].covered}
+                <span className="text-sm font-normal text-slate-400">
+                  {" "}
+                  / {variantCoverage[idx].total}
+                </span>
+              </span>
+              {bestVariantIdx.has(idx) && <BestBadge label="Most" />}
             </BreadthCell>
           ))}
         </BreadthRow>

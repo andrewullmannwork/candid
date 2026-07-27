@@ -11,6 +11,8 @@ import {
   sortCategoryGroups,
   usd,
   winsPerPlanInCategory,
+  type ServiceCoverageStatus,
+  type ServiceEntry,
   type ServiceRowAcrossPlans,
 } from "../compare-aggregates";
 import {
@@ -70,6 +72,7 @@ export function ServiceCategoryAccordionsV2({
           key={group.category}
           label={group.label}
           rows={group.rows}
+          services={group.services}
           plans={plans}
           planTypes={planTypes}
           bases={bases}
@@ -82,9 +85,32 @@ export function ServiceCategoryAccordionsV2({
   );
 }
 
+function StatusChipV2({ status }: { status: ServiceCoverageStatus }) {
+  if (status === "covered") {
+    return (
+      <span className="inline-flex text-[11px] font-medium bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full">
+        Covered
+      </span>
+    );
+  }
+  if (status === "not_covered") {
+    return (
+      <span className="inline-flex text-[11px] font-medium bg-rose-50 text-rose-600 px-2 py-0.5 rounded-full">
+        Not covered
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex text-[11px] font-medium bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">
+      Not listed
+    </span>
+  );
+}
+
 function CategoryAccordionV2({
   label,
   rows,
+  services,
   plans,
   planTypes,
   bases,
@@ -94,6 +120,7 @@ function CategoryAccordionV2({
 }: {
   label: string;
   rows: ServiceRowAcrossPlans[];
+  services: ServiceEntry[];
   plans: ComparePlanPayload[];
   planTypes: Array<string | null>;
   bases: PlanCostBasis[];
@@ -176,45 +203,87 @@ function CategoryAccordionV2({
       className="mt-6"
     >
       <div className="rounded-2xl bg-white ring-1 ring-slate-200 overflow-hidden">
-        {rows.map((row, idx) => {
-          // Tie-aware ranking on the in-network value: copay mode ranks the
-          // cost-share structure (rankValue at the $1k reference); bill mode ranks
-          // the live member share at the entered bill.
-          const ranks = row.perPlan.map((b, i) =>
-            // S161 (#1/#3) — an inferred (estimate) cell never competes for
-            // Best/Priciest; an estimate must not crown a row winner (the
-            // compare_v2 §4.1 verdict-guardrail principle, applied per-row).
-            b && !b.inferred
-              ? rankValue(toRule(b, "inNetwork"), bases[i], { mode, bill, dedMet })
-              : Infinity,
-          );
-          const badges = rankBadges(ranks);
-          return (
-            <div
-              key={row.variantKey}
-              className={cn(
-                "grid divide-y sm:divide-y-0 sm:divide-x divide-slate-100",
-                gridClass,
-                idx > 0 && "border-t border-slate-100",
-              )}
-            >
-              <div className="p-4 flex flex-col justify-center bg-slate-50 sm:bg-transparent">
-                <p className="text-sm font-semibold sm:font-medium text-slate-700">{row.title}</p>
-              </div>
-              {row.perPlan.map((benefit, planIdx) => (
-                <div key={planIdx} className="p-4">
-                  <MobilePlanLabel plan={plans[planIdx]} index={planIdx} />
-                  <ServiceCellV2
-                    benefit={benefit}
-                    planType={planTypes[planIdx]}
-                    basis={bases[planIdx]}
-                    mode={mode}
-                    bill={bill}
-                    dedMet={dedMet}
-                    badge={badges[planIdx]}
-                  />
+        {/* S289 nested rows (Andrew) — parent service rows with variant
+            sub-rows; single-variant services stay flat. */}
+        {services.map((entry, sIdx) => {
+          const renderVariantRow = (row: ServiceRowAcrossPlans, opts: { sub: boolean; topBorder: boolean }) => {
+            // Tie-aware ranking on the in-network value: copay mode ranks the
+            // cost-share structure (rankValue at the $1k reference); bill mode ranks
+            // the live member share at the entered bill.
+            const ranks = row.perPlan.map((b, i) =>
+              // S161 (#1/#3) — an inferred (estimate) cell never competes for
+              // Best/Priciest; an estimate must not crown a row winner (the
+              // compare_v2 §4.1 verdict-guardrail principle, applied per-row).
+              b && !b.inferred
+                ? rankValue(toRule(b, "inNetwork"), bases[i], { mode, bill, dedMet })
+                : Infinity,
+            );
+            const badges = rankBadges(ranks);
+            return (
+              <div
+                key={row.variantKey}
+                className={cn(
+                  "grid divide-y sm:divide-y-0 sm:divide-x divide-slate-100",
+                  gridClass,
+                  opts.topBorder && "border-t border-slate-100",
+                )}
+              >
+                <div
+                  className={cn(
+                    "flex flex-col justify-center bg-slate-50 sm:bg-transparent",
+                    opts.sub ? "py-3.5 pr-4 pl-10" : "p-4",
+                  )}
+                >
+                  <p
+                    className={
+                      opts.sub
+                        ? "text-[13px] text-slate-500"
+                        : "text-sm font-semibold sm:font-medium text-slate-700"
+                    }
+                  >
+                    {opts.sub ? row.subLabel : row.title}
+                  </p>
                 </div>
-              ))}
+                {row.perPlan.map((benefit, planIdx) => (
+                  <div key={planIdx} className="p-4">
+                    <MobilePlanLabel plan={plans[planIdx]} index={planIdx} />
+                    <ServiceCellV2
+                      benefit={benefit}
+                      planType={planTypes[planIdx]}
+                      basis={bases[planIdx]}
+                      mode={mode}
+                      bill={bill}
+                      dedMet={dedMet}
+                      badge={badges[planIdx]}
+                    />
+                  </div>
+                ))}
+              </div>
+            );
+          };
+
+          if (!entry.multiVariant) {
+            return renderVariantRow(entry.variants[0], { sub: false, topBorder: sIdx > 0 });
+          }
+          return (
+            <div key={entry.serviceSlug} className={cn(sIdx > 0 && "border-t border-slate-100")}>
+              <div
+                className={cn(
+                  "grid divide-y sm:divide-y-0 sm:divide-x divide-slate-100 bg-slate-50/60",
+                  gridClass,
+                )}
+              >
+                <div className="p-4 flex flex-col justify-center">
+                  <p className="text-sm font-semibold text-slate-800">{entry.title}</p>
+                </div>
+                {entry.perPlanStatus.map((status, planIdx) => (
+                  <div key={planIdx} className="p-4 flex items-center">
+                    <MobilePlanLabel plan={plans[planIdx]} index={planIdx} />
+                    <StatusChipV2 status={status} />
+                  </div>
+                ))}
+              </div>
+              {entry.variants.map((row) => renderVariantRow(row, { sub: true, topBorder: true }))}
             </div>
           );
         })}
