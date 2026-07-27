@@ -75,7 +75,13 @@ interface Cleanup {
   catalogSlugs: string[];
 }
 
-/** Every synthetic slug the RPC legs promote through canonical_plan_services. */
+/**
+ * Every synthetic slug the RPC legs promote through canonical_plan_services.
+ * MUST be exhaustive: a missing slug now FK-403s the RPC insert (mig 213) and
+ * the meta-carry asserts then fail against an empty entry — while the
+ * "key SKIPPED" asserts pass vacuously (S289 DEV-apply lesson: exactly that
+ * happened with fixture_pt/fixture_xray).
+ */
 const FIXTURE_SLUGS = [
   "fixture_office_visit",
   "fixture_specialist",
@@ -83,6 +89,8 @@ const FIXTURE_SLUGS = [
   "fixture_surgery",
   "fixture_inpatient",
   "fixture_mri",
+  "fixture_pt",
+  "fixture_xray",
 ] as const;
 
 async function setup(cleanup: Cleanup): Promise<{ insurerId: string }> {

@@ -165,10 +165,14 @@ REVOKE EXECUTE ON FUNCTION stamp_cps_concept_id() FROM anon, authenticated;
 --    SELECT service_slug, COUNT(*) FROM canonical_plan_services
 --    WHERE service_slug IN ('telehealth_pcp','telehealth_specialist')
 --    GROUP BY 1;                                                     -- [0 rows]
--- 5) Remapped rows landed at virtual:
---    SELECT service_slug, place_of_service, COUNT(*)
+-- 5) Remapped rows landed at virtual — filter on the remap's updated_at
+--    fingerprint; the absolute @virtual count ALSO includes ~424 pre-existing
+--    regen telehealth rows, so an unfiltered count proves nothing (DEV-apply
+--    lesson, 2026-07-27):
+--    SELECT service_slug, COUNT(*)
 --    FROM canonical_plan_services
 --    WHERE place_of_service = 'virtual'
 --      AND service_slug IN ('pcp_visit','specialist_visit')
---    GROUP BY 1, 2;                                                  -- [7 total]
+--      AND updated_at > now() - interval '1 hour'
+--    GROUP BY 1;                                                     -- [7 total]
 -- =============================================================================
