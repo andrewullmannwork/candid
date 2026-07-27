@@ -98,6 +98,69 @@ export async function GET(req: NextRequest) {
     .order("created_at", { ascending: false })
     .limit(4);
 
+  // ── S288 display overlay (response-only; nothing is written) ──────────────
+  // A link-only catalog plan (search-select / "Change plan") deliberately
+  // carries no cost terms on its user row — readers resolve them through the
+  // canonical link. Mirror those terms (+ headline copays) into THIS response
+  // so profile surfaces (Cost Structure grid) don't dash out. User values
+  // always win; keys fill only when null. canonical_plans keeps LEGACY names
+  // for in-network plan-level terms; only OON columns are out_-prefixed.
+  if (
+    insurancePlan?.canonical_plan_id &&
+    insurancePlan.in_deductible_individual == null &&
+    insurancePlan.in_oop_max_individual == null
+  ) {
+    try {
+      const { data: ct } = await supabase
+        .from("canonical_plans")
+        .select(
+          "deductible_individual, deductible_family, oop_max_individual, oop_max_family, out_deductible_individual, out_deductible_family, out_oop_max_individual, out_oop_max_family",
+        )
+        .eq("id", insurancePlan.canonical_plan_id)
+        .maybeSingle();
+      const { data: svcRows } = await supabase
+        .from("canonical_plan_services")
+        .select("service_slug, in_copay")
+        .eq("canonical_plan_id", insurancePlan.canonical_plan_id)
+        .in("service_slug", ["pcp_visit", "specialist_visit", "emergency_room"]);
+      const copayFor = (slug: string): number | null => {
+        const vals = (svcRows ?? [])
+          .filter((r) => r.service_slug === slug && r.in_copay != null)
+          .map((r) => r.in_copay as number);
+        return vals.length > 0 ? Math.min(...vals) : null;
+      };
+      const t = (ct ?? {}) as Record<string, number | null>;
+      const fill = (obj: Record<string, unknown> | null, key: string, val: unknown) => {
+        if (obj && obj[key] == null && val != null) obj[key] = val;
+      };
+      const planObj = insurancePlan as Record<string, unknown>;
+      fill(planObj, "in_deductible_individual", t.deductible_individual);
+      fill(planObj, "in_deductible_family", t.deductible_family);
+      fill(planObj, "in_oop_max_individual", t.oop_max_individual);
+      fill(planObj, "in_oop_max_family", t.oop_max_family);
+      fill(planObj, "out_deductible_individual", t.out_deductible_individual);
+      fill(planObj, "out_deductible_family", t.out_deductible_family);
+      fill(planObj, "out_oop_max_individual", t.out_oop_max_individual);
+      fill(planObj, "out_oop_max_family", t.out_oop_max_family);
+      const profObj = (profile as Record<string, unknown> | null) ?? null;
+      fill(profObj, "in_deductible_individual", t.deductible_individual);
+      fill(profObj, "in_deductible_family", t.deductible_family);
+      fill(profObj, "in_oop_max_individual", t.oop_max_individual);
+      fill(profObj, "in_oop_max_family", t.oop_max_family);
+      fill(profObj, "out_deductible_individual", t.out_deductible_individual);
+      fill(profObj, "out_deductible_family", t.out_deductible_family);
+      fill(profObj, "out_oop_max_individual", t.out_oop_max_individual);
+      fill(profObj, "out_oop_max_family", t.out_oop_max_family);
+      fill(profObj, "deductible_individual", t.deductible_individual);
+      fill(profObj, "oop_max_individual", t.oop_max_individual);
+      fill(profObj, "copay_primary", copayFor("pcp_visit"));
+      fill(profObj, "copay_specialist", copayFor("specialist_visit"));
+      fill(profObj, "copay_er", copayFor("emergency_room"));
+    } catch {
+      /* display overlay is best-effort */
+    }
+  }
+
   return NextResponse.json({
     profile: profile || null,
     insurancePlan,
@@ -374,7 +437,20 @@ export async function POST(req: NextRequest) {
   }
   if (phone !== undefined) update.phone = phone || null;
   if (matched_plan_id !== undefined) update.matched_plan_id = matched_plan_id || null;
-  if (plan_source !== undefined) update.plan_source = plan_source || null;
+  if (plan_source !== undefined) {
+    update.plan_source = plan_source || null;
+    // S288 provenance guard: a card/manual save must not silently downgrade a
+    // catalog-matched plan's provenance — it flipped the dashboard context line
+    // from "the plan you selected" back to generic plan-type copy. A real
+    // switch (force_plan_switch) still writes whatever the new flow sets.
+    if ((plan_source === "manual" || plan_source === "insurance_card") && !force_plan_switch) {
+      const { data: provCheck } = await userScoped(supabase, user.id)
+        .table("profiles")
+        .select("plan_source")
+        .single();
+      if (provCheck?.plan_source === "catalog_match") delete update.plan_source;
+    }
+  }
   // Address / county fields
   if (address_line1 !== undefined) update.address_line1 = address_line1 || null;
   if (address_line2 !== undefined) update.address_line2 = address_line2 || null;
@@ -534,11 +610,18 @@ export async function POST(req: NextRequest) {
         if (isFormAfterDoc) {
           // Form (card scan or manual) after a doc upload: only update identity fields.
           // Do NOT overwrite cost fields — doc data has cite-grade provenance.
+          // S288: for a CATALOG-MATCHED row the plan identity is server-trusted
+          // canonical data — a card contributes only its card-only facts
+          // (member ID / group #), never insurer/plan-name/type/state. A
+          // divergent card is the Keep/Switch decision, not a silent overwrite.
+          const catalogRow = existingPlan?.source === "catalog_match";
           planUpdate = { user_id: user.id };
-          if (insurer !== undefined) planUpdate.insurer_name = insurer || null;
-          if (plan_name !== undefined) planUpdate.plan_name = plan_name || null;
-          if (plan_type !== undefined) planUpdate.plan_type = plan_type || null;
-          if (state !== undefined) planUpdate.state = state || null;
+          if (!catalogRow) {
+            if (insurer !== undefined) planUpdate.insurer_name = insurer || null;
+            if (plan_name !== undefined) planUpdate.plan_name = plan_name || null;
+            if (plan_type !== undefined) planUpdate.plan_type = plan_type || null;
+            if (state !== undefined) planUpdate.state = state || null;
+          }
           if (group_number !== undefined) planUpdate.group_number = group_number || null;
           if (member_id !== undefined) planUpdate.member_id = member_id || null;
           // Don't overwrite deductibles, OOP, copays, coinsurance from doc-extracted values

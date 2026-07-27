@@ -213,7 +213,15 @@ export async function POST(request: NextRequest) {
           return parts.join(". ") + ".";
         }
 
-        if (coveredServices && coveredServices.length > 0) {
+        // S288 plan-flow unification: a link-only catalog plan (search-select /
+        // "Change plan") has ZERO user coverage rows — its coverage lives
+        // entirely behind canonical_plan_id. The old user-rows-only guard made
+        // analyze skip its own canonical branch and fall through to the static
+        // plan-type catalog ("Set up your profile" on a set-up account). Enter
+        // Priority 0 whenever there are user rows OR a canonical link; every
+        // path inside tolerates an empty user set (the canonical gap-fill then
+        // supplies the full benefit list).
+        if ((coveredServices && coveredServices.length > 0) || userPlan.canonical_plan_id) {
           // S99 B5: pre-resolve each row's slug to its canonical sibling (via
           // service_catalog.concept_id grouping). post-S95 reset, no aliases
           // exist; this is identity. Once admin promotes the first proposed_*
@@ -539,6 +547,27 @@ export async function POST(request: NextRequest) {
             });
           }
 
+          // S288: link-only catalog rows carry no plan-level terms — read them
+          // from the canonical so the /plan + dashboard summary tiles don't
+          // dash out. canonical_plans keeps the LEGACY names for in-network
+          // plan-level terms (deductible_individual / oop_max_individual);
+          // only the OON columns use the out_ prefix (mig 192).
+          let canonTerms: Record<string, number | null> | null = null;
+          if (
+            userPlan.canonical_plan_id &&
+            userPlan.in_deductible_individual == null &&
+            userPlan.in_oop_max_individual == null
+          ) {
+            const { data: ct } = await supabase
+              .from("canonical_plans")
+              .select(
+                "deductible_individual, oop_max_individual, out_deductible_individual, out_oop_max_individual",
+              )
+              .eq("id", userPlan.canonical_plan_id)
+              .maybeSingle();
+            canonTerms = (ct as Record<string, number | null> | null) ?? null;
+          }
+
           return NextResponse.json({
             benefits: allBenefits,
             categoryCounts: {},
@@ -586,10 +615,10 @@ export async function POST(request: NextRequest) {
               const premiumSourceCount =
                 premiumLogicalSource === "canonical_fallback" ? (decoration?.canonicalSourceCount ?? 1) : 1;
               return {
-                inDeductible: maybeDecorate<number | null>(userPlan.in_deductible_individual ?? profile.deductible_individual, getProv(userPlan, "in_deductible_individual"), planSource, 1),
-                outDeductible: maybeDecorate<number | null>(userPlan.out_deductible_individual, getProv(userPlan, "out_deductible_individual"), planSource, 1),
-                inOopMax: maybeDecorate<number | null>(userPlan.in_oop_max_individual ?? profile.oop_max_individual, getProv(userPlan, "in_oop_max_individual"), planSource, 1),
-                outOopMax: maybeDecorate<number | null>(userPlan.out_oop_max_individual, getProv(userPlan, "out_oop_max_individual"), planSource, 1),
+                inDeductible: maybeDecorate<number | null>(userPlan.in_deductible_individual ?? profile.deductible_individual ?? canonTerms?.deductible_individual ?? null, getProv(userPlan, "in_deductible_individual"), planSource, 1),
+                outDeductible: maybeDecorate<number | null>(userPlan.out_deductible_individual ?? canonTerms?.out_deductible_individual ?? null, getProv(userPlan, "out_deductible_individual"), planSource, 1),
+                inOopMax: maybeDecorate<number | null>(userPlan.in_oop_max_individual ?? profile.oop_max_individual ?? canonTerms?.oop_max_individual ?? null, getProv(userPlan, "in_oop_max_individual"), planSource, 1),
+                outOopMax: maybeDecorate<number | null>(userPlan.out_oop_max_individual ?? canonTerms?.out_oop_max_individual ?? null, getProv(userPlan, "out_oop_max_individual"), planSource, 1),
                 planType: maybeDecorate<string | null>(userPlan.plan_type, getProv(userPlan, "plan_type"), planSource, 1),
                 verificationStatus: userPlan.verification_status,
                 premiumMonthly: maybeDecorate<number | null>(premiumMonthly, undefined, premiumLogicalSource, premiumSourceCount),

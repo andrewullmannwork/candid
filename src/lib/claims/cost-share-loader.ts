@@ -50,8 +50,11 @@ export function buildServiceCostShare(coverage: PlanCoverageInput | null): Servi
 
 // ── Plan-level params (insurance_plans) ────────────────────────────────────
 
-/** The 8 plan-level numeric term columns shared by insurance_plans AND
- *  canonical_plans (F.0 aligned names; mig 165 + mig 192 OON identity). */
+/** The 8 plan-level numeric term columns on insurance_plans, mapped to their
+ *  canonical_plans counterparts. NOTE the asymmetry: canonical_plans kept the
+ *  LEGACY names for in-network plan-level terms (deductible_individual etc.);
+ *  only its OON columns carry the out_ prefix (mig 192). Selecting in_* from
+ *  canonical_plans 42703s — which this map exists to prevent. */
 const PLAN_TERM_NUMERIC_COLS = [
   "in_deductible_individual",
   "in_deductible_family",
@@ -62,6 +65,17 @@ const PLAN_TERM_NUMERIC_COLS = [
   "out_oop_max_individual",
   "out_oop_max_family",
 ] as const;
+
+const CANONICAL_TERM_COL: Record<(typeof PLAN_TERM_NUMERIC_COLS)[number], string> = {
+  in_deductible_individual: "deductible_individual",
+  in_deductible_family: "deductible_family",
+  in_oop_max_individual: "oop_max_individual",
+  in_oop_max_family: "oop_max_family",
+  out_deductible_individual: "out_deductible_individual",
+  out_deductible_family: "out_deductible_family",
+  out_oop_max_individual: "out_oop_max_individual",
+  out_oop_max_family: "out_oop_max_family",
+};
 
 export async function loadPlanCostShareParams(
   supabase: SupabaseClient,
@@ -93,16 +107,18 @@ export async function loadPlanCostShareParams(
   const canonicalId = (d.canonical_plan_id as string | null) ?? null;
   if (canonicalId && PLAN_TERM_NUMERIC_COLS.some((k) => d[k] == null)) {
     try {
-      const { data: canon } = await supabase
+      const { data: canon, error: canonErr } = await supabase
         .from("canonical_plans")
-        .select(PLAN_TERM_NUMERIC_COLS.join(", "))
+        .select([...new Set(Object.values(CANONICAL_TERM_COL))].join(", "))
         .eq("id", canonicalId)
         .maybeSingle();
-      if (canon) {
+      if (canonErr) {
+        console.warn("[cost-share-loader] canonical terms fallback failed", canonicalId, canonErr.message);
+      } else if (canon) {
         // Dynamic select string → supabase-js can't type the row; safe by construction.
         const c = canon as unknown as Record<string, unknown>;
         for (const k of PLAN_TERM_NUMERIC_COLS) {
-          if (d[k] == null && c[k] != null) d[k] = c[k];
+          if (d[k] == null && c[CANONICAL_TERM_COL[k]] != null) d[k] = c[CANONICAL_TERM_COL[k]];
         }
       }
     } catch (fallbackErr) {

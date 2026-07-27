@@ -277,6 +277,9 @@ export default function DashboardPage() {
       if (
         ps === "sbc_upload" ||
         ps === "plan_doc_upload" ||
+        // S288: a search-selected named plan is canonical-grade (green tier per
+        // the S269 DataSourceContextLine decision) — not "unverified".
+        ps === "catalog_match" ||
         (vs && vs !== "unverified")
       ) {
         return "verified" as const;

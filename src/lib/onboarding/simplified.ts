@@ -31,7 +31,7 @@ export const OB_COPY = {
   s1Skip: "No card handy? Skip — you can add it anytime",
   s2Title: "Add a plan document or a bill",
   s2Sub: "A plan document (SBC, EOC, booklet) fills in your coverage information like deductibles, OOP max, covered services. A bill or EOB gets audited for overcharges on the spot.",
-  s2Skip: "Nothing handy? Skip — we'll keep a reminder on your dashboard",
+  s2Skip: "Skip — we'll keep a reminder on your dashboard",
   s3Title: "Last thing — 30 seconds about you",
   s3Sub: "Just the things documents can't tell us. Everything else, Candid reads on its own.",
   s3Cta: "Finish — take me to my dashboard",
@@ -285,6 +285,9 @@ export interface OnboardingProfileShape {
   /** S286 additive: newest coverage docs (≤4) + exact total, for the doc-card restore. */
   recentCoverageDocs?: RecentCoverageDoc[];
   coverageDocCount?: number;
+  /** S288: the active plan row — a catalog_match source fills the doc slot
+   *  (search-select IS a substitute for uploading a document). */
+  insurancePlan?: { source?: string | null } | null;
   profile?: {
     member_id?: string | null;
     insurer?: string | null;
@@ -304,7 +307,9 @@ export function slotsFromProfile(p: OnboardingProfileShape): StrengthSlots {
   const prof = p.profile;
   return {
     card: p.hasCard === true || !!prof?.member_id,
-    doc: p.hasPlanOrBill === true,
+    // S288: a search-selected plan (catalog_match) IS the doc slot's substitute
+    // — no more "Your audits can't run yet" after picking a plan from the library.
+    doc: p.hasPlanOrBill === true || p.insurancePlan?.source === "catalog_match",
     household: !!prof?.household,
     zip: obZipOk(prof?.zip_code),
     dob: obDobOk(obDobFromIso(prof?.date_of_birth)),

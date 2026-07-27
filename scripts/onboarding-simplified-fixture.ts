@@ -78,7 +78,7 @@ eq(
   OB_COPY.s2Sub,
   "A plan document (SBC, EOC, booklet) fills in your coverage information like deductibles, OOP max, covered services. A bill or EOB gets audited for overcharges on the spot.",
 );
-eq("copy.s2Skip", OB_COPY.s2Skip, "Nothing handy? Skip — we'll keep a reminder on your dashboard");
+eq("copy.s2Skip", OB_COPY.s2Skip, "Skip — we'll keep a reminder on your dashboard");
 eq("copy.s3Title", OB_COPY.s3Title, "Last thing — 30 seconds about you");
 eq(
   "copy.s3Sub",

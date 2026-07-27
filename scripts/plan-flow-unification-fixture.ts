@@ -61,13 +61,17 @@ function mockSupabase(rows: {
   return { from: (t: string) => chain(t) } as unknown as SupabaseClient;
 }
 
+// REAL canonical_plans column names (legacy in-network names + out_-prefixed
+// OON, mig 192) — the loader must MAP these onto the in_* param shape; keying
+// this mock with in_* names would hide a column-name regression (the exact
+// silent 42703 the S288 E2E surfaced).
 const CANON_TERMS = {
-  in_deductible_individual: 1500,
-  in_deductible_family: 3000,
+  deductible_individual: 1500,
+  deductible_family: 3000,
+  oop_max_individual: 6000,
+  oop_max_family: 12000,
   out_deductible_individual: 4000,
   out_deductible_family: 8000,
-  in_oop_max_individual: 6000,
-  in_oop_max_family: 12000,
   out_oop_max_individual: 15000,
   out_oop_max_family: 30000,
 };
