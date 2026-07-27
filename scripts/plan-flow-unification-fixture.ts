@@ -482,7 +482,7 @@ const CANON_TERMS = {
     check(
       "compare variants — Andrew title scheme (fees + place)",
       facility?.title,
-      "Surgery Facility Fees — independent facility",
+      "Surgery Facility Fees — Independent facility",
     );
     check("compare variants — plan B fills its variant cell", facility?.perPlan[1]?.costInNetworkDescription, "30% coinsurance");
     const professional = rows.find((r) => r.variantKey.includes("|professional|"));
@@ -513,7 +513,7 @@ const CANON_TERMS = {
     check(
       "compare variants — tier is pre-dash, Title Case (bucket, not place)",
       variantQualifiedTitle("Generic Drugs", bene("generic_rx", "Generic Drugs", "", { pos: "retail_pharmacy", tier: "tier_1" }) as unknown as CompareBenefit),
-      "Generic Drugs Tier 1 — retail pharmacy",
+      "Generic Drugs Tier 1 — Retail pharmacy",
     );
     check(
       "compare variants — PCP office casing",
@@ -602,12 +602,12 @@ const CANON_TERMS = {
     check(
       "nested — variant subLabel is qualifier-only",
       nestedServices[0]?.variants.find((v) => v.variantKey.includes("independent_facility"))?.subLabel,
-      "Facility Fees — independent facility",
+      "Facility Fees — Independent facility",
     );
     check(
-      "nested — umbrella variant reads All settings",
+      "nested — umbrella variant reads All locations",
       nestedServices[0]?.variants.find((v) => v.variantKey.includes("|any|global|"))?.subLabel,
-      "All settings",
+      "All locations",
     );
     const loneEntry = lone[0]?.services[0];
     check("nested — single-variant service stays flat", loneEntry?.multiVariant, false);

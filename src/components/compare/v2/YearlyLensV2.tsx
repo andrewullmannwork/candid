@@ -262,7 +262,7 @@ export function YearlyLensV2({
           >
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
           </svg>
-          {showAdjust ? "Hide my care inputs" : "Adjust my care"}
+          {showAdjust ? "Hide my care inputs" : "Personalize cost calculator inputs"}
           {isAdjusted && (
             <span className="px-1.5 py-0.5 rounded-md bg-blue-100 text-blue-700 text-[10px] font-bold uppercase">
               Customized

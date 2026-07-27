@@ -162,7 +162,10 @@ export function variantTitleParts(b: CompareBenefit): { qualifier: string; tail:
         : "";
   const tierLabel = tier === "none" ? "" : titleCaseWords(tier);
   const qualifier = [feeType, tierLabel].filter(Boolean).join(" ");
-  const tail = pos === "any" ? "" : pos === "pcp_office" ? "PCP office" : pos.replace(/_/g, " ");
+  // Andrew S289: the place label leads with a capital ("Independent
+  // facility", "Retail pharmacy") — both after the em-dash and standalone.
+  const rawTail = pos === "any" ? "" : pos === "pcp_office" ? "PCP office" : pos.replace(/_/g, " ");
+  const tail = rawTail ? rawTail.charAt(0).toUpperCase() + rawTail.slice(1) : "";
   return { qualifier, tail };
 }
 
@@ -178,7 +181,9 @@ export function variantQualifiedTitle(base: string, b: CompareBenefit): string {
  */
 export function variantRowLabel(b: CompareBenefit): string {
   const { qualifier, tail } = variantTitleParts(b);
-  if (!qualifier && !tail) return "All settings";
+  // "All locations" (Andrew S289) — matches /plan's cost-matrix vocabulary
+  // for the no-modifier case.
+  if (!qualifier && !tail) return "All locations";
   return `${qualifier}${qualifier && tail ? " — " : ""}${tail}`;
 }
 

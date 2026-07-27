@@ -192,13 +192,16 @@ function CategoryAccordion({
               <div
                 key={row.variantKey}
                 className={cn(
-                  "grid divide-y sm:divide-y-0 sm:divide-x divide-slate-100",
+                  // S289 (Andrew #4) — flat service rows share the parent-row
+                  // treatment (tint + bold label) so every service reads the
+                  // same whether or not it has variants.
+                  "grid divide-y sm:divide-y-0 sm:divide-x divide-slate-100 bg-slate-50/60",
                   gridClass,
                   sIdx > 0 && "border-t border-slate-100",
                 )}
               >
-                <div className="p-4 flex flex-col justify-center bg-slate-50 sm:bg-transparent">
-                  <p className="text-sm font-semibold sm:font-medium text-slate-700">
+                <div className="p-4 flex flex-col justify-center">
+                  <p className="text-sm font-semibold text-slate-800">
                     {row.title}
                   </p>
                 </div>

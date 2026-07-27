@@ -225,20 +225,23 @@ function CategoryAccordionV2({
                 className={cn(
                   "grid divide-y sm:divide-y-0 sm:divide-x divide-slate-100",
                   gridClass,
+                  // S289 (Andrew #4) — flat service rows share the parent-row
+                  // tint + bold label; variant sub-rows stay white.
+                  !opts.sub && "bg-slate-50/60",
                   opts.topBorder && "border-t border-slate-100",
                 )}
               >
                 <div
                   className={cn(
-                    "flex flex-col justify-center bg-slate-50 sm:bg-transparent",
-                    opts.sub ? "py-3.5 pr-4 pl-10" : "p-4",
+                    "flex flex-col justify-center",
+                    opts.sub ? "py-3.5 pr-4 pl-10 bg-slate-50 sm:bg-transparent" : "p-4",
                   )}
                 >
                   <p
                     className={
                       opts.sub
                         ? "text-[13px] text-slate-500"
-                        : "text-sm font-semibold sm:font-medium text-slate-700"
+                        : "text-sm font-semibold text-slate-800"
                     }
                   >
                     {opts.sub ? row.subLabel : row.title}
