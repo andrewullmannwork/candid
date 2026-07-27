@@ -7,6 +7,7 @@ import { decorateFieldFromEntry } from "@/lib/parser/consumer-read";
 import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import { resolveCanonicalSlugs } from "@/lib/parser/canonical-resolution";
 import { loadCatalogIdentity } from "@/lib/plan/catalog-identity";
+import { readUsedBenefits } from "@/lib/plan/benefit-usage";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
@@ -602,6 +603,11 @@ export async function POST(request: NextRequest) {
             totalNotCovered: allBenefits.length - coveredCount,
             profileComplete: true,
             missingFields: [],
+            // S289 — "I use this" ticks live on the active plan row
+            // (metadata.used_benefits, LIVE slugs; see lib/plan/benefit-usage).
+            // Client hydrates from here; POST /api/plan/benefit-usage toggles.
+            // Paths without a plan row omit the field (client defaults to []).
+            usedBenefits: readUsedBenefits(userPlan.metadata),
             dataSource: canonicalGapBenefits.length > 0 ? "user_plan_with_canonical" : "user_plan",
             planName: userPlan.plan_name,
             planYear: userPlan.plan_year || null,

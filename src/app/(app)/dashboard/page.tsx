@@ -80,15 +80,11 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   // Claim pipeline (Surface 1 dash-duo) — same derived counts as /claim.
   const pipeline = useClaimPipeline();
-  const [usedBenefits] = useState<Set<string>>(() => {
-    if (typeof window === "undefined") return new Set();
-    try {
-      const stored = localStorage.getItem("candid_used_benefits");
-      return stored ? new Set(JSON.parse(stored) as string[]) : new Set();
-    } catch {
-      return new Set();
-    }
-  });
+  // S289 — slug-keyed ticks hydrated from the analyze response (server truth
+  // on the active plan row). The old localStorage init read TITLE-keyed
+  // entries written by /plan, so the per-tile used counts below could never
+  // match a tick; server hydration fixes both surfaces at once.
+  const [usedBenefits, setUsedBenefits] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!user) return;
@@ -129,7 +125,9 @@ export default function DashboardPage() {
 
       if (planRes && planRes.ok) {
         try {
-          setPlanResult(await planRes.json());
+          const planData = await planRes.json();
+          setPlanResult(planData);
+          setUsedBenefits(new Set((planData.usedBenefits as string[] | undefined) ?? []));
         } catch {
           // Plan analysis may fail if profile incomplete; non-fatal.
         }

@@ -32,6 +32,11 @@ import {
   CATEGORY_DISPLAY_ORDER,
   sortCategoryGroups,
 } from "../src/components/compare/compare-aggregates";
+import {
+  applyUsedBenefitsToggle,
+  readUsedBenefits,
+  USED_BENEFITS_CAP,
+} from "../src/lib/plan/benefit-usage";
 
 let pass = 0;
 let fail = 0;
@@ -270,6 +275,37 @@ const CANON_TERMS = {
     check("compare order — rx labeled Prescriptions", sorted.find((g) => g.category === "rx")?.label, "Prescriptions");
     check("compare order — dme labeled Equipment", sorted.find((g) => g.category === "dme")?.label, "Equipment & supplies");
     check("compare order — other sorts LAST", sorted[sorted.length - 1].category, "other");
+  }
+
+  // ── 6. S289 benefit-usage persistence helpers ───────────────────────────
+  {
+    check("usage read — null metadata", readUsedBenefits(null).length, 0);
+    check("usage read — no key", readUsedBenefits({ other: 1 }).length, 0);
+    check("usage read — garbage value", readUsedBenefits({ used_benefits: "nope" }).length, 0);
+    const mixed = readUsedBenefits({ used_benefits: ["b", "a", 3, null, "b", ""] });
+    check("usage read — filters + dedupes + sorts", JSON.stringify(mixed), '["a","b"]');
+
+    const added = applyUsedBenefitsToggle(null, { add: ["pcp_visit"] });
+    check("usage toggle — add to empty", JSON.stringify(added), '["pcp_visit"]');
+    const dup = applyUsedBenefitsToggle({ used_benefits: ["pcp_visit"] }, { add: ["pcp_visit"] });
+    check("usage toggle — add idempotent", dup.length, 1);
+    const removed = applyUsedBenefitsToggle(
+      { used_benefits: ["pcp_visit", "generic_rx", "surgery"] },
+      { remove: ["generic_rx"] },
+    );
+    check("usage toggle — remove keeps others", JSON.stringify(removed), '["pcp_visit","surgery"]');
+    // Group-off removes every variant form (raw + live) in one call.
+    const bothForms = applyUsedBenefitsToggle(
+      { used_benefits: ["telehealth_pcp", "pcp_visit", "generic_rx"] },
+      { remove: ["telehealth_pcp", "pcp_visit"] },
+    );
+    check("usage toggle — removes raw+live forms", JSON.stringify(bothForms), '["generic_rx"]');
+    const capped = applyUsedBenefitsToggle(
+      { used_benefits: Array.from({ length: USED_BENEFITS_CAP + 20 }, (_, i) => `slug_${String(i).padStart(4, "0")}`) },
+      { add: ["aaa_first"] },
+    );
+    check("usage toggle — capped", capped.length, USED_BENEFITS_CAP);
+    check("usage toggle — cap keeps sorted head", capped[0], "aaa_first");
   }
 
   console.log(`\n${pass}/${pass + fail} passed`);

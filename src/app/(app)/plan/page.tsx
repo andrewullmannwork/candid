@@ -102,6 +102,9 @@ interface AnalyzeResponse extends PlanAnalysisResult {
   planType?: string;
   // S202 §9: present only when eoc_reader_resolution_v1 is ON (plan-wide + by-location PA + About).
   eocReader?: EocReaderSurfaces;
+  // S289: "I use this" ticks (LIVE service slugs) from the active plan row's
+  // metadata; present only on the user_plan/user_plan_with_canonical paths.
+  usedBenefits?: string[];
   planSummary?: {
     inDeductible?: MaybeDecorated<number | null>;
     outDeductible?: MaybeDecorated<number | null>;
@@ -467,13 +470,14 @@ export default function CandidPlanPage() {
     if (hash.startsWith("category-")) return hash.slice("category-".length);
     return null;
   });
-  const [usedBenefits, setUsedBenefits] = useState<Set<string>>(() => {
-    if (typeof window === "undefined") return new Set();
-    try {
-      const stored = localStorage.getItem("candid_used_benefits");
-      return stored ? new Set(JSON.parse(stored)) : new Set();
-    } catch { return new Set(); }
-  });
+  // S289 — "I use this" ticks are account-level, keyed by SERVICE SLUG, and
+  // persisted on the active plan row (metadata.used_benefits) via
+  // POST /api/plan/benefit-usage. Hydrated from the analyze response below.
+  // (Replaced the localStorage set: browser-local, TITLE-keyed — every rename
+  // orphaned ticks, and /dashboard's slug-keyed tile counter could never see
+  // them.) Accounts with no plan row (static_catalog path) keep ticks
+  // session-local — the POST 404s and we keep the optimistic state.
+  const [usedBenefits, setUsedBenefits] = useState<Set<string>>(new Set());
 
   // Feature flags
   const [correctionsEnabled, setCorrectionsEnabled] = useState(false);
@@ -554,14 +558,48 @@ export default function CandidPlanPage() {
     setCorrectionSubmitting(false);
   }
 
-  function toggleBenefit(id: string) {
+  /**
+   * S289 — optimistic slug-keyed toggle, persisted server-side. A group's
+   * checkbox covers every POS/slug variant sharing its display title:
+   * ticking ON stores the primary slug; ticking OFF removes ALL variant
+   * slugs (so a stale sibling tick can't keep the row checked).
+   */
+  function toggleBenefit(primarySlug: string, variantSlugs: string[]) {
+    const wasUsed = variantSlugs.some((s) => usedBenefits.has(s));
+    const snapshot = new Set(usedBenefits);
     setUsedBenefits((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      localStorage.setItem("candid_used_benefits", JSON.stringify([...next]));
+      if (wasUsed) for (const s of variantSlugs) next.delete(s);
+      else next.add(primarySlug);
       return next;
     });
+    void (async () => {
+      try {
+        const idToken = await user!.firebaseUser.getIdToken();
+        const res = await fetch("/api/plan/benefit-usage", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify(
+            wasUsed ? { remove: variantSlugs } : { add: [primarySlug] },
+          ),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setUsedBenefits(new Set((data.usedBenefits as string[]) ?? []));
+        } else if (res.status !== 404) {
+          // Real failure → revert to truth. 404 = no plan row to persist
+          // against (static_catalog cohort) → keep the session-local tick.
+          setUsedBenefits(snapshot);
+          console.error("[benefit-usage] save failed:", res.status);
+        }
+      } catch (err) {
+        setUsedBenefits(snapshot);
+        console.error("[benefit-usage] save failed:", err);
+      }
+    })();
   }
 
   // S71 follow-up (Session 73) — REMOVED in-memory cache. The previous
@@ -595,6 +633,7 @@ export default function CandidPlanPage() {
 
         const data: AnalyzeResponse = await res.json();
         setResult(data);
+        setUsedBenefits(new Set(data.usedBenefits ?? []));
 
         // Scroll category section into view when arriving from /dashboard tile
         // (B3.1) — hash format `category-<categoryKey>`. Defers one frame so
@@ -751,12 +790,20 @@ export default function CandidPlanPage() {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const coveredBenefits = result.benefits.filter((b) => (b as any).covered !== false);
-  // B3.2 — totalUsed counts distinct benefit-titles the user has checked off
-  // (not POS-variant rows or distinct slugs). Matches the title-keyed toggle
-  // semantics used by the per-group parent rows below.
-  const distinctCoveredTitles = new Set(coveredBenefits.map((b) => b.benefit.title));
-  const totalUsed = Array.from(distinctCoveredTitles).filter((title) => usedBenefits.has(title)).length;
-  const totalCoveredBenefitIds = distinctCoveredTitles.size;
+  // B3.2 — totalUsed counts distinct benefit-TITLES checked off (one checkbox
+  // per title-group below, not per POS-variant row). S289: tick identity is
+  // the benefit SLUG (account-level persistence; see toggleBenefit) — a title
+  // counts as used when ANY of its benefits' slugs is ticked.
+  const slugsByTitle = new Map<string, string[]>();
+  for (const b of coveredBenefits) {
+    const list = slugsByTitle.get(b.benefit.title) ?? [];
+    list.push(b.benefit.id);
+    slugsByTitle.set(b.benefit.title, list);
+  }
+  const totalUsed = Array.from(slugsByTitle.values()).filter((slugs) =>
+    slugs.some((s) => usedBenefits.has(s)),
+  ).length;
+  const totalCoveredBenefitIds = slugsByTitle.size;
 
   // B3.2 — HSA-eligible benefit count drives banner copy + visibility gate.
   const hsaEligibleCount = result.benefits.filter((b) => b.benefit.hsaFsaEligible).length;
@@ -949,7 +996,9 @@ export default function CandidPlanPage() {
           // Counts in benefit-id terms (one count per benefit-type, not per
           // POS-variant row). Matches user mental model "I used N of M benefit
           // types" and the per-benefit-id toggle/expand semantics below.
-          const usedInCategory = groups.filter((g) => usedBenefits.has(g.groupKey)).length;
+          const usedInCategory = groups.filter((g) =>
+            g.visibleVariants.some((v) => usedBenefits.has(v.benefit.id)),
+          ).length;
           const totalInCategory = groups.length;
           const verifiedInCategory = flagOff
             ? undefined
@@ -981,7 +1030,7 @@ export default function CandidPlanPage() {
               {groups.map((group) => {
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   const primary = group.visibleVariants[0] as any;
-                  const isUsed = usedBenefits.has(group.groupKey);
+                  const isUsed = group.visibleVariants.some((v) => usedBenefits.has(v.benefit.id));
                   const isExpanded = expandedBenefit === group.groupKey;
                   const isMultiVariant = group.visibleVariants.length > 1;
                   // Worst-signal variant's display drives SourceQuote /
@@ -999,7 +1048,12 @@ export default function CandidPlanPage() {
                             benefit-id post-B3.2 so the shared toggle no longer
                             looks like duplicate-row sync). */}
                         <button
-                          onClick={() => toggleBenefit(group.groupKey)}
+                          onClick={() =>
+                            toggleBenefit(
+                              group.primarySlug,
+                              group.visibleVariants.map((v) => v.benefit.id),
+                            )
+                          }
                           className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-all ${
                             isUsed ? "bg-green-500 border-green-500" : "border-gray-300 hover:border-blue-400"
                           }`}
