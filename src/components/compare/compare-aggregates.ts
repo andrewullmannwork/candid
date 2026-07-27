@@ -100,6 +100,13 @@ export interface ServiceRowAcrossPlans {
    */
   subLabel: string;
   perPlan: Array<CompareBenefit | null>;
+  /**
+   * S289 cascade (Andrew) — set on the UMBRELLA row only: a plan with no
+   * umbrella but WITH location-specific rows for this service renders
+   * "Varies by location" here instead of "Not listed yet" (its data sits in
+   * the rows directly below). Absent/null → the normal empty state.
+   */
+  perPlanNote?: Array<"varies_by_location" | null>;
 }
 
 /** Per-plan service-level coverage status (parent-row chips). */
@@ -314,6 +321,38 @@ export function groupBenefitsByCategory(
         }
         return sawListed ? ("not_covered" as const) : ("not_listed" as const);
       });
+
+      // S289 cascade (Andrew, approved): a plan's umbrella ("All locations")
+      // benefit ENTAILS the same terms at every location, so it fills that
+      // plan's EMPTY location cells (rows the plan explicitly lists —
+      // including covered:false exclusions — always win). A "Not covered"
+      // umbrella cascades as Not covered. Plans with no umbrella but with
+      // location rows get "Varies by location" on the umbrella row instead
+      // of "Not listed yet". Variant-rows mode only.
+      if (variantRows && entry.multiVariant) {
+        const umbrellaRow = entry.variants.find(
+          (v) => v.variantKey === `${entry.serviceSlug}|any|global|none`,
+        );
+        if (umbrellaRow) {
+          for (let i = 0; i < planCount; i++) {
+            const ub = umbrellaRow.perPlan[i];
+            if (ub) {
+              for (const v of entry.variants) {
+                if (v === umbrellaRow || v.perPlan[i] != null) continue;
+                v.perPlan[i] = { ...ub, cascadedFromUmbrella: true };
+              }
+            } else {
+              const hasLocationRows = entry.variants.some(
+                (v) => v !== umbrellaRow && v.perPlan[i] != null,
+              );
+              if (hasLocationRows) {
+                umbrellaRow.perPlanNote ??= new Array(planCount).fill(null);
+                umbrellaRow.perPlanNote[i] = "varies_by_location";
+              }
+            }
+          }
+        }
+      }
     }
     groups.push({ category, rows: flatRows, services: Array.from(entryBySlug.values()) });
   }

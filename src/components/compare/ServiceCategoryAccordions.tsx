@@ -208,7 +208,7 @@ function CategoryAccordion({
                 {row.perPlan.map((benefit, planIdx) => (
                   <div key={planIdx} className="p-4">
                     <MobilePlanLabel plan={plans[planIdx]} index={planIdx} />
-                    <ServiceCell benefit={benefit} isBestInn={bestIdx.has(planIdx)} />
+                    <ServiceCell benefit={benefit} isBestInn={bestIdx.has(planIdx)} note={row.perPlanNote?.[planIdx] ?? null} />
                   </div>
                 ))}
               </div>
@@ -250,7 +250,7 @@ function CategoryAccordion({
                     {row.perPlan.map((benefit, planIdx) => (
                       <div key={planIdx} className="p-4">
                         <MobilePlanLabel plan={plans[planIdx]} index={planIdx} />
-                        <ServiceCell benefit={benefit} isBestInn={bestIdx.has(planIdx)} />
+                        <ServiceCell benefit={benefit} isBestInn={bestIdx.has(planIdx)} note={row.perPlanNote?.[planIdx] ?? null} />
                       </div>
                     ))}
                   </div>

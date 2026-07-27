@@ -665,6 +665,66 @@ const CANON_TERMS = {
     check("variants metric — tier axis excluded (D1)", JSON.stringify(tiers[0]), '{"covered":1,"total":1}');
     check("variants metric — cross-plan tier naming is not a gap", JSON.stringify(tiers[1]), '{"covered":1,"total":1}');
 
+    // ── S289 umbrella cascade (Andrew, approved) ──
+    {
+      const umbrellaA = { ...(bene("er_visit", "Emergency Room Visit", "20% coinsurance") as object), category: "emergency" };
+      const locB = { ...(bene("er_visit", "Emergency Room Visit", "$500 copay", { pos: "emergency_room" }) as object), category: "emergency" };
+      const csGroups = groupBenefitsByCategory([
+        { benefits: [umbrellaA] } as unknown as ComparePlanPayload,
+        { benefits: [locB] } as unknown as ComparePlanPayload,
+      ]);
+      const csRows = csGroups.find((g) => g.category === "emergency")?.rows ?? [];
+      const locRow = csRows.find((r) => r.variantKey.includes("emergency_room"));
+      const umbRow = csRows.find((r) => r.variantKey.includes("|any|global|"));
+      check("cascade — umbrella fills the plan's empty location cell", locRow?.perPlan[0]?.costInNetworkDescription, "20% coinsurance");
+      check("cascade — filled cell carries the provenance flag", locRow?.perPlan[0]?.cascadedFromUmbrella, true);
+      check("cascade — listed cell NOT overwritten", locRow?.perPlan[1]?.costInNetworkDescription, "$500 copay");
+      check("cascade — umbrella-less plan reads Varies by location", umbRow?.perPlanNote?.[1], "varies_by_location");
+      check("cascade — umbrella-holding plan gets NO note", umbRow?.perPlanNote?.[0] ?? null, null);
+
+      // Explicit exclusion beats the cascade.
+      const exclA = { ...(bene("er_visit", "Emergency Room Visit", "Not covered", { pos: "emergency_room" }) as object), covered: false, category: "emergency" };
+      const exRows = groupBenefitsByCategory([
+        { benefits: [umbrellaA, exclA] } as unknown as ComparePlanPayload,
+        { benefits: [locB] } as unknown as ComparePlanPayload,
+      ]).find((g) => g.category === "emergency")?.rows ?? [];
+      const exLoc = exRows.find((r) => r.variantKey.includes("emergency_room"));
+      check("cascade — explicit covered:false survives", exLoc?.perPlan[0]?.covered, false);
+      check("cascade — exclusion cell is NOT flagged cascaded", exLoc?.perPlan[0]?.cascadedFromUmbrella ?? false, false);
+
+      // A Not-covered umbrella cascades as Not covered.
+      const ncUmbrella = { ...(bene("er_visit", "Emergency Room Visit", "Not covered") as object), covered: false, category: "emergency" };
+      const ncRows = groupBenefitsByCategory([
+        { benefits: [ncUmbrella] } as unknown as ComparePlanPayload,
+        { benefits: [locB] } as unknown as ComparePlanPayload,
+      ]).find((g) => g.category === "emergency")?.rows ?? [];
+      const ncLoc = ncRows.find((r) => r.variantKey.includes("emergency_room"));
+      check("cascade — Not-covered umbrella cascades", ncLoc?.perPlan[0]?.covered, false);
+      check("cascade — Not-covered cascade is flagged", ncLoc?.perPlan[0]?.cascadedFromUmbrella, true);
+
+      // Plan with NEITHER umbrella nor locations: normal empty state, no note.
+      const absRows = groupBenefitsByCategory([
+        { benefits: [umbrellaA, locB] } as unknown as ComparePlanPayload,
+        { benefits: [] } as unknown as ComparePlanPayload,
+      ]).find((g) => g.category === "emergency")?.rows ?? [];
+      const absUmb = absRows.find((r) => r.variantKey.includes("|any|global|"));
+      check("cascade — absent plan keeps the plain empty state", absUmb?.perPlanNote?.[1] ?? null, null);
+
+      // Kill switch: no cascade artifacts in collapsed mode.
+      const ksRows = groupBenefitsByCategory(
+        [
+          { benefits: [umbrellaA] } as unknown as ComparePlanPayload,
+          { benefits: [locB] } as unknown as ComparePlanPayload,
+        ],
+        { variantRows: false },
+      ).find((g) => g.category === "emergency")?.rows ?? [];
+      check(
+        "cascade — kill switch mode has no cascaded cells",
+        ksRows.every((r) => r.perPlan.every((b) => !b?.cascadedFromUmbrella)),
+        true,
+      );
+    }
+
     // ── Services covered is MACRO (Andrew): distinct services, not variants ──
     check(
       "services covered — 3 surgery variants + pcp = 2 services (was 4)",

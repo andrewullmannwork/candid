@@ -44,6 +44,9 @@ interface ServiceCellV2Props {
   dedMet: boolean;
   /** Tie-aware verdict on the in-network value; null = no badge. */
   badge?: Badge;
+  /** S289 cascade — umbrella-row cell for a plan whose data sits in the
+   *  location rows below ("Varies by location" instead of "Not listed yet"). */
+  note?: "varies_by_location" | null;
 }
 
 export function ServiceCellV2({
@@ -54,8 +57,12 @@ export function ServiceCellV2({
   bill,
   dedMet,
   badge = null,
+  note = null,
 }: ServiceCellV2Props) {
   if (!benefit) {
+    if (note === "varies_by_location") {
+      return <div className="py-1 text-xs text-slate-500 italic">Varies by location</div>;
+    }
     return (
       <div className="py-1">
         <EmptyState kind="unk" />
@@ -92,6 +99,9 @@ export function ServiceCellV2({
         dedMet={dedMet}
         copayDescription={benefit.costOutOfNetworkDescription}
       />
+      {benefit.cascadedFromUmbrella && (
+        <div className="col-span-2 text-[10px] text-slate-400">All locations</div>
+      )}
     </div>
   );
 }

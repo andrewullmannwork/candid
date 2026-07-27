@@ -38,10 +38,16 @@ import { BestBadge } from "./BestBadge";
 interface ServiceCellProps {
   benefit: CompareBenefit | null;
   isBestInn?: boolean;
+  /** S289 cascade — umbrella-row cell for a plan whose data sits in the
+   *  location rows below ("Varies by location" instead of the em dash). */
+  note?: "varies_by_location" | null;
 }
 
-export function ServiceCell({ benefit, isBestInn = false }: ServiceCellProps) {
+export function ServiceCell({ benefit, isBestInn = false, note = null }: ServiceCellProps) {
   if (!benefit) {
+    if (note === "varies_by_location") {
+      return <div className="text-xs text-slate-500 italic text-center py-1">Varies by location</div>;
+    }
     return <div className="text-xs text-slate-400 text-center py-1">—</div>;
   }
   return (
@@ -56,6 +62,9 @@ export function ServiceCell({ benefit, isBestInn = false }: ServiceCellProps) {
         label="OON"
         description={benefit.costOutOfNetworkDescription}
       />
+      {benefit.cascadedFromUmbrella && (
+        <div className="text-[10px] text-slate-400">All locations</div>
+      )}
     </div>
   );
 }

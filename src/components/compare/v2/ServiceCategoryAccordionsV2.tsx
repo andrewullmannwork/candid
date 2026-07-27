@@ -258,6 +258,7 @@ function CategoryAccordionV2({
                       bill={bill}
                       dedMet={dedMet}
                       badge={badges[planIdx]}
+                      note={row.perPlanNote?.[planIdx] ?? null}
                     />
                   </div>
                 ))}

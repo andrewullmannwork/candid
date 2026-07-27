@@ -74,6 +74,15 @@ export interface CompareBenefit {
   };
   covered: boolean | null;
   /**
+   * S289 cascade (Andrew) — present ONLY on a cell synthesized from the same
+   * plan's umbrella ("All locations") benefit of the same service. A
+   * DERIVATION, not an estimate: "all locations: 20%" entails 20% at each
+   * location, so cascaded cells display as real values and compete in row
+   * rankings; the cell renders a muted "All locations" tag for provenance.
+   * Never persisted; display-layer only.
+   */
+  cascadedFromUmbrella?: boolean;
+  /**
    * S161 (#1/#3) — present ONLY on a synthesized gap-fill benefit: this plan has
    * no enumerated row for the service, but coverage was inferred from a
    * same-category covered sibling (`preventive_care` → `annual_physical`) or the
