@@ -188,7 +188,7 @@ function CategoryAccordionV2({
           const badges = rankBadges(ranks);
           return (
             <div
-              key={row.serviceSlug}
+              key={row.variantKey}
               className={cn(
                 "grid divide-y sm:divide-y-0 sm:divide-x divide-slate-100",
                 gridClass,

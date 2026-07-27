@@ -81,6 +81,8 @@ export function distinctCategoriesAcrossCohort(plans: ComparePlanPayload[]): num
 
 export interface ServiceRowAcrossPlans {
   serviceSlug: string;
+  /** S289 Phase B — unique row identity: slug + Pattern-S variant modifiers. */
+  variantKey: string;
   title: string;
   perPlan: Array<CompareBenefit | null>;
 }
@@ -91,45 +93,83 @@ export interface CategoryGroup {
 }
 
 /**
- * Group benefits across plans by category. For each category, list services
- * (by slug) and per-service the per-plan benefit (or null when missing).
- * Categories with no eligible services are dropped.
+ * S289 Phase B — human label for a variant's Pattern-S modifiers, shown only
+ * when a slug has >1 variant in the cohort ("Surgery — facility" vs a lone
+ * "Surgery"). Exported for the fixture.
+ */
+export function variantLabel(b: CompareBenefit): string {
+  const parts: string[] = [];
+  const pos = b.placeOfService ?? "any";
+  const component = b.component ?? "global";
+  const tier = b.planTierLabel ?? "none";
+  if (pos !== "any") parts.push(pos.replace(/_/g, " "));
+  if (component !== "global") parts.push(component.replace(/_/g, " "));
+  if (tier !== "none") parts.push(tier.replace(/_/g, " "));
+  return parts.join(" · ");
+}
+
+function variantKeyOf(b: CompareBenefit): string {
+  return `${b.serviceSlug}|${b.placeOfService ?? "any"}|${b.component ?? "global"}|${b.planTierLabel ?? "none"}`;
+}
+
+/**
+ * Group benefits across plans by category. One row PER VARIANT
+ * (slug + place_of_service + component + plan_tier_label), each holding the
+ * per-plan benefit (or null when a plan lacks that variant — rendered as an
+ * empty cell, compare's native missing-service treatment). Categories with no
+ * eligible services are dropped.
  *
- * Backend bundled in this PR enriches canonical-resolver benefits with
- * service_catalog.category. Pre-fix canonical benefits hardcoded category="other";
- * post-fix categories map to the same vocabulary user-plan resolves use.
+ * S289 Phase B: rows were previously keyed per SLUG with
+ * `perPlan[planIdx] = benefit` per variant — the LAST variant won, and the
+ * feeding queries had no ORDER BY, so WHICH cost a multi-variant service
+ * displayed was Postgres heap order: nondeterministic. Now every variant is a
+ * first-class row; when a slug has multiple variants in the cohort, titles
+ * carry the modifier qualifier ("Surgery — facility").
  */
 export function groupBenefitsByCategory(
   plans: ComparePlanPayload[],
 ): CategoryGroup[] {
   const byCategory = new Map<
     string,
-    Map<string, { title: string; perPlan: Array<CompareBenefit | null> }>
+    Map<string, { serviceSlug: string; title: string; label: string; perPlan: Array<CompareBenefit | null> }>
   >();
+  const variantsPerSlug = new Map<string, Set<string>>();
   for (let planIdx = 0; planIdx < plans.length; planIdx++) {
     for (const benefit of plans[planIdx].benefits) {
       const category = benefit.category || "other";
       const slug = benefit.serviceSlug;
       if (!slug) continue;
+      const key = variantKeyOf(benefit);
+      (variantsPerSlug.get(slug) ?? variantsPerSlug.set(slug, new Set()).get(slug)!).add(key);
       if (!byCategory.has(category)) byCategory.set(category, new Map());
-      const slugMap = byCategory.get(category)!;
-      if (!slugMap.has(slug)) {
-        slugMap.set(slug, {
+      const rowMap = byCategory.get(category)!;
+      if (!rowMap.has(key)) {
+        rowMap.set(key, {
+          serviceSlug: slug,
           title: benefit.title,
+          label: variantLabel(benefit),
           perPlan: new Array(plans.length).fill(null),
         });
       }
-      slugMap.get(slug)!.perPlan[planIdx] = benefit;
+      rowMap.get(key)!.perPlan[planIdx] = benefit;
     }
   }
 
   const groups: CategoryGroup[] = [];
-  for (const [category, slugMap] of byCategory) {
+  for (const [category, rowMap] of byCategory) {
     const rows: ServiceRowAcrossPlans[] = [];
-    for (const [serviceSlug, { title, perPlan }] of slugMap) {
-      rows.push({ serviceSlug, title, perPlan });
+    for (const [variantKey, { serviceSlug, title, label, perPlan }] of rowMap) {
+      const multiVariant = (variantsPerSlug.get(serviceSlug)?.size ?? 1) > 1;
+      rows.push({
+        serviceSlug,
+        variantKey,
+        title: multiVariant && label ? `${title} — ${label}` : title,
+        perPlan,
+      });
     }
-    rows.sort((a, b) => a.title.localeCompare(b.title));
+    rows.sort(
+      (a, b) => a.title.localeCompare(b.title) || a.variantKey.localeCompare(b.variantKey),
+    );
     groups.push({ category, rows });
   }
   return groups;

@@ -16,7 +16,7 @@ import { decorateFieldFromEntry } from "@/lib/parser/consumer-read";
 import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import type { DecorationContext } from "@/lib/plan/analyze-decoration";
 import type { BestForTag } from "@/lib/plan/best-for";
-import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
+import { formatInNetworkCost, formatOutOfNetworkCost } from "@/lib/plan/cost-share-format";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import {
   resolveSecondaryCoverage,
@@ -38,6 +38,16 @@ export interface CompareBenefit {
   serviceSlug: string;
   category: string;
   title: string;
+  /**
+   * S289 Phase B — Pattern-S variant modifiers (defaults any/global/none).
+   * The aggregates layer keys rows on (slug + these three) so multi-variant
+   * services render one row PER VARIANT; before, a per-slug map made the
+   * LAST variant win — nondeterministically, since the feeding queries had
+   * no ORDER BY. Optional: synthesized benefits (backstop) omit them.
+   */
+  placeOfService?: string | null;
+  component?: string | null;
+  planTierLabel?: string | null;
   /** Cost summary string for display ("$30 copay" etc.). */
   costInNetworkDescription: string;
   costOutOfNetworkDescription: string;
@@ -180,54 +190,26 @@ function maybeDecorate<T>(
   });
 }
 
-function describeCost(opts: {
-  copay: number | null;
-  coinsurance: number | null;
-  deductibleApplies: boolean | null;
-  description: string | null;
-  covered: boolean | null;
-}): string {
-  if (opts.covered === false) return "Not covered";
-  if (opts.description && opts.description.trim().length > 0) {
-    return opts.description.trim();
-  }
-  const parts: string[] = [];
-  if (opts.copay != null) parts.push(`$${opts.copay} copay`);
-  if (opts.coinsurance != null && opts.coinsurance > 0) {
-    parts.push(`${normalizeCoinsurancePct(opts.coinsurance)}% coinsurance`);
-  }
-  if (opts.deductibleApplies) parts.push("after deductible");
-  if (parts.length === 0 && opts.copay === 0 && opts.coinsurance === 0) {
-    return "No charge";
-  }
-  if (parts.length === 0) return "Covered";
-  return parts.join(", ").replace(/^./, (c) => c.toUpperCase());
+// S289 Phase B — cost phrasing now comes from the shared, fixture-asserted
+// module (src/lib/plan/cost-share-format.ts), the same engine /plan's analyze
+// route uses. The former local describeCost/describeOonCost twins are gone:
+// duplicated phrasing engines are the bug-class that produced the leg-③
+// blank-cells defect. Call-site semantics preserved: covered:false →
+// "Not covered"; extracted prose wins; OON's final fallback stays "—" here
+// (compare cells render the string raw, unlike /plan which draws its own
+// em-dash for "").
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function compareInCost(s: any): string {
+  if (s.covered === false) return "Not covered";
+  const prose = typeof s.in_cost_description === "string" ? s.in_cost_description.trim() : "";
+  return prose || formatInNetworkCost(s);
 }
 
-function describeOonCost(opts: {
-  copay: number | null;
-  coinsurance: number | null;
-  deductibleApplies: boolean | null;
-  description: string | null;
-  covered: boolean | null;
-  planType: string | null;
-}): string {
-  if (opts.covered === false) return "Not covered";
-  if (opts.description && opts.description.trim().length > 0) {
-    return opts.description.trim();
-  }
-  const parts: string[] = [];
-  if (opts.copay != null) parts.push(`$${opts.copay} copay`);
-  if (opts.coinsurance != null && opts.coinsurance > 0) {
-    parts.push(`${normalizeCoinsurancePct(opts.coinsurance)}% coinsurance`);
-  }
-  if (opts.deductibleApplies) parts.push("after deductible");
-  if (parts.length > 0) return parts.join(", ").replace(/^./, (c) => c.toUpperCase());
-  if (opts.copay === 0 && opts.coinsurance === 0) return "No charge";
-  // HMO/EPO typically don't cover OON.
-  const pt = (opts.planType || "").toUpperCase();
-  if (pt === "HMO" || pt === "EPO") return "Not covered";
-  return "—";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function compareOonCost(s: any, planType: string | null): string {
+  if (s.covered === false) return "Not covered";
+  return formatOutOfNetworkCost(s, planType) || "—";
 }
 
 function titleCase(slug: string | null | undefined): string {
@@ -274,7 +256,12 @@ export async function resolveCanonicalPlan(opts: {
   const { data: services } = await supabase
     .from("canonical_plan_services")
     .select("*")
-    .eq("canonical_plan_id", canonicalPlanId);
+    .eq("canonical_plan_id", canonicalPlanId)
+    // S289 Phase B — deterministic row order. Without it, which variant of a
+    // multi-variant slug displayed was Postgres heap order (could change
+    // after a VACUUM). The aggregates layer also sorts; this makes the raw
+    // payload stable too.
+    .order("id");
 
   // B3.3 — enrich each service with category from service_catalog.
   // canonical_plan_services has service_slug TEXT (no inline-join FK until
@@ -303,22 +290,19 @@ export async function resolveCanonicalPlan(opts: {
           ? { source: "synonym_cache" as const, matchedSlug: slug }
           : null,
         category: catalogIdentity.get(slug)?.category ?? "other",
-        title: titleCase(slug),
-        costInNetworkDescription: describeCost({
-          copay: s.in_copay ?? null,
-          coinsurance: s.in_coinsurance ?? null,
-          deductibleApplies: s.in_deductible_applies ?? null,
-          description: null,
-          covered: s.covered ?? null,
-        }),
-        costOutOfNetworkDescription: describeOonCost({
-          copay: s.out_copay ?? null,
-          coinsurance: s.out_coinsurance ?? null,
-          deductibleApplies: s.out_deductible_applies ?? null,
-          description: null,
-          covered: s.covered ?? null,
-          planType: plan.plan_type ?? null,
-        }),
+        // S289 Phase B — display name from the live catalog row (parity with
+        // /plan and with this file's own user-plan path below); the slug
+        // prettify made the SAME plan read "Pcp Visit" here and "Primary Care
+        // Visit" on /plan.
+        title: catalogIdentity.get(slug)?.name ?? titleCase(slug),
+        costInNetworkDescription: compareInCost(s),
+        costOutOfNetworkDescription: compareOonCost(s, plan.plan_type ?? null),
+        // S289 Phase B — variant identity (Pattern S modifiers) so the
+        // aggregates layer can render one row PER VARIANT instead of
+        // last-write-wins per slug.
+        placeOfService: (s.place_of_service as string | null) ?? "any",
+        component: (s.component as string | null) ?? "global",
+        planTierLabel: (s.plan_tier_label as string | null) ?? "none",
         costSharing: {
           inNetwork: {
             copay: maybeDecorate<number | null>(
@@ -492,7 +476,9 @@ export async function resolveUserPlan(opts: {
     .from("plan_covered_services")
     .select("*, service_catalog!inner(slug, name, category, merged_into_id)")
     .eq("insurance_plan_id", insurancePlanId)
-    .is("service_catalog.merged_into_id", null);
+    .is("service_catalog.merged_into_id", null)
+    // S289 Phase B — deterministic row order (see canonical resolver note).
+    .order("id");
 
   const planSource = (plan.source as string) ?? "doc_extraction";
 
@@ -508,21 +494,12 @@ export async function resolveUserPlan(opts: {
         : null,
       category: s.service_catalog?.category || "other",
       title: rawName,
-      costInNetworkDescription: describeCost({
-        copay: s.in_copay ?? null,
-        coinsurance: s.in_coinsurance ?? null,
-        deductibleApplies: s.in_deductible_applies ?? null,
-        description: s.in_cost_description ?? null,
-        covered: s.covered ?? null,
-      }),
-      costOutOfNetworkDescription: describeOonCost({
-        copay: s.out_copay ?? null,
-        coinsurance: s.out_coinsurance ?? null,
-        deductibleApplies: s.out_deductible_applies ?? null,
-        description: s.out_cost_description ?? null,
-        covered: s.covered ?? null,
-        planType: plan.plan_type as string | null,
-      }),
+      costInNetworkDescription: compareInCost(s),
+      costOutOfNetworkDescription: compareOonCost(s, (plan.plan_type as string | null) ?? null),
+      // S289 Phase B — variant identity (see canonical path note above).
+      placeOfService: (s.place_of_service as string | null) ?? "any",
+      component: (s.component as string | null) ?? "global",
+      planTierLabel: (s.plan_tier_label as string | null) ?? "none",
       costSharing: {
         inNetwork: {
           copay: maybeDecorate<number | null>(
@@ -678,15 +655,16 @@ function buildInferredBenefit(
     serviceSlug: slug,
     category: category ?? "other",
     title: titleCase(slug),
-    costInNetworkDescription: describeCost({
-      copay: cov.copay ?? null,
-      coinsurance: cov.coinsurance ?? null,
-      // Preventive sibling / ACA coverage is not deductible-gated, and the
-      // borrowed coverage carries no deductible signal either way.
-      deductibleApplies: false,
-      description: null,
-      covered: cov.covered ?? true,
-    }),
+    costInNetworkDescription:
+      cov.covered === false
+        ? "Not covered"
+        : formatInNetworkCost({
+            in_copay: cov.copay ?? null,
+            in_coinsurance: cov.coinsurance ?? null,
+            // Preventive sibling / ACA coverage is not deductible-gated, and
+            // the borrowed coverage carries no deductible signal either way.
+            in_deductible_applies: false,
+          }),
     // OON is never inferred — it stays unk/na honestly (compare_v2 §6 item 2).
     costOutOfNetworkDescription: "—",
     costSharing: {

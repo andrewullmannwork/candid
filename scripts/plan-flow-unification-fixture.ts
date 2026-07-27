@@ -30,8 +30,11 @@ import {
 } from "../src/lib/plan/category-display";
 import {
   CATEGORY_DISPLAY_ORDER,
+  groupBenefitsByCategory,
   sortCategoryGroups,
+  variantLabel,
 } from "../src/components/compare/compare-aggregates";
+import type { ComparePlanPayload } from "../src/lib/plan/compare";
 import {
   applyUsedBenefitsToggle,
   readUsedBenefits,
@@ -396,6 +399,72 @@ const CANON_TERMS = {
       screenshotRows.every((r) => formatInNetworkCost(r).length > 0),
       true,
     );
+  }
+
+  // ── 9. S289 Phase B — /compare variant rows (the last-write-wins fix) ────
+  {
+    const bene = (
+      slug: string, title: string, cost: string,
+      variant: { pos?: string; component?: string; tier?: string } = {},
+    ) => ({
+      serviceSlug: slug,
+      category: "surgery",
+      title,
+      placeOfService: variant.pos ?? "any",
+      component: variant.component ?? "global",
+      planTierLabel: variant.tier ?? "none",
+      costInNetworkDescription: cost,
+      costOutOfNetworkDescription: "—",
+      costSharing: {
+        inNetwork: { copay: null, coinsurance: null, deductibleApplies: null },
+        outOfNetwork: { copay: null, coinsurance: null, deductibleApplies: null },
+        annualLimit: null,
+        priorAuthRequired: null,
+      },
+      covered: true,
+      inferred: null,
+    });
+    // Plan A: 3 surgery variants (the e4e shape). Plan B: only the facility one.
+    const planA = {
+      benefits: [
+        bene("surgery", "Surgery", "40% coinsurance, after deductible", { component: "facility" }),
+        bene("surgery", "Surgery", "50% coinsurance, after deductible", { component: "professional" }),
+        bene("surgery", "Surgery", "50% coinsurance, after deductible"),
+      ],
+    } as unknown as ComparePlanPayload;
+    const planB = {
+      benefits: [bene("surgery", "Surgery", "30% coinsurance", { component: "facility" })],
+    } as unknown as ComparePlanPayload;
+
+    const groups = groupBenefitsByCategory([planA, planB]);
+    const rows = groups.find((g) => g.category === "surgery")?.rows ?? [];
+    check("compare variants — ALL 3 variants get rows (was last-wins 1)", rows.length, 3);
+    const facility = rows.find((r) => r.variantKey.includes("|facility|"));
+    check("compare variants — qualifier on multi-variant title", facility?.title, "Surgery — facility");
+    check("compare variants — plan B fills its variant cell", facility?.perPlan[1]?.costInNetworkDescription, "30% coinsurance");
+    const professional = rows.find((r) => r.variantKey.includes("|professional|"));
+    check("compare variants — plan B lacks professional → null cell", professional?.perPlan[1], null);
+    check(
+      "compare variants — correct cost per variant (A facility = 40%)",
+      facility?.perPlan[0]?.costInNetworkDescription,
+      "40% coinsurance, after deductible",
+    );
+    // Determinism: shuffled input order yields identical row order.
+    const shuffled = {
+      benefits: [planA.benefits[2], planA.benefits[0], planA.benefits[1]],
+    } as unknown as ComparePlanPayload;
+    const rows2 = groupBenefitsByCategory([shuffled, planB]).find((g) => g.category === "surgery")?.rows ?? [];
+    check(
+      "compare variants — row order independent of input order",
+      JSON.stringify(rows2.map((r) => r.variantKey)),
+      JSON.stringify(rows.map((r) => r.variantKey)),
+    );
+    // Single-variant slug stays unqualified.
+    const lone = groupBenefitsByCategory([
+      { benefits: [bene("pcp_visit", "Primary Care Visit", "$20 copay")] } as unknown as ComparePlanPayload,
+    ]);
+    check("compare variants — single variant keeps clean title", lone[0]?.rows[0]?.title, "Primary Care Visit");
+    check("compare variants — variantLabel formats modifiers", variantLabel(planA.benefits[0]), "facility");
   }
 
   console.log(`\n${pass}/${pass + fail} passed`);
