@@ -31,7 +31,7 @@ export const OB_COPY = {
   s1Skip: "No card handy? Skip — you can add it anytime",
   s2Title: "Add a plan document or a bill",
   s2Sub: "A plan document (SBC, EOC, booklet) fills in your coverage information like deductibles, OOP max, covered services. A bill or EOB gets audited for overcharges on the spot.",
-  s2Skip: "Nothing handy? Skip — we'll keep a reminder on your dashboard",
+  s2Skip: "Skip — we'll keep a reminder on your dashboard",
   s3Title: "Last thing — 30 seconds about you",
   s3Sub: "Just the things documents can't tell us. Everything else, Candid reads on its own.",
   s3Cta: "Finish — take me to my dashboard",
@@ -39,6 +39,14 @@ export const OB_COPY = {
   consequence: "Without a card or plan document, Candid can't audit anything yet. That's okay — your dashboard will show exactly what's missing.",
   situationLabel: "What brings you here?",
   situationWhy: "Helps us run the right audit checks first.",
+  /* S288 mode system (plan-change / about-you edit reuse of the flow) —
+     copy APPROVED by Andrew S289 (2026-07-27); fixture-asserted verbatim. */
+  cancel: "Cancel",
+  done: "Done",
+  saveChanges: "Save changes",
+  planModeTitle: "Update your plan",
+  planModeSub:
+    "Replace your plan or insurance card by uploading a document or searching Candid's library.",
 } as const;
 
 /** Step names shown in the progress row. */
@@ -54,6 +62,12 @@ export const OB_CARD_COPY = {
   replace: "Replace",
   scanNote: "OCR · matching insurer · pulling IDs",
   save: "Save details",
+  /* S288 both-or-neither (copy APPROVED by Andrew S289): a divergent card +
+     "Keep current plan" writes NOTHING — this is the receipt. */
+  keptNothing: "Nothing was changed — that card doesn't match the plan on file. Try again.",
+  /* S288 plan-change mode — current-card framing (copy APPROVED S289). */
+  currentCardEyebrow: "YOUR CURRENT CARD",
+  replaceCard: "Replace card",
 } as const;
 
 export const OB_DOC_COPY = {
@@ -68,6 +82,20 @@ export const OB_DOC_COPY = {
     { tag: "PLAN DOC", items: "Deductibles · OOP max · covered services" },
     { tag: "BILL · EOB", items: "Line-item overcharge audit, on the spot" },
   ],
+  /* S288 plan-library search (upload's peer alternative) — copy APPROVED by
+     Andrew S289 (2026-07-27); fixture-asserted verbatim. */
+  searchToggle: "No document handy? Search for your plan instead",
+  searchPlaceholder: "Plan name or insurer — e.g. UHC Gold Advantage",
+  searchHint:
+    "Picking your plan from Candid's library fills in your coverage like a document would. You can add the document anytime for verified details.",
+  searchEmpty: "No matches — try fewer words, or upload a document instead.",
+  searchSelecting: "Setting up your plan…",
+  searchDone: "Plan on file — from Candid's plan library",
+  searchError: "Couldn't find that plan. Please try again.",
+  searchBack: "Back to upload",
+  /* S288 plan-change mode — prominent current-plan framing (copy APPROVED S289). */
+  currentPlanEyebrow: "YOUR CURRENT PLAN",
+  replacePlan: "Replace plan",
 } as const;
 
 /** Dashboard meter copy (same approval). */
@@ -269,6 +297,9 @@ export interface OnboardingProfileShape {
   /** S286 additive: newest coverage docs (≤4) + exact total, for the doc-card restore. */
   recentCoverageDocs?: RecentCoverageDoc[];
   coverageDocCount?: number;
+  /** S288: the active plan row — a catalog_match source fills the doc slot
+   *  (search-select IS a substitute for uploading a document). */
+  insurancePlan?: { source?: string | null } | null;
   profile?: {
     member_id?: string | null;
     insurer?: string | null;
@@ -288,7 +319,9 @@ export function slotsFromProfile(p: OnboardingProfileShape): StrengthSlots {
   const prof = p.profile;
   return {
     card: p.hasCard === true || !!prof?.member_id,
-    doc: p.hasPlanOrBill === true,
+    // S288: a search-selected plan (catalog_match) IS the doc slot's substitute
+    // — no more "Your audits can't run yet" after picking a plan from the library.
+    doc: p.hasPlanOrBill === true || p.insurancePlan?.source === "catalog_match",
     household: !!prof?.household,
     zip: obZipOk(prof?.zip_code),
     dob: obDobOk(obDobFromIso(prof?.date_of_birth)),

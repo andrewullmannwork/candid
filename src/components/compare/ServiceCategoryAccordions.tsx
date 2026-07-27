@@ -6,10 +6,13 @@ import type { ComparePlanPayload } from "@/lib/plan/compare";
 import {
   bestNumericIndices,
   coveredPerPlanInCategory,
+  distinctServiceCount,
   groupBenefitsByCategory,
   inNetworkCopay,
   sortCategoryGroups,
   winsPerPlanInCategory,
+  type ServiceCoverageStatus,
+  type ServiceEntry,
   type ServiceRowAcrossPlans,
 } from "./compare-aggregates";
 import { compareGridClass } from "./compare-grid";
@@ -55,6 +58,7 @@ export function ServiceCategoryAccordions({ plans }: ServiceCategoryAccordionsPr
           key={group.category}
           label={group.label}
           rows={group.rows}
+          services={group.services}
           plans={plans}
         />
       ))}
@@ -62,18 +66,44 @@ export function ServiceCategoryAccordions({ plans }: ServiceCategoryAccordionsPr
   );
 }
 
+function StatusChip({ status }: { status: ServiceCoverageStatus }) {
+  if (status === "covered") {
+    return (
+      <span className="inline-flex text-[11px] font-medium bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full">
+        Covered
+      </span>
+    );
+  }
+  if (status === "not_covered") {
+    return (
+      <span className="inline-flex text-[11px] font-medium bg-rose-50 text-rose-600 px-2 py-0.5 rounded-full">
+        Not covered
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex text-[11px] font-medium bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">
+      Not listed
+    </span>
+  );
+}
+
 function CategoryAccordion({
   label,
   rows,
+  services,
   plans,
 }: {
   label: string;
   rows: ServiceRowAcrossPlans[];
+  services: ServiceEntry[];
   plans: ComparePlanPayload[];
 }) {
   const gridClass = compareGridClass(plans.length);
   const planCount = plans.length;
-  const totalRows = rows.length;
+  // S289 review F2/F6 — user-facing counts are SERVICES (distinct slugs); the
+  // row list may hold several variant rows per service.
+  const totalRows = distinctServiceCount(rows);
   const covered = coveredPerPlanInCategory(rows, planCount);
   const wins = winsPerPlanInCategory(rows, planCount);
   const leaderIdx = new Set(bestNumericIndices(wins, (n) => n, false));
@@ -149,30 +179,83 @@ function CategoryAccordion({
       className="mt-6"
     >
       <div className="rounded-2xl bg-white ring-1 ring-slate-200 overflow-hidden">
-        {rows.map((row, idx) => {
-          const bestIdx = new Set(
-            bestNumericIndices(row.perPlan, inNetworkCopay, true),
-          );
-          return (
-            <div
-              key={row.serviceSlug}
-              className={cn(
-                "grid divide-y sm:divide-y-0 sm:divide-x divide-slate-100",
-                gridClass,
-                idx > 0 && "border-t border-slate-100",
-              )}
-            >
-              <div className="p-4 flex flex-col justify-center bg-slate-50 sm:bg-transparent">
-                <p className="text-sm font-semibold sm:font-medium text-slate-700">
-                  {row.title}
-                </p>
-              </div>
-              {row.perPlan.map((benefit, planIdx) => (
-                <div key={planIdx} className="p-4">
-                  <MobilePlanLabel plan={plans[planIdx]} index={planIdx} />
-                  <ServiceCell benefit={benefit} isBestInn={bestIdx.has(planIdx)} />
+        {/* S289 nested rows (Andrew) — one parent row per SERVICE; variant
+            sub-rows nest under multi-variant services. Single-variant
+            services keep the flat pre-S289 rendering. */}
+        {services.map((entry, sIdx) => {
+          if (!entry.multiVariant) {
+            const row = entry.variants[0];
+            const bestIdx = new Set(
+              bestNumericIndices(row.perPlan, inNetworkCopay, true),
+            );
+            return (
+              <div
+                key={row.variantKey}
+                className={cn(
+                  // S289 (Andrew #4) — flat service rows share the parent-row
+                  // treatment (tint + bold label) so every service reads the
+                  // same whether or not it has variants.
+                  "grid divide-y sm:divide-y-0 sm:divide-x divide-slate-100 bg-slate-50/60",
+                  gridClass,
+                  sIdx > 0 && "border-t border-slate-100",
+                )}
+              >
+                <div className="p-4 flex flex-col justify-center">
+                  <p className="text-sm font-semibold text-slate-800">
+                    {row.title}
+                  </p>
                 </div>
-              ))}
+                {row.perPlan.map((benefit, planIdx) => (
+                  <div key={planIdx} className="p-4">
+                    <MobilePlanLabel plan={plans[planIdx]} index={planIdx} />
+                    <ServiceCell benefit={benefit} isBestInn={bestIdx.has(planIdx)} note={row.perPlanNote?.[planIdx] ?? null} />
+                  </div>
+                ))}
+              </div>
+            );
+          }
+          return (
+            <div key={entry.serviceSlug} className={cn(sIdx > 0 && "border-t border-slate-100")}>
+              <div
+                className={cn(
+                  "grid divide-y sm:divide-y-0 sm:divide-x divide-slate-100 bg-slate-50/60",
+                  gridClass,
+                )}
+              >
+                <div className="p-4 flex flex-col justify-center">
+                  <p className="text-sm font-semibold text-slate-800">{entry.title}</p>
+                </div>
+                {entry.perPlanStatus.map((status, planIdx) => (
+                  <div key={planIdx} className="p-4 flex items-center">
+                    <MobilePlanLabel plan={plans[planIdx]} index={planIdx} />
+                    <StatusChip status={status} />
+                  </div>
+                ))}
+              </div>
+              {entry.variants.map((row) => {
+                const bestIdx = new Set(
+                  bestNumericIndices(row.perPlan, inNetworkCopay, true),
+                );
+                return (
+                  <div
+                    key={row.variantKey}
+                    className={cn(
+                      "grid divide-y sm:divide-y-0 sm:divide-x divide-slate-100 border-t border-slate-100",
+                      gridClass,
+                    )}
+                  >
+                    <div className="py-3.5 pr-4 pl-10 flex flex-col justify-center bg-slate-50 sm:bg-transparent">
+                      <p className="text-[13px] text-slate-500">{row.subLabel}</p>
+                    </div>
+                    {row.perPlan.map((benefit, planIdx) => (
+                      <div key={planIdx} className="p-4">
+                        <MobilePlanLabel plan={plans[planIdx]} index={planIdx} />
+                        <ServiceCell benefit={benefit} isBestInn={bestIdx.has(planIdx)} note={row.perPlanNote?.[planIdx] ?? null} />
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
             </div>
           );
         })}

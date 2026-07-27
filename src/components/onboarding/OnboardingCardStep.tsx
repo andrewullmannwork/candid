@@ -11,6 +11,10 @@ export interface CardSlotValue {
   chips: ObChip[];
   manual: boolean;
   fileName: string | null;
+  /** S288: seeds the step-2 plan search ("soft fill") — card-scanned plan name
+   *  when a photo gave us one, else the typed insurer. Both optional. */
+  insurer?: string | null;
+  planName?: string | null;
 }
 
 interface PlanMismatchInfo {
@@ -88,12 +92,16 @@ export function OnboardingCardStep({
   onReplace,
   hasConsented,
   grantConsent,
+  emphasizeCurrent,
 }: {
   value: CardSlotValue | null;
   onSaved: (v: CardSlotValue) => void;
   onReplace: () => void;
   hasConsented: boolean;
   grantConsent: () => Promise<void>;
+  /** S288 plan-change mode: render the saved card as a PROMINENT current-card
+   *  card (eyebrow + a real Replace button) matching the plan card's chrome. */
+  emphasizeCurrent?: boolean;
 }) {
   const { user } = useAuth();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -111,6 +119,9 @@ export function OnboardingCardStep({
   const [mismatch, setMismatch] = useState<
     (PlanMismatchInfo & { pendingData: Record<string, string>; pendingSlot: CardSlotValue }) | null
   >(null);
+  // S288: "Keep current plan" on a divergent card writes NOTHING — this notice
+  // is the receipt ("Nothing was changed…"). Cleared on the next save attempt.
+  const [keptNotice, setKeptNotice] = useState(false);
   const [canonicalMatch, setCanonicalMatch] = useState<PendingCanonicalMatch | null>(null);
 
   const saveProfile = useCallback(
@@ -155,18 +166,21 @@ export function OnboardingCardStep({
     if (!mIns && !mId) return;
     setSaving(true);
     setError("");
+    setKeptNotice(false);
     try {
       const payload: Record<string, string> = { plan_source: "manual" };
       if (mIns) payload.insurer = mIns;
       if (mId) payload.member_id = mId;
       if (mGrp) payload.group_number = mGrp;
-      const result = await saveProfile(payload);
+      // S288 both-or-neither: typed saves opt into the server divergence
+      // pre-check — a mismatched insurer gets Keep/Switch, never a silent write.
+      const result = await saveProfile({ ...payload, divergence_check: true });
       const chips: ObChip[] = [
         ...(mIns ? [{ label: "Insurer", value: mIns }] : []),
         ...(mId ? [{ label: "Member ID", value: mId, mono: true }] : []),
         ...(mGrp ? [{ label: "Group", value: mGrp, mono: true }] : []),
       ];
-      finishSave({ chips, manual: true, fileName: null }, result, payload);
+      finishSave({ chips, manual: true, fileName: null, insurer: mIns || null }, result, payload);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed. Please try again.");
     } finally {
@@ -179,6 +193,7 @@ export function OnboardingCardStep({
       if (!user) return;
       setScanning(true);
       setError("");
+      setKeptNotice(false);
       try {
         const idToken = await user.firebaseUser.getIdToken();
         const formData = new FormData();
@@ -209,8 +224,18 @@ export function OnboardingCardStep({
           );
         }
         const payload = scanSavePayload(fields);
-        const result = await saveProfile(payload);
-        finishSave({ chips: fieldsToChips(fields), manual: false, fileName: file.name }, result, payload);
+        const result = await saveProfile({ ...payload, divergence_check: true });
+        finishSave(
+          {
+            chips: fieldsToChips(fields),
+            manual: false,
+            fileName: file.name,
+            insurer: fields.insurer || null,
+            planName: fields.planName || null,
+          },
+          result,
+          payload,
+        );
       } catch (err) {
         setError(err instanceof Error ? err.message : "Scan failed. Please try again.");
       } finally {
@@ -262,17 +287,31 @@ export function OnboardingCardStep({
 
   /* ── Done state ─────────────────────────────────────────────────────────── */
   if (value && !mismatch) {
+    const prominent = emphasizeCurrent === true;
     return (
-      <div className="rounded-[18px] border border-emerald-300 bg-white p-5 shadow-sm">
+      <div
+        className={`rounded-[18px] border border-emerald-300 bg-white shadow-sm ${
+          prominent ? "border-2 p-6" : "p-5"
+        }`}
+      >
+        {prominent && (
+          <p className="mb-2.5 text-[10.5px] font-bold tracking-[0.12em] text-emerald-700">
+            {OB_CARD_COPY.currentCardEyebrow}
+          </p>
+        )}
         <div className="flex items-center gap-2.5">
           <span className="inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7" /></svg>
           </span>
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-gray-900">
+            <p className={`font-semibold text-gray-900 ${prominent ? "text-[15px]" : "text-sm"}`}>
               {value.manual ? OB_CARD_COPY.manualSaved : OB_CARD_COPY.scanned}
             </p>
-            <p className="truncate text-xs text-gray-400">
+            <p
+              className={
+                prominent ? "mt-0.5 text-[13px] leading-snug text-gray-600" : "truncate text-xs text-gray-400"
+              }
+            >
               {value.manual ? OB_CARD_COPY.manualNote : value.fileName}
             </p>
           </div>
@@ -283,9 +322,13 @@ export function OnboardingCardStep({
               setMGrp("");
               onReplace();
             }}
-            className="ml-auto rounded-lg px-2 py-1 text-xs font-semibold text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+            className={
+              prominent
+                ? "ml-auto shrink-0 self-start rounded-xl border border-blue-200 bg-blue-50 px-3.5 py-2 text-[13px] font-bold text-blue-700 transition-colors hover:bg-blue-100"
+                : "ml-auto rounded-lg px-2 py-1 text-xs font-semibold text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+            }
           >
-            {OB_CARD_COPY.replace}
+            {prominent ? OB_CARD_COPY.replaceCard : OB_CARD_COPY.replace}
           </button>
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
@@ -373,21 +416,13 @@ export function OnboardingCardStep({
             Switch to {mismatch.newInsurer || "the new plan"}
           </button>
           <button
-            onClick={async () => {
-              // Keep the current plan; save only the identity fields (member
-              // ID / group #) — identity-only writes are safe post-doc (CF-25).
-              try {
-                const idOnly: Record<string, string> = {};
-                if (mismatch.pendingData.member_id) idOnly.member_id = mismatch.pendingData.member_id;
-                if (mismatch.pendingData.group_number) idOnly.group_number = mismatch.pendingData.group_number;
-                if (Object.keys(idOnly).length > 0) await saveProfile(idOnly);
-                const slot = mismatch.pendingSlot;
-                setMismatch(null);
-                onSaved(slot);
-              } catch (err) {
-                setMismatch(null);
-                setError(err instanceof Error ? err.message : "Save failed. Please try again.");
-              }
+            onClick={() => {
+              // S288 both-or-neither: a divergent card + "Keep" writes NOTHING.
+              // The old quiet member-ID/group attach is how mixed-identity
+              // states were born ("Blue Cross" insurer glued to a UHC plan).
+              // The pending card is discarded; the prior state stands whole.
+              setMismatch(null);
+              setKeptNotice(true);
             }}
             className="flex-1 rounded-xl border border-amber-300 bg-white px-3 py-2.5 text-xs font-semibold text-amber-800 transition-colors hover:bg-amber-100"
           >
@@ -417,6 +452,15 @@ export function OnboardingCardStep({
   /* ── Type-first card (manual grid + photo drop strip) ───────────────────── */
   return (
     <>
+      {keptNotice && (
+        <div className="mb-3 flex items-center gap-2.5 rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-[13px] text-gray-600">
+          <svg className="shrink-0" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M12 8v4m0 4h.01" />
+          </svg>
+          {OB_CARD_COPY.keptNothing}
+        </div>
+      )}
       <div
         className={`rounded-[18px] border bg-white p-5 shadow-sm transition-colors ${
           dragOver ? "border-blue-400 bg-blue-50/50" : "border-gray-200"

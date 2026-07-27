@@ -14,15 +14,19 @@ export interface ComparePlanColor {
   solid: string;
   /** Solid color hex (e.g., for inline border style or data-plan attribute). */
   hex: string;
+  /** S289 — light sub-card treatment (ring + wash) in this plan's hue. */
+  tint: string;
+  /** S289 — hover companion for `solid` (one step darker), for buttons in this plan's hue. */
+  solidHover: string;
 }
 
 export const COMPARE_PLAN_COLORS: ComparePlanColor[] = [
   // Slot A — blue (design #2563eb → #1d4ed8)
-  { gradient: "bg-gradient-to-br from-blue-600 to-blue-700", solid: "bg-blue-600", hex: "#2563eb" },
+  { gradient: "bg-gradient-to-br from-blue-600 to-blue-700", solid: "bg-blue-600", hex: "#2563eb", tint: "ring-blue-200 bg-blue-50/70", solidHover: "hover:bg-blue-700" },
   // Slot B — purple (design #7e22ce → #6b21a8)
-  { gradient: "bg-gradient-to-br from-purple-700 to-purple-800", solid: "bg-purple-700", hex: "#7e22ce" },
+  { gradient: "bg-gradient-to-br from-purple-700 to-purple-800", solid: "bg-purple-700", hex: "#7e22ce", tint: "ring-purple-200 bg-purple-50/70", solidHover: "hover:bg-purple-800" },
   // Slot C — pink (design #db2777 → #be185d)
-  { gradient: "bg-gradient-to-br from-pink-600 to-pink-700", solid: "bg-pink-600", hex: "#db2777" },
+  { gradient: "bg-gradient-to-br from-pink-600 to-pink-700", solid: "bg-pink-600", hex: "#db2777", tint: "ring-pink-200 bg-pink-50/70", solidHover: "hover:bg-pink-700" },
 ];
 
 export function letterFor(idx: number): string {

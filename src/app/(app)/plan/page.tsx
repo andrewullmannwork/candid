@@ -1,13 +1,15 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ChangePlanModal } from "@/components/plan/ChangePlanModal";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
 import { createBrowserClient } from "@/lib/supabase/client";
 import type { PlanAnalysisResult, AnalyzedBenefit } from "@/lib/plan/analyzer";
 import type { BenefitCategory } from "@/lib/plan/benefits-catalog";
-import { BENEFIT_CATEGORY_LABELS } from "@/lib/plan/benefits-catalog";
+import { labelForCategory } from "@/lib/plan/category-display";
+import { groupCoveredBenefits, isGroupUsed } from "@/lib/plan/benefit-grouping";
 import {
   DisplayStateBadge,
   SourceQuote,
@@ -80,22 +82,9 @@ function MatrixVerifyTag({ state }: { state: DisplayState | null | undefined }) 
   );
 }
 
-const SERVICE_CATEGORY_LABELS: Record<string, string> = {
-  office_visit: "Office Visits",
-  emergency: "Emergency",
-  hospital: "Hospital",
-  imaging: "Imaging",
-  lab: "Lab & Testing",
-  rx: "Prescriptions",
-  therapy: "Therapy & Rehab",
-  mental_health: "Mental Health",
-  maternity: "Maternity",
-  dme: "Equipment & Supplies",
-  preventive: "Preventive Care",
-  long_term_care: "Long-Term Care",
-  other: "Other Services",
-  general: "General",
-};
+// Category labels live in src/lib/plan/category-display.ts (S289 — shared
+// with /dashboard + fixture-asserted; V1-first precedence, static_catalog
+// keeps V2-first).
 
 // ── Extended API response type ─────────────────────────────────────────────────
 
@@ -114,6 +103,9 @@ interface AnalyzeResponse extends PlanAnalysisResult {
   planType?: string;
   // S202 §9: present only when eoc_reader_resolution_v1 is ON (plan-wide + by-location PA + About).
   eocReader?: EocReaderSurfaces;
+  // S289: "I use this" ticks (LIVE service slugs) from the active plan row's
+  // metadata; present only on the user_plan/user_plan_with_canonical paths.
+  usedBenefits?: string[];
   planSummary?: {
     inDeductible?: MaybeDecorated<number | null>;
     outDeductible?: MaybeDecorated<number | null>;
@@ -189,6 +181,14 @@ const EXTENDED_CATEGORY_ICONS: Record<string, { path: string; color: string }> =
   therapy: { path: "M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z", color: "text-orange-600 bg-orange-50" },
   dme: { path: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z", color: "text-amber-600 bg-amber-50" },
   preventive: { path: "M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z", color: "text-blue-600 bg-blue-50" },
+  // S289 — categories that previously fell to the gray DEFAULT_ICON:
+  surgery: { path: "M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z", color: "text-rose-600 bg-rose-50" },
+  hospitalization: { path: "M3 21h18M5 21V7l7-4 7 4v14M9 9h1m4 0h1M9 13h1m4 0h1M9 17h1m4 0h1", color: "text-red-600 bg-red-50" },
+  dialysis: { path: "M7.5 3.75c0 2.9-3 4.35-3 7.5a7.5 7.5 0 0015 0c0-3.15-3-4.6-3-7.5m-4.5 0v16.5m-3.75-6h7.5", color: "text-cyan-600 bg-cyan-50" },
+  family_planning: { path: "M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z M12 8v4m-2-2h4", color: "text-pink-600 bg-pink-50" },
+  dental: { path: "M12 5.5c-1.5-1.5-4-2-5.5-.5C4.5 6.5 4.5 9 5.5 11c.83 1.66 1.5 4.5 2 7 .17.83 1.33.83 1.5 0l1-4.5c.17-.83 1.83-.83 2 0l1 4.5c.17.83 1.33.83 1.5 0 .5-2.5 1.17-5.34 2-7 1-2 1-4.5-1-6-1.5-1.5-4-1-5.5.5z", color: "text-sky-600 bg-sky-50" },
+  vision: { path: "M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z", color: "text-indigo-600 bg-indigo-50" },
+  long_term_care: { path: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6", color: "text-slate-600 bg-slate-100" },
   other: DEFAULT_ICON,
   general: DEFAULT_ICON,
 };
@@ -295,8 +295,10 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
           <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-blue-600">
             Your plan on file
           </p>
-          <h3 className="mt-1 text-base font-semibold text-gray-900 leading-tight">
-            <span className="truncate">{displayTitle}</span>
+          <h3 className="mt-1 text-base font-semibold text-gray-900 leading-tight break-words">
+            {/* S288: no truncate — nowrap-without-width just clipped long
+                canonical names mid-word at the card edge; let them wrap. */}
+            <span>{displayTitle}</span>
             {planType.value && (
               <span className="ml-2 inline-flex align-middle text-[11px] font-semibold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded">
                 {planType.value}
@@ -469,13 +471,14 @@ export default function CandidPlanPage() {
     if (hash.startsWith("category-")) return hash.slice("category-".length);
     return null;
   });
-  const [usedBenefits, setUsedBenefits] = useState<Set<string>>(() => {
-    if (typeof window === "undefined") return new Set();
-    try {
-      const stored = localStorage.getItem("candid_used_benefits");
-      return stored ? new Set(JSON.parse(stored)) : new Set();
-    } catch { return new Set(); }
-  });
+  // S289 — "I use this" ticks are account-level, keyed by SERVICE SLUG, and
+  // persisted on the active plan row (metadata.used_benefits) via
+  // POST /api/plan/benefit-usage. Hydrated from the analyze response below.
+  // (Replaced the localStorage set: browser-local, TITLE-keyed — every rename
+  // orphaned ticks, and /dashboard's slug-keyed tile counter could never see
+  // them.) Accounts with no plan row (static_catalog path) keep ticks
+  // session-local — the POST 404s and we keep the optimistic state.
+  const [usedBenefits, setUsedBenefits] = useState<Set<string>>(new Set());
 
   // Feature flags
   const [correctionsEnabled, setCorrectionsEnabled] = useState(false);
@@ -485,6 +488,31 @@ export default function CandidPlanPage() {
   // which returns [] under Firebase auth — see feedback_candid_client_flag_reads).
   const [changePlanEnabled, setChangePlanEnabled] = useState(false);
   const [changePlanOpen, setChangePlanOpen] = useState(false);
+  // S288 plan-flow unification: when onboarding_simplified_v1 is ON, "Change
+  // plan" routes into the onboarding flow's plan mode instead of the inline
+  // picker (flag OFF keeps the legacy modal as the rollback path).
+  const [planFlowOn, setPlanFlowOn] = useState(false);
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // S289 — dashboard-tile deep link (?cat=<category>). A QUERY param, not a
+  // hash, deliberately: the App Router caches this client tree across soft
+  // navigations (see the S71 cachedResult removal note below), so mount-time
+  // hash reads — the openCategory useState init AND the analyze effect —
+  // never re-run when a tile is clicked, and pushState navigation fires no
+  // hashchange. useSearchParams IS reactive across cached-tree restores.
+  // `result` in the deps covers the fresh-mount race: on first load the
+  // accordions don't exist until analyze resolves; the effect re-fires when
+  // they do.
+  useEffect(() => {
+    const cat = searchParams.get("cat");
+    if (!cat || !result) return;
+    setOpenCategory(cat);
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`category-${cat}`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, [searchParams, result]);
   // Bump to force a re-analyze after the active plan is replaced.
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -551,14 +579,48 @@ export default function CandidPlanPage() {
     setCorrectionSubmitting(false);
   }
 
-  function toggleBenefit(id: string) {
+  /**
+   * S289 — optimistic slug-keyed toggle, persisted server-side. A group's
+   * checkbox covers every POS/slug variant sharing its display title:
+   * ticking ON stores the primary slug; ticking OFF removes ALL variant
+   * slugs (so a stale sibling tick can't keep the row checked).
+   */
+  function toggleBenefit(primarySlug: string, variantSlugs: string[]) {
+    const wasUsed = variantSlugs.some((s) => usedBenefits.has(s));
+    const snapshot = new Set(usedBenefits);
     setUsedBenefits((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      localStorage.setItem("candid_used_benefits", JSON.stringify([...next]));
+      if (wasUsed) for (const s of variantSlugs) next.delete(s);
+      else next.add(primarySlug);
       return next;
     });
+    void (async () => {
+      try {
+        const idToken = await user!.firebaseUser.getIdToken();
+        const res = await fetch("/api/plan/benefit-usage", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify(
+            wasUsed ? { remove: variantSlugs } : { add: [primarySlug] },
+          ),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setUsedBenefits(new Set((data.usedBenefits as string[]) ?? []));
+        } else if (res.status !== 404) {
+          // Real failure → revert to truth. 404 = no plan row to persist
+          // against (static_catalog cohort) → keep the session-local tick.
+          setUsedBenefits(snapshot);
+          console.error("[benefit-usage] save failed:", res.status);
+        }
+      } catch (err) {
+        setUsedBenefits(snapshot);
+        console.error("[benefit-usage] save failed:", err);
+      }
+    })();
   }
 
   // S71 follow-up (Session 73) — REMOVED in-memory cache. The previous
@@ -592,6 +654,7 @@ export default function CandidPlanPage() {
 
         const data: AnalyzeResponse = await res.json();
         setResult(data);
+        setUsedBenefits(new Set(data.usedBenefits ?? []));
 
         // Scroll category section into view when arriving from /dashboard tile
         // (B3.1) — hash format `category-<categoryKey>`. Defers one frame so
@@ -604,6 +667,12 @@ export default function CandidPlanPage() {
         if (typeof window !== "undefined") {
           const hash = window.location.hash.slice(1);
           if (hash.startsWith("category-")) {
+            // S289 — also OPEN the accordion, don't just scroll to it. The
+            // useState init covers hard loads, but on a soft nav from a
+            // dashboard tile the initializer can read the pre-navigation URL,
+            // landing the user on a collapsed section. Idempotent on hard
+            // loads (same value).
+            setOpenCategory(hash.slice("category-".length));
             requestAnimationFrame(() => {
               const el = document.getElementById(hash);
               if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -668,6 +737,11 @@ export default function CandidPlanPage() {
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (!cancelled && d) setChangePlanEnabled(!!d.enabled); })
       .catch(() => { /* flag falls back to OFF */ });
+    // S288: route "Change plan" into the unified flow when onboarding is ON.
+    fetch("/api/feature-flags/onboarding_simplified_v1")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d) setPlanFlowOn(!!d.enabled); })
+      .catch(() => { /* falls back to the legacy inline picker */ });
     return () => { cancelled = true; };
   }, []);
 
@@ -741,14 +815,14 @@ export default function CandidPlanPage() {
     catMap.get(titleKey)!.push(item);
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const coveredBenefits = result.benefits.filter((b) => (b as any).covered !== false);
-  // B3.2 — totalUsed counts distinct benefit-titles the user has checked off
-  // (not POS-variant rows or distinct slugs). Matches the title-keyed toggle
-  // semantics used by the per-group parent rows below.
-  const distinctCoveredTitles = new Set(coveredBenefits.map((b) => b.benefit.title));
-  const totalUsed = Array.from(distinctCoveredTitles).filter((title) => usedBenefits.has(title)).length;
-  const totalCoveredBenefitIds = distinctCoveredTitles.size;
+  // B3.2 — totalUsed counts distinct benefit-TITLES checked off (one checkbox
+  // per title-group below, not per POS-variant row). S289: the grouping is the
+  // shared counting rule (benefit-grouping.ts) — /dashboard tiles use the SAME
+  // groups, so both surfaces show one number for one plan. A title counts as
+  // used when ANY of its benefits' slugs is ticked.
+  const coveredGroups = groupCoveredBenefits(result.benefits);
+  const totalUsed = coveredGroups.filter((g) => isGroupUsed(g, usedBenefits)).length;
+  const totalCoveredBenefitIds = coveredGroups.length;
 
   // B3.2 — HSA-eligible benefit count drives banner copy + visibility gate.
   const hsaEligibleCount = result.benefits.filter((b) => b.benefit.hsaFsaEligible).length;
@@ -787,7 +861,9 @@ export default function CandidPlanPage() {
         userHasDoc={userHasDoc}
         insurer={result.insurer}
         changePlanEnabled={changePlanEnabled}
-        onChangePlan={() => setChangePlanOpen(true)}
+        onChangePlan={() =>
+          planFlowOn ? router.push("/onboarding?mode=plan&from=/plan") : setChangePlanOpen(true)
+        }
       />
       {changePlanEnabled && (
         <ChangePlanModal
@@ -939,7 +1015,9 @@ export default function CandidPlanPage() {
           // Counts in benefit-id terms (one count per benefit-type, not per
           // POS-variant row). Matches user mental model "I used N of M benefit
           // types" and the per-benefit-id toggle/expand semantics below.
-          const usedInCategory = groups.filter((g) => usedBenefits.has(g.groupKey)).length;
+          const usedInCategory = groups.filter((g) =>
+            g.visibleVariants.some((v) => usedBenefits.has(v.benefit.id)),
+          ).length;
           const totalInCategory = groups.length;
           const verifiedInCategory = flagOff
             ? undefined
@@ -948,7 +1026,7 @@ export default function CandidPlanPage() {
           // in all visible groups) — drives the X-of-Y pill color.
           const categoryAggState = aggregateRowState(groups.flatMap((g) => g.visibleVariantDisplays.map((r) => r?.state ?? null)));
           const safeAggState = categoryAggState && isVisibleState(categoryAggState) ? categoryAggState : null;
-          const label = BENEFIT_CATEGORY_LABELS[category as BenefitCategory] || SERVICE_CATEGORY_LABELS[category] || category.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+          const label = labelForCategory(category, result?.dataSource);
           const isOpen = openCategory === category;
           // Item 2: a service is "drilled into" only when this category is open
           // AND the currently-expanded benefit belongs to it. Drives the header
@@ -971,7 +1049,7 @@ export default function CandidPlanPage() {
               {groups.map((group) => {
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   const primary = group.visibleVariants[0] as any;
-                  const isUsed = usedBenefits.has(group.groupKey);
+                  const isUsed = group.visibleVariants.some((v) => usedBenefits.has(v.benefit.id));
                   const isExpanded = expandedBenefit === group.groupKey;
                   const isMultiVariant = group.visibleVariants.length > 1;
                   // Worst-signal variant's display drives SourceQuote /
@@ -989,7 +1067,12 @@ export default function CandidPlanPage() {
                             benefit-id post-B3.2 so the shared toggle no longer
                             looks like duplicate-row sync). */}
                         <button
-                          onClick={() => toggleBenefit(group.groupKey)}
+                          onClick={() =>
+                            toggleBenefit(
+                              group.primarySlug,
+                              group.visibleVariants.map((v) => v.benefit.id),
+                            )
+                          }
                           className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-all ${
                             isUsed ? "bg-green-500 border-green-500" : "border-gray-300 hover:border-blue-400"
                           }`}

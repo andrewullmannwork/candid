@@ -48,8 +48,22 @@ export function OnboardingFlow() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
+  // S288 mode system — ONE flow, served in scoped modes:
+  //   signup (default): steps 1-2-3; finish/skip stamp onboarding_completed_at;
+  //   ?mode=plan:  card + plan steps only (Dashboard "Update plan", /plan
+  //                "Change plan" — every plan entry point lands here);
+  //   ?mode=about: the about-you step only (profile "about" edits).
+  // Edit modes NEVER stamp completion and exit to ?from= (default /dashboard).
+  const modeParam = searchParams.get("mode");
+  const mode: "signup" | "plan" | "about" =
+    modeParam === "plan" ? "plan" : modeParam === "about" ? "about" : "signup";
+  const modeSteps = mode === "plan" ? [0, 1] : mode === "about" ? [2] : [0, 1, 2];
+  const fromParam = searchParams.get("from") || "/dashboard";
+  const exitTo = fromParam.startsWith("/") && !fromParam.startsWith("//") ? fromParam : "/dashboard";
+
   const stepParam = parseInt(searchParams.get("step") || "1", 10);
-  const [step, setStep] = useState<number>(isNaN(stepParam) ? 0 : Math.min(Math.max(stepParam - 1, 0), 2));
+  const initialStep = isNaN(stepParam) ? modeSteps[0] : Math.min(Math.max(stepParam - 1, 0), 2);
+  const [step, setStep] = useState<number>(modeSteps.includes(initialStep) ? initialStep : modeSteps[0]);
   const [hydrated, setHydrated] = useState(false);
   const [card, setCard] = useState<CardSlotValue | null>(null);
   const [doc, setDoc] = useState<DocSlotValue | null>(null);
@@ -65,6 +79,9 @@ export function OnboardingFlow() {
   const [tryFin, setTryFin] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [finishError, setFinishError] = useState("");
+  // S288: profile-derived search seed (plan_name > insurer) — the card slot's
+  // own values win over this when the card step ran this session.
+  const [profileSeed, setProfileSeed] = useState<string | null>(null);
   const prefillFiredRef = useRef(false);
 
   // One consent instance for both upload surfaces — a grant in step 1 covers
@@ -84,6 +101,7 @@ export function OnboardingFlow() {
         const data = (await res.json().catch(() => ({}))) as {
           profile?: {
             insurer?: string | null;
+            plan_name?: string | null;
             member_id?: string | null;
             group_number?: string | null;
             household?: HouseholdId | null;
@@ -99,6 +117,9 @@ export function OnboardingFlow() {
           insurancePlan?: {
             in_deductible_individual?: unknown;
             in_oop_max_individual?: unknown;
+            source?: string | null;
+            plan_name?: string | null;
+            insurer_name?: string | null;
           } | null;
           hasCard?: boolean;
           hasPlanOrBill?: boolean;
@@ -107,6 +128,7 @@ export function OnboardingFlow() {
         };
         if (cancelled) return;
         const prof = data.profile;
+        setProfileSeed(prof?.plan_name || prof?.insurer || null);
 
         if (data.hasCard === true || prof?.member_id) {
           const chips: ObChip[] = [];
@@ -168,6 +190,35 @@ export function OnboardingFlow() {
             if (oop) chips.push({ label: "OOP max", value: oop, verified: true });
             setDoc({ kind: "plan", fileName: null, chips });
           }
+        } else if (data.insurancePlan?.source === "catalog_match") {
+          // S288: a search-selected plan has NO document — restore it as the
+          // search done-card so re-entering the flow never looks like the
+          // selection vanished (chips re-fetch like the doc-restore path).
+          setDoc({
+            kind: "plan",
+            via: "search",
+            fileName:
+              [data.insurancePlan.plan_name, data.insurancePlan.insurer_name]
+                .filter(Boolean)
+                .join(" — ") || null,
+            chips: [],
+          });
+          void (async () => {
+            try {
+              const ar = await fetch("/api/plan/analyze", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+                body: JSON.stringify({}),
+              });
+              const ad = (await ar.json().catch(() => ({}))) as PlanAnalyzeChipSource;
+              const chips = chipsFromPlanAnalyze(ad);
+              if (!cancelled && chips.length > 0) {
+                setDoc((prev) => (prev && prev.via === "search" ? { ...prev, chips } : prev));
+              }
+            } catch {
+              /* chips are decorative */
+            }
+          })();
         }
 
         // DOB source of truth: profiles.date_of_birth; else the signup ?dob=
@@ -274,8 +325,13 @@ export function OnboardingFlow() {
   }, [user]);
 
   /** "I'll do this later" — Q4: a skip is an answer. Save whatever's valid,
-   *  stamp complete, land on the dashboard (the meter owns what's missing). */
+   *  stamp complete, land on the dashboard (the meter owns what's missing).
+   *  Edit modes (S288): this is a plain Cancel — no stamp, no writes, exit. */
   const handleLater = useCallback(async () => {
+    if (mode !== "signup") {
+      router.push(exitTo);
+      return;
+    }
     try {
       await saveAbout({ requireValid: false });
     } catch {
@@ -283,7 +339,7 @@ export function OnboardingFlow() {
     }
     await stampComplete();
     router.push("/dashboard");
-  }, [saveAbout, stampComplete, router]);
+  }, [mode, exitTo, saveAbout, stampComplete, router]);
 
   const handleFinish = useCallback(async () => {
     if (!obZipOk(about.zip) || !obDobOk(about.dob)) {
@@ -294,8 +350,10 @@ export function OnboardingFlow() {
     setFinishError("");
     try {
       await saveAbout({ requireValid: true });
-      await stampComplete();
-      router.push("/dashboard");
+      // S288: edit modes never stamp completion (an unstamped user wandering
+      // into ?mode=about must not get silently marked onboarded).
+      if (mode === "signup") await stampComplete();
+      router.push(mode === "signup" ? "/dashboard" : exitTo);
     } catch (err) {
       setFinishing(false);
       setFinishError(
@@ -304,9 +362,12 @@ export function OnboardingFlow() {
           : "Couldn't save — check your answers and try again.",
       );
     }
-  }, [about, saveAbout, stampComplete, router]);
+  }, [about, mode, exitTo, saveAbout, stampComplete, router]);
 
   const noDocs = !card && !doc;
+
+  // S288: in plan mode the doc/search step is the LAST step — Continue/Skip exit.
+  const advanceFromDoc = () => (mode === "plan" ? router.push(exitTo) : setStep(2));
 
   /* ── Shell ──────────────────────────────────────────────────────────────── */
 
@@ -323,47 +384,110 @@ export function OnboardingFlow() {
           </div>
           {/* S286: hidden on the doc step (its in-step skip covers it); kept on
               step 1 (clean full-exit) + step 3 (the Q4 dismiss — decision ⑪). */}
-          {step !== 1 && (
+          {mode !== "plan" && step !== 1 && (
             <button
               onClick={handleLater}
               className="rounded-[10px] px-2.5 py-2 text-[13px] font-medium text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
             >
-              {OB_COPY.later} →
+              {mode === "signup" ? <>{OB_COPY.later} →</> : OB_COPY.cancel}
             </button>
           )}
         </div>
 
         {/* Column */}
         <div className="mx-auto w-full max-w-[640px] flex-1 px-6 pb-20 pt-7">
-          {/* Progress — 3 segment bars + STEP n OF 3 */}
+          {/* Progress — segment bars + STEP n OF N (hidden in the single-screen
+              plan-change mode — S288, Andrew: no step-before, just the cards). */}
+          {mode !== "plan" && (
           <div className="mb-7">
             <div className="mb-2.5 flex gap-2">
-              {[0, 1, 2].map((i) => (
+              {modeSteps.map((s) => (
                 <div
-                  key={i}
+                  key={s}
                   className={`h-1 flex-1 rounded-full transition-colors ${
-                    i < step ? "bg-blue-600" : i === step ? "bg-blue-400" : "bg-gray-200"
+                    s < step ? "bg-blue-600" : s === step ? "bg-blue-400" : "bg-gray-200"
                   }`}
                 />
               ))}
             </div>
             <div className="flex items-baseline justify-between">
               <span className="text-[11px] font-bold tracking-[0.12em] text-blue-600">
-                STEP {step + 1} OF 3
+                STEP {modeSteps.indexOf(step) + 1} OF {modeSteps.length}
               </span>
               <span className="text-xs text-gray-400">{OB_STEP_NAMES[step]}</span>
             </div>
           </div>
+          )}
 
           {!hydrated ? (
             <div className="py-16 text-center text-sm text-gray-400">Loading…</div>
+          ) : mode === "plan" ? (
+            /* ── Plan-change mode: ONE screen, no step-before (S288, Andrew) —
+               the prominent current-plan card and the matching current-card
+               card, each with its own Replace; Done/Cancel exit to origin. ── */
+            <div>
+              <h1 className="mb-2 text-[27px] font-bold leading-[1.15] tracking-tight text-gray-900">
+                {OB_COPY.planModeTitle}
+              </h1>
+              <p className="mb-6 text-[14.5px] leading-relaxed text-gray-500">{OB_COPY.planModeSub}</p>
+              <OnboardingDocStep
+                value={doc}
+                searchSeed={card?.planName || card?.insurer || profileSeed}
+                emphasizeCurrent
+                onCardCleared={() => setCard(null)}
+                onDone={(v) =>
+                  setDoc((prev) => {
+                    if (!prev) return v;
+                    const prevNames = [prev.fileName, ...(prev.extraFiles ?? [])].filter(
+                      (x): x is string => !!x && x !== v.fileName,
+                    );
+                    return {
+                      ...v,
+                      extraFiles: prevNames.slice(0, 3),
+                      moreCount: (prev.moreCount ?? 0) + Math.max(0, prevNames.length - 3),
+                    };
+                  })
+                }
+                onReplace={() => setDoc(null)}
+                hasConsented={hasConsented}
+                grantConsent={grantConsent}
+              />
+              <div className="mt-6">
+                <OnboardingCardStep
+                  value={card}
+                  emphasizeCurrent
+                  onSaved={setCard}
+                  onReplace={() => setCard(null)}
+                  hasConsented={hasConsented}
+                  grantConsent={grantConsent}
+                />
+              </div>
+              <div className="mt-8 flex flex-col gap-3.5">
+                <button
+                  onClick={() => router.push(exitTo)}
+                  className="w-full rounded-[14px] bg-blue-600 px-6 py-3.5 text-[15px] font-semibold text-white transition-colors [box-shadow:var(--glow-blue)] hover:bg-blue-700 hover:[box-shadow:var(--glow-blue-hover)]"
+                >
+                  {OB_COPY.done} →
+                </button>
+                <div className="text-center">
+                  <button
+                    onClick={() => router.push(exitTo)}
+                    className="rounded-[10px] px-2.5 py-1.5 text-[13.5px] font-medium text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+                  >
+                    {OB_COPY.cancel}
+                  </button>
+                </div>
+              </div>
+            </div>
           ) : (
             <>
               {step === 0 && (
                 <div>
-                  <div className="mb-2.5 text-[11px] font-bold tracking-[0.14em] text-blue-600">
-                    {OB_COPY.eyebrow}
-                  </div>
+                  {mode === "signup" && (
+                    <div className="mb-2.5 text-[11px] font-bold tracking-[0.14em] text-blue-600">
+                      {OB_COPY.eyebrow}
+                    </div>
+                  )}
                   <h1 className="mb-2 text-[27px] font-bold leading-[1.15] tracking-tight text-gray-900">
                     {OB_COPY.s1TitleManual}
                   </h1>
@@ -415,6 +539,8 @@ export function OnboardingFlow() {
                   <p className="mb-6 text-[14.5px] leading-relaxed text-gray-500">{OB_COPY.s2Sub}</p>
                   <OnboardingDocStep
                     value={doc}
+                    searchSeed={card?.planName || card?.insurer || profileSeed}
+                    onCardCleared={() => setCard(null)}
                     onDone={(v) =>
                       setDoc((prev) => {
                         // S286: a fresh upload becomes the primary row; prior
@@ -438,14 +564,14 @@ export function OnboardingFlow() {
                     {doc ? (
                       <>
                         <button
-                          onClick={() => setStep(2)}
+                          onClick={advanceFromDoc}
                           className="w-full rounded-[14px] bg-blue-600 px-6 py-3.5 text-[15px] font-semibold text-white transition-colors [box-shadow:var(--glow-blue)] hover:bg-blue-700 hover:[box-shadow:var(--glow-blue-hover)]"
                         >
                           {OB_COPY.continueCta} →
                         </button>
                         <div className="text-center">
                           <button
-                            onClick={() => setStep(2)}
+                            onClick={advanceFromDoc}
                             className="rounded-[10px] px-2.5 py-1.5 text-[13.5px] font-medium text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
                           >
                             {OB_COPY.s2Skip}
@@ -454,7 +580,7 @@ export function OnboardingFlow() {
                       </>
                     ) : (
                       <button
-                        onClick={() => setStep(2)}
+                        onClick={advanceFromDoc}
                         className="w-full rounded-[14px] border border-gray-200 bg-white px-6 py-3.5 text-[15px] font-medium text-gray-400 transition-colors hover:bg-gray-50 hover:text-gray-600"
                       >
                         {OB_COPY.s2Skip} →
@@ -483,7 +609,7 @@ export function OnboardingFlow() {
                     tryFin={tryFin}
                   />
                   <div className="mt-8 flex flex-col gap-3.5">
-                    {noDocs && (
+                    {mode === "signup" && noDocs && (
                       <div className="flex items-start gap-2.5 rounded-[14px] border border-amber-200 bg-amber-50 px-3.5 py-3 text-left text-[13px] leading-relaxed text-amber-700">
                         <svg className="mt-0.5 shrink-0" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                           <path d="M12 9v4m0 4h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" />
@@ -501,15 +627,19 @@ export function OnboardingFlow() {
                       disabled={finishing}
                       className="w-full rounded-[14px] bg-blue-600 px-6 py-3.5 text-[15px] font-semibold text-white transition-colors [box-shadow:var(--glow-blue)] hover:bg-blue-700 hover:[box-shadow:var(--glow-blue-hover)] disabled:cursor-default disabled:opacity-60"
                     >
-                      {finishing ? "Saving…" : `${OB_COPY.s3Cta} →`}
+                      {finishing
+                        ? "Saving…"
+                        : `${mode === "about" ? OB_COPY.saveChanges : OB_COPY.s3Cta} →`}
                     </button>
-                    <button
-                      onClick={() => setStep(1)}
-                      className="flex items-center gap-1.5 self-start rounded-[10px] px-2 py-1.5 text-[13.5px] font-medium text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
-                    >
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 19l-7-7 7-7" /></svg>
-                      Back
-                    </button>
+                    {mode !== "about" && (
+                      <button
+                        onClick={() => setStep(1)}
+                        className="flex items-center gap-1.5 self-start rounded-[10px] px-2 py-1.5 text-[13.5px] font-medium text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 19l-7-7 7-7" /></svg>
+                        Back
+                      </button>
+                    )}
                   </div>
                 </div>
               )}

@@ -190,22 +190,10 @@ function defaultAcaColumns(parserSourceLabel: string): AcaColumns {
   };
 }
 
-function inferServiceCategory(slug: string): string {
-  if (/rx|drug|pharm|medication|prescription/.test(slug)) return "rx";
-  if (/mental|psych|behavioral|substance|counseling/.test(slug)) return "mental_health";
-  if (/therapy|rehab|pt_|ot_|speech|habilitation/.test(slug)) return "therapy";
-  if (/hospital|inpatient|surgical|surgery/.test(slug)) return "hospital";
-  if (/emergency|er_|urgent/.test(slug)) return "emergency";
-  if (/imaging|mri|ct_|xray|ultrasound|radiol/.test(slug)) return "imaging";
-  if (/lab|test|blood|pathol/.test(slug)) return "lab";
-  if (/maternity|prenatal|delivery|pregnancy|birth/.test(slug)) return "maternity";
-  if (/prevent|screen|immuniz|vaccine|wellness|physical/.test(slug)) return "preventive";
-  if (/dme|equipment|prosthetic|diabetic/.test(slug)) return "dme";
-  if (/visit|office|pcp|specialist|physician/.test(slug)) return "office_visit";
-  if (/dental|vision|eye|hearing|glasses/.test(slug)) return "other";
-  if (/hospice|home_health|skilled_nursing/.test(slug)) return "other";
-  return "other";
-}
+// (S289) inferServiceCategory deleted — a zero-call-site regex slug→category
+// classifier whose rules contradicted the catalog (dental/vision → "other").
+// Category is service_catalog.category, joined via the pcs FK or resolved via
+// src/lib/plan/catalog-identity.ts for slug-keyed canonical rows.
 
 /**
  * Process a plan document (SBC or full plan certificate).

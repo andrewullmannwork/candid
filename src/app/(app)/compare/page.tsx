@@ -59,6 +59,7 @@ import { BreadthTable } from "@/components/compare/BreadthTable";
 import { ServiceCategoryAccordions } from "@/components/compare/ServiceCategoryAccordions";
 import { ResultsViewV2 } from "@/components/compare/v2/ResultsViewV2";
 import { BuildViewV2 } from "@/components/compare/v2/BuildViewV2";
+import { CompareSessionsBar } from "@/components/compare/v2/CompareSessionsBar";
 import {
   loadSessions,
   saveSession,
@@ -1123,8 +1124,6 @@ function CompareInterface() {
               setSlot={setSlot}
               currentPlan={currentPlan}
               recents={recents}
-              sessions={sessions}
-              onResume={resumeSession}
             />
           ) : (
             <>
@@ -1197,6 +1196,15 @@ function CompareInterface() {
             </button>
             {resultsError && <p className="text-sm text-rose-600 mt-3 text-center">{resultsError}</p>}
           </div>
+
+          {/* S289 (Andrew) — saved comparisons BELOW the submit CTA: the
+              primary action reads first. v2-only (sessions are a v2 feature;
+              moved out of BuildViewV2). */}
+          {v2On && (
+            <div className="mt-2">
+              <CompareSessionsBar sessions={sessions} onResume={resumeSession} />
+            </div>
+          )}
 
           {/* B3.3 — soft-variant ShareWithFriend embed below the Compare CTA
               (picker view only). Un-gated inline per S125 B3.1 /dashboard

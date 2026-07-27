@@ -14,6 +14,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { loadCatalogIdentity } from "../plan/catalog-identity";
 import type { PlanCoverageInput } from "../claims/recovery-math";
 import type { ParsedBill } from "../billing/types";
 import {
@@ -579,19 +580,12 @@ export async function loadCanonicalCoverageMeta(
     console.warn("[coverage-loader] loadCanonicalCoverageMeta services load failed", error);
   }
   const rows = services ?? [];
-  const slugList = Array.from(
-    new Set(rows.map((r) => r.service_slug as string | null).filter(Boolean) as string[]),
+  // S289 — shared merge-chain resolver (was an inline slug→category two-query
+  // merge; one implementation now serves /compare, /plan gap-fill, and here).
+  const catalogIdentity = await loadCatalogIdentity(
+    supabase,
+    rows.map((r) => r.service_slug as string | null),
   );
-  const categoryBySlug = new Map<string, string | null>();
-  if (slugList.length > 0) {
-    const { data: catalog } = await supabase
-      .from("service_catalog")
-      .select("slug, category")
-      .in("slug", slugList);
-    for (const c of catalog ?? []) {
-      categoryBySlug.set(c.slug as string, (c.category as string | null) ?? null);
-    }
-  }
   for (const r of rows) {
     const entry = out.get(r.canonical_plan_id as string);
     if (!entry) continue;
@@ -599,7 +593,7 @@ export async function loadCanonicalCoverageMeta(
     if (!slug) continue;
     entry.coveredMeta.push({
       slug,
-      category: categoryBySlug.get(slug) ?? null,
+      category: catalogIdentity.get(slug)?.category ?? null,
       coverage: {
         covered: r.covered as boolean | null,
         copay: r.in_copay as number | null,

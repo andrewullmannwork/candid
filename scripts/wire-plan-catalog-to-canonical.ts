@@ -1,5 +1,13 @@
 #!/usr/bin/env npx tsx
 /**
+ * ⚠️ SUPERSEDED (S289) — do not re-run against PROD/DEV. The cold-start Group B
+ * regeneration (S270-S274, [[coldstart_regeneration]]) re-derived the canonical
+ * seed through the live parser pipeline; this script's CMS_TO_CANDID map still
+ * targets 8 slugs that mig 148 merged away (generic_rx_tier1, inpatient_facility,
+ * outpatient_surgery_*, …) — they pass the mig-213 FK (merged catalog rows keep
+ * their slug) but would reintroduce dead-slug rows the readers then have to
+ * chain-resolve. Kept for provenance of the original 2026-Q2 seed only.
+ *
  * Wire Plan Catalog → Canonical Plans + Canonical Plan Services
  *
  * Reads plan_catalog entries (populated by CMS ingest scripts) and:

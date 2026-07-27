@@ -11,7 +11,11 @@
  */
 
 import { unwrapValue } from "@/components/display-state";
-import type { ComparePlanPayload, CompareBenefit } from "@/lib/plan/compare";
+import {
+  pickRepresentativeVariant,
+  type ComparePlanPayload,
+  type CompareBenefit,
+} from "@/lib/plan/compare";
 
 export type BestForTagKey =
   | "low_everyday_costs"
@@ -45,9 +49,13 @@ function num(value: unknown): number | null {
 }
 
 function findBenefit(plan: ComparePlanPayload, slugs: string[]): CompareBenefit | null {
+  // S289 review F5 — representative variant, not first-in-array: "Good for
+  // preventative care — $X primary care copay" must quote the service's
+  // default variant, not whichever variant happened to sort first.
   for (const slug of slugs) {
-    const hit = plan.benefits.find((b) => b.serviceSlug === slug);
-    if (hit) return hit;
+    const hits = plan.benefits.filter((b) => b.serviceSlug === slug);
+    const rep = pickRepresentativeVariant(hits);
+    if (rep) return rep;
   }
   return null;
 }

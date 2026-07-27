@@ -4,7 +4,11 @@ import { cn } from "@/lib/utils/cn";
 import { ComparisonSection } from "@/components/comparison-section";
 import { unwrapValue } from "@/components/display-state";
 import type { ComparePlanPayload } from "@/lib/plan/compare";
-import { categoryCoveragePerPlan, distinctCategoriesAcrossCohort } from "../compare-aggregates";
+import {
+  categoryCoveragePerPlan,
+  distinctCategoriesAcrossCohort,
+  variantCoveragePerPlan,
+} from "../compare-aggregates";
 import { rankBadges } from "../cost-model";
 import { compareGridClass } from "../compare-grid";
 import { getCorroborationCopy } from "../compare-colors";
@@ -32,15 +36,40 @@ export function BreadthTableV2({ plans }: BreadthTableV2Props) {
   // Higher = better → negate so rankBadges (lower = better) flags the highest as Best/"Most".
   const coveredBadges = rankBadges(plans.map((p) => -p.coveredServiceCount));
   const coverageBadges = rankBadges(coveragePerPlan.map((n) => -n));
+  // S289 (Andrew) — variants-covered metric (blanket coverage counts all;
+  // explicit exclusions subtract; drug-tier axis excluded — see
+  // variantCoveragePerPlan).
+  const variantCoverage = variantCoveragePerPlan(plans);
+  const variantBadges = rankBadges(variantCoverage.map((v) => -v.covered));
 
   return (
     <ComparisonSection eyebrow="Service breadth" title="How many services each plan covers">
       <div className="rounded-2xl bg-white ring-1 ring-slate-200 overflow-hidden">
+        {/* S289 (Andrew) — Category coverage leads the table. */}
         <BreadthRowV2
-          label="Services covered"
-          sublabel="Covered = copay or coinsurance disclosed"
+          label="Category coverage"
+          sublabel="Distinct categories covered"
           gridClass={gridClass}
           isFirst
+        >
+          {plans.map((plan, idx) => (
+            <BreadthCellV2 key={`${plan.ref.id}-${idx}`} plan={plan} index={idx}>
+              <span className="text-base font-semibold text-slate-900 tabular-nums">
+                {coveragePerPlan[idx]}
+                <span className="text-sm font-normal text-slate-400">
+                  {" "}
+                  / {totalCategoriesInCohort || coveragePerPlan[idx]}
+                </span>
+              </span>
+              <CompareRankBadge kind={coverageBadges[idx]} bestLabel="Most" worstLabel="Fewest" />
+            </BreadthCellV2>
+          ))}
+        </BreadthRowV2>
+
+        <BreadthRowV2
+          label="Services covered"
+          sublabel="Services covered by plan. May not include all variants."
+          gridClass={gridClass}
         >
           {plans.map((plan, idx) => (
             <BreadthCellV2 key={`${plan.ref.id}-${idx}`} plan={plan} index={idx}>
@@ -52,17 +81,22 @@ export function BreadthTableV2({ plans }: BreadthTableV2Props) {
           ))}
         </BreadthRowV2>
 
-        <BreadthRowV2 label="Category coverage" sublabel="Distinct categories covered" gridClass={gridClass}>
+        {/* S289 (Andrew) — variants-covered metric. */}
+        <BreadthRowV2
+          label="Variants covered"
+          sublabel="Service-specific conditions and their coverage."
+          gridClass={gridClass}
+        >
           {plans.map((plan, idx) => (
             <BreadthCellV2 key={`${plan.ref.id}-${idx}`} plan={plan} index={idx}>
               <span className="text-base font-semibold text-slate-900 tabular-nums">
-                {coveragePerPlan[idx]}
+                {variantCoverage[idx].covered}
                 <span className="text-sm font-normal text-slate-400">
                   {" "}
-                  / {totalCategoriesInCohort || coveragePerPlan[idx]}
+                  / {variantCoverage[idx].total}
                 </span>
               </span>
-              <CompareRankBadge kind={coverageBadges[idx]} bestLabel="Most" worstLabel="Fewest" />
+              <CompareRankBadge kind={variantBadges[idx]} bestLabel="Most" worstLabel="Fewest" />
             </BreadthCellV2>
           ))}
         </BreadthRowV2>

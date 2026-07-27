@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
 import { createBrowserClient } from "@/lib/supabase/client";
-import type { PlanAnalysisResult, AnalyzedBenefit } from "@/lib/plan/analyzer";
+import type { PlanAnalysisResult } from "@/lib/plan/analyzer";
 import { FollowupBanner } from "@/components/disputes/FollowupBanner";
 import { ShareWithFriend } from "@/components/share/share-with-friend";
 import { PageHeader } from "@/components/page-header";
@@ -25,6 +25,12 @@ import {
   type BenefitsGridTile,
   type TileDomain,
 } from "@/components/dashboard/BenefitsGrid";
+import { categoryToDomain } from "@/lib/plan/category-display";
+import {
+  groupCoveredBenefits,
+  isGroupUsed,
+  type CoveredBenefitGroup,
+} from "@/lib/plan/benefit-grouping";
 import { MoreFromCandidCards } from "@/components/dashboard/MoreFromCandidCards";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -79,15 +85,11 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   // Claim pipeline (Surface 1 dash-duo) — same derived counts as /claim.
   const pipeline = useClaimPipeline();
-  const [usedBenefits] = useState<Set<string>>(() => {
-    if (typeof window === "undefined") return new Set();
-    try {
-      const stored = localStorage.getItem("candid_used_benefits");
-      return stored ? new Set(JSON.parse(stored) as string[]) : new Set();
-    } catch {
-      return new Set();
-    }
-  });
+  // S289 — slug-keyed ticks hydrated from the analyze response (server truth
+  // on the active plan row). The old localStorage init read TITLE-keyed
+  // entries written by /plan, so the per-tile used counts below could never
+  // match a tick; server hydration fixes both surfaces at once.
+  const [usedBenefits, setUsedBenefits] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!user) return;
@@ -128,7 +130,9 @@ export default function DashboardPage() {
 
       if (planRes && planRes.ok) {
         try {
-          setPlanResult(await planRes.json());
+          const planData = await planRes.json();
+          setPlanResult(planData);
+          setUsedBenefits(new Set((planData.usedBenefits as string[] | undefined) ?? []));
         } catch {
           // Plan analysis may fail if profile incomplete; non-fatal.
         }
@@ -277,6 +281,9 @@ export default function DashboardPage() {
       if (
         ps === "sbc_upload" ||
         ps === "plan_doc_upload" ||
+        // S288: a search-selected named plan is canonical-grade (green tier per
+        // the S269 DataSourceContextLine decision) — not "unverified".
+        ps === "catalog_match" ||
         (vs && vs !== "unverified")
       ) {
         return "verified" as const;
@@ -292,9 +299,19 @@ export default function DashboardPage() {
   const planYear = planResult?.planYear ?? null;
   const planName = planResult?.planName ?? null;
   const planType = planResult?.planType ?? null;
-  const totalBenefits = planResult?.totalBenefits ?? 0;
   const showYearRolloverSuffix =
     yearRolloverEnabled && planYear === currentYear ? `${planYear} plan year active` : undefined;
+
+  // BenefitsGrid tile mapping (D-§1.C.1-E + AMA-scrub NON-NEGOTIABLE).
+  // S289 — one counting rule with /plan: title-groups, not raw variant items
+  // (the analyze payload's totalBenefits is item-level and disagreed with
+  // /plan's "X of N" denominator).
+  const benefits = planResult?.benefits ?? [];
+  const benefitGroups = groupCoveredBenefits(benefits);
+  const benefitsTiles = buildBenefitsTiles(benefitGroups, usedBenefits);
+  const hsaCount = benefits.filter((b) => b.benefit.hsaFsaEligible).length;
+  const usedCount = benefitGroups.filter((g) => isGroupUsed(g, usedBenefits)).length;
+  const totalBenefits = benefitGroups.length;
 
   // Plan card meta line (verified state) — "PPO · 2026 · 90 benefits".
   const planCardMeta =
@@ -303,12 +320,6 @@ export default function DashboardPage() {
           .filter(Boolean)
           .join(" · ")
       : null;
-
-  // BenefitsGrid tile mapping (D-§1.C.1-E + AMA-scrub NON-NEGOTIABLE).
-  const benefits = planResult?.benefits ?? [];
-  const benefitsTiles = buildBenefitsTiles(benefits, usedBenefits);
-  const hsaCount = benefits.filter((b) => b.benefit.hsaFsaEligible).length;
-  const usedCount = usedBenefits.size;
 
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
@@ -606,35 +617,9 @@ function labelFor(docType: string): string {
 
 // ─── BenefitsGrid mapping (AMA-clean per P5 Hard Rule #3) ──────────────────
 
-/** Map candid category strings (BenefitCategory or service_catalog) → design tile domain. */
-function categoryToDomain(category: string): TileDomain {
-  const map: Record<string, TileDomain> = {
-    // BenefitCategory enum values (benefits-catalog.ts)
-    preventive_care: "preventive",
-    mental_health: "mental",
-    nutrition: "other",
-    physical_therapy: "therapy",
-    hsa_fsa: "other",
-    telehealth: "office",
-    chronic_care: "ltc",
-    wellness: "preventive",
-    maternity: "maternity",
-    vision_dental: "other",
-    // Service catalog category values
-    imaging: "imaging",
-    emergency: "emergency",
-    office_visit: "office",
-    hospital: "hospital",
-    lab: "lab",
-    rx: "rx",
-    therapy: "therapy",
-    dme: "equip",
-    preventive: "preventive",
-    other: "other",
-    general: "other",
-  };
-  return map[category] ?? "other";
-}
+// categoryToDomain lives in src/lib/plan/category-display.ts (S289 — shared,
+// fixture-asserted; adds the 7 previously-missing service_catalog categories
+// that all fell to "other" and kept the LTC tile permanently at 0).
 
 const TILE_DEFS: Array<{ id: string; domain: TileDomain; name: string }> = [
   { id: "preventive", domain: "preventive", name: "Preventive Care" },
@@ -652,10 +637,15 @@ const TILE_DEFS: Array<{ id: string; domain: TileDomain; name: string }> = [
 ];
 
 function buildBenefitsTiles(
-  benefits: AnalyzedBenefit[],
+  benefitGroups: CoveredBenefitGroup[],
   usedBenefits: Set<string>,
 ): BenefitsGridTile[] {
-  // categoryKey = candid category string of the FIRST benefit landing in the
+  // S289 — tiles count TITLE-GROUPS via the shared counting rule
+  // (benefit-grouping.ts), exactly what /plan renders one row + one checkbox
+  // for. The previous per-ITEM loop counted every POS/component/tier variant
+  // separately (a 3-variant Surgery = 3 on the tile, 1 on /plan) and bumped
+  // usedCount once per variant sharing a ticked slug (one tick showed as 2).
+  // categoryKey = candid category string of the FIRST group landing in the
   // bucket; powers the /plan#category-{categoryKey} deep-link anchor.
   type Bucket = {
     count: number;
@@ -668,13 +658,13 @@ function buildBenefitsTiles(
 
   const otherBucket: Bucket = { count: 0, usedCount: 0 };
 
-  for (const item of benefits) {
-    const domain = categoryToDomain(item.benefit.category);
+  for (const group of benefitGroups) {
+    const domain = categoryToDomain(group.category);
     const bucket = domain === "other" ? otherBucket : grouped.get(domain)!;
     bucket.count++;
-    if (usedBenefits.has(item.benefit.id)) bucket.usedCount++;
-    if (!bucket.topBenefit) bucket.topBenefit = item.benefit.title;
-    if (!bucket.categoryKey) bucket.categoryKey = item.benefit.category;
+    if (isGroupUsed(group, usedBenefits)) bucket.usedCount++;
+    if (!bucket.topBenefit) bucket.topBenefit = group.title;
+    if (!bucket.categoryKey) bucket.categoryKey = group.category;
   }
 
   const tiles: BenefitsGridTile[] = TILE_DEFS.map((def) => {

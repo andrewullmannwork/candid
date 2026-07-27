@@ -208,6 +208,8 @@ export function ResultsViewV2({
           plans={plans}
           effPremium={effPremium}
           premiumGrounded={premiumGrounded}
+          premiumEntryFor={entryFor}
+          onPremiumSave={onPremiumSave}
           usage={usage}
           setUsage={setUsage}
           household={household}

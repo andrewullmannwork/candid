@@ -6,6 +6,9 @@ import { loadDecorationContext, type DecorationContext } from "@/lib/plan/analyz
 import { decorateFieldFromEntry } from "@/lib/parser/consumer-read";
 import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import { resolveCanonicalSlugs } from "@/lib/parser/canonical-resolution";
+import { loadCatalogIdentity } from "@/lib/plan/catalog-identity";
+import { readUsedBenefits } from "@/lib/plan/benefit-usage";
+import { formatInNetworkCost, formatOutOfNetworkCost } from "@/lib/plan/cost-share-format";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
@@ -153,37 +156,15 @@ export async function POST(request: NextRequest) {
             ? `Find a covered provider at ${planLevelNetworkFinderUrl}.`
             : null;
 
+        // S289 — cost-share display formatting extracted to the shared,
+        // fixture-asserted module (src/lib/plan/cost-share-format.ts) so every
+        // producer of `costDescription` (user-row path AND canonical gap-fill)
+        // runs the same named rule. Local aliases keep call sites readable.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        function formatCost(s: any): string {
-          const parts: string[] = [];
-          const copay = s.in_copay as number | null;
-          const coinsurance = s.in_coinsurance as number | null;
-          if (copay != null) parts.push(`$${copay} copay`);
-          if (coinsurance != null && coinsurance > 0) parts.push(`${normalizeCoinsurancePct(coinsurance)}% coinsurance`);
-          if (s.in_deductible_applies) parts.push("after deductible");
-          if (parts.length === 0 && copay === null && coinsurance === 0) return "No charge";
-          if (parts.length === 0) return "Covered";
-          return parts.join(", ").replace(/^./, (c: string) => c.toUpperCase());
-        }
-
+        const formatCost = (s: any): string => formatInNetworkCost(s);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        function formatOonCost(s: any, planType: string | null): string {
-          // Prefer explicit OON description from extraction.
-          if (s.out_cost_description) return s.out_cost_description;
-          // Fall back to structured OON fields.
-          const parts: string[] = [];
-          const copay = s.out_copay as number | null;
-          const coinsurance = s.out_coinsurance as number | null;
-          if (copay != null) parts.push(`$${copay} copay`);
-          if (coinsurance != null && coinsurance > 0) parts.push(`${normalizeCoinsurancePct(coinsurance)}% coinsurance`);
-          if (s.out_deductible_applies) parts.push("after deductible");
-          if (parts.length > 0) return parts.join(", ").replace(/^./, (c: string) => c.toUpperCase());
-          if (copay === 0 && coinsurance === 0) return "No charge";
-          // HMO/EPO typically don't cover OON. Signal that instead of an empty em dash.
-          const pt = (planType || "").toUpperCase();
-          if (pt === "HMO" || pt === "EPO") return "Not covered";
-          return "";
-        }
+        const formatOonCost = (s: any, planType: string | null): string =>
+          formatOutOfNetworkCost(s, planType);
 
         function cleanDescription(raw: string): string {
           return raw
@@ -213,7 +194,15 @@ export async function POST(request: NextRequest) {
           return parts.join(". ") + ".";
         }
 
-        if (coveredServices && coveredServices.length > 0) {
+        // S288 plan-flow unification: a link-only catalog plan (search-select /
+        // "Change plan") has ZERO user coverage rows — its coverage lives
+        // entirely behind canonical_plan_id. The old user-rows-only guard made
+        // analyze skip its own canonical branch and fall through to the static
+        // plan-type catalog ("Set up your profile" on a set-up account). Enter
+        // Priority 0 whenever there are user rows OR a canonical link; every
+        // path inside tolerates an empty user set (the canonical gap-fill then
+        // supplies the full benefit list).
+        if ((coveredServices && coveredServices.length > 0) || userPlan.canonical_plan_id) {
           // S99 B5: pre-resolve each row's slug to its canonical sibling (via
           // service_catalog.concept_id grouping). post-S95 reset, no aliases
           // exist; this is identity. Once admin promotes the first proposed_*
@@ -248,12 +237,10 @@ export async function POST(request: NextRequest) {
             // place-aware composite keys (slug:place_of_service) — checked before slug-only fallback
             "pcp_visit:virtual": "telehealth-primary",
             "specialist_visit:virtual": "telehealth-primary",
-            // deprecated-slug aliases (mig 183): the user-covered-services path filters these out via
-            // merged_into_id IS NULL (line ~121), but the canonical gap-fill path reads
-            // canonical_plan_services.service_slug directly (NOT merged-filtered), so a stale canonical
-            // row with a telehealth_* slug still reaches this lookup → keep the aliases live.
-            telehealth_pcp: "telehealth-primary",
-            telehealth_specialist: "telehealth-primary",
+            // (S289) the former telehealth_pcp/telehealth_specialist dead-slug aliases are gone:
+            // the gap-fill path now resolves stored slugs through loadCatalogIdentity (merge-chain
+            // aware) and keys this lookup on the LIVE slug; mig 213 also remaps the 7 stored
+            // dead-slug rows onto pcp_visit/specialist_visit @ place_of_service='virtual'.
             // legacy aliases (pre-S94 data; safe to remove once S94 backfill complete)
             physical_therapy: "physical-therapy",
             occupational_therapy: "occupational-therapy",
@@ -406,9 +393,22 @@ export async function POST(request: NextRequest) {
               .eq("canonical_plan_id", userPlan.canonical_plan_id);
 
             if (canonicalServices) {
-              const gapServices = canonicalServices.filter(
-                (cs) => cs.service_slug && !userSlugs.has(cs.service_slug)
+              // S289 — canonical_plan_services stores a bare service_slug (no FK), so
+              // category/name/merge-state come from the shared merge-chain resolver.
+              // This replaced the hardcoded category:"other" that dumped every
+              // search-selected plan's benefits into one "Other Services" bucket.
+              const gapIdentity = await loadCatalogIdentity(
+                supabase,
+                canonicalServices.map((cs) => cs.service_slug as string | null),
               );
+              // Gap = services the user doesn't already have. Compare on the LIVE
+              // slug — "does the user already have this service" is an identity
+              // question, so a stored dead slug must not slip past its live twin.
+              const gapServices = canonicalServices.filter((cs) => {
+                if (!cs.service_slug) return false;
+                const live = gapIdentity.get(cs.service_slug)?.liveSlug ?? cs.service_slug;
+                return !userSlugs.has(live);
+              });
 
               // Phase 4 Task 4-B: canonical gap-fill rows are CROSS-USER source
               // ("canonical_inherited") — subject to multi-source corroboration
@@ -419,6 +419,11 @@ export async function POST(request: NextRequest) {
               const canonicalSourceCount = decoration?.canonicalSourceCount ?? 1;
               const canonicalLogicalSource = "canonical_inherited";
               canonicalGapBenefits = gapServices.map((cs) => {
+                // S289 — live catalog identity for this stored slug (undefined
+                // only for a slug missing from service_catalog entirely; callers
+                // fall back to the old prettify/"other" behavior there).
+                const identity = cs.service_slug ? gapIdentity.get(cs.service_slug) : undefined;
+                const liveSlug = identity?.liveSlug ?? (cs.service_slug as string | null);
                 // FE→BE request resolution (feedback_benefits_prose_preserve):
                 // back-fill whyUnderutilized + howToAccess from BENEFITS_CATALOG
                 // when the canonical service slug maps to a catalog entry. Reuses
@@ -428,12 +433,16 @@ export async function POST(request: NextRequest) {
                 // item 4 (mig 183): composite key first, symmetric with the user-row path
                 // (line ~281) — a virtual pcp_visit/specialist_visit canonical row resolves to
                 // "telehealth-primary", not "annual-physical"/"cancer-screenings".
+                // S289: keyed on the LIVE slug so rows stored on a merged slug
+                // reach the same prose as their live twin.
                 const gapCatalogId =
-                  (cs.place_of_service === "virtual" && cs.service_slug
-                    ? SLUG_TO_CATALOG[`${cs.service_slug}:virtual`]
+                  (cs.place_of_service === "virtual" && liveSlug
+                    ? SLUG_TO_CATALOG[`${liveSlug}:virtual`]
                     : undefined)
-                  ?? (cs.service_slug ? SLUG_TO_CATALOG[cs.service_slug] : undefined);
+                  ?? (liveSlug ? SLUG_TO_CATALOG[liveSlug] : undefined);
                 const gapCatalogBenefit = gapCatalogId ? catalogBenefitMap.get(gapCatalogId) : undefined;
+                // S289: real category from the live catalog row (was hardcoded "other").
+                const gapCategory = identity?.category ?? "other";
                 return {
                 // S99 B5: canonical_plan_services entries should be canonical
                 // slugs per Pattern 1 #14. Pass through; surface separately
@@ -442,8 +451,14 @@ export async function POST(request: NextRequest) {
                 canonicalServiceSlug: cs.service_slug,
                 benefit: {
                   id: cs.service_slug || cs.id,
-                  category: "other",
-                  title: cleanDescription((cs.service_slug || "").replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())),
+                  category: gapCategory,
+                  // S289: display name from the live catalog row (parity with the
+                  // user-row path, which titles from service_catalog.name via its
+                  // FK join) — "Pcp Visit" → "Primary Care Visit".
+                  title: cleanDescription(
+                    identity?.name
+                      ?? (cs.service_slug || "").replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase()),
+                  ),
                   description: cs.covered === false
                     ? "Not covered under this plan."
                     : [
@@ -458,7 +473,7 @@ export async function POST(request: NextRequest) {
                   hsaFsaEligible: gapCatalogBenefit?.hsaFsaEligible || false,
                   planTypes: [userPlan.plan_type || ""],
                 },
-                categoryLabel: "other",
+                categoryLabel: gapCategory,
                 // A3 (cite-grade gate): the cold-start seed IS the plan's own official SBC (admin
                 // cold-start), so the prior "other plan members" label is the same over-claim the old
                 // "Community" badge was. Relabel ONLY for the official seed (source='admin_attested');
@@ -475,7 +490,14 @@ export async function POST(request: NextRequest) {
                     copay: maybeDecorate<number | null>(cs.covered === false ? null : cs.in_copay, getProv(cs, "in_copay"), canonicalLogicalSource, canonicalSourceCount),
                     coinsurance: maybeDecorate<number | null>(cs.covered === false ? null : cs.in_coinsurance, getProv(cs, "in_coinsurance"), canonicalLogicalSource, canonicalSourceCount),
                     deductibleApplies: cs.covered === false ? false : cs.in_deductible_applies,
-                    costDescription: cs.covered === false ? "Not covered" : "",
+                    // S289 — was hardcoded "" for covered rows, which the /plan
+                    // cost matrix + single-variant panel render as an em-dash:
+                    // every canonical gap-fill benefit showed "—" in BOTH
+                    // network columns while the summary prose above it showed
+                    // the real numbers. Same formatters as the user-row path;
+                    // canonical rows carry the aligned in_*/out_* columns
+                    // (F.0 mig 169), so they apply verbatim.
+                    costDescription: cs.covered === false ? "Not covered" : formatCost(cs),
                   },
                   // CF-19c (Session 64): canonical_plan_services now carries OON columns
                   // (mig 071). Populate them when present; null until promotion events fire
@@ -484,7 +506,7 @@ export async function POST(request: NextRequest) {
                     copay: maybeDecorate<number | null>(cs.covered === false ? null : (cs.out_copay ?? null), getProv(cs, "out_copay"), canonicalLogicalSource, canonicalSourceCount),
                     coinsurance: maybeDecorate<number | null>(cs.covered === false ? null : (cs.out_coinsurance ?? null), getProv(cs, "out_coinsurance"), canonicalLogicalSource, canonicalSourceCount),
                     deductibleApplies: cs.covered === false ? false : (cs.out_deductible_applies ?? false),
-                    costDescription: cs.covered === false ? "Not covered" : "",
+                    costDescription: cs.covered === false ? "Not covered" : formatOonCost(cs, userPlan.plan_type ?? null),
                   },
                   annualLimit: maybeDecorate<string | null>(cs.annual_limit ? String(cs.annual_limit) : null, getProv(cs, "annual_limit"), canonicalLogicalSource, canonicalSourceCount),
                   priorAuthRequired: maybeDecorate<boolean | null>(cs.prior_auth_required, getProv(cs, "prior_auth_required"), canonicalLogicalSource, canonicalSourceCount),
@@ -539,6 +561,27 @@ export async function POST(request: NextRequest) {
             });
           }
 
+          // S288: link-only catalog rows carry no plan-level terms — read them
+          // from the canonical so the /plan + dashboard summary tiles don't
+          // dash out. canonical_plans keeps the LEGACY names for in-network
+          // plan-level terms (deductible_individual / oop_max_individual);
+          // only the OON columns use the out_ prefix (mig 192).
+          let canonTerms: Record<string, number | null> | null = null;
+          if (
+            userPlan.canonical_plan_id &&
+            userPlan.in_deductible_individual == null &&
+            userPlan.in_oop_max_individual == null
+          ) {
+            const { data: ct } = await supabase
+              .from("canonical_plans")
+              .select(
+                "deductible_individual, oop_max_individual, out_deductible_individual, out_oop_max_individual",
+              )
+              .eq("id", userPlan.canonical_plan_id)
+              .maybeSingle();
+            canonTerms = (ct as Record<string, number | null> | null) ?? null;
+          }
+
           return NextResponse.json({
             benefits: allBenefits,
             categoryCounts: {},
@@ -546,6 +589,11 @@ export async function POST(request: NextRequest) {
             totalNotCovered: allBenefits.length - coveredCount,
             profileComplete: true,
             missingFields: [],
+            // S289 — "I use this" ticks live on the active plan row
+            // (metadata.used_benefits, LIVE slugs; see lib/plan/benefit-usage).
+            // Client hydrates from here; POST /api/plan/benefit-usage toggles.
+            // Paths without a plan row omit the field (client defaults to []).
+            usedBenefits: readUsedBenefits(userPlan.metadata),
             dataSource: canonicalGapBenefits.length > 0 ? "user_plan_with_canonical" : "user_plan",
             planName: userPlan.plan_name,
             planYear: userPlan.plan_year || null,
@@ -585,11 +633,29 @@ export async function POST(request: NextRequest) {
                 premiumSource ? premiumSource : "cms_marketplace";
               const premiumSourceCount =
                 premiumLogicalSource === "canonical_fallback" ? (decoration?.canonicalSourceCount ?? 1) : 1;
+              // S288: a canonical-filled value must decorate as canonical data
+              // ("canonical_inherited" + the canonical's source count — the
+              // same treatment the gap-fill benefit rows get), NOT under the
+              // row's own planSource with count 1: the consumer-read filter
+              // maps that to a non-visible state and the tiles dash out.
+              const pickTerm = (
+                own: number | null | undefined,
+                canon: number | null | undefined,
+                provKey: string,
+              ) =>
+                own == null && canon != null
+                  ? maybeDecorate<number | null>(
+                      canon,
+                      undefined,
+                      "canonical_inherited",
+                      decoration?.canonicalSourceCount ?? 1,
+                    )
+                  : maybeDecorate<number | null>(own ?? null, getProv(userPlan, provKey), planSource, 1);
               return {
-                inDeductible: maybeDecorate<number | null>(userPlan.in_deductible_individual ?? profile.deductible_individual, getProv(userPlan, "in_deductible_individual"), planSource, 1),
-                outDeductible: maybeDecorate<number | null>(userPlan.out_deductible_individual, getProv(userPlan, "out_deductible_individual"), planSource, 1),
-                inOopMax: maybeDecorate<number | null>(userPlan.in_oop_max_individual ?? profile.oop_max_individual, getProv(userPlan, "in_oop_max_individual"), planSource, 1),
-                outOopMax: maybeDecorate<number | null>(userPlan.out_oop_max_individual, getProv(userPlan, "out_oop_max_individual"), planSource, 1),
+                inDeductible: pickTerm(userPlan.in_deductible_individual ?? profile.deductible_individual, canonTerms?.deductible_individual, "in_deductible_individual"),
+                outDeductible: pickTerm(userPlan.out_deductible_individual, canonTerms?.out_deductible_individual, "out_deductible_individual"),
+                inOopMax: pickTerm(userPlan.in_oop_max_individual ?? profile.oop_max_individual, canonTerms?.oop_max_individual, "in_oop_max_individual"),
+                outOopMax: pickTerm(userPlan.out_oop_max_individual, canonTerms?.out_oop_max_individual, "out_oop_max_individual"),
                 planType: maybeDecorate<string | null>(userPlan.plan_type, getProv(userPlan, "plan_type"), planSource, 1),
                 verificationStatus: userPlan.verification_status,
                 premiumMonthly: maybeDecorate<number | null>(premiumMonthly, undefined, premiumLogicalSource, premiumSourceCount),

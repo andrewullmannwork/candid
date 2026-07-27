@@ -72,7 +72,26 @@ interface Cleanup {
   canonicalIds: string[];
   insurerId?: string;
   promotionEventIds: string[];
+  catalogSlugs: string[];
 }
+
+/**
+ * Every synthetic slug the RPC legs promote through canonical_plan_services.
+ * MUST be exhaustive: a missing slug now FK-403s the RPC insert (mig 213) and
+ * the meta-carry asserts then fail against an empty entry — while the
+ * "key SKIPPED" asserts pass vacuously (S289 DEV-apply lesson: exactly that
+ * happened with fixture_pt/fixture_xray).
+ */
+const FIXTURE_SLUGS = [
+  "fixture_office_visit",
+  "fixture_specialist",
+  "fixture_lab",
+  "fixture_surgery",
+  "fixture_inpatient",
+  "fixture_mri",
+  "fixture_pt",
+  "fixture_xray",
+] as const;
 
 async function setup(cleanup: Cleanup): Promise<{ insurerId: string }> {
   // Resolve any existing insurer to point at; use the first one (no FK constraint
@@ -82,6 +101,20 @@ async function setup(cleanup: Cleanup): Promise<{ insurerId: string }> {
     throw new Error("No insurer_catalog rows exist; cannot create synthetic canonical_plans row");
   }
   cleanup.insurerId = insurer.id;
+  // mig 213 — cps.service_slug now FKs service_catalog(slug): seed the
+  // synthetic slugs so the RPC's cps INSERTs pass; teardown removes them
+  // after the cps rows (FK is NO ACTION, so order matters).
+  for (const slug of FIXTURE_SLUGS) {
+    const { error } = await sb.from("service_catalog").insert({
+      slug,
+      name: `Fixture — ${slug}`,
+      category: "other",
+    });
+    if (error && !/duplicate key/i.test(error.message)) {
+      throw new Error(`service_catalog fixture insert failed (${slug}): ${error.message}`);
+    }
+    if (!error) cleanup.catalogSlugs.push(slug);
+  }
   return { insurerId: insurer.id };
 }
 
@@ -177,7 +210,12 @@ async function teardown(cleanup: Cleanup) {
     await sb.from("canonical_plan_services").delete().in("canonical_plan_id", cleanup.canonicalIds);
     await sb.from("canonical_plans").delete().in("id", cleanup.canonicalIds);
   }
-  console.log(`  cleaned up ${cleanup.canonicalIds.length} canonical(s), ${cleanup.promotionEventIds.length} event(s)`);
+  if (cleanup.catalogSlugs.length > 0) {
+    // After cps deletes — mig-213 FK (NO ACTION) blocks catalog deletion
+    // while referenced.
+    await sb.from("service_catalog").delete().in("slug", cleanup.catalogSlugs);
+  }
+  console.log(`  cleaned up ${cleanup.canonicalIds.length} canonical(s), ${cleanup.promotionEventIds.length} event(s), ${cleanup.catalogSlugs.length} catalog slug(s)`);
 }
 
 async function testCanonicalPlansTypedColSync(cleanup: Cleanup, insurerId: string) {
@@ -499,7 +537,7 @@ async function testProvenanceMetaCarry(cleanup: Cleanup, insurerId: string) {
 async function main() {
   console.log("Path B PR #1 fixture — apply_promotion_event typed-col sync\n");
 
-  const cleanup: Cleanup = { canonicalIds: [], promotionEventIds: [] };
+  const cleanup: Cleanup = { canonicalIds: [], promotionEventIds: [], catalogSlugs: [] };
 
   try {
     const { insurerId } = await setup(cleanup);
