@@ -40,13 +40,13 @@ export const OB_COPY = {
   situationLabel: "What brings you here?",
   situationWhy: "Helps us run the right audit checks first.",
   /* S288 mode system (plan-change / about-you edit reuse of the flow) —
-     DRAFT copy pending Andrew approval. */
+     copy APPROVED by Andrew S289 (2026-07-27); fixture-asserted verbatim. */
   cancel: "Cancel",
   done: "Done",
   saveChanges: "Save changes",
   planModeTitle: "Update your plan",
   planModeSub:
-    "Replace your plan by uploading a document or searching Candid's plan library — or update the insurance card on file.",
+    "Replace your plan or insurance card by uploading a document or searching Candid's library.",
 } as const;
 
 /** Step names shown in the progress row. */
@@ -62,10 +62,10 @@ export const OB_CARD_COPY = {
   replace: "Replace",
   scanNote: "OCR · matching insurer · pulling IDs",
   save: "Save details",
-  /* S288 both-or-neither (DRAFT copy pending Andrew approval): a divergent
-     card + "Keep current plan" writes NOTHING — this is the receipt. */
-  keptNothing: "Nothing was changed — that card doesn't match the plan on file.",
-  /* S288 plan-change mode — current-card framing (DRAFT copy). */
+  /* S288 both-or-neither (copy APPROVED by Andrew S289): a divergent card +
+     "Keep current plan" writes NOTHING — this is the receipt. */
+  keptNothing: "Nothing was changed — that card doesn't match the plan on file. Try again.",
+  /* S288 plan-change mode — current-card framing (copy APPROVED S289). */
   currentCardEyebrow: "YOUR CURRENT CARD",
   replaceCard: "Replace card",
 } as const;
@@ -82,8 +82,8 @@ export const OB_DOC_COPY = {
     { tag: "PLAN DOC", items: "Deductibles · OOP max · covered services" },
     { tag: "BILL · EOB", items: "Line-item overcharge audit, on the spot" },
   ],
-  /* S288 plan-library search (upload's peer alternative) — DRAFT copy pending
-     Andrew approval. */
+  /* S288 plan-library search (upload's peer alternative) — copy APPROVED by
+     Andrew S289 (2026-07-27); fixture-asserted verbatim. */
   searchToggle: "No document handy? Search for your plan instead",
   searchPlaceholder: "Plan name or insurer — e.g. UHC Gold Advantage",
   searchHint:
@@ -91,9 +91,9 @@ export const OB_DOC_COPY = {
   searchEmpty: "No matches — try fewer words, or upload a document instead.",
   searchSelecting: "Setting up your plan…",
   searchDone: "Plan on file — from Candid's plan library",
-  searchError: "Couldn't set that plan. Please try again.",
+  searchError: "Couldn't find that plan. Please try again.",
   searchBack: "Back to upload",
-  /* S288 plan-change mode — prominent current-plan framing (DRAFT copy). */
+  /* S288 plan-change mode — prominent current-plan framing (copy APPROVED S289). */
   currentPlanEyebrow: "YOUR CURRENT PLAN",
   replacePlan: "Replace plan",
 } as const;

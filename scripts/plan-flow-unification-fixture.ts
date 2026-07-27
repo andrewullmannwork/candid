@@ -172,28 +172,57 @@ const CANON_TERMS = {
     check("fail-open — unfilled stays null", p?.inDeductibleIndividual, null);
   }
 
-  // 2. S288 copy keys present + non-empty.
-  for (const [k, v] of [
-    ["OB_COPY.cancel", OB_COPY.cancel],
-    ["OB_COPY.done", OB_COPY.done],
-    ["OB_COPY.saveChanges", OB_COPY.saveChanges],
-    ["OB_DOC_COPY.searchToggle", OB_DOC_COPY.searchToggle],
-    ["OB_DOC_COPY.searchPlaceholder", OB_DOC_COPY.searchPlaceholder],
-    ["OB_DOC_COPY.searchHint", OB_DOC_COPY.searchHint],
-    ["OB_DOC_COPY.searchEmpty", OB_DOC_COPY.searchEmpty],
-    ["OB_DOC_COPY.searchSelecting", OB_DOC_COPY.searchSelecting],
-    ["OB_DOC_COPY.searchDone", OB_DOC_COPY.searchDone],
-    ["OB_DOC_COPY.searchError", OB_DOC_COPY.searchError],
-    ["OB_DOC_COPY.searchBack", OB_DOC_COPY.searchBack],
-    ["OB_DOC_COPY.currentPlanEyebrow", OB_DOC_COPY.currentPlanEyebrow],
-    ["OB_DOC_COPY.replacePlan", OB_DOC_COPY.replacePlan],
-    ["OB_CARD_COPY.keptNothing", OB_CARD_COPY.keptNothing],
-    ["OB_CARD_COPY.currentCardEyebrow", OB_CARD_COPY.currentCardEyebrow],
-    ["OB_CARD_COPY.replaceCard", OB_CARD_COPY.replaceCard],
-    ["OB_COPY.planModeTitle", OB_COPY.planModeTitle],
-    ["OB_COPY.planModeSub", OB_COPY.planModeSub],
+  // 2. S288 mode/search copy — APPROVED by Andrew S289 (2026-07-27),
+  // asserted VERBATIM (the S285 precedent: approved copy is a contract).
+  for (const [k, v, expected] of [
+    ["OB_COPY.cancel", OB_COPY.cancel, "Cancel"],
+    ["OB_COPY.done", OB_COPY.done, "Done"],
+    ["OB_COPY.saveChanges", OB_COPY.saveChanges, "Save changes"],
+    ["OB_COPY.planModeTitle", OB_COPY.planModeTitle, "Update your plan"],
+    [
+      "OB_COPY.planModeSub",
+      OB_COPY.planModeSub,
+      "Replace your plan or insurance card by uploading a document or searching Candid's library.",
+    ],
+    [
+      "OB_CARD_COPY.keptNothing",
+      OB_CARD_COPY.keptNothing,
+      "Nothing was changed — that card doesn't match the plan on file. Try again.",
+    ],
+    ["OB_CARD_COPY.currentCardEyebrow", OB_CARD_COPY.currentCardEyebrow, "YOUR CURRENT CARD"],
+    ["OB_CARD_COPY.replaceCard", OB_CARD_COPY.replaceCard, "Replace card"],
+    [
+      "OB_DOC_COPY.searchToggle",
+      OB_DOC_COPY.searchToggle,
+      "No document handy? Search for your plan instead",
+    ],
+    [
+      "OB_DOC_COPY.searchPlaceholder",
+      OB_DOC_COPY.searchPlaceholder,
+      "Plan name or insurer — e.g. UHC Gold Advantage",
+    ],
+    [
+      "OB_DOC_COPY.searchHint",
+      OB_DOC_COPY.searchHint,
+      "Picking your plan from Candid's library fills in your coverage like a document would. You can add the document anytime for verified details.",
+    ],
+    [
+      "OB_DOC_COPY.searchEmpty",
+      OB_DOC_COPY.searchEmpty,
+      "No matches — try fewer words, or upload a document instead.",
+    ],
+    ["OB_DOC_COPY.searchSelecting", OB_DOC_COPY.searchSelecting, "Setting up your plan…"],
+    [
+      "OB_DOC_COPY.searchDone",
+      OB_DOC_COPY.searchDone,
+      "Plan on file — from Candid's plan library",
+    ],
+    ["OB_DOC_COPY.searchError", OB_DOC_COPY.searchError, "Couldn't find that plan. Please try again."],
+    ["OB_DOC_COPY.searchBack", OB_DOC_COPY.searchBack, "Back to upload"],
+    ["OB_DOC_COPY.currentPlanEyebrow", OB_DOC_COPY.currentPlanEyebrow, "YOUR CURRENT PLAN"],
+    ["OB_DOC_COPY.replacePlan", OB_DOC_COPY.replacePlan, "Replace plan"],
   ] as const) {
-    check(`${k} non-empty`, typeof v === "string" && v.length > 0, true);
+    check(`${k} verbatim`, v, expected);
   }
 
   // ── 3. S289 catalog-identity resolver (mocked service_catalog) ──────────
