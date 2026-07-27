@@ -298,3 +298,139 @@ html {
   0% { margin-left: -40%; }
   100% { margin-left: 100%; }
 }
+
+/* ── /learn public editorial surface (GTM-05 content engine) ──────────────
+   Scoped like `.admin-ops-prose` above: one place, no per-element overrides
+   inside the markdown renderer. Tuned for long-form public reading rather
+   than reference scanning — wider type, a ~68ch measure, and tables that
+   scroll on narrow screens instead of forcing the page to scroll sideways. */
+.learn-page { display: flex; flex-direction: column; min-height: 100%; background: var(--bg-1); }
+
+.learn-chrome-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-4);
+  max-width: 960px; width: 100%; margin: 0 auto;
+  padding: var(--space-5) var(--space-6);
+}
+.learn-wordmark {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  font-size: var(--text-h5); font-weight: var(--weight-bold);
+  color: var(--fg-1); letter-spacing: var(--tracking-tight); text-decoration: none;
+}
+.learn-wordmark-badge {
+  width: 28px; height: 28px; background: var(--candid-blue-600); border-radius: 7px;
+  display: grid; place-items: center; color: #fff;
+}
+.learn-chrome-nav { display: flex; align-items: center; gap: var(--space-5); }
+.learn-chrome-nav a {
+  font-size: var(--text-body); font-weight: var(--weight-medium);
+  color: var(--fg-3); text-decoration: none;
+}
+.learn-chrome-nav a:hover { color: var(--fg-1); }
+.learn-chrome-cta {
+  background: var(--candid-blue-600); color: #fff !important;
+  padding: var(--space-2) var(--space-4); border-radius: var(--radius-pill);
+  font-weight: var(--weight-semibold) !important;
+}
+.learn-chrome-cta:hover { background: var(--candid-blue-700); }
+
+.learn-main { flex: 1; width: 100%; max-width: 720px; margin: 0 auto; padding: var(--space-8) var(--space-6) var(--space-20); }
+.learn-crumb { margin-bottom: var(--space-5); font-size: var(--text-sm); }
+.learn-crumb a { color: var(--candid-blue-600); text-decoration: none; }
+.learn-crumb a:hover { text-decoration: underline; }
+.learn-title {
+  color: var(--fg-1); font-size: var(--text-h2); font-weight: var(--weight-bold);
+  line-height: var(--leading-tight); letter-spacing: var(--tracking-tight); margin: 0;
+}
+.learn-meta { margin: var(--space-3) 0 var(--space-8); font-size: var(--text-sm); color: var(--fg-4); }
+.learn-lede { margin: var(--space-4) 0 var(--space-10); font-size: var(--text-h5); line-height: var(--leading-normal); color: var(--fg-3); }
+
+/* Hub */
+.learn-cluster { margin-bottom: var(--space-12); }
+.learn-cluster-title {
+  color: var(--fg-1); font-size: var(--text-h4); font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-tight); margin: 0 0 var(--space-4);
+}
+.learn-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3); }
+.learn-card {
+  display: block; padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--border-2); border-radius: var(--radius-lg);
+  background: var(--bg-1); text-decoration: none; transition: border-color 120ms, box-shadow 120ms;
+}
+.learn-card:hover { border-color: var(--candid-blue-200); box-shadow: var(--glow-blue); }
+.learn-card-title { display: block; color: var(--fg-1); font-size: var(--text-base); font-weight: var(--weight-semibold); }
+.learn-card-desc { display: block; margin-top: var(--space-1); color: var(--fg-3); font-size: var(--text-body); line-height: var(--leading-normal); }
+
+/* Article body */
+.learn-prose { color: var(--fg-3); font-size: var(--text-base); line-height: var(--leading-relaxed); }
+.learn-prose h2 {
+  color: var(--fg-1); font-size: var(--text-h4); font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-tight); margin: var(--space-12) 0 var(--space-4);
+  scroll-margin-top: var(--space-8);
+}
+.learn-prose h3 {
+  color: var(--fg-1); font-size: var(--text-h5); font-weight: var(--weight-semibold);
+  margin: var(--space-8) 0 var(--space-2); scroll-margin-top: var(--space-8);
+}
+.learn-prose p { margin: 0 0 var(--space-5); }
+.learn-prose ul, .learn-prose ol { margin: 0 0 var(--space-5); padding-left: var(--space-6); }
+.learn-prose ul { list-style: disc; }
+.learn-prose ol { list-style: decimal; }
+.learn-prose li { margin: var(--space-2) 0; }
+.learn-prose li > ul, .learn-prose li > ol { margin: var(--space-2) 0 0; }
+.learn-prose strong { color: var(--fg-2); font-weight: var(--weight-semibold); }
+.learn-prose a { color: var(--candid-blue-600); text-decoration: underline; text-underline-offset: 2px; }
+.learn-prose a:hover { text-decoration-thickness: 2px; }
+.learn-prose code {
+  font-family: var(--font-mono); font-size: var(--text-sm); color: var(--fg-2);
+  background: var(--bg-3); border: 1px solid var(--border-2);
+  border-radius: var(--radius-xs); padding: 1px 6px;
+}
+.learn-prose blockquote {
+  margin: var(--space-6) 0; padding: var(--space-4) var(--space-5);
+  border-left: 3px solid var(--candid-blue-200); background: var(--candid-blue-50);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0; color: var(--fg-3);
+}
+.learn-prose blockquote p:last-child { margin: 0; }
+.learn-prose hr { border: 0; border-top: 1px solid var(--border-2); margin: var(--space-12) 0; }
+.learn-prose em { font-style: italic; }
+
+/* Wide comparison tables must scroll inside their own box; the page itself
+   never scrolls sideways on a phone. `display: block` turns the table into its
+   own scroll container (the browser keeps an anonymous table box inside, so
+   rows and cells still lay out correctly) — which avoids a custom wrapper
+   element in the markdown renderer. */
+.learn-prose table {
+  display: block; overflow-x: auto; max-width: 100%;
+  border-collapse: collapse; margin: 0 0 var(--space-6);
+  font-size: var(--text-body); -webkit-overflow-scrolling: touch;
+}
+.learn-prose th, .learn-prose td {
+  border: 1px solid var(--border-2); padding: var(--space-2) var(--space-3);
+  text-align: left; vertical-align: top; min-width: 120px;
+}
+.learn-prose th { background: var(--bg-2); color: var(--fg-2); font-weight: var(--weight-semibold); white-space: nowrap; }
+
+/* Footer */
+.learn-chrome-foot {
+  border-top: 1px solid var(--border-2); background: var(--bg-2);
+  padding: var(--space-8) var(--space-6);
+}
+.learn-chrome-foot-top {
+  max-width: 960px; margin: 0 auto var(--space-4);
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3);
+}
+.learn-chrome-parent { font-size: var(--text-body); font-weight: var(--weight-medium); color: var(--fg-2); }
+.learn-chrome-foot-links { display: flex; flex-wrap: wrap; gap: var(--space-4); }
+.learn-chrome-foot-links a { font-size: var(--text-sm); color: var(--fg-3); text-decoration: none; }
+.learn-chrome-foot-links a:hover { text-decoration: underline; }
+.learn-chrome-disclaimer {
+  max-width: 960px; margin: 0 auto; font-size: var(--text-xs);
+  line-height: var(--leading-normal); color: var(--fg-4);
+}
+
+@media (max-width: 640px) {
+  .learn-chrome-head { padding: var(--space-4); flex-wrap: wrap; }
+  .learn-main { padding: var(--space-6) var(--space-4) var(--space-16); }
+  .learn-title { font-size: var(--text-h3); }
+  .learn-prose h2 { font-size: var(--text-h5); }
+}

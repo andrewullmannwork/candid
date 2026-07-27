@@ -27,6 +27,11 @@ const FIRST_TOUCH_KEYS = [
   "referrer_host",
   "landing",
   "ts",
+  // last_guide — slug of the /learn guide read most recently before signup.
+  // Acquisition channel comes from the FIRST visit and so cannot identify the
+  // article that converted a returning reader; this carries that separately in
+  // the same blob (no schema change — the JSONB shape is ours).
+  "last_guide",
 ] as const;
 
 function sanitizeFirstTouch(input: unknown): Record<string, string> | null {

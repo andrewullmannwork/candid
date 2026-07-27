@@ -16,6 +16,7 @@
  */
 
 const STORAGE_KEY = "candid_first_touch";
+const LAST_GUIDE_KEY = "candid_last_guide";
 
 export interface FirstTouch {
   source?: string;
@@ -24,6 +25,8 @@ export interface FirstTouch {
   referrer_host?: string;
   landing?: string;
   ts?: string;
+  /** Slug of the most recent /learn guide read before signup (see below). */
+  last_guide?: string;
 }
 
 /** Capture the first touch if none is stored yet. Call once on mount. */
@@ -66,15 +69,50 @@ export function captureFirstTouch(): void {
   }
 }
 
-/** Read the stored first touch (null when absent/unreadable). */
+/**
+ * Record the most recently read /learn guide. Unlike the first touch, this is
+ * OVERWRITTEN on every guide read — it answers a different question.
+ *
+ * First touch answers "which channel acquired this person", and it is captured
+ * once, on their very first visit. That makes it structurally unable to answer
+ * "which article converted them": someone who arrives from Reddit in week one
+ * and signs up after reading a guide in week three is recorded as Reddit, with
+ * a landing page from three weeks ago. The converting guide leaves no trace.
+ *
+ * So the two are captured separately and travel together in the same blob:
+ * acquisition channel from the first visit, converting guide from the last.
+ */
+export function captureLastGuide(slug: string): void {
+  try {
+    if (typeof window === "undefined" || !slug) return;
+    window.localStorage.setItem(LAST_GUIDE_KEY, slug);
+  } catch {
+    /* best-effort — never surface */
+  }
+}
+
+/**
+ * Read the stored first touch, with the last-read guide folded in (null when
+ * neither is present). Rides inside the existing `first_touch` JSONB rather
+ * than a new column: the blob's shape is ours, and the server already persists
+ * it on the new-user INSERT only, which is exactly the moment this fact is
+ * true — "the guide this signup last read".
+ */
 export function readFirstTouch(): FirstTouch | null {
   try {
     if (typeof window === "undefined") return null;
+
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object") return null;
-    return parsed as FirstTouch;
+    let touch: FirstTouch = {};
+    if (raw) {
+      const parsed = JSON.parse(raw) as unknown;
+      if (parsed && typeof parsed === "object") touch = parsed as FirstTouch;
+    }
+
+    const lastGuide = window.localStorage.getItem(LAST_GUIDE_KEY);
+    if (lastGuide) touch = { ...touch, last_guide: lastGuide };
+
+    return Object.keys(touch).length > 0 ? touch : null;
   } catch {
     return null;
   }
