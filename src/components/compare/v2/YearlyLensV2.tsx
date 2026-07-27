@@ -361,7 +361,13 @@ export function YearlyLensV2({
                       setPremDraft(entry.value != null ? String(entry.value) : "");
                       setPremEdit(j);
                     }}
-                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 transition-colors"
+                    className={cn(
+                      // S289 (Andrew) — the button wears its plan's hue, darker
+                      // than the sub-card wash it sits on.
+                      "inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-white text-xs font-semibold transition-colors",
+                      planColorFor(j).solid,
+                      planColorFor(j).solidHover,
+                    )}
                   >
                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.2} viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14M5 12h14" />
