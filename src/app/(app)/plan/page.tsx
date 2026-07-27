@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ChangePlanModal } from "@/components/plan/ChangePlanModal";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
@@ -493,6 +493,26 @@ export default function CandidPlanPage() {
   // picker (flag OFF keeps the legacy modal as the rollback path).
   const [planFlowOn, setPlanFlowOn] = useState(false);
   const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // S289 — dashboard-tile deep link (?cat=<category>). A QUERY param, not a
+  // hash, deliberately: the App Router caches this client tree across soft
+  // navigations (see the S71 cachedResult removal note below), so mount-time
+  // hash reads — the openCategory useState init AND the analyze effect —
+  // never re-run when a tile is clicked, and pushState navigation fires no
+  // hashchange. useSearchParams IS reactive across cached-tree restores.
+  // `result` in the deps covers the fresh-mount race: on first load the
+  // accordions don't exist until analyze resolves; the effect re-fires when
+  // they do.
+  useEffect(() => {
+    const cat = searchParams.get("cat");
+    if (!cat || !result) return;
+    setOpenCategory(cat);
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`category-${cat}`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, [searchParams, result]);
   // Bump to force a re-analyze after the active plan is replaced.
   const [reloadKey, setReloadKey] = useState(0);
 

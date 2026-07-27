@@ -55,8 +55,11 @@ export interface BenefitsGridTile {
   /**
    * Candid category string (BenefitCategory enum value OR service_catalog key)
    * of the dominant benefit in this tile. Used to build the /plan deep-link
-   * anchor (`/plan#category-{categoryKey}`). Falls back to no-hash navigation
-   * when undefined (e.g., empty tile with count=0).
+   * (`/plan?cat={categoryKey}` — S289: a QUERY param, not a hash: the App
+   * Router caches /plan's client tree across soft navs, so mount-time hash
+   * reads never re-run on a tile click; useSearchParams is the reactive
+   * channel that opens + scrolls the target accordion every time). Falls back
+   * to plain /plan when undefined (e.g., empty tile with count=0).
    */
   categoryKey?: string;
 }
@@ -128,7 +131,7 @@ export function BenefitsGrid({ tiles }: { tiles: BenefitsGridTile[] }) {
         return (
           <Link
             key={t.id}
-            href={t.categoryKey ? `/plan#category-${t.categoryKey}` : "/plan"}
+            href={t.categoryKey ? `/plan?cat=${encodeURIComponent(t.categoryKey)}` : "/plan"}
             className={cn(
               "block p-3.5 rounded-xl bg-white ring-1 ring-gray-100 transition-all group",
               "hover:ring-blue-200 hover:bg-blue-50/30",
