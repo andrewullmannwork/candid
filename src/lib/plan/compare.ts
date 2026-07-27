@@ -213,6 +213,24 @@ function compareOonCost(s: any, planType: string | null): string {
 }
 
 /**
+ * S289 (Andrew) — "Services covered" is a MACRO count: distinct services
+ * (slugs) with at least one covered benefit. The old
+ * `benefits.filter(covered !== false).length` counted VARIANT benefits —
+ * one per DB row — so a 3-variant surgery inflated the breadth number to 3.
+ * (Pre-existing: payloads always carried per-variant benefits; the S289
+ * nested display made the inflation visible.) Exported for the fixture.
+ */
+export function countCoveredServices(
+  benefits: ReadonlyArray<{ serviceSlug: string; covered: boolean | null }>,
+): number {
+  const slugs = new Set<string>();
+  for (const b of benefits) {
+    if (b.serviceSlug && b.covered !== false) slugs.add(b.serviceSlug);
+  }
+  return slugs.size;
+}
+
+/**
  * S289 review F5 — deterministic representative among a slug's variant
  * benefits: the DEFAULT variant (any/global/none) when present — it means
  * "the service overall" — else the lowest variant key. Consumers that need
@@ -441,7 +459,7 @@ export async function resolveCanonicalPlan(opts: {
       inOopMaxFamily: (plan.oop_max_family as number | null) ?? null,
     },
     benefits,
-    coveredServiceCount: benefits.filter((b) => b.covered !== false).length,
+    coveredServiceCount: countCoveredServices(benefits),
     sourceLabel: "canonical",
     isOwnedByUser: false,
     corroborationCount: (plan.verification_count as number | null) ?? 0,
@@ -639,7 +657,7 @@ export async function resolveUserPlan(opts: {
       inOopMaxFamily: (plan.in_oop_max_family as number | null) ?? null,
     },
     benefits,
-    coveredServiceCount: benefits.filter((b) => b.covered !== false).length,
+    coveredServiceCount: countCoveredServices(benefits),
     sourceLabel: "user_plan",
     isOwnedByUser: true,
     corroborationCount,

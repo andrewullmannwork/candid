@@ -39,7 +39,12 @@ import {
   variantQualifiedTitle,
   winsPerPlanInCategory,
 } from "../src/components/compare/compare-aggregates";
-import { pickRepresentativeVariant, type ComparePlanPayload, type CompareBenefit } from "../src/lib/plan/compare";
+import {
+  countCoveredServices,
+  pickRepresentativeVariant,
+  type ComparePlanPayload,
+  type CompareBenefit,
+} from "../src/lib/plan/compare";
 import {
   applyUsedBenefitsToggle,
   readUsedBenefits,
@@ -659,6 +664,26 @@ const CANON_TERMS = {
     );
     check("variants metric — tier axis excluded (D1)", JSON.stringify(tiers[0]), '{"covered":1,"total":1}');
     check("variants metric — cross-plan tier naming is not a gap", JSON.stringify(tiers[1]), '{"covered":1,"total":1}');
+
+    // ── Services covered is MACRO (Andrew): distinct services, not variants ──
+    check(
+      "services covered — 3 surgery variants + pcp = 2 services (was 4)",
+      countCoveredServices([
+        { serviceSlug: "surgery", covered: true },
+        { serviceSlug: "surgery", covered: null },
+        { serviceSlug: "surgery", covered: true },
+        { serviceSlug: "pcp_visit", covered: true },
+      ]),
+      2,
+    );
+    check(
+      "services covered — all-variants-excluded service does NOT count",
+      countCoveredServices([
+        { serviceSlug: "surgery", covered: false },
+        { serviceSlug: "pcp_visit", covered: true },
+      ]),
+      1,
+    );
 
     // ── Review F5: representative variant ──
     const repDefault = pickRepresentativeVariant([

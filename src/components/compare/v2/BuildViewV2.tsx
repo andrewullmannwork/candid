@@ -2,9 +2,8 @@
 
 import Link from "next/link";
 import type { CurrentPlanSummary, SlotState } from "../PlanSlot";
-import type { CompareSession, RecentPlan } from "../compare-sessions";
+import type { RecentPlan } from "../compare-sessions";
 import { PlanSlotV2 } from "./PlanSlotV2";
-import { CompareSessionsBar } from "./CompareSessionsBar";
 
 /**
  * Compare v2 (PR5) — the reskinned build/picker view (hero + 3 PlanSlotV2 +
@@ -30,11 +29,9 @@ interface BuildViewV2Props {
   setSlot: (i: number, s: SlotState) => void;
   currentPlan: CurrentPlanSummary | null;
   recents: RecentPlan[];
-  sessions: CompareSession[];
-  onResume: (s: CompareSession) => void;
 }
 
-export function BuildViewV2({ slots, setSlot, currentPlan, recents, sessions, onResume }: BuildViewV2Props) {
+export function BuildViewV2({ slots, setSlot, currentPlan, recents }: BuildViewV2Props) {
   return (
     <div>
       <Link
@@ -78,7 +75,9 @@ export function BuildViewV2({ slots, setSlot, currentPlan, recents, sessions, on
         ))}
       </div>
 
-      <CompareSessionsBar sessions={sessions} onResume={onResume} />
+      {/* S289 (Andrew) — the sessions bar ("Pick up where you left off")
+          moved to page.tsx BELOW the submit CTA: the primary action reads
+          first, saved comparisons second. */}
     </div>
   );
 }
