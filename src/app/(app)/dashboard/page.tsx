@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/auth-context";
 import { createBrowserClient } from "@/lib/supabase/client";
-import type { PlanAnalysisResult, AnalyzedBenefit } from "@/lib/plan/analyzer";
+import type { PlanAnalysisResult } from "@/lib/plan/analyzer";
 import { FollowupBanner } from "@/components/disputes/FollowupBanner";
 import { ShareWithFriend } from "@/components/share/share-with-friend";
 import { PageHeader } from "@/components/page-header";
@@ -26,6 +26,11 @@ import {
   type TileDomain,
 } from "@/components/dashboard/BenefitsGrid";
 import { categoryToDomain } from "@/lib/plan/category-display";
+import {
+  groupCoveredBenefits,
+  isGroupUsed,
+  type CoveredBenefitGroup,
+} from "@/lib/plan/benefit-grouping";
 import { MoreFromCandidCards } from "@/components/dashboard/MoreFromCandidCards";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -294,9 +299,19 @@ export default function DashboardPage() {
   const planYear = planResult?.planYear ?? null;
   const planName = planResult?.planName ?? null;
   const planType = planResult?.planType ?? null;
-  const totalBenefits = planResult?.totalBenefits ?? 0;
   const showYearRolloverSuffix =
     yearRolloverEnabled && planYear === currentYear ? `${planYear} plan year active` : undefined;
+
+  // BenefitsGrid tile mapping (D-§1.C.1-E + AMA-scrub NON-NEGOTIABLE).
+  // S289 — one counting rule with /plan: title-groups, not raw variant items
+  // (the analyze payload's totalBenefits is item-level and disagreed with
+  // /plan's "X of N" denominator).
+  const benefits = planResult?.benefits ?? [];
+  const benefitGroups = groupCoveredBenefits(benefits);
+  const benefitsTiles = buildBenefitsTiles(benefitGroups, usedBenefits);
+  const hsaCount = benefits.filter((b) => b.benefit.hsaFsaEligible).length;
+  const usedCount = benefitGroups.filter((g) => isGroupUsed(g, usedBenefits)).length;
+  const totalBenefits = benefitGroups.length;
 
   // Plan card meta line (verified state) — "PPO · 2026 · 90 benefits".
   const planCardMeta =
@@ -305,12 +320,6 @@ export default function DashboardPage() {
           .filter(Boolean)
           .join(" · ")
       : null;
-
-  // BenefitsGrid tile mapping (D-§1.C.1-E + AMA-scrub NON-NEGOTIABLE).
-  const benefits = planResult?.benefits ?? [];
-  const benefitsTiles = buildBenefitsTiles(benefits, usedBenefits);
-  const hsaCount = benefits.filter((b) => b.benefit.hsaFsaEligible).length;
-  const usedCount = usedBenefits.size;
 
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
@@ -628,10 +637,15 @@ const TILE_DEFS: Array<{ id: string; domain: TileDomain; name: string }> = [
 ];
 
 function buildBenefitsTiles(
-  benefits: AnalyzedBenefit[],
+  benefitGroups: CoveredBenefitGroup[],
   usedBenefits: Set<string>,
 ): BenefitsGridTile[] {
-  // categoryKey = candid category string of the FIRST benefit landing in the
+  // S289 — tiles count TITLE-GROUPS via the shared counting rule
+  // (benefit-grouping.ts), exactly what /plan renders one row + one checkbox
+  // for. The previous per-ITEM loop counted every POS/component/tier variant
+  // separately (a 3-variant Surgery = 3 on the tile, 1 on /plan) and bumped
+  // usedCount once per variant sharing a ticked slug (one tick showed as 2).
+  // categoryKey = candid category string of the FIRST group landing in the
   // bucket; powers the /plan#category-{categoryKey} deep-link anchor.
   type Bucket = {
     count: number;
@@ -644,13 +658,13 @@ function buildBenefitsTiles(
 
   const otherBucket: Bucket = { count: 0, usedCount: 0 };
 
-  for (const item of benefits) {
-    const domain = categoryToDomain(item.benefit.category);
+  for (const group of benefitGroups) {
+    const domain = categoryToDomain(group.category);
     const bucket = domain === "other" ? otherBucket : grouped.get(domain)!;
     bucket.count++;
-    if (usedBenefits.has(item.benefit.id)) bucket.usedCount++;
-    if (!bucket.topBenefit) bucket.topBenefit = item.benefit.title;
-    if (!bucket.categoryKey) bucket.categoryKey = item.benefit.category;
+    if (isGroupUsed(group, usedBenefits)) bucket.usedCount++;
+    if (!bucket.topBenefit) bucket.topBenefit = group.title;
+    if (!bucket.categoryKey) bucket.categoryKey = group.category;
   }
 
   const tiles: BenefitsGridTile[] = TILE_DEFS.map((def) => {

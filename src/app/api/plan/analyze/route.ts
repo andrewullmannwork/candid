@@ -511,7 +511,14 @@ export async function POST(request: NextRequest) {
                     copay: maybeDecorate<number | null>(cs.covered === false ? null : cs.in_copay, getProv(cs, "in_copay"), canonicalLogicalSource, canonicalSourceCount),
                     coinsurance: maybeDecorate<number | null>(cs.covered === false ? null : cs.in_coinsurance, getProv(cs, "in_coinsurance"), canonicalLogicalSource, canonicalSourceCount),
                     deductibleApplies: cs.covered === false ? false : cs.in_deductible_applies,
-                    costDescription: cs.covered === false ? "Not covered" : "",
+                    // S289 — was hardcoded "" for covered rows, which the /plan
+                    // cost matrix + single-variant panel render as an em-dash:
+                    // every canonical gap-fill benefit showed "—" in BOTH
+                    // network columns while the summary prose above it showed
+                    // the real numbers. Same formatters as the user-row path;
+                    // canonical rows carry the aligned in_*/out_* columns
+                    // (F.0 mig 169), so they apply verbatim.
+                    costDescription: cs.covered === false ? "Not covered" : formatCost(cs),
                   },
                   // CF-19c (Session 64): canonical_plan_services now carries OON columns
                   // (mig 071). Populate them when present; null until promotion events fire
@@ -520,7 +527,7 @@ export async function POST(request: NextRequest) {
                     copay: maybeDecorate<number | null>(cs.covered === false ? null : (cs.out_copay ?? null), getProv(cs, "out_copay"), canonicalLogicalSource, canonicalSourceCount),
                     coinsurance: maybeDecorate<number | null>(cs.covered === false ? null : (cs.out_coinsurance ?? null), getProv(cs, "out_coinsurance"), canonicalLogicalSource, canonicalSourceCount),
                     deductibleApplies: cs.covered === false ? false : (cs.out_deductible_applies ?? false),
-                    costDescription: cs.covered === false ? "Not covered" : "",
+                    costDescription: cs.covered === false ? "Not covered" : formatOonCost(cs, userPlan.plan_type ?? null),
                   },
                   annualLimit: maybeDecorate<string | null>(cs.annual_limit ? String(cs.annual_limit) : null, getProv(cs, "annual_limit"), canonicalLogicalSource, canonicalSourceCount),
                   priorAuthRequired: maybeDecorate<boolean | null>(cs.prior_auth_required, getProv(cs, "prior_auth_required"), canonicalLogicalSource, canonicalSourceCount),

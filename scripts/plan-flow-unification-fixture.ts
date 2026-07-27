@@ -37,6 +37,7 @@ import {
   readUsedBenefits,
   USED_BENEFITS_CAP,
 } from "../src/lib/plan/benefit-usage";
+import { groupCoveredBenefits, isGroupUsed } from "../src/lib/plan/benefit-grouping";
 
 let pass = 0;
 let fail = 0;
@@ -306,6 +307,35 @@ const CANON_TERMS = {
     );
     check("usage toggle — capped", capped.length, USED_BENEFITS_CAP);
     check("usage toggle — cap keeps sorted head", capped[0], "aaa_first");
+  }
+
+  // ── 7. S289 shared benefit-counting rule (dashboard tiles ↔ /plan rows) ──
+  {
+    const mk = (id: string, title: string, category: string, covered?: boolean | null) => ({
+      covered,
+      benefit: { id, title, category },
+    });
+    const groups = groupCoveredBenefits([
+      mk("surgery", "Surgery", "surgery"),            // 3 variants, one title →
+      mk("surgery", "Surgery", "surgery"),            // ONE group (the tile-vs-plan
+      mk("surgery", "Surgery", "surgery"),            // 3-vs-1 mismatch)
+      mk("generic_rx", "Generic Drugs", "rx"),
+      mk("generic_rx_90day", "Generic Drugs", "rx"),  // same title, 2nd slug
+      mk("pcp_visit", "Primary Care Visit", "office_visit"),
+      mk("excluded", "Cosmetic Thing", "surgery", false), // covered:false → out
+    ]);
+    check("grouping — 7 items → 3 covered groups", groups.length, 3);
+    const surgery = groups.find((g) => g.title === "Surgery");
+    check("grouping — variants dedupe to one slug", surgery?.slugs.length, 1);
+    const rx = groups.find((g) => g.title === "Generic Drugs");
+    check("grouping — same-title distinct slugs collected", rx?.slugs.length, 2);
+    check("grouping — covered:false excluded", groups.some((g) => g.title === "Cosmetic Thing"), false);
+    check("grouping — category = first-seen", rx?.category, "rx");
+    // One tick = one used group, regardless of how many variants share it.
+    const ticked = new Set(["generic_rx"]);
+    check("grouping — one tick marks ONE group", groups.filter((g) => isGroupUsed(g, ticked)).length, 1);
+    check("grouping — tick on any variant slug counts", isGroupUsed(rx!, new Set(["generic_rx_90day"])), true);
+    check("grouping — untucked group not used", isGroupUsed(surgery!, ticked), false);
   }
 
   console.log(`\n${pass}/${pass + fail} passed`);

@@ -148,13 +148,16 @@ export function BenefitsGrid({ tiles }: { tiles: BenefitsGridTile[] }) {
                 </div>
                 {t.sub && <div className="text-[11.5px] text-gray-400 truncate mt-0.5">{t.sub}</div>}
               </div>
+              {/* S289 — count only (was `used/count`): the "0/1" fraction read
+                  as "you have zero benefits", not "none checked off yet". The
+                  progress bar below stays as the used-progress signal. */}
               <div
                 className={cn(
                   "text-[10px] font-bold shrink-0",
                   t.count > 0 && t.usedCount === t.count ? "text-green-600" : "text-gray-400",
                 )}
               >
-                {t.usedCount}/{t.count}
+                {t.count}
               </div>
             </div>
             <div className="mt-2.5 h-1 bg-gray-100 rounded-full overflow-hidden">

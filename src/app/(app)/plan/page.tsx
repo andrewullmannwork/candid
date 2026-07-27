@@ -9,6 +9,7 @@ import { createBrowserClient } from "@/lib/supabase/client";
 import type { PlanAnalysisResult, AnalyzedBenefit } from "@/lib/plan/analyzer";
 import type { BenefitCategory } from "@/lib/plan/benefits-catalog";
 import { labelForCategory } from "@/lib/plan/category-display";
+import { groupCoveredBenefits, isGroupUsed } from "@/lib/plan/benefit-grouping";
 import {
   DisplayStateBadge,
   SourceQuote,
@@ -646,6 +647,12 @@ export default function CandidPlanPage() {
         if (typeof window !== "undefined") {
           const hash = window.location.hash.slice(1);
           if (hash.startsWith("category-")) {
+            // S289 — also OPEN the accordion, don't just scroll to it. The
+            // useState init covers hard loads, but on a soft nav from a
+            // dashboard tile the initializer can read the pre-navigation URL,
+            // landing the user on a collapsed section. Idempotent on hard
+            // loads (same value).
+            setOpenCategory(hash.slice("category-".length));
             requestAnimationFrame(() => {
               const el = document.getElementById(hash);
               if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -788,22 +795,14 @@ export default function CandidPlanPage() {
     catMap.get(titleKey)!.push(item);
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const coveredBenefits = result.benefits.filter((b) => (b as any).covered !== false);
   // B3.2 — totalUsed counts distinct benefit-TITLES checked off (one checkbox
-  // per title-group below, not per POS-variant row). S289: tick identity is
-  // the benefit SLUG (account-level persistence; see toggleBenefit) — a title
-  // counts as used when ANY of its benefits' slugs is ticked.
-  const slugsByTitle = new Map<string, string[]>();
-  for (const b of coveredBenefits) {
-    const list = slugsByTitle.get(b.benefit.title) ?? [];
-    list.push(b.benefit.id);
-    slugsByTitle.set(b.benefit.title, list);
-  }
-  const totalUsed = Array.from(slugsByTitle.values()).filter((slugs) =>
-    slugs.some((s) => usedBenefits.has(s)),
-  ).length;
-  const totalCoveredBenefitIds = slugsByTitle.size;
+  // per title-group below, not per POS-variant row). S289: the grouping is the
+  // shared counting rule (benefit-grouping.ts) — /dashboard tiles use the SAME
+  // groups, so both surfaces show one number for one plan. A title counts as
+  // used when ANY of its benefits' slugs is ticked.
+  const coveredGroups = groupCoveredBenefits(result.benefits);
+  const totalUsed = coveredGroups.filter((g) => isGroupUsed(g, usedBenefits)).length;
+  const totalCoveredBenefitIds = coveredGroups.length;
 
   // B3.2 — HSA-eligible benefit count drives banner copy + visibility gate.
   const hsaEligibleCount = result.benefits.filter((b) => b.benefit.hsaFsaEligible).length;
