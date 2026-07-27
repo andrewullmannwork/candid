@@ -502,11 +502,12 @@ const CANON_TERMS = {
       { benefits: [bene("pcp_visit", "Primary Care Visit", "$20 copay")] } as unknown as ComparePlanPayload,
     ]);
     check("compare variants — single variant keeps clean title", lone[0]?.rows[0]?.title, "Primary Care Visit");
-    // Title scheme details (Andrew S289): tier + PCP casing + global component.
+    // Title scheme details (Andrew S289): pre-dash = charge kind (fees/tier),
+    // post-dash = place. Tier is a BUCKET, so it joins the pre-dash slot.
     check(
-      "compare variants — tier tail with place",
+      "compare variants — tier is pre-dash (bucket, not place)",
       variantQualifiedTitle("Generic Drugs", bene("generic_rx", "Generic Drugs", "", { pos: "retail_pharmacy", tier: "tier_1" }) as unknown as CompareBenefit),
-      "Generic Drugs — retail pharmacy · tier 1",
+      "Generic Drugs tier 1 — retail pharmacy",
     );
     check(
       "compare variants — PCP office casing",
@@ -523,17 +524,63 @@ const CANON_TERMS = {
     const covered = coveredPerPlanInCategory(rows, 2);
     check("review F2 — covered counts slugs (A: 1 not 3)", covered[0], 1);
     check("review F2 — covered counts slugs (B: 1)", covered[1], 1);
-    const winRows = groupBenefitsByCategory([
-      { benefits: [
-        { ...(bene("surgery", "Surgery", "", { component: "facility" }) as object), costSharing: { inNetwork: { copay: 100, coinsurance: null, deductibleApplies: null }, outOfNetwork: { copay: null, coinsurance: null, deductibleApplies: null }, annualLimit: null, priorAuthRequired: null } },
-        { ...(bene("surgery", "Surgery", "", { component: "professional" }) as object), costSharing: { inNetwork: { copay: 500, coinsurance: null, deductibleApplies: null }, outOfNetwork: { copay: null, coinsurance: null, deductibleApplies: null }, annualLimit: null, priorAuthRequired: null } },
-      ] } as unknown as ComparePlanPayload,
-      { benefits: [
-        { ...(bene("surgery", "Surgery", "", { component: "facility" }) as object), costSharing: { inNetwork: { copay: 200, coinsurance: null, deductibleApplies: null }, outOfNetwork: { copay: null, coinsurance: null, deductibleApplies: null }, annualLimit: null, priorAuthRequired: null } },
-      ] } as unknown as ComparePlanPayload,
-    ]).find((g) => g.category === "surgery")?.rows ?? [];
-    const wins = winsPerPlanInCategory(winRows, 2);
-    check("review F2 — wins at slug level, best-variant per plan (A cheapest $100)", JSON.stringify(wins), "[1,0]");
+    const withCopay = (slug: string, variant: { pos?: string; component?: string; tier?: string }, copay: number) => ({
+      ...(bene(slug, "Surgery", "", variant) as object),
+      costSharing: { inNetwork: { copay, coinsurance: null, deductibleApplies: null }, outOfNetwork: { copay: null, coinsurance: null, deductibleApplies: null }, annualLimit: null, priorAuthRequired: null },
+    });
+    const winRowsOf = (aBenefits: object[], bBenefits: object[]) =>
+      groupBenefitsByCategory([
+        { benefits: aBenefits } as unknown as ComparePlanPayload,
+        { benefits: bBenefits } as unknown as ComparePlanPayload,
+      ]).find((g) => g.category === "surgery")?.rows ?? [];
+
+    // Andrew's model: a service counts ONCE, decided by row-majority among
+    // contested rows. A wins 3 of 4 shared variants → one win, not three.
+    const majority = winsPerPlanInCategory(
+      winRowsOf(
+        [
+          withCopay("surgery", { component: "facility", pos: "independent_facility" }, 100),
+          withCopay("surgery", { component: "facility", pos: "outpatient_facility" }, 100),
+          withCopay("surgery", { component: "professional" }, 100),
+          withCopay("surgery", {}, 500),
+        ],
+        [
+          withCopay("surgery", { component: "facility", pos: "independent_facility" }, 200),
+          withCopay("surgery", { component: "facility", pos: "outpatient_facility" }, 200),
+          withCopay("surgery", { component: "professional" }, 200),
+          withCopay("surgery", {}, 300),
+        ],
+      ),
+      2,
+    );
+    check("wins — 3-of-4 row majority = ONE slug win", JSON.stringify(majority), "[1,0]");
+    // 1-1 contested split → nobody claims the service.
+    const tie = winsPerPlanInCategory(
+      winRowsOf(
+        [withCopay("surgery", { component: "facility" }, 100), withCopay("surgery", { component: "professional" }, 500)],
+        [withCopay("surgery", { component: "facility" }, 200), withCopay("surgery", { component: "professional" }, 300)],
+      ),
+      2,
+    );
+    check("wins — row-win tie → no winner", JSON.stringify(tie), "[0,0]");
+    // Disjoint variant sets → zero contested rows → no apples-to-oranges win.
+    const disjoint = winsPerPlanInCategory(
+      winRowsOf(
+        [withCopay("surgery", { component: "facility" }, 100)],
+        [withCopay("surgery", { component: "professional" }, 999)],
+      ),
+      2,
+    );
+    check("wins — disjoint variants → no winner", JSON.stringify(disjoint), "[0,0]");
+    // Single shared row still decides.
+    const single = winsPerPlanInCategory(
+      winRowsOf(
+        [withCopay("surgery", { component: "facility" }, 100)],
+        [withCopay("surgery", { component: "facility" }, 200)],
+      ),
+      2,
+    );
+    check("wins — single contested row decides", JSON.stringify(single), "[1,0]");
 
     // ── Review F5: representative variant ──
     const repDefault = pickRepresentativeVariant([

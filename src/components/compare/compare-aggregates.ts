@@ -113,16 +113,16 @@ export interface CategoryGroup {
 export const COMPARE_VARIANT_ROWS = true;
 
 /**
- * S289 — variant title scheme (Andrew-approved structure): the service, the
- * COVERAGE COMPONENT as a "fees" suffix (facility fees / professional fees;
- * billing-grounded — global component adds nothing), then place-of-service
- * and drug-tier detail after an em-dash:
+ * S289 — variant title scheme (Andrew): pre-dash = WHAT KIND of charge line
+ * (component as a "fees" suffix; drug tier — a charge BUCKET, same axis);
+ * post-dash = WHERE (place of service). Tier is plan-local vocabulary
+ * (Pattern S), so drug variant rows often fill for one plan only — honest.
  *   "Surgery facility fees — independent facility"
- *   "Surgery professional fees"                     (place = any)
- *   "Generic Drugs — retail pharmacy · tier 1"      (global component)
+ *   "Surgery professional fees"              (place = any)
+ *   "Generic Drugs tier 1 — retail pharmacy" (tier is a bucket, not a place)
  * Exported for the fixture.
  */
-export function variantTitleParts(b: CompareBenefit): { feeType: string; tail: string } {
+export function variantTitleParts(b: CompareBenefit): { qualifier: string; tail: string } {
   const component = b.component ?? "global";
   const pos = b.placeOfService ?? "any";
   const tier = b.planTierLabel ?? "none";
@@ -132,16 +132,15 @@ export function variantTitleParts(b: CompareBenefit): { feeType: string; tail: s
       : component === "professional"
         ? "professional fees"
         : "";
-  const posLabel =
-    pos === "any" ? "" : pos === "pcp_office" ? "PCP office" : pos.replace(/_/g, " ");
   const tierLabel = tier === "none" ? "" : tier.replace(/_/g, " ");
-  const tail = [posLabel, tierLabel].filter(Boolean).join(" · ");
-  return { feeType, tail };
+  const qualifier = [feeType, tierLabel].filter(Boolean).join(" ");
+  const tail = pos === "any" ? "" : pos === "pcp_office" ? "PCP office" : pos.replace(/_/g, " ");
+  return { qualifier, tail };
 }
 
 export function variantQualifiedTitle(base: string, b: CompareBenefit): string {
-  const { feeType, tail } = variantTitleParts(b);
-  return `${base}${feeType ? ` ${feeType}` : ""}${tail ? ` — ${tail}` : ""}`;
+  const { qualifier, tail } = variantTitleParts(b);
+  return `${base}${qualifier ? ` ${qualifier}` : ""}${tail ? ` — ${tail}` : ""}`;
 }
 
 function variantKeyOf(b: CompareBenefit): string {
@@ -306,26 +305,33 @@ export function winsPerPlanInCategory(
   rows: ServiceRowAcrossPlans[],
   planCount: number,
 ): number[] {
-  // S289 review F2 — wins count at SLUG level, best-variant per slug. Counting
-  // variant rows let a plan rack up "Lowest cost on N services" from
-  // uncontested single-populated rows and weighted a 3-variant service 3×.
-  // Per slug: take each plan's own cheapest populated variant, then rank
-  // plans on that (competition guard inside bestNumericIndices).
+  // S289 (Andrew) — a service (slug) yields AT MOST ONE win, decided by the
+  // side-by-side rows users actually see: within the slug, tally per-variant
+  // row wins (bestNumericIndices only ranks rows where ≥2 plans have values),
+  // and the plan winning STRICTLY the most contested rows takes the service.
+  // Row-win tie or zero contested rows → no winner claimed.
+  //
+  // Two rejected alternatives, for the record: counting every variant row
+  // (pre-review) let uncontested rows mint wins and weighted a 3-variant
+  // service 3×; comparing each plan's own CHEAPEST variant (first fix)
+  // cherry-picked — it could crown a plan's virtual-visit price over another
+  // plan's office price and call that winning "office visits". This tally is
+  // derivable from the rendered row pills, so the summary never claims more
+  // than the grid shows.
   const wins = new Array(planCount).fill(0);
   const bySlug = new Map<string, ServiceRowAcrossPlans[]>();
   for (const row of rows) {
     (bySlug.get(row.serviceSlug) ?? bySlug.set(row.serviceSlug, []).get(row.serviceSlug)!).push(row);
   }
   for (const slugRows of bySlug.values()) {
-    const perPlanBest: Array<number | null> = new Array(planCount).fill(null);
+    const rowWins = new Array(planCount).fill(0);
     for (const row of slugRows) {
-      for (let i = 0; i < planCount; i++) {
-        const v = row.perPlan[i] ? inNetworkCopay(row.perPlan[i]) : null;
-        if (v != null && (perPlanBest[i] == null || v < perPlanBest[i]!)) perPlanBest[i] = v;
-      }
+      for (const i of bestNumericIndices(row.perPlan, inNetworkCopay, true)) rowWins[i] += 1;
     }
-    const bestIdx = bestNumericIndices(perPlanBest, (v) => v, true);
-    for (const i of bestIdx) wins[i] += 1;
+    const max = Math.max(...rowWins);
+    if (max === 0) continue;
+    const leaders = rowWins.reduce<number[]>((acc, w, i) => (w === max ? [...acc, i] : acc), []);
+    if (leaders.length === 1) wins[leaders[0]] += 1;
   }
   return wins;
 }
