@@ -121,10 +121,10 @@ export default async function OGImage() {
             }}
           >
             <span style={{ color: "#334155", fontWeight: 600 }}>
-              See what your insurance is hiding.&nbsp;
+              You pay a lot for healthcare. Get the most out of it.&nbsp;
             </span>
             <span style={{ color: "#6b7280" }}>
-              Find medical bill errors. Discover benefits. Save money.
+              Free bill audit and benefits analysis — in under five minutes.
             </span>
           </div>
         </div>

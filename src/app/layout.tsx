@@ -16,19 +16,22 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "Candid Claim — Free Medical Bill Audit & Insurance Benefits Tool",
+    // Keyword-first: every keyword char sits inside Google's ~580px cutoff;
+    // only the brand suffix can clip, and the WebSite JSON-LD below renders
+    // "Candid Claim" as the SERP site name regardless.
+    default: "Free Medical Bill Audit & Insurance Benefits Checker | Candid Claim",
     template: "%s | Candid Claim",
   },
   description:
-    "Upload your medical bill and get a free audit in seconds. Candid Claim finds overcharges, surfaces insurance benefits you're not using, and drafts dispute letters. No credit card required.",
+    "Free medical bill audit in minutes. Candid finds overcharges, drafts dispute letters, and shows what your insurance covers. No credit card required.",
   metadataBase: new URL("https://www.candidclaim.com"),
   alternates: {
     canonical: "/",
   },
   openGraph: {
-    title: "Find medical bill errors. Discover benefits. Save money.",
+    title: "You pay a lot for healthcare. Get the most out of it.",
     description:
-      "See what your insurance is hiding. Upload your bill, select your plan, and we do the rest…",
+      "Free bill audit and benefits analysis. We'll tell you if you've been overcharged and what your plan covers — in under five minutes.",
     url: "https://www.candidclaim.com",
     siteName: "Candid Claim",
     locale: "en_US",
@@ -36,9 +39,9 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Find medical bill errors. Discover benefits. Save money.",
+    title: "You pay a lot for healthcare. Get the most out of it.",
     description:
-      "See what your insurance is hiding. Upload your bill, select your plan, and we do the rest…",
+      "Free bill audit and benefits analysis. We'll tell you if you've been overcharged and what your plan covers — in under five minutes.",
   },
   robots: {
     index: true,
@@ -100,6 +103,35 @@ export const metadata: Metadata = {
     "what preventive care is free",
     "understanding my EOB",
     "am I using all my insurance benefits",
+    // Group 3: fight / negotiate / itemize (aligned to the /learn guide targets)
+    "how to fight a medical bill",
+    "how to negotiate a medical bill",
+    "how to get an itemized hospital bill",
+    "why is my medical bill different from my EOB",
+    "how to read an EOB",
+    // Group 4: denials & appeals
+    "insurance denied my claim what to do",
+    "appeal denied health insurance claim",
+    "how to appeal a health insurance denial",
+    "insurance appeal letter template",
+    "external review health insurance",
+    "prior authorization denied what to do",
+    // Group 5: collections & medical debt
+    "medical bill in collections what to do",
+    "debt validation letter for medical bill",
+    "can I dispute a medical bill in collections",
+    // Group 6: plan comparison & choice
+    "how to compare health insurance plans",
+    "compare health insurance plans side by side",
+    "how to choose a health insurance plan",
+    "HMO vs PPO which is better",
+    "HDHP vs PPO which saves money",
+    "health insurance comparison tool",
+    "open enrollment how to choose a plan",
+    // Group 7: cost-share mechanics (accumulator tracker)
+    "deductible vs out of pocket maximum",
+    "how to track my deductible",
+    "does my insurance cover massage therapy",
   ],
   authors: [{ name: "Candid Claim", url: "https://www.candidclaim.com" }],
   creator: "Airgetlam Labs LLC",
@@ -167,7 +199,63 @@ export default function RootLayout({
                     "Healthcare overcharges",
                     "Medical bill dispute letters",
                     "EOB review",
+                    "Health insurance plan comparison",
+                    "Insurance denial appeals",
+                    "Medical debt collections",
                   ],
+                  // The three products as first-class Services — featureList
+                  // below is a flat string array and cannot carry per-service
+                  // descriptions; this can. No `url` on the Services: /claim,
+                  // /plan, /compare are authed routes that bounce crawlers to
+                  // sign-in, so pointing structured data at them is noise.
+                  hasOfferCatalog: {
+                    "@type": "OfferCatalog",
+                    name: "The Candid Suite",
+                    itemListElement: [
+                      {
+                        "@type": "Offer",
+                        price: "0",
+                        priceCurrency: "USD",
+                        itemOffered: {
+                          "@type": "Service",
+                          name: "Candid Claim",
+                          description:
+                            "Free medical bill audit that checks every line, flags overcharges and billing errors, and drafts the dispute letter for you.",
+                        },
+                      },
+                      {
+                        "@type": "Offer",
+                        price: "0",
+                        priceCurrency: "USD",
+                        itemOffered: {
+                          "@type": "Service",
+                          name: "Candid Plan",
+                          description:
+                            "Reads your insurance documents and shows what your plan covers — copays, visit limits, and benefits you're not using.",
+                        },
+                      },
+                      {
+                        "@type": "Offer",
+                        price: "0",
+                        priceCurrency: "USD",
+                        itemOffered: {
+                          "@type": "Service",
+                          name: "Candid Compare",
+                          description:
+                            "Compares up to three health insurance plans side by side, with every number sourced from real plan documents.",
+                        },
+                      },
+                    ],
+                  },
+                },
+                {
+                  // Site identity: Google draws the SERP "site name" line from
+                  // WebSite structured data — this is what keeps "Candid Claim"
+                  // visible even when the <title>'s brand suffix truncates.
+                  "@type": "WebSite",
+                  name: "Candid Claim",
+                  alternateName: "Candid",
+                  url: "https://www.candidclaim.com",
                 },
                 {
                   "@type": "WebApplication",
@@ -182,12 +270,19 @@ export default function RootLayout({
                     price: "0",
                     priceCurrency: "USD",
                   },
+                  // Query-shaped feature strings; every entry is a live PROD
+                  // capability. ("In-network provider lookup" removed — no
+                  // provider directory exists; never claim unshipped features.)
                   featureList: [
-                    "Medical bill line-by-line audit",
-                    "Overcharge and duplicate code detection",
-                    "Dispute letter generation",
-                    "Insurance benefits discovery",
-                    "In-network provider lookup",
+                    "Line-by-line medical bill audit",
+                    "Overcharge, duplicate-charge, and billing-error detection",
+                    "Medical bill dispute letter generator",
+                    "Insurance benefits checker — see what your plan covers",
+                    "Side-by-side health insurance plan comparison",
+                    "Deductible and out-of-pocket maximum tracker",
+                    "Health insurance appeal letter generator (denials and external review)",
+                    "Debt validation letters for medical bills in collections",
+                    "EOB-to-bill reconciliation",
                     "HSA/FSA eligibility flagging",
                   ],
                 },
