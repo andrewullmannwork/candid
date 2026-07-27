@@ -38,6 +38,7 @@ import {
   USED_BENEFITS_CAP,
 } from "../src/lib/plan/benefit-usage";
 import { groupCoveredBenefits, isGroupUsed } from "../src/lib/plan/benefit-grouping";
+import { formatInNetworkCost, formatOutOfNetworkCost } from "../src/lib/plan/cost-share-format";
 
 let pass = 0;
 let fail = 0;
@@ -336,6 +337,65 @@ const CANON_TERMS = {
     check("grouping — one tick marks ONE group", groups.filter((g) => isGroupUsed(g, ticked)).length, 1);
     check("grouping — tick on any variant slug counts", isGroupUsed(rx!, new Set(["generic_rx_90day"])), true);
     check("grouping — untucked group not used", isGroupUsed(surgery!, ticked), false);
+  }
+
+  // ── 8. S289 cost-share display formatting (the leg-③ blank-cells bug) ────
+  // Shapes below are the REAL canonical rows from the E2E screenshot (BCBS TX
+  // Silver 605 Surgery/pcp/generic_rx) — the exact cells that rendered "—".
+  {
+    check(
+      "cost fmt — coinsurance decimal + deductible",
+      formatInNetworkCost({ in_coinsurance: 0.4, in_deductible_applies: true }),
+      "40% coinsurance, after deductible",
+    );
+    check(
+      "cost fmt — plain copay",
+      formatInNetworkCost({ in_copay: 115 }),
+      "$115 copay",
+    );
+    check(
+      "cost fmt — percent-stored coinsurance normalizes",
+      formatInNetworkCost({ in_coinsurance: 50 }),
+      "50% coinsurance",
+    );
+    check("cost fmt — all-null → Covered", formatInNetworkCost({}), "Covered");
+    check(
+      "cost fmt — zero coinsurance, no copay → No charge",
+      formatInNetworkCost({ in_copay: null, in_coinsurance: 0 }),
+      "No charge",
+    );
+    check(
+      "cost fmt — OON copay + coinsurance + deductible",
+      formatOutOfNetworkCost({ out_copay: 2000, out_coinsurance: 0.5, out_deductible_applies: true }, "HMO"),
+      "$2000 copay, 50% coinsurance, after deductible",
+    );
+    check(
+      "cost fmt — OON empty on HMO → Not covered",
+      formatOutOfNetworkCost({}, "HMO"),
+      "Not covered",
+    );
+    check(
+      "cost fmt — OON empty on PPO → empty (em-dash is honest there)",
+      formatOutOfNetworkCost({}, "PPO"),
+      "",
+    );
+    check(
+      "cost fmt — OON extracted prose wins",
+      formatOutOfNetworkCost({ out_cost_description: "50% after ded.", out_copay: 10 }, "PPO"),
+      "50% after ded.",
+    );
+    // The regression itself: a covered canonical row must NEVER format to "".
+    const screenshotRows = [
+      { in_coinsurance: 0.4, in_deductible_applies: true },
+      { in_coinsurance: 0.5, in_deductible_applies: true },
+      { in_copay: 115 },
+      { in_copay: 40 },
+    ];
+    check(
+      "cost fmt — no covered row formats to empty (the leg-③ bug)",
+      screenshotRows.every((r) => formatInNetworkCost(r).length > 0),
+      true,
+    );
   }
 
   console.log(`\n${pass}/${pass + fail} passed`);

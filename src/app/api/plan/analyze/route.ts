@@ -8,6 +8,7 @@ import type { FieldProvenanceEntry } from "@/lib/parser/field-categories";
 import { resolveCanonicalSlugs } from "@/lib/parser/canonical-resolution";
 import { loadCatalogIdentity } from "@/lib/plan/catalog-identity";
 import { readUsedBenefits } from "@/lib/plan/benefit-usage";
+import { formatInNetworkCost, formatOutOfNetworkCost } from "@/lib/plan/cost-share-format";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
@@ -155,37 +156,15 @@ export async function POST(request: NextRequest) {
             ? `Find a covered provider at ${planLevelNetworkFinderUrl}.`
             : null;
 
+        // S289 — cost-share display formatting extracted to the shared,
+        // fixture-asserted module (src/lib/plan/cost-share-format.ts) so every
+        // producer of `costDescription` (user-row path AND canonical gap-fill)
+        // runs the same named rule. Local aliases keep call sites readable.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        function formatCost(s: any): string {
-          const parts: string[] = [];
-          const copay = s.in_copay as number | null;
-          const coinsurance = s.in_coinsurance as number | null;
-          if (copay != null) parts.push(`$${copay} copay`);
-          if (coinsurance != null && coinsurance > 0) parts.push(`${normalizeCoinsurancePct(coinsurance)}% coinsurance`);
-          if (s.in_deductible_applies) parts.push("after deductible");
-          if (parts.length === 0 && copay === null && coinsurance === 0) return "No charge";
-          if (parts.length === 0) return "Covered";
-          return parts.join(", ").replace(/^./, (c: string) => c.toUpperCase());
-        }
-
+        const formatCost = (s: any): string => formatInNetworkCost(s);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        function formatOonCost(s: any, planType: string | null): string {
-          // Prefer explicit OON description from extraction.
-          if (s.out_cost_description) return s.out_cost_description;
-          // Fall back to structured OON fields.
-          const parts: string[] = [];
-          const copay = s.out_copay as number | null;
-          const coinsurance = s.out_coinsurance as number | null;
-          if (copay != null) parts.push(`$${copay} copay`);
-          if (coinsurance != null && coinsurance > 0) parts.push(`${normalizeCoinsurancePct(coinsurance)}% coinsurance`);
-          if (s.out_deductible_applies) parts.push("after deductible");
-          if (parts.length > 0) return parts.join(", ").replace(/^./, (c: string) => c.toUpperCase());
-          if (copay === 0 && coinsurance === 0) return "No charge";
-          // HMO/EPO typically don't cover OON. Signal that instead of an empty em dash.
-          const pt = (planType || "").toUpperCase();
-          if (pt === "HMO" || pt === "EPO") return "Not covered";
-          return "";
-        }
+        const formatOonCost = (s: any, planType: string | null): string =>
+          formatOutOfNetworkCost(s, planType);
 
         function cleanDescription(raw: string): string {
           return raw
