@@ -6,6 +6,7 @@ import type { ComparePlanPayload } from "@/lib/plan/compare";
 import {
   bestNumericIndices,
   coveredPerPlanInCategory,
+  distinctServiceCount,
   groupBenefitsByCategory,
   inNetworkCopay,
   sortCategoryGroups,
@@ -73,7 +74,9 @@ function CategoryAccordion({
 }) {
   const gridClass = compareGridClass(plans.length);
   const planCount = plans.length;
-  const totalRows = rows.length;
+  // S289 review F2/F6 — user-facing counts are SERVICES (distinct slugs); the
+  // row list may hold several variant rows per service.
+  const totalRows = distinctServiceCount(rows);
   const covered = coveredPerPlanInCategory(rows, planCount);
   const wins = winsPerPlanInCategory(rows, planCount);
   const leaderIdx = new Set(bestNumericIndices(wins, (n) => n, false));

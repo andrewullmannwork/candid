@@ -212,6 +212,25 @@ function compareOonCost(s: any, planType: string | null): string {
   return formatOutOfNetworkCost(s, planType) || "—";
 }
 
+/**
+ * S289 review F5 — deterministic representative among a slug's variant
+ * benefits: the DEFAULT variant (any/global/none) when present — it means
+ * "the service overall" — else the lowest variant key. Consumers that need
+ * ONE benefit per slug (yearly lens rules, best-for copy) use this instead
+ * of first/last-in-array, which .order("id") made deterministic but still
+ * arbitrary (surgery facility 40% vs professional 50% — whichever row id
+ * sorts first).
+ */
+export function pickRepresentativeVariant(candidates: CompareBenefit[]): CompareBenefit | null {
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+  const keyOf = (b: CompareBenefit) =>
+    `${b.placeOfService ?? "any"}|${b.component ?? "global"}|${b.planTierLabel ?? "none"}`;
+  const dflt = candidates.find((b) => keyOf(b) === "any|global|none");
+  if (dflt) return dflt;
+  return [...candidates].sort((a, b) => keyOf(a).localeCompare(keyOf(b)))[0];
+}
+
 function titleCase(slug: string | null | undefined): string {
   if (!slug) return "—";
   return slug
@@ -284,7 +303,12 @@ export async function resolveCanonicalPlan(opts: {
       // SBC-parser-only on plan_covered_services). Cost summaries assemble from
       // structured copay/coinsurance/deductible fields exclusively.
       return {
-        serviceSlug: slug,
+        // S289 review F4 — emit the LIVE slug: a canonical row stored on a
+        // merged (dead) slug otherwise splits from the user-plan row of the
+        // same service into two identically-TITLED rows (titles already
+        // resolve live) with complementary empty cells. Read-only surface —
+        // no write path receives this remap.
+        serviceSlug: catalogIdentity.get(slug)?.liveSlug ?? slug,
         // A3: synonym-inferred identity → estimate + drop from verdicts (parity with the /plan cap).
         inferred: isSynonymInferred(s, decoration)
           ? { source: "synonym_cache" as const, matchedSlug: slug }
@@ -649,12 +673,18 @@ function buildInferredBenefit(
   slug: string,
   category: string | null,
   sec: SecondaryCoverage,
+  // S289 review F3 — modifiers of the cohort's enumerated variant of this
+  // slug, so the synthesized benefit lands in the EXISTING variant row.
+  variant?: { placeOfService: string; component: string; planTierLabel: string },
 ): CompareBenefit {
   const cov = sec.coverage;
   return {
     serviceSlug: slug,
     category: category ?? "other",
     title: titleCase(slug),
+    placeOfService: variant?.placeOfService ?? "any",
+    component: variant?.component ?? "global",
+    planTierLabel: variant?.planTierLabel ?? "none",
     costInNetworkDescription:
       cov.covered === false
         ? "Not covered"
@@ -703,6 +733,27 @@ export function computeCompareBackstop(
     new Set(payloads.flatMap((p) => p.benefits.map((b) => b.serviceSlug).filter(Boolean))),
   );
   if (unionSlugs.length === 0) return;
+  // S289 review F3 — variant-aware synthesis: the grouping layer now keys rows
+  // on (slug|pos|component|tier). A synthesized benefit at bare defaults
+  // (any|global|none) would mint a NEW half-empty row beside the cohort's real
+  // variant rows — each plan then shows a false "Not listed yet" cell for a
+  // service it has, the exact S161 defect this backstop exists to kill. Copy
+  // the modifiers of the cohort's first (deterministic) enumerated variant of
+  // that slug so the inferred benefit lands IN the existing row.
+  const cohortVariantBySlug = new Map<
+    string,
+    { placeOfService: string; component: string; planTierLabel: string }
+  >();
+  for (const p of payloads) {
+    for (const b of p.benefits) {
+      if (!b.serviceSlug || cohortVariantBySlug.has(b.serviceSlug)) continue;
+      cohortVariantBySlug.set(b.serviceSlug, {
+        placeOfService: b.placeOfService ?? "any",
+        component: b.component ?? "global",
+        planTierLabel: b.planTierLabel ?? "none",
+      });
+    }
+  }
   for (const p of payloads) {
     const cov = ctx.coverageByRefId.get(p.ref.id);
     if (!cov) continue;
@@ -715,7 +766,9 @@ export function computeCompareBackstop(
       if (!bm || !bm.isPreventiveEligible) continue;
       const sec = resolveSecondaryCoverage(slug, bm, cov.coveredMeta, cov.acaCompliant, ctx.gate);
       if (!sec || sec.confidence !== "confident") continue;
-      p.benefits.push(buildInferredBenefit(slug, bm.category, sec));
+      p.benefits.push(
+        buildInferredBenefit(slug, bm.category, sec, cohortVariantBySlug.get(slug)),
+      );
       present.add(slug);
     }
   }

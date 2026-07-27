@@ -29,12 +29,16 @@ import {
   categoryToDomain,
 } from "../src/lib/plan/category-display";
 import {
+  bestNumericIndices,
   CATEGORY_DISPLAY_ORDER,
+  coveredPerPlanInCategory,
+  distinctServiceCount,
   groupBenefitsByCategory,
   sortCategoryGroups,
-  variantLabel,
+  variantQualifiedTitle,
+  winsPerPlanInCategory,
 } from "../src/components/compare/compare-aggregates";
-import type { ComparePlanPayload } from "../src/lib/plan/compare";
+import { pickRepresentativeVariant, type ComparePlanPayload, type CompareBenefit } from "../src/lib/plan/compare";
 import {
   applyUsedBenefitsToggle,
   readUsedBenefits,
@@ -456,22 +460,27 @@ const CANON_TERMS = {
     // Plan A: 3 surgery variants (the e4e shape). Plan B: only the facility one.
     const planA = {
       benefits: [
-        bene("surgery", "Surgery", "40% coinsurance, after deductible", { component: "facility" }),
+        bene("surgery", "Surgery", "40% coinsurance, after deductible", { pos: "independent_facility", component: "facility" }),
         bene("surgery", "Surgery", "50% coinsurance, after deductible", { component: "professional" }),
         bene("surgery", "Surgery", "50% coinsurance, after deductible"),
       ],
     } as unknown as ComparePlanPayload;
     const planB = {
-      benefits: [bene("surgery", "Surgery", "30% coinsurance", { component: "facility" })],
+      benefits: [bene("surgery", "Surgery", "30% coinsurance", { pos: "independent_facility", component: "facility" })],
     } as unknown as ComparePlanPayload;
 
     const groups = groupBenefitsByCategory([planA, planB]);
     const rows = groups.find((g) => g.category === "surgery")?.rows ?? [];
     check("compare variants — ALL 3 variants get rows (was last-wins 1)", rows.length, 3);
     const facility = rows.find((r) => r.variantKey.includes("|facility|"));
-    check("compare variants — qualifier on multi-variant title", facility?.title, "Surgery — facility");
+    check(
+      "compare variants — Andrew title scheme (fees + place)",
+      facility?.title,
+      "Surgery facility fees — independent facility",
+    );
     check("compare variants — plan B fills its variant cell", facility?.perPlan[1]?.costInNetworkDescription, "30% coinsurance");
     const professional = rows.find((r) => r.variantKey.includes("|professional|"));
+    check("compare variants — professional fees title, no place tail", professional?.title, "Surgery professional fees");
     check("compare variants — plan B lacks professional → null cell", professional?.perPlan[1], null);
     check(
       "compare variants — correct cost per variant (A facility = 40%)",
@@ -493,7 +502,61 @@ const CANON_TERMS = {
       { benefits: [bene("pcp_visit", "Primary Care Visit", "$20 copay")] } as unknown as ComparePlanPayload,
     ]);
     check("compare variants — single variant keeps clean title", lone[0]?.rows[0]?.title, "Primary Care Visit");
-    check("compare variants — variantLabel formats modifiers", variantLabel(planA.benefits[0]), "facility");
+    // Title scheme details (Andrew S289): tier + PCP casing + global component.
+    check(
+      "compare variants — tier tail with place",
+      variantQualifiedTitle("Generic Drugs", bene("generic_rx", "Generic Drugs", "", { pos: "retail_pharmacy", tier: "tier_1" }) as unknown as CompareBenefit),
+      "Generic Drugs — retail pharmacy · tier 1",
+    );
+    check(
+      "compare variants — PCP office casing",
+      variantQualifiedTitle("Office Visit", bene("pcp_visit", "Office Visit", "", { pos: "pcp_office" }) as unknown as CompareBenefit),
+      "Office Visit — PCP office",
+    );
+
+    // ── Review F1: no "best" without competition ──
+    check("review F1 — single populated value wins nothing", JSON.stringify(bestNumericIndices([10, null], (v) => v as number | null, true)), "[]");
+    check("review F1 — two values still rank", JSON.stringify(bestNumericIndices([10, 20], (v) => v as number | null, true)), "[0]");
+
+    // ── Review F2/F6: slug-level counts ──
+    check("review F6 — header counts services not variants", distinctServiceCount(rows), 1);
+    const covered = coveredPerPlanInCategory(rows, 2);
+    check("review F2 — covered counts slugs (A: 1 not 3)", covered[0], 1);
+    check("review F2 — covered counts slugs (B: 1)", covered[1], 1);
+    const winRows = groupBenefitsByCategory([
+      { benefits: [
+        { ...(bene("surgery", "Surgery", "", { component: "facility" }) as object), costSharing: { inNetwork: { copay: 100, coinsurance: null, deductibleApplies: null }, outOfNetwork: { copay: null, coinsurance: null, deductibleApplies: null }, annualLimit: null, priorAuthRequired: null } },
+        { ...(bene("surgery", "Surgery", "", { component: "professional" }) as object), costSharing: { inNetwork: { copay: 500, coinsurance: null, deductibleApplies: null }, outOfNetwork: { copay: null, coinsurance: null, deductibleApplies: null }, annualLimit: null, priorAuthRequired: null } },
+      ] } as unknown as ComparePlanPayload,
+      { benefits: [
+        { ...(bene("surgery", "Surgery", "", { component: "facility" }) as object), costSharing: { inNetwork: { copay: 200, coinsurance: null, deductibleApplies: null }, outOfNetwork: { copay: null, coinsurance: null, deductibleApplies: null }, annualLimit: null, priorAuthRequired: null } },
+      ] } as unknown as ComparePlanPayload,
+    ]).find((g) => g.category === "surgery")?.rows ?? [];
+    const wins = winsPerPlanInCategory(winRows, 2);
+    check("review F2 — wins at slug level, best-variant per plan (A cheapest $100)", JSON.stringify(wins), "[1,0]");
+
+    // ── Review F5: representative variant ──
+    const repDefault = pickRepresentativeVariant([
+      bene("surgery", "Surgery", "", { component: "facility" }) as unknown as CompareBenefit,
+      bene("surgery", "Surgery", "") as unknown as CompareBenefit,
+    ]);
+    check("review F5 — default variant preferred", (repDefault as { component?: string })?.component, "global");
+    const repSorted = pickRepresentativeVariant([
+      bene("surgery", "Surgery", "", { component: "professional" }) as unknown as CompareBenefit,
+      bene("surgery", "Surgery", "", { component: "facility" }) as unknown as CompareBenefit,
+    ]);
+    check("review F5 — else lowest variant key (facility < professional)", (repSorted as { component?: string })?.component, "facility");
+
+    // ── Kill switch: per-slug rows, representative cells, clean titles ──
+    const legacy = groupBenefitsByCategory([planA, planB], { variantRows: false });
+    const legacyRows = legacy.find((g) => g.category === "surgery")?.rows ?? [];
+    check("kill switch — one row per slug", legacyRows.length, 1);
+    check("kill switch — clean title", legacyRows[0]?.title, "Surgery");
+    check(
+      "kill switch — cell holds the DEFAULT variant (not last-write)",
+      legacyRows[0]?.perPlan[0]?.costInNetworkDescription,
+      "50% coinsurance, after deductible",
+    );
   }
 
   console.log(`\n${pass}/${pass + fail} passed`);

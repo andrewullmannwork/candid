@@ -20,7 +20,7 @@
  * prices are ILLUSTRATIVE (curated MVP; fast-follow = claims-derived medians,
  * k-anon ≥5).
  */
-import type { ComparePlanPayload } from "@/lib/plan/compare";
+import { pickRepresentativeVariant, type ComparePlanPayload } from "@/lib/plan/compare";
 import { asNumber } from "./compare-aggregates";
 import { toRule, type CostRule } from "./cost-model";
 
@@ -146,13 +146,23 @@ interface IndexedRule {
 }
 
 function indexInNetworkRules(plan: ComparePlanPayload): Map<string, IndexedRule> {
-  const map = new Map<string, IndexedRule>();
+  // S289 review F5 — one rule per slug via the DEFAULT variant (else lowest
+  // variant key). The old per-benefit map.set let the LAST variant win — the
+  // yearly estimate silently used whichever variant's row id sorted last
+  // (surgery facility 40% vs professional 50%).
+  const bySlug = new Map<string, typeof plan.benefits>();
   for (const b of plan.benefits) {
     if (!b.serviceSlug) continue;
-    const rule = toRule(b, "inNetwork");
+    (bySlug.get(b.serviceSlug) ?? bySlug.set(b.serviceSlug, []).get(b.serviceSlug)!).push(b);
+  }
+  const map = new Map<string, IndexedRule>();
+  for (const [slug, candidates] of bySlug) {
+    const rep = pickRepresentativeVariant(candidates);
+    if (!rep) continue;
+    const rule = toRule(rep, "inNetwork");
     // An explicit exclusion (covered===false) counts as KNOWN data, not a gap.
-    const hasData = b.covered === false || rule.copay != null || rule.coinsurance != null;
-    map.set(b.serviceSlug, { rule, hasData });
+    const hasData = rep.covered === false || rule.copay != null || rule.coinsurance != null;
+    map.set(slug, { rule, hasData });
   }
   return map;
 }

@@ -56,7 +56,8 @@ export function formatInNetworkCost(s: CostShareRow): string {
  * "Not covered" instead of an empty em-dash.
  */
 export function formatOutOfNetworkCost(s: CostShareRow, planType: string | null): string {
-  if (s.out_cost_description) return s.out_cost_description;
+  const prose = s.out_cost_description?.trim();
+  if (prose) return prose;
   const parts: string[] = [];
   const copay = s.out_copay ?? null;
   const coinsurance = s.out_coinsurance ?? null;
