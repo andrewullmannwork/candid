@@ -53,28 +53,12 @@ export function BreadthTable({ plans }: BreadthTableProps) {
       title="How many services each plan covers"
     >
       <div className="rounded-2xl bg-white ring-1 ring-slate-200 overflow-hidden">
-        {/* Row 1: covered services count */}
-        <BreadthRow
-          label="Services covered"
-          sublabel="Covered = copay or coinsurance disclosed"
-          gridClass={gridClass}
-          isFirst
-        >
-          {plans.map((plan, idx) => (
-            <BreadthCell key={`${plan.ref.id}-${idx}`} plan={plan} index={idx}>
-              <span className="text-base font-semibold text-slate-900">
-                {plan.coveredServiceCount}
-              </span>
-              {bestCoveredIdx.has(idx) && <BestBadge label="Most breadth" />}
-            </BreadthCell>
-          ))}
-        </BreadthRow>
-
-        {/* Row 2: category coverage */}
+        {/* Row 1: category coverage — S289 (Andrew): leads the table. */}
         <BreadthRow
           label="Category coverage"
           sublabel="Distinct categories covered"
           gridClass={gridClass}
+          isFirst
         >
           {plans.map((plan, idx) => (
             <BreadthCell key={`${plan.ref.id}-${idx}`} plan={plan} index={idx}>
@@ -86,6 +70,22 @@ export function BreadthTable({ plans }: BreadthTableProps) {
                 </span>
               </span>
               {bestCoverageIdx.has(idx) && <BestBadge />}
+            </BreadthCell>
+          ))}
+        </BreadthRow>
+
+        {/* Row 2: covered services count */}
+        <BreadthRow
+          label="Services covered"
+          sublabel="Covered = copay or coinsurance disclosed"
+          gridClass={gridClass}
+        >
+          {plans.map((plan, idx) => (
+            <BreadthCell key={`${plan.ref.id}-${idx}`} plan={plan} index={idx}>
+              <span className="text-base font-semibold text-slate-900">
+                {plan.coveredServiceCount}
+              </span>
+              {bestCoveredIdx.has(idx) && <BestBadge label="Most breadth" />}
             </BreadthCell>
           ))}
         </BreadthRow>

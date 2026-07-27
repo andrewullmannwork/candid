@@ -36,23 +36,13 @@ export function BreadthTableV2({ plans }: BreadthTableV2Props) {
   return (
     <ComparisonSection eyebrow="Service breadth" title="How many services each plan covers">
       <div className="rounded-2xl bg-white ring-1 ring-slate-200 overflow-hidden">
+        {/* S289 (Andrew) — Category coverage leads the table. */}
         <BreadthRowV2
-          label="Services covered"
-          sublabel="Covered = copay or coinsurance disclosed"
+          label="Category coverage"
+          sublabel="Distinct categories covered"
           gridClass={gridClass}
           isFirst
         >
-          {plans.map((plan, idx) => (
-            <BreadthCellV2 key={`${plan.ref.id}-${idx}`} plan={plan} index={idx}>
-              <span className="text-2xl font-bold text-slate-900 tabular-nums">
-                {plan.coveredServiceCount}
-              </span>
-              <CompareRankBadge kind={coveredBadges[idx]} bestLabel="Most" worstLabel="Fewest" />
-            </BreadthCellV2>
-          ))}
-        </BreadthRowV2>
-
-        <BreadthRowV2 label="Category coverage" sublabel="Distinct categories covered" gridClass={gridClass}>
           {plans.map((plan, idx) => (
             <BreadthCellV2 key={`${plan.ref.id}-${idx}`} plan={plan} index={idx}>
               <span className="text-base font-semibold text-slate-900 tabular-nums">
@@ -63,6 +53,21 @@ export function BreadthTableV2({ plans }: BreadthTableV2Props) {
                 </span>
               </span>
               <CompareRankBadge kind={coverageBadges[idx]} bestLabel="Most" worstLabel="Fewest" />
+            </BreadthCellV2>
+          ))}
+        </BreadthRowV2>
+
+        <BreadthRowV2
+          label="Services covered"
+          sublabel="Covered = copay or coinsurance disclosed"
+          gridClass={gridClass}
+        >
+          {plans.map((plan, idx) => (
+            <BreadthCellV2 key={`${plan.ref.id}-${idx}`} plan={plan} index={idx}>
+              <span className="text-2xl font-bold text-slate-900 tabular-nums">
+                {plan.coveredServiceCount}
+              </span>
+              <CompareRankBadge kind={coveredBadges[idx]} bestLabel="Most" worstLabel="Fewest" />
             </BreadthCellV2>
           ))}
         </BreadthRowV2>

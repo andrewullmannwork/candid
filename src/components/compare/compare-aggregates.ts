@@ -126,13 +126,17 @@ export function variantTitleParts(b: CompareBenefit): { qualifier: string; tail:
   const component = b.component ?? "global";
   const pos = b.placeOfService ?? "any";
   const tier = b.planTierLabel ?? "none";
+  // Andrew S289: the pre-dash qualifier is Title Case ("Facility Fees",
+  // "Tier 1"); the post-dash place stays lowercase (PCP excepted).
+  const titleCaseWords = (s: string) =>
+    s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   const feeType =
     component === "facility"
-      ? "facility fees"
+      ? "Facility Fees"
       : component === "professional"
-        ? "professional fees"
+        ? "Professional Fees"
         : "";
-  const tierLabel = tier === "none" ? "" : tier.replace(/_/g, " ");
+  const tierLabel = tier === "none" ? "" : titleCaseWords(tier);
   const qualifier = [feeType, tierLabel].filter(Boolean).join(" ");
   const tail = pos === "any" ? "" : pos === "pcp_office" ? "PCP office" : pos.replace(/_/g, " ");
   return { qualifier, tail };

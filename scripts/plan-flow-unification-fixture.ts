@@ -476,11 +476,11 @@ const CANON_TERMS = {
     check(
       "compare variants — Andrew title scheme (fees + place)",
       facility?.title,
-      "Surgery facility fees — independent facility",
+      "Surgery Facility Fees — independent facility",
     );
     check("compare variants — plan B fills its variant cell", facility?.perPlan[1]?.costInNetworkDescription, "30% coinsurance");
     const professional = rows.find((r) => r.variantKey.includes("|professional|"));
-    check("compare variants — professional fees title, no place tail", professional?.title, "Surgery professional fees");
+    check("compare variants — professional fees title, no place tail", professional?.title, "Surgery Professional Fees");
     check("compare variants — plan B lacks professional → null cell", professional?.perPlan[1], null);
     check(
       "compare variants — correct cost per variant (A facility = 40%)",
@@ -505,9 +505,9 @@ const CANON_TERMS = {
     // Title scheme details (Andrew S289): pre-dash = charge kind (fees/tier),
     // post-dash = place. Tier is a BUCKET, so it joins the pre-dash slot.
     check(
-      "compare variants — tier is pre-dash (bucket, not place)",
+      "compare variants — tier is pre-dash, Title Case (bucket, not place)",
       variantQualifiedTitle("Generic Drugs", bene("generic_rx", "Generic Drugs", "", { pos: "retail_pharmacy", tier: "tier_1" }) as unknown as CompareBenefit),
-      "Generic Drugs tier 1 — retail pharmacy",
+      "Generic Drugs Tier 1 — retail pharmacy",
     );
     check(
       "compare variants — PCP office casing",
