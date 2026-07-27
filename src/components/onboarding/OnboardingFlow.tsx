@@ -434,6 +434,7 @@ export function OnboardingFlow() {
                 value={doc}
                 searchSeed={card?.planName || card?.insurer || profileSeed}
                 emphasizeCurrent
+                onCardCleared={() => setCard(null)}
                 onDone={(v) =>
                   setDoc((prev) => {
                     if (!prev) return v;
@@ -539,6 +540,7 @@ export function OnboardingFlow() {
                   <OnboardingDocStep
                     value={doc}
                     searchSeed={card?.planName || card?.insurer || profileSeed}
+                    onCardCleared={() => setCard(null)}
                     onDone={(v) =>
                       setDoc((prev) => {
                         // S286: a fresh upload becomes the primary row; prior

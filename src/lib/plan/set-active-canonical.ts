@@ -23,8 +23,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { userScoped } from "@/lib/security/user-scoped";
 
 export type SetActiveCanonicalResult =
-  | { ok: true; insurancePlanId: string }
+  | { ok: true; insurancePlanId: string; cardCleared: boolean }
   | { ok: false; status: number; error: string };
+
+const normalizeInsurer = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
 export async function setActiveCanonicalPlan(
   supabase: SupabaseClient,
@@ -65,6 +67,45 @@ export async function setActiveCanonicalPlan(
     source: "catalog_match" as const,
   };
 
+  // ── Card-preservation decision (S288, e3e finding) ─────────────────────────
+  // "A confirmed switch clears the other half" was designed for CHANGING an
+  // established pair — not for signup ASSEMBLY, where the card was typed
+  // seconds before the plan was selected and clearing it reads as data loss.
+  // Preserve the card IDs (member/group) when:
+  //   - ASSEMBLY: the prior active row is just the card's manual/card stub
+  //     (or nothing) — the user is building the pair, not switching plans; or
+  //   - the prior insurer MATCHES the selected plan's insurer (same-insurer
+  //     plan change — the card isn't stale).
+  // Clear them only on a real cross-insurer switch, and REPORT it
+  // (cardCleared) so the client mirrors the truth instead of showing a card
+  // that silently stopped existing server-side.
+  const { data: priorProfile } = await userScoped(supabase, userId)
+    .table("profiles")
+    .select("insurer, member_id, group_number, active_insurance_plan_id")
+    .maybeSingle();
+  let priorActiveSource: string | null = null;
+  if (priorProfile?.active_insurance_plan_id) {
+    const { data: priorActive } = await userScoped(supabase, userId)
+      .table("insurance_plans")
+      .select("source")
+      .eq("id", priorProfile.active_insurance_plan_id)
+      .maybeSingle();
+    priorActiveSource = (priorActive?.source as string | null) ?? null;
+  }
+  const assembly =
+    priorActiveSource === null || priorActiveSource === "manual" || priorActiveSource === "insurance_card";
+  const priorInsurerNorm = priorProfile?.insurer ? normalizeInsurer(priorProfile.insurer as string) : "";
+  const newInsurerNorm = insurerName ? normalizeInsurer(insurerName) : "";
+  const insurerMatches =
+    !!priorInsurerNorm &&
+    !!newInsurerNorm &&
+    (priorInsurerNorm.includes(newInsurerNorm) || newInsurerNorm.includes(priorInsurerNorm));
+  const preserveCard = assembly || insurerMatches;
+  const keptMemberId = preserveCard ? ((priorProfile?.member_id as string | null) ?? null) : null;
+  const keptGroupNumber = preserveCard ? ((priorProfile?.group_number as string | null) ?? null) : null;
+  const cardCleared =
+    !preserveCard && (priorProfile?.member_id != null || priorProfile?.group_number != null);
+
   // ── Dedup: reuse an existing owned row already linked to this canonical plan
   // (re-selecting the same plan should reactivate, not duplicate). ────────────
   const { data: existing } = await userScoped(supabase, userId)
@@ -86,11 +127,18 @@ export async function setActiveCanonicalPlan(
     return { ok: false, status: 500, error: "Could not set plan" };
   }
 
+  // Preserved card IDs ride onto the plan row too (they describe the user's
+  // enrollment in THIS plan once the pair is coherent).
+  const cardCarry =
+    keptMemberId != null || keptGroupNumber != null
+      ? { member_id: keptMemberId, group_number: keptGroupNumber }
+      : {};
+
   let activePlanId: string;
   if (existing?.id) {
     const { error: reactivateErr } = await userScoped(supabase, userId)
       .table("insurance_plans")
-      .update({ ...identity, is_active: true })
+      .update({ ...identity, ...cardCarry, is_active: true })
       .eq("id", existing.id);
     if (reactivateErr) {
       console.error("[set-active-canonical] reactivate failed:", reactivateErr.message);
@@ -100,7 +148,7 @@ export async function setActiveCanonicalPlan(
   } else {
     const { data: inserted, error: insertErr } = await userScoped(supabase, userId)
       .table("insurance_plans")
-      .insert({ ...identity, user_id: userId, is_active: true })
+      .insert({ ...identity, ...cardCarry, user_id: userId, is_active: true })
       .select("id")
       .single();
     if (insertErr || !inserted) {
@@ -125,8 +173,10 @@ export async function setActiveCanonicalPlan(
       state: canonical.state,
       plan_source: "catalog_match",
       matched_plan_id: null,
-      group_number: null,
-      member_id: null,
+      // S288 (e3e): card IDs survive assembly + same-insurer switches; they
+      // clear only on a real cross-insurer switch (cardCleared reports it).
+      group_number: keptGroupNumber,
+      member_id: keptMemberId,
       deductible_individual: null,
       oop_max_individual: null,
       copay_primary: null,
@@ -139,5 +189,5 @@ export async function setActiveCanonicalPlan(
     return { ok: false, status: 500, error: "Could not set plan" };
   }
 
-  return { ok: true, insurancePlanId: activePlanId };
+  return { ok: true, insurancePlanId: activePlanId, cardCleared };
 }

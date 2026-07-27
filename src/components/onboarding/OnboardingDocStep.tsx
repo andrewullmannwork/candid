@@ -72,6 +72,7 @@ export function OnboardingDocStep({
   grantConsent,
   searchSeed,
   emphasizeCurrent,
+  onCardCleared,
 }: {
   value: DocSlotValue | null;
   onDone: (v: DocSlotValue) => void;
@@ -85,6 +86,9 @@ export function OnboardingDocStep({
    *  card (eyebrow + full name + a real Replace button) so what's-on-file vs
    *  what-you're-changing is unmistakable. */
   emphasizeCurrent?: boolean;
+  /** S288 (e3e): the server cleared the card IDs (cross-insurer switch) —
+   *  the flow mirrors it by clearing its card slot. */
+  onCardCleared?: () => void;
 }) {
   const { user } = useAuth();
 
@@ -178,6 +182,8 @@ export function OnboardingDocStep({
           body: JSON.stringify({ canonicalPlanId: p.canonicalPlanId }),
         });
         if (!res.ok) throw new Error("set-active failed");
+        const setActive = (await res.json().catch(() => ({}))) as { cardCleared?: boolean };
+        if (setActive.cardCleared === true) onCardCleared?.();
         // Same in-step "it took" feedback as a successful doc parse: coverage
         // chips from the now canonical-linked active plan.
         let chips: ObChip[] = [];
@@ -205,7 +211,7 @@ export function OnboardingDocStep({
         setSearchSelecting(false);
       }
     },
-    [user, onDone],
+    [user, onDone, onCardCleared],
   );
 
   const [userPickedFile, setUserPickedFile] = useState(false);

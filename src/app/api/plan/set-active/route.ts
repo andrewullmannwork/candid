@@ -68,5 +68,12 @@ export async function POST(req: NextRequest) {
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: result.status });
   }
-  return NextResponse.json({ success: true, insurancePlanId: result.insurancePlanId });
+  // cardCleared (S288): true only on a real cross-insurer switch — the client
+  // mirrors it (clears its card slot) so the UI never shows a card the server
+  // just retired.
+  return NextResponse.json({
+    success: true,
+    insurancePlanId: result.insurancePlanId,
+    cardCleared: result.cardCleared,
+  });
 }
