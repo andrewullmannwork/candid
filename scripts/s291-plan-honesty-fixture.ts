@@ -30,6 +30,8 @@ import {
   type PlanCostShareParams,
 } from "@/lib/claims/recovery-math";
 import { pendingAssumptionFields } from "@/components/claims/CostShareBanner";
+import { buildDirectEntryProvenance } from "@/lib/parser/provenance-builders";
+import { SOURCE_DEFAULT_CONFIDENCE } from "@/lib/parser/field-categories";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail = ""): void {
@@ -238,7 +240,49 @@ check(
   JSON.stringify([...multi]),
 );
 
-const total = 16;
+// ── Provenance stamping — the root fix that made mig 217 unnecessary ───────
+// A card-scanned copay and a hand-typed one used to be byte-identical rows, so
+// no query could retire the fabricated ones without destroying real answers.
+const cardProv = buildDirectEntryProvenance(
+  "plan_covered_services",
+  [["in_copay", 0]],
+  "card_corroboration",
+);
+const userProv = buildDirectEntryProvenance(
+  "plan_covered_services",
+  [["in_copay", 0]],
+  "user_correction",
+);
+check(
+  "identical $0 copays are now DISTINGUISHABLE by provenance",
+  cardProv.in_copay?.source === "card_corroboration" &&
+    userProv.in_copay?.source === "user_correction",
+  `${cardProv.in_copay?.source} vs ${userProv.in_copay?.source}`,
+);
+check(
+  "a typed value outranks a scanned one",
+  (userProv.in_copay?.confidence ?? 0) > (cardProv.in_copay?.confidence ?? 1),
+  `user ${userProv.in_copay?.confidence} > card ${cardProv.in_copay?.confidence}`,
+);
+check(
+  "confidence comes from the calibrated table, not a literal",
+  cardProv.in_copay?.confidence === SOURCE_DEFAULT_CONFIDENCE.card_corroboration &&
+    userProv.in_copay?.confidence === SOURCE_DEFAULT_CONFIDENCE.user_correction,
+  `${cardProv.in_copay?.confidence} / ${userProv.in_copay?.confidence}`,
+);
+check(
+  "null values are not stamped (nothing to attribute)",
+  Object.keys(
+    buildDirectEntryProvenance("plan_covered_services", [["in_copay", null]], "card_corroboration"),
+  ).length === 0,
+);
+check(
+  "the value travels with the entry (Pattern 1 #3 corroboration)",
+  cardProv.in_copay?.value === 0,
+  JSON.stringify(cardProv.in_copay?.value),
+);
+
+const total = 21;
 console.log(`\n${total} assertions — ${total - failures} passed, ${failures} failed`);
 if (failures > 0) {
   console.error("✗ s291-plan-honesty fixture RED");

@@ -19,6 +19,8 @@ import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { userScoped, upsertOwnedChildren } from "@/lib/security/user-scoped";
 import { parseCostShareOverride } from "@/lib/claims/cost-share-override";
 import { PLAN_COVERED_ONCONFLICT } from "@/lib/plan/coverage-targeting";
+import { buildDirectEntryProvenance } from "@/lib/parser/provenance-builders";
+import { SOURCE_DEFAULT_CONFIDENCE } from "@/lib/parser/field-categories";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -200,11 +202,28 @@ export async function POST(
       component: "global",
       covered: true,
       source: "manual",
-      confidence: 1,
+      confidence: SOURCE_DEFAULT_CONFIDENCE.user_correction,
     };
     if (ov.copay != null) row.in_copay = ov.copay;
     if (ov.coinsurance != null) row.in_coinsurance = ov.coinsurance;
     if (ov.deductibleApplies != null) row.in_deductible_applies = ov.deductibleApplies;
+
+    // S291 — stamp that a HUMAN asserted this. Previously this row was written
+    // with `source: 'manual', confidence: 1` and no provenance, identical to the
+    // card-scan write in syncCopayServices — and because this upserts on the
+    // same conflict key, a user's answer OVERWROTE the fabricated row in place
+    // with no trace of which it was. That ambiguity is what made mig 217
+    // unsafe. `user_correction` carries 0.9 in the calibrated table, above
+    // card_corroboration's 0.6, so a typed value outranks a scanned one.
+    row.field_provenance = buildDirectEntryProvenance(
+      "plan_covered_services",
+      [
+        ["in_copay", ov.copay],
+        ["in_coinsurance", ov.coinsurance],
+        ["in_deductible_applies", ov.deductibleApplies],
+      ],
+      "user_correction",
+    );
 
     const { upserted } = await upsertOwnedChildren(
       supabase,

@@ -20,8 +20,20 @@
 -- that rests on an unverified-plan copay row to `insufficient`. No data
 -- mutation, nothing destroyed, reversible by flag.
 --
--- Kept in-tree as the record of why the data fix was rejected. Superseded by
--- the code-side fix. Do not run.
+-- RESOLVED (S291) — the root cause was information LOSS AT WRITE TIME, not a
+-- missing query. `card_corroboration` / `user_initial_entry` / `user_correction`
+-- already existed in the provenance vocabulary with calibrated confidences;
+-- these two writers just never stamped them. Both now do
+-- (buildDirectEntryProvenance), so a scanned copay and a typed one are
+-- permanently distinguishable and no cleanup migration is needed going forward.
+--
+-- Rows written BEFORE that change carry no provenance and are genuinely
+-- unattributable. They are left alone deliberately: consumers must treat absent
+-- provenance as UNKNOWN — never as "the user told us" — rather than us guessing
+-- which they were and destroying half of them.
+--
+-- Kept in-tree as the record of why the data fix was rejected, and to consume
+-- the number so it can't be reused. Do not run.
 -- =============================================================================
 --
 -- MIGRATION 217 — retire fabricated $0 card copays already in the data

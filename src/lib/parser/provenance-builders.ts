@@ -273,6 +273,50 @@ export function buildCanonicalInheritedProvenance(
 }
 
 /**
+ * Provenance for a DIRECT write — a value that reached us without a parser:
+ * scanned off an insurance card, or typed by the user.
+ *
+ * S291 — the gap this closes. `syncCopayServices` and the cost-share-override
+ * route both wrote `plan_covered_services` rows with a hardcoded
+ * `source: 'manual', confidence: 1` and NO field_provenance. That made a
+ * card-scanned "$0 copay" indistinguishable from a copay the user deliberately
+ * entered — identical on every column, and the override upserts over the same
+ * row. Migration 217 was written to retire the fabricated ones and had to be
+ * abandoned: there was no surviving signal to select on, and it would have
+ * destroyed real answers.
+ *
+ * The fix isn't a smarter query, it's not throwing the information away at
+ * write time. `card_corroboration` / `user_initial_entry` / `user_correction`
+ * already exist in the vocabulary with calibrated confidences — these writers
+ * simply never used them.
+ *
+ * Rows written before this point carry no provenance and are genuinely
+ * unattributable; consumers must treat absent provenance as unknown rather than
+ * assuming either origin.
+ */
+export function buildDirectEntryProvenance(
+  table: string,
+  fields: Array<[string, unknown]>,
+  source: "card_corroboration" | "user_initial_entry" | "user_correction",
+): Record<string, FieldProvenanceEntry> {
+  const provenance: Record<string, FieldProvenanceEntry> = {};
+  for (const [column, value] of fields) {
+    if (value === null || value === undefined) continue;
+    const entry = buildProvenanceEntry(
+      table,
+      column,
+      source,
+      undefined, // no Haiku ran
+      undefined, // no source excerpt — nothing was parsed
+      undefined, // no searched sections
+      value, // the value itself, for cross-user corroboration (Pattern 1 #3)
+    );
+    if (entry) provenance[column] = entry;
+  }
+  return provenance;
+}
+
+/**
  * Build field_provenance for a `plan_covered_services` row from a plan_doc Haiku-first
  * parser service emission.
  *

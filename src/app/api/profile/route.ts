@@ -7,6 +7,8 @@ import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
 import { setActiveCanonicalPlan } from "@/lib/plan/set-active-canonical";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { PLAN_COVERED_ONCONFLICT, type PlanCoverageRow } from "@/lib/plan/coverage-targeting";
+import { buildDirectEntryProvenance } from "@/lib/parser/provenance-builders";
+import { SOURCE_DEFAULT_CONFIDENCE } from "@/lib/parser/field-categories";
 import { OB_HOUSEHOLD, OB_SITUATIONS } from "@/lib/onboarding/simplified";
 
 /** Extract and verify the Firebase ID token from the Authorization header */
@@ -912,13 +914,24 @@ async function syncCopayServices(
 
     if (!service) continue;
 
+    // S291 — stamp WHERE this number came from. Without it a card-scanned copay
+    // and a hand-typed one are byte-identical rows, which is what made the
+    // fabricated-$0 cleanup (mig 217) impossible to write safely. Confidence
+    // comes from the vocabulary's calibrated table, not a hand-picked literal,
+    // so provenance and confidence can never disagree.
+    const provSource = fromCardScan ? "card_corroboration" : "user_initial_entry";
     rows.push({
       service_id: service.id,
       place_of_service: "any",
       component: "global",
       in_copay: copay,
       source: fromCardScan ? "insurance_card" : "manual",
-      confidence: fromCardScan ? 0.5 : 1,
+      confidence: SOURCE_DEFAULT_CONFIDENCE[provSource],
+      field_provenance: buildDirectEntryProvenance(
+        "plan_covered_services",
+        [["in_copay", copay]],
+        provSource,
+      ),
     });
   }
 
