@@ -1659,6 +1659,14 @@ export function ClaimDetail({
         eyebrow="Plan we checked against"
         title="Which plan were you on?"
         confirmLabel="Use this plan"
+        // S291 (Andrew) — when no plan covers the bill's year there is nothing
+        // to pick, so "choose one" is a dead end. The chooser's existing
+        // search-or-upload affordance is the way out; it was simply never wired
+        // on this path.
+        onSearchLibrary={() => {
+          setRepinOpen(false);
+          router.push("/upload?type=plan");
+        }}
         onConfirm={(id) => {
           setRepinOpen(false);
           // Re-pinning changes which coverage the audit reads, so the claim is
