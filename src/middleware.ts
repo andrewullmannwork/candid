@@ -11,6 +11,12 @@ const PUBLIC_ROUTES = [
   "/privacy",
   "/terms",
   "/health-data",
+  // Public marketing/SEO content surface (/learn + /learn/<slug>). These pages
+  // carry no auth and no health data by construction (see LearnChrome), are
+  // advertised to crawlers in sitemap.ts, and are deliberately NOT in robots.ts
+  // CHD_DISALLOW — gating them behind the auth wall would 307 every indexed URL
+  // to the sign-in page and make the content surface unindexable.
+  "/learn",
   "/api/waitlist",
   "/api/stripe/webhook",
   "/api/auth/sync",
