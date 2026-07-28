@@ -476,15 +476,6 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const { error } = await userScoped(supabase, user.id)
-    .table("profiles")
-    .upsert(update, { onConflict: "user_id" });
-
-  if (error) {
-    console.error("Profile save error:", error);
-    return NextResponse.json({ error: "Failed to save profile" }, { status: 500 });
-  }
-
   // ── S288 plan-flow unification: canonical search-select persists for real ──
   // The plan-name autocomplete has returned canonical_plans ids since S107,
   // but this route filed them under matched_catalog_plan_id (a plan_catalog
@@ -494,6 +485,16 @@ export async function POST(req: NextRequest) {
   // (canonical link + single-active + profile repoint, source='catalog_match')
   // and skip the generic manual-row dual-write below. Non-canonical ids (true
   // legacy plan_catalog matches) keep the old behavior.
+  //
+  // S290 ORDERING FIX (Andrew E2E, main-account plan change 04:56Z): this
+  // block used to run AFTER the profiles upsert — when activation failed or
+  // was skipped, the trio (insurer/plan_name/plan_source='catalog_match') was
+  // already written, leaving a profile that CLAIMS a catalog match while
+  // active_insurance_plan_id still points at the old row and no plan row
+  // exists for the selection. Now: activation runs FIRST; a canonical
+  // selection whose activation fails returns 500 (both-or-neither — no
+  // half-written identity); and 'catalog_match' provenance is SERVER-DERIVED
+  // (stamped only when activation actually succeeded, never client-asserted).
   let canonicalSelected = false;
   if (typeof matched_plan_id === "string" && matched_plan_id) {
     try {
@@ -507,11 +508,37 @@ export async function POST(req: NextRequest) {
         canonicalSelected = setActive.ok;
         if (!setActive.ok) {
           console.error("[profile] canonical set-active failed:", setActive.error);
+          return NextResponse.json(
+            { error: "Could not set that plan as active. Nothing was changed — please try again." },
+            { status: 500 },
+          );
         }
       }
     } catch (canonicalErr) {
       console.error("[profile] canonical set-active errored:", canonicalErr);
+      return NextResponse.json(
+        { error: "Could not set that plan as active. Nothing was changed — please try again." },
+        { status: 500 },
+      );
     }
+  }
+  // Server-derived provenance: only a SUCCESSFUL canonical activation may
+  // stamp catalog_match. A client-asserted 'catalog_match' without one is
+  // dropped (keeps the existing provenance) and logged.
+  if (update.plan_source === "catalog_match" && !canonicalSelected) {
+    console.warn(
+      "[profile] dropped client-asserted plan_source='catalog_match' (no successful canonical activation)",
+    );
+    delete update.plan_source;
+  }
+
+  const { error } = await userScoped(supabase, user.id)
+    .table("profiles")
+    .upsert(update, { onConflict: "user_id" });
+
+  if (error) {
+    console.error("Profile save error:", error);
+    return NextResponse.json({ error: "Failed to save profile" }, { status: 500 });
   }
 
   // ── Dual-write: sync plan data to insurance_plans ─────────────────────────

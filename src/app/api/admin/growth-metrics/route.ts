@@ -32,9 +32,21 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Failed to load metrics" }, { status: 500 });
   }
 
+  // S290 — /learn thumbs aggregates (mig 215; additive companion RPC so the
+  // live growth_metrics body is never CREATE-OR-REPLACEd). Degrades to null
+  // when the RPC isn't applied yet — the dashboard section then self-hides.
+  let guideFeedback: unknown = null;
+  const gf = await supabase.rpc("guide_feedback_metrics", { win });
+  if (gf.error) {
+    console.warn("[admin/growth-metrics] guide_feedback_metrics unavailable:", gf.error.message);
+  } else {
+    guideFeedback = gf.data ?? null;
+  }
+
   return NextResponse.json({
     generatedAt: new Date().toISOString(),
     window: win,
+    guideFeedback,
     ...(data as Record<string, unknown>),
   });
 }

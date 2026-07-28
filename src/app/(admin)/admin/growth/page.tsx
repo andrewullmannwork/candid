@@ -46,6 +46,13 @@ export interface GrowthMetrics {
   signupGates: { attempted: number; phoneBlocked: number; created: number };
   /** Onboarding-step completion for signups in the window (derived from artifacts; backfills). */
   funnel: { signups: number; withPlan: number; withCard: number; withClaimDoc: number };
+  /** S290 — /learn "was this helpful" thumbs (mig 214 votes, mig 215 RPC).
+   *  null until the RPC is applied → the section self-hides. */
+  guideFeedback: {
+    totalUp: number;
+    totalDown: number;
+    articles: { slug: string; up: number; down: number }[];
+  } | null;
 }
 
 const WINDOWS: { key: GrowthMetrics["window"]; label: string }[] = [
@@ -344,6 +351,56 @@ export function GrowthMetricsView({
             </tbody>
           </table>
         </div>
+
+        {/* S290 — /learn thumbs (mig 214 votes · mig 215 RPC). Self-hides until
+            the RPC is applied; admin voters excluded like every growth metric. */}
+        {data.guideFeedback && (
+          <div className="rounded-2xl border border-gray-200 bg-white">
+            <div className="border-b border-gray-100 px-5 py-3">
+              <h2 className="text-sm font-semibold text-gray-900">
+                Guide feedback
+                <span className="ml-2 align-middle text-[12px] font-normal text-gray-400">
+                  👍 {data.guideFeedback.totalUp} · 👎 {data.guideFeedback.totalDown}
+                </span>
+              </h2>
+              <p className="mt-0.5 text-[12px] text-gray-500">
+                &quot;Was this article helpful?&quot; votes on /learn — anonymous allowed, signed-in
+                votes identity-verified server-side; admin voters excluded.
+              </p>
+            </div>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-[12px] uppercase tracking-wide text-gray-400">
+                  <th className="px-5 py-2.5 font-medium">Guide</th>
+                  <th className="px-5 py-2.5 text-right font-medium">Helpful</th>
+                  <th className="px-5 py-2.5 text-right font-medium">Not helpful</th>
+                  <th className="px-5 py-2.5 text-right font-medium">Helpful %</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {data.guideFeedback.articles.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-5 py-8 text-center text-gray-400">
+                      No votes yet — the widget records from deploy.
+                    </td>
+                  </tr>
+                )}
+                {data.guideFeedback.articles.map((a) => {
+                  const total = a.up + a.down;
+                  const pct = total > 0 ? Math.round((a.up / total) * 100) : null;
+                  return (
+                    <tr key={a.slug} className="text-gray-700">
+                      <td className="px-5 py-2.5 font-mono text-[13px] text-gray-900">/learn/{a.slug}</td>
+                      <td className="px-5 py-2.5 text-right tabular-nums text-emerald-700">{a.up}</td>
+                      <td className="px-5 py-2.5 text-right tabular-nums text-red-600">{a.down}</td>
+                      <td className="px-5 py-2.5 text-right tabular-nums">{pct == null ? "—" : `${pct}%`}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
 
         <div className="rounded-2xl border border-gray-200 bg-white">
           <div className="border-b border-gray-100 px-5 py-3">

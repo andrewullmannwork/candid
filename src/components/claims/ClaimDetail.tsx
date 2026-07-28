@@ -2652,6 +2652,13 @@ export function ClaimDetail({
           surface their actions inside step 4 "Recover the money"). */}
       {!isFlagged && (billState === "needs_review" ? (
         <>
+          {/* S290 (Andrew E2E) — the "upload your plan" nag renders ONLY when
+              we genuinely have no plan terms for this bill (no line resolved
+              coverage). With a plan on file (uploaded OR search-selected via
+              the canonical fallback), the assumptions card above is the ask —
+              this banner's premise ("once we have your plan details") is
+              false and it reads as if the selection didn't register. */}
+          {!primaryLineItems.some((li) => li.planCoverage != null) && (
           <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-gray-200 bg-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
             <div className="max-w-prose text-[13px] text-gray-500">
               Help us answer the questions above. Once we have your plan details, we&apos;ll know if this bill is an overcharge — and draft the appeal in one click.
@@ -2673,13 +2680,14 @@ export function ClaimDetail({
               </button>
             </div>
           </div>
+          )}
           {/* Bulk dispute still available for needs_review when findings exist —
               user may want to dispute uncertain charges. Suppressed once ANY dispute
               exists on the bill (incl. cancelled) — the Disputes card is the single
               CTA, and this also kills the transient "Draft" flash during a
               billState-recompute refetch. */}
           {data.disputes.length === 0 && (
-            <div className="mt-4">
+            <div className="my-4">
             <BulkDisputeButton
               size="xl"
               claimId={claimId}
@@ -2699,7 +2707,7 @@ export function ClaimDetail({
         // For clean state it self-suppresses when there's nothing to dispute. Also
         // suppressed once ANY dispute exists — the Disputes card below is the single
         // CTA (kills the transient "Draft" flash during a billState-recompute refetch).
-        <div className="mt-4">
+        <div className="my-4">
         <BulkDisputeButton
           size="xl"
           claimId={claimId}
