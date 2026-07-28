@@ -369,6 +369,22 @@ export interface CostShareOverrides {
   userNetworkOverride: "in_network" | "out_of_network" | null;
 }
 
+/**
+ * S290 — the claim-scope assumption fields the CostShareBanner renders as ONE
+ * ask each (network/ded/oop rows + the ACA question). This constant is the
+ * single source for the /api/claims list aggregation (`openQuestionCount`),
+ * so the card's "Answer N questions" can never drift from the banner's rows.
+ * Adding a new banner question? Add its field HERE and render it there —
+ * `service_cost` stays separate (counted per service, not per claim), and
+ * `deductible_applies`/`denial` are engine-internal (no banner row).
+ */
+export const CLAIM_SCOPE_QUESTION_FIELDS = [
+  "network",
+  "deductible_met",
+  "oop_met",
+  "aca_preventive",
+] as const;
+
 export interface CostShareAssumption {
   field:
     | "network"

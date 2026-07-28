@@ -11,6 +11,7 @@ import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import {
   computeRecoveryV2,
   rollupCostShareVerdict,
+  CLAIM_SCOPE_QUESTION_FIELDS,
   type PlanCostShareParams,
   type CostShareOverrides,
   type CostShareVerdict,
@@ -520,7 +521,7 @@ export async function GET(req: NextRequest) {
           lineVerdict = cs.verdict;
           csLineVerdicts.push(cs.verdict);
           for (const a of cs.assumptions) {
-            if (a.field === "network" || a.field === "deductible_met" || a.field === "oop_met" || a.field === "aca_preventive") {
+            if ((CLAIM_SCOPE_QUESTION_FIELDS as readonly string[]).includes(a.field)) {
               csPendingFields.add(a.field);
             } else if (a.field === "service_cost") {
               csServiceCostKeys.add((item.service_slug as string | null) ?? (item.id as string));
