@@ -481,6 +481,15 @@ export function ClaimDetail({
     () => readServicesConfirmedAt(claim.metadata) != null,
   );
   const [svcIssue, setSvcIssue] = useState(false);
+  /**
+   * S291 — plans that could apply to THIS bill's service year, for the
+   * plan-identity assumption row and its re-pin chooser. Fetched once per claim.
+   * A separate DisputePlanChooser instance from the draft-time one: same
+   * reusable modal, different confirm (re-pin vs draft), no shared state.
+   */
+  const [planCandidates, setPlanCandidates] = useState<DisputePlanChooserPlan[] | null>(null);
+  const [repinOpen, setRepinOpen] = useState(false);
+
 
   // Read localStorage once on mount per claim.
   useEffect(() => {
@@ -599,6 +608,49 @@ export function ClaimDetail({
     if (!user) return null;
     return user.firebaseUser.getIdToken();
   }, [user]);
+
+  /**
+   * S291 — candidate plans for THIS bill's service year, backing the
+   * plan-identity assumption row and its re-pin chooser.
+   *
+   * Declared here, above the loading early-return, because hooks must run in
+   * the same order every render; it reads `data?.claim` defensively rather than
+   * the `claim` binding, which only exists after that return.
+   */
+  const claimDos = (data?.claim as Record<string, unknown> | undefined)?.date_of_service as
+    | string
+    | undefined;
+  const claimPlanId = (data?.claim as Record<string, unknown> | undefined)?.insurance_plan_id as
+    | string
+    | null
+    | undefined;
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const year =
+        typeof claimDos === "string" && Number.isInteger(parseInt(claimDos.slice(0, 4), 10))
+          ? parseInt(claimDos.slice(0, 4), 10)
+          : null;
+      if (year == null) return;
+      try {
+        const token = await getAuthToken();
+        if (!token) return;
+        const qp = new URLSearchParams({ year: String(year) });
+        if (claimPlanId) qp.set("pin", claimPlanId);
+        const r = await fetch(`/api/plan/by-year?${qp.toString()}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!r.ok) return;
+        const { plans } = (await r.json()) as { plans: DisputePlanChooserPlan[] };
+        if (!cancelled) setPlanCandidates(plans ?? []);
+      } catch {
+        /* the row simply doesn't render without candidates */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [claimDos, claimPlanId, getAuthToken]);
 
   // B4.2 — "View uploaded bill" header icon (bonus per Andrew direction).
   // Fetches a short-lived signed URL for claims.source_document_id from
@@ -981,6 +1033,33 @@ export function ClaimDetail({
       serviceSlug: li.service_slug,
     })),
   );
+
+  /**
+   * S291 — which plan this bill is audited against, for the assumptions row.
+   *
+   * Uses DATE OF SERVICE, not `claims.plan_year`: the two can disagree (a
+   * 2025-06 bill carrying plan_year 2026 exists in DEV today), and for "which
+   * plan covered you then" the service date is the fact and plan_year is a
+   * parsed guess.
+   *
+   * `null` label = no plan on file for that period — the honest zero-match
+   * state. The existing draft-time chooser only opens when MORE than one plan
+   * matches, so this case previously produced silence plus a quietly wrong pin.
+   */
+  const claimServiceYear = (() => {
+    const dos = claim.date_of_service;
+    if (typeof dos === "string") {
+      const y = parseInt(dos.slice(0, 4), 10);
+      if (Number.isInteger(y)) return y;
+    }
+    return resolveClaimYear(claim);
+  })();
+  const pinnedPlanId = (claim.insurance_plan_id as string | null) ?? null;
+  const pinnedPlan = planCandidates?.find((p) => p.insurancePlanId === pinnedPlanId) ?? null;
+  const planIdentityLabel = pinnedPlan
+    ? [pinnedPlan.planName, pinnedPlan.insurerName].filter(Boolean).join(" — ") || null
+    : null;
+
   // The line the banner's verdict-specific CTAs act on (matching line, else first).
   const bannerTargetLineId = (() => {
     const v = data.costShareBill?.verdict;
@@ -1475,6 +1554,15 @@ export function ClaimDetail({
                 onOverride={submitCostShareOverride}
                 onConfirmDefaults={confirmAssumptionDefaults}
                 pendingFields={assumptionsPendingFields}
+                planIdentity={
+                  planCandidates
+                    ? {
+                        label: planIdentityLabel,
+                        year: claimServiceYear,
+                        onChange: () => setRepinOpen(true),
+                      }
+                    : null
+                }
                 flagUnanswered={assumptionsEngaged}
                 pendingKey={csOverridePending}
                 errorMsg={csOverrideError}
@@ -1558,6 +1646,28 @@ export function ClaimDetail({
           />
         </div>
       )}
+      {/* S291 — plan-identity re-pin. Separate instance from the draft-time
+          chooser (different component, different confirm); the modal is
+          self-contained so two usages need no shared state. */}
+      <DisputePlanChooser
+        open={repinOpen}
+        onClose={() => setRepinOpen(false)}
+        plans={planCandidates ?? []}
+        defaultPlanId={(claim.insurance_plan_id as string | null) ?? null}
+        serviceDate={(claim.date_of_service as string) || null}
+        year={claimServiceYear}
+        eyebrow="Plan we checked against"
+        title="Which plan were you on?"
+        confirmLabel="Use this plan"
+        onConfirm={(id) => {
+          setRepinOpen(false);
+          // Re-pinning changes which coverage the audit reads, so the claim is
+          // refetched and the verdict recomputed — same path as any other
+          // assumption correction.
+          void submitCostShareOverride({ field: "claim_plan", insurancePlanId: id }, "claim-plan");
+        }}
+      />
+
       {/* Cost-Share v2 (W2+W3) — the §5 verdict + assumptions card. One per bill.
           S290 (Andrew E2E #6): moved ABOVE the line table, below the bill
           header — the questions gate the math, so they come first. Carries the
@@ -1575,6 +1685,15 @@ export function ClaimDetail({
           onOverride={submitCostShareOverride}
                 onConfirmDefaults={confirmAssumptionDefaults}
                 pendingFields={assumptionsPendingFields}
+                planIdentity={
+                  planCandidates
+                    ? {
+                        label: planIdentityLabel,
+                        year: claimServiceYear,
+                        onChange: () => setRepinOpen(true),
+                      }
+                    : null
+                }
                 flagUnanswered={assumptionsEngaged}
           pendingKey={csOverridePending}
           errorMsg={csOverrideError}

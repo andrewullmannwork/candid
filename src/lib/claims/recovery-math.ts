@@ -411,7 +411,9 @@ export interface CostShareAssumption {
     | "denial"
     | "aca_preventive"
     /** S291 — the plan's terms came from a card/manual entry, not a document. */
-    | "plan_provenance";
+    | "plan_provenance"
+    /** S291 — WHICH plan this bill is audited against (correctable via the chooser). */
+    | "plan_identity";
   /** the value we assumed, e.g. "not_met", "in_network", "subject". */
   assumed: string;
   /** dollar value behind it when known (e.g. the $7,050 deductible); null → banner shows "add …". */

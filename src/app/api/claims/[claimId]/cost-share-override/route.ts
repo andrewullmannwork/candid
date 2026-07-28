@@ -146,6 +146,31 @@ export async function POST(
     return NextResponse.json({ ok: true, field: ov.field, applied: true });
   }
 
+  // ── Re-pin the claim to a different plan the user owns ──────────────────
+  // S291 (Andrew) — "the bill should be calculated against the insurance plan
+  // during that period of time… the user should be able to change it."
+  //
+  // Ownership is verified on the TARGET plan, not just the claim: without that
+  // check a caller could pin their own claim to someone else's plan id and read
+  // its coverage back through the audit. userScoped makes the lookup return
+  // nothing for a foreign id, so it fails closed with a 404.
+  if (ov.field === "claim_plan") {
+    const { data: target } = await userScoped(supabase, user.id)
+      .table("insurance_plans")
+      .select("id")
+      .eq("id", ov.insurancePlanId)
+      .maybeSingle();
+    if (!target) {
+      return NextResponse.json({ error: "Plan not found" }, { status: 404 });
+    }
+    const { error } = await userScoped(supabase, user.id)
+      .table("claims")
+      .update({ insurance_plan_id: ov.insurancePlanId })
+      .eq("id", claimId);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true, field: ov.field, applied: true });
+  }
+
   // Everything below is PLAN-scoped — needs the claim's plan + year.
   if (!planId) {
     return NextResponse.json(

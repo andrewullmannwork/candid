@@ -21,7 +21,8 @@ export type CostShareOverrideParsed =
     }
   | { field: "aca"; status: "confirmed" | "non_aca" }
   | { field: "patient_paid"; amount: number | null }
-  | { field: "services_confirmed"; confirmed: boolean };
+  | { field: "services_confirmed"; confirmed: boolean }
+  | { field: "claim_plan"; insurancePlanId: string };
 
 export type ParseResult =
   | { ok: true; value: CostShareOverrideParsed }
@@ -131,6 +132,20 @@ export function parseCostShareOverride(body: unknown): ParseResult {
         return { ok: false, error: "services_confirmed requires a boolean `confirmed`" };
       }
       return { ok: true, value: { field: "services_confirmed", confirmed: b.confirmed } };
+    }
+
+    case "claim_plan": {
+      // S291 — re-pin this bill to a different plan the user already has.
+      // Bills are pinned to the plan in force when the care happened; when we
+      // guessed wrong (or guessed at all), the user corrects it here and the
+      // audit re-runs against the right coverage.
+      if (typeof b.insurancePlanId !== "string" || b.insurancePlanId.trim() === "") {
+        return { ok: false, error: "claim_plan requires an insurancePlanId" };
+      }
+      return {
+        ok: true,
+        value: { field: "claim_plan", insurancePlanId: b.insurancePlanId.trim() },
+      };
     }
 
     default:

@@ -41,7 +41,9 @@ export type CostShareOverrideRequest =
   | { field: "oop_met"; met: boolean; asOf: string | null }
   | { field: "aca"; status: "confirmed" | "non_aca" }
   /** S291 — "I checked the service list" (guided rail step 2), persisted to claims.metadata. */
-  | { field: "services_confirmed"; confirmed: boolean };
+  | { field: "services_confirmed"; confirmed: boolean }
+  /** S291 — re-pin the bill to another plan the user owns. */
+  | { field: "claim_plan"; insurancePlanId: string };
 
 interface CostShareBannerProps {
   verdict: CostShareVerdict;
@@ -76,6 +78,15 @@ interface CostShareBannerProps {
    * borders here and the amber step badge on the rail read the SAME set.
    */
   pendingFields?: Set<string>;
+  /**
+   * S291 (Andrew) — WHICH plan this bill is being checked against, surfaced as
+   * a first-class assumption. Bills pin to the plan in force when the care
+   * happened and do NOT follow later plan changes (by design — a 2025 bill must
+   * not be judged by a 2026 plan). Nothing said so, which made a correctly
+   * pinned bill look broken. `label` null = we have no plan for that period, the
+   * honest zero-match state: we ask rather than silently borrowing a plan.
+   */
+  planIdentity?: { label: string | null; year: number | null; onChange: () => void } | null;
   /**
    * The user has tried to finish this step (any override persisted, or the
    * services below confirmed). Only then do unanswered rows turn amber —
@@ -276,6 +287,7 @@ export function CostShareBanner({
   onOverride,
   onConfirmDefaults,
   pendingFields,
+  planIdentity,
   flagUnanswered = false,
   errorMsg,
   onShouldBeCovered,
@@ -433,7 +445,7 @@ export function CostShareBanner({
     ((oopExists && !oopResolved) ? 1 : 0) +
     serviceCostChips.length +
     (showAca ? 1 : 0);
-  const rawSectionHasRows = showNetwork || showDeductible || showOop || hasServiceCostGap || showAca || hasEditableCost;
+  const rawSectionHasRows = !!planIdentity || showNetwork || showDeductible || showOop || hasServiceCostGap || showAca || hasEditableCost;
   // Section is OPEN unless the user dismissed it via "Done"; when closed but
   // assumptions exist, "Update assumptions" brings it back.
   const sectionOpen = !dismissed && rawSectionHasRows;
@@ -521,6 +533,27 @@ export function CostShareBanner({
           >
             {!assumptionsOnly && (
               <div className="border-t border-gray-100 pt-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-gray-400">What we assumed</div>
+            )}
+
+            {planIdentity && (
+              <Row
+                flagged={planIdentity.label == null && flagUnanswered}
+                icon={DocIcon}
+                label="Plan we checked against"
+                control={
+                  <button
+                    type="button"
+                    onClick={planIdentity.onChange}
+                    className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    Change
+                  </button>
+                }
+              >
+                {planIdentity.label
+                  ? `We checked this bill against ${planIdentity.label}. Change it if you were on a different plan${planIdentity.year ? ` in ${planIdentity.year}` : ""}.`
+                  : `We don't have a plan on file for${planIdentity.year ? ` ${planIdentity.year}` : " when this care happened"}. Pick the plan you were on so we can check this bill properly.`}
+              </Row>
             )}
 
             {showNetwork && (
