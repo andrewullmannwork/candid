@@ -213,7 +213,7 @@ function CategoryIcon({ category }: { category: string }) {
 
 // ── Plan Summary Card ──────────────────────────────────────────────────────────
 
-function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insurancePlanId, userHasDoc, insurer, changePlanEnabled, onChangePlan }: {
+function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insurancePlanId, userHasDoc, insurer, changePlanEnabled, onChangePlan, children }: {
   planName?: string;
   planYear?: number | null;
   planSummary?: AnalyzeResponse["planSummary"];
@@ -224,6 +224,8 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
   /** Bugbash Stretch 1 — show the "Change plan" link (flag change_plan_v1). */
   changePlanEnabled?: boolean;
   onChangePlan?: () => void;
+  /** Merged spending section (AccumulatorPanel) — rendered below a top divider. */
+  children?: React.ReactNode;
 }) {
   if (!planSummary || dataSource === "static_catalog") return null;
 
@@ -380,6 +382,7 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
           </div>
         );
       })()}
+      {children && <div className="mt-5 pt-5 border-t border-gray-100">{children}</div>}
     </div>
   );
 }
@@ -864,7 +867,16 @@ export default function CandidPlanPage() {
         onChangePlan={() =>
           planFlowOn ? router.push("/onboarding?mode=plan&from=/plan") : setChangePlanOpen(true)
         }
-      />
+      >
+        {/* "Your plan spending" — cross-bill deductible/OOP tally vs the insurer's
+            accumulator (gated accumulator_ledger_v1; renders null when OFF/no data).
+            Merged into the plan card per the redesign (one card, top divider). */}
+        <AccumulatorPanel
+          insurancePlanId={result.insurancePlanId}
+          planYear={result.planYear}
+          insurer={result.insurer}
+        />
+      </PlanSummaryCard>
       {changePlanEnabled && (
         <ChangePlanModal
           open={changePlanOpen}
@@ -873,14 +885,6 @@ export default function CandidPlanPage() {
           onChanged={() => setReloadKey((k) => k + 1)}
         />
       )}
-
-      {/* "Your plan spending" — cross-bill deductible/OOP tally vs the insurer's
-          accumulator (gated accumulator_ledger_v1; renders null when OFF/no data). */}
-      <AccumulatorPanel
-        insurancePlanId={result.insurancePlanId}
-        planYear={result.planYear}
-        className="mt-4"
-      />
 
       {/* D-§1.C.2-E: inline profile-completeness prompt REMOVED from /plan;
           /dashboard's banner stack (B3.1) governs profile-completeness UX
