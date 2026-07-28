@@ -729,15 +729,20 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
       if (remainingOop != null) shouldOwe = Math.min(shouldOwe, remainingOop);
     } else if (!dedMet) {
       // deductible-subject, not met → toward deductible.
-      if (!dedMetKnown) {
-        assumptions.push({
-          field: "deductible_met",
-          assumed: "not_met",
-          value: deductibleMax,
-          correctable: true,
-          reason: acc == null ? "no_accumulator" : "no_override",
-        });
-      }
+      // S291 (Andrew) — emit this row even when the accumulator ALREADY knows.
+      // Previously the assumption was suppressed whenever `dedMetKnown`, so the
+      // deductible row simply vanished from the card: the user could not see
+      // what we believed, where it came from, or disagree with it. Our tally
+      // only reflects bills they've uploaded, so it is a floor, not the truth —
+      // it must stay visible and overridable. `reason: "accumulator"` marks it
+      // as answered-by-data (not pending) while keeping it on screen.
+      assumptions.push({
+        field: "deductible_met",
+        assumed: "not_met",
+        value: deductibleMax,
+        correctable: true,
+        reason: dedMetKnown ? "accumulator" : acc == null ? "no_accumulator" : "no_override",
+      });
       if (remainingDeductible != null && remainingDeductible < allowed) {
         // straddle: fill remaining deductible (100%), then coinsurance on the rest.
         phase = "straddle";
@@ -755,6 +760,18 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
         deductibleConsumed = shouldOwe;
       }
     } else {
+      // S291 — deductible MET. Emit the row so the user can see what we believe
+      // and disagree; an override already produces a row, but an
+      // accumulator-derived "met" previously rendered nothing at all.
+      if (dedMetKnown && ov.deductibleMet == null) {
+        assumptions.push({
+          field: "deductible_met",
+          assumed: "met",
+          value: deductibleMax,
+          correctable: true,
+          reason: "accumulator",
+        });
+      }
       // deductible met, OOP not met → copay / coinsurance (HDHP-$0; else conservative).
       phase = "post_deductible";
       const r = resolveServiceShare(allowed, copay, coinsurance, isHdhpFull);
@@ -763,14 +780,17 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
       if (remainingOop != null) shouldOwe = Math.min(shouldOwe, remainingOop);
     }
 
-    // oop-met assumption only where OOP can actually bind (deductible met / copay-exempt) and it's unknown.
-    if (!oopMetKnown && (phase === "post_deductible" || phase === "straddle" || phase === "copay_exempt")) {
+    // OOP row wherever OOP can actually bind (deductible met / straddle /
+    // copay-exempt). S291: emitted even when the accumulator knows, so the row
+    // stays visible with its source instead of disappearing — same reasoning as
+    // the deductible row above.
+    if (phase === "post_deductible" || phase === "straddle" || phase === "copay_exempt") {
       assumptions.push({
         field: "oop_met",
-        assumed: "not_hit",
+        assumed: oopMet ? "hit" : "not_hit",
         value: oopMax,
         correctable: true,
-        reason: acc == null ? "no_accumulator" : "no_override",
+        reason: oopMetKnown ? "accumulator" : acc == null ? "no_accumulator" : "no_override",
       });
     }
   }
@@ -894,7 +914,13 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
   else if (preventiveAcaUnknown) verdict = "insufficient";
   else if (!shouldOweGrounded) verdict = "insufficient";
   else if (provenanceUngrounded) verdict = "insufficient";
-  else if (assumptions.length > 0) verdict = "correct";
+  // S291 — `correct` means "right, GIVEN things we assumed"; `confident` means
+  // "right, nothing assumed". A row sourced from the accumulator is DATA, not an
+  // assumption — it's emitted now only so the user can see and override it
+  // (they used to vanish). Counting those would silently demote every
+  // accumulator-backed bill from `confident` to `correct` with identical
+  // dollars, which is exactly the kind of quiet drift this session was about.
+  else if (assumptions.some((a) => a.reason !== "accumulator")) verdict = "correct";
   else verdict = "confident";
 
   return {

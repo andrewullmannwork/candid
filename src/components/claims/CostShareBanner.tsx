@@ -168,9 +168,17 @@ export function pendingAssumptionFields(
 
   // Toggle-backed rows: a default is on screen, so these are pending only until
   // an override is saved — and "Done" saves them.
-  if (has("network") && overrides?.userNetworkOverride == null) pending.add("network");
-  if (has("deductible_met") && overrides?.deductibleMet == null) pending.add("deductible_met");
-  if (has("oop_met") && overrides?.oopMet == null) pending.add("oop_met");
+  // A row whose reason is "accumulator" is already ANSWERED — by our own tally
+  // of the user's bills — so it renders (transparency) without counting as
+  // outstanding. It stays overridable: the tally only knows uploaded bills, so
+  // it's a floor, not the truth. S291.
+  const answeredByData = (field: string) =>
+    assumptions.some((a) => a.field === field && a.reason === "accumulator");
+  const unanswered = (field: string) => has(field) && !answeredByData(field);
+
+  if (unanswered("network") && overrides?.userNetworkOverride == null) pending.add("network");
+  if (unanswered("deductible_met") && overrides?.deductibleMet == null) pending.add("deductible_met");
+  if (unanswered("oop_met") && overrides?.oopMet == null) pending.add("oop_met");
 
   // Input-backed rows: no default exists to accept, so "Done" can never clear
   // them. They stay pending until the user supplies a real value.
@@ -278,7 +286,6 @@ export function CostShareBanner({
 }: CostShareBannerProps) {
   const assumptionsOnly = variant === "assumptions";
   const [acaDismissed, setAcaDismissed] = useState(false);
-  const [editAll, setEditAll] = useState(false); // "Update assumptions" re-opens resolved rows for re-edit
   const [dismissed, setDismissed] = useState(false); // "Done" collapses the section (accept as-is)
   const [confirming, setConfirming] = useState(false); // Done is now a WRITE — guard the double-click
   const [optimistic, setOptimistic] = useState<Optimistic>({});
@@ -384,7 +391,6 @@ export function CostShareBanner({
       }
     }
     setDismissed(true);
-    setEditAll(false);
   };
 
   const answerAca = (status: "confirmed" | "non_aca") => {
@@ -393,8 +399,15 @@ export function CostShareBanner({
   };
 
   // An assumption is "resolved" once the user picks it (override present —
-  // optimistic or persisted). Resolved rows DISAPPEAR from the list; the
-  // "Update assumptions" control re-opens them all (saved values) to re-select.
+  // optimistic or persisted).
+  //
+  // S291 (Andrew) — resolved rows used to DISAPPEAR, which is why the "Update
+  // assumptions" control existed at all. Reversed deliberately: hiding an
+  // answered assumption means the user can't see what we assumed, where the
+  // number came from, or change their mind — and after "Done" started
+  // persisting the displayed defaults, whole rows (deductible, OOP max) began
+  // vanishing the moment they were confirmed. Transparency over tidiness: a
+  // resolved row stays visible, states its source, and stays editable.
   const netResolved = optimistic.network !== undefined || overrides?.userNetworkOverride != null;
   const dedResolved = optimistic.deductibleMet !== undefined || overrides?.deductibleMet != null;
   const oopResolved = optimistic.oopMet !== undefined || overrides?.oopMet != null;
@@ -402,9 +415,10 @@ export function CostShareBanner({
   const deductibleExists = !!deductibleA || dedResolved;
   const oopExists = !!oopA || oopResolved;
 
-  const showNetwork = networkExists && (!netResolved || editAll);
-  const showDeductible = deductibleExists && (!dedResolved || editAll);
-  const showOop = oopExists && (!oopResolved || editAll);
+  // Always shown when the assumption exists at all — resolved or not.
+  const showNetwork = networkExists;
+  const showDeductible = deductibleExists;
+  const showOop = oopExists;
   const showAca = !!acaA && !acaDismissed;
   const hasServiceCostGap = serviceCostChips.length > 0;
   // S263 — the user's own manual cost-share is EDITABLE (correct a mistake); a
@@ -524,11 +538,11 @@ export function CostShareBanner({
             )}
 
             {showDeductible && (
-              <MetRow flagged={flagRow("deductible_met")} kind="deductible" isMet={dedMetDisplay} metAsOf={dedAsOfDisplay} amount={deductibleA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectDeductible} />
+              <MetRow flagged={flagRow("deductible_met")} source={dedResolved ? "user" : deductibleA?.reason === "accumulator" ? "accumulator" : null} kind="deductible" isMet={dedMetDisplay} metAsOf={dedAsOfDisplay} amount={deductibleA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectDeductible} />
             )}
 
             {showOop && (
-              <MetRow flagged={flagRow("oop_met")} kind="oop" isMet={oopMetDisplay} metAsOf={oopAsOfDisplay} amount={oopA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectOop} />
+              <MetRow flagged={flagRow("oop_met")} source={oopResolved ? "user" : oopA?.reason === "accumulator" ? "accumulator" : null} kind="oop" isMet={oopMetDisplay} metAsOf={oopAsOfDisplay} amount={oopA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectOop} />
             )}
 
             {serviceCostChips.map((chip, i) => (
@@ -604,7 +618,7 @@ export function CostShareBanner({
 
         {showUpdateLink && (
           <div className="border-t border-gray-100 px-5 py-3">
-            <button type="button" onClick={() => { setDismissed(false); setEditAll(true); }} className="text-[13px] font-medium text-blue-600 hover:text-blue-800">
+            <button type="button" onClick={() => setDismissed(false)} className="text-[13px] font-medium text-blue-600 hover:text-blue-800">
               Update assumptions
             </button>
           </div>
@@ -645,7 +659,7 @@ export function CostShareBanner({
 }
 
 function MetRow({
-  kind, isMet, metAsOf, amount, networkLabel, money, onSubmit, flagged = false,
+  kind, isMet, metAsOf, amount, networkLabel, money, onSubmit, flagged = false, source = null,
 }: {
   kind: "deductible" | "oop";
   isMet: boolean;
@@ -656,6 +670,13 @@ function MetRow({
   onSubmit: (met: boolean, asOf: string | null) => void;
   /** S291 — still unanswered after the user tried to finish. */
   flagged?: boolean;
+  /**
+   * S291 — where this answer came from. "accumulator" = our own running tally
+   * of the user's uploaded bills; "user" = they told us. Rendered as a small
+   * attribution line so a confirmed row still shows its basis and stays
+   * arguable — our tally only sees bills we've been given, so it is a floor.
+   */
+  source?: "accumulator" | "user" | null;
 }) {
   const [editing, setEditing] = useState(false);
   const [dateValue, setDateValue] = useState("");
@@ -702,6 +723,13 @@ function MetRow({
                 ? `You've ${verb} your ${networkLabel} ${nounBase} as of ${fmtDate(metAsOf)}.`
                 : `You haven't ${verb} your ${noun} yet, so this applies to it.`}
             </div>
+            {source && (
+              <div className="mt-1 text-[12px] text-gray-500">
+                {source === "accumulator"
+                  ? "Based on the bills you've uploaded — change it if you've had others."
+                  : "You told us this."}
+              </div>
+            )}
           </div>
         </div>
         <div className="pt-1">{control}</div>

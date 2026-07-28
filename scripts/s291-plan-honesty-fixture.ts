@@ -282,7 +282,52 @@ check(
   JSON.stringify(cardProv.in_copay?.value),
 );
 
-const total = 21;
+// ── Accumulator rows are DATA, not assumptions (S291 transparency reversal) ─
+// The deductible/OOP rows are now emitted even when our tally already knows, so
+// the user can see and override them instead of watching them vanish. They must
+// NOT be counted as assumptions — doing so silently demotes every
+// accumulator-backed bill from `confident` to `correct` with identical dollars.
+function knownAccBill(acc: ComputeCostShareV2Args["accumulator"]): ComputeCostShareV2Args {
+  const a = cleanBill(DOC_PLAN, false);
+  return {
+    ...a,
+    service: { copay: 20, coinsurance: null, deductibleApplies: true, covered: true } as unknown as ComputeCostShareV2Args["service"],
+    accumulator: acc,
+  };
+}
+const accKnown = computeCostShareV2(
+  knownAccBill({ deductibleApplied: 3000, deductibleMax: 3000, oopApplied: 100, oopMax: 7900 }),
+);
+check(
+  "accumulator-known → rows ARE emitted (they used to disappear)",
+  accKnown.assumptions.filter((a) => a.reason === "accumulator").length === 2,
+  JSON.stringify(accKnown.assumptions.map((a) => `${a.field}/${a.reason}`)),
+);
+check(
+  "accumulator-known → still `confident`, not demoted to `correct`",
+  accKnown.verdict === "confident",
+  `got ${accKnown.verdict}`,
+);
+const accAbsent = computeCostShareV2(knownAccBill(null));
+check(
+  "no accumulator → a real assumption → `correct`",
+  accAbsent.verdict === "correct",
+  `got ${accAbsent.verdict}`,
+);
+check(
+  "emitting the rows changed no dollars",
+  accKnown.potentialRecovery === 0 && accKnown.shouldOwe === 20,
+  `shouldOwe ${accKnown.shouldOwe} recovery ${accKnown.potentialRecovery}`,
+);
+check(
+  "an accumulator row is NOT pending (visible, already answered, still overridable)",
+  !pendingAssumptionFields(
+    [asum("deductible_met", { reason: "accumulator" }), asum("oop_met", { reason: "accumulator" })],
+    null,
+  ).size,
+);
+
+const total = 26;
 console.log(`\n${total} assertions — ${total - failures} passed, ${failures} failed`);
 if (failures > 0) {
   console.error("✗ s291-plan-honesty fixture RED");
