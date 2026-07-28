@@ -6,11 +6,11 @@ cluster: "claim"
 order: "2"
 target_query: "how to negotiate a medical bill"
 published: "2026-07-27"
-last_updated: "2026-07-27"
+last_updated: "2026-07-28"
 ---
 
 You want to negotiate a medical bill, but don't know how. Great news! That is what this article is about. We cover the following steps: 
-1. **First and foremost**, verify the bill. Get the itemized bill, confirm the charges are real and priced right.
+1. **First and foremost**, verify the bill. Get the itemized bill; confirm the charges are real and priced right.
 
 Then work the ladder in order:
 

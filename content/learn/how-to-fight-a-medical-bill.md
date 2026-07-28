@@ -6,15 +6,12 @@ cluster: "claim"
 order: "1"
 target_query: "how to fight a medical bill"
 published: "2026-07-27"
-last_updated: "2026-07-27"
+last_updated: "2026-07-28"
 ---
-
-**TL;DR:** 
-To fight a medical bill: request an itemized bill, pull your explanation of benefits (EOB). This is your insurer's statement of what you actually owe. Compare your EOB and the medical bill line by line, then dispute errors in writing with the billing department and ask for an account hold. Escalate to the hospital's patient advocate or your state regulators if needed.
 
 ## First, understand what a medical bill actually is
 
-A medical bill is an opening position, not a verdict. The number on it is not necessarily the correct amount. It also may not be what you owe under your plan. Three out of four medical bills contain errors (Medical Billing Advocates of America), but bills only get corrected when people challenge.
+A medical bill is an opening position, not a verdict. The number on it is not necessarily the correct amount. It also may not be what you owe under your plan. Three out of four medical bills contain errors (Medical Billing Advocates of America), but bills only get corrected when people challenge them.
 
 So before anything else, two rules:
 1. **Don't panic pay.** Once you've paid, you're negotiating for a refund instead of disputing a charge. That's a much weaker position. Putting it on a **credit card is even worse** since debt and interest accrue while you dispute.
@@ -50,7 +47,7 @@ The anchor number is the EOB's **patient responsibility** - what your insurer sa
 | **Balance billing**                    | You were billed the gap between the provider's charge and your insurer's allowed amount (the plan's negotiated price) | The provider, with your EOB as evidence |
 | **Surprise billing**                   | Emergency care, or an out-of-network provider at an in-network facility                                               | Federal surprise-billing protections    |
 
-Not sure what errors look like on paper? Start with the seven billing errors worth checking for. If a covered claim was denied, the path is an insurance appeal. And if an out-of-network charge appeared where you never chose an out-of-network provider, read the No Surprises Act, explained before you pay anything.
+Not sure what errors look like on paper? Start with the seven billing errors worth checking for. If a covered claim was denied, the path is an insurance appeal. And if an out-of-network charge appeared where you never chose an out-of-network provider, read our No Surprises Act explainer before you pay anything.
 
 ## Step 4: Dispute in writing
 
@@ -103,7 +100,7 @@ So build the habit on day one. One folder for every document. A dated log of eve
 
 ## The fastest free way to do all of this
 
-Everything in this guide you can do yourself - that's why we wrote it down. **[Candid](https://www.candidclaim.com/?utm_campaign=how-to-fight-a-medical-bill)** just takes a weekend's worth of work and does most of it for you, for free. It drafts the Step 1 letter requesting an itemized bill, runs the Step 2 match against your EOB and plan, sorts what it finds into the exact Step 3 grounds, and writes the Step 4 dispute letter. It even helps you track the response clock to tell you when it's time to escalate.
+Everything in this guide you can do yourself - that's why we wrote it down. **[Candid](https://www.candidclaim.com/?utm_campaign=how-to-fight-a-medical-bill)** takes a weekend's worth of work and does most of it for you, for free. It drafts the Step 1 letter requesting an itemized bill, runs the Step 2 match against your EOB and plan, sorts what it finds into the exact Step 3 grounds, and writes the Step 4 dispute letter. It even helps you track the response clock to tell you when it's time to escalate.
 
 *Candid is our tool - this guide is complete without it. It just turns an afternoon of paperwork into a few minutes.*
 

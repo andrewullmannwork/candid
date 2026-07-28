@@ -85,7 +85,7 @@ export async function loadPlanCostShareParams(
   const { data, error } = await supabase
     .from("insurance_plans")
     .select(
-      "canonical_plan_id, in_deductible_individual, in_deductible_family, out_deductible_individual, out_deductible_family, in_oop_max_individual, in_oop_max_family, out_oop_max_individual, out_oop_max_family, in_coinsurance_default, out_coinsurance_default, deductible_calc_method, combined_medical_rx_oop, coverage_tier",
+      "canonical_plan_id, source, verification_status, in_deductible_individual, in_deductible_family, out_deductible_individual, out_deductible_family, in_oop_max_individual, in_oop_max_family, out_oop_max_individual, out_oop_max_family, in_coinsurance_default, out_coinsurance_default, deductible_calc_method, combined_medical_rx_oop, coverage_tier",
     )
     .eq("id", insurancePlanId)
     .maybeSingle();
@@ -142,6 +142,15 @@ export async function loadPlanCostShareParams(
     deductibleCalcMethod: (d.deductible_calc_method as "embedded" | "aggregate" | null) ?? null,
     combinedMedicalRxOop: (d.combined_medical_rx_oop as boolean | null) ?? null,
     coverageTier: (d.coverage_tier as string | null) ?? null,
+    // S291 — provenance travels WITH the terms. A plan assembled from a photo
+    // of an insurance card (or hand-typed) is the same tier the UI already
+    // labels "unverified"; the honesty gate needs that fact to refuse a
+    // confident "your bill is correct" built on it. Read from the USER row
+    // only — a canonical-terms fallback fills numbers, never provenance.
+    provenanceUnverified:
+      (d.source as string | null) === "insurance_card" ||
+      (d.source as string | null) === "manual" ||
+      (d.verification_status as string | null) === "unverified",
   };
 }
 

@@ -56,6 +56,13 @@ export interface PlanCoverageInput {
    * `deductibleApplies=false` (preventive is deductible-exempt by law).
    */
   deductibleApplies?: boolean | null;
+  /**
+   * S291 — attribution for this row's cost-share. Display-only (the engine
+   * ignores it); it exists so the assumptions card can stop telling users "you
+   * told us" about a value a card scan invented. "unknown" = written before
+   * provenance stamping and genuinely unattributable.
+   */
+  costProvenance?: "user" | "card" | "unknown";
   outCopay?: number | null;
   outCoinsurance?: number | null;
   outDeductibleApplies?: boolean | null;
@@ -342,6 +349,15 @@ export interface PlanCostShareParams {
   deductibleCalcMethod: "embedded" | "aggregate" | null;
   combinedMedicalRxOop: boolean | null;
   coverageTier: string | null;
+  /**
+   * S291 — true when these terms come from an insurance card or hand entry
+   * rather than a plan document / catalog match, i.e. the tier the UI already
+   * discloses as "unverified". Feeds the §13.2 honesty gate: a bill audited
+   * against an unverified plan must never read `correct`. Optional so existing
+   * constructors keep compiling; absent/null is treated as "not unverified"
+   * (fail-open — the gate can only ever make a verdict MORE cautious).
+   */
+  provenanceUnverified?: boolean | null;
 }
 
 /** The relevant accumulator snapshot for this line's network / type / grain (resolved upstream). */
@@ -369,6 +385,22 @@ export interface CostShareOverrides {
   userNetworkOverride: "in_network" | "out_of_network" | null;
 }
 
+/**
+ * S290 — the claim-scope assumption fields the CostShareBanner renders as ONE
+ * ask each (network/ded/oop rows + the ACA question). This constant is the
+ * single source for the /api/claims list aggregation (`openQuestionCount`),
+ * so the card's "Answer N questions" can never drift from the banner's rows.
+ * Adding a new banner question? Add its field HERE and render it there —
+ * `service_cost` stays separate (counted per service, not per claim), and
+ * `deductible_applies`/`denial` are engine-internal (no banner row).
+ */
+export const CLAIM_SCOPE_QUESTION_FIELDS = [
+  "network",
+  "deductible_met",
+  "oop_met",
+  "aca_preventive",
+] as const;
+
 export interface CostShareAssumption {
   field:
     | "network"
@@ -377,7 +409,9 @@ export interface CostShareAssumption {
     | "deductible_applies"
     | "service_cost"
     | "denial"
-    | "aca_preventive";
+    | "aca_preventive"
+    /** S291 — the plan's terms came from a card/manual entry, not a document. */
+    | "plan_provenance";
   /** the value we assumed, e.g. "not_met", "in_network", "subject". */
   assumed: string;
   /** dollar value behind it when known (e.g. the $7,050 deductible); null → banner shows "add …". */
@@ -460,6 +494,13 @@ export interface ComputeCostShareV2Args {
    * honored directly and takes precedence.
    */
   claimInsurerPaidZero?: boolean;
+  /**
+   * S291 — `unverified_plan_honesty_gate_v1` (mig 216). When true AND the plan
+   * is unverified provenance, a `correct`/`confident` verdict degrades to
+   * `insufficient`. Resolved at the route (flag reads are async; the engine is
+   * pure). Absent → OFF, i.e. prior behaviour byte-for-byte.
+   */
+  unverifiedPlanHonestyGate?: boolean;
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -819,6 +860,31 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
     shouldOweGrounded = false;
   }
 
+  // S291 — provenance grounding. shouldOweGrounded asks "did we compute this
+  // from known terms"; it never asked "do we trust WHERE those terms came
+  // from." A plan built from a photo of an insurance card is disclosed as
+  // unverified on every benefits surface, so an all-clear computed against it
+  // is a confident answer we have not earned — the exact silent false-negative
+  // Andrew caught (a fabricated $0 card copay grounded a "no issues" verdict on
+  // a bill the user paid $292.41 for). Degrades `correct`/`confident` to
+  // `insufficient` ONLY — recovery, not_covered and denial findings are real
+  // regardless of tier and pass through untouched, so this can never suppress a
+  // dispute or fabricate one. Flag-gated (`unverified_plan_honesty_gate_v1`,
+  // mig 216) because it shifts verdicts for every card-only user.
+  const provenanceUngrounded = args.unverifiedPlanHonestyGate === true && plan.provenanceUnverified === true;
+  if (provenanceUngrounded) {
+    // Recorded even when another clause already forces `insufficient`, so the
+    // banner can name the ACTUAL remedy ("add your plan document") instead of
+    // a generic "we need more info".
+    assumptions.push({
+      field: "plan_provenance",
+      assumed: "unverified_plan",
+      value: null,
+      correctable: true,
+      reason: "no_plan_document",
+    });
+  }
+
   // recovery wins over not-covered (Q2); denial never "correct" (Q4); preventive-ACA-unknown
   // always asks (care that's often free must not be rubber-stamped by the insurer-$0 signal).
   let verdict: CostShareVerdict;
@@ -827,6 +893,7 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
   else if (coverageDecision.planStance === "not_covered") verdict = "not_covered";
   else if (preventiveAcaUnknown) verdict = "insufficient";
   else if (!shouldOweGrounded) verdict = "insufficient";
+  else if (provenanceUngrounded) verdict = "insufficient";
   else if (assumptions.length > 0) verdict = "correct";
   else verdict = "confident";
 
@@ -867,6 +934,8 @@ export interface ComputeClaimCostShareV2Args {
   networkClaim: NetworkTier | null;
   minRecovery?: number;
   claimInsurerPaidZero?: boolean;
+  /** S291 — see ComputeCostShareV2Args.unverifiedPlanHonestyGate. */
+  unverifiedPlanHonestyGate?: boolean;
 }
 
 export interface ClaimCostShareV2Result {
@@ -925,6 +994,7 @@ export function computeClaimCostShareV2(args: ComputeClaimCostShareV2Args): Clai
       minRecovery: args.minRecovery,
       preventive: line.preventive,
       claimInsurerPaidZero: args.claimInsurerPaidZero,
+      unverifiedPlanHonestyGate: args.unverifiedPlanHonestyGate,
     }),
   );
 

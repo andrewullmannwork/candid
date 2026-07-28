@@ -132,21 +132,26 @@ async function syncWithBackend(
 
   if (!res.ok) {
     const errBody = await res.json().catch(() => ({}));
-    console.error("Auth sync failed:", res.status, errBody);
     if (res.status === 403) {
       const msg: string = (errBody as { error?: string })?.error ?? "";
       // Phone OTP gate (S69) returns 403 with a message about phone verification.
       // Distinguish it from Turnstile 403 so caller surfaces the right UX.
       if (msg.toLowerCase().includes("phone verification")) {
+        // S290 — EXPECTED state during signup: the auth-state listener syncs
+        // before the OTP step completes, the gate answers 403, and the caller
+        // routes the user into OTP. Not an error; log quietly.
+        console.info("Auth sync: phone verification pending (expected pre-OTP).");
         throw Object.assign(
           new Error("Phone verification required. Please complete the OTP step."),
           { code: "auth/phone-verification-required" },
         );
       }
+      console.error("Auth sync failed:", res.status, errBody);
       throw Object.assign(new Error("Bot defense check failed. Please reload and try again."), {
         code: "auth/turnstile-failed",
       });
     }
+    console.error("Auth sync failed:", res.status, errBody);
     throw new Error("Failed to sync auth");
   }
 

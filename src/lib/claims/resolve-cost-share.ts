@@ -73,6 +73,11 @@ export interface CostShareClaimCtx {
   coverageTier: string | null;
   /** benefit year for the accumulator lookup (claim date-of-service UTC year). */
   planYear: number | null;
+  /**
+   * S291 — `unverified_plan_honesty_gate_v1` (mig 216) resolved at the route.
+   * Optional: absent → OFF → prior verdict behaviour exactly.
+   */
+  unverifiedPlanHonestyGate?: boolean;
 }
 
 /**
@@ -145,6 +150,7 @@ export function resolveCostShareForLine(
       acaStatus: ctx.acaStatus,
     },
     claimInsurerPaidZero: ctx.claimInsurerPaidZero,
+    unverifiedPlanHonestyGate: ctx.unverifiedPlanHonestyGate,
   });
 }
 

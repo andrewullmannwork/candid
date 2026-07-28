@@ -23,9 +23,14 @@ export interface RecoveryHeroStats {
   totalRecovery: number;
   /** Total bills audited. */
   billsCount: number;
-  /** Confirmed overcharge count (drafted or not). */
+  /**
+   * Confirmed overcharges with NO letter drafted yet (pipeline
+   * `counts.needsDraft`). S291 (Andrew): deliberately EXCLUDES drafted bills —
+   * once a letter exists the bill's next step is "send it", so it belongs to
+   * the letters tile alone and must not be counted twice.
+   */
   issuesCount: number;
-  /** Drafted-dispute count. */
+  /** Drafted-dispute count. Disjoint from issuesCount by construction. */
   disputesCount: number;
   /** Bills with review-needed state (unclear from plan). */
   reviewCount: number;

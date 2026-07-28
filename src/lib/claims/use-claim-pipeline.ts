@@ -55,6 +55,10 @@ export interface PipelineClaimSummary {
   claim_group_id?: string | null;
   potentialSavings?: number;
   reviewNeededCount?: number;
+  /** S290 — live Cost-Share v2 signals from the list route. Non-null ONLY when
+   *  the flag is ON and the engine ran; null → legacy derivation unchanged. */
+  costShareBillVerdict?: "correct" | "confident" | "insufficient" | "recovery" | null;
+  openQuestionCount?: number | null;
   reviewLineItems?: Array<{
     id: string;
     description: string | null;
@@ -89,8 +93,21 @@ export interface PipelineClaimStats {
 
 /** Aggregate BILL counts by pipeline stage (bills, not line items). */
 export interface PipelineCounts {
-  /** Bills with a confirmed overcharge (drafted or not). */
+  /**
+   * Bills with a confirmed overcharge, drafted or not. This is the "how many
+   * overcharges did we find" total — drafting a letter does not un-find one —
+   * so /dashboard's DashDuo reads THIS.
+   */
   flagged: number;
+  /**
+   * Bills with a confirmed overcharge and NO letter yet — the actionable
+   * "needs a draft" bucket. S291 (Andrew): a bill must not sit in both
+   * "flagged for review" and "dispute ready to send"; once the letter exists
+   * the bill belongs to the letters bucket alone. /claim's next-step tile, its
+   * Flagged tab count, and that tab's list all read THIS so the three can
+   * never disagree.
+   */
+  needsDraft: number;
   /** Bills with a drafted (non-cancelled) dispute letter. */
   drafted: number;
   /** Bills awaiting user input (needs_review). */
@@ -147,6 +164,28 @@ export function buildBillState(
   }
   if ((claim.reviewNeededCount ?? 0) > 0) {
     findings.push({ severity: "needs_review", confidence: 0.5 });
+  }
+
+  // S290 — live-engine supersession. When the list route ran Cost-Share v2
+  // (costShareBillVerdict non-null), the persisted tier-2/3 discrepancy rows
+  // are an AUDIT-TIME snapshot the user's later answers never touch — feeding
+  // them into deriveBillState pinned bills at "needs_review / Answer N
+  // questions" forever (the stale-6-questions defect: detail showed a clean
+  // recovery verdict while the card read 6 open questions from flagged rows).
+  // Uncertainty for v2 bills = the live signals only: an engine verdict of
+  // 'insufficient' (data still missing) or unresolved-coverage lines. Legacy
+  // bills (verdict null — flag OFF or engine skipped) keep the persisted-row
+  // derivation byte-identical.
+  const liveVerdict = claim.costShareBillVerdict ?? null;
+  if (liveVerdict != null) {
+    if (liveVerdict === "insufficient" && findings.every((f) => f.severity !== "needs_review")) {
+      findings.push({ severity: "needs_review", confidence: 0.5 });
+    }
+    return deriveBillState(
+      { audit_findings: findings },
+      [], // persisted discrepancies superseded by the live engine
+      claimDisputes.map((d) => ({ status: d.status })),
+    );
   }
 
   return deriveBillState(
@@ -285,10 +324,11 @@ export function useClaimPipeline(): ClaimPipeline {
   }, [claims, discrepancies, disputeData]);
 
   const counts = useMemo<PipelineCounts>(() => {
-    const c: PipelineCounts = { flagged: 0, drafted: 0, review: 0 };
+    const c: PipelineCounts = { flagged: 0, needsDraft: 0, drafted: 0, review: 0 };
     for (const claim of claims) {
       const s = billStates.get(claim.id);
       if (s === "overcharge_no_draft" || s === "overcharge_drafted") c.flagged += 1;
+      if (s === "overcharge_no_draft") c.needsDraft += 1;
       if (s === "overcharge_drafted") c.drafted += 1;
       if (s === "needs_review") c.review += 1;
     }

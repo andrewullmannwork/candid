@@ -6,14 +6,14 @@ cluster: "claim"
 order: "3"
 target_query: "how to know if you were overcharged medical bill"
 published: "2026-07-27"
-last_updated: "2026-07-27"
+last_updated: "2026-07-28"
 ---
 
 To find out if you were overcharged, put your itemized bill next to your Explanation of Benefits (EOB) which is your insurer's statement of what you actually owe. Match them line by line. Every charge should appear on both documents. Anything unmatched, denied, or inflated is a dispute candidate.
 
 ## Why this works: two documents, one visit
 
-Your itemized bill is the provider's version of what happened. Your EOB is your insurer's version of the same visit. When they agree, you owe the patient-responsibility number on the EOB not a dollar more. When they disagree, the disagreement often costs you money.
+Your itemized bill is the provider's version of what happened. Your EOB is your insurer's version of the same visit. When they agree, you owe the patient-responsibility number on the EOB - not a dollar more. When they disagree, the disagreement often costs you money.
 
 This article is about making the two documents agree. No billing degree required. Remember, nobody reconciles for *you* - it's up to you to do it.
 
@@ -36,7 +36,7 @@ Every problem line lands in one of three buckets, and each bucket has a differen
 
 **Bucket A** often traces to a registration typo - a wrong member ID, an old policy on file. The script: "Please submit this charge to my insurance and send me a new statement after it's processed. I'm not paying it before then."
 
-**Bucket B** is an insurance fight, not a provider fight. If the denial reason is clerical (wrong ID, wrong date) requesting corrected details and a resubmission can clear it. If the plan genuinely refused a service you believe is covered, that's an appeal, and it has deadlines printed right on the denial. Useful question for the insurer's phone rep: "What exactly would make this claim payable - a corrected detail, a record, a different network status?" Write the answer down and remember to get your reference number. That's your fix list.
+**Bucket B** is an insurance fight, not a provider fight. If the denial reason is clerical (wrong ID, wrong date), requesting corrected details and a resubmission can clear it. If the plan genuinely refused a service you believe is covered, that's an appeal, and it has deadlines printed right on the denial. Useful question for the insurer's phone rep: "What exactly would make this claim payable - a corrected detail, a record, a different network status?" Write the answer down and remember to get your reference number. That's your fix list.
 
 **Bucket C** may be **balance billing** - charging you the gap between the provider's sticker price and the insurer's allowed amount. An in-network provider's contract with your insurer generally forbids exactly that. Your EOB is your receipt for what you owe. The dispute is one sentence: "My EOB dated [date] shows my responsibility as [amount]; your bill says more; please correct it."
 
@@ -61,7 +61,7 @@ For a more detailed overview (including scripts for calls and written communicat
 
 ## Only have five minutes? Run the triage version
 
-Compare the two totals for those dates of service: specifically what the bill demands to the sum of the patient-responsibility amounts on your EOBs. If they match, spot-check dates and quantities and move on with your life. If they don't match, the gap is your homework - run the full line-by-line pass above. A mismatch between those totals is never resolved by paying the bigger number.
+Compare two totals for the dates of service: what the bill demands versus the sum of the patient-responsibility amounts on your EOBs. If they match, spot-check dates and quantities and move on with your life. If they don't match, the gap is your homework - run the full line-by-line pass above. A mismatch between those totals is never resolved by paying the bigger number.
 
 ## What are the red flags worth circling?
 
@@ -71,13 +71,13 @@ While you match lines, watch for the classics:
 - **Services you didn't receive** - including tests that were ordered, then canceled.
 - **Wrong quantities** - the units column claiming more than you got.
 - **Dates that don't match your visit** - care billed for days you weren't there.
-- **A separate bill from a provider you never met** - often someone out-of-network at your in-network facility. Federal surprise-billing protections may apply: check the No Surprises Act, explained before paying that one.
+- **A separate bill from a provider you never met** - often someone out-of-network at your in-network facility. Federal surprise-billing protections may apply: check the No Surprises Act explainer before paying that one.
 
 Each of these has a specific tell and a specific challenge script - the full list lives in common medical billing errors.
 
 ## How do you price-check a single charge?
 
-**IMPORTANT NOTE:** Studies find the majority of hospitals do not comply with the federal Hospital Transparency rule. See our article hospital prices for more information. So take the numbers below with a (large) grain of salt.
+**IMPORTANT NOTE:** Studies find the majority of hospitals do not comply with the federal Hospital Transparency rule. See our article on hospital prices for more information. So take the numbers below with a (large) grain of salt.
 
 Sometimes every line is real but one number looks absurd. Two free lookups and a bonus question:
 
@@ -92,7 +92,7 @@ One caution: if you're insured, the number that governs is your plan's **allowed
 
 Match the fix to the buckets above. Bucket A: make them run it through insurance first. Bucket B: correct and resubmit, or appeal. Bucket C: dispute with the provider, EOB attached.
 
-Don't call and vent - dispute in writing: the specific lines, the reasons, copies of your EOB, a request for a corrected bill, and an account hold while it's reviewed. Then escalate if the answer is no. The step-by-step letter skeleton, certified mail, escalation ladder - is in [how to fight a medical bill](/learn/how-to-fight-a-medical-bill).
+Don't call and vent - dispute in writing: the specific lines, the reasons, copies of your EOB, a request for a corrected bill, and an account hold while it's reviewed. Then escalate if the answer is no. The step-by-step (i.e. letter skeleton, certified mail, escalation ladder) is in [how to fight a medical bill](/learn/how-to-fight-a-medical-bill).
 
 ## What if the numbers match but the bill still hurts?
 

@@ -7,6 +7,8 @@ import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
 import { setActiveCanonicalPlan } from "@/lib/plan/set-active-canonical";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { PLAN_COVERED_ONCONFLICT, type PlanCoverageRow } from "@/lib/plan/coverage-targeting";
+import { buildDirectEntryProvenance } from "@/lib/parser/provenance-builders";
+import { SOURCE_DEFAULT_CONFIDENCE } from "@/lib/parser/field-categories";
 import { OB_HOUSEHOLD, OB_SITUATIONS } from "@/lib/onboarding/simplified";
 
 /** Extract and verify the Firebase ID token from the Authorization header */
@@ -476,15 +478,6 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const { error } = await userScoped(supabase, user.id)
-    .table("profiles")
-    .upsert(update, { onConflict: "user_id" });
-
-  if (error) {
-    console.error("Profile save error:", error);
-    return NextResponse.json({ error: "Failed to save profile" }, { status: 500 });
-  }
-
   // ── S288 plan-flow unification: canonical search-select persists for real ──
   // The plan-name autocomplete has returned canonical_plans ids since S107,
   // but this route filed them under matched_catalog_plan_id (a plan_catalog
@@ -494,6 +487,16 @@ export async function POST(req: NextRequest) {
   // (canonical link + single-active + profile repoint, source='catalog_match')
   // and skip the generic manual-row dual-write below. Non-canonical ids (true
   // legacy plan_catalog matches) keep the old behavior.
+  //
+  // S290 ORDERING FIX (Andrew E2E, main-account plan change 04:56Z): this
+  // block used to run AFTER the profiles upsert — when activation failed or
+  // was skipped, the trio (insurer/plan_name/plan_source='catalog_match') was
+  // already written, leaving a profile that CLAIMS a catalog match while
+  // active_insurance_plan_id still points at the old row and no plan row
+  // exists for the selection. Now: activation runs FIRST; a canonical
+  // selection whose activation fails returns 500 (both-or-neither — no
+  // half-written identity); and 'catalog_match' provenance is SERVER-DERIVED
+  // (stamped only when activation actually succeeded, never client-asserted).
   let canonicalSelected = false;
   if (typeof matched_plan_id === "string" && matched_plan_id) {
     try {
@@ -507,11 +510,37 @@ export async function POST(req: NextRequest) {
         canonicalSelected = setActive.ok;
         if (!setActive.ok) {
           console.error("[profile] canonical set-active failed:", setActive.error);
+          return NextResponse.json(
+            { error: "Could not set that plan as active. Nothing was changed — please try again." },
+            { status: 500 },
+          );
         }
       }
     } catch (canonicalErr) {
       console.error("[profile] canonical set-active errored:", canonicalErr);
+      return NextResponse.json(
+        { error: "Could not set that plan as active. Nothing was changed — please try again." },
+        { status: 500 },
+      );
     }
+  }
+  // Server-derived provenance: only a SUCCESSFUL canonical activation may
+  // stamp catalog_match. A client-asserted 'catalog_match' without one is
+  // dropped (keeps the existing provenance) and logged.
+  if (update.plan_source === "catalog_match" && !canonicalSelected) {
+    console.warn(
+      "[profile] dropped client-asserted plan_source='catalog_match' (no successful canonical activation)",
+    );
+    delete update.plan_source;
+  }
+
+  const { error } = await userScoped(supabase, user.id)
+    .table("profiles")
+    .upsert(update, { onConflict: "user_id" });
+
+  if (error) {
+    console.error("Profile save error:", error);
+    return NextResponse.json({ error: "Failed to save profile" }, { status: 500 });
   }
 
   // ── Dual-write: sync plan data to insurance_plans ─────────────────────────
@@ -718,13 +747,13 @@ export async function POST(req: NextRequest) {
             if (existingProfile) existingProfile.active_insurance_plan_id = newPlan.id;
 
             // Create plan_covered_services rows for copays
-            await syncCopayServices(supabase, user.id, newPlan.id, { copay_primary, copay_specialist, copay_er, copay_urgent_care, copay_rx });
+            await syncCopayServices(supabase, user.id, newPlan.id, { copay_primary, copay_specialist, copay_er, copay_urgent_care, copay_rx }, isCardScan);
           }
         }
 
         // If updating existing plan, also sync copays (skip for card-after-doc — SBC copays are more complete)
         if (!isFormAfterDoc && existingProfile?.active_insurance_plan_id && (copay_primary !== undefined || copay_specialist !== undefined || copay_er !== undefined || copay_urgent_care !== undefined || copay_rx !== undefined)) {
-          await syncCopayServices(supabase, user.id, existingProfile.active_insurance_plan_id, { copay_primary, copay_specialist, copay_er, copay_urgent_care, copay_rx });
+          await syncCopayServices(supabase, user.id, existingProfile.active_insurance_plan_id, { copay_primary, copay_specialist, copay_er, copay_urgent_care, copay_rx }, isCardScan);
         }
 
         // ── Canonical plan matching for card scans ────────────────────────────
@@ -837,11 +866,20 @@ export async function POST(req: NextRequest) {
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
+/**
+ * @param fromCardScan — provenance of these copays. A value the user TYPED is a
+ * first-party assertion (`manual` / confidence 1). A value OCR'd off a photo of
+ * an insurance card is a single weak source and must not masquerade as one
+ * (S291): it gets `insurance_card` / confidence 0.5, which is also what Data
+ * Rule 8 requires of any single-source coverage row. Card-derived $0 copays are
+ * dropped upstream in `/api/profile/scan-card` and never reach this function.
+ */
 async function syncCopayServices(
   supabase: SupabaseClient,
   userId: string,
   insurancePlanId: string,
-  copays: { copay_primary?: number; copay_specialist?: number; copay_er?: number; copay_urgent_care?: number; copay_rx?: number }
+  copays: { copay_primary?: number; copay_specialist?: number; copay_er?: number; copay_urgent_care?: number; copay_rx?: number },
+  fromCardScan = false,
 ) {
   const copayMap: Record<string, number | undefined> = {
     pcp_visit: copays.copay_primary,
@@ -876,13 +914,24 @@ async function syncCopayServices(
 
     if (!service) continue;
 
+    // S291 — stamp WHERE this number came from. Without it a card-scanned copay
+    // and a hand-typed one are byte-identical rows, which is what made the
+    // fabricated-$0 cleanup (mig 217) impossible to write safely. Confidence
+    // comes from the vocabulary's calibrated table, not a hand-picked literal,
+    // so provenance and confidence can never disagree.
+    const provSource = fromCardScan ? "card_corroboration" : "user_initial_entry";
     rows.push({
       service_id: service.id,
       place_of_service: "any",
       component: "global",
       in_copay: copay,
-      source: "manual",
-      confidence: 1,
+      source: fromCardScan ? "insurance_card" : "manual",
+      confidence: SOURCE_DEFAULT_CONFIDENCE[provSource],
+      field_provenance: buildDirectEntryProvenance(
+        "plan_covered_services",
+        [["in_copay", copay]],
+        provSource,
+      ),
     });
   }
 

@@ -10,6 +10,8 @@ import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import {
   computeRecoveryV2,
+  rollupCostShareVerdict,
+  CLAIM_SCOPE_QUESTION_FIELDS,
   type PlanCostShareParams,
   type CostShareOverrides,
   type CostShareVerdict,
@@ -223,6 +225,11 @@ export async function GET(req: NextRequest) {
   // a single selectOwnedChildren grouped by claim_id. ON adds ~(#plans +
   // #plan-years + 1) queries, never +3×N.
   const costShareV2 = await isFeatureEnabled("recovery_cost_share_v2");
+  // S291 (mig 216) — a bill audited against a card/manual plan may not read
+  // "correct". Resolved once per request; the engine itself stays pure.
+  const csHonestyGate = costShareV2
+    ? await isFeatureEnabled("unverified_plan_honesty_gate_v1")
+    : false;
   const csGate: CostShareGate = costShareV2
     ? await loadCostShareGate(supabase)
     : { minRecovery: 1 };
@@ -411,6 +418,7 @@ export async function GET(req: NextRequest) {
         networkClaim: coerceNetworkTier(claim.network_status),
         coverageTier: csPlanParams?.coverageTier ?? null,
         planYear: csPlanYear,
+        unverifiedPlanHonestyGate: csHonestyGate,
       };
 
       // §18.10 list-swap — per-line PREP inputs (coverage + secondary + ACA-fallback +
@@ -434,6 +442,17 @@ export async function GET(req: NextRequest) {
       let findingCount = 0;
       let potentialSavings = 0;
       let reviewNeededCount = 0;
+      // S290 — live open-questions aggregation (Cost-Share v2 only). Mirrors
+      // the detail banner's pending rows: claim-scope fields dedupe to one ask
+      // each (network / deductible_met / oop_met / aca_preventive) and
+      // service_cost dedupes per service. The engine emits an assumption ONLY
+      // when it isn't answered by an override/known value, so this count is
+      // resolved-aware by construction — unlike the persisted tier-2/3
+      // discrepancy rows the page used to fall back on (the stale
+      // "Answer 6 questions" defect).
+      const csLineVerdicts: CostShareVerdict[] = [];
+      const csPendingFields = new Set<string>();
+      const csServiceCostKeys = new Set<string>();
       let lineItemPatientOwedSum = 0;
       let claimPotentialRecovery = 0;
       let claimAlreadyPaid = 0;
@@ -506,6 +525,14 @@ export async function GET(req: NextRequest) {
           );
           rec = cs;
           lineVerdict = cs.verdict;
+          csLineVerdicts.push(cs.verdict);
+          for (const a of cs.assumptions) {
+            if ((CLAIM_SCOPE_QUESTION_FIELDS as readonly string[]).includes(a.field)) {
+              csPendingFields.add(a.field);
+            } else if (a.field === "service_cost") {
+              csServiceCostKeys.add((item.service_slug as string | null) ?? (item.id as string));
+            }
+          }
         } else {
           // Rollback path (recovery_cost_share_v2 OFF). insuranceAdjusted stays the RAW
           // per-line value — NOT lp.insuranceAdjusted (header-prorated) — so this branch is
@@ -619,12 +646,24 @@ export async function GET(req: NextRequest) {
         ? Number(claim.total_insurance_adjusted)
         : items.reduce((s, it) => s + Number(it.insurance_adjusted_amount ?? 0), 0);
 
+      // S290 — live bill verdict (same rollup helper as the detail GET) +
+      // open-question count. null when the flag is OFF / no verdicts, which
+      // tells the client to keep its legacy derivation untouched.
+      const costShareBillVerdict =
+        costShareV2 && csLineVerdicts.length > 0 ? rollupCostShareVerdict(csLineVerdicts) : null;
+      const openQuestionCount =
+        costShareV2 && csLineVerdicts.length > 0
+          ? csPendingFields.size + csServiceCostKeys.size + reviewNeededCount
+          : null;
+
       return {
         ...claim,
         lineItemCount: items.length,
         findingCount,
         reviewNeededCount,
         reviewLineItems,
+        costShareBillVerdict,
+        openQuestionCount,
         potentialSavings,
         lineItemPatientOwedSum,
         topFindings: topFindings.slice(0, 3),

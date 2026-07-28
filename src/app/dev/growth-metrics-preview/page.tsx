@@ -13,6 +13,16 @@ import { GrowthMetricsView, type GrowthMetrics } from "@/app/(admin)/admin/growt
 const MOCK: GrowthMetrics = {
   generatedAt: "2026-07-12T10:00:00.000Z",
   window: "30d",
+  // S290 — guide-feedback thumbs section preview.
+  guideFeedback: {
+    totalUp: 14,
+    totalDown: 3,
+    articles: [
+      { slug: "how-to-fight-a-medical-bill", up: 6, down: 1 },
+      { slug: "how-to-read-an-eob", up: 5, down: 0 },
+      { slug: "how-to-negotiate-a-medical-bill", up: 3, down: 2 },
+    ],
+  },
   totals: {
     signups: 36,
     verified: 29,

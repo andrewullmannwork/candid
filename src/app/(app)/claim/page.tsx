@@ -165,9 +165,14 @@ export default function CandidClaimPage() {
     return units;
   })();
 
-  // needs_review "Answer N questions" count — reviewNeededCount when present,
-  // else that claim's open tier-2/3 discrepancy count (min 1).
+  // needs_review "Answer N questions" count. S290 — when the list route ran
+  // Cost-Share v2 it emits the LIVE open-question count (pending engine
+  // assumptions, deduped like the detail banner, + unresolved-coverage lines);
+  // the persisted tier-2/3 discrepancy fallback pinned answered bills at
+  // "Answer 6 questions" forever (audit-time rows nothing resolves). Legacy
+  // bills (null) keep the old derivation.
   function questionCountFor(claim: PipelineClaimSummary): number {
+    if (claim.openQuestionCount != null) return Math.max(1, claim.openQuestionCount);
     if ((claim.reviewNeededCount ?? 0) > 0) return claim.reviewNeededCount!;
     const open = pipeline.discrepancies.filter(
       (d) =>
@@ -236,10 +241,11 @@ export default function CandidClaimPage() {
   const readyToDraftClaims = claims.filter(
     (c) => billStates.get(c.id) === "overcharge_no_draft",
   );
-  const flaggedClaims = claims.filter((c) => {
-    const s = billStates.get(c.id);
-    return s === "overcharge_drafted" || s === "overcharge_no_draft";
-  });
+  // S291 (Andrew): the Flagged tab is the SAME bucket as ready-to-draft — a bill
+  // whose letter is already drafted belongs to "Dispute ready to send" alone, not
+  // to both tiles at once. Aliased rather than re-filtered so the tab list can
+  // never drift from counts.needsDraft, which feeds the tile + the tab count.
+  const flaggedClaims = readyToDraftClaims;
   const reviewClaims = claims.filter((c) => billStates.get(c.id) === "needs_review");
 
   return (
@@ -270,7 +276,7 @@ export default function CandidClaimPage() {
             stats={{
               totalRecovery,
               billsCount: claims.length,
-              issuesCount: counts.flagged,
+              issuesCount: counts.needsDraft,
               disputesCount: counts.drafted,
               reviewCount: counts.review,
             }}
@@ -289,7 +295,7 @@ export default function CandidClaimPage() {
               </TabButton>
               <TabButton active={tab === "flagged"} onClick={() => setTab("flagged")}>
                 Flagged
-                <TabCount count={counts.flagged} active={tab === "flagged"} />
+                <TabCount count={counts.needsDraft} active={tab === "flagged"} />
               </TabButton>
               <TabButton active={tab === "input"} onClick={() => setTab("input")}>
                 Need your input

@@ -473,6 +473,43 @@ export async function POST(req: NextRequest) {
       console.log(`[scan-card] Regex fallback | confidence: ${extractionConfidence.toFixed(2)} | insurer: ${fields.insurer || "NONE"} | memberId: ${fields.memberId || "NONE"}`);
     }
 
+    // ── Zero-copay suppression (S291, Andrew E2E) ─────────────────────────
+    // A card-derived copay of exactly $0 is treated as ABSENT, not as an
+    // assertion of zero cost-share. Applied here, after both extraction
+    // branches converge, so it holds for Haiku AND regex — and for every
+    // insurer and card layout (no carrier-specific carve-outs).
+    //
+    // Why: these values become `plan_covered_services` rows, which the bill
+    // audit reads as known cost-share. A fabricated "$0 copay, covered" makes
+    // `costShareUnknown` false, which makes `shouldOweGrounded` true, which
+    // lets the engine label a bill "correct" — a confident all-clear on a bill
+    // it never actually checked. That is exactly the silent false-negative
+    // Andrew caught: three 0s off a sample card produced "no issues" on a
+    // $428 primary-care visit the user paid $292.41 for.
+    //
+    // The trade is deliberately asymmetric. Dropping a TRUE $0 costs one extra
+    // question to the user (the verdict falls back to "we can't fully check
+    // this"); trusting a FALSE $0 costs them a missed overcharge and tells them
+    // a lie. Cards are photos, not cited documents — a genuine $0 benefit
+    // reaches us through a plan document ("No charge" in an SBC, written with
+    // `source: 'sbc_parsed'`), and that path is untouched by this rule.
+    //
+    // Scoped to copays: a card-derived $0 deductible/OOP already fails SAFE
+    // downstream (`allowed <= deductibleMax` is false at 0, so the verdict
+    // degrades to `insufficient` on its own) and is left alone.
+    const suppressedZeroCopays: string[] = [];
+    for (const key of ["copayPrimary", "copaySpecialist", "copayEr", "copayUrgentCare", "copayRx"] as const) {
+      if (fields[key] === 0) {
+        suppressedZeroCopays.push(key);
+        fields[key] = undefined;
+      }
+    }
+    if (suppressedZeroCopays.length > 0) {
+      console.log(
+        `[scan-card] Suppressed ${suppressedZeroCopays.length} zero-valued copay field(s) as absent: ${suppressedZeroCopays.join(", ")}`,
+      );
+    }
+
     // Log OCR stats
     console.log(`[scan-card] OCR text length: ${ocrResult.text.length} | method: ${extractionMethod}`);
 

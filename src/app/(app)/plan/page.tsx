@@ -27,6 +27,7 @@ import { BenefitsScoreboard } from "@/components/benefits-scoreboard";
 import { DataSourceContextLine } from "@/components/data-source-context-line";
 import { PlanStat } from "@/components/plan/PlanStat";
 import { AccumulatorPanel } from "@/components/plan/AccumulatorPanel";
+import { StrandedPlanBanner } from "@/components/plan/StrandedPlanBanner";
 import { CategoryAccordion } from "@/components/plan/CategoryAccordion";
 import { EocPriorAuthCard, EocAboutPlanCard, EocServiceCoverageDetail, type EocServiceItem } from "@/components/plan/EocCoverageRules";
 import type { EocReaderSurfaces } from "@/lib/plan/eoc-reader-resolution";
@@ -840,6 +841,13 @@ export default function CandidPlanPage() {
   return (
     <div className="max-w-3xl">
       <PageHeader title="Your Benefits" sub={headerSub} />
+
+      {/* S291 — recovery for a parsed plan doc that never became active. Sits
+          ABOVE the data-source line because it's the ANSWER to what that line
+          is complaining about ("your insurance card alone doesn't reveal your
+          specific coverage" — while their uploaded document sits unused).
+          Renders nothing in the normal case. */}
+      <StrandedPlanBanner />
 
       {/* Data source transparency — methodology disclosure per Pattern 1 #11.
           Replaces S107-era AmberBanner+DataSourceBanner with the B3.1

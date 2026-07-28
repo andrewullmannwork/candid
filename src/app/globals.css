@@ -428,6 +428,39 @@ html {
   line-height: var(--leading-normal); color: var(--fg-4);
 }
 
+/* S290 — "Was this article helpful?" thumbs (ArticleFeedback.tsx). Sits
+   between the prose and the footer; learn-card chrome, token colors only. */
+.learn-feedback {
+  display: flex; flex-direction: column; align-items: center; gap: var(--space-3);
+  margin-top: var(--space-12); padding: var(--space-6) var(--space-5);
+  border: 1px solid var(--border-2); border-radius: var(--radius-lg);
+  background: var(--bg-1); text-align: center; min-height: 76px; justify-content: center;
+}
+.learn-feedback-q {
+  margin: 0; color: var(--fg-1); font-size: var(--text-base); font-weight: var(--weight-semibold);
+}
+.learn-feedback-actions { display: flex; gap: var(--space-3); }
+.learn-feedback-btn {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-2) var(--space-5);
+  border: 1px solid var(--border-2); border-radius: 999px;
+  background: var(--bg-1); color: var(--fg-2);
+  font-size: var(--text-sm); font-weight: var(--weight-semibold);
+  cursor: pointer; transition: border-color 120ms, box-shadow 120ms, color 120ms, transform 120ms;
+}
+.learn-feedback-btn:hover {
+  border-color: var(--candid-blue-200); box-shadow: var(--glow-blue);
+  color: var(--candid-blue-700); transform: translateY(-1px);
+}
+.learn-feedback-thanks {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  margin: 0; color: var(--fg-2); font-size: var(--text-body); font-weight: var(--weight-medium);
+}
+.learn-feedback-check {
+  display: grid; place-items: center; width: 22px; height: 22px;
+  border-radius: 999px; background: var(--verified-soft); color: var(--verified-ink);
+}
+
 @media (max-width: 640px) {
   .learn-chrome-head { padding: var(--space-4); flex-wrap: wrap; }
   .learn-main { padding: var(--space-6) var(--space-4) var(--space-16); }

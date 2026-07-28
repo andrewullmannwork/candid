@@ -138,16 +138,35 @@ export function OnboardingFlow() {
           setCard({ chips, manual: data.hasCard !== true, fileName: null });
         }
 
-        if (data.hasPlanOrBill === true) {
+        // S290 (Andrew E2E #12): in plan-mode the doc card renders as "YOUR
+        // CURRENT PLAN" — a BILL must never occupy it (the newest-doc rule let
+        // an uploaded bill visually displace the search-selected plan, even
+        // though persistence was correct). Plan-mode restricts the pool to
+        // plan-kind docs and falls through to the catalog_match search card
+        // when only bills exist. The full signup flow keeps newest-of-any-kind:
+        // its step-2 slot is genuinely "plan doc or a bill".
+        const allDocs = data.recentCoverageDocs ?? [];
+        const docPool =
+          mode === "plan"
+            ? allDocs.filter(
+                (d) => getDocTypeClass((d.doc_type ?? "plan_document") as DocType) !== "bill",
+              )
+            : allDocs;
+        if (data.hasPlanOrBill === true && (mode !== "plan" || docPool.length > 0)) {
           // S286 restore fidelity: rebuild the slot from the ACTUAL newest
           // coverage docs — real filename(s), right kind, in-flight vs parsed —
           // instead of a generic "plan" card. Chips re-fetch through the same
           // shaping the live path uses (chips pop in; hydration stays fast).
-          const docs = data.recentCoverageDocs ?? [];
+          const docs = docPool;
           const primary = docs[0];
           if (primary) {
             const extraFiles = docs.slice(1, 4).map((d) => d.file_name || "Document");
-            const moreCount = Math.max(0, (data.coverageDocCount ?? docs.length) - docs.length);
+            // In plan-mode the +N counter must not count the bills we filtered
+            // out of the pool — derive from the pool alone there.
+            const moreCount =
+              mode === "plan"
+                ? Math.max(0, docs.length - 1 - extraFiles.length)
+                : Math.max(0, (data.coverageDocCount ?? docs.length) - docs.length);
             if (primary.status !== "processed") {
               setDoc({ kind: "background", fileName: primary.file_name, chips: [], extraFiles, moreCount });
             } else {
@@ -262,7 +281,9 @@ export function OnboardingFlow() {
     return () => {
       cancelled = true;
     };
-  }, [user, searchParams]);
+    // `mode` derives from searchParams but the S290 plan-mode doc-pool filter
+    // reads it directly — keep it in deps for exhaustive-deps correctness.
+  }, [user, searchParams, mode]);
 
   /* ── Step-3 write-through + completion ──────────────────────────────────── */
 

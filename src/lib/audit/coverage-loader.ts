@@ -410,6 +410,29 @@ export function resolveSecondaryCoverage(
  * fields are optional on PlanCoverageInput, so legacy/audit consumers are
  * unaffected; computeCostShareV2 reads them via buildServiceCostShare.
  */
+/**
+ * S291 — WHO said this cost-share, compressed to a tag the client can render
+ * copy from. Never ships the field_provenance blob itself (it can carry parser
+ * excerpts); just the attribution.
+ *
+ *   "user"    — a human typed it (user_correction / user_initial_entry)
+ *   "card"    — scanned off an insurance card
+ *   "unknown" — written before provenance stamping. GENUINELY unattributable:
+ *               the card-scan and user-entry writers were byte-identical then,
+ *               which is why mig 217 could not be written safely. Must never be
+ *               rendered as "you told us" — we don't know that.
+ */
+function readCostProvenance(row: Record<string, unknown>): "user" | "card" | "unknown" {
+  const fp = row.field_provenance as Record<string, { source?: string }> | null | undefined;
+  const src = fp?.in_copay?.source ?? fp?.in_coinsurance?.source ?? null;
+  if (src === "user_correction" || src === "user_initial_entry") return "user";
+  if (src === "card_corroboration") return "card";
+  // Row-level source still identifies post-fix card writes even if the blob
+  // wasn't selected on this path.
+  if ((row.source as string | null) === "insurance_card") return "card";
+  return "unknown";
+}
+
 export function planCoverageFromRow(row: Record<string, unknown>): PlanCoverageInput {
   return {
     covered: (row.covered as boolean | null) ?? null,
@@ -417,6 +440,7 @@ export function planCoverageFromRow(row: Record<string, unknown>): PlanCoverageI
     // in_coinsurance may be integer-percent OR decimal; normalizer → decimal 0-1.
     coinsurance: normalizeCoinsuranceForStorage(row.in_coinsurance as number | null),
     deductibleApplies: (row.in_deductible_applies as boolean | null) ?? null,
+    costProvenance: readCostProvenance(row),
     outCopay: (row.out_copay as number | null) ?? null,
     outCoinsurance: normalizeCoinsuranceForStorage(row.out_coinsurance as number | null),
     outDeductibleApplies: (row.out_deductible_applies as boolean | null) ?? null,
@@ -433,7 +457,7 @@ export function planCoverageFromRow(row: Record<string, unknown>): PlanCoverageI
 // smaller schema) — see loadCanonicalCoverageMeta / loadCoverageFromCanonical.
 // ============================================================================
 const COVERAGE_BASE_SELECT =
-  "insurance_plan_id, covered, in_copay, in_coinsurance, in_deductible_applies, out_copay, out_coinsurance, out_deductible_applies, oon_paid_at_in_network, source, service_catalog!inner(slug, category, name)";
+  "insurance_plan_id, covered, in_copay, in_coinsurance, in_deductible_applies, out_copay, out_coinsurance, out_deductible_applies, oon_paid_at_in_network, source, field_provenance, service_catalog!inner(slug, category, name)";
 const COVERAGE_CITEGRADE_SELECT = "confidence, sbc_excerpt, sbc_page, field_provenance";
 
 /** The user-scope coverage SELECT — base, plus the dispute-letter cite-grade columns when asked. */
@@ -509,6 +533,19 @@ export interface PlanCoverageMeta {
  * Consolidates the queries the DETAIL GET ran inline (plan_covered_services +
  * category, is_aca_compliant) into one per-plan shape so LIST / discrepancy /
  * audit / detail share it. Two round-trips total regardless of plan count.
+ *
+ * S290 — canonical fallback for coverage-empty plans. A search-selected plan
+ * (`source='catalog_match'` / any pure-canonical row) keeps its coverage on
+ * `canonical_plan_services`, NOT user-scoped `plan_covered_services` — so this
+ * loader returned an EMPTY context for it and the ungated same-category sibling
+ * match (path 1 of resolveSecondaryCoverage) could never run; only the
+ * ACA-gated backstop could ever answer (the "plan says $0 but line reads
+ * Unknown" S290 E2E defect). Now: a plan with zero user-scoped rows AND a
+ * `canonical_plan_id` inherits the canonical coverage (marked
+ * `canonical_inherited`) plus the S161 D1 metal-level→ACA inference — a user
+ * plan's explicit `is_aca_compliant` (incl. user_override) always wins.
+ * Plans with ANY user-scoped rows are untouched (docs stay authoritative);
+ * merge-under for hybrid doc+canonical plans is a named follow-up, not this.
  */
 export async function loadPlanCoverageMeta(
   supabase: SupabaseClient,
@@ -541,11 +578,40 @@ export async function loadPlanCoverageMeta(
 
   const { data: plans } = await supabase
     .from("insurance_plans")
-    .select("id, is_aca_compliant")
+    .select("id, is_aca_compliant, canonical_plan_id")
     .in("id", ids);
+  const canonicalByPlan = new Map<string, string>();
   for (const p of plans ?? []) {
     const entry = out.get(p.id as string);
-    if (entry) entry.acaCompliant = (p.is_aca_compliant as boolean | null) ?? null;
+    if (!entry) continue;
+    entry.acaCompliant = (p.is_aca_compliant as boolean | null) ?? null;
+    const canonicalId = p.canonical_plan_id as string | null;
+    // Fallback candidates: zero user-scoped coverage rows + a linked canonical.
+    if (entry.coveredMeta.length === 0 && canonicalId) {
+      canonicalByPlan.set(p.id as string, canonicalId);
+    }
+  }
+
+  if (canonicalByPlan.size > 0) {
+    const canonMeta = await loadCanonicalCoverageMeta(
+      supabase,
+      Array.from(new Set(canonicalByPlan.values())),
+    );
+    for (const [planId, canonicalId] of canonicalByPlan) {
+      const entry = out.get(planId);
+      const canon = canonMeta.get(canonicalId);
+      if (!entry || !canon) continue;
+      entry.coveredMeta = canon.coveredMeta;
+      for (const m of canon.coveredMeta) {
+        // Canonical scope carries in-network terms only (no out_* / no
+        // deductible-applies column) — absent fields stay null and the engine
+        // applies its usual inference; preventive is deductible-exempt anyway.
+        entry.coverageMap.set(m.slug, { ...m.coverage, source: "canonical_inherited" });
+      }
+      // Explicit user answer (user_override true/false) wins; only fill the
+      // unknown case with the S161 D1 metal-level inference.
+      if (entry.acaCompliant == null) entry.acaCompliant = canon.acaCompliant;
+    }
   }
   return out;
 }
