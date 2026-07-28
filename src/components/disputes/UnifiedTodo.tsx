@@ -125,6 +125,25 @@ export interface UnifiedTodoProps {
   nameResolved: boolean;
   onResolvePatient: (choice: "me" | "dependent" | "wrong", correctedName?: string) => void;
 
+  /**
+   * GET IT READY — plan-year mismatch (S291, Andrew). Renders only when the
+   * bill's care year has no matching plan on file, the same conditional shape
+   * as the patient-identity row above.
+   *
+   * Both years are facts off real documents — the care date from the bill, the
+   * plan year from the plan — so a disagreement means we'd be citing coverage
+   * that wasn't in force. It sits ABOVE "Confirm the claim details" because the
+   * plan under question is what that step confirms.
+   *
+   * `children` for this row is the EXISTING VerifStrip, passed in by the parent
+   * rather than reimplemented: its copy is approved verbatim (S111 §3c) and it
+   * already owns the upload / search-library / use-as-stand-in choices and the
+   * "letter asks the insurer for the missing year" wording.
+   */
+  planYearMismatch: { billYear: number; planYear: number | null; insurerName: string | null } | null;
+  planYearResolved: boolean;
+  planYearStrip?: ReactNode;
+
   // GET IT READY — claim-details expansion (embeds the real CaseNeedsPanel)
   children?: ReactNode;
 
@@ -311,6 +330,9 @@ export function UnifiedTodo({
   insurerAddressOnFile,
   onAddInsurerAddress,
   nameMismatch,
+  planYearMismatch,
+  planYearResolved,
+  planYearStrip,
   nameResolved,
   onResolvePatient,
   children,
@@ -331,7 +353,7 @@ export function UnifiedTodo({
   onUndoSent,
   onUndoOutcome,
 }: UnifiedTodoProps) {
-  const [expanded, setExpanded] = useState<"patient" | "details" | null>(null);
+  const [expanded, setExpanded] = useState<"patient" | "details" | "planyear" | null>(null);
   const [who, setWho] = useState<"me" | "dependent" | "wrong">("me");
   const [correctedName, setCorrectedName] = useState("");
   const [checks, setChecks] = useState<Record<string, boolean>>({});
@@ -390,6 +412,19 @@ export function UnifiedTodo({
             required: true,
             cta: "Resolve name",
             onDo: () => setExpanded((e) => (e === "patient" ? null : "patient")),
+          } satisfies RowDef,
+        ]
+      : []),
+    ...(planYearMismatch
+      ? [
+          {
+            id: "planyear",
+            title: `This bill is from ${planYearMismatch.billYear} — your plan is ${planYearMismatch.planYear ?? "from another year"}`,
+            sub: "We need the plan you had when the care happened.",
+            state: lockIfSent(planYearResolved ? "done" : "todo"),
+            required: true,
+            cta: "Fix this",
+            onDo: () => setExpanded((e) => (e === "planyear" ? null : "planyear")),
           } satisfies RowDef,
         ]
       : []),
@@ -872,6 +907,9 @@ export function UnifiedTodo({
                     resolving through the real confirm-patient-identity flow;
                     "me"/"wrong" also fill the letter name in the parent).
                     Re-openable after completion until the letter is sent. */}
+                {row.id === "planyear" && expanded === "planyear" && !sent && planYearStrip && (
+                  <div className="animate-fade-in mt-2 mb-2.5">{planYearStrip}</div>
+                )}
                 {row.id === "patient" && expanded === "patient" && !sent && nameMismatch && (
                   <div className="animate-fade-in mt-2 mb-2.5 rounded-[14px] border border-blue-200 bg-white p-4 shadow-[0_14px_30px_-20px_rgba(37,99,235,0.35)]">
                     <div className="mb-3 text-[13px] leading-relaxed text-gray-600">

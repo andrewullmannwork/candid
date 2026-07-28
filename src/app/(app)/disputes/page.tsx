@@ -1715,6 +1715,80 @@ function DisputesContent() {
       onAddProviderAddress={() => setProviderAddressOpen(true)}
       insurerAddressOnFile={zone1InsurerAddressOnFile}
       onAddInsurerAddress={() => setInsurerCorrectionOpen(true)}
+      // S291 (Andrew) — the plan-year strip is now a STEP in "What you need to
+      // do" instead of a banner floating below it. Same component, same approved
+      // copy (S111 §3c); only its placement changes, so a wrong-year plan is a
+      // tracked item ticked off before the letter goes out.
+      planYearMismatch={
+        planContext && !planContext.plan && planContext.missingForYear != null && disputeId
+          ? {
+              billYear: planContext.missingForYear,
+              planYear: planContext.fallbackPlan?.planYear ?? null,
+              insurerName: planContext.insurer?.name ?? planContext.fallbackPlan?.insurerName ?? null,
+            }
+          : null
+      }
+      planYearResolved={userConfirmedSamePlan != null || userAcceptedProxy === true}
+      planYearStrip={
+        planContext && !planContext.plan && planContext.missingForYear != null && disputeId ? (
+        <VerifStrip
+        disputeId={disputeId}
+        billYear={planContext.missingForYear}
+        insurerName={
+        planContext.insurer?.name ??
+        planContext.fallbackPlan?.insurerName ??
+        null
+        }
+        fallbackPlan={planContext.fallbackPlan}
+        userConfirmedSamePlan={userConfirmedSamePlan}
+        userAcceptedProxy={userAcceptedProxy}
+        archiveCanonicalPlan={
+        planContext.archiveCanonicalPlan
+        ? {
+        id: planContext.archiveCanonicalPlan.id,
+        planName: planContext.archiveCanonicalPlan.planName,
+        planYear: planContext.archiveCanonicalPlan.planYear,
+        insurerName: planContext.archiveCanonicalPlan.insurerName,
+        }
+        : null
+        }
+        boundCanonicalPlan={boundCanonicalPlan}
+        wrongYearBannerDismissed={wrongYearBannerDismissed}
+        getAuthToken={getAuthToken}
+        onConfirmed={async (answer) => {
+        setUserConfirmedSamePlan(answer);
+        await fetchDispute(disputeId);
+        }}
+        onOpenSearchModalAuto={() => {
+        setPlanSearchModalMode("auto");
+        setPlanSearchModalOpen(true);
+        }}
+        onOpenSearchModalSearch={() => {
+        setPlanSearchModalMode("search");
+        setPlanSearchModalOpen(true);
+        }}
+        onOpenUploadModal={() => {
+        setPlanSearchModalMode("upload");
+        setPlanSearchModalOpen(true);
+        }}
+        onDismissWrongYearBanner={async () => {
+        // S111 smoke #5 — POST dismiss flag + refetch. Server resets
+        // dismissal to false on each new bind so the banner reappears
+        // if the user binds another wrong-year plan.
+        if (!user) return;
+        const token = await user.firebaseUser.getIdToken();
+        await fetch(
+        `/api/disputes/${disputeId}/dismiss-wrong-year-banner`,
+        {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        },
+        );
+        await fetchDispute(disputeId);
+        }}
+        />
+        ) : null
+      }
       nameMismatch={nameMismatch}
       nameResolved={patientIdentityResolved}
       onResolvePatient={async (choice, correctedName) => {
@@ -1813,67 +1887,6 @@ function DisputesContent() {
           Subplan §3d. Parent gates rendering when no exact-year user plan
           exists; the strip itself handles state derivation + optimistic
           updates. */}
-      {planContext &&
-        !planContext.plan &&
-        planContext.missingForYear != null &&
-        disputeId && (
-          <VerifStrip
-            disputeId={disputeId}
-            billYear={planContext.missingForYear}
-            insurerName={
-              planContext.insurer?.name ??
-              planContext.fallbackPlan?.insurerName ??
-              null
-            }
-            fallbackPlan={planContext.fallbackPlan}
-            userConfirmedSamePlan={userConfirmedSamePlan}
-            userAcceptedProxy={userAcceptedProxy}
-            archiveCanonicalPlan={
-              planContext.archiveCanonicalPlan
-                ? {
-                    id: planContext.archiveCanonicalPlan.id,
-                    planName: planContext.archiveCanonicalPlan.planName,
-                    planYear: planContext.archiveCanonicalPlan.planYear,
-                    insurerName: planContext.archiveCanonicalPlan.insurerName,
-                  }
-                : null
-            }
-            boundCanonicalPlan={boundCanonicalPlan}
-            wrongYearBannerDismissed={wrongYearBannerDismissed}
-            getAuthToken={getAuthToken}
-            onConfirmed={async (answer) => {
-              setUserConfirmedSamePlan(answer);
-              await fetchDispute(disputeId);
-            }}
-            onOpenSearchModalAuto={() => {
-              setPlanSearchModalMode("auto");
-              setPlanSearchModalOpen(true);
-            }}
-            onOpenSearchModalSearch={() => {
-              setPlanSearchModalMode("search");
-              setPlanSearchModalOpen(true);
-            }}
-            onOpenUploadModal={() => {
-              setPlanSearchModalMode("upload");
-              setPlanSearchModalOpen(true);
-            }}
-            onDismissWrongYearBanner={async () => {
-              // S111 smoke #5 — POST dismiss flag + refetch. Server resets
-              // dismissal to false on each new bind so the banner reappears
-              // if the user binds another wrong-year plan.
-              if (!user) return;
-              const token = await user.firebaseUser.getIdToken();
-              await fetch(
-                `/api/disputes/${disputeId}/dismiss-wrong-year-banner`,
-                {
-                  method: "POST",
-                  headers: { Authorization: `Bearer ${token}` },
-                },
-              );
-              await fetchDispute(disputeId);
-            }}
-          />
-        )}
 
       {/* S111 — unified PlanSearchModal. 5-mode morph; controlled by the
           page-level open + mode state. Bind success → refetch; upload
