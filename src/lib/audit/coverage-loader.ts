@@ -410,6 +410,29 @@ export function resolveSecondaryCoverage(
  * fields are optional on PlanCoverageInput, so legacy/audit consumers are
  * unaffected; computeCostShareV2 reads them via buildServiceCostShare.
  */
+/**
+ * S291 — WHO said this cost-share, compressed to a tag the client can render
+ * copy from. Never ships the field_provenance blob itself (it can carry parser
+ * excerpts); just the attribution.
+ *
+ *   "user"    — a human typed it (user_correction / user_initial_entry)
+ *   "card"    — scanned off an insurance card
+ *   "unknown" — written before provenance stamping. GENUINELY unattributable:
+ *               the card-scan and user-entry writers were byte-identical then,
+ *               which is why mig 217 could not be written safely. Must never be
+ *               rendered as "you told us" — we don't know that.
+ */
+function readCostProvenance(row: Record<string, unknown>): "user" | "card" | "unknown" {
+  const fp = row.field_provenance as Record<string, { source?: string }> | null | undefined;
+  const src = fp?.in_copay?.source ?? fp?.in_coinsurance?.source ?? null;
+  if (src === "user_correction" || src === "user_initial_entry") return "user";
+  if (src === "card_corroboration") return "card";
+  // Row-level source still identifies post-fix card writes even if the blob
+  // wasn't selected on this path.
+  if ((row.source as string | null) === "insurance_card") return "card";
+  return "unknown";
+}
+
 export function planCoverageFromRow(row: Record<string, unknown>): PlanCoverageInput {
   return {
     covered: (row.covered as boolean | null) ?? null,
@@ -417,6 +440,7 @@ export function planCoverageFromRow(row: Record<string, unknown>): PlanCoverageI
     // in_coinsurance may be integer-percent OR decimal; normalizer → decimal 0-1.
     coinsurance: normalizeCoinsuranceForStorage(row.in_coinsurance as number | null),
     deductibleApplies: (row.in_deductible_applies as boolean | null) ?? null,
+    costProvenance: readCostProvenance(row),
     outCopay: (row.out_copay as number | null) ?? null,
     outCoinsurance: normalizeCoinsuranceForStorage(row.out_coinsurance as number | null),
     outDeductibleApplies: (row.out_deductible_applies as boolean | null) ?? null,
@@ -433,7 +457,7 @@ export function planCoverageFromRow(row: Record<string, unknown>): PlanCoverageI
 // smaller schema) — see loadCanonicalCoverageMeta / loadCoverageFromCanonical.
 // ============================================================================
 const COVERAGE_BASE_SELECT =
-  "insurance_plan_id, covered, in_copay, in_coinsurance, in_deductible_applies, out_copay, out_coinsurance, out_deductible_applies, oon_paid_at_in_network, source, service_catalog!inner(slug, category, name)";
+  "insurance_plan_id, covered, in_copay, in_coinsurance, in_deductible_applies, out_copay, out_coinsurance, out_deductible_applies, oon_paid_at_in_network, source, field_provenance, service_catalog!inner(slug, category, name)";
 const COVERAGE_CITEGRADE_SELECT = "confidence, sbc_excerpt, sbc_page, field_provenance";
 
 /** The user-scope coverage SELECT — base, plus the dispute-letter cite-grade columns when asked. */

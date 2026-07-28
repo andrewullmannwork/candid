@@ -71,6 +71,8 @@ interface LineItem {
      * pre-fill and re-opened showing an answered question as blank.
      */
     deductibleApplies?: boolean | null;
+    /** S291 — who asserted the cost-share; drives honest attribution copy. */
+    costProvenance?: "user" | "card" | "unknown";
   } | null;
   // S74.6 D2 — which path produced the line's coverage row. Drives the §A.2
   // ACA tooltip on the Coverage badge (only when 'aca_zero_cost_share').
@@ -1003,6 +1005,7 @@ export function ClaimDetail({
       // client all along (coverage-loader maps in_deductible_applies) and just
       // never being handed to the modal.
       deductibleApplies: pc.deductibleApplies ?? null,
+      costProvenance: pc.costProvenance ?? "unknown",
       // S290 — lets the banner's Edit button target THIS line explicitly.
       lineId: line!.id,
     };

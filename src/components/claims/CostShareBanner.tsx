@@ -94,7 +94,19 @@ interface CostShareBannerProps {
    *  (plan_covered_services.source='manual'). Present → a persistent "Plan cost ·
    *  $X · Edit" row so they can correct their own mistake. Null when unknown (the
    *  Add-details gap) or plan-doc-parsed (authoritative → read-only). */
-  editableServiceCost?: { serviceLabel: string; copay: number | null; coinsurancePercent: number | null; lineId?: string | null } | null;
+  editableServiceCost?: {
+    serviceLabel: string;
+    copay: number | null;
+    coinsurancePercent: number | null;
+    lineId?: string | null;
+    /**
+     * S291 (Andrew) — who actually asserted this cost. The row used to say
+     * "You told us…" unconditionally, which is a LIE for a value a card scan
+     * invented and attributed to the user. "unknown" = written before
+     * provenance stamping; we genuinely don't know, so we claim neither.
+     */
+    costProvenance?: "user" | "card" | "unknown";
+  } | null;
   onUploadEob: () => void;
   onBack: () => void;
   /** Surface 3 (clarity redesign) — "assumptions" renders ONLY the editable
@@ -542,10 +554,20 @@ export function CostShareBanner({
                   <button type="button" onClick={() => onAddPlanDetails({ lineId: editableServiceCost.lineId ?? null })} className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50">Edit</button>
                 }
               >
-                You told us your plan&apos;s cost for {editableServiceCost.serviceLabel} is{" "}
-                {editableServiceCost.copay != null
-                  ? `$${editableServiceCost.copay} copay`
-                  : `${editableServiceCost.coinsurancePercent}% coinsurance`}. Edit if that&apos;s not right.
+                {(() => {
+                  const amount =
+                    editableServiceCost.copay != null
+                      ? `$${editableServiceCost.copay} copay`
+                      : `${editableServiceCost.coinsurancePercent}% coinsurance`;
+                  const who = editableServiceCost.costProvenance ?? "unknown";
+                  if (who === "user") {
+                    return `You told us your plan's cost for ${editableServiceCost.serviceLabel} is ${amount}. Edit if that's not right.`;
+                  }
+                  if (who === "card") {
+                    return `From your insurance card, we have ${amount} for ${editableServiceCost.serviceLabel}. Cards rarely have this information — confirm or correct it.`;
+                  }
+                  return `We have ${amount} as your plan's cost for ${editableServiceCost.serviceLabel}. Confirm it's right.`;
+                })()}
               </Row>
             )}
 

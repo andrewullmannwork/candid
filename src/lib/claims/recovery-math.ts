@@ -56,6 +56,13 @@ export interface PlanCoverageInput {
    * `deductibleApplies=false` (preventive is deductible-exempt by law).
    */
   deductibleApplies?: boolean | null;
+  /**
+   * S291 — attribution for this row's cost-share. Display-only (the engine
+   * ignores it); it exists so the assumptions card can stop telling users "you
+   * told us" about a value a card scan invented. "unknown" = written before
+   * provenance stamping and genuinely unattributable.
+   */
+  costProvenance?: "user" | "card" | "unknown";
   outCopay?: number | null;
   outCoinsurance?: number | null;
   outDeductibleApplies?: boolean | null;
