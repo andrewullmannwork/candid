@@ -165,9 +165,14 @@ export default function CandidClaimPage() {
     return units;
   })();
 
-  // needs_review "Answer N questions" count — reviewNeededCount when present,
-  // else that claim's open tier-2/3 discrepancy count (min 1).
+  // needs_review "Answer N questions" count. S290 — when the list route ran
+  // Cost-Share v2 it emits the LIVE open-question count (pending engine
+  // assumptions, deduped like the detail banner, + unresolved-coverage lines);
+  // the persisted tier-2/3 discrepancy fallback pinned answered bills at
+  // "Answer 6 questions" forever (audit-time rows nothing resolves). Legacy
+  // bills (null) keep the old derivation.
   function questionCountFor(claim: PipelineClaimSummary): number {
+    if (claim.openQuestionCount != null) return Math.max(1, claim.openQuestionCount);
     if ((claim.reviewNeededCount ?? 0) > 0) return claim.reviewNeededCount!;
     const open = pipeline.discrepancies.filter(
       (d) =>
