@@ -503,6 +503,18 @@ export interface ComputeCostShareV2Args {
   unverifiedPlanHonestyGate?: boolean;
 }
 
+/**
+ * S291 — reasons that mean a row is ANSWERED rather than assumed. Both are real
+ * facts we display so the user can see and override them; neither is a guess,
+ * so neither downgrades `confident` to `correct` nor counts as outstanding
+ * input. Exported so the banner's pending-set reads the same list — the two
+ * disagreeing is precisely the class of bug this session kept finding.
+ *
+ *   accumulator   — our running tally of the user's bills said so
+ *   user_override — the user told us directly
+ */
+export const ANSWERED_REASONS: ReadonlySet<string> = new Set(["accumulator", "user_override"]);
+
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const num = (n: number | null | undefined): number | null =>
   n == null || Number.isNaN(n) ? null : n;
@@ -741,7 +753,14 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
         assumed: "not_met",
         value: deductibleMax,
         correctable: true,
-        reason: dedMetKnown ? "accumulator" : acc == null ? "no_accumulator" : "no_override",
+        reason:
+          ov.deductibleMet != null
+            ? "user_override"
+            : dedMetKnown
+              ? "accumulator"
+              : acc == null
+                ? "no_accumulator"
+                : "no_override",
       });
       if (remainingDeductible != null && remainingDeductible < allowed) {
         // straddle: fill remaining deductible (100%), then coinsurance on the rest.
@@ -790,7 +809,14 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
         assumed: oopMet ? "hit" : "not_hit",
         value: oopMax,
         correctable: true,
-        reason: oopMetKnown ? "accumulator" : acc == null ? "no_accumulator" : "no_override",
+        reason:
+          ov.oopMet != null
+            ? "user_override"
+            : oopMetKnown
+              ? "accumulator"
+              : acc == null
+                ? "no_accumulator"
+                : "no_override",
       });
     }
   }
@@ -920,7 +946,7 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
   // (they used to vanish). Counting those would silently demote every
   // accumulator-backed bill from `confident` to `correct` with identical
   // dollars, which is exactly the kind of quiet drift this session was about.
-  else if (assumptions.some((a) => a.reason !== "accumulator")) verdict = "correct";
+  else if (assumptions.some((a) => !ANSWERED_REASONS.has(a.reason))) verdict = "correct";
   else verdict = "confident";
 
   return {

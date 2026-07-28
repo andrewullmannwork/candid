@@ -18,6 +18,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
+import { ANSWERED_REASONS } from "@/lib/claims/recovery-math";
 import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recovery-math";
 import { Row, IconChip } from "@/components/shared/InputRow";
 
@@ -173,7 +174,7 @@ export function pendingAssumptionFields(
   // outstanding. It stays overridable: the tally only knows uploaded bills, so
   // it's a floor, not the truth. S291.
   const answeredByData = (field: string) =>
-    assumptions.some((a) => a.field === field && a.reason === "accumulator");
+    assumptions.some((a) => a.field === field && ANSWERED_REASONS.has(a.reason));
   const unanswered = (field: string) => has(field) && !answeredByData(field);
 
   if (unanswered("network") && overrides?.userNetworkOverride == null) pending.add("network");
@@ -538,11 +539,11 @@ export function CostShareBanner({
             )}
 
             {showDeductible && (
-              <MetRow flagged={flagRow("deductible_met")} source={dedResolved ? "user" : deductibleA?.reason === "accumulator" ? "accumulator" : null} kind="deductible" isMet={dedMetDisplay} metAsOf={dedAsOfDisplay} amount={deductibleA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectDeductible} />
+              <MetRow flagged={flagRow("deductible_met")} source={deductibleA?.reason === "user_override" || dedResolved ? "user" : deductibleA?.reason === "accumulator" ? "accumulator" : null} kind="deductible" isMet={dedMetDisplay} metAsOf={dedAsOfDisplay} amount={deductibleA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectDeductible} />
             )}
 
             {showOop && (
-              <MetRow flagged={flagRow("oop_met")} source={oopResolved ? "user" : oopA?.reason === "accumulator" ? "accumulator" : null} kind="oop" isMet={oopMetDisplay} metAsOf={oopAsOfDisplay} amount={oopA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectOop} />
+              <MetRow flagged={flagRow("oop_met")} source={oopA?.reason === "user_override" || oopResolved ? "user" : oopA?.reason === "accumulator" ? "accumulator" : null} kind="oop" isMet={oopMetDisplay} metAsOf={oopAsOfDisplay} amount={oopA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectOop} />
             )}
 
             {serviceCostChips.map((chip, i) => (

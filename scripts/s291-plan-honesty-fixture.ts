@@ -327,7 +327,38 @@ check(
   ).size,
 );
 
-const total = 26;
+// ── A user's own answer is attributed to the USER, not the tally ───────────
+// Andrew's question — "when a user adds their data, does it move to confident?"
+// — surfaced that a user-supplied answer was being tagged `accumulator`, which
+// would have rendered "Based on the bills you've uploaded" for something the
+// user typed. Right verdict, lying label.
+const userAnswered = computeCostShareV2({
+  ...knownAccBill(null),
+  overrides: { deductibleMet: false } as unknown as ComputeCostShareV2Args["overrides"],
+});
+check(
+  "user answered → `confident` (they told us; we assumed nothing)",
+  userAnswered.verdict === "confident",
+  `got ${userAnswered.verdict}`,
+);
+check(
+  "user answered → tagged user_override, NOT accumulator",
+  userAnswered.assumptions.some((a) => a.field === "deductible_met" && a.reason === "user_override"),
+  JSON.stringify(userAnswered.assumptions.map((a) => `${a.field}/${a.reason}`)),
+);
+check(
+  "a user answer is not outstanding input",
+  pendingAssumptionFields(
+    [asum("deductible_met", { reason: "user_override" })],
+    { deductibleMet: false } as Parameters<typeof pendingAssumptionFields>[1],
+  ).size === 0,
+);
+check(
+  "unanswered with no tally stays `correct` (genuinely assumed)",
+  computeCostShareV2(knownAccBill(null)).verdict === "correct",
+);
+
+const total = 30;
 console.log(`\n${total} assertions — ${total - failures} passed, ${failures} failed`);
 if (failures > 0) {
   console.error("✗ s291-plan-honesty fixture RED");
