@@ -6,10 +6,10 @@ cluster: "benefits"
 order: "2"
 target_query: "how to read an EOB"
 published: "2026-07-27"
-last_updated: "2026-07-27"
+last_updated: "2026-07-28"
 ---
 
-An EOB (explanation of benefits) is not a bill. It's your insurer's math for one claim. It shows what the provider charged, the discount your plan negotiated, what the plan paid, and what's left for you to pay (your share). Read those lines in order, then match every medical bill (meaning the bill the provider of your medical care sends) against its EOB (what your insurance covers) before you pay a dollar.
+An EOB (explanation of benefits) is not a bill. It's your insurer's math for one claim. It shows what the provider charged, the discount your plan negotiated, what the plan paid, and what's left for you to pay (your share). Read those lines in order, then match every medical bill (the bill your provider sends you) against its EOB (your insurer's math for that same claim) before you pay a dollar.
 
 ## Why an EOB is not a bill
 
@@ -17,14 +17,14 @@ Every time a provider sends a medical bill to your insurer, the insurer processe
 
 This distinction can be very powerful. The bill tells you what the provider wants. The EOB tells you what your plan says you owe. When they don't match, one of them is wrong - and you need to find out which before any money moves.
 
-What this means practically is... you already receive the tools you need to audit every claim. Your insurer sends it to you for every claim.
+What this means practically is... you already receive the tool you need to audit every claim. Your insurer sends one with every claim.
 
 ## What does each line of an EOB mean?
 
 Labels vary by insurer; the five stops don't. In order:
 
 1. **Provider billed** (or "amount charged") - the provider's list price (usually an inflated higher price). Treat it as a sticker price, not the real one.
-2. **Network discount** (or "plan discount," "adjustments") - These are the discounted rates negotiated between the provider and your insurance network. Essentially, your insurance plan has more negotiating power than you do, so they get a discount.
+2. **Network discount** (or "plan discount," "adjustments") - These are the discounted rates negotiated between the provider and your insurance network. Essentially, your insurance plan has more negotiating power than you do, so it gets a discount.
 3. **Allowed amount** - the real price: what your insurer and the provider agreed this service costs. Every number after this is just a split of the allowed amount.
 4. **Plan paid** - your insurer's share of that split.
 5. **Your responsibility** (or "member responsibility," "you may owe") - your share, itemized as deductible (what you pay before the plan shares costs), copay (a flat fee), and coinsurance (your percentage of the allowed amount). Those three terms have their own guide.
@@ -94,7 +94,7 @@ Keep every EOB. Download the PDF into a folder by year - it costs nothing and ta
 
 EOBs report the insurer's processing. Their processing can be wrong. Two patterns to check on every EOB:
 
-- **Deductible applied after you've already met it.** Compare the EOB's deductible line to your plan's accumulator and to your own stack of EOBs (and your calculated deductible) for the year.
+- **Deductible applied after you've already met it.** Compare the EOB's deductible line to the running deductible total in your plan portal and to your own stack of EOBs for the year.
 - **In-network care processed as out-of-network.** Wrong network status changes your share dramatically. If you verified the provider before the visit, the claim may simply have been keyed wrong.
 
 The fix starts with a call, not a fight:
@@ -105,7 +105,7 @@ If reprocessing doesn't happen, put it in writing as a formal appeal - the appea
 
 ## The fastest free way to do all of this
 
-Every check in this guide you can run yourself - that's why we wrote it down. **[Candid](https://www.candidclaim.com/?utm_campaign=how-to-read-an-eob)** takes all that work and runs it automatically, for free. Upload your plan documents and your bills and it matches every bill to its EOB, confirms the totals agree, sorts any mismatch into the same three buckets you just learned, and keeps the running math honest against your deductible and out-of-pocket maximum. You decide what to dispute; it drafts the letter when you do.
+Every check in this guide you can run yourself - that's why we wrote it down. **[Candid](https://www.candidclaim.com/?utm_campaign=how-to-read-an-eob)** takes all that work and runs it automatically, for free. Upload your plan documents and your bills. It matches every bill to its EOB, confirms the totals agree, sorts any mismatch into the same three buckets you just learned about, and keeps the running math honest against your deductible and out-of-pocket maximum. You decide what to dispute; it drafts the letter when you do.
 
 *Candid is our tool - this guide is complete without it. It just turns an afternoon of fine print into a few minutes.*
 

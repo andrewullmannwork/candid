@@ -6,10 +6,10 @@ cluster: "benefits"
 order: "1"
 target_query: "what does my health insurance cover"
 published: "2026-07-27"
-last_updated: "2026-07-27"
+last_updated: "2026-07-28"
 ---
 
-Your health insurance covers exactly what your plan documents say it covers - nothing more, nothing less. Four documents hold the full answer: the Summary of Benefits and Coverage (SBC), the plan contract (often EOC), the drug formulary, and the provider directory. Here's how to read them in minutes, and how to verify coverage before every appointment.
+Your health insurance covers exactly what your plan documents say it covers - nothing more, nothing less. Four documents hold the full answer: the Summary of Benefits and Coverage (SBC), the plan contract (often called the Evidence of Coverage, or EOC), the drug formulary, and the provider directory. Here's how to read them in minutes, and how to verify coverage before every appointment.
 
 ## The honest answer: your plan is a contract
 
@@ -73,7 +73,7 @@ The reference number is the point of the call. If the claim is later processed d
 
 ## Coverage and network are different questions - check both
 
-"Covered" answers whether your plan pays for a type of care. "In-network" answers whether the plan has a negotiated price with this particular provider. You need a yes to both, every time because a covered service from an out-of-network provider can still produce a painful bill.
+"Covered" answers whether your plan pays for a type of care. "In-network" answers whether the plan has a negotiated price with this particular provider. You need a yes to both, every time, because a covered service from an out-of-network provider can still produce a painful bill.
 
 For anything at a hospital or surgery center, check the facility and the people separately. The building can be in-network while someone treating you inside it isn't. Directories go stale, so confirm twice: search the directory using your network's exact name, then ask the provider's office, "Are you in-network with my specific plan?" - and name the plan, not just the insurer. If possible, have the provider send you confirmation in writing. 
 
