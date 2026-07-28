@@ -86,7 +86,19 @@ interface CostShareBannerProps {
    * pinned bill look broken. `label` null = we have no plan for that period, the
    * honest zero-match state: we ask rather than silently borrowing a plan.
    */
-  planIdentity?: { label: string | null; year: number | null; onChange: () => void } | null;
+  planIdentity?: {
+    label: string | null;
+    year: number | null;
+    /**
+     * S291 (Andrew) — the pinned plan's OWN year, when it differs from the
+     * bill's care year. Both are real facts from real documents (care date off
+     * the bill, plan year off the plan), so a disagreement isn't noise — it
+     * means we have no plan for the year this care happened and are checking
+     * the bill against the wrong one.
+     */
+    planYearMismatch: number | null;
+    onChange: () => void;
+  } | null;
   /**
    * The user has tried to finish this step (any override persisted, or the
    * services below confirmed). Only then do unanswered rows turn amber —
@@ -537,7 +549,7 @@ export function CostShareBanner({
 
             {planIdentity && (
               <Row
-                flagged={planIdentity.label == null && flagUnanswered}
+                flagged={(planIdentity.label == null || planIdentity.planYearMismatch != null) && flagUnanswered}
                 icon={DocIcon}
                 label="Plan we checked against"
                 control={
@@ -550,9 +562,11 @@ export function CostShareBanner({
                   </button>
                 }
               >
-                {planIdentity.label
-                  ? `We checked this bill against ${planIdentity.label}. Change it if you were on a different plan${planIdentity.year ? ` in ${planIdentity.year}` : ""}.`
-                  : `We don't have a plan on file for${planIdentity.year ? ` ${planIdentity.year}` : " when this care happened"}. Pick the plan you were on so we can check this bill properly.`}
+                {planIdentity.label == null
+                  ? `We don't have a plan on file for${planIdentity.year ? ` ${planIdentity.year}` : " when this care happened"}. Pick the plan you were on so we can check this bill properly.`
+                  : planIdentity.planYearMismatch != null
+                    ? `This bill is from ${planIdentity.year}, but we checked it against your ${planIdentity.planYearMismatch} plan. Coverage changes year to year — add your ${planIdentity.year} plan for an accurate check.`
+                    : `We checked this bill against ${planIdentity.label}. Change it if you were on a different plan${planIdentity.year ? ` in ${planIdentity.year}` : ""}.`}
               </Row>
             )}
 

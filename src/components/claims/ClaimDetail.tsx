@@ -1059,6 +1059,15 @@ export function ClaimDetail({
   const planIdentityLabel = pinnedPlan
     ? [pinnedPlan.planName, pinnedPlan.insurerName].filter(Boolean).join(" — ") || null
     : null;
+  // S291 — the pinned plan's own year vs the year the care happened. Both are
+  // facts off real documents; disagreeing means the bill is being checked
+  // against a plan from the wrong year, which is a prompt, not a data error.
+  const planYearMismatch =
+    pinnedPlan?.planYear != null &&
+    claimServiceYear != null &&
+    pinnedPlan.planYear !== claimServiceYear
+      ? pinnedPlan.planYear
+      : null;
 
   // The line the banner's verdict-specific CTAs act on (matching line, else first).
   const bannerTargetLineId = (() => {
@@ -1559,6 +1568,7 @@ export function ClaimDetail({
                     ? {
                         label: planIdentityLabel,
                         year: claimServiceYear,
+                        planYearMismatch,
                         onChange: () => setRepinOpen(true),
                       }
                     : null
@@ -1698,6 +1708,7 @@ export function ClaimDetail({
                     ? {
                         label: planIdentityLabel,
                         year: claimServiceYear,
+                        planYearMismatch,
                         onChange: () => setRepinOpen(true),
                       }
                     : null
