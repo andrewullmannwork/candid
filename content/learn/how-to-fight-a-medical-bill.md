@@ -6,11 +6,8 @@ cluster: "claim"
 order: "1"
 target_query: "how to fight a medical bill"
 published: "2026-07-27"
-last_updated: "2026-07-27"
+last_updated: "2026-07-28"
 ---
-
-**TL;DR:** 
-To fight a medical bill: request an itemized bill, pull your explanation of benefits (EOB). This is your insurer's statement of what you actually owe. Compare your EOB and the medical bill line by line, then dispute errors in writing with the billing department and ask for an account hold. Escalate to the hospital's patient advocate or your state regulators if needed.
 
 ## First, understand what a medical bill actually is
 
