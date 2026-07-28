@@ -2531,10 +2531,14 @@ export function ClaimDetail({
           sub="Call the billing office to verify the charge or send the appeal — many members do both."
           last
         >
+          {/* S290 (Andrew) — recover card spans the full container: sm:-ml-[43px]
+              cancels the rail body's indent so it runs from under the step badge
+              all the way across (matches the Quality-measures bar width); mb-4
+              restores breathing room (the `last` RailStep has no pb). */}
           {data.disputes.length > 0 ? (
             disputesListNode
           ) : (
-        <div className="flex flex-col gap-4 rounded-[18px] border border-blue-200 bg-gradient-to-br from-blue-50 to-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="mb-4 flex flex-col gap-4 rounded-[18px] border border-blue-200 bg-gradient-to-br from-blue-50 to-white px-6 py-5 sm:-ml-[43px] sm:flex-row sm:items-center sm:justify-between">
           <div className="max-w-[50ch] text-[13px] leading-[1.55] text-gray-600">
             <div className="mb-1.5 flex items-center gap-1.5 text-sm font-bold text-blue-900">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
