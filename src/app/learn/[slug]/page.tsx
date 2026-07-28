@@ -7,6 +7,7 @@ import rehypeSlug from "rehype-slug";
 import { getArticle, listArticles, type Article } from "@/lib/learn/articles";
 import { LearnFooter, LearnHeader } from "@/components/learn/LearnChrome";
 import { LearnVisit } from "@/components/learn/LearnVisit";
+import { ArticleFeedback } from "@/components/learn/ArticleFeedback";
 
 // Fully static: every published article is generated at build time and no
 // unknown slug renders at runtime (dynamicParams false → 404). Nothing here
@@ -160,6 +161,9 @@ export default async function LearnArticlePage({
               {article.body}
             </Markdown>
           </div>
+
+          {/* S290 — helpful? thumbs; anonymous-first, identity server-verified. */}
+          <ArticleFeedback slug={article.slug} />
         </article>
       </main>
 

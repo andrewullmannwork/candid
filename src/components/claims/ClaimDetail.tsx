@@ -941,6 +941,8 @@ export function ClaimDetail({
       serviceLabel: humanizeSlug(line!.service_slug) || line!.description || "this service",
       copay: pc.copay,
       coinsurancePercent: pc.coinsurance != null ? normalizeCoinsurancePct(pc.coinsurance) : null,
+      // S290 — lets the banner's Edit button target THIS line explicitly.
+      lineId: line!.id,
     };
   })();
 
@@ -1550,10 +1552,18 @@ export function ClaimDetail({
                 pendingKey={csOverridePending}
                 errorMsg={csOverrideError}
                 onShouldBeCovered={() => bannerTargetLineId && openCorrectionModal(bannerTargetLineId)}
-                onAddPlanDetails={() => {
-                  const line = bannerTargetLineId
-                    ? primaryLineItems.find((li) => li.id === bannerTargetLineId)
-                    : null;
+                onAddPlanDetails={(target) => {
+                  // S290 — honor the clicked chip: its lineId first, then a slug
+                  // lookup, then the legacy bannerTargetLineId fallback. Fixes the
+                  // answer landing under a DIFFERENT line's service.
+                  const line =
+                    (target?.lineId ? primaryLineItems.find((li) => li.id === target.lineId) : null) ??
+                    (target?.serviceSlug
+                      ? primaryLineItems.find((li) => li.service_slug === target.serviceSlug)
+                      : null) ??
+                    (bannerTargetLineId
+                      ? primaryLineItems.find((li) => li.id === bannerTargetLineId)
+                      : null);
                   if (line?.service_slug) setAddPlanDetailsLineId(line.id);
                   else if (bannerTargetLineId) openCorrectionModal(bannerTargetLineId);
                 }}
@@ -1616,6 +1626,45 @@ export function ClaimDetail({
           />
         </div>
       )}
+      {/* Cost-Share v2 (W2+W3) — the §5 verdict + assumptions card. One per bill.
+          S290 (Andrew E2E #6): moved ABOVE the line table, below the bill
+          header — the questions gate the math, so they come first. Carries the
+          verdict + Verified stamp itself, so it replaces the legacy
+          CleanBody/ReviewBody when the flag is ON; OFF → absent → today's UI. */}
+      {data.costShareBill && !isFlagged && (
+        <CostShareBanner
+          verdict={data.costShareBill.verdict}
+          assumptions={bannerAssumptions}
+          overrides={data.costShareOverrides ?? null}
+          recoverable={billTotals.potentialRecovery}
+          correctShare={billTotals.shouldOwe}
+          charged={billTotals.shouldOwe + billTotals.potentialRecovery}
+          fmtMoney={fmtMoney}
+          onOverride={submitCostShareOverride}
+          pendingKey={csOverridePending}
+          errorMsg={csOverrideError}
+          onShouldBeCovered={() => bannerTargetLineId && openCorrectionModal(bannerTargetLineId)}
+          onAddPlanDetails={(target) => {
+            // S290 — honor the clicked chip: its lineId first, then a slug
+            // lookup, then the legacy bannerTargetLineId fallback. Fixes the
+            // answer landing under a DIFFERENT line's service.
+            const line =
+              (target?.lineId ? primaryLineItems.find((li) => li.id === target.lineId) : null) ??
+              (target?.serviceSlug
+                ? primaryLineItems.find((li) => li.service_slug === target.serviceSlug)
+                : null) ??
+              (bannerTargetLineId
+                ? primaryLineItems.find((li) => li.id === bannerTargetLineId)
+                : null);
+            if (line?.service_slug) setAddPlanDetailsLineId(line.id);
+            else if (bannerTargetLineId) openCorrectionModal(bannerTargetLineId);
+          }}
+          editableServiceCost={bannerEditableCost}
+          onUploadEob={() => router.push("/upload?type=eob")}
+          onBack={onBack}
+        />
+      )}
+
       {/* Step-3 body wrapper — indents the line-items table into the rail on
           flagged bills; a no-op pair of divs otherwise. */}
       <div className={isFlagged ? "relative pb-[30px]" : undefined}>
@@ -2514,36 +2563,6 @@ export function ClaimDetail({
         </RailStep>
       )}
 
-      {/* Cost-Share v2 (W2+W3) — the §5 verdict + assumptions card. One per bill,
-          below the line table (mockup placement). Carries the verdict + Verified
-          stamp itself, so it replaces the legacy CleanBody/ReviewBody when the
-          flag is ON; OFF → absent → today's UI. */}
-      {data.costShareBill && !isFlagged && (
-        <CostShareBanner
-          verdict={data.costShareBill.verdict}
-          assumptions={bannerAssumptions}
-          overrides={data.costShareOverrides ?? null}
-          recoverable={billTotals.potentialRecovery}
-          correctShare={billTotals.shouldOwe}
-          charged={billTotals.shouldOwe + billTotals.potentialRecovery}
-          fmtMoney={fmtMoney}
-          onOverride={submitCostShareOverride}
-          pendingKey={csOverridePending}
-          errorMsg={csOverrideError}
-          onShouldBeCovered={() => bannerTargetLineId && openCorrectionModal(bannerTargetLineId)}
-          onAddPlanDetails={() => {
-            const line = bannerTargetLineId
-              ? primaryLineItems.find((li) => li.id === bannerTargetLineId)
-              : null;
-            if (line?.service_slug) setAddPlanDetailsLineId(line.id);
-            else if (bannerTargetLineId) openCorrectionModal(bannerTargetLineId);
-          }}
-          editableServiceCost={bannerEditableCost}
-          onUploadEob={() => router.push("/upload?type=eob")}
-          onBack={onBack}
-        />
-      )}
-
       {billState === "needs_review" && !data.costShareBill && (() => {
         // Synthesize a "Specific blockers" list from line-item state so the
         // user sees what specifically needs their input. Mirrors design's
@@ -2660,7 +2679,9 @@ export function ClaimDetail({
               CTA, and this also kills the transient "Draft" flash during a
               billState-recompute refetch. */}
           {data.disputes.length === 0 && (
+            <div className="mt-4">
             <BulkDisputeButton
+              size="xl"
               claimId={claimId}
               claim={claim}
               primaryLineItems={primaryLineItems}
@@ -2670,6 +2691,7 @@ export function ClaimDetail({
               onGenerated={(result) => router.push(disputeUrlForResult(result))}
               existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
             />
+            </div>
           )}
         </>
       ) : data.disputes.length === 0 ? (
@@ -2677,7 +2699,9 @@ export function ClaimDetail({
         // For clean state it self-suppresses when there's nothing to dispute. Also
         // suppressed once ANY dispute exists — the Disputes card below is the single
         // CTA (kills the transient "Draft" flash during a billState-recompute refetch).
+        <div className="mt-4">
         <BulkDisputeButton
+          size="xl"
           claimId={claimId}
           claim={claim}
           primaryLineItems={primaryLineItems}
@@ -2687,6 +2711,7 @@ export function ClaimDetail({
           onGenerated={(result) => router.push(disputeUrlForResult(result))}
           existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
         />
+        </div>
       ) : null)}
 
       {/* S139 — BundleSuggestion: peer bills in the same claim_group_id at the
@@ -3561,6 +3586,7 @@ function BulkDisputeButton({
   getAuthToken,
   onGenerated,
   existingDisputeId,
+  size = "md",
 }: {
   claimId: string;
   claim: Record<string, unknown>;
@@ -3570,6 +3596,10 @@ function BulkDisputeButton({
   getAuthToken: () => Promise<string | null>;
   onGenerated: (result: { disputeId?: string | null; deduplicated?: boolean }) => void;
   existingDisputeId?: string | null;
+  /** S290 (Andrew E2E #11) — "xl" renders the bottom-of-bill CTA as a
+   *  full-width primary action (onboarding Done-button idiom); default "md"
+   *  keeps the inline rail/footer chrome untouched. */
+  size?: "md" | "xl";
 }) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
@@ -3898,7 +3928,11 @@ function BulkDisputeButton({
         type="button"
         onClick={handleClick}
         disabled={loading}
-        className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-[9px] text-[13px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
+        className={
+          size === "xl"
+            ? "flex w-full items-center justify-center gap-2 rounded-[14px] bg-blue-600 px-6 py-3.5 text-[15px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
+            : "inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-[9px] text-[13px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
+        }
       >
         {buttonLabel}
         {!loading && (

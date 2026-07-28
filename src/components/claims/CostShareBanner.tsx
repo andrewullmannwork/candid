@@ -53,12 +53,15 @@ interface CostShareBannerProps {
   pendingKey: string | null;
   errorMsg: string | null;
   onShouldBeCovered: () => void;
-  onAddPlanDetails: () => void;
+  /** S290 — carries WHICH chip was clicked so the modal preselects that
+   *  service (the old zero-arg form always targeted bannerTargetLineId,
+   *  which mis-saved the answer under a different line's service). */
+  onAddPlanDetails: (target?: { lineId?: string | null; serviceSlug?: string | null }) => void;
   /** S263 — the user's OWN entered cost-share for the disputed service
    *  (plan_covered_services.source='manual'). Present → a persistent "Plan cost ·
    *  $X · Edit" row so they can correct their own mistake. Null when unknown (the
    *  Add-details gap) or plan-doc-parsed (authoritative → read-only). */
-  editableServiceCost?: { serviceLabel: string; copay: number | null; coinsurancePercent: number | null } | null;
+  editableServiceCost?: { serviceLabel: string; copay: number | null; coinsurancePercent: number | null; lineId?: string | null } | null;
   onUploadEob: () => void;
   onBack: () => void;
   /** Surface 3 (clarity redesign) — "assumptions" renders ONLY the editable
@@ -376,7 +379,7 @@ export function CostShareBanner({
                 icon={DocIcon}
                 label="Plan cost"
                 control={
-                  <button type="button" onClick={onAddPlanDetails} className="rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-[13px] font-medium text-blue-700 hover:bg-blue-50">Add details</button>
+                  <button type="button" onClick={() => onAddPlanDetails({ lineId: chip.lineId, serviceSlug: chip.serviceSlug })} className="rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-[13px] font-medium text-blue-700 hover:bg-blue-50">Add details</button>
                 }
               >
                 We don&apos;t have your plan&apos;s cost for {chip.serviceLabel} yet, so this is a conservative estimate.
@@ -388,7 +391,7 @@ export function CostShareBanner({
                 icon={DocIcon}
                 label="Plan cost"
                 control={
-                  <button type="button" onClick={onAddPlanDetails} className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50">Edit</button>
+                  <button type="button" onClick={() => onAddPlanDetails({ lineId: editableServiceCost.lineId ?? null })} className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50">Edit</button>
                 }
               >
                 You told us your plan&apos;s cost for {editableServiceCost.serviceLabel} is{" "}
@@ -445,7 +448,9 @@ export function CostShareBanner({
             )}
             {(verdict === "insufficient" || hasServiceCostGap) && (
               <>
-                <button type="button" onClick={onAddPlanDetails} className="rounded-lg border border-blue-300 bg-white px-3.5 py-1.5 text-[13px] font-semibold text-blue-700 hover:bg-blue-50">Add plan details</button>
+                {/* Footer catch-all (no specific chip) → first unresolved
+                    service-cost chip's target, else the legacy fallback. */}
+                <button type="button" onClick={() => onAddPlanDetails(serviceCostChips[0] ? { lineId: serviceCostChips[0].lineId, serviceSlug: serviceCostChips[0].serviceSlug } : undefined)} className="rounded-lg border border-blue-300 bg-white px-3.5 py-1.5 text-[13px] font-semibold text-blue-700 hover:bg-blue-50">Add plan details</button>
                 <button type="button" onClick={onUploadEob} className="rounded-lg border border-blue-300 bg-white px-3.5 py-1.5 text-[13px] font-semibold text-blue-700 hover:bg-blue-50">Upload EOB</button>
               </>
             )}

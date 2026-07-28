@@ -682,25 +682,22 @@ export async function GET(
       provenance: { citationSource: "claim_header" },
     };
   } else if (anyLinePerLineCiteGradeMissing) {
-    // S140 — recompute claim-level refund/forgive from CLAIM HEADER values
-    // (exact, no pro-rate drift). shouldOwe stays as the per-line sum since
-    // each line's shouldOwe is computed from plan coverage rules on raw
-    // billed (independent of patient_paid sparsity).
-    const claimLevelShouldOwe = lineSummedRecovery.shouldOwe;
-    const headerPatientPaid = effectiveTotals.patientPaid;
-    const headerPatientResp = effectiveTotals.patientResponsibility;
-    const effectiveBurden = Math.max(headerPatientPaid, headerPatientResp);
-    const potentialRecovery = Math.max(0, effectiveBurden - claimLevelShouldOwe);
-    const refundComponent = Math.max(0, headerPatientPaid - claimLevelShouldOwe);
-    const forgivenessComponent = Math.max(0, potentialRecovery - refundComponent);
+    // S140 — synthesized (pro-rated) per-line values → stamp claim_header
+    // citation provenance so dispute-strength gating stays honest.
+    //
+    // S290 — the ARITHMETIC is the per-line sum, no longer a claim-header
+    // netting. The old recompute did `max(0, header_paid − Σ shouldOwe)`,
+    // which let ONE unknown-cost line's CONSERVATIVE full-allowed shouldOwe
+    // (an upper bound, not evidence the patient owes it) swallow every other
+    // line's real refund — the S290 E2E defect: rows showed +$97.96 of
+    // line-level refunds while the banner read $0.00. Pro-rated per-line
+    // patient_paid sums exactly to the header total by construction, so the
+    // per-line sum keeps the "exact math" property; each line's refund is
+    // max(0, paid_i − shouldOwe_i), and a conservative unknown on line A can
+    // never absorb a known overpayment on line B. Rows, banner, and the
+    // claims-LIST chip now agree by construction (one spine).
     claimRecovery = {
-      billed: claimTotalBilled,
-      alreadyPaid: Math.max(0, claimTotalBilled - headerPatientResp),
-      stillOutstanding: Math.max(0, headerPatientResp - headerPatientPaid),
-      shouldOwe: claimLevelShouldOwe,
-      potentialRecovery,
-      refundComponent,
-      forgivenessComponent,
+      ...lineSummedRecovery,
       provenance: { citationSource: "claim_header" },
     };
   } else {
