@@ -269,6 +269,19 @@ export function resolvePerLineInsuranceAdjusted(args: {
  * dollar amount >= 0, or null when unset/invalid (→ caller no-ops and the parsed values
  * stand). Zero is a valid, meaningful override ("I paid nothing" → suppresses a refund).
  */
+/**
+ * S291 — when the user last confirmed this bill's service list ("All services
+ * look right"). ISO timestamp in `claims.metadata.servicesConfirmedAt`, or null
+ * if never confirmed. Sibling of the patient-paid override: same JSONB-first
+ * convention (Rule #9), same read-it-back-from-the-server discipline, so the
+ * guided-rail step isn't local state that evaporates on reload.
+ */
+export function readServicesConfirmedAt(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  const v = (metadata as Record<string, unknown>).servicesConfirmedAt;
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+
 export function readUserPatientPaidOverride(metadata: unknown): number | null {
   if (!metadata || typeof metadata !== "object") return null;
   const v = (metadata as Record<string, unknown>).userPatientPaid;

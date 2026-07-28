@@ -38,6 +38,16 @@ interface AddPlanDetailsModalProps {
    *  already normalized to 0-100 (percent) by the caller. */
   initialCopay?: number | null;
   initialCoinsurancePercent?: number | null;
+  /**
+   * S291 (Andrew) — the saved "counts toward your deductible?" answer.
+   *
+   * Without it this modal always opened with NEITHER Yes nor No selected, even
+   * when the plan row held an explicit `false`. Re-opening the editor made a
+   * question the user had already answered look unanswered — and a Save with it
+   * untouched silently omitted the field, so the two surfaces disagreed about
+   * whether the bill was fully answered. `null` genuinely means unanswered.
+   */
+  initialDeductibleApplies?: boolean | null;
 }
 
 export function AddPlanDetailsModal({
@@ -51,6 +61,7 @@ export function AddPlanDetailsModal({
   onSaved,
   initialCopay,
   initialCoinsurancePercent,
+  initialDeductibleApplies = null,
 }: AddPlanDetailsModalProps) {
   const [shareType, setShareType] = useState<"copay" | "coinsurance">(
     initialCopay == null && initialCoinsurancePercent != null ? "coinsurance" : "copay",
@@ -62,7 +73,9 @@ export function AddPlanDetailsModal({
         ? String(initialCoinsurancePercent)
         : "",
   );
-  const [deductibleApplies, setDeductibleApplies] = useState<boolean | null>(null);
+  const [deductibleApplies, setDeductibleApplies] = useState<boolean | null>(
+    initialDeductibleApplies,
+  );
   const [showLimits, setShowLimits] = useState(false);
   const [deductible, setDeductible] = useState("");
   const [oop, setOop] = useState("");
@@ -223,8 +236,8 @@ export function AddPlanDetailsModal({
                     onClick={() => setShareType(t)}
                     className={`rounded-md px-3.5 py-1.5 text-xs font-semibold transition ${
                       shareType === t
-                        ? "bg-white text-blue-700 shadow-sm"
-                        : "text-gray-500 hover:text-gray-700"
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : "text-gray-600 hover:text-gray-900"
                     }`}
                   >
                     {t === "copay" ? "Copay $" : "Coinsurance %"}
@@ -260,8 +273,8 @@ export function AddPlanDetailsModal({
                       onClick={() => setDeductibleApplies(val)}
                       className={`rounded-md px-4 py-1.5 text-xs font-semibold transition ${
                         deductibleApplies === val
-                          ? "bg-white text-blue-700 shadow-sm"
-                          : "text-gray-500 hover:text-gray-700"
+                          ? "bg-blue-600 text-white shadow-sm"
+                          : "text-gray-600 hover:text-gray-900"
                       }`}
                     >
                       {label}

@@ -745,13 +745,13 @@ export async function POST(req: NextRequest) {
             if (existingProfile) existingProfile.active_insurance_plan_id = newPlan.id;
 
             // Create plan_covered_services rows for copays
-            await syncCopayServices(supabase, user.id, newPlan.id, { copay_primary, copay_specialist, copay_er, copay_urgent_care, copay_rx });
+            await syncCopayServices(supabase, user.id, newPlan.id, { copay_primary, copay_specialist, copay_er, copay_urgent_care, copay_rx }, isCardScan);
           }
         }
 
         // If updating existing plan, also sync copays (skip for card-after-doc — SBC copays are more complete)
         if (!isFormAfterDoc && existingProfile?.active_insurance_plan_id && (copay_primary !== undefined || copay_specialist !== undefined || copay_er !== undefined || copay_urgent_care !== undefined || copay_rx !== undefined)) {
-          await syncCopayServices(supabase, user.id, existingProfile.active_insurance_plan_id, { copay_primary, copay_specialist, copay_er, copay_urgent_care, copay_rx });
+          await syncCopayServices(supabase, user.id, existingProfile.active_insurance_plan_id, { copay_primary, copay_specialist, copay_er, copay_urgent_care, copay_rx }, isCardScan);
         }
 
         // ── Canonical plan matching for card scans ────────────────────────────
@@ -864,11 +864,20 @@ export async function POST(req: NextRequest) {
 
 type SupabaseClient = ReturnType<typeof createServerClient>;
 
+/**
+ * @param fromCardScan — provenance of these copays. A value the user TYPED is a
+ * first-party assertion (`manual` / confidence 1). A value OCR'd off a photo of
+ * an insurance card is a single weak source and must not masquerade as one
+ * (S291): it gets `insurance_card` / confidence 0.5, which is also what Data
+ * Rule 8 requires of any single-source coverage row. Card-derived $0 copays are
+ * dropped upstream in `/api/profile/scan-card` and never reach this function.
+ */
 async function syncCopayServices(
   supabase: SupabaseClient,
   userId: string,
   insurancePlanId: string,
-  copays: { copay_primary?: number; copay_specialist?: number; copay_er?: number; copay_urgent_care?: number; copay_rx?: number }
+  copays: { copay_primary?: number; copay_specialist?: number; copay_er?: number; copay_urgent_care?: number; copay_rx?: number },
+  fromCardScan = false,
 ) {
   const copayMap: Record<string, number | undefined> = {
     pcp_visit: copays.copay_primary,
@@ -908,8 +917,8 @@ async function syncCopayServices(
       place_of_service: "any",
       component: "global",
       in_copay: copay,
-      source: "manual",
-      confidence: 1,
+      source: fromCardScan ? "insurance_card" : "manual",
+      confidence: fromCardScan ? 0.5 : 1,
     });
   }
 

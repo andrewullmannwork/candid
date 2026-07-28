@@ -20,7 +20,8 @@ export type CostShareOverrideParsed =
       deductibleApplies: boolean | null;
     }
   | { field: "aca"; status: "confirmed" | "non_aca" }
-  | { field: "patient_paid"; amount: number | null };
+  | { field: "patient_paid"; amount: number | null }
+  | { field: "services_confirmed"; confirmed: boolean };
 
 export type ParseResult =
   | { ok: true; value: CostShareOverrideParsed }
@@ -121,6 +122,15 @@ export function parseCostShareOverride(body: unknown): ParseResult {
         ok: true,
         value: { field: "patient_paid", amount: Math.round(b.amount * 100) / 100 },
       };
+    }
+
+    case "services_confirmed": {
+      // S291 — "I checked this service list." Durable so the guided-rail step
+      // survives a reload; `false` clears it (the user reopened the question).
+      if (typeof b.confirmed !== "boolean") {
+        return { ok: false, error: "services_confirmed requires a boolean `confirmed`" };
+      }
+      return { ok: true, value: { field: "services_confirmed", confirmed: b.confirmed } };
     }
 
     default:

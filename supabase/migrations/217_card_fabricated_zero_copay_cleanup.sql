@@ -1,0 +1,111 @@
+-- =============================================================================
+-- ⛔ DO NOT APPLY — BLOCKED (S291, found during pre-apply verification)
+-- =============================================================================
+-- The guards below CANNOT distinguish a fabricated card copay from a copay the
+-- user deliberately entered. `/api/claims/[claimId]/cost-share-override` writes
+-- a user's "Add plan details" answer as:
+--     { source: 'manual', confidence: 1, covered: true, in_copay: <value> }
+-- with NO concept_id — byte-identical to the syncCopayServices fabrication on
+-- every one of the four guards. Worse, that write upserts on
+-- PLAN_COVERED_ONCONFLICT, so a user's answer OVERWRITES the fabricated row
+-- in place. There is no surviving signal separating the two, and
+-- plan_covered_services has no updated_at to fall back on.
+--
+-- Applying this would silently destroy real user answers — including Andrew's
+-- own deliberate "$0 copay, deductible doesn't apply" on claim 500243ba.
+--
+-- The residual risk this was meant to close (a fabricated $0 producing a FALSE
+-- recovery, which mig 216's gate lets through because `recovery` verdicts pass
+-- untouched) should be closed in CODE instead: degrade a `recovery` verdict
+-- that rests on an unverified-plan copay row to `insufficient`. No data
+-- mutation, nothing destroyed, reversible by flag.
+--
+-- Kept in-tree as the record of why the data fix was rejected. Superseded by
+-- the code-side fix. Do not run.
+-- =============================================================================
+--
+-- MIGRATION 217 — retire fabricated $0 card copays already in the data
+-- (S291 — Andrew E2E finding #3, data half)
+-- =============================================================================
+--
+-- WHAT WENT WRONG
+-- `/api/profile` → syncCopayServices wrote `plan_covered_services` rows with a
+-- hardcoded `source: 'manual', confidence: 1` regardless of provenance. When a
+-- card SCAN produced `copay_primary/specialist/er = 0` (a card that lists no
+-- copay, read as zero), those became rows asserting "$0 copay, covered" at FULL
+-- confidence, with no cost description and no concept_id.
+--
+-- The bill audit reads those as known cost-share: costShareUnknown goes false,
+-- shouldOweGrounded goes true, and the engine issues a confident verdict on a
+-- bill it never actually checked. It also renders to the user as "You told us
+-- your plan's cost for Primary Care Visit is $0 copay" — which the user never
+-- said. That is the silent false-negative Andrew caught on a $428 primary-care
+-- visit he had paid $292.41 for.
+--
+-- The WRITE path is fixed in code (this same PR): card-derived zero copays are
+-- dropped at the card-extraction boundary, and surviving card values are
+-- written `source: 'insurance_card', confidence: 0.5` per Data Rule 8. This
+-- migration retires the rows that were already written.
+--
+-- WHAT IT DOES
+-- For coverage rows on CARD-DERIVED plans that carry the fabrication signature
+-- — in_copay = 0, confidence = 1, source = 'manual', concept_id IS NULL —
+-- clear the false value and restate the provenance honestly:
+--     in_copay   → NULL   (unknown, not "zero")
+--     source     → 'insurance_card'
+--     confidence → 0.5
+--
+-- Downstream effect: costShareUnknown becomes true for those services, so the
+-- verdict degrades to `insufficient` — "we can't fully check this" plus the
+-- "Add plan details" prompt — instead of a fabricated all-clear. That is the
+-- honest state, and it is exactly what the user sees today after mig 216.
+--
+-- SCOPE GUARDS (all four required, so this cannot over-reach):
+--   * parent plan `source = 'insurance_card'` — a user who TYPED $0 on a manual
+--     plan made a real first-party assertion and is left alone.
+--   * `in_copay = 0` — a card-derived NON-zero copay is a real reading and is
+--     left alone (its confidence is corrected by the code path on next write).
+--   * `confidence = 1` — only the over-confident rows.
+--   * `concept_id IS NULL` — parser-produced rows always carry a concept
+--     (Data Rule 6), so this can only match the syncCopayServices writes.
+--
+-- BLAST RADIUS (DEV, measured 2026-07-28): 1 card-derived plan, 4 coverage
+-- rows, all 4 matching. 0 card rows with a non-zero copay (none at risk).
+-- Measure PROD with the COUNT query below BEFORE applying.
+--
+-- REVERSIBILITY: the ROW is preserved (never deleted) — but the prior in_copay
+-- is NOT restorable, because it was never real data. There is nothing of value
+-- to roll back to; re-running is safe and idempotent (the guards stop matching
+-- once applied).
+--
+-- APPLY (Studio): run the COUNT first, then the UPDATE, then the VERIFY.
+--
+-- COUNT FIRST (know the blast radius before you write):
+--   SELECT count(*) FROM plan_covered_services pcs
+--   JOIN insurance_plans ip ON ip.id = pcs.insurance_plan_id
+--   WHERE ip.source = 'insurance_card' AND pcs.in_copay = 0
+--     AND pcs.confidence = 1 AND pcs.source = 'manual' AND pcs.concept_id IS NULL;
+--
+-- VERIFY AFTER (must return 0):
+--   SELECT count(*) FROM plan_covered_services pcs
+--   JOIN insurance_plans ip ON ip.id = pcs.insurance_plan_id
+--   WHERE ip.source = 'insurance_card' AND pcs.in_copay = 0
+--     AND pcs.confidence = 1 AND pcs.source = 'manual' AND pcs.concept_id IS NULL;
+-- =============================================================================
+
+-- ⛔ STATEMENT DEACTIVATED — see the BLOCKED header. Left commented (not
+-- deleted) so the rejected approach stays on the record. This file's own
+-- "strip comments before pasting" convention would otherwise hand a live
+-- destructive UPDATE to Studio.
+--
+-- UPDATE plan_covered_services pcs
+-- SET in_copay   = NULL,
+--     source     = 'insurance_card',
+--     confidence = 0.5
+-- FROM insurance_plans ip
+-- WHERE ip.id = pcs.insurance_plan_id
+--   AND ip.source = 'insurance_card'
+--   AND pcs.in_copay = 0
+--   AND pcs.confidence = 1
+--   AND pcs.source = 'manual'
+--   AND pcs.concept_id IS NULL;

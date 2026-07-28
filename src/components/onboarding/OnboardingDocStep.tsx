@@ -14,6 +14,7 @@ import {
   type PlanAnalyzeChipSource,
 } from "@/lib/onboarding/simplified";
 import { UnifiedParseScreen, derivePhase, type ParseDoc } from "@/components/parsing/UnifiedParseScreen";
+import type { InsurerMismatchData, YearRolloverData } from "@/components/parsing/ParseTerminalView";
 import { HealthConsentModal } from "./HealthConsentModal";
 
 /** What step 2 stores in flow state. */
@@ -110,6 +111,17 @@ export function OnboardingDocStep({
     sourceCount: number;
     insurerName: string;
   } | null>(null);
+  // S291 (Andrew E2E) — plan-identity divergence. process-plan.ts parks a
+  // diverging parse at is_active=false and hands back insurerMismatch, EXPECTING
+  // a Keep/Switch prompt (this is the same contract /upload honours via
+  // ProcessingFlow → MismatchPrompt). Onboarding read only
+  // `pending_canonical_match` off that payload and fell through to
+  // settleProcessed, so a fully-parsed plan was silently stranded inactive while
+  // /plan kept rendering the card-derived one ("your insurance card alone
+  // doesn't reveal your specific coverage"). These two states restore the prompt.
+  const [mismatch, setMismatch] = useState<InsurerMismatchData | null>(null);
+  const [yearRollover, setYearRollover] = useState<YearRolloverData | null>(null);
+  const [resolving, setResolving] = useState(false);
   const finalDocTypeRef = useRef<DocType>("plan_document");
 
   const [showConsent, setShowConsent] = useState(false);
@@ -414,7 +426,11 @@ export function OnboardingDocStep({
           isStuck?: boolean;
           needsTrigger?: boolean;
           smartSkipOutcome?: string | null;
-          insurerMismatch?: { pending_canonical_match?: typeof canonicalMatch };
+          insurerMismatch?: InsurerMismatchData & {
+            mismatch?: boolean;
+            pending_canonical_match?: typeof canonicalMatch;
+            year_rollover?: YearRolloverData;
+          };
         };
         setParseStep(data.step ?? null);
         if (data.smartSkipOutcome) setParseSmartSkip(data.smartSkipOutcome);
@@ -424,6 +440,18 @@ export function OnboardingDocStep({
         if (data.status === "processed") {
           active = false;
           setProcessing(false);
+          // Order mirrors ProcessingFlow's predicate precedence: an identity
+          // divergence outranks a canonical suggestion, because the server has
+          // ALREADY parked the plan inactive for it — falling through here is
+          // what silently discarded the parse (S291).
+          if (data.insurerMismatch?.mismatch === true) {
+            setMismatch(data.insurerMismatch);
+            return;
+          }
+          if (data.insurerMismatch?.year_rollover) {
+            setYearRollover(data.insurerMismatch.year_rollover);
+            return;
+          }
           if (data.insurerMismatch?.pending_canonical_match) {
             setCanonicalMatch(data.insurerMismatch.pending_canonical_match);
             return;
@@ -517,6 +545,116 @@ export function OnboardingDocStep({
       }
       setCanonicalMatch(null);
       settleProcessed(fileName, documentId);
+    },
+    [user, documentId, fileName, settleProcessed],
+  );
+
+  /* ── Plan-identity divergence resolve (S291) ────────────────────────────── */
+
+  /**
+   * Keep/Switch for a diverging plan doc — the onboarding peer of /upload's
+   * onUseThisPlan / onKeepCurrentFromMismatch.
+   *
+   * "use": `activate_plan` is the single authoritative server action — it
+   * deactivates the old plan, activates the parsed one, repoints
+   * profiles.active_insurance_plan_id, clears the stale card-derived cost
+   * fields, and backfills insurer/plan_name/deductible from the new plan. We
+   * deliberately do NOT send /upload's preceding POST /api/profile: that write
+   * sets plan_name/insurer only for activate_plan to clear and re-derive them
+   * from the same plan row moments later. One write, one source of truth.
+   *
+   * "keep": logs the disambiguation (same telemetry /upload sends) and leaves
+   * the parsed plan inactive — now an explicit user choice rather than silent
+   * data loss. Either way the step settles and onboarding continues; the user
+   * is never trapped behind this prompt.
+   */
+  const resolveMismatch = useCallback(
+    async (choice: "use" | "keep") => {
+      setResolving(true);
+      try {
+        if (!user || !documentId) throw new Error("missing context");
+        const idToken = await user.firebaseUser.getIdToken();
+        // Disambiguation telemetry (S91 Option B) — fire-and-forget on BOTH
+        // branches. `choice` + `modalType` are required by the route; omitting
+        // them 400s.
+        void fetch("/api/documents/status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+          body: JSON.stringify({
+            documentId,
+            action: "record_disambiguation",
+            choice: choice === "use" ? "use_this_plan" : "keep_current",
+            modalType: "insurer_mismatch",
+          }),
+        }).catch(() => {
+          /* telemetry only — never blocks the user's choice */
+        });
+
+        if (choice === "use") {
+          const res = await fetch("/api/documents/status", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+            body: JSON.stringify({ documentId, action: "activate_plan" }),
+          });
+          const activated = (await res.json().catch(() => ({}))) as {
+            error?: string;
+            needsCardRescan?: boolean;
+          };
+          if (!res.ok) throw new Error(activated.error || "activate_plan failed");
+          // Cross-insurer switches clear the scanned card server-side; tell the
+          // flow so step 1 re-opens empty instead of showing a stale card.
+          if (activated.needsCardRescan === true) onCardCleared?.();
+        }
+      } catch (err) {
+        console.error("[onboarding-upload] mismatch resolve failed:", err);
+        setError("We couldn't update your plan. You can change it anytime from your dashboard.");
+      } finally {
+        setResolving(false);
+        setMismatch(null);
+        settleProcessed(fileName, documentId);
+      }
+    },
+    [user, documentId, fileName, settleProcessed, onCardCleared],
+  );
+
+  /**
+   * New-plan-year doc — the same stranding mechanism (process-plan parks the
+   * row inactive), so it needs the same prompt or it silently strands too.
+   */
+  const resolveYearRollover = useCallback(
+    async (choice: "switch" | "keep") => {
+      setResolving(true);
+      try {
+        if (!user || !documentId) throw new Error("missing context");
+        const idToken = await user.firebaseUser.getIdToken();
+        void fetch("/api/documents/status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+          body: JSON.stringify({
+            documentId,
+            action: "record_disambiguation",
+            choice: choice === "switch" ? "use_this_plan" : "keep_current",
+            modalType: "year_rollover",
+          }),
+        }).catch(() => {
+          /* telemetry only */
+        });
+        if (choice === "switch") {
+          const res = await fetch("/api/documents/status", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+            body: JSON.stringify({ documentId, action: "activate_plan" }),
+          });
+          if (!res.ok) throw new Error("activate_plan failed");
+        }
+      } catch (err) {
+        console.error("[onboarding-upload] year-rollover resolve failed:", err);
+        setError("We couldn't update your plan. You can change it anytime from your dashboard.");
+      } finally {
+        setResolving(false);
+        setYearRollover(null);
+        settleProcessed(fileName, documentId);
+      }
     },
     [user, documentId, fileName, settleProcessed],
   );
@@ -735,6 +873,82 @@ export function OnboardingDocStep({
                 {getDocTypeClass(opt) === "bill" ? "It’s a bill / EOB" : "It’s a plan document"}
               </button>
             ))}
+          </div>
+        </div>
+      ) : mismatch ? (
+        /* S291 — plan-identity divergence. Amber (a decision, not a
+           suggestion): the parsed plan is sitting inactive until the user
+           picks, so this must never be skippable-by-accident. */
+        <div className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+          <p className="text-sm font-semibold text-amber-900">
+            {mismatch.type === "plan_name"
+              ? "This document is for a different plan"
+              : "This document is from a different insurer"}
+          </p>
+          <p className="text-xs leading-relaxed text-amber-800">
+            We read your document, but it doesn’t match what’s on file. Pick the one that’s right
+            and we’ll use it for your bills.
+          </p>
+          <div className="rounded-xl border border-gray-200 bg-white p-3">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">
+              On file now
+            </p>
+            <p className="mt-0.5 text-sm font-medium text-gray-900">
+              {(mismatch.type === "plan_name"
+                ? mismatch.existingPlanName
+                : mismatch.existingInsurer) || "Your current plan"}
+            </p>
+          </div>
+          <div className="rounded-xl border border-blue-200 bg-blue-50 p-3">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-500">
+              In this document
+            </p>
+            <p className="mt-0.5 text-sm font-medium text-gray-900">
+              {(mismatch.type === "plan_name"
+                ? mismatch.parsedPlanName
+                : mismatch.parsedInsurer) || "The plan you just uploaded"}
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => void resolveMismatch("use")}
+              disabled={resolving}
+              className="flex-1 rounded-xl bg-blue-600 px-3 py-2.5 text-xs font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+            >
+              Use this plan
+            </button>
+            <button
+              onClick={() => void resolveMismatch("keep")}
+              disabled={resolving}
+              className="flex-1 rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-xs font-semibold text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
+            >
+              Keep my current plan
+            </button>
+          </div>
+        </div>
+      ) : yearRollover ? (
+        <div className="space-y-3 rounded-2xl border border-blue-200 bg-blue-50 p-4">
+          <p className="text-sm font-semibold text-blue-900">New plan year detected</p>
+          <p className="text-xs leading-relaxed text-blue-700">
+            This document is for your <strong>{yearRollover.newYear}</strong> plan. Your current
+            plan is from <strong>{yearRollover.currentYear}</strong>. Switching activates your{" "}
+            {yearRollover.newYear} benefits and resets your deductible progress.
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => void resolveYearRollover("switch")}
+              disabled={resolving}
+              className="flex-1 rounded-xl bg-blue-600 px-3 py-2.5 text-xs font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+            >
+              Switch to {yearRollover.newYear}
+            </button>
+            <button
+              onClick={() => void resolveYearRollover("keep")}
+              disabled={resolving}
+              className="flex-1 rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-xs font-semibold text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
+            >
+              Keep {yearRollover.currentYear}
+            </button>
           </div>
         </div>
       ) : canonicalMatch ? (

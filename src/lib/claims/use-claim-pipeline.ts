@@ -93,8 +93,21 @@ export interface PipelineClaimStats {
 
 /** Aggregate BILL counts by pipeline stage (bills, not line items). */
 export interface PipelineCounts {
-  /** Bills with a confirmed overcharge (drafted or not). */
+  /**
+   * Bills with a confirmed overcharge, drafted or not. This is the "how many
+   * overcharges did we find" total — drafting a letter does not un-find one —
+   * so /dashboard's DashDuo reads THIS.
+   */
   flagged: number;
+  /**
+   * Bills with a confirmed overcharge and NO letter yet — the actionable
+   * "needs a draft" bucket. S291 (Andrew): a bill must not sit in both
+   * "flagged for review" and "dispute ready to send"; once the letter exists
+   * the bill belongs to the letters bucket alone. /claim's next-step tile, its
+   * Flagged tab count, and that tab's list all read THIS so the three can
+   * never disagree.
+   */
+  needsDraft: number;
   /** Bills with a drafted (non-cancelled) dispute letter. */
   drafted: number;
   /** Bills awaiting user input (needs_review). */
@@ -311,10 +324,11 @@ export function useClaimPipeline(): ClaimPipeline {
   }, [claims, discrepancies, disputeData]);
 
   const counts = useMemo<PipelineCounts>(() => {
-    const c: PipelineCounts = { flagged: 0, drafted: 0, review: 0 };
+    const c: PipelineCounts = { flagged: 0, needsDraft: 0, drafted: 0, review: 0 };
     for (const claim of claims) {
       const s = billStates.get(claim.id);
       if (s === "overcharge_no_draft" || s === "overcharge_drafted") c.flagged += 1;
+      if (s === "overcharge_no_draft") c.needsDraft += 1;
       if (s === "overcharge_drafted") c.drafted += 1;
       if (s === "needs_review") c.review += 1;
     }

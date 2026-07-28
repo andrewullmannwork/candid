@@ -241,10 +241,11 @@ export default function CandidClaimPage() {
   const readyToDraftClaims = claims.filter(
     (c) => billStates.get(c.id) === "overcharge_no_draft",
   );
-  const flaggedClaims = claims.filter((c) => {
-    const s = billStates.get(c.id);
-    return s === "overcharge_drafted" || s === "overcharge_no_draft";
-  });
+  // S291 (Andrew): the Flagged tab is the SAME bucket as ready-to-draft — a bill
+  // whose letter is already drafted belongs to "Dispute ready to send" alone, not
+  // to both tiles at once. Aliased rather than re-filtered so the tab list can
+  // never drift from counts.needsDraft, which feeds the tile + the tab count.
+  const flaggedClaims = readyToDraftClaims;
   const reviewClaims = claims.filter((c) => billStates.get(c.id) === "needs_review");
 
   return (
@@ -275,7 +276,7 @@ export default function CandidClaimPage() {
             stats={{
               totalRecovery,
               billsCount: claims.length,
-              issuesCount: counts.flagged,
+              issuesCount: counts.needsDraft,
               disputesCount: counts.drafted,
               reviewCount: counts.review,
             }}
@@ -294,7 +295,7 @@ export default function CandidClaimPage() {
               </TabButton>
               <TabButton active={tab === "flagged"} onClick={() => setTab("flagged")}>
                 Flagged
-                <TabCount count={counts.flagged} active={tab === "flagged"} />
+                <TabCount count={counts.needsDraft} active={tab === "flagged"} />
               </TabButton>
               <TabButton active={tab === "input"} onClick={() => setTab("input")}>
                 Need your input

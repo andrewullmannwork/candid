@@ -149,6 +149,10 @@ export async function GET(
   // client keys off the presence of the per-line `costShareVerdict` field, so
   // there is NO client flag read.
   const costShareV2 = await isFeatureEnabled("recovery_cost_share_v2");
+  // S291 (mig 216) — see /api/claims. Resolved once per request; engine stays pure.
+  const csHonestyGate = costShareV2
+    ? await isFeatureEnabled("unverified_plan_honesty_gate_v1")
+    : false;
 
   // Fetch line items (SELECT * picks up the new mig 092 columns automatically).
   // B9 B1.2 — claim_line_items has no user_id; selectOwnedChildren verifies the
@@ -395,6 +399,7 @@ export async function GET(
     networkClaim: coerceNetworkTier(claim.network_status),
     coverageTier: csPlanParams?.coverageTier ?? null,
     planYear: csPlanYear,
+    unverifiedPlanHonestyGate: csHonestyGate,
   };
 
   // §18.10 Path 2 — per-line PREP inputs (coverage + secondary + ACA-fallback +

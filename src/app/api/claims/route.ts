@@ -225,6 +225,11 @@ export async function GET(req: NextRequest) {
   // a single selectOwnedChildren grouped by claim_id. ON adds ~(#plans +
   // #plan-years + 1) queries, never +3×N.
   const costShareV2 = await isFeatureEnabled("recovery_cost_share_v2");
+  // S291 (mig 216) — a bill audited against a card/manual plan may not read
+  // "correct". Resolved once per request; the engine itself stays pure.
+  const csHonestyGate = costShareV2
+    ? await isFeatureEnabled("unverified_plan_honesty_gate_v1")
+    : false;
   const csGate: CostShareGate = costShareV2
     ? await loadCostShareGate(supabase)
     : { minRecovery: 1 };
@@ -413,6 +418,7 @@ export async function GET(req: NextRequest) {
         networkClaim: coerceNetworkTier(claim.network_status),
         coverageTier: csPlanParams?.coverageTier ?? null,
         planYear: csPlanYear,
+        unverifiedPlanHonestyGate: csHonestyGate,
       };
 
       // §18.10 list-swap — per-line PREP inputs (coverage + secondary + ACA-fallback +

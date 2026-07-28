@@ -32,6 +32,7 @@ export function Row({
   control,
   children,
   below,
+  flagged = false,
 }: {
   icon: ReactNode;
   label: string;
@@ -40,9 +41,22 @@ export function Row({
   control: ReactNode;
   children?: ReactNode;
   below?: ReactNode;
+  /**
+   * S291 (Andrew) — this row still needs input and the user has tried to
+   * finish. Amber BORDER, never an amber fill: the row is being pointed at,
+   * not re-styled as a warning surface. Replaces the top divider (a boxed row
+   * inside a divider stack would otherwise read as double-ruled).
+   */
+  flagged?: boolean;
 }) {
   return (
-    <div className="border-t border-gray-100 py-3.5">
+    <div
+      className={
+        flagged
+          ? "my-1.5 rounded-xl border border-amber-400 px-3 py-3.5"
+          : "border-t border-gray-100 py-3.5"
+      }
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-3">
           <IconChip>{icon}</IconChip>

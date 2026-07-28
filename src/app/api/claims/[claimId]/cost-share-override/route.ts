@@ -116,6 +116,34 @@ export async function POST(
     return NextResponse.json({ ok: true, field: ov.field, applied: true });
   }
 
+  // ── "I checked the service list" (per-claim; plan-independent) ───────────
+  // S291 (Andrew) — the guided rail's "Verify the services" step was local
+  // useState, so clicking Confirmed looked like it registered and was gone on
+  // the next load. Same failure as the assumptions "Done" button: an action
+  // that reads as recorded but writes nothing.
+  //
+  // Durable in claims.metadata (Rule #9 JSONB-first) rather than a new column —
+  // one boolean doesn't earn a migration, and the spread-merge keeps sibling
+  // metadata (auditSummary, userPatientPaid, provider) intact. Stored as a
+  // TIMESTAMP, not a flag: "confirmed at 14:02" survives a later re-parse with
+  // its meaning intact, and lets a future re-audit decide whether the
+  // confirmation predates new findings.
+  if (ov.field === "services_confirmed") {
+    const baseMeta = (claim.metadata as Record<string, unknown> | null) ?? {};
+    const nextMeta: Record<string, unknown> = { ...baseMeta };
+    if (ov.confirmed) {
+      nextMeta.servicesConfirmedAt = new Date().toISOString();
+    } else {
+      delete nextMeta.servicesConfirmedAt;
+    }
+    const { error } = await userScoped(supabase, user.id)
+      .table("claims")
+      .update({ metadata: nextMeta })
+      .eq("id", claimId);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true, field: ov.field, applied: true });
+  }
+
   // Everything below is PLAN-scoped — needs the claim's plan + year.
   if (!planId) {
     return NextResponse.json(

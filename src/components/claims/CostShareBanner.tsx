@@ -38,7 +38,9 @@ export type CostShareOverrideRequest =
   | { field: "network"; value: "in_network" | "out_of_network" }
   | { field: "deductible_met"; met: boolean; asOf: string | null }
   | { field: "oop_met"; met: boolean; asOf: string | null }
-  | { field: "aca"; status: "confirmed" | "non_aca" };
+  | { field: "aca"; status: "confirmed" | "non_aca" }
+  /** S291 — "I checked the service list" (guided rail step 2), persisted to claims.metadata. */
+  | { field: "services_confirmed"; confirmed: boolean };
 
 interface CostShareBannerProps {
   verdict: CostShareVerdict;
@@ -49,6 +51,37 @@ interface CostShareBannerProps {
   charged: number;
   fmtMoney: (n: number) => string;
   onOverride: (body: CostShareOverrideRequest, pendingKey: string) => void;
+  /**
+   * S291 (Andrew) — "Done" LOCKS IN the values shown on screen.
+   *
+   * Every row here is displayed with a default already selected ("Not hit"),
+   * so a user who reads it, agrees, and clicks Done has genuinely answered —
+   * but until now that answer was never written: Done only set a local
+   * `dismissed` flag. The assumption stayed unresolved, the guided-rail badge
+   * stayed amber, and the engine kept treating a confirmed fact as a guess.
+   *
+   * Batched deliberately: the single-override path refetches the whole claim
+   * after each write, so firing three in parallel races three refetches. The
+   * parent writes them in order and refetches ONCE.
+   *
+   * Only rows with a real default are sent. `service_cost` and
+   * `aca_preventive` are never auto-confirmed — there is nothing to agree
+   * with, so they keep the step unfinished until answered explicitly.
+   */
+  onConfirmDefaults?: (bodies: CostShareOverrideRequest[]) => Promise<void>;
+  /**
+   * S291 (Andrew) — rows still missing real input, from
+   * `pendingAssumptionFields`. Passed in rather than recomputed so the amber
+   * borders here and the amber step badge on the rail read the SAME set.
+   */
+  pendingFields?: Set<string>;
+  /**
+   * The user has tried to finish this step (any override persisted, or the
+   * services below confirmed). Only then do unanswered rows turn amber —
+   * flagging them before the user has attempted anything would be nagging, not
+   * signalling.
+   */
+  flagUnanswered?: boolean;
   /** reserved — the toggle is optimistic so no per-chip spinner is shown. */
   pendingKey: string | null;
   errorMsg: string | null;
@@ -94,6 +127,56 @@ export function hasAssumptionRows(
     overrides?.oopMet != null ||
     !!editableServiceCost
   );
+}
+
+/**
+ * How many assumptions still await the user's first answer — PERSISTED truth
+ * only (no optimistic overlay, no local `dismissed` flag), so it survives a
+ * reload and can drive surfaces outside this component.
+ *
+ * S291 (Andrew): returns the SET of unanswered fields, not a count, because two
+ * surfaces read it and they must never disagree — the guided-rail step badge
+ * (green check when the set is empty, amber when it isn't) and the per-row
+ * amber borders that point at which rows are still missing input. One source,
+ * so a row can't be flagged while the badge says finished, or vice versa.
+ *
+ * Deliberately NOT a hardcoded list of "required" fields: membership is derived
+ * from what the engine actually emitted, so a new assumption type inherits both
+ * the badge and the border behaviour with no change here.
+ *
+ * Persisted truth only — no optimistic overlay, no local `dismissed` flag — so
+ * it survives a reload.
+ */
+export function pendingAssumptionFields(
+  assumptions: BannerAssumption[],
+  overrides: CostShareOverrides | null,
+): Set<string> {
+  const has = (field: string) => assumptions.some((a) => a.field === field);
+  const pending = new Set<string>();
+
+  // Toggle-backed rows: a default is on screen, so these are pending only until
+  // an override is saved — and "Done" saves them.
+  if (has("network") && overrides?.userNetworkOverride == null) pending.add("network");
+  if (has("deductible_met") && overrides?.deductibleMet == null) pending.add("deductible_met");
+  if (has("oop_met") && overrides?.oopMet == null) pending.add("oop_met");
+
+  // Input-backed rows: no default exists to accept, so "Done" can never clear
+  // them. They stay pending until the user supplies a real value.
+  //
+  // `deductible_applies` is the one that produced the false green (S291): the
+  // engine emits it as a correctable assumption whenever the plan row doesn't
+  // state whether the deductible applies (recovery-math.ts:704), and it's
+  // answered through the Add-plan-details modal — NOT a toggle. It was missing
+  // from the count entirely, so a bill with a known $30 copay but an unknown
+  // deductible-applies read as fully answered. Its presence in `assumptions`
+  // IS its pending state: once the plan row carries a non-null value the engine
+  // stops emitting it.
+  if (has("deductible_applies")) pending.add("deductible_applies");
+  if (has("aca_preventive")) pending.add("aca_preventive");
+  for (const a of assumptions) {
+    if (a.field === "service_cost") pending.add(`service_cost:${a.serviceSlug ?? a.serviceLabel}`);
+  }
+  return pending;
 }
 
 function fmtDate(iso: string | null): string {
@@ -170,6 +253,9 @@ export function CostShareBanner({
   charged,
   fmtMoney,
   onOverride,
+  onConfirmDefaults,
+  pendingFields,
+  flagUnanswered = false,
   errorMsg,
   onShouldBeCovered,
   onAddPlanDetails,
@@ -182,6 +268,7 @@ export function CostShareBanner({
   const [acaDismissed, setAcaDismissed] = useState(false);
   const [editAll, setEditAll] = useState(false); // "Update assumptions" re-opens resolved rows for re-edit
   const [dismissed, setDismissed] = useState(false); // "Done" collapses the section (accept as-is)
+  const [confirming, setConfirming] = useState(false); // Done is now a WRITE — guard the double-click
   const [optimistic, setOptimistic] = useState<Optimistic>({});
 
   // Reconcile during render (not in an effect — that trips set-state-in-effect):
@@ -233,6 +320,61 @@ export function CostShareBanner({
     setOptimistic((o) => ({ ...o, oopMet: met, oopMetAsOf: asOf }));
     onOverride({ field: "oop_met", met, asOf }, "oop");
   };
+  /**
+   * "Done" = the user has read these rows and accepts what they say. Persist
+   * every displayed-but-unanswered default as a real override, THEN collapse.
+   *
+   * Sends the value currently on screen (optimistic overlay first, saved value
+   * second, engine default last), so what gets written is exactly what the
+   * user was looking at. Skips rows already answered — re-confirming them
+   * would be a redundant write.
+   *
+   * `service_cost` / `aca_preventive` are excluded by construction: they have
+   * no default to accept, so they stay pending and keep the rail step amber.
+   * Collapse still happens even if the writes fail — the error surfaces via
+   * `errorMsg`, and trapping the user in an open card helps nobody.
+   */
+  /**
+   * Does this row still need input? Each row declares which pending field(s)
+   * it OWNS — the control the user would actually use to answer them — so the
+   * flag follows the data rather than a hardcoded "plan cost is the important
+   * one" rule. `deductible_applies` has no row of its own; it's answered
+   * through the plan-cost editor, so that row owns it.
+   */
+  const flagRow = (...fields: string[]) =>
+    flagUnanswered && fields.some((f) => pendingFields?.has(f) ?? false);
+
+  const confirmAndDismiss = async () => {
+    const bodies: CostShareOverrideRequest[] = [];
+    if (networkExists && !netResolved) {
+      bodies.push({ field: "network", value: oonDisplay ? "out_of_network" : "in_network" });
+    }
+    if (deductibleExists && !dedResolved) {
+      bodies.push({ field: "deductible_met", met: dedMetDisplay, asOf: dedAsOfDisplay });
+    }
+    if (oopExists && !oopResolved) {
+      bodies.push({ field: "oop_met", met: oopMetDisplay, asOf: oopAsOfDisplay });
+    }
+    if (bodies.length > 0 && onConfirmDefaults) {
+      setConfirming(true);
+      // Mirror the writes locally so the rows don't flicker back to unanswered
+      // between the save and the refetch.
+      setOptimistic((o) => ({
+        ...o,
+        network: networkExists && !netResolved ? (oonDisplay ? "out_of_network" : "in_network") : o.network,
+        deductibleMet: deductibleExists && !dedResolved ? dedMetDisplay : o.deductibleMet,
+        oopMet: oopExists && !oopResolved ? oopMetDisplay : o.oopMet,
+      }));
+      try {
+        await onConfirmDefaults(bodies);
+      } finally {
+        setConfirming(false);
+      }
+    }
+    setDismissed(true);
+    setEditAll(false);
+  };
+
   const answerAca = (status: "confirmed" | "non_aca") => {
     setAcaDismissed(true); // hide instantly; refetch removes the assumption
     onOverride({ field: "aca", status }, "aca");
@@ -307,7 +449,11 @@ export function CostShareBanner({
   };
   const headChipBg: Record<CostShareVerdict, string> = {
     correct: "bg-emerald-600 text-white", confident: "bg-emerald-600 text-white",
-    recovery: "bg-amber-500 text-white", not_covered: "bg-gray-400 text-white", insufficient: "bg-blue-500 text-white",
+    // S291 (Andrew): the "?" reads AMBER, not blue — "we can't fully check this"
+    // is an open question needing the user, not a neutral informational note.
+    // Deliberately amber-500/white to match `recovery`'s weight: both are "this
+    // needs you". The glyph still separates them ($ = money found, ? = unknown).
+    recovery: "bg-amber-500 text-white", not_covered: "bg-gray-400 text-white", insufficient: "bg-amber-500 text-white",
   };
 
   return (
@@ -366,16 +512,17 @@ export function CostShareBanner({
             )}
 
             {showDeductible && (
-              <MetRow kind="deductible" isMet={dedMetDisplay} metAsOf={dedAsOfDisplay} amount={deductibleA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectDeductible} />
+              <MetRow flagged={flagRow("deductible_met")} kind="deductible" isMet={dedMetDisplay} metAsOf={dedAsOfDisplay} amount={deductibleA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectDeductible} />
             )}
 
             {showOop && (
-              <MetRow kind="oop" isMet={oopMetDisplay} metAsOf={oopAsOfDisplay} amount={oopA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectOop} />
+              <MetRow flagged={flagRow("oop_met")} kind="oop" isMet={oopMetDisplay} metAsOf={oopAsOfDisplay} amount={oopA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectOop} />
             )}
 
             {serviceCostChips.map((chip, i) => (
               <Row
                 key={`service_cost-${chip.lineId}-${i}`}
+                flagged={flagRow(`service_cost:${chip.serviceSlug ?? chip.serviceLabel}`)}
                 icon={DocIcon}
                 label="Plan cost"
                 control={
@@ -388,6 +535,7 @@ export function CostShareBanner({
 
             {editableServiceCost && (
               <Row
+                flagged={flagRow("deductible_applies")}
                 icon={DocIcon}
                 label="Plan cost"
                 control={
@@ -421,7 +569,8 @@ export function CostShareBanner({
             <div className="mt-4 flex justify-end">
               <button
                 type="button"
-                onClick={() => { setDismissed(true); setEditAll(false); }}
+                onClick={() => void confirmAndDismiss()}
+                disabled={confirming}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 px-4 py-2 text-[13px] font-semibold text-white shadow-sm transition-all hover:bg-gray-800 active:scale-[0.98]"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M5 13l4 4L19 7" /></svg>
@@ -474,7 +623,7 @@ export function CostShareBanner({
 }
 
 function MetRow({
-  kind, isMet, metAsOf, amount, networkLabel, money, onSubmit,
+  kind, isMet, metAsOf, amount, networkLabel, money, onSubmit, flagged = false,
 }: {
   kind: "deductible" | "oop";
   isMet: boolean;
@@ -483,6 +632,8 @@ function MetRow({
   networkLabel: string;
   money: (n: number) => string;
   onSubmit: (met: boolean, asOf: string | null) => void;
+  /** S291 — still unanswered after the user tried to finish. */
+  flagged?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [dateValue, setDateValue] = useState("");
@@ -512,7 +663,13 @@ function MetRow({
   );
 
   return (
-    <div className="border-t border-gray-100 py-3.5">
+    <div
+      className={
+        flagged
+          ? "my-1.5 rounded-xl border border-amber-400 px-3 py-3.5"
+          : "border-t border-gray-100 py-3.5"
+      }
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-3">
           <IconChip>{DollarIcon}</IconChip>

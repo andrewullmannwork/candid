@@ -14,6 +14,7 @@ import { Banner } from "@/components/banner";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { DataSourceContextLine } from "@/components/data-source-context-line";
 import { ClaimHero, PlanHero, CompareBand } from "@/components/dashboard/DashDuo";
+import { StrandedPlanBanner } from "@/components/plan/StrandedPlanBanner";
 import { useClaimPipeline } from "@/lib/claims/use-claim-pipeline";
 import { useAccumulatorLedger } from "@/components/plan/use-accumulator-ledger";
 import {
@@ -337,6 +338,12 @@ export default function DashboardPage() {
       {meterOn && <ProfileMeter />}
 
       {/* ── Action-required banner stack (max 2 above dash-trio) ───── */}
+      {/* S291 — a parsed plan document sitting unused outranks the follow-up
+          nudge: every downstream number (benefits, bill audits, recovery) is
+          computed off the weaker card-derived plan until it's resolved.
+          Self-gates to nothing in the normal case. */}
+      <StrandedPlanBanner onDashboard />
+
       {/* Followup banner self-gates on dispute follow-up presence. */}
       <FollowupBanner />
 
