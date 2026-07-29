@@ -59,6 +59,7 @@ import {
   resolveLineCostShare,
   type ClaimCostSharePrep,
   type CostShareClaimCtx,
+  type ResolvedLineCostShare,
 } from "../claims/resolve-cost-share";
 import type {
   CostShareV2Result,
@@ -94,7 +95,93 @@ export function resolveDisputeShouldOwe(
 }
 
 const LINE_COLUMNS =
-  "id, line_number, service_slug, billed_amount, insurance_adjusted_amount, insurance_paid, patient_paid_amount, patient_owes, amount_still_outstanding, member_applied_to_deductible, member_coinsurance, member_copay, denied_amount, network_status, billing_code, billing_code_type";
+  // S292 (#7) — `description` + `metadata` added so loadDisputeLineResolutions can
+  // label the needs-panel row and read the coverage_user_confirmed/rejected marks.
+  // Additive: resolveLineCostShare reads named fields off the raw row; extras are inert.
+  "id, line_number, service_slug, description, billed_amount, insurance_adjusted_amount, insurance_paid, patient_paid_amount, patient_owes, amount_still_outstanding, member_applied_to_deductible, member_coinsurance, member_copay, denied_amount, network_status, billing_code, billing_code_type, metadata";
+
+/**
+ * S292 (#7) — ONE disputed line's cost-share resolution as the CLAIM PAGE resolves it,
+ * surfaced for the dispute needs-panel so it never re-asks a plan cost the platform
+ * already knows. Derived from the SAME shared recipe (`resolveLineCostShare`, strategy
+ * "detail") that /api/claims/[claimId] runs — NOT a parallel resolver (§18 hard ban on
+ * divergent cost-share paths). `coverage` is the resolved PlanCoverageInput (coinsurance
+ * already decimal 0-1); `coverageSource` attributes it (manual / sbc_parsed /
+ * secondary_match / aca_preventive / aca_zero_cost_share / …) so the panel can split
+ * human-entered (DONE) from parser-extracted (prefill + one aggregate confirm).
+ */
+export interface DisputeLineResolution {
+  lineItemId: string;
+  lineNumber: number | null;
+  serviceSlug: string | null;
+  description: string | null;
+  coverage: PlanCoverageInput | null;
+  coverageSource: string | null;
+  secondaryMatchedSlug: string | null;
+  secondaryConfidence: "confident" | "estimate" | null;
+  /** the user's existing per-line coverage verification marks (confirm-coverage endpoint). */
+  coverageUserConfirmed: boolean;
+  coverageUserRejected: boolean;
+  result: CostShareV2Result;
+}
+
+/**
+ * Load + resolve every disputed line's FULL claim-page cost-share resolution
+ * (prep + engine result), keyed by lineItemId. Same loader + recipe as
+ * `loadDisputeGroundBasis` — this is the panel-facing projection of it, not a
+ * second resolution path. Empty map when `recovery_cost_share_v2` is OFF
+ * (callers degrade to the legacy evidence-derived panel rows).
+ */
+export async function loadDisputeLineResolutions(
+  supabase: SupabaseClient,
+  userId: string,
+  claimIds: string[],
+): Promise<Map<string, DisputeLineResolution>> {
+  const out = new Map<string, DisputeLineResolution>();
+  if (!(await isFeatureEnabled("recovery_cost_share_v2"))) return out;
+
+  const secondaryEnabled = await isFeatureEnabled("secondary_coverage_v2");
+  const secondaryGate = secondaryEnabled
+    ? await loadSecondaryGate(supabase)
+    : DEFAULT_SECONDARY_GATE;
+  const gate = await loadCostShareGate(supabase);
+
+  for (const claimId of Array.from(new Set(claimIds))) {
+    const bundle = await loadClaimBasisBundle(
+      supabase,
+      userId,
+      claimId,
+      secondaryEnabled,
+      secondaryGate,
+      gate,
+    );
+    if (!bundle) continue;
+    for (const raw of bundle.rawLines) {
+      if (raw.id == null) continue;
+      const resolved: ResolvedLineCostShare = resolveLineCostShare(
+        raw,
+        bundle.prep,
+        bundle.ctx,
+        "detail",
+      );
+      const meta = (raw.metadata as Record<string, unknown> | null) ?? {};
+      out.set(String(raw.id), {
+        lineItemId: String(raw.id),
+        lineNumber: raw.line_number != null ? Number(raw.line_number) : null,
+        serviceSlug: (raw.service_slug as string | null) ?? null,
+        description: (raw.description as string | null) ?? null,
+        coverage: resolved.coverage,
+        coverageSource: resolved.coverageSource,
+        secondaryMatchedSlug: resolved.secondaryMatchedSlug,
+        secondaryConfidence: resolved.secondaryConfidence,
+        coverageUserConfirmed: meta.coverage_user_confirmed === true,
+        coverageUserRejected: meta.coverage_user_rejected === true,
+        result: resolved.result,
+      });
+    }
+  }
+  return out;
+}
 
 /**
  * Load + resolve the deductible-aware shouldOwe for every line of the dispute's

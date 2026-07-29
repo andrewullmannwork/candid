@@ -137,9 +137,14 @@ export function InsurerAddressCorrectionModal({
               {insurerName} appeals address
             </h2>
             <p className="mt-1 text-sm text-slate-600">
+              {/* S293 (#2) — the space between the name and "members" must be INSIDE
+                  the same JSX text line as the expression: a leading space on a
+                  wrapped line is trimmed at compile time, which rendered
+                  "…help other Montanamembers…" on the live modal. */}
               We&apos;ll use this mailing address on your letter right away. We also
-              submit it for review so, if it checks out, it can help other{" "}
-              {insurerName} members — your letter isn&apos;t held up by that review.
+              submit it for review so, if it checks out, it can help
+              other {insurerName} members — your letter isn&apos;t held up by that
+              review.
             </p>
           </div>
           <button
@@ -174,30 +179,38 @@ export function InsurerAddressCorrectionModal({
               className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </Field>
+          {/* S293 (#2) — City / State / ZIP are validated as required
+              (validateUsAddress), but only Address line 1 carried the red *.
+              Every validated-required field now carries the same marker + the
+              matching HTML required attr, so the form's asks and its rejections
+              agree. */}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field label="City">
+            <Field label="City" required>
               <input
                 type="text"
                 value={values.city}
                 onChange={(e) => setValues({ ...values, city: e.target.value })}
+                required
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
             </Field>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="State">
+              <Field label="State" required>
                 <input
                   type="text"
                   value={values.state}
                   onChange={(e) => setValues({ ...values, state: e.target.value.toUpperCase() })}
                   maxLength={2}
+                  required
                   className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </Field>
-              <Field label="ZIP">
+              <Field label="ZIP" required>
                 <input
                   type="text"
                   value={values.postalCode}
                   onChange={(e) => setValues({ ...values, postalCode: e.target.value })}
+                  required
                   className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </Field>

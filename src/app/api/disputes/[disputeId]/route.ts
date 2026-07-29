@@ -18,7 +18,14 @@ import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import { resolvePlanContext, type InsurerAddressOverride } from "@/lib/disputes/plan-context";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
-import { readUserPatientPaidOverride } from "@/lib/claims/effective-totals";
+import {
+  readUserPatientPaidOverride,
+  readServicesConfirmedAt,
+} from "@/lib/claims/effective-totals";
+import {
+  loadDisputeLineResolutions,
+  type DisputeLineResolution,
+} from "@/lib/disputes/dispute-ground-basis";
 import {
   computeDisputeStrength,
   loadStrengthConfig,
@@ -604,6 +611,16 @@ export async function GET(
   // (claims.metadata.userPatientPaid), read from the same claim load below; prefills the
   // Zone-1 amount-paid row. Null when unset.
   let userPatientPaid: number | null = null;
+  // S292 (#7) — when the user confirmed the service list on the CLAIM page
+  // ("All services look right" → claims.metadata.servicesConfirmedAt), the dispute
+  // page must not re-ask. Adopted below as the attestation-reviewed state when the
+  // dispute has no explicit answer of its own.
+  let servicesConfirmedAtClaim: string | null = null;
+  // S292 (#10) — the EOB issue date the parser already extracted (persisted to
+  // claims.metadata.eob_date at claim-persist time). Prefills the denial-date input
+  // (editable, parsed provenance) on the insurer track; null when no EOB parse
+  // carried a date → the question remains.
+  let denialDatePrefill: { date: string; source: "eob_parse" } | null = null;
   try {
     const [{ data: claim }, { data: userRow }] = await Promise.all([
       userScoped(supabase, user.id)
@@ -619,12 +636,52 @@ export async function GET(
     ]);
     const billName = (claim?.metadata as { patient?: { name?: string } } | undefined)?.patient?.name?.trim() ?? "";
     userPatientPaid = readUserPatientPaidOverride(claim?.metadata ?? null);
+    servicesConfirmedAtClaim = readServicesConfirmedAt(claim?.metadata ?? null);
+    const eobDateRaw = (claim?.metadata as { eob_date?: unknown } | undefined)?.eob_date;
+    if (typeof eobDateRaw === "string" && /^\d{4}-\d{2}-\d{2}$/.test(eobDateRaw)) {
+      denialDatePrefill = { date: eobDateRaw, source: "eob_parse" };
+    }
     accountName = resolveAccountName(userRow?.display_name, userRow?.email);
     if (billName && accountName && normalizeNameForCompare(billName) !== normalizeNameForCompare(accountName)) {
       patientNameMismatch = { billName, profileName: accountName };
     }
   } catch (err) {
     console.warn("[disputes/[disputeId]] patient-name compare failed (non-fatal):", err);
+  }
+
+  // S292 (#7) — effective attestation: the dispute's own explicit answer wins;
+  // otherwise the claim-page confirmation is adopted (same human act — the user
+  // reviewed the billed services and confirmed them performed; no letter clause
+  // derives from it, so fail-closed gating is untouched — String 2 still requires
+  // an explicit per-service attestation). Source lets the panel label provenance.
+  const effectiveServiceAttestationReviewed =
+    serviceAttestationReviewed || servicesConfirmedAtClaim != null;
+  const serviceAttestationSource: "dispute" | "claim_page" | null =
+    serviceAttestationReviewed
+      ? "dispute"
+      : servicesConfirmedAtClaim != null
+        ? "claim_page"
+        : null;
+
+  // S292 (#7) — per-line cost-share resolutions THROUGH THE CLAIM PAGE'S OWN
+  // recipe (loadDisputeLineResolutions → resolveLineCostShare, strategy "detail").
+  // Powers the needs-panel plan-cost rows so a cost the claim page already
+  // resolved (exact SBC row, secondary category match, ACA preventive) arrives
+  // prefilled instead of re-asked. Non-fatal: empty map (flag OFF / load failure)
+  // → the client falls back to today's evidence-derived rows.
+  let lineCostShare: DisputeLineResolution[] = [];
+  try {
+    if (dispute.claim_id) {
+      const resolutions = await loadDisputeLineResolutions(supabase, user.id, [
+        dispute.claim_id as string,
+      ]);
+      const wanted = new Set(allLineItemIds);
+      lineCostShare = Array.from(resolutions.values()).filter(
+        (r) => wanted.size === 0 || wanted.has(r.lineItemId),
+      );
+    }
+  } catch (err) {
+    console.warn("[disputes/[disputeId]] line cost-share resolution failed (non-fatal):", err);
   }
 
   // Block C2 — once the user confirms their identity (POST confirm-patient-identity),
@@ -767,7 +824,11 @@ export async function GET(
     // attestation gate does not re-prompt once answered) + the adopted attesting
     // name (the client defaults to the account name when null). Both hydrate the
     // ServiceAttestationFlow on load.
-    serviceAttestationReviewed,
+    // S292 (#7) — the claim-page "All services look right" confirmation
+    // (claims.metadata.servicesConfirmedAt) is adopted when the dispute has no
+    // explicit answer; serviceAttestationSource carries provenance for the panel.
+    serviceAttestationReviewed: effectiveServiceAttestationReviewed,
+    serviceAttestationSource,
     attestingAsName,
     // Block C2 item 1 — default attesting name (account holder; users.display_name).
     accountName,
@@ -833,6 +894,36 @@ export async function GET(
     // deadlineInputs prefill the denial-notice + collector-first-contact date inputs
     // (persisted via POST …/deadline-inputs).
     userPatientPaid,
+    // S292 (#7) — the claim page's own per-line cost-share resolution, projected for
+    // the needs-panel: `known` when the shared recipe resolved a concrete copay or
+    // coinsurance; `humanReviewed` when a human asserted or confirmed it (manual
+    // entry / confirm-coverage mark). coinsurance arrives DECIMAL from the engine →
+    // integer percent here (panel contract). Empty when recovery_cost_share_v2 OFF.
+    lineCostShare: lineCostShare.map((r) => {
+      const copay = r.coverage?.copay ?? null;
+      const coins = r.coverage?.coinsurance ?? null;
+      const known = r.coverage != null && (copay != null || coins != null);
+      const source = r.coverageSource ?? null;
+      const humanReviewed =
+        source === "manual" || source === "user_correction" || r.coverageUserConfirmed;
+      return {
+        lineItemId: r.lineItemId,
+        serviceSlug: r.serviceSlug,
+        description: r.description,
+        known,
+        copay,
+        coinsurancePercent: coins != null ? Math.round(coins * 100) : null,
+        source,
+        humanReviewed,
+        confirmed: r.coverageUserConfirmed,
+        rejected: r.coverageUserRejected,
+        secondaryMatchedSlug: r.secondaryMatchedSlug,
+      };
+    }),
+    // S292 (#10) — parsed EOB issue date (claims.metadata.eob_date) for the
+    // denial-date prefill: editable, parsed provenance, insurer track only
+    // (client-gated); null when no EOB/denial parse carried a date → question remains.
+    denialDatePrefill,
     deadlineInputs: {
       denialNoticeDate: ((): string | null => {
         const v = (dispute.metadata as Record<string, unknown> | null)?.denialNoticeDate;

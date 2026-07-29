@@ -132,9 +132,12 @@ export function EvidenceBlock({
       </p>
 
       {/* Block C2 — service-not-rendered attestation flow (§1c/§1f L2). v3-only;
-          read-only when onAttest is absent. */}
+          read-only when onAttest is absent.
+          S293 (#11) — carries the anchor for the needs-panel "Confirm the
+          services" jump: the scroll targets THIS small step, not the whole
+          evidence card, whose center-alignment pushed the question off-screen. */}
       {showExtendedSlots && onAttest ? (
-        <div className="mt-4">
+        <div className="mt-4" id="dispute-service-attestation">
           <ServiceAttestationFlow
             lines={attestationLines}
             attested={attestedLineItemIds ?? []}

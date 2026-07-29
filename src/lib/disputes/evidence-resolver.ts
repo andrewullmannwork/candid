@@ -88,6 +88,40 @@ function buildSecondaryPlanBenefit(sec: SecondaryCoverage, planYear: number | nu
   };
 }
 
+/**
+ * S293 (#6) — Case-2 benefit for a line EXACTLY covered on the claim's own plan
+ * (per the shared loadPlanCoverageMeta map — the same map the needs panel and
+ * claim page read) that Tier-1 nonetheless produced no benefit for (sub-floor
+ * plan_covered_services row, or the letter's plan context differs from the
+ * claim's plan). Built ONLY when the user recorded a human confirm on the line
+ * (coverage_user_confirmed — the S292 aggregate "Looks right" fan-out or the
+ * per-line Verify) — the human review is the precision oracle that upgrades a
+ * value the platform already showed the user into a citable Case-2 statement
+ * (bullet, never a verbatim quote: sbcExcerptVerified stays false).
+ */
+function buildExactMatchPlanBenefit(
+  exact: { covered: boolean | null; copay: number | null; coinsurance: number | null; source?: string | null },
+  planYear: number | null,
+): PlanBenefitDetail {
+  const coverageDecision = resolveCoverageForLine({ covered: exact.covered }, null);
+  return {
+    covered: coverageDecision.planStance !== "not_covered",
+    copay: exact.copay,
+    // loadPlanCoverageMeta's planCoverageFromRow already normalized to decimal 0-1.
+    coinsurance: exact.coinsurance,
+    source: exact.source ?? "plan",
+    confidence: 0.6,
+    citation: "",
+    sbcExcerpt: null,
+    sbcPage: null,
+    sbcExcerptVerified: false,
+    citationSource: null,
+    sourcedFrom: "user_exact",
+    sourcedFromYear: planYear,
+    coverageDecision,
+  };
+}
+
 const K_ANON_THRESHOLD = 5;
 const MIN_PLAN_BENEFIT_CONFIDENCE = 0.5;
 
@@ -634,6 +668,36 @@ export async function resolveEvidence(
       "user_exact",
       planYear,
     );
+    // S293 (#6 structural) — S290 canonical gap-fill PARITY for the letter path.
+    // A search-selected plan (source='catalog_match') keeps its coverage on
+    // canonical_plan_services, not user-scoped plan_covered_services. The card /
+    // needs-panel path (loadPlanCoverageMeta) has inherited that canonical
+    // coverage since S290, so the panel showed the user real cost-share values
+    // ("canonical_inherited") — but THIS path read only plan_covered_services,
+    // saw nothing, and the letter rendered zero clauses for services the user
+    // had just confirmed (observed on dispute 80a705ac / claim 146b1b9f:
+    // pcp_visit with a canonical $10 copay produced no SUPPORTING DETAIL).
+    // Mirror the S290 rule exactly: ZERO user-scoped coverage rows + a linked
+    // canonical → load the canonical coverage via the existing archive loader
+    // (same confidence floor + canonical-haiku cite-grade cascade), tagged
+    // 'canonical_archive' so the template renders the community-verified
+    // framing — never presented as the user's own parsed document. Plans with
+    // ANY user-scoped rows are untouched (docs stay authoritative, as in S290).
+    if (coverageByServiceSlug.size === 0 && planContext.plan.canonicalPlanId) {
+      const { data: pcsRows } = await loadCoverageRows(
+        supabase,
+        [planContext.plan.id],
+        { citeGrade: false },
+      );
+      if ((pcsRows ?? []).length === 0) {
+        coverageByServiceSlug = await loadCoverageFromCanonical(
+          supabase,
+          planContext.plan.canonicalPlanId,
+          "canonical_archive",
+          planYear,
+        );
+      }
+    }
   } else if (canonicalPlanIdForBillYear) {
     // Tier 2 — manual canonical bind.
     planYear =
@@ -873,7 +937,32 @@ export async function resolveEvidence(
         // ev.planBenefit (letter context) being null does NOT mean the service is
         // uncovered — it may be an exact match on the patient's actual plan. Don't
         // emit a secondary verify gate for an exactly-covered service.
-        if (planMeta?.coverageMap.has(slug)) continue;
+        //
+        // S293 (#6) — but "skip" must not mean "silence". This skip assumed
+        // Tier-1 had already cited the exact match; when it hadn't (sub-floor
+        // row / divergent plan context), a line the panel showed as covered —
+        // and the user then CONFIRMED — produced no clause at all. If the user
+        // recorded a confirm on such a line, adopt the exact-match value the
+        // panel showed as a Case-2 citation (same recipe as the confirmed-
+        // borrow branch below). Unconfirmed exact matches keep today's
+        // behavior: skipped, no gate.
+        const exact = planMeta?.coverageMap.get(slug);
+        if (exact) {
+          if (
+            meta.coverage_user_confirmed === true &&
+            exact.covered !== false &&
+            (exact.copay != null || exact.coinsurance != null)
+          ) {
+            const pb = buildExactMatchPlanBenefit(exact, planYear);
+            ev.planBenefit = pb;
+            const expected = computeExpectedPatientCost(pb, ev.billedAmount);
+            ev.expectedPatientCost = expected;
+            if (expected != null && ev.actualPatientCost != null) {
+              ev.discrepancyAmount = Math.max(0, ev.actualPatientCost - expected);
+            }
+          }
+          continue;
+        }
         const sec = resolveSecondaryCoverage(
           slug,
           bm,

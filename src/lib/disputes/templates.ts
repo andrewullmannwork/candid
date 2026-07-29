@@ -965,26 +965,44 @@ function renderEvidenceBlock(
   // for visual structure that reads professional as plain text. Pattern P-8
   // verbatim blockquote markers (`> *"..."*`) preserved — those are inside
   // user-facing copy and convey "verbatim quote" semantically.
-  const lines: string[] = [title.toUpperCase(), ""];
+  //
+  // S292 (#6 structural) — render the per-line clauses FIRST; the section header
+  // (and each multi-claim sub-header) is emitted ONLY when at least one clause
+  // rendered beneath it. Previously the title was pushed unconditionally before
+  // the loop, so a claim whose every line gated out (renderLineItemEvidence
+  // returns "" per line) produced a BARE header — "SUPPORTING DETAIL" followed
+  // immediately by the next section (observed on dispute 01af62e8, claim
+  // ecc74954). renderGated's fail-closed rule (map §5: missing value → omit the
+  // whole clause) now extends to the section header itself: a header with zero
+  // clauses is impossible by construction. CI: dispute-grounds/no-placeholder.ts.
+  const bodyLines: string[] = [];
   let itemNumber = 1;
 
   for (const claim of evidence.claims) {
+    const claimBlocks: string[] = [];
+    for (const li of claim.lineItemEvidence) {
+      const block = renderLineItemEvidence(li, itemNumber, planContext, opts);
+      if (block) {
+        claimBlocks.push(block, "");
+        itemNumber++;
+      }
+    }
+    if (claimBlocks.length === 0) continue; // no clauses → no sub-header either
     if (multiClaim) {
       const header = [
         claim.providerName ?? "Bill",
         claim.dateOfService ? formatDate(claim.dateOfService) : null,
       ].filter(Boolean).join(" · ");
-      lines.push(header, "");
+      bodyLines.push(header, "");
     }
-
-    for (const li of claim.lineItemEvidence) {
-      const block = renderLineItemEvidence(li, itemNumber, planContext, opts);
-      if (block) {
-        lines.push(block, "");
-        itemNumber++;
-      }
-    }
+    bodyLines.push(...claimBlocks);
   }
+
+  // Zero rendered clauses across every claim → omit the whole section (header
+  // included). Fail-closed: the letter reads as if the section doesn't exist.
+  if (bodyLines.length === 0) return "";
+
+  const lines: string[] = [title.toUpperCase(), "", ...bodyLines];
 
   // S109 PR #2 (Chunk A) — closing argument + escalation paragraph moved out
   // of renderEvidenceBlock and into insuranceAppealTemplate.body directly.
@@ -1125,7 +1143,14 @@ function renderLineItemEvidence(
         break;
       }
     }
-    bullets.push(`   - ${prefix}. Source: ${li.planBenefit.citation}.`);
+    // S293 (#6) — the Source suffix is fail-closed (map §5): a benefit adopted
+    // from a user-confirmed match (buildSecondaryPlanBenefit /
+    // buildExactMatchPlanBenefit) carries citation:"" — rendering "Source: ."
+    // would be a dangling fragment in a mailed letter. Omit the suffix entirely
+    // when there is no citation string; the bullet's plan statement stands alone.
+    bullets.push(
+      `   - ${prefix}.${li.planBenefit.citation ? ` Source: ${li.planBenefit.citation}.` : ""}`,
+    );
     // Verbatim plan excerpt (Case 1 only): render only when cite-grade verified
     // OR gating is off entirely (legacy behavior). Plain-text "Plan language:"
     // label — NOT Markdown. The letter body renders as plain text everywhere it
