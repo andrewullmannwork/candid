@@ -48,6 +48,8 @@
  * the weaker rules, which can still reach "uncertain" and ask.
  */
 
+import { insurerNamesSameFamily } from "@/lib/plan/insurer-match";
+
 /** Default canonical-link confidence required before a link may decide identity. */
 export const CANONICAL_IDENTITY_CONFIDENCE_FLOOR = 0.85;
 
@@ -81,6 +83,31 @@ export interface PlanIdentityResult {
   reason: PlanIdentityReason;
   /** One plain sentence for the prompt — why we're asking (or why we didn't). */
   evidence: string;
+}
+
+/**
+ * May an upload be merged into the plan it was compared against?
+ *
+ * ONLY `same`. Both `different` and `uncertain` hold the upload as an inactive
+ * plan and ask the user — preserve-on-uncertainty. `uncertain` deliberately
+ * behaves like `different` rather than like `same`: the cost of holding a plan
+ * that turns out to be the user's is one prompt, while the cost of merging one
+ * that isn't is a permanent blend of two policies that every later bill is then
+ * audited against. The two errors are not symmetric, so the tie does not go to
+ * the merge.
+ *
+ * Extracted as a named predicate rather than left inline at the call site so
+ * the policy is stateable, testable, and visible in one place — the decision
+ * that changes behaviour is worth more than one keystroke of indirection.
+ *
+ * Written as a TYPE PREDICATE so the policy also narrows: in the `else` branch
+ * the verdict is provably `"different" | "uncertain"`, which is what lets the
+ * held-plan payload declare that narrower type instead of re-asserting it. The
+ * compiler now enforces that a `same` verdict can never reach the "we held your
+ * upload and need you to confirm" path.
+ */
+export function identityAllowsMerge(verdict: PlanIdentityVerdict): verdict is "same" {
+  return verdict === "same";
 }
 
 /**
@@ -160,12 +187,24 @@ export function resolvePlanIdentity(
   // 4 — different carrier. Decided by catalog id when both sides resolved one
   // (alias-aware: 'UHC' and 'UnitedHealthcare Insurance Company' are one id);
   // by normalized name only when neither side did.
+  //
+  // S292 FAMILY GUARD (the "Blue Cross" incident): the insurer catalog carries
+  // one row per LEGAL ENTITY — dozens of Blue-Cross-family rows — and resolving
+  // a bare brand name against them is order-dependent luck (matchInsurerCatalog
+  // returns the first substring hit). So two ids that DIFFER do not prove two
+  // carriers when the NAMES family-match ("Blue Cross" ⊂ "Blue Cross Blue
+  // Shield of Wyoming"): fall through instead of asserting a carrier change.
+  // This guard is rule 4's ONLY — rule 5 below still fires for same-family
+  // different PLANS (both canonical links at/above the floor), and sides
+  // without names keep the id verdict (no evidence is not agreement).
   if (present(existing.insurerCatalogId) && present(parsed.insurerCatalogId) && !sameInsurerById) {
-    return {
-      verdict: "different",
-      reason: "insurer_differs",
-      evidence: `This document is from ${parsed.insurerName || "a different insurer"}, not ${existing.insurerName || "your current insurer"}.`,
-    };
+    if (!insurerNamesSameFamily(existing.insurerName, parsed.insurerName)) {
+      return {
+        verdict: "different",
+        reason: "insurer_differs",
+        evidence: `This document is from ${parsed.insurerName || "a different insurer"}, not ${existing.insurerName || "your current insurer"}.`,
+      };
+    }
   }
   if (
     !present(existing.insurerCatalogId) &&
@@ -220,4 +259,52 @@ export function resolvePlanIdentity(
     reason: "insufficient_signal",
     evidence: "We couldn't tell from the document whether this is the same plan.",
   };
+}
+
+/**
+ * S292 Bug 2 — ASSEMBLY, not switching (the upload path's peer of
+ * set-active-canonical's `assembly`).
+ *
+ * When the existing active plan is a mere STUB — a card scan or typed insurer
+ * (source manual/insurance_card) with no plan name — an uploaded document from
+ * the same carrier family is the OTHER HALF of one plan being built, not a
+ * competing plan. Asking "which insurer is right?" there is a false question:
+ * both strings describe the same carrier at different levels of legal
+ * precision, and answering it cost a real user her card display.
+ *
+ * Call-site policy, deliberately NOT inside `resolvePlanIdentity` — the
+ * resolver answers "same plan or different?" from identity facts alone; what
+ * to DO with a non-`same` verdict against a stub is the upload flow's call.
+ * Pure and synchronous so the fixture can walk the whole decision table.
+ *
+ * Returns true (merge into the stub — the identityTargetPlan path, receipt and
+ * all, no prompt) only when ALL hold:
+ *   - the resolver did NOT prove a different catalog plan (`canonical_differs`
+ *     outranks assembly: two links at/above the floor pointing at different
+ *     canonical plans are two policies whatever the stub looks like);
+ *   - the existing row is a stub: source manual/insurance_card AND no plan
+ *     name (a named plan is an established identity, not half a pair);
+ *   - the stub has no insurer at all, OR its insurer family-matches the
+ *     parsed document's ("Blue Cross" + "Blue Cross Blue Shield of Wyoming").
+ *     A genuine cross-family divergence (card says Cigna, document says
+ *     Aetna) still prompts — assembly never overrides a real carrier change.
+ */
+export const STUB_ASSEMBLY_REASON = "stub_assembly";
+
+export function shouldAssembleStub(params: {
+  reason: PlanIdentityReason;
+  existingSource: string | null;
+  existingPlanName: string | null;
+  existingInsurerName: string | null;
+  parsedInsurerName: string | null;
+}): boolean {
+  if (params.reason === "canonical_differs") return false;
+  const isStub =
+    (params.existingSource === "manual" || params.existingSource === "insurance_card") &&
+    !present(params.existingPlanName);
+  if (!isStub) return false;
+  return (
+    !present(params.existingInsurerName) ||
+    insurerNamesSameFamily(params.existingInsurerName, params.parsedInsurerName)
+  );
 }
