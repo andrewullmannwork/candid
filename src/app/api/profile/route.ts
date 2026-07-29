@@ -3,7 +3,7 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren, upsertOwnedChildren } from "@/lib/security/user-scoped";
 import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
-import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
+import { findOrCreateCanonicalPlan, canonicalLinkFields } from "@/lib/plan/canonical-match";
 import { setActiveCanonicalPlan } from "@/lib/plan/set-active-canonical";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { PLAN_COVERED_ONCONFLICT, type PlanCoverageRow } from "@/lib/plan/coverage-targeting";
@@ -785,9 +785,18 @@ export async function POST(req: NextRequest) {
 
                     if (!canonicalResult.needsConfirmation) {
                       // High confidence — auto-link
+                      // mig 218 — link + confidence as one pair. Written through
+                      // userScoped (not linkPlanToCanonical) so the B9 ownership
+                      // scoping on this route is preserved; canonicalLinkFields
+                      // keeps the payload identical to every other writer.
                       await userScoped(supabase, user.id)
                         .table("insurance_plans")
-                        .update({ canonical_plan_id: canonicalResult.canonicalPlanId })
+                        .update(
+                          canonicalLinkFields(
+                            canonicalResult.canonicalPlanId,
+                            canonicalResult.confidence,
+                          ),
+                        )
                         .eq("id", activePlanId);
                     } else {
                       // Medium confidence — return for user confirmation

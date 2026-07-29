@@ -21,13 +21,15 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { userScoped } from "@/lib/security/user-scoped";
-import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
+import { decideCardPreservation } from "@/lib/plan/insurer-match";
+import {
+  canonicalLinkFields,
+  USER_CONFIRMED_CANONICAL_CONFIDENCE,
+} from "@/lib/plan/canonical-match";
 
 export type SetActiveCanonicalResult =
   | { ok: true; insurancePlanId: string; cardCleared: boolean }
   | { ok: false; status: number; error: string };
-
-const normalizeInsurer = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
 export async function setActiveCanonicalPlan(
   supabase: SupabaseClient,
@@ -59,7 +61,12 @@ export async function setActiveCanonicalPlan(
   // (NOT a user-upload source) so the /plan card shows honest canonical-grade
   // provenance — never a false "User Verified" badge.
   const identity = {
-    canonical_plan_id: canonicalPlanId,
+    // mig 218 — link + confidence as one pair. This path is the user SEARCHING
+    // the catalog and picking this exact plan, so the link is user-asserted:
+    // the same human-oracle strength as confirming a pending match, and far
+    // stronger than any fuzzy score. Spread into insurance_plans only — the
+    // profiles payload below is separate and has no such column.
+    ...canonicalLinkFields(canonicalPlanId, USER_CONFIRMED_CANONICAL_CONFIDENCE),
     insurer_name: insurerName,
     plan_name: canonical.plan_name,
     plan_type: canonical.plan_type,
@@ -93,45 +100,19 @@ export async function setActiveCanonicalPlan(
       .maybeSingle();
     priorActiveSource = (priorActive?.source as string | null) ?? null;
   }
-  const assembly =
-    priorActiveSource === null || priorActiveSource === "manual" || priorActiveSource === "insurance_card";
-  // Insurer comparison (Andrew's false-negative contingency): substring alone
-  // false-negatives on abbreviations ("UHC" vs "UnitedHealthcare Insurance
-  // Company") and would wrongly clear a same-insurer card. Decide with the
-  // alias-aware insurer_catalog resolver: resolve the prior insurer string to
-  // a catalog id and compare against the canonical's exact insurer_id. Clear
-  // ONLY on a CONFIDENT mismatch — both sides resolved AND different, with no
-  // substring agreement. Any uncertainty (unresolvable prior string, canonical
-  // without an insurer link) PRESERVES: a possibly-stale card is visible and
-  // recoverable; a destroyed member ID is data loss.
-  const priorInsurerNorm = priorProfile?.insurer ? normalizeInsurer(priorProfile.insurer as string) : "";
-  const newInsurerNorm = insurerName ? normalizeInsurer(insurerName) : "";
-  const substringMatch =
-    !!priorInsurerNorm &&
-    !!newInsurerNorm &&
-    (priorInsurerNorm.includes(newInsurerNorm) || newInsurerNorm.includes(priorInsurerNorm));
-  let confidentMismatch = false;
-  if (!assembly && !substringMatch && priorProfile?.insurer) {
-    try {
-      const priorResolved = await matchInsurerCatalog(supabase, priorProfile.insurer as string);
-      if (priorResolved != null && canonical.insurer_id != null) {
-        // The catalog carries one row per legal entity (8 UnitedHealthcare
-        // rows: parent + state subsidiaries) — an alias resolves to the parent
-        // while a canonical may point at a sibling entity. Differing ids are a
-        // CONFIDENT mismatch only when the resolved row's NAME and the
-        // canonical's insurer name don't substring-match either (family test).
-        const resolvedNorm = normalizeInsurer(priorResolved.name);
-        const familyMatch =
-          !!resolvedNorm &&
-          !!newInsurerNorm &&
-          (resolvedNorm.includes(newInsurerNorm) || newInsurerNorm.includes(resolvedNorm));
-        confidentMismatch = priorResolved.id !== canonical.insurer_id && !familyMatch;
-      }
-    } catch {
-      confidentMismatch = false; // resolver failure → uncertainty → preserve
-    }
-  }
-  const preserveCard = assembly || !confidentMismatch;
+  // S292 — the assembly/family/confident-mismatch logic that lived inline here
+  // is now THE shared decision in insurer-match.ts (`decideCardPreservation`),
+  // because activate_plan (documents/status route) had shipped a contradictory
+  // copy (unconditional clear). Behavior-identical for this caller: the exact
+  // canonical insurer_id is passed through, so when it's null the helper's
+  // name-side fallback is inert too (insurerName is derived from insurer_id
+  // above and is null in exactly the same case).
+  const { preserveCard } = await decideCardPreservation(supabase, {
+    priorActiveSource,
+    priorInsurerName: (priorProfile?.insurer as string | null) ?? null,
+    newInsurerName: insurerName,
+    newInsurerCatalogId: (canonical.insurer_id as string | null) ?? null,
+  });
   const keptMemberId = preserveCard ? ((priorProfile?.member_id as string | null) ?? null) : null;
   const keptGroupNumber = preserveCard ? ((priorProfile?.group_number as string | null) ?? null) : null;
   const cardCleared =

@@ -32,7 +32,7 @@ import type { ProcessPlanResult } from "@/lib/plan/process-plan";
 import { buildEOCPlanIdentityProvenance } from "@/lib/parser/provenance-builders";
 import { canonicalizeSlug, loadServiceRenameMap, acceptCodeAnchoredSlug } from "@/lib/plan_doc/thesaurus-routing";
 import { EocCoverageAccumulator } from "@/lib/plan/coverage-targeting";
-import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
+import { findOrCreateCanonicalPlan, linkPlanToCanonical } from "@/lib/plan/canonical-match";
 import { matchInsurerWithPlanFallback } from "@/lib/plan/insurer-match";
 import { resolveServices, type ResolveLineInput } from "@/lib/claims/service-resolver";
 import { loadValidServiceSlugs, enqueueUnknownServiceSlug, loadServiceVocabularyBlock } from "@/lib/parser/service-catalog-slugs";
@@ -844,10 +844,13 @@ async function persistEOCPlanIdentity(
           insurancePlanId: newPlan.id,
         });
         if (!canonicalResult.needsConfirmation) {
-          await supabase
-            .from("insurance_plans")
-            .update({ canonical_plan_id: canonicalResult.canonicalPlanId })
-            .eq("id", newPlan.id);
+          // mig 218 — link + confidence written as one pair.
+          await linkPlanToCanonical(
+            supabase,
+            newPlan.id,
+            canonicalResult.canonicalPlanId,
+            canonicalResult.confidence,
+          );
         }
       }
     }
