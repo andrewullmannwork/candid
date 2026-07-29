@@ -57,8 +57,21 @@ export function ProfileMeter() {
 
   const strength = obStrength(slots);
   const noDocs = !slots.card && !slots.doc;
+  // S292 — EDIT modes, never signup replay. `/onboarding?step=N` (no mode)
+  // re-enters the full signup flow: a completed user clicking "Add card" was
+  // walked through STEP 1 OF 3 → 2 → 3 all over again, and finishing
+  // re-stamped completion. The meter lives on the dashboard — its rows are
+  // deferred EDITS, so they route like every other edit entry point (S288
+  // mode system: /plan "Change plan" → ?mode=plan; profile about-edits →
+  // ?mode=about). Edit modes never stamp completion and exit back here.
+  //   card/doc rows (steps 1-2) → ?mode=plan   (card + plan, one screen)
+  //   about rows   (step 3)     → ?mode=about  (the about-you step alone)
   const go = (step?: 1 | 2 | 3) =>
-    router.push(step ? `/onboarding?step=${step}` : "/onboarding");
+    router.push(
+      step === 3
+        ? "/onboarding?mode=about&from=/dashboard"
+        : "/onboarding?mode=plan&from=/dashboard",
+    );
 
   /* ── No coverage docs — loud amber callout ─────────────────────────────── */
   if (noDocs) {
