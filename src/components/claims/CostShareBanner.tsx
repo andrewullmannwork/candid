@@ -389,6 +389,32 @@ export function CostShareBanner({
 
   const networkA = assumptions.find((a) => a.field === "network");
   const deductibleA = assumptions.find((a) => a.field === "deductible_met");
+  /**
+   * S294 — the plan's OWN statement about deductible treatment (mig 219 /
+   * `reason: "plan_document"`). An ANSWERED row: it informs, it never joins the
+   * pending set, and it never blocks Done.
+   *
+   * Rendered only for the two `_free` cases, because those are the ones whose
+   * meaning is genuinely non-obvious — a "$0" that is only $0 after a $7,250
+   * deductible reads identically to a "$0" that is free outright, and that
+   * ambiguity is the whole S294 defect. When the plan charges a real
+   * copay/coinsurance the deductible row's own prose already says "you haven't
+   * met your $X deductible yet, so this applies to it", and a second sentence
+   * saying the same thing would be noise.
+   */
+  const planDeductibleTerm = (() => {
+    const a = assumptions.find(
+      (x) => x.field === "deductible_applies" && x.reason === "plan_document",
+    );
+    if (!a) return null;
+    if (a.assumed === "subject_free" && a.value != null) {
+      return `Your plan covers this at no charge — but only after your ${money(a.value)} deductible is met.`;
+    }
+    if (a.assumed === "exempt_free") {
+      return "Your plan covers this at no charge, and the deductible doesn't apply.";
+    }
+    return null;
+  })();
   const oopA = assumptions.find((a) => a.field === "oop_met");
   const acaA = assumptions.find((a) => a.field === "aca_preventive");
   const serviceCostChips = (() => {
@@ -693,6 +719,17 @@ export function CostShareBanner({
               </Row>
             )}
 
+            {/* S294 — the plan's own term, stated BEFORE the question it makes
+                relevant. Reading order is the point: the user learns the $0 is
+                conditional, then answers the one thing that resolves it. Not a
+                Row with a control — there is nothing here to change, only
+                something to know. */}
+            {planDeductibleTerm && (
+              <Row icon={DocIcon} label="Plan cost" control={null}>
+                {planDeductibleTerm}
+              </Row>
+            )}
+
             {showDeductible && (
               <MetRow flagged={flagRow("deductible_met")} source={deductibleA?.reason === "user_override" || dedResolved ? "user" : deductibleA?.reason === "accumulator" ? "accumulator" : null} kind="deductible" isMet={dedMetDisplay} metAsOf={dedAsOfDisplay} amount={deductibleA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectDeductible} />
             )}
@@ -887,12 +924,26 @@ function MetRow({
                 ? `You've ${verb} your ${networkLabel} ${nounBase} as of ${fmtDate(metAsOf)}.`
                 : `You haven't ${verb} your ${noun} yet, so this applies to it.`}
             </div>
-            {source && (
+            {source ? (
               <div className="mt-1 text-[12px] text-gray-500">
                 {source === "accumulator"
                   ? "Based on the bills you've uploaded — change it if you've had others."
                   : "You told us this."}
               </div>
+            ) : (
+              /* S294 — with no accumulator and no answer, the toggle above is
+                 showing a DEFAULT, not a fact. Say so. The row already
+                 attributes an accumulator- or user-sourced answer; staying
+                 silent in the one case where we are guessing was the gap, and
+                 it is the same silence that let a displayed default read as a
+                 confirmed value elsewhere (S291). Conservative direction: "not
+                 yet" makes the patient owe MORE, so it can never invent a
+                 refund — but it must still be legible as an assumption. */
+              !isMet && (
+                <div className="mt-1 text-[12px] text-gray-500">
+                  We&apos;re assuming not yet. Change it if you have.
+                </div>
+              )
             )}
           </div>
         </div>

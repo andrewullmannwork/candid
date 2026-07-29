@@ -515,7 +515,21 @@ export interface ComputeCostShareV2Args {
  *   accumulator   — our running tally of the user's bills said so
  *   user_override — the user told us directly
  */
-export const ANSWERED_REASONS: ReadonlySet<string> = new Set(["accumulator", "user_override"]);
+/**
+ * Reasons that mark an assumption row as ALREADY ANSWERED — it renders, sourced
+ * and visible, but never joins the pending set and never degrades the verdict.
+ *
+ * S294 adds `plan_document`: a value the plan itself states is not an
+ * assumption we need the user to resolve, but it is still something they need
+ * to SEE ("no charge — after your $7,250 deductible"). Answering-by-document is
+ * the same shape as answering-by-accumulator, so it uses the same mechanism
+ * rather than a parallel one.
+ */
+export const ANSWERED_REASONS: ReadonlySet<string> = new Set([
+  "accumulator",
+  "user_override",
+  "plan_document",
+]);
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const num = (n: number | null | undefined): number | null =>
@@ -727,6 +741,40 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
         value: null,
         correctable: true,
         reason: "no_plan_value",
+      });
+    } else {
+      // ── S294 — the plan STATES this, so SAY so ─────────────────────────────
+      // Pre-S294 a plan-stated value simply consumed itself: it was read, used,
+      // and never shown. The user saw "$0" with no hint that the $0 sits behind
+      // a $7,250 deductible — the single most decision-relevant fact on the
+      // bill. (Worse: for canonical-backed plans the column was never even
+      // SELECTed, so this branch could not be reached at all — see mig 219.)
+      //
+      // Emitted with an ANSWERED reason, which is the S291 mechanism for
+      // exactly this: the row renders, sourced and visible, WITHOUT joining the
+      // pending set (so it never blocks Done) and WITHOUT degrading the verdict
+      // to "correct". Nothing new is invented — a fact we already resolved
+      // simply stops being invisible.
+      //
+      // `assumed` distinguishes the four cases the copy needs, so the engine
+      // reports what it resolved and the banner owns the wording:
+      //   subject_free  — covered at no charge, but only after the deductible
+      //   subject       — cost-share applies, and only after the deductible
+      //   exempt_free   — covered at no charge, deductible does not apply
+      //   exempt        — cost-share applies, deductible does not apply
+      //
+      // NOT correctable: a plan document is authoritative here, matching the
+      // existing read-only treatment of plan-doc-parsed costs. A user who
+      // disagrees corrects the COST (which carries this field), not this row.
+      const free = copay === 0 || (copay == null && coinsurance === 0);
+      assumptions.push({
+        field: "deductible_applies",
+        assumed: `${dedApplies ? "subject" : "exempt"}${free ? "_free" : ""}`,
+        // The deductible dollar figure the copy needs; null when exempt (there
+        // is no deductible to name in that sentence).
+        value: dedApplies ? deductibleMax : null,
+        correctable: false,
+        reason: "plan_document",
       });
     }
 

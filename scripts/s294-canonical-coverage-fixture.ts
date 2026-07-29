@@ -28,6 +28,15 @@ import {
   type PlanCoverageMeta,
 } from "../src/lib/audit/coverage-loader";
 import { computeExpectedPatientCost, type PlanBenefitDetail } from "../src/lib/disputes/evidence-resolver";
+import {
+  computeCostShareV2,
+  ANSWERED_REASONS,
+  type PlanCostShareParams,
+} from "../src/lib/claims/recovery-math";
+import {
+  buildServiceCostShare,
+  EMPTY_PLAN_COST_SHARE_PARAMS,
+} from "../src/lib/claims/cost-share-loader";
 
 let pass = 0;
 const fails: string[] = [];
@@ -153,6 +162,58 @@ const meta = (rows: Array<{ slug: string; deductibleApplies?: boolean | null; co
     computeExpectedPatientCost({ ...base, copay: null, coinsurance: 0.2, deductibleApplies: false }, 100), 20,
   );
   check("5e not-covered still yields null", computeExpectedPatientCost({ ...base, covered: false }, 100) === null);
+}
+
+// ── 6. F3 — the plan's own term is SURFACED, and never blocks Done ───────────
+// Runs the real engine (the S292 lesson: a fixture asserting `correct||confident`
+// was structurally blind to a verdict flip; assert the actual emission).
+{
+  const NO_OVERRIDES = { deductibleMet: null, deductibleMetAsOf: null, oopMet: null, oopMetAsOf: null, userNetworkOverride: null };
+  const plan: PlanCostShareParams = {
+    ...EMPTY_PLAN_COST_SHARE_PARAMS,
+    inDeductibleIndividual: 7250, inOopMaxIndividual: 7250, coverageTier: "individual",
+  };
+  // Andrew's real 2024 bill: 99214 pcp_visit $330, plan says $0 AFTER deductible.
+  const run = (deductibleApplies: boolean | null) =>
+    computeCostShareV2({
+      line: { billed: 330, allowed: 330, insuranceAdjusted: 0, patientPaid: 0, patientResponsibility: 330 },
+      service: buildServiceCostShare({ covered: true, copay: 0, coinsurance: null, deductibleApplies }),
+      // No EOB on this bill — every insurer field genuinely unknown, which is
+      // what made the 2024 bill unresolvable in the first place.
+      insurer: { memberAppliedToDeductible: null, memberCoinsurance: null, memberCopay: null, deniedAmount: null, insurancePaid: null },
+      plan, accumulator: null, overrides: { ...NO_OVERRIDES },
+      networkLine: null, networkClaim: null, minRecovery: 1,
+    });
+
+  const stated = run(true);
+  const da = stated.assumptions.find((a) => a.field === "deductible_applies");
+  check("6a plan-stated deductible treatment IS emitted", da != null);
+  check("6a assumed=subject_free (covered at $0, behind the deductible)", da?.assumed === "subject_free", da?.assumed, "subject_free");
+  check("6a reason=plan_document", da?.reason === "plan_document", da?.reason, "plan_document");
+  check("6a carries the deductible figure the copy needs", da?.value === 7250, da?.value, 7250);
+  check("6a NOT correctable — the plan document is authoritative", da?.correctable === false, da?.correctable, false);
+  // THE dead-end: a plan-stated fact must never sit in the pending set, because
+  // Done cannot write it. ANSWERED_REASONS is what keeps it out.
+  check("6b plan_document is an ANSWERED reason (never blocks Done)", ANSWERED_REASONS.has("plan_document"));
+  check("6b every emitted deductible_applies row here is answered",
+    stated.assumptions.filter((a) => a.field === "deductible_applies").every((a) => ANSWERED_REASONS.has(a.reason)));
+
+  // Deductible-EXEMPT (preventive): no deductible figure to name, and the
+  // engine must not then ask whether the deductible is met.
+  const exempt = run(false);
+  const ex = exempt.assumptions.find((a) => a.field === "deductible_applies");
+  check("6c exempt_free emitted", ex?.assumed === "exempt_free", ex?.assumed, "exempt_free");
+  check("6c exempt carries no deductible figure", ex?.value === null, ex?.value, null);
+  check("6c exempt bill does not ask about the deductible",
+    !exempt.assumptions.some((a) => a.field === "deductible_met"),
+    exempt.assumptions.map((a) => a.field));
+
+  // Plan genuinely silent → pre-S294 behavior: inferred, correctable, and it
+  // DOES stay pending (there is a real question to answer).
+  const silent = run(null);
+  const si = silent.assumptions.find((a) => a.field === "deductible_applies");
+  check("6d silent plan still infers with reason=no_plan_value", si?.reason === "no_plan_value", si?.reason, "no_plan_value");
+  check("6d inferred row stays correctable + pending", si?.correctable === true && !ANSWERED_REASONS.has(si!.reason));
 }
 
 if (fails.length) {

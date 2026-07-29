@@ -76,6 +76,17 @@ jobs:
         # captured, and a second revert is a no-op.
         run: npx tsx scripts/s292-merge-receipt-fixture.ts
 
+      - name: Canonical coverage completeness (S294 / mig 219)
+        # The canonical read used to drop in_deductible_applies, so "No Charge
+        # AFTER deductible" reached the engine as a flat $0. Locks: the mapper
+        # carries the column, multi-variant slugs collapse deterministically
+        # (no Postgres heap order), canonical GAP-FILLS under user rows instead
+        # of replacing them, the metal-level ACA guess does NOT widen with
+        # gap-fill (S154 confirmed-only), the letter refuses to assert an
+        # expected cost it cannot ground, and a plan-stated term is surfaced as
+        # an ANSWERED row that never blocks Done.
+        run: npx tsx scripts/s294-canonical-coverage-fixture.ts
+
       - name: Type check
         run: npx tsc --noEmit
 
