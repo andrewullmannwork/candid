@@ -264,6 +264,84 @@ export function resolvePerLineInsuranceAdjusted(args: {
 }
 
 /**
+ * S292 (#4) — per-line "BILLED TO YOU" display value.
+ *
+ * The bill-table column previously led with the provider's charge; the number
+ * the patient actually cares about is what they were ASKED to pay after
+ * adjudication: billed − insurer's negotiated adjustment − insurer's payment.
+ * This resolver derives that per line by reusing the S140 per-line resolvers
+ * above (same proportional-split method the YOU PAID column uses via
+ * resolvePerLinePatientPaid — cite-grade raw per-line values when the sums
+ * reconcile with the claim header, header-prorated by billed share otherwise).
+ *
+ * DISPLAY ONLY — feeds no recovery/forgiveness/verdict math.
+ *
+ * HONESTY FALLBACK: when the bill has NO insurer adjustment/payment data at
+ * all (per-line AND header both empty → effective totals resolve to 0), the
+ * value is the gross charge and no "before insurance" sub-line renders. We
+ * never invent an adjustment. Likewise, inconsistent data (adjustment +
+ * payment exceeding the charge → negative) falls back to the gross with no
+ * sub-line rather than displaying a negative.
+ *
+ * NOTE: this is deliberately a SEPARATE fact from YOU PAID (actual money paid
+ * so far). On a fresh unpaid bill the two legitimately disagree — billed-to-you
+ * > 0 while you-paid is $0.00 — that gap is the point. Neither is derived from
+ * the other.
+ */
+export interface PerLineBilledToYou {
+  /** Main display value — what the patient was actually asked to pay on this line. */
+  value: number;
+  /** The provider's gross charge (raw billed_amount). */
+  gross: number;
+  /**
+   * Render the "$<gross> before insurance" sub-line? False when the bill has
+   * no insurer data, when the data is inconsistent (fallback to gross), or
+   * when the value equals the gross (sub-line would add nothing).
+   */
+  showBeforeInsurance: boolean;
+}
+
+export function resolvePerLineBilledToYou(args: {
+  lineBilled: number;
+  lineInsuranceAdjusted: number | null;
+  lineInsurancePaid: number | null;
+  claimTotalBilled: number;
+  effectiveTotals: EffectiveClaimTotals;
+}): PerLineBilledToYou {
+  const gross = args.lineBilled;
+  // Honesty fallback — no insurer adjustment/payment signal anywhere on the
+  // bill. Both effective totals resolving to 0 covers per-line-all-NULL AND
+  // header-NULL (decideField treats NULL header as per-line-sum = 0).
+  const hasInsurerData =
+    args.effectiveTotals.insuranceAdjusted > 0 ||
+    args.effectiveTotals.insurancePaid > 0;
+  if (!hasInsurerData) {
+    return { value: gross, gross, showBeforeInsurance: false };
+  }
+  const adjusted = resolvePerLineInsuranceAdjusted({
+    lineBilled: args.lineBilled,
+    lineInsuranceAdjusted: args.lineInsuranceAdjusted,
+    claimTotalBilled: args.claimTotalBilled,
+    effectiveClaimInsuranceAdjusted: args.effectiveTotals,
+  }).value;
+  const insurerPaid = resolvePerLineInsurancePaid({
+    lineBilled: args.lineBilled,
+    lineInsurancePaid: args.lineInsurancePaid,
+    claimTotalBilled: args.claimTotalBilled,
+    effectiveClaimInsurancePaid: args.effectiveTotals,
+  }).value;
+  const raw = Math.round((gross - adjusted - insurerPaid) * 100) / 100;
+  if (raw < 0) {
+    // Inconsistent data — adjustment + payment exceed the charge. Never show
+    // a negative; surface the gross with no sub-line.
+    return { value: gross, gross, showBeforeInsurance: false };
+  }
+  const value = raw === 0 ? 0 : raw; // normalize -0 from rounding
+  // Sub-line only when it adds information (insurer data moved the number).
+  return { value, gross, showBeforeInsurance: value !== gross };
+}
+
+/**
  * Dispute Letters v2 (Z1.1b) — read a user-confirmed claim-level amount-paid override
  * from claims.metadata (Rule #9 JSONB store; key `userPatientPaid`). Returns a finite
  * dollar amount >= 0, or null when unset/invalid (→ caller no-ops and the parsed values

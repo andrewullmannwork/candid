@@ -42,18 +42,53 @@ export function Row({
   children?: ReactNode;
   below?: ReactNode;
   /**
-   * S291 (Andrew) — this row still needs input and the user has tried to
-   * finish. Amber BORDER, never an amber fill: the row is being pointed at,
-   * not re-styled as a warning surface. Replaces the top divider (a boxed row
-   * inside a divider stack would otherwise read as double-ruled).
+   * S291/S292 (Andrew) — this row still needs input and the user has tried to
+   * finish, so it is pointed at with an amber FULL-BLEED TINT.
+   *
+   * ⚠ This reverses the original S291 rule ("amber border, never an amber fill")
+   * — Andrew's call at S292 after seeing both rendered. The concern behind that
+   * rule still stands and is met a different way: the tint is deliberately faint
+   * and carries no icon, heading or red/amber text, so the row still reads as
+   * highlighted rather than as a warning surface.
+   *
+   * GEOMETRY — a full-bleed band with NO rules of its own. `-mx-5` cancels the
+   * parent card's `px-5` so the tint runs the entire inner width of the card,
+   * and the matching `px-5` puts the content back on the same column as every
+   * other row, so the icon chips still line up. `first:-mt-1.5` / `last:-mb-4`
+   * cancel the parent's own top/bottom padding, so a band at either end reaches
+   * the card edge instead of floating in that padding with a strip of white
+   * between it and the card border.
+   *
+   * Three earlier attempts are worth not repeating. `px-3` alone shifted this
+   * row's icon and control ~13px inboard of its neighbours. `-mx-3 px-3` fixed
+   * that but left the box aligned to neither the card (9px short) nor the
+   * content column (12px past) — a rectangle floating between two grids. And a
+   * bordered box was, for its whole life, missing its TOP rule whenever it was
+   * the first row, because the parent's `[&>div:first-child]:border-t-0` (there
+   * to stop a plain first row's divider reading as a stray edge) stripped it —
+   * so it rendered as three sides of a box and no amount of width tuning could
+   * have fixed it.
+   *
+   * NO BORDERS AT ALL is what makes this robust rather than merely current: with
+   * nothing to be stripped, doubled, or left dangling at a card edge, the whole
+   * class of bug above is unreachable. The boundary is a colour change, which
+   * needs no alignment.
+   *
+   * `data-flagged` lets the parent suppress the `border-t` of whatever FOLLOWS a
+   * band. Without that, a band would end in a grey divider on its bottom edge
+   * and nothing on its top — an asymmetry that reads as a stray line. Both
+   * boundaries are now pure colour transitions, and consecutive flagged rows
+   * merge into one continuous tinted region, which is the honest reading: they
+   * are one block of unfinished work.
    */
   flagged?: boolean;
 }) {
   return (
     <div
+      data-flagged={flagged ? "true" : undefined}
       className={
         flagged
-          ? "my-1.5 rounded-xl border border-amber-400 px-3 py-3.5"
+          ? "-mx-5 bg-amber-50 px-5 py-3.5 first:-mt-1.5 last:-mb-4"
           : "border-t border-gray-100 py-3.5"
       }
     >

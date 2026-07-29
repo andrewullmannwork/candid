@@ -138,6 +138,16 @@ interface CostShareBannerProps {
    *  flagged-bill step rail carries the verdict in step 1, so step 2 embeds
    *  just this card. Default "full" is the standalone verdict card. */
   variant?: "full" | "assumptions";
+  /**
+   * S293 (#1) — the ACA block's dismissed state, LIFTED to the parent when
+   * provided so the ONE pending set (pendingAssumptionFields, which the step
+   * badge reads) can see it: "Not sure" used to hide the block via banner-local
+   * state while the badge kept counting the field — an amber badge above a band
+   * with nothing left to answer. Controlled when both props present; falls back
+   * to internal state for legacy callers.
+   */
+  acaDismissed?: boolean;
+  onAcaDismissedChange?: (dismissed: boolean) => void;
 }
 
 /**
@@ -186,6 +196,34 @@ export function hasAssumptionRows(
 export function pendingAssumptionFields(
   assumptions: BannerAssumption[],
   overrides: CostShareOverrides | null,
+  /**
+   * S292 — the plan-identity row's state, so its amber comes from THIS set like
+   * every other row's. It used to be flagged by its own independent condition
+   * (`label == null || planYearMismatch != null`) ANDed with `flagUnanswered`,
+   * which is `assumptionsEngaged` — durably true forever once any override is
+   * saved. So the row went amber and could never clear, while the step badge
+   * independently went green: the badge and the border reading two different
+   * sources, the exact split S291 set out to end.
+   */
+  planIdentity?: { label: string | null } | null,
+  /**
+   * S293 (#1) — the S292 rule, finished: amber ⟺ counted, and a field may
+   * count ONLY while the row that answers it is actually on screen. Two fields
+   * could previously count with no visible ask — `deductible_applies` (its
+   * owning row renders only for a manual-source cost, but the engine emits the
+   * assumption for parsed/canonical costs too) and `aca_preventive` (the "Not
+   * sure" button hid the block while the field kept counting). Both produced
+   * an amber badge above a band with nothing to answer — the observed
+   * "Done → amber though every visible row is Done-confirmable". Callers pass
+   * the real row visibility; absent (legacy/standalone callers, fixtures) the
+   * defaults preserve the S291 always-counted behavior.
+   */
+  visibility?: {
+    /** the editable plan-cost row (the row that OWNS deductible_applies) renders. */
+    deductibleAppliesRowVisible?: boolean;
+    /** the ACA question block renders (exists and not "Not sure"-dismissed). */
+    acaRowVisible?: boolean;
+  },
 ): Set<string> {
   const has = (field: string) => assumptions.some((a) => a.field === field);
   const pending = new Set<string>();
@@ -215,8 +253,21 @@ export function pendingAssumptionFields(
   // deductible-applies read as fully answered. Its presence in `assumptions`
   // IS its pending state: once the plan row carries a non-null value the engine
   // stops emitting it.
-  if (has("deductible_applies")) pending.add("deductible_applies");
-  if (has("aca_preventive")) pending.add("aca_preventive");
+  if (has("deductible_applies") && (visibility?.deductibleAppliesRowVisible ?? true)) {
+    pending.add("deductible_applies");
+  }
+  if (has("aca_preventive") && (visibility?.acaRowVisible ?? true)) {
+    pending.add("aca_preventive");
+  }
+
+  // Plan identity is OUTSTANDING only when there is no plan on file for the
+  // bill's year — then we genuinely cannot check it and need the user to pick
+  // or upload one. A WRONG-YEAR plan is not counted here: we did check the bill,
+  // the caveat is stated in the row's own sub-line, and it already carries its
+  // own step in "What you need to do" (S291). Counting it here too would hold
+  // this step open forever on a bill the engine considers fully answered —
+  // which is what produced a green badge sitting above an amber row.
+  if (planIdentity && planIdentity.label == null) pending.add("plan_identity");
   for (const a of assumptions) {
     if (a.field === "service_cost") pending.add(`service_cost:${a.serviceSlug ?? a.serviceLabel}`);
   }
@@ -308,9 +359,18 @@ export function CostShareBanner({
   onUploadEob,
   onBack,
   variant = "full",
+  acaDismissed: acaDismissedProp,
+  onAcaDismissedChange,
 }: CostShareBannerProps) {
   const assumptionsOnly = variant === "assumptions";
-  const [acaDismissed, setAcaDismissed] = useState(false);
+  // S293 (#1) — controlled when the parent supplies the pair (so the badge's
+  // pending set sees the dismissal); internal otherwise.
+  const [acaDismissedLocal, setAcaDismissedLocal] = useState(false);
+  const acaDismissed = acaDismissedProp ?? acaDismissedLocal;
+  const setAcaDismissed = (v: boolean) => {
+    onAcaDismissedChange?.(v);
+    setAcaDismissedLocal(v);
+  };
   const [dismissed, setDismissed] = useState(false); // "Done" collapses the section (accept as-is)
   const [confirming, setConfirming] = useState(false); // Done is now a WRITE — guard the double-click
   const [optimistic, setOptimistic] = useState<Optimistic>({});
@@ -365,8 +425,11 @@ export function CostShareBanner({
     onOverride({ field: "oop_met", met, asOf }, "oop");
   };
   /**
-   * "Done" = the user has read these rows and accepts what they say. Persist
-   * every displayed-but-unanswered default as a real override, THEN collapse.
+   * "Done" = the user has read these rows and accepts what they say. Collapse
+   * in the SAME click; persist every displayed-but-unanswered default as a
+   * real override in the background (S293 #5 — it used to await the batched
+   * POSTs + a full claim refetch before any visible response, a multi-second
+   * dead click).
    *
    * Sends the value currently on screen (optimistic overlay first, saved value
    * second, engine default last), so what gets written is exactly what the
@@ -375,8 +438,10 @@ export function CostShareBanner({
    *
    * `service_cost` / `aca_preventive` are excluded by construction: they have
    * no default to accept, so they stay pending and keep the rail step amber.
-   * Collapse still happens even if the writes fail — the error surfaces via
-   * `errorMsg`, and trapping the user in an open card helps nobody.
+   * The pending-target idiom (ClaimDetail's svcPendingConfirm): `dismissed`
+   * holds only the in-flight collapse; everything else stays derived from
+   * server truth. A FAILED batch rejects — the section snaps back open (the
+   * user must see nothing was saved) and `errorMsg` says why.
    */
   /**
    * Does this row still need input? Each row declares which pending field(s)
@@ -388,7 +453,22 @@ export function CostShareBanner({
   const flagRow = (...fields: string[]) =>
     flagUnanswered && fields.some((f) => pendingFields?.has(f) ?? false);
 
-  const confirmAndDismiss = async () => {
+  // S293 (#1) — what would STILL pend after Done writes its three toggle
+  // fields. Done can only answer network / deductible_met / oop_met; anything
+  // else in the ONE pending set (plan cost to add, plan to pick, ACA question)
+  // survives it. Collapsing the section anyway hid exactly the rows the amber
+  // badge was counting — badge said "still needs you", band showed nothing.
+  // Rule (S292, Andrew): amber ⟺ counted, badge and band must agree — so Done
+  // collapses ONLY when nothing else pends; otherwise the section stays open
+  // with the remaining rows flagged.
+  const DONE_WRITABLE = new Set(["network", "deductible_met", "oop_met"]);
+  const pendingAfterDone = pendingFields
+    ? Array.from(pendingFields).filter(
+        (f) => !DONE_WRITABLE.has(f) && !(f === "aca_preventive" && acaDismissed),
+      ).length
+    : 0;
+
+  const confirmAndDismiss = () => {
     const bodies: CostShareOverrideRequest[] = [];
     if (networkExists && !netResolved) {
       bodies.push({ field: "network", value: oonDisplay ? "out_of_network" : "in_network" });
@@ -399,6 +479,7 @@ export function CostShareBanner({
     if (oopExists && !oopResolved) {
       bodies.push({ field: "oop_met", met: oopMetDisplay, asOf: oopAsOfDisplay });
     }
+    const collapseAfter = pendingAfterDone === 0;
     if (bodies.length > 0 && onConfirmDefaults) {
       setConfirming(true);
       // Mirror the writes locally so the rows don't flicker back to unanswered
@@ -409,13 +490,19 @@ export function CostShareBanner({
         deductibleMet: deductibleExists && !dedResolved ? dedMetDisplay : o.deductibleMet,
         oopMet: oopExists && !oopResolved ? oopMetDisplay : o.oopMet,
       }));
-      try {
-        await onConfirmDefaults(bodies);
-      } finally {
-        setConfirming(false);
-      }
+      // Collapse NOW (when nothing else pends) — the click's own render is the
+      // response. The batch and its ONE refetch reconcile in the background;
+      // rejection = snap back open + drop nothing else (errorMsg arrives via
+      // props and the existing render-time reconcile clears the optimistic
+      // overlay). When other rows still pend, stay OPEN so the flagged rows
+      // remain visible under the amber badge.
+      if (collapseAfter) setDismissed(true);
+      onConfirmDefaults(bodies)
+        .catch(() => setDismissed(false))
+        .finally(() => setConfirming(false));
+      return;
     }
-    setDismissed(true);
+    if (collapseAfter) setDismissed(true);
   };
 
   const answerAca = (status: "confirmed" | "non_aca") => {
@@ -451,12 +538,25 @@ export function CostShareBanner({
   const hasEditableCost = !!editableServiceCost;
 
   // pending = assumptions still awaiting a first pick (drives the headline copy).
-  const pendingCount =
-    ((networkExists && !netResolved) ? 1 : 0) +
-    ((deductibleExists && !dedResolved) ? 1 : 0) +
-    ((oopExists && !oopResolved) ? 1 : 0) +
-    serviceCostChips.length +
-    (showAca ? 1 : 0);
+  // S293 (#1) — derived from the ONE pending set the badge reads
+  // (pendingAssumptionFields, passed in as `pendingFields`) instead of a
+  // second local tally that could disagree with it. The set is persisted-truth
+  // only, so overlay the in-flight optimistic answers on top (a toggle click
+  // must drop the count in its own render, not after the refetch). Legacy
+  // callers without the prop keep the local tally.
+  const pendingCount = pendingFields
+    ? Array.from(pendingFields).filter((f) => {
+        if (f === "network") return !netResolved;
+        if (f === "deductible_met") return !dedResolved;
+        if (f === "oop_met") return !oopResolved;
+        if (f === "aca_preventive") return !acaDismissed;
+        return true;
+      }).length
+    : ((networkExists && !netResolved) ? 1 : 0) +
+      ((deductibleExists && !dedResolved) ? 1 : 0) +
+      ((oopExists && !oopResolved) ? 1 : 0) +
+      serviceCostChips.length +
+      (showAca ? 1 : 0);
   const rawSectionHasRows = !!planIdentity || showNetwork || showDeductible || showOop || hasServiceCostGap || showAca || hasEditableCost;
   // Section is OPEN unless the user dismissed it via "Done"; when closed but
   // assumptions exist, "Update assumptions" brings it back.
@@ -539,8 +639,11 @@ export function CostShareBanner({
               assumptionsOnly
                 ? // First row's border-t would read as a stray card edge right
                   // under the container's own border — suppress it.
-                  "px-5 pb-4 pt-1.5 [&>div:first-child]:border-t-0"
-                : "px-5 pb-4"
+                  "px-5 pb-4 pt-1.5 [&>div:first-child]:border-t-0 [&>div[data-flagged]+div]:border-t-0"
+                : // S293 (#1) — the full variant needs the same suppression: a
+                  // row following a flagged (amber-bleed) row must not draw its
+                  // top border across the tint.
+                  "px-5 pb-4 [&>div[data-flagged]+div]:border-t-0"
             }
           >
             {!assumptionsOnly && (
@@ -549,7 +652,7 @@ export function CostShareBanner({
 
             {planIdentity && (
               <Row
-                flagged={(planIdentity.label == null || planIdentity.planYearMismatch != null) && flagUnanswered}
+                flagged={flagRow("plan_identity")}
                 icon={DocIcon}
                 label="Plan we checked against"
                 control={
@@ -572,6 +675,11 @@ export function CostShareBanner({
 
             {showNetwork && (
               <Row
+                // S292 — network is counted by `pendingAssumptionFields` but had
+                // no `flagged` prop, so it was the mirror image of the plan row:
+                // the badge counted it while the border stayed silent. Every row
+                // the badge counts now shows amber, and only those do.
+                flagged={flagRow("network")}
                 icon={GlobeIcon}
                 label="Network"
                 control={
@@ -653,7 +761,7 @@ export function CostShareBanner({
             <div className="mt-4 flex justify-end">
               <button
                 type="button"
-                onClick={() => void confirmAndDismiss()}
+                onClick={confirmAndDismiss}
                 disabled={confirming}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 px-4 py-2 text-[13px] font-semibold text-white shadow-sm transition-all hover:bg-gray-800 active:scale-[0.98]"
               >
@@ -755,9 +863,17 @@ function MetRow({
 
   return (
     <div
+      // S293 (#1) — flagged renders the SAME full-bleed amber tint as the
+      // shared Row primitive (InputRow.tsx), replacing this row's private
+      // bordered-box treatment. The deductible/OOP rows were the only flagged
+      // rows drawing a border instead of the approved bleed — a genuinely
+      // pending MetRow now looks like every other pending row, and the
+      // `data-flagged` attr keeps the parent's border-suppression selector
+      // working for the row beneath it.
+      data-flagged={flagged || undefined}
       className={
         flagged
-          ? "my-1.5 rounded-xl border border-amber-400 px-3 py-3.5"
+          ? "-mx-5 bg-amber-50 px-5 py-3.5 first:-mt-1.5 last:-mb-4"
           : "border-t border-gray-100 py-3.5"
       }
     >

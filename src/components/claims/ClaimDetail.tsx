@@ -124,6 +124,13 @@ interface LineItem {
   // when per-line is sparse). Drives LineDrawer Bill card "Insurer paid $X"
   // + desktop/mobile YOU PAID column. Falls back to raw insurance_paid.
   insurancePaidResolved?: number;
+  // S292 (#4) — per-line "BILLED TO YOU": what the patient was actually asked
+  // to pay after the insurer's negotiated adjustment + payment (server-resolved
+  // via resolvePerLineBilledToYou; same proportional-split method as YOU PAID).
+  // `showBeforeInsurance` gates the "$<gross> before insurance" sub-line —
+  // false when the bill has no insurer data (honesty fallback → gross shown).
+  // Absent on legacy payloads → column falls back to today's display, no sub-line.
+  billedToYou?: { value: number; gross: number; showBeforeInsurance: boolean };
   codeIdentity?: CodeIdentityState | null;
   // Cost-Share v2 (S214) — the engine's per-line verdict, attached by the claims
   // API ONLY when recovery_cost_share_v2 is ON. Its PRESENCE switches the dispute
@@ -473,13 +480,23 @@ export function ClaimDetail({
   // the plan-vs-bill diff collapses behind "Show the math"; step 3's
   // "All services look right" / "Something looks wrong" verification pair.
   const [showMath, setShowMath] = useState(false);
-  // S291 (Andrew) — seeded from the SERVER (claims.metadata.servicesConfirmedAt)
-  // so "Confirmed" survives a reload. It was plain local state, so the click
-  // registered visually and vanished on the next load — the same
-  // looks-saved-but-writes-nothing bug as the assumptions "Done" button.
-  const [svcOk, setSvcOk] = useState(
-    () => readServicesConfirmedAt(claim.metadata) != null,
-  );
+  // S292 — "Confirmed" is SERVER truth (claims.metadata.servicesConfirmedAt),
+  // DERIVED below once `claim` exists, the same persisted-state idiom
+  // `assumptionsDone` / `assumptionsEngaged` already use further down this file.
+  //
+  // It was briefly a lazy `useState` seed reading `claim.metadata`, which could
+  // never have worked: the initializer runs on the FIRST render, when the claim
+  // fetch hasn't returned and `data` is still null — so it would have read
+  // `false` forever, the same looks-saved-but-writes-nothing bug it was meant to
+  // fix. (It also referenced `claim` 430 lines before its declaration, which
+  // crashed the page outright — a TDZ that `tsc` can't see through an
+  // arrow-function capture, so every static gate passed.)
+  //
+  // This holds only the IN-FLIGHT TARGET of a write, so the button responds
+  // instantly and then yields to the server once the write settles — including
+  // when it FAILS, where a parallel copy of the truth would go on showing a save
+  // that never landed.
+  const [svcPendingConfirm, setSvcPendingConfirm] = useState<boolean | null>(null);
   const [svcIssue, setSvcIssue] = useState(false);
   /**
    * S291 — plans that could apply to THIS bill's service year, for the
@@ -489,6 +506,11 @@ export function ClaimDetail({
    */
   const [planCandidates, setPlanCandidates] = useState<DisputePlanChooserPlan[] | null>(null);
   const [repinOpen, setRepinOpen] = useState(false);
+  // S293 (#1) — the ACA question block's "Not sure" dismissal, lifted from the
+  // banner so the ONE pending set (pendingAssumptionFields → the step badge)
+  // sees it: a dismissed block must stop counting, or the badge goes amber over
+  // a band with nothing left to answer.
+  const [acaDismissed, setAcaDismissed] = useState(false);
 
 
   // Read localStorage once on mount per claim.
@@ -755,36 +777,47 @@ export function ClaimDetail({
    * firing three of these through it would race three refetches against each
    * other and against the render that reads the result.
    *
-   * Fails soft per the banner's contract: the first error is surfaced and the
-   * rest are abandoned, but the section still collapses — the user's intent
-   * ("these are fine") shouldn't be held hostage to a failed write.
+   * S293 (#5) — the banner's Done is optimistic now (it collapses before the
+   * batch lands), so failure must REJECT: the first error is surfaced via
+   * `csOverrideError`, the rest of the batch is abandoned, the claim is still
+   * refetched (part of the batch may have landed — the banner re-derives its
+   * rows from whatever the server now says), and the thrown error snaps the
+   * collapsed section back open so the user can see nothing was saved.
    */
   const confirmAssumptionDefaults = useCallback(
     async (bodies: CostShareOverrideRequest[]) => {
       if (bodies.length === 0) return;
       setCsOverridePending("confirm-defaults");
       setCsOverrideError(null);
+      let failMsg: string | null = null;
       try {
         const token = await getAuthToken();
-        if (!token) return;
-        for (const body of bodies) {
-          const res = await fetch(`/api/claims/${claimId}/cost-share-override`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-            body: JSON.stringify(body),
-          });
-          if (!res.ok) {
-            const d = await res.json().catch(() => ({}));
-            setCsOverrideError(d.error || `Couldn't save your answers (${res.status}).`);
-            break;
+        if (!token) {
+          failMsg = "Couldn't save your answers. Please try again.";
+        } else {
+          for (const body of bodies) {
+            const res = await fetch(`/api/claims/${claimId}/cost-share-override`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+              body: JSON.stringify(body),
+            });
+            if (!res.ok) {
+              const d = await res.json().catch(() => ({}));
+              failMsg = d.error || `Couldn't save your answers (${res.status}).`;
+              break;
+            }
           }
         }
         await refetchClaim();
         if (onClaimUpdated) await onClaimUpdated();
       } catch {
-        setCsOverrideError("Couldn't save your answers. Please try again.");
+        failMsg = failMsg ?? "Couldn't save your answers. Please try again.";
       } finally {
         setCsOverridePending(null);
+      }
+      if (failMsg) {
+        setCsOverrideError(failMsg);
+        throw new Error(failMsg);
       }
     },
     [claimId, getAuthToken, refetchClaim, onClaimUpdated],
@@ -910,6 +943,14 @@ export function ClaimDetail({
 
   const claim = data.claim as Record<string, unknown>;
   const providerName = ((claim.metadata as Record<string, unknown>)?.provider as Record<string, unknown>)?.name as string || "Unknown Provider";
+
+  // S292 — services-verification state. `svcConfirmed` is the persisted truth;
+  // the in-flight target wins only until the write settles. Derived (not stored)
+  // so a reload, a refetch and this render can never disagree. It feeds
+  // `assumptionsEngaged` and the rail's done state below, so it must never read
+  // complete on a bill whose confirmation isn't actually on the server.
+  const svcConfirmed = readServicesConfirmedAt(claim.metadata) != null;
+  const svcOk = svcPendingConfirm ?? svcConfirmed;
 
   // Split line items — quality-reporting codes (CPT Cat II, zero-charge
   // HCPCS entries) are hidden in a collapsible section so the main breakdown
@@ -1156,7 +1197,27 @@ export function ClaimDetail({
   // it's skipped rather than finished — when answers are still outstanding but
   // the user has already confirmed the services below it.
   const assumptionsPendingFields = railHasAssumptions
-    ? pendingAssumptionFields(bannerAssumptions, data.costShareOverrides ?? null)
+    ? pendingAssumptionFields(
+        bannerAssumptions,
+        data.costShareOverrides ?? null,
+        // S292 — the plan-identity row's amber now comes from this ONE set,
+        // so the step badge and the row border can never disagree again.
+        // S293 (#1) — and the badge input now MIRRORS the row's own render
+        // condition: the banner renders the plan row only when `planCandidates`
+        // resolved (the by-year fetch landed). Passing `{label}` here
+        // unconditionally while the banner got `null` meant a failed/absent
+        // fetch counted plan_identity with NO row on screen — invisible amber.
+        planCandidates ? { label: planIdentityLabel } : null,
+        // S293 (#1) — a field may count only while the row that answers it is
+        // on screen (see pendingAssumptionFields). Same sources the banner
+        // renders from: the editable-cost row exists only for a manual-source
+        // cost; the ACA block hides once dismissed via "Not sure".
+        {
+          deductibleAppliesRowVisible: bannerEditableCost != null,
+          acaRowVisible:
+            bannerAssumptions.some((a) => a.field === "aca_preventive") && !acaDismissed,
+        },
+      )
     : new Set<string>();
   const assumptionsPending = assumptionsPendingFields.size;
   const assumptionsDone = railHasAssumptions && assumptionsPending === 0;
@@ -1573,6 +1634,8 @@ export function ClaimDetail({
                       }
                     : null
                 }
+                acaDismissed={acaDismissed}
+                onAcaDismissedChange={setAcaDismissed}
                 flagUnanswered={assumptionsEngaged}
                 pendingKey={csOverridePending}
                 errorMsg={csOverrideError}
@@ -1619,8 +1682,23 @@ export function ClaimDetail({
                   <button
                     type="button"
                     onClick={() => {
-                      setSvcIssue((v) => !v);
-                      setSvcOk(false);
+                      const opening = !svcIssue;
+                      setSvcIssue(opening);
+                      // S292 — flagging a problem must actually UN-confirm on the
+                      // server. `svcOk` feeds `assumptionsEngaged` and the rail's
+                      // done state, so a local-only false would let a bill the
+                      // user just flagged still read complete — and "Confirmed"
+                      // would reappear on the next load. It is also the flywheel
+                      // signal: a WITHDRAWN confirmation is human-verified
+                      // evidence that the extracted service list is wrong, and
+                      // it's only evidence if it's written down.
+                      if (opening && svcOk) {
+                        setSvcPendingConfirm(false);
+                        void submitCostShareOverride(
+                          { field: "services_confirmed", confirmed: false },
+                          "services-confirmed",
+                        ).finally(() => setSvcPendingConfirm(null));
+                      }
                     }}
                     className="rounded-xl border border-gray-200 bg-white px-4 py-[9px] text-[13px] font-semibold text-gray-700 transition-colors hover:bg-gray-50"
                   >
@@ -1631,12 +1709,16 @@ export function ClaimDetail({
                   type="button"
                   onClick={() => {
                     const next = !svcOk;
-                    setSvcOk(next); // optimistic — the write reconciles on refetch
+                    // Instant feedback, then the server decides. On a failed
+                    // write `submitCostShareOverride` skips the refetch, so
+                    // clearing the target here snaps the button back to the
+                    // truth instead of showing a save that never landed.
+                    setSvcPendingConfirm(next);
                     setSvcIssue(false);
                     void submitCostShareOverride(
                       { field: "services_confirmed", confirmed: next },
                       "services-confirmed",
-                    );
+                    ).finally(() => setSvcPendingConfirm(null));
                   }}
                   className={
                     svcOk
@@ -1713,6 +1795,8 @@ export function ClaimDetail({
                       }
                     : null
                 }
+                acaDismissed={acaDismissed}
+                onAcaDismissedChange={setAcaDismissed}
                 flagUnanswered={assumptionsEngaged}
           pendingKey={csOverridePending}
           errorMsg={csOverrideError}
@@ -1757,22 +1841,26 @@ export function ClaimDetail({
             Recovery + Forgiveness split (was single Recovery col); You-owe
             dropped per Open Q A lock; Paid → "You paid"; Plan → "Plan says".
             Grid sized for max-w-3xl container (~728px inner): 8 fixed/flex cols
-            + gap-2 (8px × 7 = 56px) + 504px fixed = 560px + ~168px flex. */}
+            + gap-2 (8px × 7 = 56px) + 504px fixed = 560px + ~168px flex.
+            S292 (#4): Billed col 64px → 88px ("Billed to you" header + the
+            "$X before insurance" sub-line need the room; Service flex absorbs). */}
         <div
           className="hidden lg:grid gap-2 items-center px-5 py-3 bg-gray-50 text-[10px] font-semibold text-gray-500 uppercase tracking-[0.06em] border-b border-gray-100"
           style={{
             gridTemplateColumns: isMultiLine
-              ? "minmax(0, 1.5fr) 56px 64px 64px 64px 72px 80px 88px 40px"
-              : "minmax(0, 1.5fr) 56px 64px 64px 64px 72px 80px 88px",
+              ? "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 88px 40px"
+              : "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 88px",
           }}
         >
           <div className="min-w-0">Service</div>
           <div className="min-w-0">Code</div>
+          {/* S292 (#4) — "Billed to you": what the patient was actually asked
+              to pay after adjudication, not the provider's gross charge. */}
           <div
             className="text-right"
-            title="Amount the provider billed before insurance write-off."
+            title="What you were actually asked to pay after your insurer's adjustments and payments."
           >
-            Billed
+            Billed to you
           </div>
           <div className="text-right">You paid</div>
           <div
@@ -1841,7 +1929,17 @@ export function ClaimDetail({
           // bill-level "Adjusted total billed" and with coinsurance × adjusted
           // math. Server-computed `adjustedBilled` is authoritative; raw
           // fallback only when API didn't surface it (legacy or empty rows).
+          // S292 (#4) — `billedDisplay` still feeds LineDrawer + the OVERCHARGE
+          // pill calc; the visible column now leads with `billedToYou` below.
           const billedDisplay = item.adjustedBilled ?? billed;
+          // S292 (#4) — BILLED TO YOU column value: billed − insurer adjustment
+          // − insurer payment (server-resolved, clamped ≥ $0). Legacy payloads
+          // without the field fall back to today's display with no sub-line.
+          const billedToYou = item.billedToYou ?? {
+            value: billedDisplay,
+            gross: billed,
+            showBeforeInsurance: false,
+          };
           // S140 fix-pass H5 — resolved insurer payment per line (pro-rated
           // when sparse). Replaces raw item.insurance_paid in display sites.
           const insurancePaidDisplay =
@@ -2009,9 +2107,18 @@ export function ClaimDetail({
                     <dt className="text-gray-500 uppercase tracking-wider">Code</dt>
                     <dd className="font-mono text-gray-700">{item.billing_code || "—"}</dd>
                   </div>
+                  {/* S292 (#4) — mobile mirror of the desktop BILLED TO YOU
+                      column (same server-resolved value + gross sub-line). */}
                   <div className="flex justify-between gap-3">
-                    <dt className="text-gray-500 uppercase tracking-wider">Billed</dt>
-                    <dd className="tabular-nums text-gray-900">${billedDisplay.toLocaleString()}</dd>
+                    <dt className="text-gray-500 uppercase tracking-wider">Billed to you</dt>
+                    <dd className="text-right">
+                      <div className="tabular-nums text-gray-900">${fmtMoney(billedToYou.value)}</div>
+                      {billedToYou.showBeforeInsurance && (
+                        <div className="text-[10px] leading-tight text-gray-400 tabular-nums">
+                          ${fmtMoney(billedToYou.gross)} before insurance
+                        </div>
+                      )}
+                    </dd>
                   </div>
                   <div className="flex justify-between gap-3">
                     <dt className="text-gray-500 uppercase tracking-wider">You paid</dt>
@@ -2116,8 +2223,8 @@ export function ClaimDetail({
                 className={`hidden lg:grid w-full gap-2 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 cursor-pointer ${isMultiLine && isExpanded ? "bg-blue-50/40 hover:bg-blue-50/60" : "hover:bg-gray-50"}`}
                 style={{
                   gridTemplateColumns: isMultiLine
-                    ? "minmax(0, 1.5fr) 56px 64px 64px 64px 72px 80px 88px 40px"
-                    : "minmax(0, 1.5fr) 56px 64px 64px 64px 72px 80px 88px",
+                    ? "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 88px 40px"
+                    : "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 88px",
                 }}
               >
                 <div className="min-w-0 text-sm text-gray-900">
@@ -2176,20 +2283,31 @@ export function ClaimDetail({
                     {item.billing_code || "—"}
                   </span>
                 </div>
-                {/* S140 fix-pass H2 — Billed column shows ADJUSTED billed
-                    (raw - resolved writeoff). Reconciles with bill-level
-                    "Adjusted total billed" + coinsurance × adjusted math
-                    everywhere else. Tooltip retains the raw-vs-adjusted
-                    explainer when writeoff is non-zero. */}
+                {/* S292 (#4) — BILLED TO YOU column: what the patient was
+                    actually asked to pay after the insurer's negotiated
+                    adjustment + payment (server-resolved; same proportional-
+                    split method as YOU PAID, different inputs). Sub-line
+                    surfaces the gross charge when insurer data moved the
+                    number; bills with no insurer data show the gross alone
+                    (honesty fallback — never an invented adjustment). This is
+                    a SEPARATE fact from YOU PAID (money actually paid so far)
+                    — on a fresh unpaid bill the two legitimately disagree. */}
                 <div
-                  className="text-sm font-semibold text-gray-700 text-right tabular-nums whitespace-nowrap"
+                  className="text-right"
                   title={
-                    billedDisplay !== billed
-                      ? `Provider billed $${billed.toLocaleString()}; insurer wrote off $${(billed - billedDisplay).toLocaleString()}, leaving an adjusted balance of $${billedDisplay.toLocaleString()}.`
-                      : `$${billed.toLocaleString()} billed.`
+                    billedToYou.showBeforeInsurance
+                      ? `Provider billed $${fmtMoney(billedToYou.gross)}; after your insurer's adjustments and payments, $${fmtMoney(billedToYou.value)} was billed to you.`
+                      : `$${fmtMoney(billedToYou.gross)} billed.`
                   }
                 >
-                  ${billedDisplay.toLocaleString()}
+                  <div className="text-sm font-semibold text-gray-700 tabular-nums whitespace-nowrap">
+                    ${fmtMoney(billedToYou.value)}
+                  </div>
+                  {billedToYou.showBeforeInsurance && (
+                    <div className="mt-0.5 text-[10px] leading-tight text-gray-400 tabular-nums">
+                      ${fmtMoney(billedToYou.gross)} before insurance
+                    </div>
+                  )}
                 </div>
                 <div className="text-sm font-semibold text-gray-700 text-right tabular-nums whitespace-nowrap">
                   ${paid.toLocaleString()}

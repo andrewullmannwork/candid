@@ -34,7 +34,9 @@ import { buildDirectEntryProvenance } from "@/lib/parser/provenance-builders";
 import { SOURCE_DEFAULT_CONFIDENCE } from "@/lib/parser/field-categories";
 
 let failures = 0;
+let total = 0; // S293 — real counter (was a hardcoded 30 at the summary, silently wrong as cases get added)
 function check(name: string, cond: boolean, detail = ""): void {
+  total++;
   if (!cond) failures++;
   console.log(`${cond ? "PASS" : "FAIL"}  ${name}${detail ? "  — " + detail : ""}`);
 }
@@ -214,6 +216,49 @@ check(
   JSON.stringify([...afterDone]),
 );
 
+// ── S293 (#1) — counted ⟺ the answering row is on screen ────────────────────
+// The inverse failure of the case above: the SAME field counting when its
+// owning row does NOT render (parsed/canonical cost → no editable row) put an
+// amber badge over a band with nothing to answer — "Done → amber though every
+// visible row is Done-confirmable" (E2E account andrewullmanntest292). The
+// visibility arg mirrors the banner's actual render conditions; explicit TRUE
+// keeps the S291 protection, explicit FALSE releases the field.
+{
+  const rowVisible = pendingAssumptionFields(
+    [asum("deductible_applies")],
+    { userNetworkOverride: "in_network", deductibleMet: false, oopMet: false } as Parameters<typeof pendingAssumptionFields>[1],
+    undefined,
+    { deductibleAppliesRowVisible: true },
+  );
+  check(
+    "S293: deductible_applies with a VISIBLE editable row → still counted",
+    rowVisible.has("deductible_applies"),
+    JSON.stringify([...rowVisible]),
+  );
+  const rowHidden = pendingAssumptionFields(
+    [asum("deductible_applies")],
+    { userNetworkOverride: "in_network", deductibleMet: false, oopMet: false } as Parameters<typeof pendingAssumptionFields>[1],
+    undefined,
+    { deductibleAppliesRowVisible: false },
+  );
+  check(
+    "S293: deductible_applies with NO row on screen → not counted (badge can go green on Done)",
+    !rowHidden.has("deductible_applies") && rowHidden.size === 0,
+    JSON.stringify([...rowHidden]),
+  );
+  const acaHidden = pendingAssumptionFields(
+    [asum("aca_preventive")],
+    { userNetworkOverride: "in_network", deductibleMet: false, oopMet: false } as Parameters<typeof pendingAssumptionFields>[1],
+    undefined,
+    { acaRowVisible: false },
+  );
+  check(
+    "S293: aca_preventive dismissed via Not-sure (block hidden) → not counted",
+    acaHidden.size === 0,
+    JSON.stringify([...acaHidden]),
+  );
+}
+
 const allAnswered = pendingAssumptionFields(
   [],
   { userNetworkOverride: "in_network", deductibleMet: false, oopMet: false } as Parameters<typeof pendingAssumptionFields>[1],
@@ -358,7 +403,6 @@ check(
   computeCostShareV2(knownAccBill(null)).verdict === "correct",
 );
 
-const total = 30;
 console.log(`\n${total} assertions — ${total - failures} passed, ${failures} failed`);
 if (failures > 0) {
   console.error("✗ s291-plan-honesty fixture RED");

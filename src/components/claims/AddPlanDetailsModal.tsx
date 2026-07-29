@@ -32,7 +32,17 @@ interface AddPlanDetailsModalProps {
   serviceLabel: string;
   getAuthToken: () => Promise<string | null>;
   onClose: () => void;
-  onSaved: () => void | Promise<void>;
+  /**
+   * S292 (#8) — the saved cost-share values are passed so the caller can update
+   * optimistically (dispute needs-panel pending-target idiom) instead of a full
+   * refetch per save. Additive: zero-arg callers (ClaimDetail) are unchanged.
+   */
+  onSaved: (saved?: {
+    serviceSlug: string;
+    copay: number | null;
+    coinsurancePercent: number | null;
+    deductibleApplies: boolean | null;
+  }) => void | Promise<void>;
   /** Pre-fill for re-open/edit (S263) — the service's current cost-share so the
    *  user can CORRECT a mistake, not start blank. Copay in dollars; coinsurance
    *  already normalized to 0-100 (percent) by the caller. */
@@ -174,8 +184,18 @@ export function AddPlanDetailsModal({
 
       // Write confirmed → show "Saved", refetch in the BACKGROUND (the slow
       // part — full claim re-fetch + cost-share recompute), then auto-close.
+      // S292 (#8) — pass the saved values so the caller can render optimistically.
       setSaved(true);
-      void onSaved();
+      void onSaved(
+        hasCost && cost !== null
+          ? {
+              serviceSlug,
+              copay: shareType === "copay" ? cost : null,
+              coinsurancePercent: shareType === "coinsurance" ? cost : null,
+              deductibleApplies,
+            }
+          : undefined,
+      );
       setTimeout(onClose, 750);
     } catch {
       setError("Couldn't save. Please try again.");
