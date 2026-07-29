@@ -784,7 +784,18 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
       // S291 — deductible MET. Emit the row so the user can see what we believe
       // and disagree; an override already produces a row, but an
       // accumulator-derived "met" previously rendered nothing at all.
-      if (dedMetKnown && ov.deductibleMet == null) {
+      // S294 — but NOT when the plan simply has no deductible. S291 emitted
+      // this row so an accumulator-derived "met" stayed visible and
+      // disagreeable; on a genuinely $0-deductible plan there is nothing to
+      // disagree with. Worse, the row went out tagged `reason: "accumulator"`
+      // — asserting we derived it from the user's uploaded bills when in fact
+      // the plan just has no deductible. A vacuous question, sourced to
+      // something that never happened.
+      //
+      // This is the mirror image of the S294 2024-bill defect: there the one
+      // question that mattered was buried behind an unanswerable one; here a
+      // question is asked that has no answer to give.
+      if (dedMetKnown && ov.deductibleMet == null && !planDeductibleZero) {
         assumptions.push({
           field: "deductible_met",
           assumed: "met",
