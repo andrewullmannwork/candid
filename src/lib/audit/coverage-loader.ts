@@ -699,6 +699,7 @@ export async function loadPlanCoverageMeta(
     const canonMeta = await loadCanonicalCoverageMeta(
       supabase,
       Array.from(new Set(canonicalByPlan.values())),
+      { completeness },
     );
     for (const [planId, canonicalId] of canonicalByPlan) {
       const entry = out.get(planId);
@@ -779,7 +780,19 @@ export function applyCanonicalGapFill(
 export async function loadCanonicalCoverageMeta(
   supabase: SupabaseClient,
   canonicalPlanIds: Array<string | null | undefined>,
+  /**
+   * S294 — `canonical_coverage_completeness_v1`. Passed down by
+   * `loadPlanCoverageMeta` (which has already resolved it) so the flag costs one
+   * lookup per request, not one per nested loader. Omitted → resolved here, for
+   * the /compare backstop caller.
+   *
+   * OFF returns the pre-S294 three-field coverage shape, so the flag genuinely
+   * means what mig 219 says it means.
+   */
+  opts?: { completeness?: boolean },
 ): Promise<Map<string, PlanCoverageMeta>> {
+  const completeness =
+    opts?.completeness ?? (await isFeatureEnabled("canonical_coverage_completeness_v1"));
   const out = new Map<string, PlanCoverageMeta>();
   const ids = Array.from(new Set(canonicalPlanIds.filter((id): id is string => Boolean(id))));
   if (ids.length === 0) return out;
@@ -816,12 +829,18 @@ export async function loadCanonicalCoverageMeta(
     }
     if (seen.has(slug)) continue;
     seen.add(slug);
+    // S294 — the shared mapper carries in_deductible_applies + out_* rather than
+    // the three-field subset this loader used to build by hand. Flag OFF
+    // projects back down to that subset, so OFF is byte-identical for every
+    // consumer (the row ORDER is not projected away — determinism replaces
+    // Postgres heap order and cannot itself produce a wrong answer).
+    const full = canonicalCoverageFromRow(r);
     entry.coveredMeta.push({
       slug,
       category: catalogIdentity.get(slug)?.category ?? null,
-      // S294 — the shared mapper. Carries in_deductible_applies + out_* rather
-      // than the three-field subset this loader used to build by hand.
-      coverage: canonicalCoverageFromRow(r),
+      coverage: completeness
+        ? full
+        : { covered: full.covered, copay: full.copay, coinsurance: full.coinsurance },
     });
   }
 
