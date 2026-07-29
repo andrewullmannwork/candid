@@ -16,6 +16,7 @@ import {
   selectOwnedParentIds,
   updateOwnedChildren,
   upsertOwnedChildren,
+  deleteOwnedChildren,
 } from "../src/lib/security/user-scoped";
 
 // In-memory dataset: u1 owns c1 (lines li1,li2); u2 owns c2 (line li3).
@@ -44,6 +45,7 @@ const DB = {
 const writes = [];
 const inserts = [];
 const upserts = [];
+const deletes = [];
 
 class QB {
   constructor(table) {
@@ -109,6 +111,10 @@ class QB {
     const rows = this._rows();
     if (this.op === "update") {
       for (const r of rows) writes.push({ table: this.table, id: r.id, values: this.values });
+      return { data: null, error: null };
+    }
+    if (this.op === "delete") {
+      for (const r of rows) deletes.push({ table: this.table, id: r.id, filters: this.filters });
       return { data: null, error: null };
     }
     return { data: rows, error: null };
@@ -282,6 +288,46 @@ check(
 check(
   "adminScoped: empty userId THROWS",
   await throws(() => adminScoped(client, "")),
+);
+
+// 11) deleteOwnedChildren (S292 4C) — owner deletes fk-scoped; foreign parent
+// deletes NOTHING; an empty match is refused rather than wiping the parent.
+deletes.length = 0;
+const delOk = await deleteOwnedChildren(client, "u1", "claim_line_items", "c1", [{ id: "li1" }]);
+check(
+  "deleteOwnedChildren: owner u1/c1 → deleted=1",
+  delOk.deleted === 1 && deletes.length === 1,
+);
+check(
+  "deleteOwnedChildren: delete is fk-pinned to the verified parent",
+  deletes[0].filters.some(([op, col, val]) => op === "eq" && col === "claim_id" && val === "c1"),
+);
+deletes.length = 0;
+const delForeign = await deleteOwnedChildren(client, "u2", "claim_line_items", "c1", [{ id: "li1" }]);
+check(
+  "deleteOwnedChildren: foreign u2/c1 → deleted=0 and NOTHING removed (closure)",
+  delForeign.deleted === 0 && deletes.length === 0,
+);
+deletes.length = 0;
+await deleteOwnedChildren(client, "u1", "claim_line_items", "c1", [{ id: "li3" }]);
+check(
+  // li3 belongs to c2. The statement runs (so the count is not an error signal,
+  // same as updateOwnedChildren) but the fk pin means it matches NO row — the
+  // property that matters is that nothing was actually removed.
+  "deleteOwnedChildren: cross-claim li3 under c1 removes NOTHING (fk guard)",
+  deletes.length === 0,
+);
+check(
+  "deleteOwnedChildren: EMPTY match THROWS (would delete every child row)",
+  await throws(() => deleteOwnedChildren(client, "u1", "claim_line_items", "c1", [{}])),
+);
+check(
+  "deleteOwnedChildren: empty userId THROWS",
+  await throws(() => deleteOwnedChildren(client, "", "claim_line_items", "c1", [{ id: "li1" }])),
+);
+check(
+  "deleteOwnedChildren: non-parent-join table THROWS",
+  await throws(() => deleteOwnedChildren(client, "u1", "documents", "c1", [{ id: "x" }])),
 );
 
 if (failures === 0) {
