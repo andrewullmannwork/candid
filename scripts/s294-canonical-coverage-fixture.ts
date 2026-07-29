@@ -37,6 +37,7 @@ import {
   buildServiceCostShare,
   EMPTY_PLAN_COST_SHARE_PARAMS,
 } from "../src/lib/claims/cost-share-loader";
+import { pendingAssumptionFields, ASSUMPTION_ANSWERABILITY, DONE_WRITABLE_FIELDS } from "../src/components/claims/CostShareBanner";
 
 let pass = 0;
 const fails: string[] = [];
@@ -214,6 +215,66 @@ const meta = (rows: Array<{ slug: string; deductibleApplies?: boolean | null; co
   const si = silent.assumptions.find((a) => a.field === "deductible_applies");
   check("6d silent plan still infers with reason=no_plan_value", si?.reason === "no_plan_value", si?.reason, "no_plan_value");
   check("6d inferred row stays correctable + pending", si?.correctable === true && !ANSWERED_REASONS.has(si!.reason));
+}
+
+// ── 7. THE PENDING INVARIANT (Andrew, third recurrence) ──────────────────────
+// An ANSWERED field is NEVER pending — for every field, not just the toggle-backed
+// ones. Asserted over the FULL field vocabulary rather than the one field that
+// broke, because this defect recurred three times by being fixed per-row.
+//
+// Fixture note: §6b previously asserted only `ANSWERED_REASONS.has("plan_document")`
+// and passed while pendingAssumptionFields ignored it — a fixture blind to the
+// thing it claimed to cover. Assert the CONSUMER, never the constant.
+{
+  const NO_OV = { deductibleMet: null, deductibleMetAsOf: null, oopMet: null, oopMetAsOf: null, userNetworkOverride: null };
+  const ALL_FIELDS = ["network", "deductible_met", "oop_met", "deductible_applies", "aca_preventive", "service_cost"];
+  for (const field of ALL_FIELDS) {
+    for (const reason of ANSWERED_REASONS) {
+      const a = [{ field, assumed: "x", value: null, correctable: true, reason, serviceLabel: "Office visit", serviceSlug: "pcp_visit" }];
+      const p = pendingAssumptionFields(a as never[], NO_OV, { label: "Some Plan" }, { deductibleAppliesRowVisible: true, acaRowVisible: true });
+      check(`7a answered ${field} via "${reason}" is NOT pending`, p.size === 0, [...p], []);
+    }
+  }
+  // …and an UNanswered field of each kind still is (the gate must not be inert).
+  for (const [field, reason] of [["deductible_applies", "no_plan_value"], ["aca_preventive", "aca_status_unknown"], ["network", "default"]] as const) {
+    const a = [{ field, assumed: "x", value: null, correctable: true, reason }];
+    const p = pendingAssumptionFields(a as never[], NO_OV, { label: "Some Plan" }, { deductibleAppliesRowVisible: true, acaRowVisible: true });
+    check(`7b unanswered ${field} IS still pending`, p.size === 1, [...p]);
+  }
+  // Andrew's exact 2024 bill after his saved answer: only `network` remains, and
+  // Done writes network — so Done genuinely finishes the step.
+  const realBill = [
+    { field: "network", assumed: "in_network", value: null, correctable: true, reason: "default" },
+    { field: "deductible_applies", assumed: "subject_free", value: 7250, correctable: false, reason: "plan_document" },
+    { field: "deductible_met", assumed: "not_met", value: 7250, correctable: true, reason: "user_override" },
+  ];
+  const p = pendingAssumptionFields(realBill as never[], { ...NO_OV, deductibleMet: false }, { label: "BCBS MT Blue Focus Silver POS 903" }, { deductibleAppliesRowVisible: true, acaRowVisible: false });
+  check("7c real 2024 bill → only Done-writable fields remain", [...p].join(",") === "network", [...p], ["network"]);
+  const afterDone = pendingAssumptionFields(realBill as never[], { ...NO_OV, deductibleMet: false, userNetworkOverride: "in_network" }, { label: "BCBS MT Blue Focus Silver POS 903" }, { deductibleAppliesRowVisible: true, acaRowVisible: false });
+  check("7d after Done → NOTHING pending (the badge clears)", afterDone.size === 0, [...afterDone], []);
+
+  // 7e EXHAUSTIVENESS — the lock that makes recurrence #4 impossible. Every
+  // field the engine can emit must DECLARE how it is answered. A new field
+  // added to CostShareAssumption without an entry here fails the build rather
+  // than silently becoming a permanently-pending row nobody can clear.
+  const ENGINE_FIELDS = [
+    "network", "deductible_met", "oop_met", "deductible_applies",
+    "service_cost", "denial", "aca_preventive", "plan_provenance", "plan_identity",
+  ];
+  for (const f of ENGINE_FIELDS) {
+    check(`7e "${f}" declares its answerability`, f in ASSUMPTION_ANSWERABILITY, f);
+  }
+  check("7e DONE_WRITABLE is derived, not hand-listed",
+    [...DONE_WRITABLE_FIELDS].sort().join(",") === "deductible_met,network,oop_met",
+    [...DONE_WRITABLE_FIELDS].sort());
+  // An "info" field can never hold the step open, however it is emitted.
+  for (const f of ["denial", "plan_provenance"]) {
+    const p = pendingAssumptionFields(
+      [{ field: f, assumed: "x", value: null, correctable: true, reason: "insurer_denied" }] as never[],
+      NO_OV, { label: "Some Plan" }, { deductibleAppliesRowVisible: true, acaRowVisible: true },
+    );
+    check(`7f info-only "${f}" is never pending`, p.size === 0, [...p], []);
+  }
 }
 
 if (fails.length) {

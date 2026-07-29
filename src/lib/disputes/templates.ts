@@ -1626,7 +1626,7 @@ I am writing to formally appeal the denial of my claim for services rendered on 
 
 I believe the services provided were medically necessary and should be covered under my plan.${reviewSection}
 
-${evidenceBlock ? `${evidenceBlock}` : ""}${reliefSection}
+${evidenceBlock ? `${evidenceBlock}\n` : ""}${reliefSection}
 
 I reserve all rights to pursue any other remedies available under federal and state law.
 

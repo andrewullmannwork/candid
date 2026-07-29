@@ -193,6 +193,49 @@ export function hasAssumptionRows(
  * Persisted truth only — no optimistic overlay, no local `dismissed` flag — so
  * it survives a reload.
  */
+/**
+ * S294 — HOW each assumption field gets answered. ONE declaration, because the
+ * "press Done, still says needs review" defect recurred THREE times and every
+ * recurrence was the same shape: two or more hand-maintained lists disagreeing
+ * about whether a field was answerable.
+ *
+ * The badge may count a field ONLY when the user has something on screen to act
+ * on. Each field declares which:
+ *
+ *   "done"  — a toggle with a real default is on screen. Done accepts it, so it
+ *             pends only until an override is saved. `DONE_WRITABLE_FIELDS` is
+ *             DERIVED from this, so the Done writer and the pending set cannot
+ *             drift apart (they were separate literals before).
+ *   "input" — no default exists to accept; a real value must be supplied
+ *             through a control (Add-details modal, plan chooser, ACA block).
+ *             Pends only while that control is actually rendered.
+ *
+ * Any field answered via ANSWERED_REASONS is exempt regardless of kind — see
+ * `clearAnswered` below. Adding a field to CostShareAssumption without adding it
+ * here fails `s294-canonical-coverage-fixture` (exhaustiveness §7e).
+ */
+export const ASSUMPTION_ANSWERABILITY = {
+  network: "done",
+  deductible_met: "done",
+  oop_met: "done",
+  deductible_applies: "input",
+  aca_preventive: "input",
+  service_cost: "input",
+  plan_identity: "input",
+  // Emitted for transparency only — never gates the step. `denial` states what
+  // the insurer said; `plan_provenance` names WHY a verdict was degraded and is
+  // resolved by uploading a plan document, not by answering a row.
+  denial: "info",
+  plan_provenance: "info",
+} as const satisfies Record<string, "done" | "input" | "info">;
+
+/** Derived, never hand-listed — the fields "Done" can actually write. */
+export const DONE_WRITABLE_FIELDS: ReadonlySet<string> = new Set(
+  Object.entries(ASSUMPTION_ANSWERABILITY)
+    .filter(([, kind]) => kind === "done")
+    .map(([field]) => field),
+);
+
 export function pendingAssumptionFields(
   assumptions: BannerAssumption[],
   overrides: CostShareOverrides | null,
@@ -242,6 +285,40 @@ export function pendingAssumptionFields(
   if (unanswered("deductible_met") && overrides?.deductibleMet == null) pending.add("deductible_met");
   if (unanswered("oop_met") && overrides?.oopMet == null) pending.add("oop_met");
 
+  // ── THE INVARIANT (S294, Andrew — third recurrence) ─────────────────────
+  // ANSWERED_REASONS is authoritative for EVERY field, without exception.
+  //
+  // It was applied only to the three toggle-backed rows above, while the
+  // input-backed rows below tested mere PRESENCE. So a field that was already
+  // answered — by our accumulator, by the user, or (S294) by the plan document
+  // itself — still counted as outstanding if it happened to be input-backed.
+  // Done cannot write those fields, so the badge stayed amber permanently with
+  // nothing on screen left to answer. That is the "press Done, still says needs
+  // review" defect, and it survived three fixes because each one reasoned about
+  // a specific ROW rather than the rule underneath.
+  //
+  // Andrew's rule, stated plainly: if every row either shows a default the user
+  // can accept or already holds a value, Done means answered. A field may hold
+  // this step open ONLY when there is genuinely nothing on screen to accept.
+  //
+  // Enforced as a post-pass so it cannot be forgotten when a field is added:
+  // whatever the branches below decide, an answered field is never pending.
+  //
+  // The second half of the same guarantee: a field declared "info" in
+  // ASSUMPTION_ANSWERABILITY has no control at all, so it can never be pending
+  // however it got added. Together these two post-passes mean the badge counts
+  // only fields the user can actually act on — by construction, not by three
+  // lists agreeing.
+  const clearUnactionable = (set: Set<string>) => {
+    for (const f of Array.from(set)) {
+      // service_cost keys are namespaced (`service_cost:<slug>`); strip to the field.
+      const field = f.startsWith("service_cost:") ? "service_cost" : f;
+      const kind = (ASSUMPTION_ANSWERABILITY as Record<string, string>)[field];
+      if (answeredByData(field) || kind === "info") set.delete(f);
+    }
+    return set;
+  };
+
   // Input-backed rows: no default exists to accept, so "Done" can never clear
   // them. They stay pending until the user supplies a real value.
   //
@@ -271,7 +348,7 @@ export function pendingAssumptionFields(
   for (const a of assumptions) {
     if (a.field === "service_cost") pending.add(`service_cost:${a.serviceSlug ?? a.serviceLabel}`);
   }
-  return pending;
+  return clearUnactionable(pending);
 }
 
 function fmtDate(iso: string | null): string {
@@ -487,7 +564,10 @@ export function CostShareBanner({
   // Rule (S292, Andrew): amber ⟺ counted, badge and band must agree — so Done
   // collapses ONLY when nothing else pends; otherwise the section stays open
   // with the remaining rows flagged.
-  const DONE_WRITABLE = new Set(["network", "deductible_met", "oop_met"]);
+  // S294 — DERIVED from ASSUMPTION_ANSWERABILITY, not a second literal. The
+  // Done writer and the pending set drifting apart is what produced the
+  // recurring "Done does nothing" defect.
+  const DONE_WRITABLE = DONE_WRITABLE_FIELDS;
   const pendingAfterDone = pendingFields
     ? Array.from(pendingFields).filter(
         (f) => !DONE_WRITABLE.has(f) && !(f === "aca_preventive" && acaDismissed),
