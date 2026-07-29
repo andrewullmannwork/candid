@@ -55,6 +55,24 @@ export interface InsurerMismatchData {
   parsedInsurer?: string;
   existingPlanName?: string;
   parsedPlanName?: string;
+  /**
+   * S292 — the plan-identity resolver's verdict, when it ran (flag
+   * `plan_identity_resolver_v1`). Present on `different` and `uncertain`;
+   * absent for the legacy name-comparison path, which is why every field here
+   * is optional and the UI falls back to the legacy copy without it.
+   *
+   * `evidence` is the resolver's OWN sentence — the same string that explains
+   * the decision in the logs and in `documents.insurer_mismatch`. Rendering it
+   * rather than re-deriving a message in the component keeps the reason the
+   * user reads and the reason we recorded identical.
+   */
+  identity?: {
+    verdict?: "different" | "uncertain";
+    reason?: string;
+    evidence?: string;
+    existingPlanId?: string;
+    existingPlanName?: string | null;
+  };
 }
 
 interface MismatchVariantProps extends CommonProps {
@@ -63,6 +81,45 @@ interface MismatchVariantProps extends CommonProps {
   submitting: boolean;
   onUseThisPlan: () => Promise<void>;
   onKeepCurrent: () => Promise<void>;
+}
+
+/**
+ * S292 — the resolver merged this document into an existing plan (verdict
+ * `same`). A receipt, not a question: the merge already happened, so this states
+ * what we did and offers the way out.
+ */
+export interface PlanIdentityMatchData {
+  existingPlanId?: string;
+  existingPlanName?: string | null;
+  // No `evidence` here by design (S292, Andrew): the resolver's own sentences
+  // explain a DECISION ("Same plan name.", "Same plan ID.") and read as
+  // machine reasoning in a success state. The matched receipt says what the
+  // merge means for the user instead. The reason is not lost — it stays in the
+  // log line and in `documents.insurer_mismatch.identity.evidence` for
+  // diagnostics, which is where a reason belongs when nobody is being asked
+  // to act on it. `different` still renders evidence, because there the
+  // reason IS the thing the user must judge.
+}
+
+interface IdentityMatchedVariantProps extends CommonProps {
+  variant: "identity_matched";
+  match: PlanIdentityMatchData;
+  submitting: boolean;
+  /**
+   * "This isn't my plan" — must REVERT the merge, not merely prevent it: at the
+   * 0.85 confidence floor the merge lands before the user ever sees this. Wired
+   * to the unwind in item 4C; omitted until then, and the affordance hides
+   * itself when absent rather than offering an escape that does nothing.
+   */
+  onNotMyPlan?: () => Promise<void>;
+}
+
+interface IdentityUncertainVariantProps extends CommonProps {
+  variant: "identity_uncertain";
+  mismatch: InsurerMismatchData;
+  submitting: boolean;
+  onSamePlan: () => Promise<void>;
+  onDifferentPlan: () => Promise<void>;
 }
 
 export interface YearRolloverData {
@@ -116,6 +173,8 @@ export type ParseTerminalViewProps =
   | DedupProcessedVariantProps
   | ErrorVariantProps
   | MismatchVariantProps
+  | IdentityMatchedVariantProps
+  | IdentityUncertainVariantProps
   | YearRolloverVariantProps
   | CanonicalMatchVariantProps
   | CompletePlanVariantProps
@@ -163,6 +222,10 @@ function HeaderLabel({ variant, kind }: { variant: string; kind?: string }) {
   if (variant === "unusable" && kind === "pending_review") return "This one's stumping us";
   if (variant === "unusable" && kind === "rejected") return "Couldn't identify this document";
   if (variant === "mismatch") return "Review needed";
+  // A match is not a problem — it gets the same "All done!" header as any other
+  // successful parse; only the body reports which plan absorbed the document.
+  if (variant === "identity_matched") return "All done!";
+  if (variant === "identity_uncertain") return "One quick question";
   if (variant === "year_rollover") return "New plan year detected";
   if (variant === "canonical_match") return "Plan match found";
   return "Processing complete";
@@ -237,9 +300,17 @@ function MismatchPrompt({ mismatch, submitting, onUseThisPlan, onKeepCurrent }: 
   const newLabel = isPlanMismatch ? mismatch.parsedPlanName : mismatch.parsedInsurer;
   return (
     <div className="mb-5 p-5 bg-amber-50 border border-amber-200 rounded-2xl">
-      <p className="text-sm font-semibold text-gray-900 mb-3">
+      <p className="text-sm font-semibold text-gray-900 mb-1">
         {isPlanMismatch ? "This document is for a different plan" : "This document is from a different insurer"}
       </p>
+      {/* S292 — the resolver's own sentence, so what the user reads is exactly
+          what we recorded and logged as the reason. Absent on the legacy
+          name-comparison path, which keeps its original headline-only layout. */}
+      {mismatch.identity?.evidence ? (
+        <p className="text-xs text-gray-600 mb-3">{mismatch.identity.evidence}</p>
+      ) : (
+        <div className="mb-3" />
+      )}
       <div className="p-3 bg-white border border-gray-200 rounded-xl mb-2">
         <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">On your card</p>
         <p className="text-sm font-medium text-gray-900 mt-0.5">{existingLabel}</p>
@@ -262,6 +333,94 @@ function MismatchPrompt({ mismatch, submitting, onUseThisPlan, onKeepCurrent }: 
           className="w-full py-2.5 border border-gray-200 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors disabled:opacity-50"
         >
           Keep my current plan
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * S292 — verdict `same`. A RECEIPT: the document has already been merged into
+ * the named plan, so this reports rather than asks. Deliberately calm (no amber,
+ * no warning glyph) — nothing went wrong; the user is simply being told which
+ * plan absorbed their upload, which the flow never said before.
+ */
+function IdentityMatchedPrompt({
+  match,
+  submitting,
+  onNotMyPlan,
+}: {
+  match: PlanIdentityMatchData;
+  submitting: boolean;
+  onNotMyPlan?: () => Promise<void>;
+}) {
+  const planName = match.existingPlanName?.trim();
+  return (
+    <div className="mb-5 p-5 bg-gray-50 border border-gray-200 rounded-2xl">
+      <p className="text-sm font-semibold text-gray-900">
+        {planName ? <>We added this to your <strong>{planName}</strong> plan.</> : "We added this to your existing plan."}
+      </p>
+      <p className="mt-1 text-xs text-gray-600">
+        Your upload will be added to our existing plan data for the most complete results.
+      </p>
+      {/* Hidden until the unwind exists (4C). An escape hatch that cannot revert
+          the merge would be worse than none: the merge has already landed, so a
+          control that only "prevents" it would silently do nothing. */}
+      {onNotMyPlan ? (
+        <button
+          onClick={() => void onNotMyPlan()}
+          disabled={submitting}
+          className="mt-4 w-full py-2.5 border border-gray-200 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors disabled:opacity-50"
+        >
+          This isn&apos;t my plan
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * S292 — verdict `uncertain`. We could not tell, so we ASK rather than guess,
+ * and the document is held as a separate inactive plan until the user answers
+ * (preserve-on-uncertainty). The cost of asking is one question; the cost of a
+ * wrong silent merge is every future bill audited against a blend of two plans.
+ */
+function IdentityUncertainPrompt({
+  mismatch,
+  submitting,
+  onSamePlan,
+  onDifferentPlan,
+}: {
+  mismatch: InsurerMismatchData;
+  submitting: boolean;
+  onSamePlan: () => Promise<void>;
+  onDifferentPlan: () => Promise<void>;
+}) {
+  const onFile = mismatch.identity?.existingPlanName?.trim() || mismatch.existingPlanName?.trim();
+  return (
+    <div className="mb-5 p-5 bg-blue-50 border border-blue-200 rounded-2xl">
+      <p className="text-sm font-semibold text-gray-900 mb-1">
+        Is this the same plan you already have on file?
+      </p>
+      <p className="text-xs text-gray-600 mb-4">
+        {onFile
+          ? <>We couldn&apos;t tell from the document — <strong>{onFile}</strong> is what&apos;s on file now.</>
+          : "We couldn't tell from the document which plan it belongs to."}
+      </p>
+      <div className="flex flex-col gap-2">
+        <button
+          onClick={() => void onSamePlan()}
+          disabled={submitting}
+          className="w-full py-2.5 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50"
+        >
+          Yes, same plan
+        </button>
+        <button
+          onClick={() => void onDifferentPlan()}
+          disabled={submitting}
+          className="w-full py-2.5 border border-gray-200 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors disabled:opacity-50"
+        >
+          No, it&apos;s different
         </button>
       </div>
     </div>
@@ -402,6 +561,23 @@ function VariantBody(props: ParseTerminalViewProps) {
           submitting={props.submitting}
           onUseThisPlan={props.onUseThisPlan}
           onKeepCurrent={props.onKeepCurrent}
+        />
+      );
+    case "identity_matched":
+      return (
+        <IdentityMatchedPrompt
+          match={props.match}
+          submitting={props.submitting}
+          onNotMyPlan={props.onNotMyPlan}
+        />
+      );
+    case "identity_uncertain":
+      return (
+        <IdentityUncertainPrompt
+          mismatch={props.mismatch}
+          submitting={props.submitting}
+          onSamePlan={props.onSamePlan}
+          onDifferentPlan={props.onDifferentPlan}
         />
       );
     case "year_rollover":

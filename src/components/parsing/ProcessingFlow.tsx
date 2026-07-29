@@ -61,6 +61,20 @@ interface InsurerMismatchPayload {
   parsedInsurer?: string;
   existingPlanName?: string;
   parsedPlanName?: string;
+  /**
+   * S292 — the plan-identity resolver's verdict, when it ran. Present on all
+   * three outcomes: `same` rides a record with `mismatch: false` (the merge
+   * receipt), `different` and `uncertain` ride the mismatch payload. Absent
+   * entirely on the legacy name-comparison path, so every predicate below
+   * degrades to today's behaviour when the flag is OFF.
+   */
+  identity?: {
+    verdict?: "same" | "different" | "uncertain";
+    reason?: string;
+    evidence?: string;
+    existingPlanId?: string;
+    existingPlanName?: string | null;
+  };
   pending_canonical_match?: {
     canonicalPlanId: string;
     matchedPlanName: string;
@@ -136,6 +150,12 @@ export interface ProcessingFlowProps {
   onCancelConfirmation: () => Promise<void>;
   onUseThisPlanFromMismatch: () => Promise<void>;
   onKeepCurrentFromMismatch: () => Promise<void>;
+  /**
+   * S292 item 4C — reverts a supplement-merge the identity resolver performed.
+   * Optional: when absent the receipt hides its escape hatch rather than
+   * offering an undo that would do nothing.
+   */
+  onNotMyPlanFromMatch?: () => Promise<void>;
   onSwitchYearRollover: () => Promise<void>;
   onKeepCurrentYearRollover: () => Promise<void>;
   onConfirmCanonicalMatch: () => Promise<void>;
@@ -218,9 +238,29 @@ export function useProcessingFlowSlots(props: ProcessingFlowProps): ProcessingFl
 
   // ─── Derived predicates (mirrors upload/page.tsx:845-895 + 305-332) ────
   const isPendingReview = uploadStatus === "pending_review";
+  // S292 — the resolver merged this document into an existing plan. Rides a
+  // `mismatch: false` record, so it must be excluded from `isComplete` or the
+  // plain success view would win the priority order and the receipt would never
+  // render. Everything else about this state IS success — hence the same header.
+  // A pending canonical match is a QUESTION and outranks a receipt about a merge
+  // that already succeeded — both can ride the same record, so this is explicit
+  // rather than left to the order of the render branches.
+  const hasIdentityMatch =
+    processingProgress?.status === "processed" &&
+    !processingProgress?.insurerMismatch?.mismatch &&
+    !processingProgress?.insurerMismatch?.pending_canonical_match &&
+    !(yearRolloverEnabled && processingProgress?.insurerMismatch?.year_rollover) &&
+    processingProgress?.insurerMismatch?.identity?.verdict === "same";
+  // S292 — the resolver could not tell. Held as an inactive plan and asked
+  // about, so it travels as a mismatch but needs its own two-button prompt.
+  const hasIdentityUncertain =
+    processingProgress?.status === "processed" &&
+    !!processingProgress?.insurerMismatch?.mismatch &&
+    processingProgress?.insurerMismatch?.identity?.verdict === "uncertain";
   const isComplete =
     processingProgress?.status === "processed" &&
     !processingProgress?.insurerMismatch?.mismatch &&
+    !hasIdentityMatch &&
     !(yearRolloverEnabled && processingProgress?.insurerMismatch?.year_rollover) &&
     !processingProgress?.insurerMismatch?.pending_canonical_match;
   const isError = processingProgress?.status === "error";
@@ -400,7 +440,7 @@ export function useProcessingFlowSlots(props: ProcessingFlowProps): ProcessingFl
     return slots;
   }
 
-  // Priority 5 — Mismatch (in drop zone)
+  // Priority 5 — Mismatch / identity prompts (in drop zone)
   if (hasMismatch && processingProgress?.insurerMismatch) {
     const mm = processingProgress.insurerMismatch;
     const mismatchData: InsurerMismatchData = {
@@ -409,7 +449,25 @@ export function useProcessingFlowSlots(props: ProcessingFlowProps): ProcessingFl
       parsedInsurer: mm.parsedInsurer,
       existingPlanName: mm.existingPlanName,
       parsedPlanName: mm.parsedPlanName,
+      identity: mm.identity as InsurerMismatchData["identity"],
     };
+    // S292 — "we couldn't tell" is a different question from "these are
+    // different plans", so it gets its own prompt rather than being dressed up
+    // as a mismatch the resolver never actually asserted.
+    if (hasIdentityUncertain) {
+      slots.dropZoneContent = (
+        <ParseTerminalView
+          variant="identity_uncertain"
+          mismatch={mismatchData}
+          submitting={false}
+          onSamePlan={props.onUseThisPlanFromMismatch}
+          onDifferentPlan={props.onKeepCurrentFromMismatch}
+          fileName={fileName}
+          onUploadAnother={props.onUploadAnother}
+        />
+      );
+      return slots;
+    }
     slots.dropZoneContent = (
       <ParseTerminalView
         variant="mismatch"
@@ -451,6 +509,29 @@ export function useProcessingFlowSlots(props: ProcessingFlowProps): ProcessingFl
         submitting={false}
         onConfirmMatch={props.onConfirmCanonicalMatch}
         onRejectMatch={props.onRejectCanonicalMatch}
+        fileName={fileName}
+        onUploadAnother={props.onUploadAnother}
+      />
+    );
+    return slots;
+  }
+
+  // Priority 7.5 — S292 identity match receipt (in drop zone). Sits BELOW every
+  // question (mismatch, rollover, pending canonical) and ABOVE plain completion:
+  // the parse did succeed, so this replaces the generic "all done" with a
+  // statement of WHICH plan absorbed the document — the thing the flow never
+  // said, which is how a wrong merge stayed invisible.
+  if (hasIdentityMatch && processingProgress?.insurerMismatch?.identity) {
+    const id = processingProgress.insurerMismatch.identity;
+    slots.dropZoneContent = (
+      <ParseTerminalView
+        variant="identity_matched"
+        match={{
+          existingPlanId: id.existingPlanId,
+          existingPlanName: id.existingPlanName ?? null,
+        }}
+        submitting={false}
+        onNotMyPlan={props.onNotMyPlanFromMatch}
         fileName={fileName}
         onUploadAnother={props.onUploadAnother}
       />
