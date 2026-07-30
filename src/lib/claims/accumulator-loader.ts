@@ -112,8 +112,52 @@ export async function loadAccumulatorLedger(
     .select("dependents, active_insurance_plan_id")
     .eq("user_id", userId)
     .maybeSingle();
-  const planId = insurancePlanId ?? (profile?.active_insurance_plan_id as string | null) ?? null;
+  let planId = insurancePlanId ?? (profile?.active_insurance_plan_id as string | null) ?? null;
   if (!planId) return null;
+
+  // ── S294 (Andrew's prod E2E, half 2) — never tally an EMPTY plan while bills
+  // exist. Bills pin to the plan in force when the care happened (S291 rule)
+  // and NEVER follow later plan changes — so the moment a new plan goes active
+  // (an SBC upload mid-testing today; every member's January in real life) the
+  // active plan has zero bills and the panel read "$0 of $0 · Tallied from 0
+  // bills" while the member's whole history sat one plan-row over.
+  //
+  // When the CALLER didn't pin a plan (the generic /plan panel), fall back to
+  // the plan the MOST RECENT bill pins to. The ledger's maxes then come from
+  // THAT plan's terms — a tally is only meaningful against the terms of the
+  // plan it accrued under — and `talliedPlanName` is set so the panel can say
+  // whose ledger it is showing. An explicitly requested plan is never
+  // second-guessed.
+  let talliedPlanName: string | null = null;
+  if (insurancePlanId == null) {
+    const { data: probe } = await userScoped(supabase, userId)
+      .table("claims")
+      .select("insurance_plan_id, date_of_service")
+      .is("deleted_at", null)
+      .not("insurance_plan_id", "is", null)
+      .order("date_of_service", { ascending: false })
+      .limit(1);
+    const newest = (probe ?? [])[0] as Record<string, unknown> | undefined;
+    const newestPlanId = (newest?.insurance_plan_id as string | null) ?? null;
+    if (newestPlanId && newestPlanId !== planId) {
+      // Does the ACTIVE plan have any bills at all? Only divert when it has none.
+      const { data: activeHasBills } = await userScoped(supabase, userId)
+        .table("claims")
+        .select("id")
+        .is("deleted_at", null)
+        .eq("insurance_plan_id", planId)
+        .limit(1);
+      if ((activeHasBills ?? []).length === 0) {
+        planId = newestPlanId;
+        const { data: divertedPlan } = await userScoped(supabase, userId)
+          .table("insurance_plans")
+          .select("plan_name")
+          .eq("id", planId)
+          .maybeSingle();
+        talliedPlanName = (divertedPlan?.plan_name as string | null) ?? null;
+      }
+    }
+  }
 
   // B9 — ownership-check the plan before reading its terms (no cross-user leak); grab
   // plan_year so the caller can omit it (self-resolve the benefit year from the plan).
@@ -123,7 +167,7 @@ export async function loadAccumulatorLedger(
     .eq("id", planId)
     .maybeSingle();
   if (!ownedPlan) return null;
-  const year = planYear ?? (ownedPlan.plan_year as number | null) ?? new Date().getUTCFullYear();
+  let year = planYear ?? (ownedPlan.plan_year as number | null) ?? new Date().getUTCFullYear();
 
   const plan = await loadPlanCostShareParams(supabase, planId);
   if (!plan) return null;
@@ -135,10 +179,35 @@ export async function loadAccumulatorLedger(
     .is("deleted_at", null)
     .eq("insurance_plan_id", planId);
   if (error) return null;
-  const claimsForYear = (rawClaims ?? []).filter((c) => {
+  const claimYear = (c: unknown): number | null => {
     const dos = (c as Record<string, unknown>).date_of_service as string | null;
-    return dos != null && new Date(dos).getUTCFullYear() === year;
-  });
+    return dos ? new Date(dos).getUTCFullYear() : null;
+  };
+  let claimsForYear = (rawClaims ?? []).filter((c) => claimYear(c) === year);
+
+  // ── S294 (Andrew's prod E2E) — never tally an EMPTY year while bills exist ──
+  // The default benefit year is the linked plan's own year (a search-selected
+  // 2026 plan ⇒ 2026), but a member's bills are typically for care that already
+  // happened — 2024/2025 DOS. The year filter is actuarially RIGHT (a 2024 bill
+  // does not accumulate toward a 2026 deductible), yet filtering to a year with
+  // zero bills rendered "$0 of $0 · Tallied from 0 bills" under two uploaded
+  // bills — true, useless, and reads as broken.
+  //
+  // When the CALLER didn't pin a year, resolve to the most recent benefit year
+  // that actually HAS bills. The ledger's planYear flows to the panel label, so
+  // the header states which year is being tallied ("2025 plan year") — honest
+  // by construction, same bills-pin-to-their-year rule as S291 dispute pinning.
+  // An explicitly requested year is never second-guessed (that's the future
+  // year-switcher's contract).
+  if (claimsForYear.length === 0 && planYear == null && (rawClaims?.length ?? 0) > 0) {
+    const yearsWithBills = Array.from(
+      new Set((rawClaims ?? []).map(claimYear).filter((y): y is number => y != null)),
+    ).sort((a, b) => b - a);
+    if (yearsWithBills.length > 0) {
+      year = yearsWithBills[0];
+      claimsForYear = (rawClaims ?? []).filter((c) => claimYear(c) === year);
+    }
+  }
 
   // Dependents → family scope + attribution (only those on the same plan count).
   const onPlanDeps = parseDependents(profile?.dependents).filter((d) => d.onSamePlan);
@@ -269,7 +338,7 @@ export async function loadAccumulatorLedger(
     });
   }
 
-  return computeAccumulatorLedger({
+  const ledger = computeAccumulatorLedger({
     plan,
     planYear: year,
     claims: ledgerClaims,
@@ -279,4 +348,6 @@ export async function loadAccumulatorLedger(
     rxDeductibleIndividual: null,
     rxDeductibleFamily: null,
   });
+  // S294 — set only when the tally diverted to the most-recent-billed plan.
+  return { ...ledger, talliedPlanName };
 }

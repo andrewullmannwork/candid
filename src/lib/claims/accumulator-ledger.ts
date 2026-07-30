@@ -163,6 +163,12 @@ export type LedgerScope = "individual" | "family_aggregate" | "family_embedded";
 
 export interface AccumulatorLedger {
   planYear: number;
+  /** S294 — the plan whose bills are tallied, WHEN it differs from the plan the
+   *  caller asked about (the active plan had zero bills, so the loader diverted
+   *  to the most-recent-billed plan). Null when tallying the requested plan.
+   *  The panel appends it to the subtitle so the ledger is never silently
+   *  attributed to the wrong plan. */
+  talliedPlanName?: string | null;
   /** distinct claims counted (after best-effort dedup). */
   billsCounted: number;
   /** exact-duplicate claims dropped by dedup (§5b). */
