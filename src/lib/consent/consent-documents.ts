@@ -877,15 +877,15 @@ Airgetlam Labs LLC (operator of Candid), 7547 Leviston Avenue, El Cerrito, CA 94
   // ===========================================================================
   health_data_upload: defineConsent(
     "health_data_upload",
-    "1.6",
-    "2026-07-10",
+    "1.7",
+    "2026-07-30",
     "Health Data Consent",
     "Separate consent required before uploading medical bills, EOBs, or other health-related documents.",
     `CANDID HEALTH DATA CONSENT
-Version 1.6 — Effective July 10, 2026
+Version 1.7 — Effective July 30, 2026
 Operated by Airgetlam Labs LLC
 
-Version 1.6 amendment: Updated Section 4 (Service Providers That Receive Your Health Data) — when you contact support, Slack now receives your full support messages and any replies you send, which may include billing and plan details you choose to share (previously only your message's subject and a short preview).
+Version 1.7 amendment: Corrected Section 3(b) (Audit analysis) to describe our current checks accurately — removed "upcoding" from the list of billing issues we flag (we do not currently perform upcoding detection) and clarified that hospital price-transparency comparisons occur where that data is available. This narrows, and does not expand, the processing you consented to. The Version 1.6 amendment (Slack support-message disclosure, Section 4) is retained.
 
 IMPORTANT — PLEASE READ BEFORE UPLOADING. This Health Data Consent is SEPARATE from our Terms of Service and Privacy Policy. Under the Washington My Health My Data Act (RCW 19.373, "MHMDA") and the California Consumer Privacy Act (CCPA/CPRA), the medical-billing and insurance information in the documents you provide is consumer health data ("CHD"). We obtain your specific, informed, freely-given consent before we collect or process it. You must accept this consent before uploading any health-related document or entering health information manually.
 
@@ -917,7 +917,7 @@ What we do NOT collect or store: Social Security numbers, medical record numbers
 3. THE SPECIFIC PURPOSES WE USE YOUR HEALTH DATA FOR
 We use your health data only for the purposes below, and will not use it for anything else without your separate, additional consent.
 (a) Bill parsing — Reading your documents and extracting structured billing data, using text extraction, optical character recognition (OCR), and automated/AI analysis (see Section 3A).
-(b) Audit analysis — Comparing your charges against public benchmarks (CMS Medicare Physician Fee Schedule; published hospital price-transparency files) to flag overcharges, errors, unbundling, upcoding, or duplicates.
+(b) Audit analysis — Comparing your charges against public benchmarks (such as the CMS Medicare Physician Fee Schedule and, where available, published hospital price-transparency data) to flag overcharges, billing errors, unbundling, or duplicate charges.
 (c) Benefit matching — Comparing your bill's procedures against your plan's covered benefits to surface coverage gaps or missed in-network savings.
 (d) Dispute-letter generation — Populating letter templates with facts from your documents. You review and send every letter yourself — Candid transmits nothing to any insurer, provider, court, or regulator on your behalf.
 (e) Cost estimation — Showing price comparisons for your procedures among providers in your area.
