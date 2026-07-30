@@ -480,18 +480,43 @@ export function CostShareBanner({
    * saying the same thing would be noise.
    */
   const planDeductibleTerm = (() => {
-    const a = assumptions.find(
+    const rows = assumptions.filter(
       (x) => x.field === "deductible_applies" && x.reason === "plan_document",
     );
-    if (!a) return null;
+    if (rows.length === 0) return null;
+    const a = rows[0];
+    // S294 (Andrew) — name the actual services rather than "this". Read off the
+    // bill's OWN lines, so it stays correct for any bill: one service is named,
+    // two are joined, three or more collapse to "these services" rather than
+    // running an unbounded list through the sentence.
+    const names = Array.from(
+      new Set(rows.map((r) => r.serviceLabel).filter((n): n is string => !!n && n.trim().length > 0)),
+    );
+    const subject =
+      names.length === 1 ? names[0]
+      : names.length === 2 ? `${names[0]} and ${names[1]}`
+      : names.length > 2 ? "these services"
+      : "this";
     if (a.assumed === "subject_free" && a.value != null) {
-      return `Your plan covers this at no charge — but only after your ${money(a.value)} deductible is met.`;
+      return `Your plan covers ${subject} at no charge — but only after your ${money(a.value)} deductible is met.`;
     }
     if (a.assumed === "exempt_free") {
-      return "Your plan covers this at no charge, and the deductible doesn't apply.";
+      return `Your plan covers ${subject} at no charge, and the deductible doesn't apply.`;
     }
     return null;
   })();
+
+  /**
+   * S294 (Andrew) — where these terms came from, stated plainly and WITHOUT
+   * blocking anything. Candid's catalog extraction of a plan's SBC is the same
+   * filing the member would upload, so it no longer degrades the verdict; the
+   * member is simply told, and pointed at the upload that would make it current.
+   */
+  const planCostSourceNote = assumptions.some(
+    (x) => x.field === "deductible_applies" && x.reason === "plan_document",
+  ) && !editableServiceCost
+    ? "From Candid's plan database — upload your plan document for the most up-to-date results."
+    : null;
   const oopA = assumptions.find((a) => a.field === "oop_met");
   const acaA = assumptions.find((a) => a.field === "aca_preventive");
   const serviceCostChips = (() => {
@@ -696,7 +721,17 @@ export function CostShareBanner({
     body = "Your plan doesn't cover this service, so this cost is yours — nothing to dispute. If you believe it should be covered, tell us and we'll take another look.";
   } else {
     headline = "We can't fully check this one yet";
-    body = "We're missing your plan's cost for this service, and we won't flag a dispute we can't back up. Add it and we'll run the numbers.";
+    // S294 (Andrew) — say the ACTUAL reason. The single line below was shown for
+    // every `insufficient` verdict, so a bill whose plan cost we were DISPLAYING
+    // one row further down still claimed we were missing it — and pointed at
+    // "Add plan details", which writes a `manual` value the same gate distrusts.
+    // The instruction could not resolve the state it was describing.
+    const cardSourced = assumptions.some(
+      (a) => a.field === "plan_provenance" && a.assumed === "unverified_plan",
+    );
+    body = cardSourced
+      ? "These costs came from your insurance card which lacks the specifics needed to determine coverage. Upload your plan document and we'll re-check."
+      : "We're missing your plan's cost for this service, and we won't flag a dispute we can't back up. Add it and we'll run the numbers.";
   }
 
   const headChip: Record<CostShareVerdict, ReactNode> = {
@@ -805,7 +840,16 @@ export function CostShareBanner({
                 Row with a control — there is nothing here to change, only
                 something to know. */}
             {planDeductibleTerm && (
-              <Row icon={DocIcon} label="Plan cost" control={null}>
+              <Row
+                icon={DocIcon}
+                label="Plan cost"
+                control={null}
+                below={
+                  planCostSourceNote ? (
+                    <div className="mt-1 text-[12px] text-gray-500">{planCostSourceNote}</div>
+                  ) : undefined
+                }
+              >
                 {planDeductibleTerm}
               </Row>
             )}

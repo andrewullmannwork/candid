@@ -35,6 +35,32 @@
 
 import { resolveCoverageForLine, isInsurerDenied, type CoverageDecision } from "./coverage-decision";
 
+/**
+ * S294 — WHERE a service's cost-share numbers came from. The honesty gate turns
+ * on this, so it must describe the DATA, not the plan row that happens to hold
+ * it.
+ *
+ *   "plan_document" — read off a real coverage document: the member's own
+ *                     uploaded SBC/EOC, or Candid's catalog extraction of that
+ *                     same filing (admin-attested / cold-start regen, which
+ *                     carry a source excerpt and a section-verified flag).
+ *                     Trusted for a verdict.
+ *   "user"          — a human typed it. Trusted (they know their own plan).
+ *   "card"          — scanned off an insurance card. NOT trusted: a card rarely
+ *                     lists cost-share, and S291 caught a fabricated $0 copay
+ *                     from this path grounding a false "no issues" on a bill
+ *                     the member had paid $292.41 for.
+ *   "unknown"       — written before provenance stamping, or below the
+ *                     confidence floor. Treated as untrusted (safe direction).
+ */
+export type CostProvenance = "plan_document" | "user" | "card" | "unknown";
+
+/** The provenances a confident verdict may rest on. Everything else degrades. */
+export const TRUSTED_COST_PROVENANCE: ReadonlySet<CostProvenance> = new Set<CostProvenance>([
+  "plan_document",
+  "user",
+]);
+
 export interface PlanCoverageInput {
   covered: boolean | null;
   /** Per-visit fixed dollar amount the patient owes. Caps at allowed amount. */
@@ -62,7 +88,7 @@ export interface PlanCoverageInput {
    * told us" about a value a card scan invented. "unknown" = written before
    * provenance stamping and genuinely unattributable.
    */
-  costProvenance?: "user" | "card" | "unknown";
+  costProvenance?: CostProvenance;
   outCopay?: number | null;
   outCoinsurance?: number | null;
   outDeductibleApplies?: boolean | null;
@@ -332,6 +358,8 @@ export interface ServiceCostShare {
   outDeductibleApplies?: boolean | null;
   /** plan pays OON at in-network rates for this service → use in-network params even when OON. */
   oonPaidAtInNetwork?: boolean | null;
+  /** S294 — where THESE numbers came from. Drives the honesty gate per line. */
+  costProvenance?: CostProvenance;
 }
 
 /** Plan-level phase params (from insurance_plans). Coinsurance is decimal 0-1. */
@@ -978,7 +1006,41 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
   // regardless of tier and pass through untouched, so this can never suppress a
   // dispute or fabricate one. Flag-gated (`unverified_plan_honesty_gate_v1`,
   // mig 216) because it shifts verdicts for every card-only user.
-  const provenanceUngrounded = args.unverifiedPlanHonestyGate === true && plan.provenanceUnverified === true;
+  // ── S294 — the gate reads the DATA's provenance, not the plan row's flag ───
+  //
+  // Was: `plan.provenanceUnverified` — driven by insurance_plans.source and
+  // .verification_status. `verification_status` is stamped "document_verified"
+  // ONLY by a document-parse path, so a plan the member picked from SEARCH was
+  // permanently "unverified" no matter how well-sourced its terms were. Its
+  // cost-share comes from canonical_plan_services rows that Candid extracted
+  // from that plan's own SBC — quoted excerpt, section-verified, 0.9 confidence
+  // — i.e. the very same filing the member would have uploaded. Those were
+  // degraded identically to a fabricated card copay, forever, with no on-screen
+  // way to resolve it (Andrew, 3 rounds).
+  //
+  // Now: trust follows the numbers. `plan_document` (member upload OR Candid's
+  // catalog extraction of the same filing) and `user` (they typed it) ground a
+  // verdict; `card` and `unknown` do not — which PRESERVES the S291 case this
+  // gate was built for, where a card scan invented a $0 copay and grounded a
+  // false "no issues" on a bill the member had paid $292.41 for.
+  //
+  // Absent service coverage → falls to `unknown` → degraded, which is the same
+  // conservative answer as before for a genuinely uncovered service. The plan
+  // row's flag is still honoured for card/manual-sourced PLANS, so nothing that
+  // previously degraded on those grounds stops degrading.
+  // ⚠ FAILS OPEN, deliberately — S291's rule, and the s291-plan-honesty fixture
+  // caught me breaking it. Most rows written before provenance stamping carry
+  // NO provenance; degrading all of them would silently mass-downgrade every
+  // legacy member's bills. So absence is never evidence of fabrication. Only a
+  // POSITIVELY identified card scan degrades — which is exactly the S291 case
+  // (a card-invented $0 copay grounding a false "no issues"), and nothing wider.
+  const serviceProvenance: CostProvenance = service?.costProvenance ?? "unknown";
+  const provenanceUnverified =
+    serviceProvenance === "card" ||
+    // A plan ASSEMBLED from a card photo / hand entry stays untrusted even when
+    // an individual service row looks better sourced than the plan around it.
+    plan.provenanceUnverified === true;
+  const provenanceUngrounded = args.unverifiedPlanHonestyGate === true && provenanceUnverified;
   if (provenanceUngrounded) {
     // Recorded even when another clause already forces `insufficient`, so the
     // banner can name the ACTUAL remedy ("add your plan document") instead of

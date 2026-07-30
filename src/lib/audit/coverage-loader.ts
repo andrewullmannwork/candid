@@ -15,7 +15,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { loadCatalogIdentity } from "../plan/catalog-identity";
-import type { PlanCoverageInput } from "../claims/recovery-math";
+import type { PlanCoverageInput, CostProvenance } from "../claims/recovery-math";
 import type { ParsedBill } from "../billing/types";
 import {
   buildAcaCoverageFallback,
@@ -427,14 +427,51 @@ export function resolveSecondaryCoverage(
  *               which is why mig 217 could not be written safely. Must never be
  *               rendered as "you told us" — we don't know that.
  */
-function readCostProvenance(row: Record<string, unknown>): "user" | "card" | "unknown" {
+/**
+ * S294 — sources that mean "these numbers were read off a real coverage
+ * DOCUMENT". The honesty gate turns on this distinction, so the list is
+ * explicit rather than a negation: anything not named here is treated as
+ * undocumented, which is the safe direction.
+ *
+ * `admin_attested` and `coldstart_regen_v1` are the catalog's own SBC
+ * extractions — the same filing the member would upload, parsed with a source
+ * excerpt and a section-verified flag. `sbc_parser` / `plan_doc*` / `eoc*` are
+ * the member's own uploads.
+ */
+const DOCUMENTED_COST_SOURCES = new Set([
+  "sbc_parser",
+  "plan_doc_parser",
+  "plan_document",
+  "eoc_parser",
+  "eoc_upload",
+  "admin_attested",
+  "coldstart_regen_v1",
+]);
+
+/** Confidence a documented row must clear to count as documented (Data Rule #8:
+ *  single-source starts at 0.5). Deliberately the SAME floor the dispute letter
+ *  already applies (MIN_PLAN_BENEFIT_CONFIDENCE) — one bar, not a new one. */
+export const DOCUMENTED_COST_CONFIDENCE_FLOOR = 0.5;
+
+function readCostProvenance(row: Record<string, unknown>): CostProvenance {
   const fp = row.field_provenance as Record<string, { source?: string }> | null | undefined;
   const src = fp?.in_copay?.source ?? fp?.in_coinsurance?.source ?? null;
   if (src === "user_correction" || src === "user_initial_entry") return "user";
   if (src === "card_corroboration") return "card";
   // Row-level source still identifies post-fix card writes even if the blob
   // wasn't selected on this path.
-  if ((row.source as string | null) === "insurance_card") return "card";
+  const rowSource = (row.source as string | null) ?? null;
+  if (rowSource === "insurance_card") return "card";
+  // S294 — a member's own parsed plan document. This is what the honesty gate
+  // was always meant to trust; it previously had no way to say so, because
+  // provenance was read from a flag on the PLAN ROW rather than from the row
+  // carrying the numbers.
+  if (
+    (src && DOCUMENTED_COST_SOURCES.has(src)) ||
+    (rowSource && DOCUMENTED_COST_SOURCES.has(rowSource))
+  ) {
+    return "plan_document";
+  }
   return "unknown";
 }
 
@@ -541,9 +578,22 @@ export async function loadCanonicalCoverageRows(
  * `canonical_archive` so the letter layer keeps that distinction.
  */
 export function canonicalCoverageFromRow(row: Record<string, unknown>): PlanCoverageInput {
+  // S294 — the catalog's own SBC extraction is document provenance. Gated on
+  // the ROW's declared source + confidence, never on "it lives in the canonical
+  // table": promotion paths evolve, and a weak row landing here must not
+  // inherit trust from its neighbours (the same reason mig 218 stores a link's
+  // confidence alongside the link).
+  const src = (row.source as string | null) ?? null;
+  const conf = (row.confidence as number | null) ?? null;
+  const documented =
+    !!src &&
+    DOCUMENTED_COST_SOURCES.has(src) &&
+    conf != null &&
+    conf >= DOCUMENTED_COST_CONFIDENCE_FLOOR;
   return {
     covered: (row.covered as boolean | null) ?? null,
     copay: (row.in_copay as number | null) ?? null,
+    costProvenance: documented ? "plan_document" : "unknown",
     // canonical_plan_services.in_coinsurance is decimal-stored; normalize
     // defensively (parity with planCoverageFromRow).
     coinsurance: normalizeCoinsuranceForStorage(row.in_coinsurance as number | null),

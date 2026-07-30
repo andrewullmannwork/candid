@@ -277,6 +277,51 @@ const meta = (rows: Array<{ slug: string; deductibleApplies?: boolean | null; co
   }
 }
 
+// ── 8. THE HONESTY GATE reads the DATA's provenance, not the plan row ────────
+// S291's case must keep degrading; a search-selected plan backed by Candid's
+// own SBC extraction must NOT. This is the substance of Andrew's 3-round report.
+{
+  const NO_OV = { deductibleMet: false, deductibleMetAsOf: null, oopMet: null, oopMetAsOf: null, userNetworkOverride: "in_network" as const };
+  const run = (costProvenance: string | undefined, planUnverified: boolean) =>
+    computeCostShareV2({
+      line: { billed: 330, allowed: 330, insuranceAdjusted: 0, patientPaid: 0, patientResponsibility: 330 },
+      service: { covered: true, copay: 0, coinsurance: null, deductibleApplies: true, costProvenance: costProvenance as never },
+      insurer: { memberAppliedToDeductible: null, memberCoinsurance: null, memberCopay: null, deniedAmount: null, insurancePaid: null },
+      plan: { ...EMPTY_PLAN_COST_SHARE_PARAMS, inDeductibleIndividual: 7250, inOopMaxIndividual: 7250, coverageTier: "individual", provenanceUnverified: planUnverified },
+      accumulator: null, overrides: NO_OV, networkLine: null, networkClaim: null, minRecovery: 1,
+      unverifiedPlanHonestyGate: true,
+    });
+
+  // Trusted: the member's own document, Candid's extraction of the same filing,
+  // or a value they typed themselves.
+  check("8a plan_document → real verdict", run("plan_document", false).verdict !== "insufficient", run("plan_document", false).verdict);
+  check("8b user-typed → real verdict", run("user", false).verdict !== "insufficient", run("user", false).verdict);
+
+  // ⚠ S291 REGRESSION LOCK — a card scan invented a $0 copay and grounded a
+  // false "no issues" on a bill the member had paid $292.41 for. It must always
+  // degrade, whatever else changes around it.
+  check("8c CARD-sourced → still degrades (S291)", run("card", false).verdict === "insufficient", run("card", false).verdict, "insufficient");
+  // ⚠ FAILS OPEN on absence — S291's deliberate rule, not an oversight. Rows
+  // written before provenance stamping carry none, and degrading them all would
+  // silently mass-downgrade every legacy member. Absence is not evidence of
+  // fabrication; only a positively identified card scan is. (I initially built
+  // this the other way round and s291-plan-honesty-fixture caught it — the
+  // reason that fixture exists.)
+  check("8d unknown provenance → FAILS OPEN, real verdict (no mass-downgrade)", run("unknown", false).verdict !== "insufficient", run("unknown", false).verdict);
+  check("8e absent provenance → FAILS OPEN, real verdict", run(undefined, false).verdict !== "insufficient", run(undefined, false).verdict);
+
+  // A plan ASSEMBLED from a card/manual entry stays untrusted even if one
+  // service row looks better sourced than the plan around it.
+  check("8f card/manual PLAN degrades even with documented service rows",
+    run("plan_document", true).verdict === "insufficient", run("plan_document", true).verdict, "insufficient");
+
+  // The degraded case must still NAME itself, so the banner can say the true
+  // reason instead of "we're missing your plan's cost".
+  check("8g degraded verdict emits plan_provenance so the copy can be honest",
+    run("card", false).assumptions.some((a) => a.field === "plan_provenance"),
+    run("card", false).assumptions.map((a) => a.field));
+}
+
 if (fails.length) {
   console.error(`\ns294 canonical-coverage fixture: ${pass} passed, ${fails.length} failed`);
   for (const f of fails) console.error("  " + f);
