@@ -23,6 +23,7 @@
 
 import { Fragment, useState, type ReactNode } from "react";
 import { Row } from "@/components/shared/InputRow";
+import { PatientIdentityChoices } from "@/components/disputes/PatientIdentityChoices";
 import {
   ServiceAttestationFlow,
   type AttestationLine,
@@ -159,7 +160,15 @@ export interface CaseNeedsPanelProps {
     serviceAttestationReviewed: boolean;
     attestingAsName?: string;
   }) => void | Promise<void>;
-  onConfirmName: () => void;
+  /**
+   * S294 — replaces the one-click `onConfirmName`. That button resolved the
+   * identity mismatch with NO choice: on a dependent's bill it suppressed the
+   * rail's three-choice question and later renders fell back to the ACCOUNT
+   * name — an outbound letter naming the wrong patient (observed live, bug 2
+   * of Andrew's prod E2E). Same contract as UnifiedTodo.onResolvePatient; both
+   * surfaces render the shared PatientIdentityChoices form.
+   */
+  onResolvePatient: (choice: "me" | "dependent" | "wrong", correctedName?: string) => void;
   onEditLetter: () => void;
   onReviewAttestation: () => void;
   onAddProviderAddress: () => void;
@@ -498,7 +507,7 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
     collectorFirstContactDate,
     planLabel, showInsuranceRow, canChangePlan, readiness,
     coverageVerifyGaps, onCoverageVerify, rerunAuditEnabled, auditFindingsMissing, onAuditRerun,
-    onAddPlanDetails, onConfirmParsedCosts, onRejectParsedCost, onConfirmName, onEditLetter,
+    onAddPlanDetails, onConfirmParsedCosts, onRejectParsedCost, onResolvePatient, onEditLetter,
     onReviewAttestation,
     claimFacts, attestationLines, attestedLineItemIds, accountName, attestingAsName, onAttest,
     onAddProviderAddress, onAddInsurerAddress, onUploadEob, onSaveAmountPaid,
@@ -511,6 +520,8 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   // S293 (#5) — the one-block's "Something's wrong" expansion (per-item edits +
   // the didn't-receive attestation flow).
   const [detailsWrongMode, setDetailsWrongMode] = useState(false);
+  // S294 — the shared three-choice patient-identity form, expanded below its row.
+  const [nameChoicesOpen, setNameChoicesOpen] = useState(false);
   const close = () => setOpenEditor(null);
 
   const insurerTrack = INSURER_TRACK.has(letterType);
@@ -868,9 +879,27 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
         label="Verify the patient name"
         control={
           <div className="flex items-center gap-2">
-            <AddButton label="This is me" onClick={onConfirmName} />
+            {/* S294 — opens the SAME three-choice form the rail uses (shared
+                PatientIdentityChoices), replacing the one-click "This is me"
+                that resolved with no choice and no dependent path. */}
+            <AddButton label="Resolve name" onClick={() => setNameChoicesOpen((o) => !o)} />
             <button type="button" onClick={onEditLetter} className="whitespace-nowrap text-[13px] font-medium text-gray-500 hover:text-gray-700">Edit</button>
           </div>
+        }
+        below={
+          nameChoicesOpen && billName && profileName ? (
+            <div className="mt-2">
+              <PatientIdentityChoices
+                billName={billName}
+                profileName={profileName}
+                onResolve={(choice, correctedName) => {
+                  onResolvePatient(choice, correctedName);
+                  setNameChoicesOpen(false);
+                }}
+                onCancel={() => setNameChoicesOpen(false)}
+              />
+            </div>
+          ) : undefined
         }
       >
         {billName && profileName
