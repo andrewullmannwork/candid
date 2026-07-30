@@ -6,7 +6,7 @@ cluster: "claim"
 order: "4"
 target_query: "how to get an itemized bill from a hospital"
 published: "2026-07-27"
-last_updated: "2026-07-27"
+last_updated: "2026-07-30"
 ---
 
 Call the hospital's billing office or send a message through the patient portal: "Please send me a fully itemized bill for account [number], listing every charge with billing codes, quantities, and dates of service." Billing offices handle this request every day. The summary statement you got in the mail is ***NOT*** an itemized bill.
@@ -65,7 +65,7 @@ Three fast checks before any deeper audit:
 2. **Dates.** Every date of service should be a day you were actually there. Compare against your admission and discharge paperwork, not memory alone.
 3. **Room and level charges.** Nights billed times the room rate should match your stay, and the level of care billed - standard room versus specialty unit - should match where you actually were. If you were moved between units, the dates for each level should line up with the move.
 
-Those three catch the loud errors. The full catalog of errors - duplicates, upcoding, unbundling, etc. - is in common medical billing errors.
+Those three catch the loud errors. The full catalog of errors - duplicates, upcoding, unbundling, etc. - is in [common medical billing errors](/learn/common-medical-billing-errors).
 
 ## Pair it with your EOB before you pay
 
@@ -81,7 +81,7 @@ Most requests just take time - same-day by portal at best, a few weeks by mail a
 
 If a rep claims the summary is all that exists: every charge on your account was entered line by line in the hospital's billing system. This means a line-level record exists; the question is only whether it gets printed for you. Ask for the **billing supervisor**, then the **patient advocate** (patient relations) if you need to escalate. And move the request into writing: a portal message makes the trail undeniable, and if portal and phone both fail, a letter by certified mail with a return receipt starts the clock on your escalation.
 
-Two more cards to play. You have a right to your own medical records, and those records document what care actually took place. If a specific charge needs backup, request the matching record (for drug charges, the medication administration record) and compare. A charge that can't be matched to any record is a charge you dispute: the written-dispute process, account holds and all, is in [how to fight a medical bill](/learn/how-to-fight-a-medical-bill).
+Two more cards to play. You have a [right to your own medical records](https://www.hhs.gov/hipaa/for-individuals/medical-records/index.html), and those records document what care actually took place. If a specific charge needs backup, request the matching record (for drug charges, the medication administration record) and compare. A charge that can't be matched to any record is a charge you dispute: the written-dispute process, account holds and all, is in [how to fight a medical bill](/learn/how-to-fight-a-medical-bill).
 
 ## The fastest free way to do all of this
 

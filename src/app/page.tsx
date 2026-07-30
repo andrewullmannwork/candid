@@ -479,10 +479,30 @@ function CompareMockup() {
 
 /* ── Stat strip ──────────────────────────────────────────────────────── */
 function StatStrip() {
+  // Copy sheet v6.2 (Andrew-approved 2026-07-30). Every figure is exactly what
+  // its linked source says — cites render as links deliberately: fact-check
+  // armor for readers and a citation signal for AI engines. The prior tiles
+  // (MBAA "3 in 4", "$1,300" NerdWallet, "92%" CDC) were untraceable or
+  // misattributed and must not be reintroduced (sheet §H).
   const stats = [
-    { num: "3 in 4",  label: "medical bills contain errors",         cite: "Medical Billing Advocates of America" },
-    { num: "$1,300",  label: "average overcharge on large bills",    cite: "NerdWallet / MBAA billing analysis" },
-    { num: "92%",     label: "of covered preventive benefits go unused", cite: "CDC preventive services utilization data" },
+    {
+      num: "100 million",
+      label: "Americans carry medical debt",
+      cite: "KFF Health News · NPR",
+      href: "https://kffhealthnews.org/news/article/diagnosis-debt-investigation-100-million-americans-hidden-medical-debt/",
+    },
+    {
+      num: "$262 billion",
+      label: "in hospital claims denied",
+      cite: "Change Healthcare analysis, 2016",
+      href: "https://www.healthcaredive.com/news/report-262b-in-healthcare-claims-initially-denied-last-year/445758/",
+    },
+    {
+      num: "<1%",
+      label: "of denied claims are ever appealed",
+      cite: "KFF · healthcare.gov plans, 2023",
+      href: "https://www.kff.org/private-insurance/healthcare-gov-insurers-denied-nearly-1-in-5-in-network-claims-in-2023-but-information-about-reasons-is-limited-in-public-data/",
+    },
   ];
   return (
     <div className="stats">
@@ -491,7 +511,12 @@ function StatStrip() {
           <div className="stat-cell" key={i}>
             <div className="stat-num">{s.num}</div>
             <div className="stat-label">{s.label}</div>
-            <div className="stat-cite"><span className="stat-cite-dot" />{s.cite}</div>
+            <div className="stat-cite">
+              <span className="stat-cite-dot" />
+              <a href={s.href} target="_blank" rel="noopener noreferrer" className="stat-cite-link">
+                {s.cite}
+              </a>
+            </div>
           </div>
         ))}
       </div>

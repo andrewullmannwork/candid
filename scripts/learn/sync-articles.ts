@@ -35,6 +35,19 @@ const PUBLISHED: string[] = [
   "Approved-claim-04_how-to-get-an-itemized-hospital-bill",
   "Approved-benefits-01_what-does-my-health-insurance-actually-cover",
   "Approved-benefits-02_how-to-read-an-eob",
+  // ── Wave E2 (2026-07-30) — completes the Claim cluster + the first five
+  // editorial pieces. Publishing this wave also promotes the ~30 cross-links
+  // that E1 shipped as plain text.
+  "Approved-claim-05_common-medical-billing-errors",
+  "Approved-claim-06_medical-bill-in-collections",
+  "Approved-claim-07_hospital-charity-care-financial-assistance",
+  "Approved-claim-08_no-surprises-act-explained",
+  "Approved-claim-09_how-to-appeal-a-denied-health-insurance-claim",
+  "Approved-editorial-01_what-to-do-when-you-get-a-hospital-bill",
+  "Approved-editorial-02_how-to-audit-an-er-bill",
+  "Approved-editorial-03_how-to-verify-your-bill-with-medical-records",
+  "Approved-editorial-06_hospital-billing-phone-scripts",
+  "Approved-editorial-08_who-to-complain-to-about-a-medical-bill",
 ];
 
 /**

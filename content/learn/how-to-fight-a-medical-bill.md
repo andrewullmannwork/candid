@@ -6,12 +6,12 @@ cluster: "claim"
 order: "1"
 target_query: "how to fight a medical bill"
 published: "2026-07-27"
-last_updated: "2026-07-28"
+last_updated: "2026-07-30"
 ---
 
 ## First, understand what a medical bill actually is
 
-A medical bill is an opening position, not a verdict. The number on it is not necessarily the correct amount. It also may not be what you owe under your plan. Three out of four medical bills contain errors (Medical Billing Advocates of America), but bills only get corrected when people challenge them.
+A medical bill is an opening position, not a verdict. The number on it is not necessarily the correct amount. It also may not be what you owe under your plan. [Nearly half of insured adults](https://www.commonwealthfund.org/publications/issue-briefs/2024/aug/unforeseen-health-care-bills-coverage-denials-by-insurers) say they have been billed for something they thought was covered, and among people who disputed a bill, 38% got it reduced or erased. Most people never challenge at all, and the most common reason is not knowing they can. That is the entire case for checking before you pay.
 
 So before anything else, two rules:
 1. **Don't panic pay.** Once you've paid, you're negotiating for a refund instead of disputing a charge. That's a much weaker position. Putting it on a **credit card is even worse** since debt and interest accrue while you dispute.
@@ -47,7 +47,7 @@ The anchor number is the EOB's **patient responsibility** - what your insurer sa
 | **Balance billing**                    | You were billed the gap between the provider's charge and your insurer's allowed amount (the plan's negotiated price) | The provider, with your EOB as evidence |
 | **Surprise billing**                   | Emergency care, or an out-of-network provider at an in-network facility                                               | Federal surprise-billing protections    |
 
-Not sure what errors look like on paper? Start with the seven billing errors worth checking for. If a covered claim was denied, the path is an insurance appeal. And if an out-of-network charge appeared where you never chose an out-of-network provider, read our No Surprises Act explainer before you pay anything.
+Not sure what errors look like on paper? Start with [the seven billing errors worth checking for](/learn/common-medical-billing-errors). If a covered claim was denied, the path is [an insurance appeal](/learn/how-to-appeal-a-denied-health-insurance-claim). And if an out-of-network charge appeared where you never chose an out-of-network provider, read [our No Surprises Act explainer](/learn/no-surprises-act-explained) before you pay anything.
 
 ## Step 4: Dispute in writing
 
@@ -73,7 +73,7 @@ One "no" from a billing rep is not the end of the process. It's the end of the f
 
 - **If the insurer processed it wrong:** file the appeal. Your denial letter and plan documents spell out the process and its deadlines - follow them exactly.
 - **If the billing office stonewalls:** ask for the hospital's **patient advocate** (sometimes "patient relations"). Advocates exist to resolve exactly this kind of standoff, and they can reach people the billing line can't.
-- **If the insurer stonewalls:** file a complaint with your state insurance department. Regulators read those, and insurers answer them.
+- **If the insurer stonewalls:** file a complaint with your [state insurance department](https://content.naic.org/state-insurance-departments). Regulators read those, and insurers answer them.
 - **If the billing conduct itself feels abusive:** your state attorney general's consumer-protection office takes complaints about billing practices.
 
 Every escalation works better with your paper trail attached: dates, names, reference numbers, copies.
@@ -82,13 +82,13 @@ Every escalation works better with your paper trail attached: dates, names, refe
 
 The dispute will take weeks. Spend them:
 
-**Checking financial assistance.** Nonprofit hospitals are federally required to have financial assistance policies - often called charity care - and many other providers have them too. Eligibility is income-based, and applying while a dispute is open is fair game. Here's how hospital charity care works.
+**Checking financial assistance.** Nonprofit hospitals are federally required to have financial assistance policies - often called charity care - and many other providers have them too. Eligibility is income-based, and applying while a dispute is open is fair game. Here's [how hospital charity care works](/learn/hospital-charity-care-financial-assistance).
 
 **Negotiate whatever survives the audit.** Once the bill is corrected, the remaining number is still movable: self-pay discounts, lump-sum settlements, interest-free payment plans. The scripts are in [how to negotiate a medical bill](/learn/how-to-negotiate-a-medical-bill).
 
 ## What if it's already in collections?
 
-You still have options. Federal law requires a debt collector to send you a written validation notice - what they claim you owe, and to whom - within five days of first contacting you. You then have 30 days from receiving that notice to dispute the debt in writing, and a timely written dispute pauses collection until they verify it. Do that before paying a collector anything, and keep disputing the underlying bill with the provider. The full playbook is in medical bills in collections.
+You still have options. Federal law requires a debt collector to send you a written validation notice - what they claim you owe, and to whom - within five days of first contacting you. You then have 30 days from receiving that notice to dispute the debt in writing, and a timely written dispute pauses collection until they verify it. Do that before paying a collector anything, and keep disputing the underlying bill with the provider. The full playbook is in [medical bills in collections](/learn/medical-bill-in-collections).
 
 If things escalate toward a lawsuit or wage garnishment, consider consulting an attorney - legal aid is free for many people.
 

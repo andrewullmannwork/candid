@@ -194,7 +194,9 @@ export default async function LearnArticlePage({
                 {AUTHOR.name}
               </Link>
             </p>
-            <p className="learn-authorbox-bio">{AUTHOR.bio}</p>
+            <p className="learn-authorbox-bio">
+              {AUTHOR.name} is the founder of Candid. {AUTHOR.bio}
+            </p>
           </aside>
         </article>
       </main>

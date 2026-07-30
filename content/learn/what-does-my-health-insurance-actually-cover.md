@@ -6,7 +6,7 @@ cluster: "benefits"
 order: "1"
 target_query: "what does my health insurance cover"
 published: "2026-07-27"
-last_updated: "2026-07-28"
+last_updated: "2026-07-30"
 ---
 
 Your health insurance covers exactly what your plan documents say it covers - nothing more, nothing less. Four documents hold the full answer: the Summary of Benefits and Coverage (SBC), the plan contract (often called the Evidence of Coverage, or EOC), the drug formulary, and the provider directory. Here's how to read them in minutes, and how to verify coverage before every appointment.
@@ -30,7 +30,7 @@ Four documents, four jobs:
 | **Drug formulary**                                                                   | The list of prescription drugs your plan covers, sorted into tiers - pricing groups that set your share | Check any prescription before you fill it                                   |
 | **Provider directory**                                                               | The list of doctors and facilities in your network - providers your plan has negotiated prices with     | Find in-network care, then verify by phone                                  |
 
-All four typically live in your insurer's member portal. Can't find one? Call the member-services number on the back of your insurance card and ask for each by name, or ask your employer's benefits contact. The SBC isn't optional - every plan must provide one.
+All four typically live in your insurer's member portal. Can't find one? Call the member-services number on the back of your insurance card and ask for each by name, or ask your employer's benefits contact. The SBC isn't optional - [every plan must provide one](https://www.healthcare.gov/health-care-law-protections/summary-of-benefits-and-coverage/).
 
 And because SBCs are standardized, they're built for side-by-side reading. That's the backbone of comparing plans during open enrollment.
 
@@ -51,7 +51,7 @@ That's it. Ten minutes, and you know your plan better than most people ever know
 
 You're paying for these whether you use them or not. Plans differ, so treat this as a verification checklist, not a promise that your plan includes all of it:
 
-- **Preventive care at no cost.** ACA-compliant plans cover a defined list of preventive services at no cost to you when you stay in-network - categories like screenings, immunizations, and annual wellness visits. One catch: the same visit can be billed as preventive or diagnostic depending on why it happens, so ask how it will be billed when you book.
+- **Preventive care at no cost.** ACA-compliant plans cover a [defined list of preventive services](https://www.healthcare.gov/coverage/preventive-care-benefits/) at no cost to you when you stay in-network - categories like screenings, immunizations, and annual wellness visits. One catch: the same visit can be billed as preventive or diagnostic depending on why it happens, so ask how it will be billed when you book.
 - **Mental-health coverage.** Federal parity law says a plan's mental-health and substance-use benefits can't be more restrictive than its comparable medical benefits. Check the mental-health rows of your SBC the same way you'd check any specialist visit.
 - **Telehealth.** Many plans cover virtual visits, sometimes at a lower cost than the same visit in person. Look for a telehealth line on the SBC or a telehealth option in your portal.
 - **Physical, occupational, and speech therapy.** Often covered with a visit limit per year. The limit - and whether prior authorization is required - is in the plan contract; search the PDF for "therapy."
@@ -69,7 +69,7 @@ The coverage question should be answered before the appointment, not after the b
 
 > "I want to verify coverage before an appointment. Is this service covered under my plan? Is prior authorization required? Is this provider in-network for my specific plan? And can I get a reference number for this call?"
 
-The reference number is the point of the call. If the claim is later processed differently from what you were told, that record is your evidence - and the first exhibit in an appeal.
+The reference number is the point of the call. If the claim is later processed differently from what you were told, that record is your evidence - and the first exhibit in [an appeal](/learn/how-to-appeal-a-denied-health-insurance-claim).
 
 ## Coverage and network are different questions - check both
 
@@ -77,7 +77,7 @@ The reference number is the point of the call. If the claim is later processed d
 
 For anything at a hospital or surgery center, check the facility and the people separately. The building can be in-network while someone treating you inside it isn't. Directories go stale, so confirm twice: search the directory using your network's exact name, then ask the provider's office, "Are you in-network with my specific plan?" - and name the plan, not just the insurer. If possible, have the provider send you confirmation in writing. 
 
-NOTE: Emergencies and certain surprise out-of-network bills play by different rules - that's the No Surprises Act, explained.
+NOTE: Emergencies and certain surprise out-of-network bills play by different rules - that's [the No Surprises Act, explained](/learn/no-surprises-act-explained).
 
 One more layer: after care happens, your insurer produces an explanation of benefits showing exactly how the claim was processed. Reading it takes five minutes once you know the lines - [here's the walkthrough](/learn/how-to-read-an-eob). Know what you have. Verify before. Audit after.
 
@@ -103,7 +103,7 @@ Search the plan contract for the service by name, then call member services to c
 
 ### What if my insurer says something isn't covered but my documents say it is?
 
-Ask the insurer to point to the exact contract language behind the decision. If the answer doesn't hold up against your Evidence of Coverage, you can challenge it - plans have a formal review process. Here's how to appeal a denied claim.
+Ask the insurer to point to the exact contract language behind the decision. If the answer doesn't hold up against your Evidence of Coverage, you can challenge it - plans have a formal review process. Here's [how to appeal a denied claim](/learn/how-to-appeal-a-denied-health-insurance-claim).
 
 ### Where do I find my plan documents?
 

@@ -6,7 +6,7 @@ cluster: "claim"
 order: "3"
 target_query: "how to know if you were overcharged medical bill"
 published: "2026-07-27"
-last_updated: "2026-07-28"
+last_updated: "2026-07-30"
 ---
 
 To find out if you were overcharged, put your itemized bill next to your Explanation of Benefits (EOB) which is your insurer's statement of what you actually owe. Match them line by line. Every charge should appear on both documents. Anything unmatched, denied, or inflated is a dispute candidate.
@@ -36,7 +36,7 @@ Every problem line lands in one of three buckets, and each bucket has a differen
 
 **Bucket A** often traces to a registration typo - a wrong member ID, an old policy on file. The script: "Please submit this charge to my insurance and send me a new statement after it's processed. I'm not paying it before then."
 
-**Bucket B** is an insurance fight, not a provider fight. If the denial reason is clerical (wrong ID, wrong date), requesting corrected details and a resubmission can clear it. If the plan genuinely refused a service you believe is covered, that's an appeal, and it has deadlines printed right on the denial. Useful question for the insurer's phone rep: "What exactly would make this claim payable - a corrected detail, a record, a different network status?" Write the answer down and remember to get your reference number. That's your fix list.
+**Bucket B** is an insurance fight, not a provider fight. If the denial reason is clerical (wrong ID, wrong date), requesting corrected details and a resubmission can clear it. If the plan genuinely refused a service you believe is covered, that's [an appeal](/learn/how-to-appeal-a-denied-health-insurance-claim), and it has deadlines printed right on the denial. Useful question for the insurer's phone rep: "What exactly would make this claim payable - a corrected detail, a record, a different network status?" Write the answer down and remember to get your reference number. That's your fix list.
 
 **Bucket C** may be **balance billing** - charging you the gap between the provider's sticker price and the insurer's allowed amount. An in-network provider's contract with your insurer generally forbids exactly that. Your EOB is your receipt for what you owe. The dispute is one sentence: "My EOB dated [date] shows my responsibility as [amount]; your bill says more; please correct it."
 
@@ -53,11 +53,11 @@ Every problem line lands in one of three buckets, and each bucket has a differen
 Fifteen minutes for a routine visit. Longer for a hospital stay, because there are more lines - not because any line is harder.
 
 For a more detailed overview (including scripts for calls and written communication), you can use any combination of the resources below: 
-* How to verify your bill with your medical records
-* What to do when you get a hospital bill
-* Who to complain to about a medical bill
-* how to audit an ER bill
-* Common medical bill errors
+* [How to verify your bill with your medical records](/learn/how-to-verify-your-bill-with-medical-records)
+* [What to do when you get a hospital bill](/learn/what-to-do-when-you-get-a-hospital-bill)
+* [Who to complain to about a medical bill](/learn/who-to-complain-to-about-a-medical-bill)
+* [how to audit an ER bill](/learn/how-to-audit-an-er-bill)
+* [Common medical bill errors](/learn/common-medical-billing-errors)
 
 ## Only have five minutes? Run the triage version
 
@@ -71,9 +71,9 @@ While you match lines, watch for the classics:
 - **Services you didn't receive** - including tests that were ordered, then canceled.
 - **Wrong quantities** - the units column claiming more than you got.
 - **Dates that don't match your visit** - care billed for days you weren't there.
-- **A separate bill from a provider you never met** - often someone out-of-network at your in-network facility. Federal surprise-billing protections may apply: check the No Surprises Act explainer before paying that one.
+- **A separate bill from a provider you never met** - often someone out-of-network at your in-network facility. [Federal surprise-billing protections](https://www.cms.gov/nosurprises) may apply: check [the No Surprises Act explainer](/learn/no-surprises-act-explained) before paying that one.
 
-Each of these has a specific tell and a specific challenge script - the full list lives in common medical billing errors.
+Each of these has a specific tell and a specific challenge script - the full list lives in [common medical billing errors](/learn/common-medical-billing-errors).
 
 ## How do you price-check a single charge?
 
@@ -96,7 +96,7 @@ Don't call and vent - dispute in writing: the specific lines, the reasons, copie
 
 ## What if the numbers match but the bill still hurts?
 
-Then the bill is probably accurate - and possibly still movable. Correct and affordable are different questions. Work the discount, settlement, and payment-plan ladder in [how to negotiate a medical bill](/learn/how-to-negotiate-a-medical-bill), and check whether you qualify for hospital financial assistance - nonprofit hospitals are federally required to have a policy.
+Then the bill is probably accurate - and possibly still movable. Correct and affordable are different questions. Work the discount, settlement, and payment-plan ladder in [how to negotiate a medical bill](/learn/how-to-negotiate-a-medical-bill), and check whether you qualify for [hospital financial assistance](/learn/hospital-charity-care-financial-assistance) - nonprofit hospitals are federally required to have a policy.
 
 ## The fastest free way to do all of this
 

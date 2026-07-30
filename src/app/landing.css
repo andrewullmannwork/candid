@@ -624,3 +624,8 @@
   text-decoration: none;
 }
 .faq-item a:hover { text-decoration: underline; }
+
+/* Stat-strip cites are links now (copy sheet v6.2): inherit the muted cite
+   look, underline only on hover so the strip stays quiet. */
+.stat-cite-link { color: inherit; text-decoration: none; }
+.stat-cite-link:hover { text-decoration: underline; }

@@ -14,10 +14,11 @@ export const AUTHOR = {
   path: "/about",
   role: "Founder, Candid",
   /**
-   * Shown under every guide's byline. Kept factual: what he does and why he
-   * built the tool. No credential claims we cannot stand behind.
+   * Shown in the author box on every guide and on /about — Andrew-approved
+   * final wording (copy sheet v6.2, 2026-07-30). Factual, professional, no
+   * personal narrative, no credential claims we cannot stand behind.
    */
-  bio: "Andrew Ullmann is the founder of Candid. He built it after going line by line through his own medical bills and finding that the numbers on them frequently did not survive a careful check. He writes these guides from the same process the product automates: get the itemized bill, match it to the explanation of benefits, and dispute what does not hold up.",
+  bio: "He builds the Candid software that checks medical bills against EOBs, insurance plan documents, and the federal patient protection rules. These guides walk through the same checks, so you can run them yourself.",
   /**
    * Personal profiles for the Person entity. Deliberately EMPTY for now: the
    * LinkedIn page on file (linkedin.com/company/candidclaim) is the COMPANY,
