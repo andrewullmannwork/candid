@@ -758,8 +758,16 @@ export function ClaimDetail({
           setCsOverrideError(d.error || `Couldn't save your change (${res.status}).`);
           return;
         }
+        // S295 — the answered row's value is re-derived by the ENGINE server-side,
+        // so `refetchClaim` stays awaited: unpinning before it lands would show
+        // the pre-answer value for a beat. What does NOT need to gate the control
+        // is `onClaimUpdated` — that refetches the whole claims LIST purely to
+        // refresh the parent BillCard chrome. Awaiting it put a second full GET
+        // in the click path of every assumption answer (step 1), on top of
+        // /api/claims/[claimId], which is ~24 Supabase queries and can re-run the
+        // audit inline. Fire it in the background instead.
         await refetchClaim();
-        if (onClaimUpdated) await onClaimUpdated();
+        if (onClaimUpdated) void onClaimUpdated();
       } catch {
         setCsOverrideError("Couldn't save your change. Please try again.");
       } finally {
@@ -808,8 +816,11 @@ export function ClaimDetail({
             }
           }
         }
+        // S295 — same split as submitCostShareOverride: the claim re-resolve is
+        // load-bearing (the banner re-derives its rows from it), the list refresh
+        // is chrome. Don't make the user wait on the chrome.
         await refetchClaim();
-        if (onClaimUpdated) await onClaimUpdated();
+        if (onClaimUpdated) void onClaimUpdated();
       } catch {
         failMsg = failMsg ?? "Couldn't save your answers. Please try again.";
       } finally {

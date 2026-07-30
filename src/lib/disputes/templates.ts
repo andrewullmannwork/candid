@@ -11,7 +11,12 @@ import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 
 interface LetterTemplate {
   type: DisputeLetterType;
-  subject: (provider: string) => string;
+  /**
+   * S295 — `evidence` is optional and additive: only insurance_appeal reads it
+   * (its subject asserted a denial unconditionally, the same defect as its
+   * opener). Every other template ignores the argument and is unchanged.
+   */
+  subject: (provider: string, evidence?: DisputeEvidence | null) => string;
   body: (params: TemplateParams) => string;
 }
 
@@ -122,6 +127,37 @@ interface TemplateParams {
   appealExhausted?: { attested: boolean; denialDate?: string | null }; // external_review gate
   collector?: { name: string; address?: string | null; originalCreditor?: string | null }; // debt_validation recipient (user-supplied)
   debtWithinWindow?: boolean; // debt_validation — within FDCPA §1692g 30-day window (route-computed)
+}
+
+/**
+ * S295 — did an insurer actually adjudicate this claim?
+ *
+ * An insurer figure on a line (`insurancePaid` / `patientOwes`) is the proof
+ * that the claim was processed at all, and equivalently that an EOB was parsed.
+ * Absent any, we hold a provider bill and nothing else: there is no denial to
+ * appeal and no Explanation of Benefits to have reviewed, so every sentence
+ * that says otherwise is an unsupported assertion in a document the user mails
+ * out — the same class the S294 letter-side grounding gate closed for dollars.
+ *
+ * TWO framings depend on it, which is why it is named for the signal rather
+ * than for either consumer: insurance_appeal's denial framing (Re: header +
+ * subject + opener + request section) and balance_billing's "after reviewing
+ * my Explanation of Benefits" recital.
+ *
+ * Deliberately keyed on the EVIDENCE, not on `bill.billType`: a document typed
+ * "eob" whose lines carry no insurer figures is a parse that recovered no
+ * adjudication, and asserting a denial off that is exactly the failure this
+ * guards. A denied line still passes — `insurancePaid: 0` is not null.
+ *
+ * ONE derivation, shared by every surface that frames a letter, so they cannot
+ * drift apart.
+ */
+export function hasAdjudicationEvidence(evidence?: DisputeEvidence | null): boolean {
+  return (evidence?.claims ?? []).some((c) =>
+    (c.lineItemEvidence ?? []).some(
+      (li) => li.insurancePaid != null || li.patientOwes != null,
+    ),
+  );
 }
 
 // ============================================================================
@@ -285,7 +321,16 @@ function buildClaimIdHeader(params: {
   // change since the markdown-to-PDF translator handles both formats; plain
   // labels match the surrounding letter style (the original header before
   // this rewrite also used plain labels).
-  const lines: string[] = ["Re: Appeal of Adverse Benefit Determination", ""];
+  // S295 — the Re: line is the first thing the recipient reads, and it asserted
+  // an adverse benefit determination on every letter, including claims where no
+  // adjudication appears in evidence at all. Same gate as the subject and the
+  // opener (hasAdjudicationEvidence), so all three agree.
+  const lines: string[] = [
+    hasAdjudicationEvidence(params.evidence)
+      ? "Re: Appeal of Adverse Benefit Determination"
+      : "Re: Claim Processing Dispute — Request for Review",
+    "",
+  ];
   lines.push(`Patient: ${params.patientName}`);
   if (params.memberId) lines.push(`Member ID: ${params.memberId}`);
   lines.push(`Date of Service: ${formatDate(params.serviceDate)}`);
@@ -657,7 +702,10 @@ export function buildRequestSection(params: {
     if (isInsurer) {
       asks.push(
         noPlanToCite
-          ? `State, in writing, the specific plan provision and any clinical criteria on which this denial rests, and produce the governing plan document — the Summary Plan Description or Evidence of Coverage — together with the line-by-line adjudication of the claim. I am entitled to a full and fair review of this denial; furnish these records so it can be reviewed against the plan's actual terms, and reprocess the claim if those terms require payment.`
+          // S295 (Andrew-approved) — the §2560.503-1 entitlement attaches to the
+          // CLAIM, so the sentence holds either way; saying "this denial" asserted
+          // an adverse determination the evidence may not contain. Withdraw-only.
+          ? `State, in writing, the specific plan provision and any clinical criteria on which this claim's processing rests, and produce the governing plan document — the Summary Plan Description or Evidence of Coverage — together with the line-by-line adjudication of the claim. I am entitled to a full and fair review of this claim; furnish these records so it can be reviewed against the plan's actual terms, and reprocess the claim if those terms require payment.`
           : `Cover ${many ? "these services" : "this service"} under the plan terms cited above, reprocess the claim, and pay the provider the plan-allowed ${many ? "amounts" : "amount"} so that I am not balance-billed; for any continued denial, issue a written determination identifying the specific plan provision relied upon.`,
       );
     } else {
@@ -1098,10 +1146,17 @@ function renderLineItemEvidence(
     // plan data backs the citation (user's exact-year plan vs current-plan-
     // as-proxy vs community-verified canonical archive). Pattern 1 #2 is
     // preserved — we never cite a year we don't have as if it's that year.
+    // S295 — the $0 / preventive case. A zero copay rendered literally as
+    // "specifies a $0.00 copay for this service", which reads as a machine
+    // artifact in a document that gets mailed to an insurer. Zero cost-sharing
+    // gets its own phrasing; every non-zero value stays byte-identical.
+    const zeroCopay = li.planBenefit.copay === 0;
     const costDescriptor = li.planBenefit.copay != null
       ? `a ${formatCurrency(li.planBenefit.copay)} copay`
       : li.planBenefit.coinsurance != null
-      ? `${normalizeCoinsurancePct(li.planBenefit.coinsurance)}% coinsurance`
+      ? li.planBenefit.coinsurance === 0
+        ? "no coinsurance"
+        : `${normalizeCoinsurancePct(li.planBenefit.coinsurance)}% coinsurance`
       : "cost-sharing terms";
 
     let prefix: string;
@@ -1125,21 +1180,27 @@ function renderLineItemEvidence(
         const yearClause = li.planBenefit.sourcedFromYear != null
           ? `${li.planBenefit.sourcedFromYear} Summary of Benefits and Coverage (community-verified)`
           : "Summary of Benefits and Coverage (community-verified)";
-        prefix = `Per ${insurer} ${planName} ${yearClause}, this service is covered with ${costDescriptor}`;
+        prefix = zeroCopay
+          ? `Per ${insurer} ${planName} ${yearClause}, this service is covered at no cost to me`
+          : `Per ${insurer} ${planName} ${yearClause}, this service is covered with ${costDescriptor}`;
         break;
       }
       case "user_fallback": {
         const yearClause = li.planBenefit.sourcedFromYear != null
           ? `My current plan (${li.planBenefit.sourcedFromYear})`
           : "My current plan";
-        prefix = `${yearClause} specifies ${costDescriptor} for this service`;
+        prefix = zeroCopay
+          ? `${yearClause} covers this service with no copay`
+          : `${yearClause} specifies ${costDescriptor} for this service`;
         break;
       }
       case "user_exact":
       default: {
         const planName = planContext?.plan?.planName ?? "Your plan";
         const year = planContext?.plan?.planYear ? `, ${planContext.plan.planYear}` : "";
-        prefix = `${planName}${year} specifies ${costDescriptor} for this service`;
+        prefix = zeroCopay
+          ? `${planName}${year} covers this service with no copay`
+          : `${planName}${year} specifies ${costDescriptor} for this service`;
         break;
       }
     }
@@ -1506,7 +1567,13 @@ DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis t
 
 const insuranceAppealTemplate: LetterTemplate = {
   type: "insurance_appeal",
-  subject: (provider) => `Appeal of Claim Denial — ${provider}`,
+  // S295 — matches the body's opener: an appeal OF A DENIAL only when a denial
+  // is in evidence; otherwise this is a claim-processing dispute and the
+  // subject line has to say so (the recipient reads it first).
+  subject: (provider, evidence) =>
+    hasAdjudicationEvidence(evidence)
+      ? `Appeal of Claim Denial — ${provider}`
+      : `Claim Processing Dispute — Request for Review — ${provider}`,
   body: ({
     patientName,
     providerName,
@@ -1606,6 +1673,15 @@ const insuranceAppealTemplate: LetterTemplate = {
     // "full review 1/2/3" list becomes a one-line pointer, and the ERISA closing
     // + escalation paragraphs are replaced by the conditional request tree (which
     // carries its own deadline + §2719 consequence). OFF → byte-identical.
+    // S295 — the denial-framing gate. The opener asserted a denial
+    // UNCONDITIONALLY, including on a bill with no EOB behind it. See
+    // `hasAdjudicationEvidence` for why the signal is the insurer figures.
+    // Withdraw-only: with denial evidence present the sentence is unchanged.
+    const denialEvidencePresent = hasAdjudicationEvidence(evidence);
+    const openingSentence = denialEvidencePresent
+      ? `I am writing to formally appeal the denial of my claim for services rendered on ${formatDate(serviceDate)} by ${providerName}.`
+      : `I am writing to formally dispute how my claim for services rendered on ${formatDate(serviceDate)} by ${providerName} was processed.`;
+
     const v3 = v3DesignOn ?? false;
     const reviewSection = v3
       ? ` The specific relief I am requesting is set out below, following the supporting detail.`
@@ -1622,7 +1698,7 @@ ${claimIdHeader}
 
 To Whom It May Concern:
 
-I am writing to formally appeal the denial of my claim for services rendered on ${formatDate(serviceDate)} by ${providerName}.${planLabelSentence}
+${openingSentence}${planLabelSentence}
 
 I believe the services provided were medically necessary and should be covered under my plan.${reviewSection}
 
@@ -1671,6 +1747,17 @@ const balanceBillingTemplate: LetterTemplate = {
       "Why these charges appear inconsistent with my plan's cost-sharing terms",
       { gateUnverified: gateUnverified ?? false, attestingName: attestingName ?? patientName, v3DesignOn: v3DesignOn ?? false, disputeGroundsOn: disputeGroundsOn ?? false },
     );
+    // S295 — the only unevidenced assertion left outside insurance_appeal. This
+    // recital claimed the user had REVIEWED AN EOB and that an insurance payment
+    // had been made — both of which a balance-billing letter drafted from a
+    // provider bill alone cannot support, and the "allowed amount minus my
+    // insurance payment" arithmetic is unknowable without one. Same gate as the
+    // denial framing (hasAdjudicationEvidence). With an EOB present the sentence
+    // is byte-identical; without one it drops to what the bill alone shows and
+    // leaves the NSA ask below — already conditional voice — to carry the letter.
+    const eobRecital = hasAdjudicationEvidence(evidence)
+      ? "After reviewing my Explanation of Benefits and your bill, I have identified charges that exceed my plan's allowed amount minus my insurance payment."
+      : "Reviewing your bill, I have identified charges that may exceed my in-network cost-sharing for these services.";
     // §18 incr-3 — finding block from EVIDENCE when ON (rerender-safe); OFF → byte-identical.
     const effectiveFindings: Array<AuditFinding | GroundFinding> =
       disputeGroundsOn && evidence ? groundFindingsForEvidence(evidence) : findings;
@@ -1712,7 +1799,7 @@ To Whom It May Concern:
 
 I am writing to dispute what appears to be balance billing on my account for services rendered on ${formatDate(serviceDate)}.
 
-After reviewing my Explanation of Benefits and your bill, I have identified charges that exceed my plan's allowed amount minus my insurance payment. If these services are subject to the No Surprises Act (for example, emergency services, or services from an out-of-network provider at an in-network facility) or to applicable state balance-billing protections, I should not be billed beyond my in-network cost-sharing for covered services. Please confirm whether these protections apply to these charges and, to the extent they do, correct the balance accordingly.
+${eobRecital} If these services are subject to the No Surprises Act (for example, emergency services, or services from an out-of-network provider at an in-network facility) or to applicable state balance-billing protections, I should not be billed beyond my in-network cost-sharing for covered services. Please confirm whether these protections apply to these charges and, to the extent they do, correct the balance accordingly.
 
 Specifically:
 

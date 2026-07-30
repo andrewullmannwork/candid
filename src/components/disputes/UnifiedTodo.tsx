@@ -147,6 +147,22 @@ export interface UnifiedTodoProps {
 
   // GET IT READY — claim-details expansion (embeds the real CaseNeedsPanel)
   children?: ReactNode;
+  /**
+   * S295 — the claim-details row's REAL confirmation state, mirroring the
+   * `nameResolved` / `planYearResolved` props its sibling rows already get.
+   *
+   * Before this the row's green "done" came only from the cosmetic `details`
+   * checklist flag, which the footer button wrote. The two were decoupled in
+   * BOTH directions: confirming inside the panel (which persists the coverage
+   * marks + attestation and recomposes the letter) left the row reading
+   * "to-do", while the footer button turned the row green having written
+   * nothing about the claim. Same family as the S294 "Done does nothing"
+   * recurrence and the S291 "looked answered while nothing was written".
+   *
+   * Null when the details block isn't active (no truth to read) → the row
+   * falls back to the persisted check, so nothing regresses.
+   */
+  detailsConfirmed?: boolean | null;
 
   // Optional read-through
   onOpenLetter: () => void;
@@ -337,6 +353,7 @@ export function UnifiedTodo({
   nameResolved,
   onResolvePatient,
   children,
+  detailsConfirmed = null,
   onOpenLetter,
   onDownload,
   onMarkSent,
@@ -369,7 +386,10 @@ export function UnifiedTodo({
   };
   const toggleCheck = (id: string) => setCheck(id, !effChecks[id]);
 
-  const detailsDone = effChecks.details === true;
+  // S295 — real confirmation state wins when we have it; the persisted check is
+  // the fallback for the case where the details block isn't rendering (nothing
+  // to derive from). See `detailsConfirmed` on the props for why.
+  const detailsDone = detailsConfirmed ?? effChecks.details === true;
   const readState: "todo" | "done" | "skipped" = effChecks.read
     ? "done"
     : effChecks.read_skipped
@@ -941,6 +961,14 @@ export function UnifiedTodo({
                       >
                         Close
                       </button>
+                      {/* S295 — demoted from a blue "These are right" that sat
+                          inches below the panel's own blue "These look right"
+                          and looked like the same action while writing only a
+                          cosmetic flag. Now a neutral dismissal: it records
+                          that the user has been through the section and
+                          collapses it. The panel's button remains the ONLY
+                          affirmative control, and the row's done-state comes
+                          from what that button actually persisted. */}
                       {!sent && (
                         <button
                           type="button"
@@ -948,9 +976,9 @@ export function UnifiedTodo({
                             setCheck("details", true);
                             setExpanded(null);
                           }}
-                          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-[12.5px] font-semibold text-white hover:bg-blue-700"
+                          className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-700 hover:bg-gray-50"
                         >
-                          <CheckIcon size={12} /> These are right
+                          Done reviewing
                         </button>
                       )}
                     </div>

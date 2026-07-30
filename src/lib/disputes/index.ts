@@ -250,7 +250,10 @@ export function generateDisputeLetter(
     letterType: resolvedType,
     findingIds,
     recipient,
-    subject: template.subject(bill.provider.name),
+    // S295 — the subject reads the same evidence the body does, so an
+    // "Appeal of Claim Denial" heading can't sit on a letter whose opener
+    // (correctly) declines to assert a denial. Ignored by every other template.
+    subject: template.subject(bill.provider.name, evidence ?? null),
     body,
     supportingFacts: findings.map((f) => f.description),
     legalBasis: getLegalBasis(resolvedType),

@@ -32,7 +32,11 @@ import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingMod
 import { CollectorModal } from "@/components/disputes/CollectorModal";
 import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestModal";
 import { suggestNextStep, isOutcomeDetail, mapOutcomeToStatus, type NextStepSuggestion } from "@/lib/disputes/outcome-taxonomy";
-import { CaseNeedsPanel, type PlanCostService } from "@/components/disputes/CaseNeedsPanel";
+import {
+  CaseNeedsPanel,
+  isClaimDetailsConfirmed,
+  type PlanCostService,
+} from "@/components/disputes/CaseNeedsPanel";
 import { UnifiedTodo, type CaseLetterSummary } from "@/components/disputes/UnifiedTodo";
 import { CaseSummary } from "@/components/disputes/CaseSummary";
 import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
@@ -1134,9 +1138,17 @@ function DisputesContent() {
       // amount in this same action (the override is a recovery input the
       // composer reads; it is now also part of the evidence fingerprint).
       setUserPatientPaid(amount);
-      if (disputeId) void fetchDispute(disputeId, { refresh: true });
+      // S295 — through the SHARED debounced reconcile instead of firing its own
+      // immediate fetchDispute. An un-debounced reload racing the debounced one
+      // is a real flicker vector: it lands mid-window, clears `pendingCostShare`
+      // and overwrites `lineCostShare` with a payload from before the pending
+      // write, so a just-typed plan cost disappears — and then reappears when
+      // the debounced reconcile fires 1.2s later. One reconcile path, one paint.
+      // The POST stays awaited: AmountEditor surfaces its error state off the
+      // throw, so this must keep rejecting.
+      scheduleReconcile({ refresh: true });
     },
-    [user, letter?.auditReportId, disputeId, fetchDispute],
+    [user, letter?.auditReportId, scheduleReconcile],
   );
   const handleSaveDeadlineDate = useCallback(
     async (
@@ -1152,10 +1164,13 @@ function DisputesContent() {
       });
       if (!res.ok) throw new Error("Failed to save date");
       // Optimistic + background reconcile (S265 Andrew feedback — don't block Save on refetch).
+      // S295 — onto the shared debounced reconcile; see handleSaveAmountPaid for
+      // why an immediate second fetch is a flicker vector. DateEditor reads its
+      // error state off the throw, so the POST stays awaited.
       setDeadlineInputs((prev) => ({ ...prev, [field]: value }));
-      void fetchDispute(disputeId);
+      scheduleReconcile();
     },
-    [user, disputeId, fetchDispute],
+    [user, disputeId, scheduleReconcile],
   );
 
   // ── S292 (#8) — batched/optimistic service-cost saves ────────────────────────
@@ -1188,30 +1203,25 @@ function DisputesContent() {
   const handleConfirmParsedCosts = useCallback(
     async (services: PlanCostService[]) => {
       if (!user || !letter?.auditReportId) return;
-      const token = await user.firebaseUser.getIdToken();
       const claimId = letter.auditReportId;
       const lineIds = Array.from(
         new Set(services.flatMap((s) => s.lineItemIds ?? [])),
       );
-      const results = await Promise.allSettled(
-        lineIds.map((lineItemId) =>
-          fetch(`/api/claims/${claimId}/line-items/${lineItemId}/confirm-coverage`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ decision: "match" }),
-          }).then((r) => {
-            if (!r.ok) throw new Error(`confirm-coverage ${r.status}`);
-          }),
-        ),
-      );
-      if (results.some((r) => r.status === "rejected")) {
-        throw new Error("confirm failed");
-      }
-      // Optimistic: flip the confirmed rows locally; ONE reconcile refetch.
-      // S293 (#6) — refresh:true so the SAME action recomposes the letter: the
-      // confirmed values become citations (clauses) in this reconcile, not on a
-      // hypothetical "next render" (dispute 80a705ac shipped zero clauses
-      // because nothing ever scheduled that render).
+      if (lineIds.length === 0) return;
+      // S295 — PAINT FIRST, exactly the handleAttestServices idiom this call is
+      // fired alongside (CaseNeedsPanel's confirmDetails runs both). It used to
+      // await one confirm-coverage round-trip PER LINE before flipping anything,
+      // and each of those does ~5 DB round-trips server-side (users → claim
+      // ownership → selectOwnedChildren over ALL the claim's lines →
+      // updateOwnedChildren). On a 6-line bill that is 6 × 5 sequential DB hops
+      // the user waits on with the button stuck at "Saving…" — the slow
+      // "These look right". Now the rows flip in the click's own render, the
+      // writes run in the background, and a failure snaps everything back.
+      //
+      // Consequence, deliberate: this no longer REJECTS (same contract as
+      // handleAttestServices / handleResolvePatientIdentity). The snap-back IS
+      // the failure signal — the block returns to its unconfirmed state.
+      const prevRows = lineCostShare;
       mutationGenRef.current += 1;
       const confirmedIds = new Set(lineIds);
       setLineCostShare((prev) =>
@@ -1219,30 +1229,51 @@ function DisputesContent() {
           confirmedIds.has(r.lineItemId) ? { ...r, humanReviewed: true, confirmed: true } : r,
         ),
       );
-      scheduleReconcile({ refresh: true });
+      try {
+        const token = await user.firebaseUser.getIdToken();
+        const results = await Promise.allSettled(
+          lineIds.map((lineItemId) =>
+            fetch(`/api/claims/${claimId}/line-items/${lineItemId}/confirm-coverage`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ decision: "match" }),
+            }).then((r) => {
+              if (!r.ok) throw new Error(`confirm-coverage ${r.status}`);
+            }),
+          ),
+        );
+        if (results.some((r) => r.status === "rejected")) {
+          throw new Error("confirm failed");
+        }
+        // S293 (#6) — refresh:true so the SAME action recomposes the letter: the
+        // confirmed values become citations (clauses) in this reconcile, not on a
+        // hypothetical "next render" (dispute 80a705ac shipped zero clauses
+        // because nothing ever scheduled that render).
+        scheduleReconcile({ refresh: true });
+      } catch (err) {
+        console.error("[confirm-coverage] failed:", err);
+        mutationGenRef.current += 1;
+        setLineCostShare(prevRows);
+        scheduleReconcile();
+      }
     },
-    [user, letter?.auditReportId, scheduleReconcile],
+    [user, letter?.auditReportId, lineCostShare, scheduleReconcile],
   );
 
   /** S292 (#7) — per-item "Doesn't match" on a secondary-borrowed value. */
   const handleRejectParsedCost = useCallback(
     async (svc: PlanCostService) => {
       if (!user || !letter?.auditReportId) return;
-      const token = await user.firebaseUser.getIdToken();
       const claimId = letter.auditReportId;
-      for (const lineItemId of svc.lineItemIds ?? []) {
-        const res = await fetch(
-          `/api/claims/${claimId}/line-items/${lineItemId}/confirm-coverage`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ decision: "no_match" }),
-          },
-        );
-        if (!res.ok) throw new Error("reject failed");
-      }
+      const lineIds = svc.lineItemIds ?? [];
+      if (lineIds.length === 0) return;
+      // S295 — same paint-first treatment as its confirm twin, plus the writes
+      // now run CONCURRENTLY: this was a sequential for-loop, so a service
+      // spanning k lines cost k serial round-trips before the row moved. Both
+      // call sites already fire this with `void` (no throw contract to keep).
+      const prevRows = lineCostShare;
       mutationGenRef.current += 1;
-      const rejectedIds = new Set(svc.lineItemIds ?? []);
+      const rejectedIds = new Set(lineIds);
       setLineCostShare((prev) =>
         prev.map((r) =>
           rejectedIds.has(r.lineItemId)
@@ -1250,10 +1281,32 @@ function DisputesContent() {
             : r,
         ),
       );
-      // S293 (#6) — a rejection EXCLUDES a citation → recompose in this action.
-      scheduleReconcile({ refresh: true });
+      try {
+        const token = await user.firebaseUser.getIdToken();
+        const results = await Promise.allSettled(
+          lineIds.map((lineItemId) =>
+            fetch(`/api/claims/${claimId}/line-items/${lineItemId}/confirm-coverage`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ decision: "no_match" }),
+            }).then((r) => {
+              if (!r.ok) throw new Error(`confirm-coverage ${r.status}`);
+            }),
+          ),
+        );
+        if (results.some((r) => r.status === "rejected")) {
+          throw new Error("reject failed");
+        }
+        // S293 (#6) — a rejection EXCLUDES a citation → recompose in this action.
+        scheduleReconcile({ refresh: true });
+      } catch (err) {
+        console.error("[confirm-coverage no_match] failed:", err);
+        mutationGenRef.current += 1;
+        setLineCostShare(prevRows);
+        scheduleReconcile();
+      }
     },
-    [user, letter?.auditReportId, scheduleReconcile],
+    [user, letter?.auditReportId, lineCostShare, scheduleReconcile],
   );
 
   // Unified case timeline (S286) — persist a checklist check-off. Optimistic
@@ -2245,6 +2298,15 @@ function DisputesContent() {
       nameMismatch={nameMismatch}
       nameResolved={patientIdentityResolved}
       onResolvePatient={resolvePatientChoice}
+      // S295 — the claim-details row reads the REAL confirmation state, the way
+      // nameResolved / planYearResolved already do. Null when the details block
+      // isn't rendering (same gate as its claimFacts / onAttest props), which
+      // leaves the row on its persisted check rather than inventing a verdict.
+      detailsConfirmed={
+        v3DesignOn && disputeId
+          ? isClaimDetailsConfirmed(zone1Services, serviceAttestationReviewed)
+          : null
+      }
       onOpenLetter={() =>
         document
           .getElementById("dispute-letter-article")

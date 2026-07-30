@@ -314,9 +314,23 @@ export default function CandidClaimPage() {
             onStep={jumpTo}
           />
 
+          {/* "Upload another bill" — S295. Sits directly under the recovery card
+              (the page's first read) as the ONE upload affordance: outlined
+              rather than filled so it doesn't outrank "Draft my dispute letter",
+              but at the same xl scale so it can't read as decoration the way the
+              dashed add-tile at the bottom of the list did. Replaces BOTH the
+              small tabbar "Upload bill" link and that bottom tile. */}
+          <Link
+            href="/upload"
+            className="mt-5 flex w-full items-center justify-center gap-2 rounded-[14px] border border-blue-600 bg-white px-6 py-3.5 text-[15px] font-semibold text-blue-700 transition-all hover:-translate-y-px hover:bg-blue-50"
+          >
+            Upload another bill
+            <span className="font-normal text-blue-500">— EOB, itemized bill, or statement</span>
+          </Link>
+
           {/* Tabbar — Surface 2 rename: All bills / Flagged / Need your input /
               Letters to send (1:1 with the next-steps tiles). */}
-          <div ref={tabsRef} className="mb-5 mt-8 flex flex-wrap items-center justify-between gap-3">
+          <div ref={tabsRef} className="mb-5 mt-8 flex flex-wrap items-center gap-3">
             <div className="flex w-fit flex-wrap gap-1 rounded-2xl border border-gray-200 bg-white p-1">
               <TabButton active={tab === "bills"} onClick={() => setTab("bills")}>
                 All bills
@@ -335,27 +349,6 @@ export default function CandidClaimPage() {
                 <TabCount count={counts.drafted} active={tab === "letters"} />
               </TabButton>
             </div>
-
-            <Link
-              href="/upload"
-              className="inline-flex items-center gap-1.5 rounded-[10px] border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 transition-colors hover:border-blue-300 hover:bg-gray-50 hover:text-blue-700"
-            >
-              <svg
-                className="h-3.5 w-3.5"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={2}
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M12 16V4m0 0l-4 4m4-4l4 4M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"
-                />
-              </svg>
-              Upload bill
-            </Link>
           </div>
 
           {/* All bills tab — groups + singletons */}
@@ -379,17 +372,6 @@ export default function CandidClaimPage() {
                   />
                 ),
               )}
-
-              {/* "Upload another bill" full-width dashed add-tile — D-§1.D.1-H */}
-              <Link
-                href="/upload"
-                className="group block rounded-2xl border-2 border-dashed border-gray-200 bg-white px-5 py-5 text-center transition-colors hover:border-blue-300 hover:bg-blue-50/30"
-              >
-                <p className="text-sm font-semibold text-gray-700 group-hover:text-blue-700">
-                  + Upload another bill
-                  <span className="ml-1 font-normal text-gray-500">— EOB, itemized bill, or statement</span>
-                </p>
-              </Link>
             </div>
           )}
 
