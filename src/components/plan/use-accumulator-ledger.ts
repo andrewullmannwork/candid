@@ -14,6 +14,8 @@ import type { AccumulatorLedger } from "@/lib/claims/accumulator-ledger";
 export function useAccumulatorLedger(
   insurancePlanId?: string | null,
   planYear?: number | null,
+  /** S294 — bump to refetch (the plan-change modal's Apply re-pins bills). */
+  refreshKey?: number,
 ): AccumulatorLedger | null {
   const { user } = useAuth();
   const [ledger, setLedger] = useState<AccumulatorLedger | null>(null);
@@ -50,7 +52,7 @@ export function useAccumulatorLedger(
     return () => {
       cancelled = true;
     };
-  }, [user, insurancePlanId, planYear]);
+  }, [user, insurancePlanId, planYear, refreshKey]);
 
   return ledger;
 }

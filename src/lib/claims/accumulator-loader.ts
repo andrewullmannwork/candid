@@ -28,6 +28,7 @@ import {
   buildLineInsurer,
 } from "./cost-share-loader";
 import { resolveLinePrep, type ClaimCostSharePrep } from "./resolve-cost-share";
+import { CANONICAL_IDENTITY_CONFIDENCE_FLOOR } from "../plan/plan-identity";
 import { resolveEffectiveClaimTotals } from "./effective-totals";
 import { buildAcaCoverageFallback, detectPreventiveMembership } from "../audit/aca-coverage-fallback";
 import {
@@ -39,12 +40,14 @@ import {
 } from "../audit/coverage-loader";
 import {
   computeAccumulatorLedger,
+  decideAccumulatorCarry,
   DEFAULT_MATERIALITY,
   type AccumulatorLedger,
   type AccumulatorLedgerClaim,
   type AccumulatorLedgerLine,
   type InsurerAccumulatorRow,
   type Materiality,
+  type SameYearAskBill,
 } from "./accumulator-ledger";
 
 const LINE_COLS =
@@ -77,6 +80,21 @@ function parseDependents(raw: unknown): DepLite[] {
       return { name: String(o.name ?? ""), onSamePlan: o.on_same_plan !== false };
     })
     .filter((d) => d.name.length > 0);
+}
+
+
+/** S294 — the carry ladder's floor: the SAME tunable the upload resolver reads
+ *  (`plan_identity_resolver_v1` config.canonical_confidence_floor; Ship Gate #6
+ *  no-hardcoded-thresholds), falling back to the shared exported constant. One
+ *  floor, one config key — the two identity consumers can never drift. */
+async function loadCanonicalConfidenceFloor(supabase: SupabaseClient): Promise<number> {
+  const { data } = await supabase
+    .from("feature_flag_rules")
+    .select("config")
+    .eq("flag_key", "plan_identity_resolver_v1")
+    .maybeSingle();
+  const raw = (data?.config as Record<string, unknown> | null)?.canonical_confidence_floor;
+  return typeof raw === "number" && raw > 0 && raw <= 1 ? raw : CANONICAL_IDENTITY_CONFIDENCE_FLOOR;
 }
 
 /** Materiality gate (§9) from the `accumulator_ledger_v1` flag config JSONB (admin-tunable). */
@@ -112,62 +130,34 @@ export async function loadAccumulatorLedger(
     .select("dependents, active_insurance_plan_id")
     .eq("user_id", userId)
     .maybeSingle();
-  let planId = insurancePlanId ?? (profile?.active_insurance_plan_id as string | null) ?? null;
+  const planId = insurancePlanId ?? (profile?.active_insurance_plan_id as string | null) ?? null;
   if (!planId) return null;
 
-  // ── S294 (Andrew's prod E2E, half 2) — never tally an EMPTY plan while bills
-  // exist. Bills pin to the plan in force when the care happened (S291 rule)
-  // and NEVER follow later plan changes — so the moment a new plan goes active
-  // (an SBC upload mid-testing today; every member's January in real life) the
-  // active plan has zero bills and the panel read "$0 of $0 · Tallied from 0
-  // bills" while the member's whole history sat one plan-row over.
+  // ── S294 MODEL (Andrew) — the accumulator is an instrument of the CURRENT
+  // plan only. While a plan is active its bills accumulate; when a new plan
+  // goes active the accumulator RESTARTS at $0; at the year boundary we PROMPT
+  // for the new year's plan rather than silently rolling anything. (This
+  // replaces the short-lived #266 divert-to-most-recent-billed-plan, which
+  // could tally one benefit year against another year's denominators.)
   //
-  // When the CALLER didn't pin a plan (the generic /plan panel), fall back to
-  // the plan the MOST RECENT bill pins to. The ledger's maxes then come from
-  // THAT plan's terms — a tally is only meaningful against the terms of the
-  // plan it accrued under — and `talliedPlanName` is set so the panel can say
-  // whose ledger it is showing. An explicitly requested plan is never
-  // second-guessed.
-  let talliedPlanName: string | null = null;
-  if (insurancePlanId == null) {
-    const { data: probe } = await userScoped(supabase, userId)
-      .table("claims")
-      .select("insurance_plan_id, date_of_service")
-      .is("deleted_at", null)
-      .not("insurance_plan_id", "is", null)
-      .order("date_of_service", { ascending: false })
-      .limit(1);
-    const newest = (probe ?? [])[0] as Record<string, unknown> | undefined;
-    const newestPlanId = (newest?.insurance_plan_id as string | null) ?? null;
-    if (newestPlanId && newestPlanId !== planId) {
-      // Does the ACTIVE plan have any bills at all? Only divert when it has none.
-      const { data: activeHasBills } = await userScoped(supabase, userId)
-        .table("claims")
-        .select("id")
-        .is("deleted_at", null)
-        .eq("insurance_plan_id", planId)
-        .limit(1);
-      if ((activeHasBills ?? []).length === 0) {
-        planId = newestPlanId;
-        const { data: divertedPlan } = await userScoped(supabase, userId)
-          .table("insurance_plans")
-          .select("plan_name")
-          .eq("id", planId)
-          .maybeSingle();
-        talliedPlanName = (divertedPlan?.plan_name as string | null) ?? null;
-      }
-    }
-  }
+  // The one carry rule at switch time: SAME-YEAR bills sitting on another plan
+  // row carry into this accumulator ONLY when that row provably IS this plan —
+  // decided by the mig-218 canonical pair through decideAccumulatorCarry, the
+  // same identity ladder (same floor, same config key) the upload resolver
+  // uses. Provably different → excluded silently. Identity unknown → we ASK
+  // (`sameYearAskCount`); the member's answer is the existing `claim_plan`
+  // re-pin, which moves the bill onto this plan and flows in here naturally.
+  // Bills are never re-pinned by the accumulator itself — read-side only.
 
   // B9 — ownership-check the plan before reading its terms (no cross-user leak); grab
-  // plan_year so the caller can omit it (self-resolve the benefit year from the plan).
+  // plan_year + the canonical pair (the carry ladder's identity oracle).
   const { data: ownedPlan } = await userScoped(supabase, userId)
     .table("insurance_plans")
-    .select("id, plan_year")
+    .select("id, plan_year, plan_name, canonical_plan_id, canonical_match_confidence")
     .eq("id", planId)
     .maybeSingle();
   if (!ownedPlan) return null;
-  let year = planYear ?? (ownedPlan.plan_year as number | null) ?? new Date().getUTCFullYear();
+  const year = planYear ?? (ownedPlan.plan_year as number | null) ?? new Date().getUTCFullYear();
 
   const plan = await loadPlanCostShareParams(supabase, planId);
   if (!plan) return null;
@@ -183,31 +173,72 @@ export async function loadAccumulatorLedger(
     const dos = (c as Record<string, unknown>).date_of_service as string | null;
     return dos ? new Date(dos).getUTCFullYear() : null;
   };
-  let claimsForYear = (rawClaims ?? []).filter((c) => claimYear(c) === year);
+  const claimsForYear = (rawClaims ?? []).filter((c) => claimYear(c) === year);
 
-  // ── S294 (Andrew's prod E2E) — never tally an EMPTY year while bills exist ──
-  // The default benefit year is the linked plan's own year (a search-selected
-  // 2026 plan ⇒ 2026), but a member's bills are typically for care that already
-  // happened — 2024/2025 DOS. The year filter is actuarially RIGHT (a 2024 bill
-  // does not accumulate toward a 2026 deductible), yet filtering to a year with
-  // zero bills rendered "$0 of $0 · Tallied from 0 bills" under two uploaded
-  // bills — true, useless, and reads as broken.
-  //
-  // When the CALLER didn't pin a year, resolve to the most recent benefit year
-  // that actually HAS bills. The ledger's planYear flows to the panel label, so
-  // the header states which year is being tallied ("2025 plan year") — honest
-  // by construction, same bills-pin-to-their-year rule as S291 dispute pinning.
-  // An explicitly requested year is never second-guessed (that's the future
-  // year-switcher's contract).
-  if (claimsForYear.length === 0 && planYear == null && (rawClaims?.length ?? 0) > 0) {
-    const yearsWithBills = Array.from(
-      new Set((rawClaims ?? []).map(claimYear).filter((y): y is number => y != null)),
-    ).sort((a, b) => b - a);
-    if (yearsWithBills.length > 0) {
-      year = yearsWithBills[0];
-      claimsForYear = (rawClaims ?? []).filter((c) => claimYear(c) === year);
+  // ── Same-year bills on OTHER plan rows: carry / exclude / ask ─────────────
+  const sameYearAsk: SameYearAskBill[] = [];
+  {
+    const { data: elsewhere } = await userScoped(supabase, userId)
+      .table("claims")
+      .select("*")
+      .is("deleted_at", null)
+      .neq("insurance_plan_id", planId)
+      .not("insurance_plan_id", "is", null);
+    const sameYearElsewhere = (elsewhere ?? []).filter((c) => claimYear(c) === year);
+    if (sameYearElsewhere.length > 0) {
+      const floor = await loadCanonicalConfidenceFloor(supabase);
+      const otherPlanIds = Array.from(
+        new Set(sameYearElsewhere.map((c) => (c as Record<string, unknown>).insurance_plan_id as string)),
+      );
+      const { data: otherPlans } = await userScoped(supabase, userId)
+        .table("insurance_plans")
+        .select("id, plan_name, canonical_plan_id, canonical_match_confidence")
+        .in("id", otherPlanIds);
+      const verdictByPlan = new Map<string, "carry" | "exclude" | "ask">();
+      for (const p of otherPlans ?? []) {
+        const row = p as Record<string, unknown>;
+        verdictByPlan.set(
+          row.id as string,
+          decideAccumulatorCarry(
+            {
+              canonicalPlanId: (ownedPlan.canonical_plan_id as string | null) ?? null,
+              canonicalMatchConfidence: (ownedPlan.canonical_match_confidence as number | null) ?? null,
+            },
+            {
+              canonicalPlanId: (row.canonical_plan_id as string | null) ?? null,
+              canonicalMatchConfidence: (row.canonical_match_confidence as number | null) ?? null,
+            },
+            floor,
+          ),
+        );
+      }
+      const planNameById = new Map<string, string | null>();
+      for (const p of otherPlans ?? []) {
+        planNameById.set((p as Record<string, unknown>).id as string, ((p as Record<string, unknown>).plan_name as string | null) ?? null);
+      }
+      for (const c of sameYearElsewhere) {
+        const row = c as Record<string, unknown>;
+        const verdict = verdictByPlan.get(row.insurance_plan_id as string) ?? "ask";
+        if (verdict === "carry") claimsForYear.push(c);
+        else if (verdict === "ask") {
+          const meta = (row.metadata ?? {}) as Record<string, unknown>;
+          sameYearAsk.push({
+            claimId: row.id as string,
+            providerName:
+              ((meta.provider as Record<string, unknown> | undefined)?.name as string | undefined) ??
+              ((row.provider_name as string | null) ?? null),
+            dateOfService: (row.date_of_service as string | null) ?? null,
+            totalBilled: row.total_billed == null ? null : Number(row.total_billed),
+            currentPlanName: planNameById.get(row.insurance_plan_id as string) ?? null,
+          });
+        }
+      }
     }
   }
+
+  // Year boundary — the prompt, never a silent roll: a plan year behind the
+  // clock means the member's NEW year has no plan document yet.
+  const promptNewYearPlan = new Date().getUTCFullYear() > year;
 
   // Dependents → family scope + attribution (only those on the same plan count).
   const onPlanDeps = parseDependents(profile?.dependents).filter((d) => d.onSamePlan);
@@ -348,6 +379,12 @@ export async function loadAccumulatorLedger(
     rxDeductibleIndividual: null,
     rxDeductibleFamily: null,
   });
-  // S294 — set only when the tally diverted to the most-recent-billed plan.
-  return { ...ledger, talliedPlanName };
+  // S294 model — the ask count + year-boundary prompt ride the ledger to the panel.
+  return {
+    ...ledger,
+    sameYearAsk,
+    promptNewYearPlan,
+    planId,
+    planName: (ownedPlan.plan_name as string | null) ?? null,
+  };
 }
