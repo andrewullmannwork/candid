@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren, upsertOwnedChildren } from "@/lib/security/user-scoped";
+import { loadPlanCoverageMeta } from "@/lib/audit/coverage-loader";
+import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
 import { findOrCreateCanonicalPlan, canonicalLinkFields } from "@/lib/plan/canonical-match";
 import { setActiveCanonicalPlan } from "@/lib/plan/set-active-canonical";
@@ -120,17 +122,6 @@ export async function GET(req: NextRequest) {
         )
         .eq("id", insurancePlan.canonical_plan_id)
         .maybeSingle();
-      const { data: svcRows } = await supabase
-        .from("canonical_plan_services")
-        .select("service_slug, in_copay")
-        .eq("canonical_plan_id", insurancePlan.canonical_plan_id)
-        .in("service_slug", ["pcp_visit", "specialist_visit", "emergency_room"]);
-      const copayFor = (slug: string): number | null => {
-        const vals = (svcRows ?? [])
-          .filter((r) => r.service_slug === slug && r.in_copay != null)
-          .map((r) => r.in_copay as number);
-        return vals.length > 0 ? Math.min(...vals) : null;
-      };
       const t = (ct ?? {}) as Record<string, number | null>;
       const fill = (obj: Record<string, unknown> | null, key: string, val: unknown) => {
         if (obj && obj[key] == null && val != null) obj[key] = val;
@@ -155,9 +146,41 @@ export async function GET(req: NextRequest) {
       fill(profObj, "out_oop_max_family", t.out_oop_max_family);
       fill(profObj, "deductible_individual", t.deductible_individual);
       fill(profObj, "oop_max_individual", t.oop_max_individual);
-      fill(profObj, "copay_primary", copayFor("pcp_visit"));
-      fill(profObj, "copay_specialist", copayFor("specialist_visit"));
-      fill(profObj, "copay_er", copayFor("emergency_room"));
+    } catch {
+      /* display overlay is best-effort */
+    }
+  }
+
+  // ── S294 — headline copay chips read the SAME resolved coverage as /plan ──
+  // Andrew's prod E2E: an SBC upload filled the benefits tab (user-scoped
+  // plan_covered_services) while the Cost Structure chips stayed "—". Three
+  // defects in the old overlay above, now removed: it read CANONICAL rows
+  // only (never the rows the member's own document produced), it ran only for
+  // a link-only plan (plan-level terms null — an SBC plan has them, so the
+  // block never executed), and it queried slug "emergency_room", which does
+  // not exist in the catalog (er_visit) — the ER chip could never fill from
+  // any source. One derivation: loadPlanCoverageMeta — user rows win,
+  // canonical gap-fills beneath them, deterministic variants, real slugs.
+  // Fill-only-null keeps every user-entered profile value authoritative.
+  if (insurancePlan && profile) {
+    try {
+      const activePlanId = (insurancePlan as Record<string, unknown>).id as string;
+      const meta = (await loadPlanCoverageMeta(supabase, [activePlanId])).get(activePlanId);
+      const profObj = profile as Record<string, unknown>;
+      const fillNull = (key: string, val: unknown) => {
+        if (profObj[key] == null && val != null) profObj[key] = val;
+      };
+      const chip = (slug: string) => meta?.coverageMap.get(slug)?.copay ?? null;
+      fillNull("copay_primary", chip("pcp_visit"));
+      fillNull("copay_specialist", chip("specialist_visit"));
+      fillNull("copay_er", chip("er_visit"));
+      // Plan-level coinsurance default → percent (profiles.coinsurance_pct is
+      // the user-facing integer percent; the stored default may be decimal or
+      // percent — the shared normalizer resolves the unit).
+      const coinsDec = normalizeCoinsuranceForStorage(
+        ((insurancePlan as Record<string, unknown>).in_coinsurance_default as number | null) ?? null,
+      );
+      fillNull("coinsurance_pct", coinsDec != null ? Math.round(coinsDec * 100) : null);
     } catch {
       /* display overlay is best-effort */
     }
