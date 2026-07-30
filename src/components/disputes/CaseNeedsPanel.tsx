@@ -61,6 +61,31 @@ export interface PlanCostService {
   billedAmount?: number | null;
 }
 
+/**
+ * S292 (#7) — services the platform resolved but no human has confirmed. These
+ * are what the claim-details block asks about; an empty set means every known
+ * plan cost has been reviewed.
+ */
+export function unconfirmedParsedServices(
+  planServices: PlanCostService[],
+): PlanCostService[] {
+  return planServices.filter((s) => s.known && s.humanReviewed === false);
+}
+
+/**
+ * S295 — the claim-details block's confirmation predicate, exported so the
+ * UnifiedTodo row's done-state and the block's own rendering read the SAME
+ * derivation rather than two that can drift (the S292 one-derivation
+ * invariant). True once the services attestation has been reviewed AND no
+ * parser-extracted plan cost is still awaiting a human confirmation.
+ */
+export function isClaimDetailsConfirmed(
+  planServices: PlanCostService[],
+  attestationReviewed: boolean,
+): boolean {
+  return attestationReviewed && unconfirmedParsedServices(planServices).length === 0;
+}
+
 export interface CaseNeedsPanelProps {
   /** Surface 4 (clarity redesign) — true when rendered INSIDE the UnifiedTodo
    *  "Confirm the claim details" expansion: drops the outer card chrome
@@ -536,7 +561,7 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   // parser-extracted only → prefilled under the ONE aggregate confirm below.
   // `humanReviewed === undefined` (legacy caller shape) keeps the old known→DONE
   // behavior. Genuinely unknown services keep the "Add plan cost" ask.
-  const parsedSvcs = planServices.filter((s) => s.known && s.humanReviewed === false);
+  const parsedSvcs = unconfirmedParsedServices(planServices);
   // S293 (#5) — the ONE claim-details block replaces the per-item confirmation
   // surfaces (known-cost rows, the aggregate confirm row, the attest row) when
   // the page supplies its inputs. Unknown-cost "Add plan cost" rows stay
@@ -676,7 +701,7 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   // "These look right" fans out the SAME writes the two rows it replaces made:
   // the per-line confirm-coverage marks + the services-performed attestation.
   if (detailsBlockActive && claimFacts && attestationLines && onAttest) {
-    const detailsDone = attestationReviewed && parsedSvcs.length === 0;
+    const detailsDone = isClaimDetailsConfirmed(planServices, attestationReviewed);
     const factsLine = [
       claimFacts.patientName ? `Patient: ${claimFacts.patientName}` : null,
       claimFacts.providerName ? `Provider: ${claimFacts.providerName}` : null,
@@ -1105,8 +1130,10 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
         >
           {openEditor !== "denial" && denialNoticeDate == null
             ? denialPrefillDate != null
-              ? /* TODO(copy-proposal S292): provenance line pending approval. */
-                "Date from your bill. Confirm the date of receipt or edit if incorrect."
+              ? /* S295 — approved. The prefill's only source is a parsed EOB
+                   (claims.metadata.eob_date); a bill never carries this date,
+                   so "from your bill" pointed at the wrong document. */
+                "Date from your Explanation of Benefits. Confirm the date you received it, or edit if incorrect."
               : "The date printed on your insurer's denial letter — this sets your appeal deadline."
             : undefined}
         </Row>
