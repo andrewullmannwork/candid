@@ -165,6 +165,17 @@ export default function RootLayout({
         {/* First-touch attribution (mig 203) is NOT analytics: first-party
             localStorage snapshot of UTM/referrer, no cookie, no tracker, no
             network call — persisted once at signup via /api/auth/sync. */}
+        {/* Feed autodiscovery, rendered explicitly rather than via
+            `metadata.alternates.types`: a page that sets its own `alternates`
+            (every /learn page, /about, /terms…) REPLACES the layout's block
+            wholesale, which silently dropped this tag from exactly the pages
+            that need it. React hoists this into <head> site-wide. */}
+        <link
+          rel="alternate"
+          type="application/atom+xml"
+          title="Candid Guides"
+          href="/learn/feed.xml"
+        />
         <FirstTouchCapture />
         {/* Site-wide identity only. The product HowTo and the product FAQPage
             used to live here and therefore rode along on every page — which

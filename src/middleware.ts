@@ -17,6 +17,11 @@ const PUBLIC_ROUTES = [
   // CHD_DISALLOW — gating them behind the auth wall would 307 every indexed URL
   // to the sign-in page and make the content surface unindexable.
   "/learn",
+  // Author page — the Person entity every /learn byline links to. Same
+  // reasoning as /learn above: behind the auth wall it would 307 to sign-in,
+  // which makes the authorship signal worthless (a crawler following the
+  // byline hits a login page) and breaks the link for logged-out readers.
+  "/about",
   "/api/waitlist",
   "/api/stripe/webhook",
   "/api/auth/sync",

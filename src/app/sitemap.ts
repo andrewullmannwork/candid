@@ -21,6 +21,8 @@ export default function sitemap(): MetadataRoute.Sitemap {
     { url: `${base}/auth/signup`, lastModified: new Date(), changeFrequency: "monthly", priority: 0.9 },
     { url: `${base}/learn`, lastModified: new Date(), changeFrequency: "weekly", priority: 0.8 },
     ...guides,
+    // Author page — the Person entity every guide's byline points at.
+    { url: `${base}/about`, lastModified: new Date(), changeFrequency: "monthly", priority: 0.5 },
     { url: `${base}/auth/signin`, lastModified: new Date(), changeFrequency: "monthly", priority: 0.5 },
     { url: `${base}/terms`, lastModified: new Date(), changeFrequency: "monthly", priority: 0.3 },
     { url: `${base}/privacy`, lastModified: new Date(), changeFrequency: "monthly", priority: 0.3 },
