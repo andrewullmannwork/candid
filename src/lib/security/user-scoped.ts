@@ -343,6 +343,58 @@ export async function updateOwnedChildren(
 }
 
 /**
+ * Parent-join child DELETE, keyed by a natural (non-`id`) match (S292 4C).
+ *
+ * The other child primitives cover select / update / upsert; deletion had no
+ * sanctioned path, so the merge-unwind route (`/api/plan/unwind-merge`, which
+ * removes coverage cells a disowned document created) would otherwise have had
+ * to reach for a raw `.from()` and an eslint-disable — turning a class-backstop
+ * into a per-site exception. Adding the primitive keeps the ban absolute.
+ *
+ * Ownership is verified ONCE against the parent (selectOwnedParentIds), and the
+ * fk is pinned on every delete, so a caller cannot delete a row belonging to a
+ * plan it doesn't own even if it supplies a matching natural key. Fails closed:
+ * empty userId throws; a foreign or unknown parent deletes NOTHING and reports
+ * 0 rather than erroring, matching updateOwnedChildren's contract.
+ *
+ * `matches` are equality predicates on child columns (the 5-col coverage cell
+ * key, for instance). An EMPTY match object is rejected: it would delete every
+ * child row of the parent, which no caller should express by accident.
+ */
+export async function deleteOwnedChildren(
+  supabase: SupabaseClient,
+  userId: string,
+  childTable: ParentJoinChildTable,
+  parentId: string,
+  matches: Record<string, string | number | boolean | null>[],
+): Promise<{ deleted: number }> {
+  assertUserId(userId);
+  const meta = PARENT_JOIN_TABLES[childTable];
+  if (!meta) {
+    // Defense-in-depth for a dynamic (non-literal) childTable that escapes the
+    // compile-time union. Fail closed rather than do an unscoped child delete.
+    throw new Error(
+      `deleteOwnedChildren: "${childTable}" is not a parent-join child table`,
+    );
+  }
+  if (matches.length === 0) return { deleted: 0 };
+  if (matches.some((m) => Object.keys(m).length === 0)) {
+    throw new Error("deleteOwnedChildren: an empty match would delete every child row");
+  }
+  const ownedParentIds = await selectOwnedParentIds(supabase, userId, meta.parent, [parentId]);
+  if (!ownedParentIds.has(parentId)) return { deleted: 0 };
+
+  let deleted = 0;
+  for (const match of matches) {
+    let q = supabase.from(childTable).delete().eq(meta.fk, parentId);
+    for (const [col, val] of Object.entries(match)) q = q.eq(col, val);
+    const { error } = await q;
+    if (!error) deleted += 1;
+  }
+  return { deleted };
+}
+
+/**
  * Parent-join child UPSERT: the lint-clean way for a route to UPSERT child-table
  * rows (plan_covered_services) that have NO `user_id`, keyed by a natural
  * conflict target. Verifies the parent is owned ONCE (selectOwnedParentIds),

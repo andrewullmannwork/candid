@@ -104,9 +104,10 @@ const baseBasis: CostShareBasis = {
     amountStillOutstanding: 163.27,
     totalPatientResponsibility: 163.27,
     insurancePlanId: "plan-1",
+    userPatientPaid: null,
   },
   lines: [
-    { lineNumber: 1, billedAmount: 221, insuranceAdjustedAmount: 57.73, insurancePaid: 0, patientPaidAmount: 163.27, patientOwes: 163.27, amountStillOutstanding: 0, memberAppliedToDeductible: 163.27, memberCoinsurance: 0, memberCopay: 0, deniedAmount: 0, networkStatus: "in_network", billingCode: "99213", billingCodeType: "CPT" },
+    { lineNumber: 1, billedAmount: 221, insuranceAdjustedAmount: 57.73, insurancePaid: 0, patientPaidAmount: 163.27, patientOwes: 163.27, amountStillOutstanding: 0, memberAppliedToDeductible: 163.27, memberCoinsurance: 0, memberCopay: 0, deniedAmount: 0, networkStatus: "in_network", billingCode: "99213", billingCodeType: "CPT", coverageUserConfirmed: false, coverageUserRejected: false },
   ],
   accumulators: [
     { benefitYear: "2024", networkTier: "in_network", accumulatorType: "medical", isIndividual: true, deductibleApplied: 500, deductibleMax: 1500, oopApplied: 500, oopMax: 8000 },
@@ -153,6 +154,14 @@ check("F3 identical basis deterministic", fp(withBasis(baseBasis)) === fp(withBa
 // F17 — coinsurance: sub-4dp float noise stable; a real change drifts
 { const b = cloneBasis(baseBasis); if (b.plan.params) b.plan.params.inCoinsuranceDefault = 0.2000000001; check("F17a coins float-noise stable", fp(withBasis(b)) === fp(withBasis(baseBasis))); }
 { const b = cloneBasis(baseBasis); if (b.plan.params) b.plan.params.inCoinsuranceDefault = 0.25; check("F17b coins real drift", fp(withBasis(b)) !== fp(withBasis(baseBasis))); }
+// F18 — S293 (#6): the aggregate "Looks right" per-line confirm mark drifts the
+// hash (the letter CITES confirmed borrows — dispute 80a705ac's zero-clause
+// letter never flagged stale because the old hash was blind to this mark).
+{ const b = cloneBasis(baseBasis); b.lines[0].coverageUserConfirmed = true; check("F18 coverage-confirm mark drift", fp(withBasis(b)) !== fp(withBasis(baseBasis))); }
+// F19 — S293 (#6): a per-line "doesn't match" rejection drifts (it EXCLUDES a citation).
+{ const b = cloneBasis(baseBasis); b.lines[0].coverageUserRejected = true; check("F19 coverage-reject mark drift", fp(withBasis(b)) !== fp(withBasis(baseBasis))); }
+// F20 — S293 (#6): the user-confirmed amount-paid override drifts (recovery input).
+{ const b = cloneBasis(baseBasis); b.claim.userPatientPaid = 146.21; check("F20 userPatientPaid drift", fp(withBasis(b)) !== fp(withBasis(baseBasis))); }
 
 // ── isDisputeStale — the SHARED staleness rule (dispute card == letter page) ──
 // §17.4: the claim GET (the card) and the dispute GET (the letter) MUST agree on

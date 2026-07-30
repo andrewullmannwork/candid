@@ -25,6 +25,9 @@ export interface DisputePlanChooserPlan {
   planName: string | null;
   insurerName: string | null;
   planType: string | null;
+  /** S291 — the plan's own year. The API has always sent it; declaring it lets
+   *  callers compare it against the bill's care year. */
+  planYear?: number | null;
   coveragePeriodStart: string | null;
   coveragePeriodEnd: string | null;
   isActive: boolean;

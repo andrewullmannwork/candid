@@ -18,6 +18,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
+import { ANSWERED_REASONS } from "@/lib/claims/recovery-math";
 import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recovery-math";
 import { Row, IconChip } from "@/components/shared/InputRow";
 
@@ -40,7 +41,9 @@ export type CostShareOverrideRequest =
   | { field: "oop_met"; met: boolean; asOf: string | null }
   | { field: "aca"; status: "confirmed" | "non_aca" }
   /** S291 — "I checked the service list" (guided rail step 2), persisted to claims.metadata. */
-  | { field: "services_confirmed"; confirmed: boolean };
+  | { field: "services_confirmed"; confirmed: boolean }
+  /** S291 — re-pin the bill to another plan the user owns. */
+  | { field: "claim_plan"; insurancePlanId: string };
 
 interface CostShareBannerProps {
   verdict: CostShareVerdict;
@@ -75,6 +78,27 @@ interface CostShareBannerProps {
    * borders here and the amber step badge on the rail read the SAME set.
    */
   pendingFields?: Set<string>;
+  /**
+   * S291 (Andrew) — WHICH plan this bill is being checked against, surfaced as
+   * a first-class assumption. Bills pin to the plan in force when the care
+   * happened and do NOT follow later plan changes (by design — a 2025 bill must
+   * not be judged by a 2026 plan). Nothing said so, which made a correctly
+   * pinned bill look broken. `label` null = we have no plan for that period, the
+   * honest zero-match state: we ask rather than silently borrowing a plan.
+   */
+  planIdentity?: {
+    label: string | null;
+    year: number | null;
+    /**
+     * S291 (Andrew) — the pinned plan's OWN year, when it differs from the
+     * bill's care year. Both are real facts from real documents (care date off
+     * the bill, plan year off the plan), so a disagreement isn't noise — it
+     * means we have no plan for the year this care happened and are checking
+     * the bill against the wrong one.
+     */
+    planYearMismatch: number | null;
+    onChange: () => void;
+  } | null;
   /**
    * The user has tried to finish this step (any override persisted, or the
    * services below confirmed). Only then do unanswered rows turn amber —
@@ -114,6 +138,16 @@ interface CostShareBannerProps {
    *  flagged-bill step rail carries the verdict in step 1, so step 2 embeds
    *  just this card. Default "full" is the standalone verdict card. */
   variant?: "full" | "assumptions";
+  /**
+   * S293 (#1) — the ACA block's dismissed state, LIFTED to the parent when
+   * provided so the ONE pending set (pendingAssumptionFields, which the step
+   * badge reads) can see it: "Not sure" used to hide the block via banner-local
+   * state while the badge kept counting the field — an amber badge above a band
+   * with nothing left to answer. Controlled when both props present; falls back
+   * to internal state for legacy callers.
+   */
+  acaDismissed?: boolean;
+  onAcaDismissedChange?: (dismissed: boolean) => void;
 }
 
 /**
@@ -159,18 +193,131 @@ export function hasAssumptionRows(
  * Persisted truth only — no optimistic overlay, no local `dismissed` flag — so
  * it survives a reload.
  */
+/**
+ * S294 — HOW each assumption field gets answered. ONE declaration, because the
+ * "press Done, still says needs review" defect recurred THREE times and every
+ * recurrence was the same shape: two or more hand-maintained lists disagreeing
+ * about whether a field was answerable.
+ *
+ * The badge may count a field ONLY when the user has something on screen to act
+ * on. Each field declares which:
+ *
+ *   "done"  — a toggle with a real default is on screen. Done accepts it, so it
+ *             pends only until an override is saved. `DONE_WRITABLE_FIELDS` is
+ *             DERIVED from this, so the Done writer and the pending set cannot
+ *             drift apart (they were separate literals before).
+ *   "input" — no default exists to accept; a real value must be supplied
+ *             through a control (Add-details modal, plan chooser, ACA block).
+ *             Pends only while that control is actually rendered.
+ *
+ * Any field answered via ANSWERED_REASONS is exempt regardless of kind — see
+ * `clearAnswered` below. Adding a field to CostShareAssumption without adding it
+ * here fails `s294-canonical-coverage-fixture` (exhaustiveness §7e).
+ */
+export const ASSUMPTION_ANSWERABILITY = {
+  network: "done",
+  deductible_met: "done",
+  oop_met: "done",
+  deductible_applies: "input",
+  aca_preventive: "input",
+  service_cost: "input",
+  plan_identity: "input",
+  // Emitted for transparency only — never gates the step. `denial` states what
+  // the insurer said; `plan_provenance` names WHY a verdict was degraded and is
+  // resolved by uploading a plan document, not by answering a row.
+  denial: "info",
+  plan_provenance: "info",
+} as const satisfies Record<string, "done" | "input" | "info">;
+
+/** Derived, never hand-listed — the fields "Done" can actually write. */
+export const DONE_WRITABLE_FIELDS: ReadonlySet<string> = new Set(
+  Object.entries(ASSUMPTION_ANSWERABILITY)
+    .filter(([, kind]) => kind === "done")
+    .map(([field]) => field),
+);
+
 export function pendingAssumptionFields(
   assumptions: BannerAssumption[],
   overrides: CostShareOverrides | null,
+  /**
+   * S292 — the plan-identity row's state, so its amber comes from THIS set like
+   * every other row's. It used to be flagged by its own independent condition
+   * (`label == null || planYearMismatch != null`) ANDed with `flagUnanswered`,
+   * which is `assumptionsEngaged` — durably true forever once any override is
+   * saved. So the row went amber and could never clear, while the step badge
+   * independently went green: the badge and the border reading two different
+   * sources, the exact split S291 set out to end.
+   */
+  planIdentity?: { label: string | null } | null,
+  /**
+   * S293 (#1) — the S292 rule, finished: amber ⟺ counted, and a field may
+   * count ONLY while the row that answers it is actually on screen. Two fields
+   * could previously count with no visible ask — `deductible_applies` (its
+   * owning row renders only for a manual-source cost, but the engine emits the
+   * assumption for parsed/canonical costs too) and `aca_preventive` (the "Not
+   * sure" button hid the block while the field kept counting). Both produced
+   * an amber badge above a band with nothing to answer — the observed
+   * "Done → amber though every visible row is Done-confirmable". Callers pass
+   * the real row visibility; absent (legacy/standalone callers, fixtures) the
+   * defaults preserve the S291 always-counted behavior.
+   */
+  visibility?: {
+    /** the editable plan-cost row (the row that OWNS deductible_applies) renders. */
+    deductibleAppliesRowVisible?: boolean;
+    /** the ACA question block renders (exists and not "Not sure"-dismissed). */
+    acaRowVisible?: boolean;
+  },
 ): Set<string> {
   const has = (field: string) => assumptions.some((a) => a.field === field);
   const pending = new Set<string>();
 
   // Toggle-backed rows: a default is on screen, so these are pending only until
   // an override is saved — and "Done" saves them.
-  if (has("network") && overrides?.userNetworkOverride == null) pending.add("network");
-  if (has("deductible_met") && overrides?.deductibleMet == null) pending.add("deductible_met");
-  if (has("oop_met") && overrides?.oopMet == null) pending.add("oop_met");
+  // A row whose reason is "accumulator" is already ANSWERED — by our own tally
+  // of the user's bills — so it renders (transparency) without counting as
+  // outstanding. It stays overridable: the tally only knows uploaded bills, so
+  // it's a floor, not the truth. S291.
+  const answeredByData = (field: string) =>
+    assumptions.some((a) => a.field === field && ANSWERED_REASONS.has(a.reason));
+  const unanswered = (field: string) => has(field) && !answeredByData(field);
+
+  if (unanswered("network") && overrides?.userNetworkOverride == null) pending.add("network");
+  if (unanswered("deductible_met") && overrides?.deductibleMet == null) pending.add("deductible_met");
+  if (unanswered("oop_met") && overrides?.oopMet == null) pending.add("oop_met");
+
+  // ── THE INVARIANT (S294, Andrew — third recurrence) ─────────────────────
+  // ANSWERED_REASONS is authoritative for EVERY field, without exception.
+  //
+  // It was applied only to the three toggle-backed rows above, while the
+  // input-backed rows below tested mere PRESENCE. So a field that was already
+  // answered — by our accumulator, by the user, or (S294) by the plan document
+  // itself — still counted as outstanding if it happened to be input-backed.
+  // Done cannot write those fields, so the badge stayed amber permanently with
+  // nothing on screen left to answer. That is the "press Done, still says needs
+  // review" defect, and it survived three fixes because each one reasoned about
+  // a specific ROW rather than the rule underneath.
+  //
+  // Andrew's rule, stated plainly: if every row either shows a default the user
+  // can accept or already holds a value, Done means answered. A field may hold
+  // this step open ONLY when there is genuinely nothing on screen to accept.
+  //
+  // Enforced as a post-pass so it cannot be forgotten when a field is added:
+  // whatever the branches below decide, an answered field is never pending.
+  //
+  // The second half of the same guarantee: a field declared "info" in
+  // ASSUMPTION_ANSWERABILITY has no control at all, so it can never be pending
+  // however it got added. Together these two post-passes mean the badge counts
+  // only fields the user can actually act on — by construction, not by three
+  // lists agreeing.
+  const clearUnactionable = (set: Set<string>) => {
+    for (const f of Array.from(set)) {
+      // service_cost keys are namespaced (`service_cost:<slug>`); strip to the field.
+      const field = f.startsWith("service_cost:") ? "service_cost" : f;
+      const kind = (ASSUMPTION_ANSWERABILITY as Record<string, string>)[field];
+      if (answeredByData(field) || kind === "info") set.delete(f);
+    }
+    return set;
+  };
 
   // Input-backed rows: no default exists to accept, so "Done" can never clear
   // them. They stay pending until the user supplies a real value.
@@ -183,12 +330,25 @@ export function pendingAssumptionFields(
   // deductible-applies read as fully answered. Its presence in `assumptions`
   // IS its pending state: once the plan row carries a non-null value the engine
   // stops emitting it.
-  if (has("deductible_applies")) pending.add("deductible_applies");
-  if (has("aca_preventive")) pending.add("aca_preventive");
+  if (has("deductible_applies") && (visibility?.deductibleAppliesRowVisible ?? true)) {
+    pending.add("deductible_applies");
+  }
+  if (has("aca_preventive") && (visibility?.acaRowVisible ?? true)) {
+    pending.add("aca_preventive");
+  }
+
+  // Plan identity is OUTSTANDING only when there is no plan on file for the
+  // bill's year — then we genuinely cannot check it and need the user to pick
+  // or upload one. A WRONG-YEAR plan is not counted here: we did check the bill,
+  // the caveat is stated in the row's own sub-line, and it already carries its
+  // own step in "What you need to do" (S291). Counting it here too would hold
+  // this step open forever on a bill the engine considers fully answered —
+  // which is what produced a green badge sitting above an amber row.
+  if (planIdentity && planIdentity.label == null) pending.add("plan_identity");
   for (const a of assumptions) {
     if (a.field === "service_cost") pending.add(`service_cost:${a.serviceSlug ?? a.serviceLabel}`);
   }
-  return pending;
+  return clearUnactionable(pending);
 }
 
 function fmtDate(iso: string | null): string {
@@ -267,6 +427,7 @@ export function CostShareBanner({
   onOverride,
   onConfirmDefaults,
   pendingFields,
+  planIdentity,
   flagUnanswered = false,
   errorMsg,
   onShouldBeCovered,
@@ -275,10 +436,18 @@ export function CostShareBanner({
   onUploadEob,
   onBack,
   variant = "full",
+  acaDismissed: acaDismissedProp,
+  onAcaDismissedChange,
 }: CostShareBannerProps) {
   const assumptionsOnly = variant === "assumptions";
-  const [acaDismissed, setAcaDismissed] = useState(false);
-  const [editAll, setEditAll] = useState(false); // "Update assumptions" re-opens resolved rows for re-edit
+  // S293 (#1) — controlled when the parent supplies the pair (so the badge's
+  // pending set sees the dismissal); internal otherwise.
+  const [acaDismissedLocal, setAcaDismissedLocal] = useState(false);
+  const acaDismissed = acaDismissedProp ?? acaDismissedLocal;
+  const setAcaDismissed = (v: boolean) => {
+    onAcaDismissedChange?.(v);
+    setAcaDismissedLocal(v);
+  };
   const [dismissed, setDismissed] = useState(false); // "Done" collapses the section (accept as-is)
   const [confirming, setConfirming] = useState(false); // Done is now a WRITE — guard the double-click
   const [optimistic, setOptimistic] = useState<Optimistic>({});
@@ -297,6 +466,57 @@ export function CostShareBanner({
 
   const networkA = assumptions.find((a) => a.field === "network");
   const deductibleA = assumptions.find((a) => a.field === "deductible_met");
+  /**
+   * S294 — the plan's OWN statement about deductible treatment (mig 219 /
+   * `reason: "plan_document"`). An ANSWERED row: it informs, it never joins the
+   * pending set, and it never blocks Done.
+   *
+   * Rendered only for the two `_free` cases, because those are the ones whose
+   * meaning is genuinely non-obvious — a "$0" that is only $0 after a $7,250
+   * deductible reads identically to a "$0" that is free outright, and that
+   * ambiguity is the whole S294 defect. When the plan charges a real
+   * copay/coinsurance the deductible row's own prose already says "you haven't
+   * met your $X deductible yet, so this applies to it", and a second sentence
+   * saying the same thing would be noise.
+   */
+  const planDeductibleTerm = (() => {
+    const rows = assumptions.filter(
+      (x) => x.field === "deductible_applies" && x.reason === "plan_document",
+    );
+    if (rows.length === 0) return null;
+    const a = rows[0];
+    // S294 (Andrew) — name the actual services rather than "this". Read off the
+    // bill's OWN lines, so it stays correct for any bill: one service is named,
+    // two are joined, three or more collapse to "these services" rather than
+    // running an unbounded list through the sentence.
+    const names = Array.from(
+      new Set(rows.map((r) => r.serviceLabel).filter((n): n is string => !!n && n.trim().length > 0)),
+    );
+    const subject =
+      names.length === 1 ? names[0]
+      : names.length === 2 ? `${names[0]} and ${names[1]}`
+      : names.length > 2 ? "these services"
+      : "this";
+    if (a.assumed === "subject_free" && a.value != null) {
+      return `Your plan covers ${subject} at no charge — but only after your ${money(a.value)} deductible is met.`;
+    }
+    if (a.assumed === "exempt_free") {
+      return `Your plan covers ${subject} at no charge, and the deductible doesn't apply.`;
+    }
+    return null;
+  })();
+
+  /**
+   * S294 (Andrew) — where these terms came from, stated plainly and WITHOUT
+   * blocking anything. Candid's catalog extraction of a plan's SBC is the same
+   * filing the member would upload, so it no longer degrades the verdict; the
+   * member is simply told, and pointed at the upload that would make it current.
+   */
+  const planCostSourceNote = assumptions.some(
+    (x) => x.field === "deductible_applies" && x.reason === "plan_document",
+  ) && !editableServiceCost
+    ? "From Candid's plan database — upload your plan document for the most up-to-date results."
+    : null;
   const oopA = assumptions.find((a) => a.field === "oop_met");
   const acaA = assumptions.find((a) => a.field === "aca_preventive");
   const serviceCostChips = (() => {
@@ -333,8 +553,11 @@ export function CostShareBanner({
     onOverride({ field: "oop_met", met, asOf }, "oop");
   };
   /**
-   * "Done" = the user has read these rows and accepts what they say. Persist
-   * every displayed-but-unanswered default as a real override, THEN collapse.
+   * "Done" = the user has read these rows and accepts what they say. Collapse
+   * in the SAME click; persist every displayed-but-unanswered default as a
+   * real override in the background (S293 #5 — it used to await the batched
+   * POSTs + a full claim refetch before any visible response, a multi-second
+   * dead click).
    *
    * Sends the value currently on screen (optimistic overlay first, saved value
    * second, engine default last), so what gets written is exactly what the
@@ -343,8 +566,10 @@ export function CostShareBanner({
    *
    * `service_cost` / `aca_preventive` are excluded by construction: they have
    * no default to accept, so they stay pending and keep the rail step amber.
-   * Collapse still happens even if the writes fail — the error surfaces via
-   * `errorMsg`, and trapping the user in an open card helps nobody.
+   * The pending-target idiom (ClaimDetail's svcPendingConfirm): `dismissed`
+   * holds only the in-flight collapse; everything else stays derived from
+   * server truth. A FAILED batch rejects — the section snaps back open (the
+   * user must see nothing was saved) and `errorMsg` says why.
    */
   /**
    * Does this row still need input? Each row declares which pending field(s)
@@ -356,7 +581,25 @@ export function CostShareBanner({
   const flagRow = (...fields: string[]) =>
     flagUnanswered && fields.some((f) => pendingFields?.has(f) ?? false);
 
-  const confirmAndDismiss = async () => {
+  // S293 (#1) — what would STILL pend after Done writes its three toggle
+  // fields. Done can only answer network / deductible_met / oop_met; anything
+  // else in the ONE pending set (plan cost to add, plan to pick, ACA question)
+  // survives it. Collapsing the section anyway hid exactly the rows the amber
+  // badge was counting — badge said "still needs you", band showed nothing.
+  // Rule (S292, Andrew): amber ⟺ counted, badge and band must agree — so Done
+  // collapses ONLY when nothing else pends; otherwise the section stays open
+  // with the remaining rows flagged.
+  // S294 — DERIVED from ASSUMPTION_ANSWERABILITY, not a second literal. The
+  // Done writer and the pending set drifting apart is what produced the
+  // recurring "Done does nothing" defect.
+  const DONE_WRITABLE = DONE_WRITABLE_FIELDS;
+  const pendingAfterDone = pendingFields
+    ? Array.from(pendingFields).filter(
+        (f) => !DONE_WRITABLE.has(f) && !(f === "aca_preventive" && acaDismissed),
+      ).length
+    : 0;
+
+  const confirmAndDismiss = () => {
     const bodies: CostShareOverrideRequest[] = [];
     if (networkExists && !netResolved) {
       bodies.push({ field: "network", value: oonDisplay ? "out_of_network" : "in_network" });
@@ -367,6 +610,7 @@ export function CostShareBanner({
     if (oopExists && !oopResolved) {
       bodies.push({ field: "oop_met", met: oopMetDisplay, asOf: oopAsOfDisplay });
     }
+    const collapseAfter = pendingAfterDone === 0;
     if (bodies.length > 0 && onConfirmDefaults) {
       setConfirming(true);
       // Mirror the writes locally so the rows don't flicker back to unanswered
@@ -377,14 +621,19 @@ export function CostShareBanner({
         deductibleMet: deductibleExists && !dedResolved ? dedMetDisplay : o.deductibleMet,
         oopMet: oopExists && !oopResolved ? oopMetDisplay : o.oopMet,
       }));
-      try {
-        await onConfirmDefaults(bodies);
-      } finally {
-        setConfirming(false);
-      }
+      // Collapse NOW (when nothing else pends) — the click's own render is the
+      // response. The batch and its ONE refetch reconcile in the background;
+      // rejection = snap back open + drop nothing else (errorMsg arrives via
+      // props and the existing render-time reconcile clears the optimistic
+      // overlay). When other rows still pend, stay OPEN so the flagged rows
+      // remain visible under the amber badge.
+      if (collapseAfter) setDismissed(true);
+      onConfirmDefaults(bodies)
+        .catch(() => setDismissed(false))
+        .finally(() => setConfirming(false));
+      return;
     }
-    setDismissed(true);
-    setEditAll(false);
+    if (collapseAfter) setDismissed(true);
   };
 
   const answerAca = (status: "confirmed" | "non_aca") => {
@@ -393,8 +642,15 @@ export function CostShareBanner({
   };
 
   // An assumption is "resolved" once the user picks it (override present —
-  // optimistic or persisted). Resolved rows DISAPPEAR from the list; the
-  // "Update assumptions" control re-opens them all (saved values) to re-select.
+  // optimistic or persisted).
+  //
+  // S291 (Andrew) — resolved rows used to DISAPPEAR, which is why the "Update
+  // assumptions" control existed at all. Reversed deliberately: hiding an
+  // answered assumption means the user can't see what we assumed, where the
+  // number came from, or change their mind — and after "Done" started
+  // persisting the displayed defaults, whole rows (deductible, OOP max) began
+  // vanishing the moment they were confirmed. Transparency over tidiness: a
+  // resolved row stays visible, states its source, and stays editable.
   const netResolved = optimistic.network !== undefined || overrides?.userNetworkOverride != null;
   const dedResolved = optimistic.deductibleMet !== undefined || overrides?.deductibleMet != null;
   const oopResolved = optimistic.oopMet !== undefined || overrides?.oopMet != null;
@@ -402,9 +658,10 @@ export function CostShareBanner({
   const deductibleExists = !!deductibleA || dedResolved;
   const oopExists = !!oopA || oopResolved;
 
-  const showNetwork = networkExists && (!netResolved || editAll);
-  const showDeductible = deductibleExists && (!dedResolved || editAll);
-  const showOop = oopExists && (!oopResolved || editAll);
+  // Always shown when the assumption exists at all — resolved or not.
+  const showNetwork = networkExists;
+  const showDeductible = deductibleExists;
+  const showOop = oopExists;
   const showAca = !!acaA && !acaDismissed;
   const hasServiceCostGap = serviceCostChips.length > 0;
   // S263 — the user's own manual cost-share is EDITABLE (correct a mistake); a
@@ -412,13 +669,26 @@ export function CostShareBanner({
   const hasEditableCost = !!editableServiceCost;
 
   // pending = assumptions still awaiting a first pick (drives the headline copy).
-  const pendingCount =
-    ((networkExists && !netResolved) ? 1 : 0) +
-    ((deductibleExists && !dedResolved) ? 1 : 0) +
-    ((oopExists && !oopResolved) ? 1 : 0) +
-    serviceCostChips.length +
-    (showAca ? 1 : 0);
-  const rawSectionHasRows = showNetwork || showDeductible || showOop || hasServiceCostGap || showAca || hasEditableCost;
+  // S293 (#1) — derived from the ONE pending set the badge reads
+  // (pendingAssumptionFields, passed in as `pendingFields`) instead of a
+  // second local tally that could disagree with it. The set is persisted-truth
+  // only, so overlay the in-flight optimistic answers on top (a toggle click
+  // must drop the count in its own render, not after the refetch). Legacy
+  // callers without the prop keep the local tally.
+  const pendingCount = pendingFields
+    ? Array.from(pendingFields).filter((f) => {
+        if (f === "network") return !netResolved;
+        if (f === "deductible_met") return !dedResolved;
+        if (f === "oop_met") return !oopResolved;
+        if (f === "aca_preventive") return !acaDismissed;
+        return true;
+      }).length
+    : ((networkExists && !netResolved) ? 1 : 0) +
+      ((deductibleExists && !dedResolved) ? 1 : 0) +
+      ((oopExists && !oopResolved) ? 1 : 0) +
+      serviceCostChips.length +
+      (showAca ? 1 : 0);
+  const rawSectionHasRows = !!planIdentity || showNetwork || showDeductible || showOop || hasServiceCostGap || showAca || hasEditableCost;
   // Section is OPEN unless the user dismissed it via "Done"; when closed but
   // assumptions exist, "Update assumptions" brings it back.
   const sectionOpen = !dismissed && rawSectionHasRows;
@@ -451,7 +721,17 @@ export function CostShareBanner({
     body = "Your plan doesn't cover this service, so this cost is yours — nothing to dispute. If you believe it should be covered, tell us and we'll take another look.";
   } else {
     headline = "We can't fully check this one yet";
-    body = "We're missing your plan's cost for this service, and we won't flag a dispute we can't back up. Add it and we'll run the numbers.";
+    // S294 (Andrew) — say the ACTUAL reason. The single line below was shown for
+    // every `insufficient` verdict, so a bill whose plan cost we were DISPLAYING
+    // one row further down still claimed we were missing it — and pointed at
+    // "Add plan details", which writes a `manual` value the same gate distrusts.
+    // The instruction could not resolve the state it was describing.
+    const cardSourced = assumptions.some(
+      (a) => a.field === "plan_provenance" && a.assumed === "unverified_plan",
+    );
+    body = cardSourced
+      ? "These costs came from your insurance card which lacks the specifics needed to determine coverage. Upload your plan document and we'll re-check."
+      : "We're missing your plan's cost for this service, and we won't flag a dispute we can't back up. Add it and we'll run the numbers.";
   }
 
   const headChip: Record<CostShareVerdict, ReactNode> = {
@@ -500,16 +780,47 @@ export function CostShareBanner({
               assumptionsOnly
                 ? // First row's border-t would read as a stray card edge right
                   // under the container's own border — suppress it.
-                  "px-5 pb-4 pt-1.5 [&>div:first-child]:border-t-0"
-                : "px-5 pb-4"
+                  "px-5 pb-4 pt-1.5 [&>div:first-child]:border-t-0 [&>div[data-flagged]+div]:border-t-0"
+                : // S293 (#1) — the full variant needs the same suppression: a
+                  // row following a flagged (amber-bleed) row must not draw its
+                  // top border across the tint.
+                  "px-5 pb-4 [&>div[data-flagged]+div]:border-t-0"
             }
           >
             {!assumptionsOnly && (
               <div className="border-t border-gray-100 pt-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-gray-400">What we assumed</div>
             )}
 
+            {planIdentity && (
+              <Row
+                flagged={flagRow("plan_identity")}
+                icon={DocIcon}
+                label="Plan we checked against"
+                control={
+                  <button
+                    type="button"
+                    onClick={planIdentity.onChange}
+                    className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    Change
+                  </button>
+                }
+              >
+                {planIdentity.label == null
+                  ? `We don't have a plan on file for${planIdentity.year ? ` ${planIdentity.year}` : " when this care happened"}. Pick the plan you were on so we can check this bill properly.`
+                  : planIdentity.planYearMismatch != null
+                    ? `This bill is from ${planIdentity.year}, but we checked it against your ${planIdentity.planYearMismatch} plan. Coverage changes year to year — add your ${planIdentity.year} plan for an accurate check.`
+                    : `We checked this bill against ${planIdentity.label}. Change it if you were on a different plan${planIdentity.year ? ` in ${planIdentity.year}` : ""}.`}
+              </Row>
+            )}
+
             {showNetwork && (
               <Row
+                // S292 — network is counted by `pendingAssumptionFields` but had
+                // no `flagged` prop, so it was the mirror image of the plan row:
+                // the badge counted it while the border stayed silent. Every row
+                // the badge counts now shows amber, and only those do.
+                flagged={flagRow("network")}
                 icon={GlobeIcon}
                 label="Network"
                 control={
@@ -523,12 +834,32 @@ export function CostShareBanner({
               </Row>
             )}
 
+            {/* S294 — the plan's own term, stated BEFORE the question it makes
+                relevant. Reading order is the point: the user learns the $0 is
+                conditional, then answers the one thing that resolves it. Not a
+                Row with a control — there is nothing here to change, only
+                something to know. */}
+            {planDeductibleTerm && (
+              <Row
+                icon={DocIcon}
+                label="Plan cost"
+                control={null}
+                below={
+                  planCostSourceNote ? (
+                    <div className="mt-1 text-[12px] text-gray-500">{planCostSourceNote}</div>
+                  ) : undefined
+                }
+              >
+                {planDeductibleTerm}
+              </Row>
+            )}
+
             {showDeductible && (
-              <MetRow flagged={flagRow("deductible_met")} kind="deductible" isMet={dedMetDisplay} metAsOf={dedAsOfDisplay} amount={deductibleA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectDeductible} />
+              <MetRow flagged={flagRow("deductible_met")} source={deductibleA?.reason === "user_override" || dedResolved ? "user" : deductibleA?.reason === "accumulator" ? "accumulator" : null} kind="deductible" isMet={dedMetDisplay} metAsOf={dedAsOfDisplay} amount={deductibleA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectDeductible} />
             )}
 
             {showOop && (
-              <MetRow flagged={flagRow("oop_met")} kind="oop" isMet={oopMetDisplay} metAsOf={oopAsOfDisplay} amount={oopA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectOop} />
+              <MetRow flagged={flagRow("oop_met")} source={oopA?.reason === "user_override" || oopResolved ? "user" : oopA?.reason === "accumulator" ? "accumulator" : null} kind="oop" isMet={oopMetDisplay} metAsOf={oopAsOfDisplay} amount={oopA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectOop} />
             )}
 
             {serviceCostChips.map((chip, i) => (
@@ -591,7 +922,7 @@ export function CostShareBanner({
             <div className="mt-4 flex justify-end">
               <button
                 type="button"
-                onClick={() => void confirmAndDismiss()}
+                onClick={confirmAndDismiss}
                 disabled={confirming}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 px-4 py-2 text-[13px] font-semibold text-white shadow-sm transition-all hover:bg-gray-800 active:scale-[0.98]"
               >
@@ -604,7 +935,7 @@ export function CostShareBanner({
 
         {showUpdateLink && (
           <div className="border-t border-gray-100 px-5 py-3">
-            <button type="button" onClick={() => { setDismissed(false); setEditAll(true); }} className="text-[13px] font-medium text-blue-600 hover:text-blue-800">
+            <button type="button" onClick={() => setDismissed(false)} className="text-[13px] font-medium text-blue-600 hover:text-blue-800">
               Update assumptions
             </button>
           </div>
@@ -645,7 +976,7 @@ export function CostShareBanner({
 }
 
 function MetRow({
-  kind, isMet, metAsOf, amount, networkLabel, money, onSubmit, flagged = false,
+  kind, isMet, metAsOf, amount, networkLabel, money, onSubmit, flagged = false, source = null,
 }: {
   kind: "deductible" | "oop";
   isMet: boolean;
@@ -656,6 +987,13 @@ function MetRow({
   onSubmit: (met: boolean, asOf: string | null) => void;
   /** S291 — still unanswered after the user tried to finish. */
   flagged?: boolean;
+  /**
+   * S291 — where this answer came from. "accumulator" = our own running tally
+   * of the user's uploaded bills; "user" = they told us. Rendered as a small
+   * attribution line so a confirmed row still shows its basis and stays
+   * arguable — our tally only sees bills we've been given, so it is a floor.
+   */
+  source?: "accumulator" | "user" | null;
 }) {
   const [editing, setEditing] = useState(false);
   const [dateValue, setDateValue] = useState("");
@@ -686,9 +1024,17 @@ function MetRow({
 
   return (
     <div
+      // S293 (#1) — flagged renders the SAME full-bleed amber tint as the
+      // shared Row primitive (InputRow.tsx), replacing this row's private
+      // bordered-box treatment. The deductible/OOP rows were the only flagged
+      // rows drawing a border instead of the approved bleed — a genuinely
+      // pending MetRow now looks like every other pending row, and the
+      // `data-flagged` attr keeps the parent's border-suppression selector
+      // working for the row beneath it.
+      data-flagged={flagged || undefined}
       className={
         flagged
-          ? "my-1.5 rounded-xl border border-amber-400 px-3 py-3.5"
+          ? "-mx-5 bg-amber-50 px-5 py-3.5 first:-mt-1.5 last:-mb-4"
           : "border-t border-gray-100 py-3.5"
       }
     >
@@ -702,6 +1048,27 @@ function MetRow({
                 ? `You've ${verb} your ${networkLabel} ${nounBase} as of ${fmtDate(metAsOf)}.`
                 : `You haven't ${verb} your ${noun} yet, so this applies to it.`}
             </div>
+            {source ? (
+              <div className="mt-1 text-[12px] text-gray-500">
+                {source === "accumulator"
+                  ? "Based on the bills you've uploaded — change it if you've had others."
+                  : "You told us this."}
+              </div>
+            ) : (
+              /* S294 — with no accumulator and no answer, the toggle above is
+                 showing a DEFAULT, not a fact. Say so. The row already
+                 attributes an accumulator- or user-sourced answer; staying
+                 silent in the one case where we are guessing was the gap, and
+                 it is the same silence that let a displayed default read as a
+                 confirmed value elsewhere (S291). Conservative direction: "not
+                 yet" makes the patient owe MORE, so it can never invent a
+                 refund — but it must still be legible as an assumption. */
+              !isMet && (
+                <div className="mt-1 text-[12px] text-gray-500">
+                  We&apos;re assuming not yet. Change it if you have.
+                </div>
+              )
+            )}
           </div>
         </div>
         <div className="pt-1">{control}</div>

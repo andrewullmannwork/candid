@@ -19,14 +19,30 @@ import type { PlanDocPlanIdentity } from "@/lib/plan_doc/types";
 import type { ClassifiedDocType } from "@/lib/classifier";
 import type { ForcedReparseReason } from "@/lib/parser/cf40-v4";
 import { extractServicesWithClaude } from "@/lib/plan/claude-extractor";
-import { findOrCreateCanonicalPlan } from "@/lib/plan/canonical-match";
+import {
+  findOrCreateCanonicalPlan,
+  linkPlanToCanonical,
+  resolveCanonicalCandidate,
+} from "@/lib/plan/canonical-match";
+import {
+  resolvePlanIdentity,
+  identityAllowsMerge,
+  shouldAssembleStub,
+  STUB_ASSEMBLY_REASON,
+  CANONICAL_IDENTITY_CONFIDENCE_FLOOR,
+} from "@/lib/plan/plan-identity";
 import { recordCostEvent } from "@/lib/cost/parse-cost-events";
-import { matchInsurerWithPlanFallback } from "@/lib/plan/insurer-match";
-import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { matchInsurerWithPlanFallback, matchInsurerCatalog } from "@/lib/plan/insurer-match";
+import { isFeatureEnabled, readFeatureFlagConfig } from "@/lib/config/product-flags";
 import { routePlanDocServices } from "@/lib/plan_doc/thesaurus-routing";
 import type { RawService } from "@/lib/plan_doc/haiku-prompts/services-cost-sharing";
 import { applyPlanCoverageCell, mergeServiceCoverageRules, coerceComponent } from "@/lib/plan/coverage-targeting";
 import { applyDocSupplementMerge } from "@/lib/plan/plan-merge";
+import {
+  PLAN_MERGE_RECEIPT_VERSION,
+  MAX_RECEIPT_CELLS,
+  type PlanMergeReceipt,
+} from "@/lib/plan/merge-receipt";
 import { derivePlanTierLabel } from "@/lib/claims/service-resolver";
 import { votedParseSBC } from "@/lib/sbc/voted-parser";
 import type { VotedParseSBCResult } from "@/lib/sbc/voted-parser";
@@ -705,56 +721,326 @@ export async function processPlanDocumentData(
       parsedInsurer: string;
       existingPlanName?: string;
       parsedPlanName?: string;
+      /** S292 — the resolver's verdict, so the UI can pick its prompt state. */
+      identity?: {
+        verdict: "different" | "uncertain";
+        reason: string;
+        evidence: string;
+        existingPlanId: string;
+      };
     } | null = null;
 
-    if (profileInsurer && parsedInsurer
-      && profileInsurer !== parsedInsurer
-      && !profileInsurer.includes(parsedInsurer)
-      && !parsedInsurer.includes(profileInsurer)) {
-      mismatchData = {
-        mismatch: true,
-        type: "insurer",
-        existingInsurer: userProfile?.insurer || "",
-        parsedInsurer: planInsert.insurer_name || "",
+    // ── S292 item 4A — plan identity, resolved (flag `plan_identity_resolver_v1`) ─
+    // The legacy check below compares the parse against the PROFILE's insurer +
+    // plan_name with a five-word-strip normalizer. It is wrong in both
+    // directions, and one real account proved both on the same day:
+    //
+    //   FALSE NEGATIVE — an upload resolving to a genuinely DIFFERENT catalog
+    //   plan was silently supplement-merged into the active plan because the
+    //   profile's plan_name was empty, so the comparison never ran. Every later
+    //   bill is then audited against a blend of two policies.
+    //
+    //   FALSE POSITIVE — a card and an SBC that provably resolve to the SAME
+    //   canonical plan were flagged as a mismatch because the strings differ.
+    //
+    // Two structural fixes ride along, independent of the resolver itself:
+    //
+    //   1. We compare against the ACTIVE PLAN ROW, not the profile. The profile
+    //      is a denormalized copy that goes stale (and was empty in the real
+    //      false-negative case).
+    //   2. ONE lookup feeds both the identity decision and the merge target.
+    //      Previously the mismatch check read `profiles` while the merge target
+    //      read `insurance_plans` — two sources, so we could decide "same plan"
+    //      about one row and then merge into a different one.
+    //
+    // WHAT THE RESOLVER CAN ACTUALLY SEE HERE. Rules 2 (HIOS) and 3 (group +
+    // insurer) need those identifiers on BOTH sides; the plan parsers do not
+    // extract either today, so on this path they are dormant and the live rungs
+    // are canonical-match, insurer-differs, canonical-differs, name-differs and
+    // uncertain. The facts are read from `planInsert` anyway, so both rungs
+    // light up on their own the day the parser starts emitting them.
+    //
+    // MERGE POLICY: only `same` merges. `different` AND `uncertain` both hold
+    // the upload as an inactive plan and ask — preserve-on-uncertainty, the
+    // resolver's own doctrine. That is a real behaviour change: today a parse
+    // with two empty names falls through and merges. Holding it is why the flag
+    // exists, and the S291 stranded-plan recovery (`/api/plan/stranded` + the
+    // banner) is what keeps a held plan visible rather than lost.
+    let identityTargetPlan: { id: string; plan_year: number | null } | null = null;
+    let identityDecided = false;
+    /**
+     * The "we merged this into your existing plan" receipt (verdict `same`).
+     * Rides `documents.insurer_mismatch` — already the channel the status route
+     * exposes and the upload surface polls — rather than opening a second one.
+     * `mismatch: false` keeps every existing consumer's `insurerMismatch.mismatch`
+     * check false, so this is additive: nothing that reads the column today can
+     * mistake a match for a mismatch.
+     */
+    let identityMatchRecord: {
+      mismatch: false;
+      identity: {
+        verdict: "same";
+        reason: string;
+        evidence: string;
+        existingPlanId: string;
+        existingPlanName: string | null;
       };
-    } else if (userProfile?.plan_name && planInsert.plan_name
-      && normalize(userProfile.plan_name) !== normalize(planInsert.plan_name)
-      && !normalize(userProfile.plan_name).includes(normalize(planInsert.plan_name))
-      && !normalize(planInsert.plan_name).includes(normalize(userProfile.plan_name))) {
-      mismatchData = {
-        mismatch: true,
-        type: "plan_name",
-        existingInsurer: userProfile?.insurer || "",
-        parsedInsurer: planInsert.insurer_name || "",
-        existingPlanName: userProfile.plan_name,
-        parsedPlanName: planInsert.plan_name,
-      };
-    } else if (!planInsert.insurer_name && userProfile?.insurer) {
-      // S90 Bug Y defensive guard: parser (incl. Bug X safety-net Haiku
-      // fallback) failed to extract any insurer name AND the user has an
-      // existing profile insurer. We cannot determine whether this upload
-      // is the same plan or a different one. Fail-safe by treating as a
-      // mismatch — the downstream merge step at L580 will create a new
-      // is_active=false row instead of silently overwriting the user's
-      // active plan's cost-share fields. Surfaces in UI as "insurer
-      // mismatch" so the user can disambiguate.
-      mismatchData = {
-        mismatch: true,
-        type: "insurer",
-        existingInsurer: userProfile.insurer,
-        parsedInsurer: "(parser could not extract)",
-      };
+    } | null = null;
+
+    const identityResolverOn =
+      !options?.seedMode &&
+      !isComparisonUpload &&
+      (await isFeatureEnabled("plan_identity_resolver_v1", userForFlagCheck?.email ?? undefined));
+
+    if (identityResolverOn) {
+      // Deterministic pick: `.single()` THROWS on multi-active rows and the old
+      // code then fell through to the create-branch silently (the S286 landmine).
+      // Order instead, take the newest activation, and say so out loud.
+      const { data: activePlanRows } = await supabase
+        .from("insurance_plans")
+        .select(
+          "id, plan_name, insurer_name, plan_year, group_number, hios_id, canonical_plan_id, canonical_match_confidence, source, activated_at, updated_at",
+        )
+        .eq("user_id", doc.user_id)
+        .eq("is_active", true)
+        .order("activated_at", { ascending: false, nullsFirst: false })
+        .order("updated_at", { ascending: false });
+
+      const activePlan = activePlanRows?.[0] ?? null;
+      if (activePlanRows && activePlanRows.length > 1) {
+        console.warn(
+          `[plan-identity] ${activePlanRows.length} ACTIVE plans for user ${doc.user_id} — comparing against the most recently activated (${activePlan?.id}). The others are invisible to this decision.`,
+        );
+      }
+
+      if (!activePlan) {
+        // Nothing on file to be the same as or different from. The create-plan
+        // branch below owns this case, exactly as it does today.
+        identityDecided = true;
+        console.log(`[plan-identity] no active plan for user ${doc.user_id} — first plan, nothing to compare (doc=${documentId})`);
+      } else {
+        // Ship Gate #6 — the floor is flag config, not a constant in the source.
+        const floor = await readFeatureFlagConfig(
+          "plan_identity_resolver_v1",
+          "canonical_confidence_floor",
+          CANONICAL_IDENTITY_CONFIDENCE_FLOOR,
+        );
+
+        // `resolvePlanIdentity` is pure and synchronous by design, so insurer
+        // identity is resolved to a catalog id HERE — that is what makes 'UHC'
+        // and 'UnitedHealthcare Insurance Company' one company rather than two.
+        const [existingInsurerCatalog, parsedInsurerCatalog] = await Promise.all([
+          activePlan.insurer_name
+            ? matchInsurerCatalog(supabase, activePlan.insurer_name as string)
+            : Promise.resolve(null),
+          planInsert.insurer_name
+            ? matchInsurerCatalog(supabase, planInsert.insurer_name as string)
+            : Promise.resolve(null),
+        ]);
+
+        // The parsed document's catalog identity, resolved READ-ONLY. The
+        // writing path (`findOrCreateCanonicalPlan`) does not run until ~350
+        // lines below — after the merge it is supposed to be informing — so
+        // asking it here would both be too late and create a canonical as a
+        // side effect of a question. A candidate still awaiting user
+        // confirmation is deliberately NOT used as identity evidence: an
+        // unconfirmed guess must not decide whether two plans are the same.
+        let parsedCanonicalId: string | null = null;
+        let parsedCanonicalConfidence: number | null = null;
+        if (parsedInsurerCatalog?.id && planInsert.plan_name) {
+          const candidate = await resolveCanonicalCandidate(supabase, {
+            insurerId: parsedInsurerCatalog.id,
+            planName: planInsert.plan_name as string,
+            planType: (planInsert.plan_type as string | null) ?? undefined,
+            state: (planInsert.state as string | null) ?? undefined,
+            planYear: (planInsert.plan_year as number | null) ?? undefined,
+            groupNumber: (planInsert.group_number as string | null) ?? undefined,
+            hiosId: (planInsert.hios_id as string | null) ?? undefined,
+            deductible: (planInsert.in_deductible_individual as number | null) ?? undefined,
+            oopMax: (planInsert.in_oop_max_individual as number | null) ?? undefined,
+          });
+          if (candidate.canonicalPlanId && !candidate.needsConfirmation) {
+            parsedCanonicalId = candidate.canonicalPlanId;
+            parsedCanonicalConfidence = candidate.confidence;
+          }
+        }
+
+        const identity = resolvePlanIdentity(
+          {
+            canonicalPlanId: (activePlan.canonical_plan_id as string | null) ?? null,
+            canonicalConfidence: (activePlan.canonical_match_confidence as number | null) ?? null,
+            hiosId: (activePlan.hios_id as string | null) ?? null,
+            groupNumber: (activePlan.group_number as string | null) ?? null,
+            insurerName: (activePlan.insurer_name as string | null) ?? null,
+            insurerCatalogId: existingInsurerCatalog?.id ?? null,
+            planName: (activePlan.plan_name as string | null) ?? null,
+          },
+          {
+            canonicalPlanId: parsedCanonicalId,
+            canonicalConfidence: parsedCanonicalConfidence,
+            hiosId: (planInsert.hios_id as string | null) ?? null,
+            groupNumber: (planInsert.group_number as string | null) ?? null,
+            insurerName: (planInsert.insurer_name as string | null) ?? null,
+            insurerCatalogId: parsedInsurerCatalog?.id ?? null,
+            planName: (planInsert.plan_name as string | null) ?? null,
+          },
+          { canonicalConfidenceFloor: floor },
+        );
+
+        // Ship Gate #7 — telemetry on EVERY decision, fire AND non-fire. Without
+        // the non-fires we cannot tell a resolver that is working from one that
+        // is answering "uncertain" to everything because its inputs are null.
+        console.log(
+          `[plan-identity] verdict=${identity.verdict} reason=${identity.reason} floor=${floor} ` +
+            `doc=${documentId} activePlan=${activePlan.id} ` +
+            `existingCanonical=${activePlan.canonical_plan_id ?? "none"}@${activePlan.canonical_match_confidence ?? "unscored"} ` +
+            `parsedCanonical=${parsedCanonicalId ?? "none"}@${parsedCanonicalConfidence ?? "unscored"} ` +
+            `existingInsurerCatalog=${existingInsurerCatalog?.id ?? "none"} parsedInsurerCatalog=${parsedInsurerCatalog?.id ?? "none"} ` +
+            `— ${identity.evidence}`,
+        );
+
+        identityDecided = true;
+        if (identityAllowsMerge(identity.verdict)) {
+          identityTargetPlan = {
+            id: activePlan.id as string,
+            plan_year: (activePlan.plan_year as number | null) ?? null,
+          };
+          // A successful merge wrote NOTHING the user could see: the upload flow
+          // only ever recorded exceptions (mismatch / rollover / pending match),
+          // so "we quietly folded this document into your plan" was invisible and
+          // — more to the point — unappealable. Record the match so the upload
+          // surface can say which plan absorbed the document, and so the escape
+          // hatch has something to act on.
+          identityMatchRecord = {
+            mismatch: false,
+            identity: {
+              verdict: "same",
+              reason: identity.reason,
+              evidence: identity.evidence,
+              existingPlanId: activePlan.id as string,
+              existingPlanName: (activePlan.plan_name as string | null) ?? null,
+            },
+          };
+        } else if (
+          shouldAssembleStub({
+            reason: identity.reason,
+            existingSource: (activePlan.source as string | null) ?? null,
+            existingPlanName: (activePlan.plan_name as string | null) ?? null,
+            existingInsurerName: (activePlan.insurer_name as string | null) ?? null,
+            parsedInsurerName: (planInsert.insurer_name as string | null) ?? null,
+          })
+        ) {
+          // S292 Bug 2 — ASSEMBLY: the active "plan" is just the card's stub
+          // (source manual/insurance_card, no plan name) and this document is
+          // from the same carrier family — the card and the document are two
+          // halves of ONE plan being built. Search-select already treats this
+          // as assembly (set-active-canonical); the upload path now agrees
+          // instead of asking the user to pick between her own card and her
+          // own SBC. Merge into the stub — the identityTargetPlan path,
+          // receipt and all — no prompt. `canonical_differs` never reaches
+          // here (shouldAssembleStub refuses it), so a catalog-proven
+          // different plan still asks.
+          identityTargetPlan = {
+            id: activePlan.id as string,
+            plan_year: (activePlan.plan_year as number | null) ?? null,
+          };
+          identityMatchRecord = {
+            mismatch: false,
+            identity: {
+              verdict: "same",
+              reason: STUB_ASSEMBLY_REASON,
+              evidence:
+                "Your card and this document describe one plan — the document filled in the card's stub.",
+              existingPlanId: activePlan.id as string,
+              existingPlanName: (activePlan.plan_name as string | null) ?? null,
+            },
+          };
+          console.log(
+            `[plan-identity] stub-assembly override — resolver said ${identity.verdict}/${identity.reason} but the active plan is a ${activePlan.source} stub in the same insurer family; merging doc=${documentId} into ${activePlan.id}`,
+          );
+        } else {
+          mismatchData = {
+            mismatch: true,
+            // `insurer_differs` is the only reason that is genuinely about the
+            // carrier; every other non-same reason is a plan-level difference.
+            type: identity.reason === "insurer_differs" ? "insurer" : "plan_name",
+            existingInsurer: (activePlan.insurer_name as string | null) || "",
+            parsedInsurer: (planInsert.insurer_name as string | null) || "",
+            existingPlanName: (activePlan.plan_name as string | null) || undefined,
+            parsedPlanName: (planInsert.plan_name as string | null) || undefined,
+            // Carried into documents.insurer_mismatch so the upload UI can pick
+            // between the "different plan" and "we couldn't tell" prompts, and
+            // can quote the resolver's own sentence rather than inventing one.
+            identity: {
+              verdict: identity.verdict,
+              reason: identity.reason,
+              evidence: identity.evidence,
+              existingPlanId: activePlan.id as string,
+            },
+          };
+        }
+      }
+    }
+
+    if (!identityDecided) {
+      if (profileInsurer && parsedInsurer
+        && profileInsurer !== parsedInsurer
+        && !profileInsurer.includes(parsedInsurer)
+        && !parsedInsurer.includes(profileInsurer)) {
+        mismatchData = {
+          mismatch: true,
+          type: "insurer",
+          existingInsurer: userProfile?.insurer || "",
+          parsedInsurer: planInsert.insurer_name || "",
+        };
+      } else if (userProfile?.plan_name && planInsert.plan_name
+        && normalize(userProfile.plan_name) !== normalize(planInsert.plan_name)
+        && !normalize(userProfile.plan_name).includes(normalize(planInsert.plan_name))
+        && !normalize(planInsert.plan_name).includes(normalize(userProfile.plan_name))) {
+        mismatchData = {
+          mismatch: true,
+          type: "plan_name",
+          existingInsurer: userProfile?.insurer || "",
+          parsedInsurer: planInsert.insurer_name || "",
+          existingPlanName: userProfile.plan_name,
+          parsedPlanName: planInsert.plan_name,
+        };
+      } else if (!planInsert.insurer_name && userProfile?.insurer) {
+        // S90 Bug Y defensive guard: parser (incl. Bug X safety-net Haiku
+        // fallback) failed to extract any insurer name AND the user has an
+        // existing profile insurer. We cannot determine whether this upload
+        // is the same plan or a different one. Fail-safe by treating as a
+        // mismatch — the downstream merge step at L580 will create a new
+        // is_active=false row instead of silently overwriting the user's
+        // active plan's cost-share fields. Surfaces in UI as "insurer
+        // mismatch" so the user can disambiguate.
+        mismatchData = {
+          mismatch: true,
+          type: "insurer",
+          existingInsurer: userProfile.insurer,
+          parsedInsurer: "(parser could not extract)",
+        };
+      }
     }
 
     // ── Plan year rollover detection ─────────────────────────────────────────
     let yearRollover: { currentYear: number; newYear: number } | null = null;
     if (!mismatchData && planInsert.plan_year) {
-      const { data: existingActivePlanForYear } = await supabase
-        .from("insurance_plans")
-        .select("plan_year")
-        .eq("user_id", doc.user_id)
-        .eq("is_active", true)
-        .single();
+      // S292 — when the resolver ran, reuse the row it actually compared against.
+      // Re-querying here could return a DIFFERENT active row (multi-active), so
+      // the rollover would be judged against a plan the identity decision never
+      // saw. One decision, one row.
+      const { data: refetchedActivePlanForYear } = identityTargetPlan
+        ? { data: null }
+        : await supabase
+            .from("insurance_plans")
+            .select("plan_year")
+            .eq("user_id", doc.user_id)
+            .eq("is_active", true)
+            .single();
+      const existingActivePlanForYear = identityTargetPlan
+        ? { plan_year: identityTargetPlan.plan_year }
+        : refetchedActivePlanForYear;
 
       if (existingActivePlanForYear?.plan_year
         && existingActivePlanForYear.plan_year !== planInsert.plan_year) {
@@ -774,6 +1060,15 @@ export async function processPlanDocumentData(
       planInsert.is_active = false;
     }
 
+    // S292 — the match receipt. Written only when the identity resolver actually
+    // ran and said "same", and only when nothing more urgent claims the surface:
+    // a year rollover is a decision the user must make, so it outranks a receipt
+    // about a merge that already happened.
+    if (identityMatchRecord && !yearRollover && !options?.seedMode) {
+      console.log(`[process-plan] Identity match — merged into ${identityMatchRecord.identity.existingPlanId}`);
+      await supabase.from("documents").update({ insurer_mismatch: identityMatchRecord }).eq("id", documentId);
+    }
+
     // seedMode (cold-start regen): skip the per-doc year-rollover documents churn write.
     if (yearRollover && !options?.seedMode) {
       // Store year rollover info alongside any mismatch data
@@ -789,15 +1084,25 @@ export async function processPlanDocumentData(
     // wants to evaluate, not an enrichment of their primary.
     let mergeIntoExistingPlan: string | null = null;
     if (!mismatchData && !yearRollover && !isComparisonUpload) {
-      const { data: existingActivePlan } = await supabase
-        .from("insurance_plans")
-        .select("id")
-        .eq("user_id", doc.user_id)
-        .eq("is_active", true)
-        .single();
-      if (existingActivePlan) {
-        mergeIntoExistingPlan = existingActivePlan.id;
-        console.log(`[process-plan] Merging into existing active plan: ${mergeIntoExistingPlan}`);
+      if (identityTargetPlan) {
+        // S292 — the resolver said "same plan" ABOUT THIS ROW, so this is the
+        // row we merge into. Re-querying was the structural bug: the mismatch
+        // check read `profiles` and the merge target read `insurance_plans`, so
+        // on a multi-active account we could clear a merge against one plan and
+        // then write it into another.
+        mergeIntoExistingPlan = identityTargetPlan.id;
+        console.log(`[process-plan] Merging into identity-resolved plan: ${mergeIntoExistingPlan}`);
+      } else {
+        const { data: existingActivePlan } = await supabase
+          .from("insurance_plans")
+          .select("id")
+          .eq("user_id", doc.user_id)
+          .eq("is_active", true)
+          .single();
+        if (existingActivePlan) {
+          mergeIntoExistingPlan = existingActivePlan.id;
+          console.log(`[process-plan] Merging into existing active plan: ${mergeIntoExistingPlan}`);
+        }
       }
     }
 
@@ -898,11 +1203,92 @@ export async function processPlanDocumentData(
         `[process-plan] supplement-merge (${targetPlanId}): ${JSON.stringify(supplementMerge.actions)}` +
           (supplementMerge.conflictWinner ? ` — conflicts → ${supplementMerge.conflictWinner}` : ""),
       );
-      await supabase.from("insurance_plans").update(supplementMerge.update).eq("id", targetPlanId);
       // Ensure profile points to this plan and back-populate plan info
       const profileUpdate: Record<string, unknown> = { active_insurance_plan_id: targetPlanId };
       if (planInsert.insurer_name) profileUpdate.insurer = planInsert.insurer_name;
       if (planInsert.plan_name) profileUpdate.plan_name = planInsert.plan_name;
+
+      // ── S292 item 4C — merge receipt, captured BEFORE the write ─────────────
+      // The escape hatch on the match receipt has to REVERT: at the 0.85 floor
+      // the merge lands before the user sees the confirmation. Nothing in the
+      // schema can reconstruct the prior state afterwards — the supplement-merge
+      // overwrites each column AND its citation together, and coverage cells
+      // upsert in place — so the pre-image is captured here or it is gone.
+      //
+      // Written BEFORE the merge on purpose: a receipt whose merge then fails is
+      // harmless (reverting to values that were never changed is a no-op), while
+      // a merge whose receipt fails to write is unrevertable.
+      if (identityMatchRecord && !options?.seedMode) {
+        try {
+          const { data: cellsBeforeRows, error: cellsErr } = await supabase
+            .from("plan_covered_services")
+            .select("*")
+            .eq("insurance_plan_id", targetPlanId);
+          if (cellsErr) throw new Error(cellsErr.message);
+
+          const rows = cellsBeforeRows ?? [];
+          // No silent caps: past the ceiling we record that services can't be
+          // unwound rather than snapshotting a partial set that would look
+          // complete and revert only some of the plan.
+          const servicesUnwindable = rows.length <= MAX_RECEIPT_CELLS;
+          const priorProv =
+            ((mergeTargetRow as Record<string, unknown> | null)?.field_provenance as
+              | Record<string, unknown>
+              | null) ?? null;
+          const before = (mergeTargetRow ?? {}) as Record<string, unknown>;
+          const planBefore: Record<string, unknown> = {};
+          for (const col of Object.keys(supplementMerge.update)) planBefore[col] = before[col] ?? null;
+
+          const { data: profBefore } = await supabase
+            .from("profiles")
+            .select("active_insurance_plan_id, insurer, plan_name")
+            .eq("user_id", doc.user_id)
+            .maybeSingle();
+
+          const receipt: PlanMergeReceipt = {
+            version: PLAN_MERGE_RECEIPT_VERSION,
+            documentId,
+            targetPlanId,
+            mergedAt: new Date().toISOString(),
+            plan: { before: planBefore, wrote: supplementMerge.update },
+            provenanceBefore: priorProv,
+            profile: profBefore
+              ? { before: profBefore as Record<string, unknown>, wrote: profileUpdate }
+              : null,
+            cellsBefore: servicesUnwindable
+              ? rows.map((r) => ({
+                  key: {
+                    service_id: String(r.service_id ?? ""),
+                    place_of_service: String(r.place_of_service ?? "any"),
+                    component: String(r.component ?? "global"),
+                    plan_tier_label: String(r.plan_tier_label ?? "none"),
+                  },
+                  row: r as Record<string, unknown>,
+                }))
+              : [],
+            servicesUnwindable,
+          };
+
+          const { data: docRow } = await supabase
+            .from("documents").select("metadata").eq("id", documentId).maybeSingle();
+          const meta = ((docRow?.metadata as Record<string, unknown> | null) ?? {});
+          await supabase
+            .from("documents")
+            .update({ metadata: { ...meta, plan_merge_receipt: receipt } })
+            .eq("id", documentId);
+          console.log(
+            `[process-plan] merge receipt captured (doc=${documentId} plan=${targetPlanId} cols=${Object.keys(supplementMerge.update).length} cells=${receipt.cellsBefore.length} servicesUnwindable=${servicesUnwindable})`,
+          );
+        } catch (err) {
+          // Non-fatal: a missing receipt must not fail the upload. It DOES mean
+          // this merge cannot be undone, so it is logged loudly rather than
+          // swallowed — and the escape hatch hides itself when the receipt is
+          // absent instead of offering an undo that would do nothing.
+          console.error("[process-plan] merge receipt capture FAILED — this merge will not be unwindable:", err);
+        }
+      }
+
+      await supabase.from("insurance_plans").update(supplementMerge.update).eq("id", targetPlanId);
       // seedMode (cold-start regen): never churn the admin's active-plan pointer ×N seed docs.
       if (!options?.seedMode) {
         await supabase.from("profiles").update(profileUpdate).eq("user_id", doc.user_id);
@@ -1082,7 +1468,12 @@ export async function processPlanDocumentData(
           canonicalNeedsConfirmation = true;
           await supabase.from("documents").update({
             insurer_mismatch: {
-              ...(mismatchData || {}),
+              // S292 — carry the identity record through. This spread rebuilds
+              // the column from scratch, so without it a document that merged
+              // cleanly AND drew a pending canonical match would lose its merge
+              // receipt: the user would never learn which plan absorbed it, and
+              // the unwind would have nothing to act on.
+              ...(mismatchData || identityMatchRecord || {}),
               pending_canonical_match: {
                 canonicalPlanId: canonicalResult.canonicalPlanId,
                 matchedPlanName: canonicalResult.matchedPlanName,
@@ -1097,9 +1488,16 @@ export async function processPlanDocumentData(
           // Auto-link (high confidence or new plan)
           canonicalPlanId = canonicalResult.canonicalPlanId;
           canonicalIsNew = canonicalResult.isNew;
-          await supabase.from("insurance_plans")
-            .update({ canonical_plan_id: canonicalPlanId })
-            .eq("id", targetPlanId);
+          // mig 218 — write the link WITH the confidence that produced it. This
+          // number was already computed here and thrown away; without it
+          // plan-identity.ts treats the link as unscored and can never decide
+          // "same plan" / "different plan" on it.
+          await linkPlanToCanonical(
+            supabase,
+            targetPlanId,
+            canonicalPlanId,
+            canonicalResult.confidence,
+          );
 
           // Copy premium data from insurance_plans to canonical_plans if available
           if (planInsert.premium_total || planInsert.premium_employee) {

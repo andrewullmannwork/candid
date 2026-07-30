@@ -88,6 +88,51 @@ function buildSecondaryPlanBenefit(sec: SecondaryCoverage, planYear: number | nu
   };
 }
 
+/**
+ * S293 (#6) — Case-2 benefit for a line EXACTLY covered on the claim's own plan
+ * (per the shared loadPlanCoverageMeta map — the same map the needs panel and
+ * claim page read) that Tier-1 nonetheless produced no benefit for (sub-floor
+ * plan_covered_services row, or the letter's plan context differs from the
+ * claim's plan). Built ONLY when the user recorded a human confirm on the line
+ * (coverage_user_confirmed — the S292 aggregate "Looks right" fan-out or the
+ * per-line Verify) — the human review is the precision oracle that upgrades a
+ * value the platform already showed the user into a citable Case-2 statement
+ * (bullet, never a verbatim quote: sbcExcerptVerified stays false).
+ */
+function buildExactMatchPlanBenefit(
+  exact: {
+    covered: boolean | null;
+    copay: number | null;
+    coinsurance: number | null;
+    // S294 — loadPlanCoverageMeta now carries this on BOTH the user-scoped and
+    // the canonical-inherited branches, so the Case-2 borrow must carry it too.
+    // Without it this builder would re-open the exact false-assertion path the
+    // grounding gate in computeExpectedPatientCost closes.
+    deductibleApplies?: boolean | null;
+    source?: string | null;
+  },
+  planYear: number | null,
+): PlanBenefitDetail {
+  const coverageDecision = resolveCoverageForLine({ covered: exact.covered }, null);
+  return {
+    covered: coverageDecision.planStance !== "not_covered",
+    copay: exact.copay,
+    // loadPlanCoverageMeta's planCoverageFromRow already normalized to decimal 0-1.
+    coinsurance: exact.coinsurance,
+    deductibleApplies: exact.deductibleApplies ?? null,
+    source: exact.source ?? "plan",
+    confidence: 0.6,
+    citation: "",
+    sbcExcerpt: null,
+    sbcPage: null,
+    sbcExcerptVerified: false,
+    citationSource: null,
+    sourcedFrom: "user_exact",
+    sourcedFromYear: planYear,
+    coverageDecision,
+  };
+}
+
 const K_ANON_THRESHOLD = 5;
 const MIN_PLAN_BENEFIT_CONFIDENCE = 0.5;
 
@@ -117,6 +162,16 @@ export interface PlanBenefitDetail {
   covered: boolean;
   copay: number | null;
   coinsurance: number | null;
+  /**
+   * S294 — does this benefit's cost-share sit BEHIND the deductible?
+   *
+   * The letter's benefit model had no deductible concept at all, so
+   * "No Charge AFTER deductible" (in_copay=0, in_deductible_applies=true) was
+   * indistinguishable from "No Charge". See `computeExpectedPatientCost`.
+   *
+   * null/undefined = unknown (pre-S294 behavior).
+   */
+  deductibleApplies?: boolean | null;
   source: string;
   confidence: number;
   citation: string;
@@ -634,6 +689,36 @@ export async function resolveEvidence(
       "user_exact",
       planYear,
     );
+    // S293 (#6 structural) — S290 canonical gap-fill PARITY for the letter path.
+    // A search-selected plan (source='catalog_match') keeps its coverage on
+    // canonical_plan_services, not user-scoped plan_covered_services. The card /
+    // needs-panel path (loadPlanCoverageMeta) has inherited that canonical
+    // coverage since S290, so the panel showed the user real cost-share values
+    // ("canonical_inherited") — but THIS path read only plan_covered_services,
+    // saw nothing, and the letter rendered zero clauses for services the user
+    // had just confirmed (observed on dispute 80a705ac / claim 146b1b9f:
+    // pcp_visit with a canonical $10 copay produced no SUPPORTING DETAIL).
+    // Mirror the S290 rule exactly: ZERO user-scoped coverage rows + a linked
+    // canonical → load the canonical coverage via the existing archive loader
+    // (same confidence floor + canonical-haiku cite-grade cascade), tagged
+    // 'canonical_archive' so the template renders the community-verified
+    // framing — never presented as the user's own parsed document. Plans with
+    // ANY user-scoped rows are untouched (docs stay authoritative, as in S290).
+    if (coverageByServiceSlug.size === 0 && planContext.plan.canonicalPlanId) {
+      const { data: pcsRows } = await loadCoverageRows(
+        supabase,
+        [planContext.plan.id],
+        { citeGrade: false },
+      );
+      if ((pcsRows ?? []).length === 0) {
+        coverageByServiceSlug = await loadCoverageFromCanonical(
+          supabase,
+          planContext.plan.canonicalPlanId,
+          "canonical_archive",
+          planYear,
+        );
+      }
+    }
   } else if (canonicalPlanIdForBillYear) {
     // Tier 2 — manual canonical bind.
     planYear =
@@ -873,7 +958,32 @@ export async function resolveEvidence(
         // ev.planBenefit (letter context) being null does NOT mean the service is
         // uncovered — it may be an exact match on the patient's actual plan. Don't
         // emit a secondary verify gate for an exactly-covered service.
-        if (planMeta?.coverageMap.has(slug)) continue;
+        //
+        // S293 (#6) — but "skip" must not mean "silence". This skip assumed
+        // Tier-1 had already cited the exact match; when it hadn't (sub-floor
+        // row / divergent plan context), a line the panel showed as covered —
+        // and the user then CONFIRMED — produced no clause at all. If the user
+        // recorded a confirm on such a line, adopt the exact-match value the
+        // panel showed as a Case-2 citation (same recipe as the confirmed-
+        // borrow branch below). Unconfirmed exact matches keep today's
+        // behavior: skipped, no gate.
+        const exact = planMeta?.coverageMap.get(slug);
+        if (exact) {
+          if (
+            meta.coverage_user_confirmed === true &&
+            exact.covered !== false &&
+            (exact.copay != null || exact.coinsurance != null)
+          ) {
+            const pb = buildExactMatchPlanBenefit(exact, planYear);
+            ev.planBenefit = pb;
+            const expected = computeExpectedPatientCost(pb, ev.billedAmount);
+            ev.expectedPatientCost = expected;
+            if (expected != null && ev.actualPatientCost != null) {
+              ev.discrepancyAmount = Math.max(0, ev.actualPatientCost - expected);
+            }
+          }
+          continue;
+        }
         const sec = resolveSecondaryCoverage(
           slug,
           bm,
@@ -1310,6 +1420,13 @@ export interface CoverageRowForBenefit {
   covered: boolean | null;
   in_copay: number | null;
   in_coinsurance: number | null;
+  /**
+   * S294 — optional so no caller breaks; populated by both real callers. See
+   * `computeExpectedPatientCost` for why the letter needs it: without it, a
+   * "$0 AFTER deductible" benefit read as a flat $0 expected cost and the
+   * letter asserted the entire bill as a discrepancy.
+   */
+  in_deductible_applies?: boolean | null;
   source: string | null;
   confidence: number | null;
   sbc_excerpt: string | null;
@@ -1392,6 +1509,7 @@ export function buildPlanBenefitFromRow(
       // card path) so PlanBenefitDetail.coinsurance is a consistent decimal contract. The
       // display/dollar/fingerprint consumers already re-normalize idempotently → render-neutral.
       coinsurance: normalizeCoinsuranceForStorage(row.in_coinsurance),
+      deductibleApplies: row.in_deductible_applies ?? null,
       source: row.source ?? opts.sourceDefault,
       confidence,
       citation: opts.buildCitation(row.name, row.sbc_page),
@@ -1504,6 +1622,7 @@ export async function loadCoverage(
     covered: boolean | null;
     in_copay: number | null;
     in_coinsurance: number | null;
+    in_deductible_applies: boolean | null;
     source: string | null;
     confidence: number | null;
     sbc_excerpt: string | null;
@@ -1518,6 +1637,9 @@ export async function loadCoverage(
         covered: r.covered,
         in_copay: r.in_copay,
         in_coinsurance: r.in_coinsurance,
+        // S294 — already in COVERAGE_BASE_SELECT; it was read and dropped here.
+        // The user-doc path carries the same false-assertion risk as canonical.
+        in_deductible_applies: r.in_deductible_applies,
         source: r.source,
         confidence: r.confidence,
         sbc_excerpt: r.sbc_excerpt,
@@ -1582,7 +1704,11 @@ export async function loadCoverageFromCanonical(
   // the working pattern loadCanonicalCoverageMeta uses. Behavior change: empty → real coverage.
   const { data: rows } = await supabase
     .from("canonical_plan_services")
-    .select("service_slug, covered, in_copay, in_coinsurance, source, confidence, field_provenance")
+    // S294 — `in_deductible_applies` added. Its absence is why this path could
+    // read "No Charge after deductible" as a flat $0 expected cost.
+    .select(
+      "service_slug, covered, in_copay, in_coinsurance, in_deductible_applies, source, confidence, field_provenance",
+    )
     .eq("canonical_plan_id", canonicalPlanId);
 
   if (!rows) return byServiceSlug;
@@ -1592,6 +1718,7 @@ export async function loadCoverageFromCanonical(
     covered: boolean | null;
     in_copay: number | null;
     in_coinsurance: number | null;
+    in_deductible_applies: boolean | null;
     source: string | null;
     confidence: number | null;
     field_provenance: Record<string, FieldProvenanceEntry> | null;
@@ -1621,6 +1748,7 @@ export async function loadCoverageFromCanonical(
         covered: r.covered,
         in_copay: r.in_copay,
         in_coinsurance: r.in_coinsurance,
+        in_deductible_applies: r.in_deductible_applies,
         source: r.source,
         confidence: r.confidence,
         sbc_excerpt: null,
@@ -2103,11 +2231,37 @@ function extractAuditRan(metadata: Record<string, unknown> | undefined): boolean
   );
 }
 
-function computeExpectedPatientCost(
+// Exported at S294 so the grounding gate below is fixture-covered rather than
+// only reachable through a full resolveEvidence run.
+export function computeExpectedPatientCost(
   benefit: PlanBenefitDetail,
   billed: number,
 ): number | null {
   if (benefit.covered === false) return null;
+  // ── S294 — the letter-side grounding gate ────────────────────────────────
+  // When the plan puts this service BEHIND the deductible, the stated
+  // cost-share is what the patient owes AFTER the deductible is satisfied —
+  // not what they owe today. This function had no deductible concept, so a
+  // "No Charge after deductible" benefit (copay 0, deductibleApplies true)
+  // returned an expected cost of $0, and every dollar of a legitimately
+  // pre-deductible bill became an asserted discrepancy. On a $7,250-deductible
+  // plan that is a letter claiming the full charge was an overcharge when the
+  // patient genuinely owes it — a false assertion in an outbound legal
+  // document, and exactly the credibility failure the honesty gate exists to
+  // prevent.
+  //
+  // The claim engine already refuses to call an ungrounded shouldOwe "correct"
+  // (recovery-math.ts §8, shouldOweGrounded). The letter never got that gate.
+  // It does now: no deductible-met evidence reaches this resolver, so a
+  // deductible-subject benefit yields NO expected cost and therefore no
+  // discrepancy. Suppressing is the conservative direction — it can only
+  // withdraw a claim we could not ground, never fabricate one.
+  //
+  // These claims are not lost, only deferred: once the user answers the
+  // deductible question (S294 F3) that status can flow through here and the
+  // grounded ones return. That wiring is the #6 unified-coverage-resolver
+  // work, deliberately not smuggled in with this fix.
+  if (benefit.deductibleApplies === true) return null;
   if (benefit.copay != null) return benefit.copay;
   if (benefit.coinsurance != null) return Math.round(billed * normalizeCoinsuranceDecimal(benefit.coinsurance) * 100) / 100;
   return null;

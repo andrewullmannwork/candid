@@ -45,6 +45,13 @@ export function buildServiceCostShare(coverage: PlanCoverageInput | null): Servi
     outCoinsurance: coverage.outCoinsurance ?? null,
     outDeductibleApplies: coverage.outDeductibleApplies ?? null,
     oonPaidAtInNetwork: coverage.oonPaidAtInNetwork ?? null,
+    // S294 — provenance travels WITH the numbers into the engine. The honesty
+    // gate used to read a flag on the PLAN ROW (`verification_status`), which
+    // said only "this member hasn't uploaded a plan document" — so a
+    // search-selected plan whose terms came from Candid's own SBC extraction
+    // was degraded exactly like a fabricated card copay, permanently and
+    // invisibly.
+    costProvenance: coverage.costProvenance ?? "unknown",
   };
 }
 
@@ -147,10 +154,24 @@ export async function loadPlanCostShareParams(
     // labels "unverified"; the honesty gate needs that fact to refuse a
     // confident "your bill is correct" built on it. Read from the USER row
     // only — a canonical-terms fallback fills numbers, never provenance.
+    //
+    // S294 — `verification_status === "unverified"` REMOVED as a trigger.
+    // That column is stamped "document_verified" only by a document-parse path,
+    // so it really means "this member has not uploaded a plan document" — NOT
+    // "these numbers are untrustworthy". A plan chosen from SEARCH is
+    // permanently "unverified" by that definition, even though its cost-share
+    // comes from Candid's extraction of that plan's own SBC (quoted excerpt,
+    // section-verified, 0.9 confidence). It was therefore degraded exactly like
+    // a fabricated card copay, permanently, with nothing on screen to resolve
+    // — the defect Andrew reported three times.
+    //
+    // What remains is the real signal and the S291 case this gate exists for:
+    // a plan ASSEMBLED from a card photo or hand entry. Per-service trust is
+    // now decided by the numbers' own provenance (`costProvenance`), in
+    // computeCostShareV2.
     provenanceUnverified:
       (d.source as string | null) === "insurance_card" ||
-      (d.source as string | null) === "manual" ||
-      (d.verification_status as string | null) === "unverified",
+      (d.source as string | null) === "manual",
   };
 }
 

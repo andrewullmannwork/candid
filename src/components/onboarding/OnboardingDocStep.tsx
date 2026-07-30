@@ -875,6 +875,51 @@ export function OnboardingDocStep({
             ))}
           </div>
         </div>
+      ) : mismatch && mismatch.identity?.verdict === "uncertain" ? (
+        /* S292 — resolver verdict `uncertain`: "we couldn't tell" is a
+           different question from "these are different plans", so it gets its
+           own two-button prompt instead of being dressed up as a mismatch the
+           resolver never asserted. Copy is ParseTerminalView's
+           IdentityUncertainPrompt verbatim (approved at S292) — /upload and
+           onboarding must ask the same question the same way. Blue, not
+           amber: a question, not a warning. */
+        (() => {
+          const onFile =
+            mismatch.identity?.existingPlanName?.trim() || mismatch.existingPlanName?.trim();
+          return (
+            <div className="space-y-3 rounded-2xl border border-blue-200 bg-blue-50 p-4">
+              <p className="text-sm font-semibold text-gray-900">
+                Is this the same plan you already have on file?
+              </p>
+              <p className="text-xs leading-relaxed text-gray-600">
+                {onFile ? (
+                  <>
+                    We couldn&apos;t tell from the document — <strong>{onFile}</strong> is
+                    what&apos;s on file now.
+                  </>
+                ) : (
+                  "We couldn't tell from the document which plan it belongs to."
+                )}
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => void resolveMismatch("use")}
+                  disabled={resolving}
+                  className="flex-1 rounded-xl bg-blue-600 px-3 py-2.5 text-xs font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+                >
+                  Yes, same plan
+                </button>
+                <button
+                  onClick={() => void resolveMismatch("keep")}
+                  disabled={resolving}
+                  className="flex-1 rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-xs font-semibold text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
+                >
+                  No, it&apos;s different
+                </button>
+              </div>
+            </div>
+          );
+        })()
       ) : mismatch ? (
         /* S291 — plan-identity divergence. Amber (a decision, not a
            suggestion): the parsed plan is sitting inactive until the user

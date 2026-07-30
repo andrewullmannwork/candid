@@ -615,6 +615,8 @@ async function runSmartSkipCheck(args: {
       dedupResult.canonicalPlanId,
       ocrText,
       identifiers,
+      // mig 218 — inherit the traced link's confidence; never mint one here.
+      dedupResult.canonicalMatchConfidence ?? null,
     );
 
     if (!result.success) {

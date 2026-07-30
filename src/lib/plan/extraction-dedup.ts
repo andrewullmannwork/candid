@@ -17,6 +17,7 @@ import { createHash } from "crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { parseHaikuJSON } from "@/lib/parser/safe-json";
 import { applyPlanCoverageCell } from "@/lib/plan/coverage-targeting";
+import { canonicalLinkFields } from "@/lib/plan/canonical-match";
 // matchInsurerCatalog import removed (CF-40 v2 — Path B semantic-match smart-skip eliminated).
 import type { ProcessPlanResult } from "@/lib/plan/process-plan";
 import { extractImportantQuestions } from "@/lib/sbc/haiku-prompts/important-questions";
@@ -81,6 +82,19 @@ export interface PlanIdentifiers {
 export interface DedupResult {
   skip: boolean;
   canonicalPlanId?: string;
+  /**
+   * mig 218 — the confidence of the link we are INHERITING, carried so the
+   * smart-skip write can record the pair honestly.
+   *
+   * Smart-skip identifies a canonical by tracing a byte-identical document to a
+   * plan already linked to it. The new link is therefore exactly as sound as the
+   * one it copies, so we propagate that number instead of minting a fresh one —
+   * a made-up 0.95 here would let a canonical originally created single-source
+   * (0.5, uncorroborated) start deciding plan identity on the next upload.
+   * `null`/absent stays UNKNOWN, which is the honest reading for a pre-mig-218
+   * link that never recorded its own confidence.
+   */
+  canonicalMatchConfidence?: number | null;
   reason: string;
   /**
    * Ing-D.0c-ii — the structured Layer-5 forced-reparse reason when extraction
@@ -189,6 +203,48 @@ export function extractPlanIdentifiers(ocrText: string): PlanIdentifiers {
 
 const HAIKU_MODEL = "claude-haiku-4-5-20251001";
 
+/**
+ * S292 — identity-extraction input window (measured, not argued).
+ *
+ * The historical window was slice(0, 2000) with a cost rationale. Both parts
+ * were wrong: (a) cost — the services pass (claude-extractor.ts) already sends
+ * up to 100,000 chars of the same OCR, so the identity call's window saved
+ * ~nothing; (b) position — federal-layout SBCs OPEN with a ~3,100-char
+ * standardized glossary/boilerplate block, pushing the real header ("Coverage
+ * Period: MM/DD/YYYY … Plan Type: …") past offset 2,000. On the 27-doc DEV
+ * corpus, 7/27 documents (2 carriers) had their header beyond 2,000 chars and
+ * ALL of them extracted planName/planYear/planType = null — e.g. DEV doc
+ * 534eea3c (PacificSource Core Gold 1500, header at offset 3075) linked to no
+ * canonical because plan_name is a canonical-matching dimension.
+ *
+ * S292 corpus measurement (scripts/s292-identity-extraction-corpus.ts) over
+ * slice(0,2000) / slice(0,8000) / slice(0,100000) / header-anchored splicing:
+ *   - 8,000 recovered identity on all 7 displaced-header docs with ZERO lost
+ *     or corrupted fields vs the 2,000 baseline (insurer-vs-sponsor
+ *     disambiguation held: the one PEO/sponsor doc in the corpus gained the
+ *     true carrier, not the PEO).
+ *   - 100,000 added only low-stakes state fills while INTRODUCING errors:
+ *     a fabricated planYear on an EOC whose text contains no year, a verbatim
+ *     plan-name token dropped, and a filled state value flipped — long-input
+ *     dilution, at ~4x the tokens.
+ *   - Header-anchored splicing produced outputs identical to the plain 8,000
+ *     window: extra machinery, zero measured gain.
+ *
+ * Every observed header offset was <= 3,082 (the federal glossary preamble is
+ * a standardized block), so 8,000 carries ~2.6x margin. KNOWN LIMIT: a header
+ * beyond 8,000 chars would still be missed — no such document has been
+ * observed (0/27).
+ */
+export const IDENTITY_WINDOW_CHARS = 8000;
+
+/**
+ * Pure input-selection for extractPlanIdentifiersWithHaiku — exported so
+ * fixtures can lock the windowing behavior without a model call.
+ */
+export function selectIdentityWindow(ocrText: string): string {
+  return ocrText.slice(0, IDENTITY_WINDOW_CHARS);
+}
+
 export async function extractPlanIdentifiersWithHaiku(
   ocrText: string
 ): Promise<PlanIdentifiers> {
@@ -201,8 +257,7 @@ export async function extractPlanIdentifiersWithHaiku(
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return fallback;
 
-  // Send only first ~2K chars (page 1) to minimize cost
-  const headerText = ocrText.slice(0, 2000);
+  const headerText = selectIdentityWindow(ocrText);
 
   try {
     const client = new Anthropic({ apiKey, timeout: 15000, maxRetries: 1 });
@@ -310,7 +365,9 @@ export async function shouldSkipExtraction(
       // Trace to canonical plan
       const { data: linkedPlan } = await supabase
         .from("insurance_plans")
-        .select("canonical_plan_id")
+        // mig 218: carry the link's confidence, not just the link — the
+        // smart-skip write below inherits it rather than inventing one.
+        .select("canonical_plan_id, canonical_match_confidence")
         .eq("id", hashMatches[0].linked_insurance_plan_id)
         .single();
 
@@ -339,6 +396,8 @@ export async function shouldSkipExtraction(
             fileHash,
             userId: _userId,
             canonicalPlanId: linkedPlan.canonical_plan_id,
+            canonicalMatchConfidence:
+              (linkedPlan.canonical_match_confidence as number | null) ?? null,
             docType: v4PlanDocType,
             stability: {
               parseWeightAccumulated: (stability?.parse_weight_accumulated as number | null) ?? 0,
@@ -352,7 +411,13 @@ export async function shouldSkipExtraction(
         // v3 path (flag OFF or v4 errored).
         if (stability?.haiku_output_stable) {
           console.log(`[extraction-dedup] (canonical=${linkedPlan.canonical_plan_id}, hash=${fileHash.slice(0, 12)}…) is stable (count=${stability.identical_parse_count}). SKIP.`);
-          return { skip: true, canonicalPlanId: linkedPlan.canonical_plan_id, reason: "doc_stable_per_canonical_hash" };
+          return {
+            skip: true,
+            canonicalPlanId: linkedPlan.canonical_plan_id,
+            canonicalMatchConfidence:
+              (linkedPlan.canonical_match_confidence as number | null) ?? null,
+            reason: "doc_stable_per_canonical_hash",
+          };
         }
         console.log(`[extraction-dedup] (canonical=${linkedPlan.canonical_plan_id}, hash=${fileHash.slice(0, 12)}…) NOT YET stable (count=${stability?.identical_parse_count ?? 0}). EXTRACT.`);
         return NO_SKIP("doc_not_yet_stable");
@@ -396,6 +461,8 @@ async function evaluateV4SmartSkip(
     fileHash: string;
     userId: string;
     canonicalPlanId: string;
+    /** mig 218 — confidence of the link being inherited; see DedupResult. */
+    canonicalMatchConfidence?: number | null;
     docType: PlanDocType;
     stability: {
       parseWeightAccumulated: number;
@@ -404,7 +471,15 @@ async function evaluateV4SmartSkip(
     };
   },
 ): Promise<DedupResult | null> {
-  const { documentId, fileHash, userId, canonicalPlanId, docType, stability } = args;
+  const {
+    documentId,
+    fileHash,
+    userId,
+    canonicalPlanId,
+    canonicalMatchConfidence,
+    docType,
+    stability,
+  } = args;
   try {
     // Uploader trust. userId = documents.user_id = the users PK (NOT firebase_uid;
     // the upload route writes user.id). Resolve by id. (S163 fix — the prior
@@ -529,7 +604,12 @@ async function evaluateV4SmartSkip(
       console.log(
         `[extraction-dedup] CF-40v4 smart-skip ELIGIBLE (canonical=${canonicalPlanId}, doc=${docType}, weight=${stability.parseWeightAccumulated}). SKIP.`,
       );
-      return { skip: true, canonicalPlanId, reason: "v4_skip:all_pass" };
+      return {
+        skip: true,
+        canonicalPlanId,
+        canonicalMatchConfidence: canonicalMatchConfidence ?? null,
+        reason: "v4_skip:all_pass",
+      };
     }
 
     console.log(
@@ -585,7 +665,13 @@ export async function linkDocumentToCanonical(
   doc: { id: string; user_id: string; file_name: string },
   canonicalPlanId: string,
   ocrText: string,
-  identifiers: PlanIdentifiers
+  identifiers: PlanIdentifiers,
+  /**
+   * mig 218 — confidence of the canonical link this smart-skip is INHERITING
+   * (from `DedupResult.canonicalMatchConfidence`). Optional so the parameter is
+   * additive; `undefined`/`null` records UNKNOWN rather than a guess.
+   */
+  canonicalMatchConfidence?: number | null,
 ): Promise<ProcessPlanResult> {
   try {
     // Mig 078 — comparison uploads via /compare must never overwrite primary.
@@ -846,7 +932,7 @@ export async function linkDocumentToCanonical(
       const existingProv = (existingPlan.field_provenance as Record<string, FieldProvenanceEntry> | null) ?? {};
       const mergedProv = { ...existingProv, ...mergedPlanFieldProvenance };
       await supabase.from("insurance_plans").update({
-        canonical_plan_id: canonicalPlanId,
+        ...canonicalLinkFields(canonicalPlanId, canonicalMatchConfidence ?? null),
         source_document_id: doc.id,
         verification_status: "document_verified",
         in_deductible_individual: finalInDed,
@@ -893,7 +979,7 @@ export async function linkDocumentToCanonical(
           source: "sbc_upload",
           source_document_id: doc.id,
           is_active: shouldActivate,
-          canonical_plan_id: canonicalPlanId,
+          ...canonicalLinkFields(canonicalPlanId, canonicalMatchConfidence ?? null),
           verification_status: "document_verified",
           field_provenance: mergedPlanFieldProvenance,
         })

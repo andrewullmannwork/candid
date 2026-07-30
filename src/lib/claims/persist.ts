@@ -219,6 +219,14 @@ export async function persistAuditResults(
           patient: parsedBill.patient,
           insurer: parsedBill.insurer,
           auditSummary: auditReport.summary,
+          // S292 (#10) — the EOB issue date the parser already extracts
+          // (haiku-bill-parser `eob_date`, "ISO YYYY-MM-DD when EOB was issued")
+          // was dropped here, so no stored parse output retained it. Persisted
+          // JSONB-first (Rule #9) so the dispute page can prefill the
+          // denial-notice date (editable, parsed provenance) instead of asking
+          // for a date the platform already read off the document. Absent on
+          // non-EOB docs / when the parser saw no date → key omitted.
+          ...(parsedBill.eob_date ? { eob_date: parsedBill.eob_date } : {}),
           ...billParserVerdictFlags,
         },
       })

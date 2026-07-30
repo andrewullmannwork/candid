@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { Suspense, useState, useEffect, useRef, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import type { DisputeLetter } from "@/lib/billing/types";
 import { useAuth } from "@/lib/auth/auth-context";
@@ -14,7 +14,6 @@ import { letterRecipientKind } from "@/lib/disputes";
 import { DisputeLetterHero } from "@/components/disputes/DisputeLetterHero";
 import { EvidenceStrengthModal } from "@/components/disputes/EvidenceStrengthModal";
 import { DisputeRecipientCard } from "@/components/disputes/DisputeRecipientCard";
-import { EvidenceBlock } from "@/components/disputes/EvidenceBlock";
 import { VerifStrip } from "@/components/disputes/VerifStrip";
 import {
   CoverageDiffPanel,
@@ -46,7 +45,7 @@ import type {
 import type { DisputeEvidence } from "@/lib/disputes/evidence-resolver";
 // Block C (dispute_letter_v3_design) — the three-axis strength readouts.
 import { DataTrustBanner } from "@/components/disputes/DataTrustBanner";
-import type { StrengthResult, EvidenceBand } from "@/lib/disputes/strength-scoring";
+import type { StrengthResult } from "@/lib/disputes/strength-scoring";
 
 export default function DisputesPage() {
   const { isPro, loading, waitFor } = useSubscription();
@@ -224,7 +223,8 @@ function DisputesContent() {
   // Phase 4 Task 4-E: server-authoritative flag state for cite-grade gating on
   // EvidenceBlock UI. Resolved server-side in /api/disputes/[disputeId] GET so
   // we don't duplicate flag-evaluation logic on the client.
-  const [gateUnverified, setGateUnverified] = useState(false);
+  // (S293 #5 — gateUnverified state removed with the EvidenceBlock sidebar,
+  // its only consumer; the letter-side gating happens server-side at compose.)
   // S74 — dispute lifecycle state for the Mark-as-Sent flow.
   const [disputeStatus, setDisputeStatus] = useState<string | null>(null);
   const [disputeFiledDate, setDisputeFiledDate] = useState<string | null>(null);
@@ -311,6 +311,22 @@ function DisputesContent() {
   const [outcomeToast, setOutcomeToast] = useState<string | null>(null);
   // Dispute Letters v2 (Z1.2) — Zone-1 read-signals + AddPlanDetailsModal state.
   const [userPatientPaid, setUserPatientPaid] = useState<number | null>(null);
+  // S292 (#7) — the claim page's own per-line cost-share resolution (server
+  // `lineCostShare`): the needs panel derives its plan-cost rows from THIS (the
+  // shared recipe), not from the letter-citation loader, so a cost the claim page
+  // already resolved arrives prefilled instead of re-asked.
+  const [lineCostShare, setLineCostShare] = useState<LineCostShareRow[]>([]);
+  // S292 (#7) — attestation provenance ("claim_page" = adopted from the claim
+  // page's "All services look right" confirmation).
+  const [attestationSource, setAttestationSource] = useState<"dispute" | "claim_page" | null>(null);
+  // S292 (#10) — parsed EOB issue date for the denial-date prefill.
+  const [denialDatePrefill, setDenialDatePrefill] = useState<{ date: string; source: string } | null>(null);
+  // S292 (#8) — optimistic plan-cost saves: holds only the IN-FLIGHT TARGET per
+  // service slug (the ClaimDetail svcPendingConfirm idiom) so a burst of saves
+  // renders instantly; ONE debounced reconcile refetch then yields to server truth.
+  const [pendingCostShare, setPendingCostShare] = useState<
+    Map<string, { copay: number | null; coinsurancePercent: number | null }>
+  >(new Map());
   const [deadlineInputs, setDeadlineInputs] = useState<{
     denialNoticeDate: string | null;
     collectorFirstContactDate: string | null;
@@ -390,6 +406,13 @@ function DisputesContent() {
   // refetch that started before a newer mutation is DROPPED, so a slow stale reload
   // can't clobber the fresher optimistic state (the undo→won→awaiting flicker).
   const mutationGenRef = useRef(0);
+  // S293 (#13) — the last letter body the SERVER sent. The optimistic todo
+  // actions reconcile through a debounced background fetchDispute; resetting
+  // `editedBody` on every reload wiped local letter edits (the resolve-name
+  // fill, mid-edit text) a second after each background reconcile — and on
+  // every tab-refocus. The working copy now resets only when the server letter
+  // actually changed (redraft / ?refresh=1 / a different dispute).
+  const lastServerLetterRef = useRef<string | null>(null);
   const fetchDispute = useCallback(async (id: string, opts?: { refresh?: boolean }) => {
     if (!user) return;
     const startGen = mutationGenRef.current;
@@ -417,7 +440,6 @@ function DisputesContent() {
         ? { weakened: data.strengthenLetter.weakened === true, fields: data.strengthenLetter.fields as StrengthField[] }
         : null,
     );
-    setGateUnverified(!!data.gateUnverified);
     setDisputeStatus(typeof data.status === "string" ? data.status : null);
     setDisputeFiledDate(typeof data.filedDate === "string" ? data.filedDate : null);
     // Unified case timeline (S286) — sent_at + ladder + persisted checks.
@@ -468,6 +490,21 @@ function DisputesContent() {
     setAccountName(typeof data.accountName === "string" ? data.accountName : "");
     // Dispute Letters v2 (Z1.2) — Zone-1 prefill signals.
     setUserPatientPaid(typeof data.userPatientPaid === "number" ? data.userPatientPaid : null);
+    // S292 (#7/#10) — claim-page cost-share resolution rows + attestation
+    // provenance + parsed denial-date prefill. Server truth arrived → drop any
+    // in-flight optimistic plan-cost targets (pending-target idiom: server wins).
+    setLineCostShare(Array.isArray(data.lineCostShare) ? (data.lineCostShare as LineCostShareRow[]) : []);
+    setPendingCostShare(new Map());
+    setAttestationSource(
+      data.serviceAttestationSource === "dispute" || data.serviceAttestationSource === "claim_page"
+        ? data.serviceAttestationSource
+        : null,
+    );
+    setDenialDatePrefill(
+      data.denialDatePrefill && typeof data.denialDatePrefill.date === "string"
+        ? { date: data.denialDatePrefill.date, source: String(data.denialDatePrefill.source ?? "eob_parse") }
+        : null,
+    );
     setDeadlineInputs({
       denialNoticeDate:
         typeof data.deadlineInputs?.denialNoticeDate === "string"
@@ -533,7 +570,13 @@ function DisputesContent() {
         missingPlanForYear: data.missingPlanForYear ?? null,
       };
       setLetter(synthesized);
-      setEditedBody(data.letterContent);
+      // S293 (#13) — reset the working copy ONLY when the server letter
+      // actually changed; a reconcile refetch returning the same letter must
+      // not wipe the user's local edits (see lastServerLetterRef above).
+      if (lastServerLetterRef.current !== data.letterContent) {
+        setEditedBody(data.letterContent);
+      }
+      lastServerLetterRef.current = data.letterContent;
       // Zone-3 (S266) — re-derive the advisory next rung from the persisted outcome so
       // the stage-action bar's escalate CTA survives a refresh (not just in-session).
       const persistedOutcome = data.outcomeDetail;
@@ -545,27 +588,83 @@ function DisputesContent() {
     }
   }, [user]);
 
-  // Block C2 — confirm/undo patient identity (POST confirm-patient-identity) then
-  // refetch. Mirrors the inline POST+refetch shape used across this page.
+  // S292 (#8) — the ONE debounced reconcile refetch behind every optimistic
+  // handler on this page (plan-cost saves, and since S293 #13 the identity /
+  // attestation / coverage-verify rows too): coalesces a burst of writes into
+  // a single dispute re-resolve instead of one per save.
+  const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // S293 (#6) — a reconcile can be upgraded to a LETTER-REFRESHING reconcile
+  // (?refresh=1: server re-resolves evidence, recomposes + persists the body,
+  // versioning the prior letter). Handlers whose write changes what the letter
+  // SAYS (coverage confirms/rejects, service attestations, amount-paid) pass
+  // {refresh:true} so the confirmation and the clause it produces land in the
+  // SAME user action — the S292 aggregate confirm previously wrote the marks
+  // and then plain-reloaded the stored (stale, zero-clause) letter, waiting on
+  // a "next render" that nothing ever scheduled. The flag is OR-accumulated
+  // across the debounce window so a later plain reconcile can't downgrade a
+  // pending refresh.
+  const reconcileRefreshRef = useRef(false);
+  const scheduleReconcile = useCallback((opts?: { refresh?: boolean }) => {
+    if (!disputeId) return;
+    if (opts?.refresh) reconcileRefreshRef.current = true;
+    if (reconcileTimerRef.current) clearTimeout(reconcileTimerRef.current);
+    reconcileTimerRef.current = setTimeout(() => {
+      reconcileTimerRef.current = null;
+      const refresh = reconcileRefreshRef.current;
+      reconcileRefreshRef.current = false;
+      void fetchDispute(disputeId, refresh ? { refresh: true } : undefined);
+    }, 1200);
+  }, [disputeId, fetchDispute]);
+  useEffect(() => () => {
+    if (reconcileTimerRef.current) clearTimeout(reconcileTimerRef.current);
+  }, []);
+
+  // Block C2 — confirm/undo patient identity (POST confirm-patient-identity).
+  // S293 (#13) — optimistic: the todo row flips in the click's own render
+  // (pending-target idiom — local state mirrors the intended server truth and
+  // the mutationGen bump keeps a stale in-flight reload from clobbering it);
+  // the write + ONE debounced reconcile run in the background, replacing the
+  // awaited full dispute re-resolve that made "Resolve name" feel dead for
+  // seconds. Snaps back to the pre-click value if the write fails. Never
+  // rejects (callers fire-and-forget); returns whether the write landed so
+  // the letter name-fill only runs on success.
   const handleResolvePatientIdentity = useCallback(
-    async (confirmed: boolean) => {
-      if (!user || !disputeId) return;
-      const token = await user.firebaseUser.getIdToken();
-      await fetch(`/api/disputes/${disputeId}/confirm-patient-identity`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ confirmed }),
-      });
-      await fetchDispute(disputeId);
+    async (confirmed: boolean): Promise<boolean> => {
+      if (!user || !disputeId) return false;
+      const prev = patientIdentityResolved;
+      mutationGenRef.current += 1;
+      setPatientIdentityResolved(confirmed);
+      try {
+        const token = await user.firebaseUser.getIdToken();
+        const res = await fetch(`/api/disputes/${disputeId}/confirm-patient-identity`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ confirmed }),
+        });
+        if (!res.ok) throw new Error(`confirm-patient-identity ${res.status}`);
+        scheduleReconcile();
+        return true;
+      } catch (err) {
+        console.error("[confirm-patient-identity] failed:", err);
+        mutationGenRef.current += 1;
+        setPatientIdentityResolved(prev);
+        scheduleReconcile();
+        return false;
+      }
     },
-    [user, disputeId, fetchDispute],
+    [user, disputeId, patientIdentityResolved, scheduleReconcile],
   );
 
   // Block C2 — commit the full service-not-rendered attestation set (POST
-  // attest-service) then refetch so the reclassification + markers land.
+  // attest-service). S293 (#13) — optimistic: the needs-panel row + per-line
+  // evidence markers flip in the click's own render (mirroring exactly what
+  // the reconcile GET will return), the POST runs in the background, and ONE
+  // debounced reconcile replaces the awaited full dispute re-resolve. Snaps
+  // everything back if the write fails. Never rejects — the attestation gate
+  // buttons fire-and-forget this.
   const handleAttestServices = useCallback(
     async (payload: {
       attestedLineItemIds: string[];
@@ -573,28 +672,72 @@ function DisputesContent() {
       attestingAsName?: string;
     }) => {
       if (!user || !disputeId) return;
-      const token = await user.firebaseUser.getIdToken();
-      await fetch(`/api/disputes/${disputeId}/attest-service`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
-      await fetchDispute(disputeId);
+      const prev = {
+        ids: serviceAttestedLineIds,
+        reviewed: serviceAttestationReviewed,
+        name: attestingAsName,
+        source: attestationSource,
+        evidence,
+      };
+      mutationGenRef.current += 1;
+      const attestedSet = new Set(payload.attestedLineItemIds);
+      setServiceAttestedLineIds(payload.attestedLineItemIds);
+      setServiceAttestationReviewed(payload.serviceAttestationReviewed);
+      if (payload.attestingAsName) setAttestingAsName(payload.attestingAsName);
+      setAttestationSource("dispute");
+      setEvidence((prevEv) =>
+        prevEv
+          ? {
+              ...prevEv,
+              claims: prevEv.claims.map((c) => ({
+                ...c,
+                lineItemEvidence: c.lineItemEvidence.map((li) => ({
+                  ...li,
+                  serviceNotRenderedAttested: attestedSet.has(li.lineItemId),
+                })),
+              })),
+            }
+          : prevEv,
+      );
+      try {
+        const token = await user.firebaseUser.getIdToken();
+        const res = await fetch(`/api/disputes/${disputeId}/attest-service`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error(`attest-service ${res.status}`);
+        // S293 (#6) — an attestation adds/removes the service-not-rendered
+        // clause spine → recompose the letter in this same action.
+        scheduleReconcile({ refresh: true });
+      } catch (err) {
+        console.error("[attest-service] failed:", err);
+        mutationGenRef.current += 1;
+        setServiceAttestedLineIds(prev.ids);
+        setServiceAttestationReviewed(prev.reviewed);
+        setAttestingAsName(prev.name);
+        setAttestationSource(prev.source);
+        setEvidence(prev.evidence);
+        scheduleReconcile();
+      }
     },
-    [user, disputeId, fetchDispute],
+    [
+      user,
+      disputeId,
+      serviceAttestedLineIds,
+      serviceAttestationReviewed,
+      attestingAsName,
+      attestationSource,
+      evidence,
+      scheduleReconcile,
+    ],
   );
 
-  // Block C2 — per-line bands keyed by lineItemId for EvidenceBlock (L1: band only).
-  const bandByLineId = useMemo(() => {
-    const m: Record<string, EvidenceBand> = {};
-    for (const p of strength?.evidenceStrength.perLine ?? []) {
-      m[p.lineItemId] = p.band;
-    }
-    return m;
-  }, [strength]);
+  // (S293 #5 — the per-line EvidenceBand map fed only the removed EvidenceBlock
+  // sidebar; deleted with it.)
 
   // ?dispute=<id> flow — initial fetch.
   useEffect(() => {
@@ -946,8 +1089,11 @@ function DisputesContent() {
       if (!res.ok) throw new Error("Failed to save amount paid");
       // Optimistic — reflect the value immediately + reconcile in the background so Save
       // doesn't block on the full dispute re-resolve (S265 Andrew feedback: saves felt slow).
+      // S293 (#6) — refresh:1 so the letter's refund ask absorbs the confirmed
+      // amount in this same action (the override is a recovery input the
+      // composer reads; it is now also part of the evidence fingerprint).
       setUserPatientPaid(amount);
-      if (disputeId) void fetchDispute(disputeId);
+      if (disputeId) void fetchDispute(disputeId, { refresh: true });
     },
     [user, letter?.auditReportId, disputeId, fetchDispute],
   );
@@ -969,6 +1115,104 @@ function DisputesContent() {
       void fetchDispute(disputeId);
     },
     [user, disputeId, fetchDispute],
+  );
+
+  // ── S292 (#8) — batched/optimistic service-cost saves ────────────────────────
+  // A burst of plan-cost saves (modal or aggregate confirm) updates the panel
+  // instantly via `pendingCostShare` (in-flight targets only; server truth wins on
+  // reconcile — the ClaimDetail svcPendingConfirm idiom) and coalesces into ONE
+  // reconcile refetch (scheduleReconcile — declared up by fetchDispute since
+  // S293 #13 put the identity/attestation handlers on the same machinery)
+  // instead of one full dispute re-resolve per save.
+
+  /** Optimistic target for one service's plan cost + the single reconcile. */
+  const applyOptimisticCostShare = useCallback(
+    (serviceSlug: string, values: { copay: number | null; coinsurancePercent: number | null }) => {
+      mutationGenRef.current += 1; // a stale in-flight reload must not clobber this
+      setPendingCostShare((prev) => {
+        const next = new Map(prev);
+        next.set(serviceSlug, values);
+        return next;
+      });
+      scheduleReconcile();
+    },
+    [scheduleReconcile],
+  );
+
+  // ── S292 (#7) — the ONE aggregate "looks right?" confirm ────────────────────
+  // Fans out the EXISTING per-line confirm-coverage write (the recorded human
+  // glance) for every parser-extracted plan cost, then ONE reconcile refetch.
+  // Confirmed secondary borrows become citable (S154 confirmed branch) → the
+  // letter absorbs them on its next render.
+  const handleConfirmParsedCosts = useCallback(
+    async (services: PlanCostService[]) => {
+      if (!user || !letter?.auditReportId) return;
+      const token = await user.firebaseUser.getIdToken();
+      const claimId = letter.auditReportId;
+      const lineIds = Array.from(
+        new Set(services.flatMap((s) => s.lineItemIds ?? [])),
+      );
+      const results = await Promise.allSettled(
+        lineIds.map((lineItemId) =>
+          fetch(`/api/claims/${claimId}/line-items/${lineItemId}/confirm-coverage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ decision: "match" }),
+          }).then((r) => {
+            if (!r.ok) throw new Error(`confirm-coverage ${r.status}`);
+          }),
+        ),
+      );
+      if (results.some((r) => r.status === "rejected")) {
+        throw new Error("confirm failed");
+      }
+      // Optimistic: flip the confirmed rows locally; ONE reconcile refetch.
+      // S293 (#6) — refresh:true so the SAME action recomposes the letter: the
+      // confirmed values become citations (clauses) in this reconcile, not on a
+      // hypothetical "next render" (dispute 80a705ac shipped zero clauses
+      // because nothing ever scheduled that render).
+      mutationGenRef.current += 1;
+      const confirmedIds = new Set(lineIds);
+      setLineCostShare((prev) =>
+        prev.map((r) =>
+          confirmedIds.has(r.lineItemId) ? { ...r, humanReviewed: true, confirmed: true } : r,
+        ),
+      );
+      scheduleReconcile({ refresh: true });
+    },
+    [user, letter?.auditReportId, scheduleReconcile],
+  );
+
+  /** S292 (#7) — per-item "Doesn't match" on a secondary-borrowed value. */
+  const handleRejectParsedCost = useCallback(
+    async (svc: PlanCostService) => {
+      if (!user || !letter?.auditReportId) return;
+      const token = await user.firebaseUser.getIdToken();
+      const claimId = letter.auditReportId;
+      for (const lineItemId of svc.lineItemIds ?? []) {
+        const res = await fetch(
+          `/api/claims/${claimId}/line-items/${lineItemId}/confirm-coverage`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ decision: "no_match" }),
+          },
+        );
+        if (!res.ok) throw new Error("reject failed");
+      }
+      mutationGenRef.current += 1;
+      const rejectedIds = new Set(svc.lineItemIds ?? []);
+      setLineCostShare((prev) =>
+        prev.map((r) =>
+          rejectedIds.has(r.lineItemId)
+            ? { ...r, known: false, humanReviewed: false, confirmed: false, rejected: true }
+            : r,
+        ),
+      );
+      // S293 (#6) — a rejection EXCLUDES a citation → recompose in this action.
+      scheduleReconcile({ refresh: true });
+    },
+    [user, letter?.auditReportId, scheduleReconcile],
   );
 
   // Unified case timeline (S286) — persist a checklist check-off. Optimistic
@@ -1162,27 +1406,16 @@ function DisputesContent() {
     />
   );
 
-  const evidenceNode = (
-    <div id="dispute-evidence">
-    <EvidenceBlock
-      evidence={evidence}
-      planLabel={planLabel}
-      gateUnverified={gateUnverified}
-      // v3-only gated corroborating slots; flag OFF → byte-identical to today.
-      showExtendedSlots={v3DesignOn}
-      // Block C2 — per-line bands + attestation flow, all v3-only (band prop +
-      // onAttest omitted when flag OFF → unchanged OLD evidence card).
-      bandByLineId={v3DesignOn ? bandByLineId : undefined}
-      attestedLineItemIds={serviceAttestedLineIds}
-      onAttest={disputeId && v3DesignOn ? handleAttestServices : undefined}
-      attestationReviewed={serviceAttestationReviewed}
-      accountName={accountName}
-      attestingAsName={attestingAsName}
-    />
-    </div>
-  );
+  // S293 (#5, Andrew) — evidenceNode ("Why this should be covered", EvidenceBlock)
+  // removed with the sidebar; the attestation flow it hosted moved into the
+  // claim-details block in CaseNeedsPanel (same anchor id, same onAttest).
 
   // S265 — coverage-verify + re-run-audit moved from the retired EvidenceGaps card into Zone-1.
+  // S293 (#13) — the row clears right after the POST lands (either decision
+  // resolves the gap) with ONE debounced reconcile, instead of pinning the
+  // control on "Saving…" through a full dispute re-resolve. Still THROWS on
+  // failure — CoverageVerifyControl's own error state is the surface here, and
+  // nothing was dropped optimistically before the write.
   const handleCoverageVerify = async (
     claimId: string,
     lineItemId: string,
@@ -1199,7 +1432,25 @@ function DisputesContent() {
       },
     );
     if (!res.ok) throw new Error("confirm-coverage failed");
-    await refetchAfterChange();
+    mutationGenRef.current += 1;
+    setEvidence((prevEv) =>
+      prevEv
+        ? {
+            ...prevEv,
+            gaps: (prevEv.gaps ?? []).filter(
+              (g) =>
+                !(
+                  g.kind === "service_coverage_verify" &&
+                  g.claimId === claimId &&
+                  g.lineItemId === lineItemId
+                ),
+            ),
+          }
+        : prevEv,
+    );
+    // S293 (#6) — a match confirm turns a verify-gate into a citation (and a
+    // no_match excludes it) → the letter must recompose in this same action.
+    scheduleReconcile({ refresh: true });
   };
   const handleAuditRerun = async () => {
     if (!user || !disputeId) return;
@@ -1284,6 +1535,17 @@ function DisputesContent() {
     </div>
   );
 
+  // S293 (#3) — while the letter's REQUIRED inputs are still missing, the
+  // preview must read as pending, not as a finished letter that happens to be
+  // incomplete. The signal is the SAME server-computed readiness floor the
+  // needs panel's "Not ready to send" pill reads (strength.readiness — one
+  // derivation, the two surfaces cannot disagree); null readiness (legacy /
+  // flag-off payloads) → no treatment, and a sent letter is never dimmed.
+  // Visuals reuse the LockedOverlay dim recipe (blur + opacity + inert), the
+  // codebase's canonical "present but not usable yet" treatment.
+  const letterPending =
+    strength?.readiness?.state === "attention" && !alreadySent;
+
   const articleNode = (
     <article id="dispute-letter-article" className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
       {isEditing ? (
@@ -1298,6 +1560,26 @@ function DisputesContent() {
             className="block w-full resize-y bg-transparent px-10 py-12 font-serif text-[15px] leading-[1.7] text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-300/60"
             style={{ minHeight: 620 }}
           />
+        </div>
+      ) : letterPending ? (
+        <div className="relative">
+          <div
+            aria-hidden
+            className="pointer-events-none select-none whitespace-pre-wrap px-10 py-12 font-serif text-[15px] leading-[1.7] text-slate-900 opacity-40 blur-[2px] md:px-14 md:py-14"
+          >
+            {editedBody}
+          </div>
+          <div className="absolute inset-0 flex items-start justify-center px-4 pt-12 sm:pt-16">
+            {/* TODO(copy — Andrew approval): both strings below are NEW copy
+                (from the S293 brief's example wording). Swap here if the
+                approved phrasing differs. */}
+            <div className="rounded-xl border border-amber-200 bg-amber-50/95 px-4 py-3 text-center shadow-sm">
+              <p className="text-[13px] font-semibold text-amber-900">Waiting on your answers above</p>
+              <p className="mt-0.5 text-[12px] text-amber-800">
+                This draft updates as you answer — finish the items above to complete it.
+              </p>
+            </div>
+          </div>
         </div>
       ) : (
         <div className="whitespace-pre-wrap px-10 py-12 font-serif text-[15px] leading-[1.7] text-slate-900 md:px-14 md:py-14">
@@ -1437,8 +1719,74 @@ function DisputesContent() {
   // "The case" timeline (CaseSummary), driven by computeCaseStage. See the
   // <CaseSummary> render below.
 
-  // Dispute Letters v2 (Z1.2) — Zone-1 panel inputs derived from evidence/planContext.
+  // Dispute Letters v2 (Z1.2) — Zone-1 panel inputs.
+  //
+  // S292 (#7) — plan-cost rows come from the CLAIM PAGE'S OWN cost-share
+  // resolution (server `lineCostShare`, the shared resolveLineCostShare recipe),
+  // not the letter-citation loader: anything the claim page already resolved
+  // (exact SBC row, secondary category match, ACA preventive) arrives prefilled;
+  // human-reviewed values (manual entry / confirmed) arrive DONE; only services
+  // the platform genuinely can't resolve remain asks. Falls back to the legacy
+  // evidence-derived rows when the server payload is absent (flag OFF).
   const zone1Services: PlanCostService[] = (() => {
+    // slug → display name from evidence (the panel's existing label source).
+    const nameBySlug = new Map<string, string>();
+    for (const c of evidence?.claims ?? []) {
+      for (const li of c.lineItemEvidence ?? []) {
+        if (li.serviceSlug && !nameBySlug.has(li.serviceSlug)) {
+          nameBySlug.set(li.serviceSlug, li.serviceName);
+        }
+      }
+    }
+
+    // S293 (#5) — per-line billed amounts from evidence, summed per service for
+    // the one-block claim-details list.
+    const billedByLineId = new Map<string, number>();
+    for (const c of evidence?.claims ?? []) {
+      for (const li of c.lineItemEvidence ?? []) {
+        billedByLineId.set(li.lineItemId, li.billedAmount ?? 0);
+      }
+    }
+
+    if (lineCostShare.length > 0) {
+      const bySlug = new Map<string, LineCostShareRow[]>();
+      for (const r of lineCostShare) {
+        if (!r.serviceSlug) continue;
+        const arr = bySlug.get(r.serviceSlug) ?? [];
+        arr.push(r);
+        bySlug.set(r.serviceSlug, arr);
+      }
+      const out: PlanCostService[] = [];
+      for (const [slug, rows] of bySlug) {
+        const pending = pendingCostShare.get(slug);
+        // A rejected secondary borrow is NOT known (the user said the match is
+        // wrong) — the ask returns until a manual value lands.
+        const live = rows.filter((r) => !(r.rejected && !r.humanReviewed));
+        const knownRow = live.find((r) => r.known) ?? null;
+        const known = pending != null || knownRow != null;
+        out.push({
+          serviceSlug: slug,
+          serviceLabel: nameBySlug.get(slug) ?? rows[0]?.description ?? slug.replace(/_/g, " "),
+          known,
+          copay: pending ? pending.copay : knownRow?.copay ?? null,
+          coinsurancePercent: pending
+            ? pending.coinsurancePercent
+            : knownRow?.coinsurancePercent ?? null,
+          source: pending ? "manual" : knownRow?.source ?? null,
+          // pending (just typed) counts as human-reviewed; otherwise every known
+          // line must be human-reviewed for the DONE bucket.
+          humanReviewed:
+            pending != null || (knownRow != null && live.filter((r) => r.known).every((r) => r.humanReviewed)),
+          lineItemIds: rows.map((r) => r.lineItemId),
+          claimId: letter?.auditReportId ?? null,
+          secondaryMatchedSlug: knownRow?.secondaryMatchedSlug ?? null,
+          billedAmount: rows.reduce((s, r) => s + (billedByLineId.get(r.lineItemId) ?? 0), 0),
+        });
+      }
+      return out;
+    }
+
+    // Legacy fallback — evidence planBenefit (pre-S292 shape; known → DONE).
     const seen = new Set<string>();
     const out: PlanCostService[] = [];
     for (const c of evidence?.claims ?? []) {
@@ -1446,17 +1794,32 @@ function DisputesContent() {
         if (!li.serviceSlug || seen.has(li.serviceSlug)) continue;
         seen.add(li.serviceSlug);
         const pb = li.planBenefit;
+        const pending = pendingCostShare.get(li.serviceSlug);
         out.push({
           serviceSlug: li.serviceSlug,
           serviceLabel: li.serviceName,
-          known: pb != null,
-          copay: pb?.copay ?? null,
-          coinsurancePercent: pb?.coinsurance != null ? Math.round(pb.coinsurance * 100) : null,
-          source: pb?.source ?? null,
+          known: pending != null || pb != null,
+          copay: pending ? pending.copay : pb?.copay ?? null,
+          coinsurancePercent: pending
+            ? pending.coinsurancePercent
+            : pb?.coinsurance != null
+              ? Math.round(pb.coinsurance * 100)
+              : null,
+          source: pending ? "manual" : pb?.source ?? null,
         });
       }
     }
     return out;
+  })();
+
+  // S292 (#9) — the bill's parsed amount-paid for the one-click confirm prefill
+  // (evidence effectiveTotals: per-line sum when cite-grade, claim header otherwise).
+  const zone1BillPatientPaid = (() => {
+    let sum = 0;
+    for (const c of evidence?.claims ?? []) {
+      sum += c.effectiveTotals?.patientPaid ?? 0;
+    }
+    return sum > 0 ? Math.round(sum * 100) / 100 : null;
   })();
   const zone1ProviderAddressOnFile = planContext?.providerContact?.address != null;
   const zone1HasInsurer = planContext?.insurer != null;
@@ -1494,12 +1857,15 @@ function DisputesContent() {
       billName={nameMismatch?.billName ?? null}
       profileName={nameMismatch?.profileName ?? null}
       attestationReviewed={serviceAttestationReviewed}
+      attestationSource={attestationSource}
       hasInsurer={zone1HasInsurer}
       providerAddressOnFile={zone1ProviderAddressOnFile}
       insurerAddressOnFile={zone1InsurerAddressOnFile}
       eobPresent={zone1EobPresent}
       userPatientPaid={userPatientPaid}
+      billPatientPaid={zone1BillPatientPaid}
       denialNoticeDate={deadlineInputs.denialNoticeDate}
+      denialDatePrefill={denialDatePrefill}
       collectorFirstContactDate={deadlineInputs.collectorFirstContactDate}
       planLabel={planLabel}
       showInsuranceRow={zone1ShowInsuranceRow}
@@ -1510,6 +1876,36 @@ function DisputesContent() {
       rerunAuditEnabled={false}
       auditFindingsMissing={auditFindingsMissing}
       onAuditRerun={handleAuditRerun}
+      onConfirmParsedCosts={handleConfirmParsedCosts}
+      onRejectParsedCost={handleRejectParsedCost}
+      // S293 (#5) — the ONE claim-details block's inputs. Present only on the
+      // v3 path (mirrors the removed sidebar's own onAttest gate); absent →
+      // the panel falls back to the per-item confirmation rows.
+      claimFacts={
+        v3DesignOn
+          ? {
+              patientName: (nameMismatch?.billName ?? nameMismatch?.profileName ?? accountName) || null,
+              providerName: evidence?.claims?.[0]?.providerName ?? null,
+              serviceDate: evidence?.claims?.[0]?.dateOfService ?? null,
+            }
+          : null
+      }
+      attestationLines={
+        v3DesignOn
+          ? (evidence?.claims ?? []).flatMap((c) =>
+              (c.lineItemEvidence ?? []).map((li) => ({
+                lineItemId: li.lineItemId,
+                serviceName: li.serviceName,
+                codeLabel: li.billingCode ? `${li.billingCode.type} ${li.billingCode.value}` : null,
+                billedAmount: li.billedAmount ?? 0,
+              })),
+            )
+          : undefined
+      }
+      attestedLineItemIds={serviceAttestedLineIds}
+      accountName={accountName}
+      attestingAsName={attestingAsName}
+      onAttest={disputeId && v3DesignOn ? handleAttestServices : undefined}
       onAddPlanDetails={(svc) =>
         setAddPlanModal({
           serviceSlug: svc.serviceSlug,
@@ -1520,11 +1916,27 @@ function DisputesContent() {
       }
       onConfirmName={() => handleResolvePatientIdentity(true)}
       onEditLetter={() => setIsEditing(true)}
-      onReviewAttestation={() =>
-        document
-          .getElementById("dispute-evidence")
-          ?.scrollIntoView({ behavior: "smooth", block: "center" })
-      }
+      onReviewAttestation={() => {
+        // S293 (#11) — jump to the attestation STEP, not the evidence card.
+        // The old target (#dispute-evidence with block:"center") centered a
+        // card that is usually TALLER than its scrollport: centering a
+        // too-tall element aligns its MIDDLE, which pushes its top — where the
+        // "Were all of these services actually performed?" gate sits — out of
+        // view. In the v3 layout the card also lives inside the sticky rail's
+        // own overflow scroller, so the overshoot happened inside the rail.
+        // The step itself is small, so centering it lands the whole question
+        // on screen in both scrollers. Fallback (flag OFF / read-only letters
+        // where the flow isn't mounted): align the card's START so its top —
+        // where content begins — is what the user sees.
+        const step = document.getElementById("dispute-service-attestation");
+        if (step) {
+          step.scrollIntoView({ behavior: "smooth", block: "center" });
+        } else {
+          document
+            .getElementById("dispute-evidence")
+            ?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+      }}
       onAddProviderAddress={() => setProviderAddressOpen(true)}
       onAddInsurerAddress={() => setInsurerCorrectionOpen(true)}
       onUploadEob={() => window.location.assign("/upload")}
@@ -1715,16 +2127,92 @@ function DisputesContent() {
       onAddProviderAddress={() => setProviderAddressOpen(true)}
       insurerAddressOnFile={zone1InsurerAddressOnFile}
       onAddInsurerAddress={() => setInsurerCorrectionOpen(true)}
+      // S291 (Andrew) — the plan-year strip is now a STEP in "What you need to
+      // do" instead of a banner floating below it. Same component, same approved
+      // copy (S111 §3c); only its placement changes, so a wrong-year plan is a
+      // tracked item ticked off before the letter goes out.
+      planYearMismatch={
+        planContext && !planContext.plan && planContext.missingForYear != null && disputeId
+          ? {
+              billYear: planContext.missingForYear,
+              planYear: planContext.fallbackPlan?.planYear ?? null,
+              insurerName: planContext.insurer?.name ?? planContext.fallbackPlan?.insurerName ?? null,
+            }
+          : null
+      }
+      planYearResolved={userConfirmedSamePlan != null || userAcceptedProxy === true}
+      planYearStrip={
+        planContext && !planContext.plan && planContext.missingForYear != null && disputeId ? (
+        <VerifStrip
+        disputeId={disputeId}
+        billYear={planContext.missingForYear}
+        insurerName={
+        planContext.insurer?.name ??
+        planContext.fallbackPlan?.insurerName ??
+        null
+        }
+        fallbackPlan={planContext.fallbackPlan}
+        userConfirmedSamePlan={userConfirmedSamePlan}
+        userAcceptedProxy={userAcceptedProxy}
+        archiveCanonicalPlan={
+        planContext.archiveCanonicalPlan
+        ? {
+        id: planContext.archiveCanonicalPlan.id,
+        planName: planContext.archiveCanonicalPlan.planName,
+        planYear: planContext.archiveCanonicalPlan.planYear,
+        insurerName: planContext.archiveCanonicalPlan.insurerName,
+        }
+        : null
+        }
+        boundCanonicalPlan={boundCanonicalPlan}
+        wrongYearBannerDismissed={wrongYearBannerDismissed}
+        getAuthToken={getAuthToken}
+        onConfirmed={async (answer) => {
+        setUserConfirmedSamePlan(answer);
+        await fetchDispute(disputeId);
+        }}
+        onOpenSearchModalAuto={() => {
+        setPlanSearchModalMode("auto");
+        setPlanSearchModalOpen(true);
+        }}
+        onOpenSearchModalSearch={() => {
+        setPlanSearchModalMode("search");
+        setPlanSearchModalOpen(true);
+        }}
+        onOpenUploadModal={() => {
+        setPlanSearchModalMode("upload");
+        setPlanSearchModalOpen(true);
+        }}
+        onDismissWrongYearBanner={async () => {
+        // S111 smoke #5 — POST dismiss flag + refetch. Server resets
+        // dismissal to false on each new bind so the banner reappears
+        // if the user binds another wrong-year plan.
+        if (!user) return;
+        const token = await user.firebaseUser.getIdToken();
+        await fetch(
+        `/api/disputes/${disputeId}/dismiss-wrong-year-banner`,
+        {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        },
+        );
+        await fetchDispute(disputeId);
+        }}
+        />
+        ) : null
+      }
       nameMismatch={nameMismatch}
       nameResolved={patientIdentityResolved}
       onResolvePatient={async (choice, correctedName) => {
         // "me" → letter uses the account name; "wrong" → the typed name;
         // "dependent" keeps the bill name. All three resolve the mismatch via
         // the real confirm-patient-identity endpoint. The name fill edits the
-        // letter body like a manual edit (flows into copy/download) and is
-        // applied AFTER the resolve refetch — fetchDispute resets editedBody
-        // from the server, so filling first would be wiped. Mismatch is
-        // captured pre-await (the refetch nulls it once resolved).
+        // letter body like a manual edit (flows into copy/download). S293
+        // (#13): the resolve is optimistic (no awaited refetch), so the fill
+        // runs as soon as the write lands — and survives the debounced
+        // reconcile because fetchDispute now resets editedBody only when the
+        // SERVER letter changed. Mismatch is captured pre-await (the reconcile
+        // nulls it once resolved); the fill is skipped when the write failed.
         const mismatch = nameMismatch;
         const to =
           mismatch == null
@@ -1734,8 +2222,8 @@ function DisputesContent() {
               : choice === "wrong"
                 ? (correctedName ?? "").trim()
                 : null;
-        await handleResolvePatientIdentity(true);
-        if (mismatch && to && to !== mismatch.billName) {
+        const ok = await handleResolvePatientIdentity(true);
+        if (ok && mismatch && to && to !== mismatch.billName) {
           setEditedBody((body: string) =>
             body
               .split(mismatch.billName)
@@ -1799,8 +2287,18 @@ function DisputesContent() {
           serviceLabel={addPlanModal.serviceLabel}
           getAuthToken={getAuthToken}
           onClose={() => setAddPlanModal(null)}
-          onSaved={async () => {
-            if (disputeId) await fetchDispute(disputeId);
+          onSaved={(saved) => {
+            // S292 (#8) — optimistic: the panel reflects the typed value instantly
+            // (pending-target idiom); a burst of saves coalesces into ONE reconcile
+            // refetch instead of a full dispute re-resolve per save.
+            if (saved) {
+              applyOptimisticCostShare(saved.serviceSlug, {
+                copay: saved.copay,
+                coinsurancePercent: saved.coinsurancePercent,
+              });
+            } else if (disputeId) {
+              void fetchDispute(disputeId);
+            }
           }}
           initialCopay={addPlanModal.initialCopay}
           initialCoinsurancePercent={addPlanModal.initialCoinsurancePercent}
@@ -1813,67 +2311,6 @@ function DisputesContent() {
           Subplan §3d. Parent gates rendering when no exact-year user plan
           exists; the strip itself handles state derivation + optimistic
           updates. */}
-      {planContext &&
-        !planContext.plan &&
-        planContext.missingForYear != null &&
-        disputeId && (
-          <VerifStrip
-            disputeId={disputeId}
-            billYear={planContext.missingForYear}
-            insurerName={
-              planContext.insurer?.name ??
-              planContext.fallbackPlan?.insurerName ??
-              null
-            }
-            fallbackPlan={planContext.fallbackPlan}
-            userConfirmedSamePlan={userConfirmedSamePlan}
-            userAcceptedProxy={userAcceptedProxy}
-            archiveCanonicalPlan={
-              planContext.archiveCanonicalPlan
-                ? {
-                    id: planContext.archiveCanonicalPlan.id,
-                    planName: planContext.archiveCanonicalPlan.planName,
-                    planYear: planContext.archiveCanonicalPlan.planYear,
-                    insurerName: planContext.archiveCanonicalPlan.insurerName,
-                  }
-                : null
-            }
-            boundCanonicalPlan={boundCanonicalPlan}
-            wrongYearBannerDismissed={wrongYearBannerDismissed}
-            getAuthToken={getAuthToken}
-            onConfirmed={async (answer) => {
-              setUserConfirmedSamePlan(answer);
-              await fetchDispute(disputeId);
-            }}
-            onOpenSearchModalAuto={() => {
-              setPlanSearchModalMode("auto");
-              setPlanSearchModalOpen(true);
-            }}
-            onOpenSearchModalSearch={() => {
-              setPlanSearchModalMode("search");
-              setPlanSearchModalOpen(true);
-            }}
-            onOpenUploadModal={() => {
-              setPlanSearchModalMode("upload");
-              setPlanSearchModalOpen(true);
-            }}
-            onDismissWrongYearBanner={async () => {
-              // S111 smoke #5 — POST dismiss flag + refetch. Server resets
-              // dismissal to false on each new bind so the banner reappears
-              // if the user binds another wrong-year plan.
-              if (!user) return;
-              const token = await user.firebaseUser.getIdToken();
-              await fetch(
-                `/api/disputes/${disputeId}/dismiss-wrong-year-banner`,
-                {
-                  method: "POST",
-                  headers: { Authorization: `Bearer ${token}` },
-                },
-              );
-              await fetchDispute(disputeId);
-            }}
-          />
-        )}
 
       {/* S111 — unified PlanSearchModal. 5-mode morph; controlled by the
           page-level open + mode state. Bind success → refetch; upload
@@ -2122,8 +2559,13 @@ function DisputesContent() {
               hovering + wheeling over the rail reaches the lower cards (evidence,
               case file) instead of being scroll-trapped until the left column
               catches up. */}
+          {/* S293 (#5, Andrew) — the "Why this should be covered" sidebar card
+              (EvidenceBlock) is REMOVED as unused visual noise. The letter's own
+              evidence section carries the same analysis; the attestation flow it
+              hosted now lives inside the claim-details block in the needs panel.
+              Reversible: EvidenceBlock.tsx + StrengthBand.tsx remain in the tree,
+              unmounted — restore by re-adding the import + this placement. */}
           <aside className="space-y-5 lg:sticky lg:top-4 lg:self-start lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
-            {evidenceNode}
             {caseFileNode}
           </aside>
         </div>
@@ -2133,7 +2575,6 @@ function DisputesContent() {
           {strengthenPromptNode}
           {heroNode}
           {recipientNode}
-          {evidenceNode}
           {toolbarNode}
           {articleNode}
           {nextStepsNode}
@@ -2323,6 +2764,22 @@ const LETTER_TYPE_LABELS: Record<DisputeLetter["letterType"], string> = {
   external_review: "External Review Request",
   debt_validation: "Debt Validation",
 };
+
+// ── S292 (#7) — server `lineCostShare` row (the claim page's own cost-share
+// resolution per disputed line, projected by /api/disputes/[disputeId]) ────────
+interface LineCostShareRow {
+  lineItemId: string;
+  serviceSlug: string | null;
+  description: string | null;
+  known: boolean;
+  copay: number | null;
+  coinsurancePercent: number | null;
+  source: string | null;
+  humanReviewed: boolean;
+  confirmed: boolean;
+  rejected: boolean;
+  secondaryMatchedSlug: string | null;
+}
 
 // ── Unified case timeline (S286) helpers ─────────────────────────────────────
 

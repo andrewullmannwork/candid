@@ -35,6 +35,32 @@
 
 import { resolveCoverageForLine, isInsurerDenied, type CoverageDecision } from "./coverage-decision";
 
+/**
+ * S294 — WHERE a service's cost-share numbers came from. The honesty gate turns
+ * on this, so it must describe the DATA, not the plan row that happens to hold
+ * it.
+ *
+ *   "plan_document" — read off a real coverage document: the member's own
+ *                     uploaded SBC/EOC, or Candid's catalog extraction of that
+ *                     same filing (admin-attested / cold-start regen, which
+ *                     carry a source excerpt and a section-verified flag).
+ *                     Trusted for a verdict.
+ *   "user"          — a human typed it. Trusted (they know their own plan).
+ *   "card"          — scanned off an insurance card. NOT trusted: a card rarely
+ *                     lists cost-share, and S291 caught a fabricated $0 copay
+ *                     from this path grounding a false "no issues" on a bill
+ *                     the member had paid $292.41 for.
+ *   "unknown"       — written before provenance stamping, or below the
+ *                     confidence floor. Treated as untrusted (safe direction).
+ */
+export type CostProvenance = "plan_document" | "user" | "card" | "unknown";
+
+/** The provenances a confident verdict may rest on. Everything else degrades. */
+export const TRUSTED_COST_PROVENANCE: ReadonlySet<CostProvenance> = new Set<CostProvenance>([
+  "plan_document",
+  "user",
+]);
+
 export interface PlanCoverageInput {
   covered: boolean | null;
   /** Per-visit fixed dollar amount the patient owes. Caps at allowed amount. */
@@ -62,7 +88,7 @@ export interface PlanCoverageInput {
    * told us" about a value a card scan invented. "unknown" = written before
    * provenance stamping and genuinely unattributable.
    */
-  costProvenance?: "user" | "card" | "unknown";
+  costProvenance?: CostProvenance;
   outCopay?: number | null;
   outCoinsurance?: number | null;
   outDeductibleApplies?: boolean | null;
@@ -332,6 +358,8 @@ export interface ServiceCostShare {
   outDeductibleApplies?: boolean | null;
   /** plan pays OON at in-network rates for this service → use in-network params even when OON. */
   oonPaidAtInNetwork?: boolean | null;
+  /** S294 — where THESE numbers came from. Drives the honesty gate per line. */
+  costProvenance?: CostProvenance;
 }
 
 /** Plan-level phase params (from insurance_plans). Coinsurance is decimal 0-1. */
@@ -411,7 +439,9 @@ export interface CostShareAssumption {
     | "denial"
     | "aca_preventive"
     /** S291 — the plan's terms came from a card/manual entry, not a document. */
-    | "plan_provenance";
+    | "plan_provenance"
+    /** S291 — WHICH plan this bill is audited against (correctable via the chooser). */
+    | "plan_identity";
   /** the value we assumed, e.g. "not_met", "in_network", "subject". */
   assumed: string;
   /** dollar value behind it when known (e.g. the $7,050 deductible); null → banner shows "add …". */
@@ -502,6 +532,32 @@ export interface ComputeCostShareV2Args {
    */
   unverifiedPlanHonestyGate?: boolean;
 }
+
+/**
+ * S291 — reasons that mean a row is ANSWERED rather than assumed. Both are real
+ * facts we display so the user can see and override them; neither is a guess,
+ * so neither downgrades `confident` to `correct` nor counts as outstanding
+ * input. Exported so the banner's pending-set reads the same list — the two
+ * disagreeing is precisely the class of bug this session kept finding.
+ *
+ *   accumulator   — our running tally of the user's bills said so
+ *   user_override — the user told us directly
+ */
+/**
+ * Reasons that mark an assumption row as ALREADY ANSWERED — it renders, sourced
+ * and visible, but never joins the pending set and never degrades the verdict.
+ *
+ * S294 adds `plan_document`: a value the plan itself states is not an
+ * assumption we need the user to resolve, but it is still something they need
+ * to SEE ("no charge — after your $7,250 deductible"). Answering-by-document is
+ * the same shape as answering-by-accumulator, so it uses the same mechanism
+ * rather than a parallel one.
+ */
+export const ANSWERED_REASONS: ReadonlySet<string> = new Set([
+  "accumulator",
+  "user_override",
+  "plan_document",
+]);
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const num = (n: number | null | undefined): number | null =>
@@ -714,6 +770,40 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
         correctable: true,
         reason: "no_plan_value",
       });
+    } else {
+      // ── S294 — the plan STATES this, so SAY so ─────────────────────────────
+      // Pre-S294 a plan-stated value simply consumed itself: it was read, used,
+      // and never shown. The user saw "$0" with no hint that the $0 sits behind
+      // a $7,250 deductible — the single most decision-relevant fact on the
+      // bill. (Worse: for canonical-backed plans the column was never even
+      // SELECTed, so this branch could not be reached at all — see mig 219.)
+      //
+      // Emitted with an ANSWERED reason, which is the S291 mechanism for
+      // exactly this: the row renders, sourced and visible, WITHOUT joining the
+      // pending set (so it never blocks Done) and WITHOUT degrading the verdict
+      // to "correct". Nothing new is invented — a fact we already resolved
+      // simply stops being invisible.
+      //
+      // `assumed` distinguishes the four cases the copy needs, so the engine
+      // reports what it resolved and the banner owns the wording:
+      //   subject_free  — covered at no charge, but only after the deductible
+      //   subject       — cost-share applies, and only after the deductible
+      //   exempt_free   — covered at no charge, deductible does not apply
+      //   exempt        — cost-share applies, deductible does not apply
+      //
+      // NOT correctable: a plan document is authoritative here, matching the
+      // existing read-only treatment of plan-doc-parsed costs. A user who
+      // disagrees corrects the COST (which carries this field), not this row.
+      const free = copay === 0 || (copay == null && coinsurance === 0);
+      assumptions.push({
+        field: "deductible_applies",
+        assumed: `${dedApplies ? "subject" : "exempt"}${free ? "_free" : ""}`,
+        // The deductible dollar figure the copy needs; null when exempt (there
+        // is no deductible to name in that sentence).
+        value: dedApplies ? deductibleMax : null,
+        correctable: false,
+        reason: "plan_document",
+      });
     }
 
     if (oopMet) {
@@ -729,15 +819,27 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
       if (remainingOop != null) shouldOwe = Math.min(shouldOwe, remainingOop);
     } else if (!dedMet) {
       // deductible-subject, not met → toward deductible.
-      if (!dedMetKnown) {
-        assumptions.push({
-          field: "deductible_met",
-          assumed: "not_met",
-          value: deductibleMax,
-          correctable: true,
-          reason: acc == null ? "no_accumulator" : "no_override",
-        });
-      }
+      // S291 (Andrew) — emit this row even when the accumulator ALREADY knows.
+      // Previously the assumption was suppressed whenever `dedMetKnown`, so the
+      // deductible row simply vanished from the card: the user could not see
+      // what we believed, where it came from, or disagree with it. Our tally
+      // only reflects bills they've uploaded, so it is a floor, not the truth —
+      // it must stay visible and overridable. `reason: "accumulator"` marks it
+      // as answered-by-data (not pending) while keeping it on screen.
+      assumptions.push({
+        field: "deductible_met",
+        assumed: "not_met",
+        value: deductibleMax,
+        correctable: true,
+        reason:
+          ov.deductibleMet != null
+            ? "user_override"
+            : dedMetKnown
+              ? "accumulator"
+              : acc == null
+                ? "no_accumulator"
+                : "no_override",
+      });
       if (remainingDeductible != null && remainingDeductible < allowed) {
         // straddle: fill remaining deductible (100%), then coinsurance on the rest.
         phase = "straddle";
@@ -755,6 +857,29 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
         deductibleConsumed = shouldOwe;
       }
     } else {
+      // S291 — deductible MET. Emit the row so the user can see what we believe
+      // and disagree; an override already produces a row, but an
+      // accumulator-derived "met" previously rendered nothing at all.
+      // S294 — but NOT when the plan simply has no deductible. S291 emitted
+      // this row so an accumulator-derived "met" stayed visible and
+      // disagreeable; on a genuinely $0-deductible plan there is nothing to
+      // disagree with. Worse, the row went out tagged `reason: "accumulator"`
+      // — asserting we derived it from the user's uploaded bills when in fact
+      // the plan just has no deductible. A vacuous question, sourced to
+      // something that never happened.
+      //
+      // This is the mirror image of the S294 2024-bill defect: there the one
+      // question that mattered was buried behind an unanswerable one; here a
+      // question is asked that has no answer to give.
+      if (dedMetKnown && ov.deductibleMet == null && !planDeductibleZero) {
+        assumptions.push({
+          field: "deductible_met",
+          assumed: "met",
+          value: deductibleMax,
+          correctable: true,
+          reason: "accumulator",
+        });
+      }
       // deductible met, OOP not met → copay / coinsurance (HDHP-$0; else conservative).
       phase = "post_deductible";
       const r = resolveServiceShare(allowed, copay, coinsurance, isHdhpFull);
@@ -763,14 +888,24 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
       if (remainingOop != null) shouldOwe = Math.min(shouldOwe, remainingOop);
     }
 
-    // oop-met assumption only where OOP can actually bind (deductible met / copay-exempt) and it's unknown.
-    if (!oopMetKnown && (phase === "post_deductible" || phase === "straddle" || phase === "copay_exempt")) {
+    // OOP row wherever OOP can actually bind (deductible met / straddle /
+    // copay-exempt). S291: emitted even when the accumulator knows, so the row
+    // stays visible with its source instead of disappearing — same reasoning as
+    // the deductible row above.
+    if (phase === "post_deductible" || phase === "straddle" || phase === "copay_exempt") {
       assumptions.push({
         field: "oop_met",
-        assumed: "not_hit",
+        assumed: oopMet ? "hit" : "not_hit",
         value: oopMax,
         correctable: true,
-        reason: acc == null ? "no_accumulator" : "no_override",
+        reason:
+          ov.oopMet != null
+            ? "user_override"
+            : oopMetKnown
+              ? "accumulator"
+              : acc == null
+                ? "no_accumulator"
+                : "no_override",
       });
     }
   }
@@ -871,7 +1006,41 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
   // regardless of tier and pass through untouched, so this can never suppress a
   // dispute or fabricate one. Flag-gated (`unverified_plan_honesty_gate_v1`,
   // mig 216) because it shifts verdicts for every card-only user.
-  const provenanceUngrounded = args.unverifiedPlanHonestyGate === true && plan.provenanceUnverified === true;
+  // ── S294 — the gate reads the DATA's provenance, not the plan row's flag ───
+  //
+  // Was: `plan.provenanceUnverified` — driven by insurance_plans.source and
+  // .verification_status. `verification_status` is stamped "document_verified"
+  // ONLY by a document-parse path, so a plan the member picked from SEARCH was
+  // permanently "unverified" no matter how well-sourced its terms were. Its
+  // cost-share comes from canonical_plan_services rows that Candid extracted
+  // from that plan's own SBC — quoted excerpt, section-verified, 0.9 confidence
+  // — i.e. the very same filing the member would have uploaded. Those were
+  // degraded identically to a fabricated card copay, forever, with no on-screen
+  // way to resolve it (Andrew, 3 rounds).
+  //
+  // Now: trust follows the numbers. `plan_document` (member upload OR Candid's
+  // catalog extraction of the same filing) and `user` (they typed it) ground a
+  // verdict; `card` and `unknown` do not — which PRESERVES the S291 case this
+  // gate was built for, where a card scan invented a $0 copay and grounded a
+  // false "no issues" on a bill the member had paid $292.41 for.
+  //
+  // Absent service coverage → falls to `unknown` → degraded, which is the same
+  // conservative answer as before for a genuinely uncovered service. The plan
+  // row's flag is still honoured for card/manual-sourced PLANS, so nothing that
+  // previously degraded on those grounds stops degrading.
+  // ⚠ FAILS OPEN, deliberately — S291's rule, and the s291-plan-honesty fixture
+  // caught me breaking it. Most rows written before provenance stamping carry
+  // NO provenance; degrading all of them would silently mass-downgrade every
+  // legacy member's bills. So absence is never evidence of fabrication. Only a
+  // POSITIVELY identified card scan degrades — which is exactly the S291 case
+  // (a card-invented $0 copay grounding a false "no issues"), and nothing wider.
+  const serviceProvenance: CostProvenance = service?.costProvenance ?? "unknown";
+  const provenanceUnverified =
+    serviceProvenance === "card" ||
+    // A plan ASSEMBLED from a card photo / hand entry stays untrusted even when
+    // an individual service row looks better sourced than the plan around it.
+    plan.provenanceUnverified === true;
+  const provenanceUngrounded = args.unverifiedPlanHonestyGate === true && provenanceUnverified;
   if (provenanceUngrounded) {
     // Recorded even when another clause already forces `insufficient`, so the
     // banner can name the ACTUAL remedy ("add your plan document") instead of
@@ -894,7 +1063,13 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
   else if (preventiveAcaUnknown) verdict = "insufficient";
   else if (!shouldOweGrounded) verdict = "insufficient";
   else if (provenanceUngrounded) verdict = "insufficient";
-  else if (assumptions.length > 0) verdict = "correct";
+  // S291 — `correct` means "right, GIVEN things we assumed"; `confident` means
+  // "right, nothing assumed". A row sourced from the accumulator is DATA, not an
+  // assumption — it's emitted now only so the user can see and override it
+  // (they used to vanish). Counting those would silently demote every
+  // accumulator-backed bill from `confident` to `correct` with identical
+  // dollars, which is exactly the kind of quiet drift this session was about.
+  else if (assumptions.some((a) => !ANSWERED_REASONS.has(a.reason))) verdict = "correct";
   else verdict = "confident";
 
   return {

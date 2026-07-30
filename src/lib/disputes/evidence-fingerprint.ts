@@ -55,6 +55,19 @@ export interface CostShareBasisLine {
   networkStatus: string | null;
   billingCode: string | null;
   billingCodeType: string | null;
+  /**
+   * S293 (#6) — the user's per-line coverage verification marks
+   * (claim_line_items.metadata.coverage_user_confirmed / _rejected, written by
+   * the confirm-coverage endpoint incl. the S292 aggregate "Looks right"
+   * fan-out). These marks change what the letter CITES (a confirmed secondary
+   * borrow becomes a Case-2 citation; a rejection excludes the line), so a
+   * letter composed before the mark landed is stale — but the old hash was
+   * blind to them: the observed zero-clause letter on dispute 80a705ac never
+   * flagged stale after the user confirmed every service. Hashing the marks
+   * makes the W4 staleness rule see exactly what the composer reads.
+   */
+  coverageUserConfirmed: boolean;
+  coverageUserRejected: boolean;
 }
 
 /**
@@ -85,6 +98,13 @@ export interface CostShareBasis {
     amountStillOutstanding: number | null;
     totalPatientResponsibility: number | null;
     insurancePlanId: string | null;
+    /**
+     * S293 (#6) — the user-confirmed amount-paid override
+     * (claims.metadata.userPatientPaid, Z1.1b). The recovery engine overlays it
+     * onto the claim totals (applyUserPatientPaidOverride), so it is a recovery
+     * input the letter is a function of — hash it like the raw columns.
+     */
+    userPatientPaid: number | null;
   };
   lines: CostShareBasisLine[];
   accumulators: Array<{
@@ -308,22 +328,37 @@ async function loadCostShareBasis(
   const str = (r: Record<string, unknown>, k: string) =>
     r[k] == null ? null : String(r[k]);
 
-  const lines: CostShareBasisLine[] = lineItems.map((r) => ({
-    lineNumber: r.line_number == null ? null : Number(r.line_number),
-    billedAmount: num(r, "billed_amount"),
-    insuranceAdjustedAmount: num(r, "insurance_adjusted_amount"),
-    insurancePaid: num(r, "insurance_paid"),
-    patientPaidAmount: num(r, "patient_paid_amount"),
-    patientOwes: num(r, "patient_owes"),
-    amountStillOutstanding: num(r, "amount_still_outstanding"),
-    memberAppliedToDeductible: num(r, "member_applied_to_deductible"),
-    memberCoinsurance: num(r, "member_coinsurance"),
-    memberCopay: num(r, "member_copay"),
-    deniedAmount: num(r, "denied_amount"),
-    networkStatus: str(r, "network_status"),
-    billingCode: str(r, "billing_code"),
-    billingCodeType: str(r, "billing_code_type"),
-  }));
+  const lines: CostShareBasisLine[] = lineItems.map((r) => {
+    // S293 (#6) — the per-line verification marks live in line metadata (the
+    // confirm-coverage endpoint's write target); absent → false, so pre-S292
+    // rows hash identically whether the key is missing or was never set.
+    const liMeta = (r.metadata as Record<string, unknown> | null) ?? {};
+    return {
+      lineNumber: r.line_number == null ? null : Number(r.line_number),
+      billedAmount: num(r, "billed_amount"),
+      insuranceAdjustedAmount: num(r, "insurance_adjusted_amount"),
+      insurancePaid: num(r, "insurance_paid"),
+      patientPaidAmount: num(r, "patient_paid_amount"),
+      patientOwes: num(r, "patient_owes"),
+      amountStillOutstanding: num(r, "amount_still_outstanding"),
+      memberAppliedToDeductible: num(r, "member_applied_to_deductible"),
+      memberCoinsurance: num(r, "member_coinsurance"),
+      memberCopay: num(r, "member_copay"),
+      deniedAmount: num(r, "denied_amount"),
+      networkStatus: str(r, "network_status"),
+      billingCode: str(r, "billing_code"),
+      billingCodeType: str(r, "billing_code_type"),
+      coverageUserConfirmed: liMeta.coverage_user_confirmed === true,
+      coverageUserRejected: liMeta.coverage_user_rejected === true,
+    };
+  });
+
+  const claimMeta = (claim.metadata as Record<string, unknown> | null) ?? {};
+  const rawUserPatientPaid = claimMeta.userPatientPaid;
+  const userPatientPaid =
+    typeof rawUserPatientPaid === "number" && Number.isFinite(rawUserPatientPaid)
+      ? rawUserPatientPaid
+      : null;
 
   return {
     plan: { params: planParams, coverage, acaCompliant },
@@ -336,6 +371,7 @@ async function loadCostShareBasis(
       amountStillOutstanding: num(claim, "amount_still_outstanding"),
       totalPatientResponsibility: num(claim, "total_patient_responsibility"),
       insurancePlanId: planId,
+      userPatientPaid,
     },
     lines,
     accumulators,
@@ -399,6 +435,7 @@ function canonicalizeCostShareBasis(b: CostShareBasis) {
       still_out: fpCents(b.claim.amountStillOutstanding),
       total_pr: fpCents(b.claim.totalPatientResponsibility),
       plan_id: b.claim.insurancePlanId ?? null,
+      user_pt_paid: fpCents(b.claim.userPatientPaid),
     },
     lines: b.lines
       .map((l) => ({
@@ -416,6 +453,11 @@ function canonicalizeCostShareBasis(b: CostShareBasis) {
         net: l.networkStatus ?? null,
         code: l.billingCode ?? null,
         code_type: l.billingCodeType ?? null,
+        // S293 (#6) — booleans, not nullable: absent metadata keys hash as
+        // false, so untouched historical rows drift the hash exactly once
+        // (shape change), then stay stable.
+        cov_conf: l.coverageUserConfirmed,
+        cov_rej: l.coverageUserRejected,
       }))
       .sort(
         (a, z) =>

@@ -46,6 +46,47 @@ jobs:
         # fallback leak. renderGated keeps the gated clauses fail-closed; this enforces it.
         run: npx tsx scripts/calibration/fixtures/dispute-grounds/no-placeholder.ts
 
+      - name: Confirmed service ⇒ letter clause (S293 #6)
+        # Locks the invariant: a service the needs panel presented as known and
+        # the user confirmed CANNOT fail to produce its SUPPORTING DETAIL clause
+        # — even on an itemized bill whose per-line EOB fields are all NULL
+        # (the andrewullmanntest292 zero-clause regression, dispute 80a705ac).
+        # Also: no dangling "Source: ." on citation-less confirmed benefits.
+        run: npx tsx scripts/calibration/fixtures/dispute-grounds/confirmed-service-clause.ts
+
+      - name: Canonical link is a pair (S292 / mig 218)
+        # Fails the build if any code writes insurance_plans.canonical_plan_id
+        # without canonical_match_confidence. An unscored link reads as UNKNOWN to
+        # plan-identity.ts, so a half-write silently disables the resolver's two
+        # strongest rules for that plan — nothing errors and nothing is logged.
+        # Eight sites did exactly this before mig 218; the eighth hid inside a
+        # shared object literal and matched no obvious grep.
+        run: npx tsx scripts/canonical-link-pair-guard.mjs
+
+      - name: Plan identity + canonical confidence fixture (S292)
+        # Ladder verdicts, the no-half-link builder contract, the side effects
+        # findOrCreateCanonicalPlan must still perform after the read-only
+        # matcher was extracted, and the merge policy (only `same` merges).
+        run: npx tsx scripts/s292-canonical-link-confidence-fixture.ts
+
+      - name: Merge receipt / unwind fixture (S292 4C)
+        # The undo must never destroy a value the user corrected between the
+        # merge and the click. Also covers: cells created by OTHER sources are
+        # not deleted, a declined snapshot is flagged rather than partially
+        # captured, and a second revert is a no-op.
+        run: npx tsx scripts/s292-merge-receipt-fixture.ts
+
+      - name: Canonical coverage completeness (S294 / mig 219)
+        # The canonical read used to drop in_deductible_applies, so "No Charge
+        # AFTER deductible" reached the engine as a flat $0. Locks: the mapper
+        # carries the column, multi-variant slugs collapse deterministically
+        # (no Postgres heap order), canonical GAP-FILLS under user rows instead
+        # of replacing them, the metal-level ACA guess does NOT widen with
+        # gap-fill (S154 confirmed-only), the letter refuses to assert an
+        # expected cost it cannot ground, and a plan-stated term is surfaced as
+        # an ANSWERED row that never blocks Done.
+        run: npx tsx scripts/s294-canonical-coverage-fixture.ts
+
       - name: Type check
         run: npx tsc --noEmit
 

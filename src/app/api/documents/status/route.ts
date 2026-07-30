@@ -10,6 +10,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
+import { decideCardPreservation } from "@/lib/plan/insurer-match";
 
 export async function GET(req: NextRequest) {
   const documentId = req.nextUrl.searchParams.get("id");
@@ -209,6 +210,33 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "No plan linked to this document" }, { status: 400 });
     }
 
+    // ── S292 — card-preservation decision, read BEFORE anything is mutated ──
+    // This action used to clear profile member_id/group_number UNCONDITIONALLY
+    // and report needsCardRescan: true unconditionally — the "confirmed switch
+    // clears the other half" rule with no assembly or same-insurer exception.
+    // Real cost: a user who scanned her card and then confirmed her own SBC
+    // ("Blue Cross" card → "Blue Cross Blue Shield of Wyoming" document) had
+    // the onboarding card slot wiped client-side (needsCardRescan → setCard
+    // null) as if her ID card were deleted. Same decision as search-select now:
+    // the SHARED decideCardPreservation (set-active-canonical refactored onto
+    // it too) — preserve on assembly and same-family switches, clear only on a
+    // confident cross-insurer switch, and REPORT what actually happened.
+    const { data: priorProfile } = await supabase
+      .from("profiles")
+      .select("insurer, member_id, group_number, active_insurance_plan_id")
+      .eq("user_id", doc.user_id)
+      .maybeSingle();
+    let priorActiveSource: string | null = null;
+    if (priorProfile?.active_insurance_plan_id) {
+      const { data: priorActive } = await supabase
+        .from("insurance_plans")
+        .select("source")
+        .eq("id", priorProfile.active_insurance_plan_id)
+        .eq("user_id", doc.user_id)
+        .maybeSingle();
+      priorActiveSource = (priorActive?.source as string | null) ?? null;
+    }
+
     // Deactivate old plans
     await supabase
       .from("insurance_plans")
@@ -240,14 +268,37 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // New plan row read up front — its insurer feeds the card-preservation
+    // decision, and its data backfills the profile below.
+    const { data: newPlan } = await supabase
+      .from("insurance_plans")
+      .select("insurer_name, plan_name, plan_type, state, group_number, member_id, in_deductible_individual, in_oop_max_individual, source")
+      .eq("id", doc.linked_insurance_plan_id)
+      .single();
+
+    // S292 — THE shared decision (insurer-match.ts). Assembly (prior active
+    // was a card/manual stub or nothing) and same-family switches PRESERVE the
+    // card IDs; only a confident cross-insurer switch clears them.
+    const { preserveCard } = await decideCardPreservation(supabase, {
+      priorActiveSource,
+      priorInsurerName: (priorProfile?.insurer as string | null) ?? null,
+      newInsurerName: (newPlan?.insurer_name as string | null) ?? null,
+    });
+    const keptMemberId = preserveCard ? ((priorProfile?.member_id as string | null) ?? null) : null;
+    const keptGroupNumber = preserveCard ? ((priorProfile?.group_number as string | null) ?? null) : null;
+    const cardCleared =
+      !preserveCard && (priorProfile?.member_id != null || priorProfile?.group_number != null);
+
     // Clear stale plan-specific fields from profile (preserves personal info: name, DOB, phone, etc.)
     // New plan's extracted values will backfill via process-plan or next card scan.
+    // Card IDs (member_id/group_number) follow the preservation decision above
+    // instead of being cleared unconditionally.
     const { error: clearErr } = await supabase
       .from("profiles")
       .update({
         // Clear all cost/plan fields — stale data from old plan (personal info preserved)
         insurer: null, plan_name: null, plan_type: null, state: null,
-        group_number: null, member_id: null,
+        group_number: keptGroupNumber, member_id: keptMemberId,
         deductible_individual: null, oop_max_individual: null,
         copay_primary: null, copay_specialist: null, copay_er: null,
         coinsurance_pct: null,
@@ -261,13 +312,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Backfill profile with new plan's data so profile stays in sync
-    const { data: newPlan } = await supabase
-      .from("insurance_plans")
-      .select("insurer_name, plan_name, plan_type, state, group_number, member_id, in_deductible_individual, in_oop_max_individual, source")
-      .eq("id", doc.linked_insurance_plan_id)
-      .single();
-
     if (newPlan) {
       const backfill: Record<string, unknown> = {};
       if (newPlan.insurer_name) backfill.insurer = newPlan.insurer_name;
@@ -278,6 +322,17 @@ export async function POST(req: NextRequest) {
       if (newPlan.in_oop_max_individual != null) backfill.oop_max_individual = newPlan.in_oop_max_individual;
       if (Object.keys(backfill).length > 0) {
         await supabase.from("profiles").update(backfill).eq("user_id", doc.user_id);
+      }
+
+      // S292 — preserved card IDs ride onto the newly-activated plan row too
+      // (they describe the user's enrollment in THIS plan once the pair is
+      // coherent — same as set-active-canonical's cardCarry). Fill-only:
+      // never overwrite IDs the plan row already has.
+      const planCardCarry: Record<string, unknown> = {};
+      if (keptMemberId != null && newPlan.member_id == null) planCardCarry.member_id = keptMemberId;
+      if (keptGroupNumber != null && newPlan.group_number == null) planCardCarry.group_number = keptGroupNumber;
+      if (Object.keys(planCardCarry).length > 0) {
+        await supabase.from("insurance_plans").update(planCardCarry).eq("id", doc.linked_insurance_plan_id);
       }
     }
 
@@ -370,8 +425,11 @@ export async function POST(req: NextRequest) {
       console.error("[activate_plan] Ing-J canonical-binding non-fatal:", err);
     }
 
-    // Card-derived fields (member_id, group_number) were cleared — user needs to re-scan
-    return NextResponse.json({ success: true, needsCardRescan: true });
+    // S292 — honest report: needsCardRescan only when card IDs were ACTUALLY
+    // cleared (confident cross-insurer switch with IDs on file). Assembly and
+    // same-family switches preserve them, and the client must not wipe its
+    // card display for a card that still exists server-side.
+    return NextResponse.json({ success: true, needsCardRescan: cardCleared });
   }
 
   // Confirm canonical plan match (user verified the matched plan is correct)

@@ -71,17 +71,136 @@ interface CanonicalPlanRow {
 // ── Matching ───────────────────────────────────────────────────────────────────
 
 /**
- * Find an existing canonical plan or create a new one.
- * Returns the canonical plan ID, whether it was newly created,
- * the match confidence, and whether user confirmation is needed.
+ * Confidence stamped when the USER confirms a pending canonical match.
+ *
+ * A human confirmation is the precision oracle — it outranks any fuzzy score we
+ * could compute, because the person holding the document said yes.
  */
-export async function findOrCreateCanonicalPlan(
-  supabase: SupabaseClient,
-  input: CanonicalMatchInput
-): Promise<CanonicalMatchResult> {
-  const planYear = input.planYear || new Date().getFullYear();
+export const USER_CONFIRMED_CANONICAL_CONFIDENCE = 1.0;
 
-  // Step 1: Try group_number exact match (strongest signal)
+/**
+ * Confidence for a canonical plan we just CREATED from one document.
+ *
+ * Single-source: the link is correct by construction (the canonical was derived
+ * from this very plan), but nothing has corroborated the identity yet, so it
+ * stays below the identity floor rather than claiming certainty it has not
+ * earned. Matches Data Rule #8 — single-source data starts at 0.5.
+ */
+export const NEW_CANONICAL_CONFIDENCE = 0.5;
+
+/**
+ * Build the `(canonical_plan_id, canonical_match_confidence)` pair for an
+ * `insurance_plans` write.
+ *
+ * ⚠ THIS IS THE ONLY SANCTIONED WAY TO WRITE A CANONICAL LINK. Never put a bare
+ * `canonical_plan_id:` into an insert or update payload.
+ *
+ * WHY (mig 218): the link is itself a fuzzy match, and `plan-identity.ts`
+ * refuses to decide plan identity on a link it cannot score — an unscored link
+ * reads as UNKNOWN, not as certain. Before mig 218 all seven link-write sites
+ * computed a real confidence and then dropped it, so the resolver's two
+ * strongest rules could never fire on any row in the table. Emitting both
+ * columns from one builder makes the half-write unrepresentable rather than
+ * merely discouraged — the same reasoning as Data Rule #3, where a
+ * `billing_code` without its `billing_code_type` is not a weaker fact but an
+ * unusable one.
+ *
+ * Pass `confidence: null` ONLY when there is genuinely no evidence to record:
+ * that stores UNKNOWN, which is honest, rather than a number we invented.
+ */
+export function canonicalLinkFields(
+  canonicalPlanId: string | null,
+  confidence: number | null,
+): { canonical_plan_id: string | null; canonical_match_confidence: number | null } {
+  const scored =
+    typeof confidence === "number" && Number.isFinite(confidence)
+      ? Math.min(1, Math.max(0, confidence))
+      : null;
+  return {
+    canonical_plan_id: canonicalPlanId,
+    // A link with no id cannot carry a confidence about itself.
+    canonical_match_confidence: canonicalPlanId ? scored : null,
+  };
+}
+
+/**
+ * Link an insurance plan to a canonical plan, recording HOW SURE we are.
+ *
+ * ⚠ SECURITY CONTRACT: the caller passes an `insurancePlanId` the authenticated
+ * user OWNS — this does not re-scope the write by `user_id`. Same contract as
+ * `confirmCanonicalMatch` below.
+ */
+export async function linkPlanToCanonical(
+  supabase: SupabaseClient,
+  insurancePlanId: string,
+  canonicalPlanId: string,
+  confidence: number | null,
+): Promise<void> {
+  await supabase
+    .from("insurance_plans")
+    .update(canonicalLinkFields(canonicalPlanId, confidence))
+    .eq("id", insurancePlanId);
+}
+
+/** Which rung of the match ladder produced a candidate (`none` = no match). */
+export type CanonicalMatchStep =
+  | "group_number"
+  | "hios_id"
+  | "fuzzy_auto"
+  | "fuzzy_needs_confirmation"
+  | "none";
+
+/**
+ * A canonical-match candidate, resolved WITHOUT writing anything.
+ *
+ * Carries the diagnostics `findOrCreateCanonicalPlan` needs for its telemetry,
+ * so the read-only path and the writing path can never disagree about what was
+ * matched or why.
+ */
+export interface CanonicalCandidate {
+  step: CanonicalMatchStep;
+  canonicalPlanId: string | null;
+  confidence: number | null;
+  needsConfirmation: boolean;
+  matchedPlanName?: string;
+  /** The matched row, so the caller can increment source_count without re-reading. */
+  matchedRow?: CanonicalPlanRow;
+  /** Fuzzy-step diagnostics (0 when an exact rung matched before fuzzy ran). */
+  candidateCount: number;
+  scoredTopCandidateId: string | null;
+  scoredTopScore: number | null;
+}
+
+/**
+ * Resolve which canonical plan an identity matches — READ-ONLY.
+ *
+ * Extracted from `findOrCreateCanonicalPlan` (which now calls it) so callers who
+ * need a document's catalog identity BEFORE deciding what to write can ask
+ * without side effects. `process-plan.ts` needs exactly that: it compares the
+ * parsed document's canonical identity against the user's active plan at
+ * merge-decision time, which happens ~350 lines and one merge BEFORE
+ * `findOrCreateCanonicalPlan` runs today.
+ *
+ * ONE implementation, two callers — deliberately not a second matcher. A twin
+ * would drift the moment either side's scoring changed, and both are answering
+ * the same question about the same document.
+ *
+ * Performs NO writes: no `source_count` increment, no decision telemetry, no
+ * canonical creation. `step: "none"` means "nothing matched" — creating the
+ * canonical is the writing caller's decision, not this one's.
+ */
+export async function resolveCanonicalCandidate(
+  supabase: SupabaseClient,
+  input: CanonicalMatchInput,
+): Promise<CanonicalCandidate> {
+  const planYear = input.planYear || new Date().getFullYear();
+  const noFuzzy = {
+    candidateCount: 0,
+    scoredTopCandidateId: null as string | null,
+    scoredTopScore: null as number | null,
+  };
+
+  // Step 1: group_number exact match (strongest signal).
   if (input.groupNumber) {
     const { data: groupMatch } = await supabase
       .from("canonical_plans")
@@ -93,31 +212,19 @@ export async function findOrCreateCanonicalPlan(
       .single();
 
     if (groupMatch) {
-      console.log(`[canonical-plan] Group number exact match: ${groupMatch.plan_name} (${groupMatch.id})`);
-      await incrementSourceCount(supabase, groupMatch.id, groupMatch.source_count, groupMatch.confidence_score);
-      await recordCanonicalMatchDecision(supabase, {
-        documentId: input.documentId,
-        insurancePlanId: input.insurancePlanId,
-        stepMatched: "group_number",
-        bestScore: null,
-        candidateCount: 1,
-        matchedCanonicalId: groupMatch.id,
-        rejectedTopCandidateId: null,
-        input,
-        reason: "group_number exact match",
-      });
       return {
+        ...noFuzzy,
+        step: "group_number",
         canonicalPlanId: groupMatch.id,
-        isNew: false,
         confidence: 0.95,
         needsConfirmation: false, // group_number match is very high confidence
         matchedPlanName: groupMatch.plan_name,
-        sourceCount: groupMatch.source_count + 1,
+        matchedRow: groupMatch as CanonicalPlanRow,
       };
     }
   }
 
-  // Step 2: Try hios_id exact match (CMS marketplace plans)
+  // Step 2: hios_id exact match (CMS marketplace plans).
   if (input.hiosId) {
     const { data: hiosMatch } = await supabase
       .from("canonical_plans")
@@ -127,31 +234,19 @@ export async function findOrCreateCanonicalPlan(
       .single();
 
     if (hiosMatch) {
-      console.log(`[canonical-plan] HIOS ID exact match: ${hiosMatch.plan_name} (${hiosMatch.id})`);
-      await incrementSourceCount(supabase, hiosMatch.id, hiosMatch.source_count, hiosMatch.confidence_score);
-      await recordCanonicalMatchDecision(supabase, {
-        documentId: input.documentId,
-        insurancePlanId: input.insurancePlanId,
-        stepMatched: "hios_id",
-        bestScore: null,
-        candidateCount: 1,
-        matchedCanonicalId: hiosMatch.id,
-        rejectedTopCandidateId: null,
-        input,
-        reason: "hios_id exact match",
-      });
       return {
+        ...noFuzzy,
+        step: "hios_id",
         canonicalPlanId: hiosMatch.id,
-        isNew: false,
         confidence: 0.95,
         needsConfirmation: false,
         matchedPlanName: hiosMatch.plan_name,
-        sourceCount: hiosMatch.source_count + 1,
+        matchedRow: hiosMatch as CanonicalPlanRow,
       };
     }
   }
 
-  // Step 3: Fuzzy match by insurer + plan_name + state + year
+  // Step 3: fuzzy match by insurer + plan_name + state + year.
   const { data: candidates } = await supabase
     .from("canonical_plans")
     .select("*")
@@ -178,55 +273,100 @@ export async function findOrCreateCanonicalPlan(
       scoredTopScore = confidence;
 
       if (confidence >= 0.7) {
-        console.log(`[canonical-plan] Fuzzy match (${confidence.toFixed(2)}): ${best.plan.plan_name} (${best.plan.id})`);
-
-        if (confidence >= 0.9) {
-          // High confidence — auto-link
-          await incrementSourceCount(supabase, best.plan.id, best.plan.source_count, best.plan.confidence_score);
-          await recordCanonicalMatchDecision(supabase, {
-            documentId: input.documentId,
-            insurancePlanId: input.insurancePlanId,
-            stepMatched: "fuzzy_auto",
-            bestScore: confidence,
-            candidateCount,
-            matchedCanonicalId: best.plan.id,
-            rejectedTopCandidateId: null,
-            input,
-            reason: `fuzzy auto-link (score ${confidence.toFixed(3)} >= 0.9)`,
-          });
-          return {
-            canonicalPlanId: best.plan.id,
-            isNew: false,
-            confidence,
-            needsConfirmation: false,
-            matchedPlanName: best.plan.plan_name,
-            sourceCount: best.plan.source_count + 1,
-          };
-        }
-
-        // Medium confidence — needs user confirmation
-        await recordCanonicalMatchDecision(supabase, {
-          documentId: input.documentId,
-          insurancePlanId: input.insurancePlanId,
-          stepMatched: "fuzzy_needs_confirmation",
-          bestScore: confidence,
-          candidateCount,
-          matchedCanonicalId: best.plan.id,
-          rejectedTopCandidateId: null,
-          input,
-          reason: `fuzzy needs user confirmation (score ${confidence.toFixed(3)} in 0.7-0.9 range)`,
-        });
         return {
+          step: confidence >= 0.9 ? "fuzzy_auto" : "fuzzy_needs_confirmation",
           canonicalPlanId: best.plan.id,
-          isNew: false,
           confidence,
-          needsConfirmation: true,
+          needsConfirmation: confidence < 0.9,
           matchedPlanName: best.plan.plan_name,
-          sourceCount: best.plan.source_count,
+          matchedRow: best.plan,
+          candidateCount,
+          scoredTopCandidateId,
+          scoredTopScore,
         };
       }
     }
   }
+
+  return {
+    step: "none",
+    canonicalPlanId: null,
+    confidence: null,
+    needsConfirmation: false,
+    candidateCount,
+    scoredTopCandidateId,
+    scoredTopScore,
+  };
+}
+
+/**
+ * Find an existing canonical plan or create a new one.
+ * Returns the canonical plan ID, whether it was newly created,
+ * the match confidence, and whether user confirmation is needed.
+ *
+ * Matching itself lives in `resolveCanonicalCandidate` (read-only); this
+ * function owns the side effects that follow from the verdict — source_count,
+ * decision telemetry, and creating the canonical when nothing matched.
+ */
+export async function findOrCreateCanonicalPlan(
+  supabase: SupabaseClient,
+  input: CanonicalMatchInput
+): Promise<CanonicalMatchResult> {
+  const planYear = input.planYear || new Date().getFullYear();
+  const candidate = await resolveCanonicalCandidate(supabase, input);
+  const { candidateCount, scoredTopCandidateId, scoredTopScore } = candidate;
+
+  if (candidate.step !== "none" && candidate.matchedRow) {
+    const row = candidate.matchedRow;
+    const confidence = candidate.confidence as number;
+    const exactRung = candidate.step === "group_number" || candidate.step === "hios_id";
+
+    if (candidate.step === "group_number") {
+      console.log(`[canonical-plan] Group number exact match: ${row.plan_name} (${row.id})`);
+    } else if (candidate.step === "hios_id") {
+      console.log(`[canonical-plan] HIOS ID exact match: ${row.plan_name} (${row.id})`);
+    } else {
+      // Fires for BOTH fuzzy rungs, exactly as it always has.
+      console.log(`[canonical-plan] Fuzzy match (${confidence.toFixed(2)}): ${row.plan_name} (${row.id})`);
+    }
+
+    // A match still awaiting the user's blessing must not inflate the
+    // canonical's corroboration count — nobody has agreed to it yet.
+    if (!candidate.needsConfirmation) {
+      await incrementSourceCount(supabase, row.id, row.source_count, row.confidence_score);
+    }
+
+    const reason =
+      candidate.step === "group_number"
+        ? "group_number exact match"
+        : candidate.step === "hios_id"
+          ? "hios_id exact match"
+          : candidate.step === "fuzzy_auto"
+            ? `fuzzy auto-link (score ${confidence.toFixed(3)} >= 0.9)`
+            : `fuzzy needs user confirmation (score ${confidence.toFixed(3)} in 0.7-0.9 range)`;
+
+    await recordCanonicalMatchDecision(supabase, {
+      documentId: input.documentId,
+      insurancePlanId: input.insurancePlanId,
+      stepMatched: candidate.step,
+      bestScore: exactRung ? null : confidence,
+      candidateCount: exactRung ? 1 : candidateCount,
+      matchedCanonicalId: row.id,
+      rejectedTopCandidateId: null,
+      input,
+      reason,
+    });
+
+    return {
+      canonicalPlanId: row.id,
+      isNew: false,
+      confidence,
+      needsConfirmation: candidate.needsConfirmation,
+      matchedPlanName: row.plan_name,
+      sourceCount: candidate.needsConfirmation ? row.source_count : row.source_count + 1,
+    };
+  }
+
 
   // Step 4: No match — create new canonical plan
   console.log(`[canonical-plan] No match found, creating new canonical plan: ${input.planName}`);
@@ -262,7 +402,7 @@ export async function findOrCreateCanonicalPlan(
   return {
     canonicalPlanId: newPlan.id,
     isNew: true,
-    confidence: 0.5, // single-source confidence
+    confidence: NEW_CANONICAL_CONFIDENCE,
     needsConfirmation: false,
     matchedPlanName: input.planName,
     sourceCount: 1,
@@ -291,10 +431,17 @@ export async function confirmCanonicalMatch(
 ): Promise<void> {
   // Link insurance_plan to canonical. NOTE: not userScoped-wrapped — see the
   // SECURITY CONTRACT above (caller passes an owned insurancePlanId).
-  await supabase
-    .from("insurance_plans")
-    .update({ canonical_plan_id: canonicalPlanId })
-    .eq("id", insurancePlanId);
+  //
+  // Confidence 1.0 (mig 218): the user was shown the matched plan by name and
+  // said yes. That human confirmation is the precision oracle — it outranks the
+  // fuzzy score that produced the candidate, so the link stops being provisional
+  // and becomes strong enough for plan-identity.ts to decide identity on.
+  await linkPlanToCanonical(
+    supabase,
+    insurancePlanId,
+    canonicalPlanId,
+    USER_CONFIRMED_CANONICAL_CONFIDENCE,
+  );
 
   // Increment source count
   const { data: canonical } = await supabase
@@ -399,6 +546,8 @@ export async function rejectCanonicalMatch(
 
   let newCanonicalId: string;
   let outcomeDetail: string;
+  // mig 218 — carried alongside the id so the link is written as a PAIR.
+  let newCanonicalConfidence: number;
   if (matchResult.canonicalPlanId === rejectedCanonicalPlanId) {
     // Defensive: findOrCreateCanonicalPlan scored the rejected canonical
     // highest again (fuzzy match still wins even after the 0.05 confidence
@@ -411,19 +560,21 @@ export async function rejectCanonicalMatch(
     );
     const forced = await createCanonicalPlan(supabase, matchInput, planYear);
     newCanonicalId = forced.id;
+    // Freshly minted from this one plan — the same single-source confidence
+    // `findOrCreateCanonicalPlan` reports when it creates a canonical. It is a
+    // derivation rather than a match, but nothing has corroborated it yet.
+    newCanonicalConfidence = NEW_CANONICAL_CONFIDENCE;
     outcomeDetail = `force-created ${forced.id} (rejection honored over fuzzy re-match)`;
   } else {
     newCanonicalId = matchResult.canonicalPlanId;
+    newCanonicalConfidence = matchResult.confidence;
     outcomeDetail = matchResult.isNew
       ? `created new ${newCanonicalId} (no fuzzy match)`
       : `linked to existing ${newCanonicalId} (isNew=false, confidence=${matchResult.confidence.toFixed(2)}, source_count++)`;
   }
 
   // Link and merge
-  await supabase
-    .from("insurance_plans")
-    .update({ canonical_plan_id: newCanonicalId })
-    .eq("id", insurancePlanId);
+  await linkPlanToCanonical(supabase, insurancePlanId, newCanonicalId, newCanonicalConfidence);
 
   await mergeServicesIntoCanonical(supabase, insurancePlanId, newCanonicalId);
 

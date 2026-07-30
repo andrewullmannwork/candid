@@ -37,6 +37,7 @@ import {
 import {
   resolveEffectiveClaimTotals,
   resolvePerLineInsurancePaid,
+  resolvePerLineBilledToYou,
   readUserPatientPaidOverride,
   applyUserPatientPaidOverride,
 } from "@/lib/claims/effective-totals";
@@ -452,6 +453,21 @@ export async function GET(
         claimTotalBilled,
         effectiveClaimInsurancePaid: effectiveTotals,
       });
+    // S292 (#4) — "BILLED TO YOU" display value (DISPLAY ONLY; feeds no
+    // recovery/verdict math): what this line actually asked the patient to
+    // pay after the insurer's negotiated adjustment + payment. Honesty
+    // fallback lives inside the resolver — bills with no insurer data at all
+    // (or inconsistent data going negative) surface the gross, no sub-line.
+    const billedToYou = resolvePerLineBilledToYou({
+      lineBilled: billed,
+      lineInsuranceAdjusted:
+        item.insurance_adjusted_amount != null
+          ? Number(item.insurance_adjusted_amount)
+          : null,
+      lineInsurancePaid: lineInsurancePaidRaw,
+      claimTotalBilled,
+      effectiveTotals,
+    });
     // Cost-Share v2 — when ON, the plan-derived phase engine replaces the
     // deductible-blind computeShouldOwe path. The engine result is a
     // RecoveryMetrics superset, so the claim-level rollup below consumes it
@@ -599,6 +615,10 @@ export async function GET(
       // raw when cite-grade match). Drives LineDrawer Bill card "Insurer
       // paid $X" + desktop/mobile YOU PAID column derivation.
       insurancePaidResolved,
+      // S292 (#4) — per-line "BILLED TO YOU" (billed − insurer adjustment −
+      // insurer payment, ≥ 0) + gross + sub-line visibility. Drives the bill
+      // table's BILLED TO YOU column (desktop + mobile). Display only.
+      billedToYou,
       recovery: recoveryWithProvenance,
       // Cost-Share v2 — attached ONLY when the flag is ON (the client keys off
       // the presence of `costShareVerdict`). Absent → today's verdict-blind UI.

@@ -32,6 +32,7 @@ import { reparseField } from "@/lib/plan/reparse-field";
 import { loadDecorationContext } from "@/lib/plan/analyze-decoration";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { loadServerSubscription } from "@/lib/subscription/server";
+import { letterRequiresPro, evaluateLetterAccess } from "@/lib/disputes/letter-access";
 import type { DisputeLetterType } from "@/lib/billing/types";
 
 async function getAuthUser(req: NextRequest) {
@@ -81,20 +82,6 @@ export async function POST(
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  // Block B (P6) — server-side Stream-1 tier gate (re-drafting a dispute letter
-  // is a Pro feature; closes the direct-API bypass). Before the dispute load so
-  // a free caller can't probe dispute existence.
-  const subscription = await loadServerSubscription(supabase, user.id);
-  if (!subscription.isPro) {
-    console.log(
-      `[disputes/redraft] tier gate blocked: user ${user.id} tier=${subscription.tier} status=${subscription.status} → 403`,
-    );
-    return NextResponse.json(
-      { error: "subscription_required", requiredTier: "pro" },
-      { status: 403 },
-    );
-  }
-
   const { data: dispute, error } = await userScoped(supabase, user.id)
     .table("dispute_outcomes")
     .select("*")
@@ -105,6 +92,31 @@ export async function POST(
   }
   if (!dispute.claim_id) {
     return NextResponse.json({ error: "Dispute has no linked claim" }, { status: 400 });
+  }
+
+  // S292 (#12) — tier gate scoped to the LETTER TYPE, exactly like generate + the
+  // GET ?refresh=1 path: core dispute letters are free (dispute-letters v2 S2 tier
+  // flip — letter-access.ts is the single source of truth), only the escalation
+  // letters (final_notice / external_review) require Pro. The prior blanket
+  // `isPro` 403 predated the tier flip and made free users' Re-draft fail while
+  // Refresh succeeded on the SAME letter. Dispute existence is not probeable
+  // cross-user: the load above is userScoped (a foreign id 404s regardless of tier).
+  const redraftLetterType = resolveLetterTypeFromDispute(dispute);
+  if (letterRequiresPro(redraftLetterType)) {
+    const subscription = await loadServerSubscription(supabase, user.id);
+    const access = evaluateLetterAccess({
+      letterType: redraftLetterType,
+      isPro: subscription.isPro,
+    });
+    if (!access.allowed) {
+      console.log(
+        `[disputes/redraft] tier gate blocked: user ${user.id} tier=${subscription.tier} status=${subscription.status} letterType=${redraftLetterType} → 403`,
+      );
+      return NextResponse.json(
+        { error: "subscription_required", requiredTier: "pro" },
+        { status: 403 },
+      );
+    }
   }
 
   // S109 PR #2 — rate limit: 3 redrafts per dispute per rolling 24 hours.

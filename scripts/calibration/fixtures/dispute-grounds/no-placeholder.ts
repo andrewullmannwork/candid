@@ -21,6 +21,10 @@ import { LETTER_TEMPLATES } from "../../../../src/lib/disputes/templates";
 import { generateNegotiationLetter } from "../../../../src/lib/disputes/negotiation-template";
 import { buildFollowupLetter } from "../../../../src/lib/disputes/followup-letter";
 import type { AuditFinding, ParsedBill, DisputeLetterType } from "../../../../src/lib/billing/types";
+import type {
+  DisputeEvidence,
+  LineItemEvidence,
+} from "../../../../src/lib/disputes/evidence-resolver";
 
 let pass = 0;
 const fails: string[] = [];
@@ -109,6 +113,142 @@ try {
   assertClean("debt_validation [sparse]", LETTER_TEMPLATES.debt_validation.body({ ...COMMON, bill: sparseBill(), collector: { name: "Collector" }, debtWithinWindow: false }));
 } catch (e) {
   check("render debt_validation [sparse] does not throw", false, e instanceof Error ? e.message : e);
+}
+
+// ── S292 (#6) — bare section headers are impossible ──────────────────────────
+// Reproduces the REAL failure observed on dispute 01af62e8 (claim ecc74954,
+// letterVersionHistory v0): every disputed line gated out of
+// renderLineItemEvidence (no planBenefit, patient_owes/insurance_paid NULL, no
+// community/audit/peer signals) yet the section HEADER still rendered —
+// "SUPPORTING DETAIL" immediately followed by "RELIEF REQUESTED". The map §5
+// fail-closed rule (missing value → omit the whole clause) now extends to the
+// section header: zero clauses → no header. Both directions locked: the empty
+// bundle renders NO header; a populated bundle still renders header + clause.
+function gatedOutLine(over: Partial<LineItemEvidence> = {}): LineItemEvidence {
+  return {
+    lineItemId: "li-np-1",
+    billingCode: { value: "99395", type: "CPT" },
+    serviceSlug: "annual_physical",
+    serviceName: "PREV VISIT EST AGE 18-39",
+    billedAmount: 390,
+    insurancePaid: null,
+    patientOwes: null,
+    patientPaid: null,
+    planBenefit: null,
+    expectedPatientCost: null,
+    actualPatientCost: null,
+    discrepancyAmount: null,
+    discrepancyReason: null,
+    communityOutcome: null,
+    siblingCodes: null,
+    pricingBenchmark: null,
+    auditFindings: null,
+    auditRan: false,
+    peerCodes: null,
+    disputeType: "other",
+    citeGradeTier: "statute",
+    dollarAtStake: 0,
+    ...over,
+  };
+}
+function evidenceWith(lines: LineItemEvidence[]): DisputeEvidence {
+  return {
+    claims: [
+      {
+        claimId: "claim-np",
+        dateOfService: "2025-06-23",
+        providerName: "Provider",
+        totalBilled: lines.reduce((s, l) => s + l.billedAmount, 0),
+        planYear: 2026,
+        lineItemEvidence: lines,
+        effectiveTotals: {
+          patientPaid: 0,
+          insurancePaid: 0,
+          insuranceAdjusted: 0,
+          patientResponsibility: 0,
+          provenance: {
+            patientPaidSource: "per_line_sum",
+            insurancePaidSource: "per_line_sum",
+            insuranceAdjustedSource: "per_line_sum",
+            patientResponsibilitySource: "per_line_sum",
+          },
+        },
+        dataTrust: { headerReconciliationFailed: false, signViolation: false },
+      },
+    ],
+    totals: { claimCount: 1, lineItemCount: lines.length, totalBilled: 0, totalDiscrepancy: 0 },
+    planEvidence: null,
+    networkEvidence: null,
+    communityEvidence: null,
+    legalBasis: [],
+    gaps: [],
+    dataTrust: { headerReconciliationFailed: false, signViolation: false },
+  };
+}
+// (a) every line gates out → the whole section (header included) is omitted.
+try {
+  const emptyBody = LETTER_TEMPLATES.insurance_appeal.body({
+    ...COMMON,
+    bill: sparseBill(),
+    evidence: evidenceWith([gatedOutLine(), gatedOutLine({ lineItemId: "li-np-2", billingCode: { value: "91320", type: "CPT" }, serviceSlug: "immunizations", serviceName: "Sarscov2 Vacc", billedAmount: 347 })]),
+    disputeGroundsOn: false,
+  });
+  check(
+    "insurance_appeal [all lines gated]: no bare SUPPORTING DETAIL header",
+    !emptyBody.includes("SUPPORTING DETAIL"),
+    emptyBody.includes("SUPPORTING DETAIL")
+      ? `…${emptyBody.slice(Math.max(0, emptyBody.indexOf("SUPPORTING DETAIL") - 20), emptyBody.indexOf("SUPPORTING DETAIL") + 60)}…`
+      : undefined,
+  );
+  // structural: NO two consecutive all-caps section headers anywhere.
+  const adjacentHeaders = /\n[A-Z][A-Z /&'-]{5,}\n[A-Z][A-Z /&'-]{5,}\n/.exec(`\n${emptyBody}\n`);
+  check(
+    "insurance_appeal [all lines gated]: no adjacent bare headers",
+    adjacentHeaders === null,
+    adjacentHeaders ? JSON.stringify(adjacentHeaders[0]) : undefined,
+  );
+  assertClean("insurance_appeal [all lines gated]", emptyBody);
+} catch (e) {
+  check("render insurance_appeal [all lines gated] does not throw", false, e instanceof Error ? e.message : e);
+}
+// (b) a populated line still renders the header WITH a clause under it (no over-swallow).
+try {
+  const populatedBody = LETTER_TEMPLATES.insurance_appeal.body({
+    ...COMMON,
+    bill: sparseBill(),
+    evidence: evidenceWith([
+      gatedOutLine({
+        planBenefit: {
+          covered: true,
+          copay: 30,
+          coinsurance: null,
+          source: "manual",
+          confidence: 0.9,
+          citation: "Plan SBC — Annual Physical Exam",
+          sbcExcerpt: null,
+          sbcPage: null,
+          sbcExcerptVerified: false,
+          citationSource: null,
+          sourcedFrom: "user_exact",
+          sourcedFromYear: 2026,
+        },
+      }),
+    ]),
+    disputeGroundsOn: false,
+  });
+  const headerIdx = populatedBody.indexOf("SUPPORTING DETAIL");
+  check("insurance_appeal [populated]: header renders", headerIdx >= 0);
+  const reliefIdx = populatedBody.indexOf("RELIEF REQUESTED");
+  const between = headerIdx >= 0 && reliefIdx > headerIdx
+    ? populatedBody.slice(headerIdx + "SUPPORTING DETAIL".length, reliefIdx).trim()
+    : "";
+  check(
+    "insurance_appeal [populated]: clause present under header",
+    between.length > 0,
+    `between-len=${between.length}`,
+  );
+} catch (e) {
+  check("render insurance_appeal [populated] does not throw", false, e instanceof Error ? e.message : e);
 }
 
 // negotiation — the separate self-pay path; sparse (no serviceDate, no billedAmount, null benchmarks).

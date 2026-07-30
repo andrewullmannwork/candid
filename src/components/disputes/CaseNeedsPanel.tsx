@@ -23,8 +23,13 @@
 
 import { Fragment, useState, type ReactNode } from "react";
 import { Row } from "@/components/shared/InputRow";
+import {
+  ServiceAttestationFlow,
+  type AttestationLine,
+} from "@/components/disputes/ServiceAttestationFlow";
 
-/** One disputed service's plan-cost state (derived from evidence line planBenefit). */
+/** One disputed service's plan-cost state (derived from evidence line planBenefit,
+ *  or — S292 (#7) — from the claim page's own cost-share resolution `lineCostShare`). */
 export interface PlanCostService {
   serviceSlug: string;
   serviceLabel: string;
@@ -35,6 +40,24 @@ export interface PlanCostService {
   coinsurancePercent: number | null;
   /** planBenefit.source — 'manual' → the user's own entry (editable); else read-only. */
   source: string | null;
+  /**
+   * S292 (#7) — provenance split for the review-screen model: true = a human
+   * asserted or confirmed this value (manual entry / confirm-coverage mark) →
+   * DONE row; false = parser-extracted, never human-reviewed → prefilled under
+   * the ONE aggregate "looks right?" confirm. Absent (legacy callers) → known
+   * keeps its old DONE behavior.
+   */
+  humanReviewed?: boolean;
+  /** Backing claim_line_items ids (the aggregate confirm fans out per line). */
+  lineItemIds?: string[];
+  /** The claim the lines belong to (confirm-coverage endpoint scope). */
+  claimId?: string | null;
+  /** Non-null when the value came from a secondary (category) borrow — the
+   *  per-item "Doesn't match" reject stays available for those. */
+  secondaryMatchedSlug?: string | null;
+  /** S293 (#5) — the service's billed total on this claim, for the one-block
+   *  claim-details list. Absent (legacy callers) → the line renders without it. */
+  billedAmount?: number | null;
 }
 
 export interface CaseNeedsPanelProps {
@@ -49,12 +72,31 @@ export interface CaseNeedsPanelProps {
   billName: string | null;
   profileName: string | null;
   attestationReviewed: boolean;
+  /**
+   * S292 (#7) — where the attestation-reviewed state came from: "dispute" (the
+   * user answered the attestation flow here) or "claim_page" (adopted from the
+   * claim page's "All services look right" confirmation — rendered as done with
+   * that provenance, never re-asked). Absent/null when not reviewed.
+   */
+  attestationSource?: "dispute" | "claim_page" | null;
   hasInsurer: boolean;
   providerAddressOnFile: boolean;
   insurerAddressOnFile: boolean;
   eobPresent: boolean;
   userPatientPaid: number | null;
+  /**
+   * S292 (#9) — the bill's parsed amount-paid (effectiveTotals.patientPaid).
+   * When the user hasn't confirmed an override yet, the row prefills this value
+   * for a one-click confirm (never re-typed). Null/0 → the ask renders as before.
+   */
+  billPatientPaid?: number | null;
   denialNoticeDate: string | null;
+  /**
+   * S292 (#10) — parsed EOB issue date (claims.metadata.eob_date). Prefills the
+   * denial-date input on the insurer track: one-click confirm + editable, with
+   * parsed provenance. Null → the question renders as before.
+   */
+  denialDatePrefill?: { date: string; source: string } | null;
   collectorFirstContactDate: string | null;
   planLabel: string | null;
   showInsuranceRow: boolean;
@@ -82,6 +124,41 @@ export interface CaseNeedsPanelProps {
   auditFindingsMissing: boolean;
   onAuditRerun: () => Promise<void>;
   onAddPlanDetails: (svc: PlanCostService) => void;
+  /**
+   * S292 (#7) — the ONE aggregate "looks right?" confirm over every
+   * parser-extracted plan cost (the single human glance that keeps the letter's
+   * citations defensible). The page fans out the per-line confirm-coverage
+   * writes + runs ONE reconcile refetch. Absent → the aggregate row still
+   * renders but items fall back to individual Add/Edit only.
+   */
+  onConfirmParsedCosts?: (services: PlanCostService[]) => Promise<void>;
+  /** S292 (#7) — per-item "Doesn't match" for a secondary-borrowed value. */
+  onRejectParsedCost?: (svc: PlanCostService) => Promise<void>;
+  /**
+   * S293 (#5) — the ONE claim-details block (replaces the per-item confirmation
+   * rows: per-service plan-cost rows + the aggregate parsed-costs row + the
+   * attest-services row). All four props present → the block renders; any
+   * absent (legacy callers / flag-off page path) → the per-item rows render
+   * exactly as before (fail-closed to the shipped behavior).
+   */
+  claimFacts?: {
+    patientName: string | null;
+    providerName: string | null;
+    serviceDate: string | null;
+  } | null;
+  /** every billed line — the attestation picker's candidates (same shape the
+   *  ServiceAttestationFlow always consumed). */
+  attestationLines?: AttestationLine[];
+  attestedLineItemIds?: string[];
+  /** account holder's name (attestation default) + persisted adopted name. */
+  accountName?: string;
+  attestingAsName?: string | null;
+  /** the attest-service submit (page's handleAttestServices). */
+  onAttest?: (payload: {
+    attestedLineItemIds: string[];
+    serviceAttestationReviewed: boolean;
+    attestingAsName?: string;
+  }) => void | Promise<void>;
   onConfirmName: () => void;
   onEditLetter: () => void;
   onReviewAttestation: () => void;
@@ -239,6 +316,55 @@ function CoverageVerifyControl({ onDecide }: { onDecide: (d: "match" | "no_match
   );
 }
 
+/**
+ * S292 (#7/#9/#10) — "prefilled, one-click confirm" control: the platform already
+ * knows the value (parser-extracted); the user glances + confirms, never re-types.
+ * Reuses the claim page's approved "Looks right" verb (G5 / "All services look
+ * right"). Edit stays available for corrections.
+ */
+function PrefilledConfirm({
+  value,
+  onConfirm,
+  onEdit,
+}: {
+  value: string;
+  onConfirm: () => Promise<void>;
+  onEdit?: () => void;
+}) {
+  const [status, setStatus] = useState<"idle" | "saving" | "error">("idle");
+  const confirm = async () => {
+    if (status === "saving") return;
+    setStatus("saving");
+    try {
+      await onConfirm();
+      setStatus("idle");
+    } catch {
+      setStatus("error");
+    }
+  };
+  return (
+    <span className="inline-flex flex-wrap items-center justify-end gap-2.5">
+      <span className="whitespace-nowrap text-sm font-medium text-gray-900">{value}</span>
+      <button
+        type="button"
+        disabled={status === "saving"}
+        onClick={() => { void confirm(); }}
+        className="whitespace-nowrap rounded-lg bg-blue-600 px-3 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
+      >
+        {status === "saving" ? "Saving…" : "Looks right"}
+      </button>
+      {onEdit ? (
+        <button type="button" onClick={onEdit} className="whitespace-nowrap text-[13px] font-medium text-blue-600 hover:text-blue-700">
+          Edit
+        </button>
+      ) : null}
+      {status === "error" ? (
+        <span className="w-full text-right text-[12px] text-red-600">Couldn&apos;t save — try again.</span>
+      ) : null}
+    </span>
+  );
+}
+
 /** Full-width editor panel shared by the value rows — wraps on mobile. */
 function EditorShell({ prompt, children }: { prompt: string; children: React.ReactNode }) {
   return (
@@ -367,17 +493,24 @@ interface RowDesc {
 export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   const {
     embedded, letterType, planServices, nameMismatch, nameResolved, billName, profileName,
-    attestationReviewed, hasInsurer, providerAddressOnFile, insurerAddressOnFile,
-    eobPresent, userPatientPaid, denialNoticeDate, collectorFirstContactDate,
+    attestationReviewed, attestationSource, hasInsurer, providerAddressOnFile, insurerAddressOnFile,
+    eobPresent, userPatientPaid, billPatientPaid, denialNoticeDate, denialDatePrefill,
+    collectorFirstContactDate,
     planLabel, showInsuranceRow, canChangePlan, readiness,
     coverageVerifyGaps, onCoverageVerify, rerunAuditEnabled, auditFindingsMissing, onAuditRerun,
-    onAddPlanDetails, onConfirmName, onEditLetter, onReviewAttestation,
+    onAddPlanDetails, onConfirmParsedCosts, onRejectParsedCost, onConfirmName, onEditLetter,
+    onReviewAttestation,
+    claimFacts, attestationLines, attestedLineItemIds, accountName, attestingAsName, onAttest,
     onAddProviderAddress, onAddInsurerAddress, onUploadEob, onSaveAmountPaid,
     onChangePlan, onSaveDeadlineDate,
   } = props;
 
   const [openEditor, setOpenEditor] = useState<EditorKey | null>(null);
   const [showAdded, setShowAdded] = useState(false);
+  const [confirmAllStatus, setConfirmAllStatus] = useState<"idle" | "saving" | "error">("idle");
+  // S293 (#5) — the one-block's "Something's wrong" expansion (per-item edits +
+  // the didn't-receive attestation flow).
+  const [detailsWrongMode, setDetailsWrongMode] = useState(false);
   const close = () => setOpenEditor(null);
 
   const insurerTrack = INSURER_TRACK.has(letterType);
@@ -387,8 +520,27 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   // ── row descriptors (each carries done-ness + importance so we can order + group) ──
   const descs: RowDesc[] = [];
 
-  // Plan details — one row per disputed, slug'd service.
+  // S292 (#7) — review-screen split. A service the platform already knows lands in
+  // one of two buckets: human-reviewed (manual entry / confirmed) → DONE row;
+  // parser-extracted only → prefilled under the ONE aggregate confirm below.
+  // `humanReviewed === undefined` (legacy caller shape) keeps the old known→DONE
+  // behavior. Genuinely unknown services keep the "Add plan cost" ask.
+  const parsedSvcs = planServices.filter((s) => s.known && s.humanReviewed === false);
+  // S293 (#5) — the ONE claim-details block replaces the per-item confirmation
+  // surfaces (known-cost rows, the aggregate confirm row, the attest row) when
+  // the page supplies its inputs. Unknown-cost "Add plan cost" rows stay
+  // separate — they are data ASKS, not confirmations.
+  const detailsBlockActive =
+    claimFacts != null && attestationLines != null && onAttest != null;
+  // Without the aggregate handler the parsed bucket would have no row at all —
+  // fall back to the per-service DONE row (editable) rather than dropping them.
+  const aggregateActive =
+    !detailsBlockActive && parsedSvcs.length > 0 && onConfirmParsedCosts != null;
+
+  // Plan details — one row per disputed, slug'd service (done + unknown buckets).
   for (const svc of planServices) {
+    if (detailsBlockActive && svc.known) continue; // → the one claim-details block
+    if (aggregateActive && svc.known && svc.humanReviewed === false) continue; // → aggregate confirm row
     descs.push({
       key: `svc-${svc.serviceSlug}`,
       done: svc.known,
@@ -421,8 +573,253 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
     });
   }
 
+  // S292 (#7) — the ONE aggregate "looks right?" confirm over every parser-extracted
+  // plan cost. Everything known arrives prefilled; one glance + one click covers the
+  // whole set (counsel rail: that recorded human glance keeps the letter's citations
+  // defensible). Per-item Edit corrects a value (manual override); "Doesn't match"
+  // rejects a secondary borrow. Renders only when parser-only values exist.
+  if (aggregateActive && onConfirmParsedCosts) {
+    descs.push({
+      key: "parsed-costs",
+      done: false,
+      importance: "important",
+      node: (
+        <Row
+          icon={ShieldIcon}
+          label="Plan costs from your documents"
+          badge={ImportantBadge}
+          control={
+            <span className="inline-flex flex-col items-end gap-1">
+              <button
+                type="button"
+                disabled={confirmAllStatus === "saving"}
+                onClick={() => {
+                  void (async () => {
+                    if (confirmAllStatus === "saving") return;
+                    setConfirmAllStatus("saving");
+                    try {
+                      await onConfirmParsedCosts(parsedSvcs);
+                      setConfirmAllStatus("idle");
+                    } catch {
+                      setConfirmAllStatus("error");
+                    }
+                  })();
+                }}
+                className="whitespace-nowrap rounded-lg bg-blue-600 px-3 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
+              >
+                {confirmAllStatus === "saving" ? "Saving…" : "Looks right"}
+              </button>
+              {confirmAllStatus === "error" ? (
+                <span className="text-[12px] text-red-600">Couldn&apos;t save — try again.</span>
+              ) : null}
+            </span>
+          }
+          below={
+            <ul className="space-y-1.5">
+              {parsedSvcs.map((svc) => (
+                <li key={svc.serviceSlug} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-[13px]">
+                  <span className="min-w-0 text-gray-700">
+                    {svc.serviceLabel}
+                    {" — "}
+                    <span className="font-medium text-gray-900">
+                      {svc.copay != null ? `${money(svc.copay)} copay` : `${svc.coinsurancePercent}% coinsurance`}
+                    </span>
+                  </span>
+                  <span className="inline-flex items-center gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => onAddPlanDetails(svc)}
+                      className="text-[13px] font-medium text-blue-600 hover:text-blue-700"
+                    >
+                      Edit
+                    </button>
+                    {svc.secondaryMatchedSlug && onRejectParsedCost ? (
+                      <button
+                        type="button"
+                        onClick={() => { void onRejectParsedCost(svc); }}
+                        className="whitespace-nowrap text-[13px] font-medium text-gray-500 hover:text-gray-700"
+                      >
+                        Doesn&apos;t match
+                      </button>
+                    ) : null}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          }
+        >
+          {/* TODO(copy-proposal S292): sentence pending Andrew's approval — composed from
+              existing panel vocabulary; fails closed to a factual description. */}
+          From your plan documents — the letter will cite them once you confirm.
+        </Row>
+      ),
+    });
+  }
+
+  // S293 (#5) — the ONE claim-details block: every detail we parsed (patient,
+  // provider, date, services + billed + plan cost) presented together with a
+  // single "These look right" / "Something's wrong" choice. Wrong → inline
+  // per-item edits (plan-cost Edit, secondary-borrow "Doesn't match", and the
+  // didn't-receive-this-service attestation flow — moved here from the removed
+  // "Why this should be covered" sidebar; its scroll anchor comes along).
+  // "These look right" fans out the SAME writes the two rows it replaces made:
+  // the per-line confirm-coverage marks + the services-performed attestation.
+  if (detailsBlockActive && claimFacts && attestationLines && onAttest) {
+    const detailsDone = attestationReviewed && parsedSvcs.length === 0;
+    const factsLine = [
+      claimFacts.patientName ? `Patient: ${claimFacts.patientName}` : null,
+      claimFacts.providerName ? `Provider: ${claimFacts.providerName}` : null,
+      claimFacts.serviceDate ? `Service date: ${prettyDate(claimFacts.serviceDate)}` : null,
+    ].filter(Boolean).join(" · ");
+    const svcValue = (svc: PlanCostService): string =>
+      svc.copay != null ? `${money(svc.copay)} copay` : `${svc.coinsurancePercent}% coinsurance`;
+    const confirmDetails = () => {
+      void (async () => {
+        if (confirmAllStatus === "saving") return;
+        setConfirmAllStatus("saving");
+        try {
+          const ops: Array<Promise<unknown> | void> = [];
+          if (parsedSvcs.length > 0 && onConfirmParsedCosts) ops.push(onConfirmParsedCosts(parsedSvcs));
+          if (!attestationReviewed) {
+            ops.push(
+              onAttest({
+                attestedLineItemIds: attestedLineItemIds ?? [],
+                serviceAttestationReviewed: true,
+              }),
+            );
+          }
+          await Promise.all(ops);
+          setConfirmAllStatus("idle");
+          setDetailsWrongMode(false);
+        } catch {
+          setConfirmAllStatus("error");
+        }
+      })();
+    };
+    descs.push({
+      key: "claim-details",
+      done: detailsDone && !detailsWrongMode,
+      importance: "important",
+      node: (
+        <Row
+          icon={CheckListIcon}
+          label="Claim details"
+          badge={detailsDone ? undefined : ImportantBadge}
+          control={
+            detailsDone && !detailsWrongMode ? (
+              <DoneEdit label="Confirmed" onEdit={() => setDetailsWrongMode(true)} />
+            ) : (
+              <span className="inline-flex flex-col items-end gap-1">
+                <span className="inline-flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={confirmAllStatus === "saving"}
+                    onClick={confirmDetails}
+                    className="whitespace-nowrap rounded-lg bg-blue-600 px-3 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
+                  >
+                    {confirmAllStatus === "saving" ? "Saving…" : "These look right"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDetailsWrongMode((v) => !v)}
+                    className="whitespace-nowrap rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    Something&apos;s wrong
+                  </button>
+                </span>
+                {confirmAllStatus === "error" ? (
+                  <span className="text-[12px] text-red-600">Couldn&apos;t save — try again.</span>
+                ) : null}
+              </span>
+            )
+          }
+          below={
+            <div className="space-y-2.5">
+              {factsLine ? <p className="text-[13px] text-gray-700">{factsLine}</p> : null}
+              <ul className="space-y-1.5">
+                {planServices.map((svc) => (
+                  <li
+                    key={svc.serviceSlug}
+                    className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-[13px]"
+                  >
+                    <span className="min-w-0 text-gray-700">
+                      {svc.serviceLabel}
+                      {svc.billedAmount != null && svc.billedAmount > 0 ? (
+                        <span className="text-gray-500"> — billed {money(svc.billedAmount)}</span>
+                      ) : null}
+                      {svc.known ? (
+                        <>
+                          {" · "}
+                          <span className="font-medium text-gray-900">{svcValue(svc)}</span>
+                        </>
+                      ) : null}
+                    </span>
+                    {detailsWrongMode ? (
+                      <span className="inline-flex items-center gap-2.5">
+                        <button
+                          type="button"
+                          onClick={() => onAddPlanDetails(svc)}
+                          className="text-[13px] font-medium text-blue-600 hover:text-blue-700"
+                        >
+                          Edit
+                        </button>
+                        {svc.secondaryMatchedSlug && onRejectParsedCost ? (
+                          <button
+                            type="button"
+                            onClick={() => { void onRejectParsedCost(svc); }}
+                            className="whitespace-nowrap text-[13px] font-medium text-gray-500 hover:text-gray-700"
+                          >
+                            Doesn&apos;t match
+                          </button>
+                        ) : null}
+                      </span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+              {detailsWrongMode ? (
+                // The didn't-receive-this-service path — the attestation flow's
+                // own picker handles per-item selection + the locked affirmation.
+                // Anchor id preserved for the "Confirm the services" jump.
+                <div id="dispute-service-attestation" className="pt-1">
+                  <ServiceAttestationFlow
+                    lines={attestationLines}
+                    attested={attestedLineItemIds ?? []}
+                    reviewed={attestationReviewed}
+                    accountName={accountName ?? ""}
+                    attestingAsName={attestingAsName}
+                    onSubmit={onAttest}
+                  />
+                </div>
+              ) : attestationReviewed && attestationSource === "claim_page" ? (
+                /* TODO(copy-proposal S292): provenance line pending approval. */
+                <p className="text-[12px] text-gray-500">You confirmed these on the previous page.</p>
+              ) : null}
+            </div>
+          }
+        >
+          {detailsDone && !detailsWrongMode
+            ? undefined
+            : /* TODO(copy — Andrew approval): NEW sentence for the one-block
+                 confirm (S293 #5); factual fallback wording. */
+              "Everything below comes from your documents — confirm it together, or flag what's off."}
+        </Row>
+      ),
+    });
+  }
+
   // Coverage-verify gates (moved from EvidenceGaps into Zone-1, S265) — open when present.
+  // S292 (#7) — a gap whose line is already covered by the aggregate confirm above is
+  // folded into it (same per-line confirm, one glance) instead of double-asking.
+  // Folds ONLY when the aggregate row actually renders (else the gap stays standalone).
+  // S293 (#5) — the one-block confirm covers the same line ids, so it folds too.
+  const parsedLineIds = new Set(
+    aggregateActive || detailsBlockActive
+      ? parsedSvcs.flatMap((s) => s.lineItemIds ?? [])
+      : [],
+  );
   for (const g of coverageVerifyGaps) {
+    if (parsedLineIds.has(g.lineItemId)) continue;
     descs.push({
       key: `coverage-verify-${g.claimId}-${g.lineItemId}`,
       done: false,
@@ -486,12 +883,32 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   });
 
   // Attest services performed (editable once attested — un-attest a service in the evidence list).
-  descs.push({
+  // S292 (#7) — the claim page's "All services look right" confirmation
+  // (claims.metadata.servicesConfirmedAt) is adopted server-side: the row arrives
+  // DONE with claim-page provenance, never re-asked. Edit still opens the flow
+  // (flagging a service as not-performed remains an explicit act here).
+  // S293 (#5) — superseded by the one claim-details block when it renders (the
+  // block owns both the confirm and the didn't-receive path).
+  if (!detailsBlockActive) descs.push({
     key: "attest",
     done: attestationReviewed,
     importance: "helpful",
     node: attestationReviewed ? (
-      <Row icon={CheckListIcon} label="Services performed" control={<DoneEdit label="Attested" onEdit={onReviewAttestation} />} />
+      <Row
+        icon={CheckListIcon}
+        label="Services performed"
+        control={
+          <DoneEdit
+            label={attestationSource === "claim_page" ? "Confirmed" : "Attested"}
+            onEdit={onReviewAttestation}
+          />
+        }
+      >
+        {attestationSource === "claim_page"
+          ? /* TODO(copy-proposal S292): provenance line pending approval. */
+            "You confirmed these on the previous page."
+          : undefined}
+      </Row>
     ) : (
       <Row
         icon={CheckListIcon}
@@ -563,6 +980,13 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   });
 
   // Amount paid (expand-to-edit; unlocks a refund request).
+  // S292 (#9) — the bill's parsed amount-paid (effectiveTotals / the S291
+  // userPatientPaid override chain) prefills the row: one-click confirm writes it
+  // as the override; the user never re-types a number the platform already read.
+  const amountPrefill =
+    userPatientPaid == null && billPatientPaid != null && billPatientPaid > 0
+      ? Math.round(billPatientPaid * 100) / 100
+      : null;
   descs.push({
     key: "amount",
     done: userPatientPaid != null,
@@ -572,12 +996,18 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
       <Row
         icon={CashIcon}
         label="Amount you paid"
-        badge={userPatientPaid == null && openEditor !== "amount" ? ImportantBadge : undefined}
+        badge={userPatientPaid == null && amountPrefill == null && openEditor !== "amount" ? ImportantBadge : undefined}
         control={
           openEditor === "amount" ? (
             <CancelLink onClick={close} />
           ) : userPatientPaid != null ? (
             <ValueEdit value={money(userPatientPaid)} onEdit={() => setOpenEditor("amount")} />
+          ) : amountPrefill != null ? (
+            <PrefilledConfirm
+              value={money(amountPrefill)}
+              onConfirm={() => onSaveAmountPaid(amountPrefill)}
+              onEdit={() => setOpenEditor("amount")}
+            />
           ) : (
             <AddButton label="Add" onClick={() => setOpenEditor("amount")} />
           )
@@ -585,20 +1015,29 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
         below={
           openEditor === "amount" ? (
             <AmountEditor
-              initial={userPatientPaid}
+              initial={userPatientPaid ?? amountPrefill}
               onSaved={async (a) => { await onSaveAmountPaid(a); close(); }}
             />
           ) : undefined
         }
       >
-        {userPatientPaid == null && openEditor !== "amount"
-          ? "How much you've paid so far. If you overpaid, we add a refund request."
+        {openEditor !== "amount" && userPatientPaid == null
+          ? amountPrefill != null
+            ? /* TODO(copy-proposal S292): provenance line pending approval. */
+              "This total is from your bill. Confirm the amount or edit if incorrect."
+            : "How much you've paid so far. If you overpaid, we add a refund request."
           : undefined}
       </Row>
     ),
   });
 
   // Denial-notice date (insurer track) — sets the appeal deadline.
+  // S292 (#10) — when the EOB parser already read the notice date
+  // (claims.metadata.eob_date), it prefills here: one-click confirm persists it;
+  // Edit opens the date input seeded with it (parsed provenance, always editable).
+  // No parsed date → the question renders exactly as before.
+  const denialPrefillDate =
+    denialNoticeDate == null && denialDatePrefill != null ? denialDatePrefill.date : null;
   if (insurerTrack) {
     descs.push({
       key: "denial",
@@ -609,12 +1048,18 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
         <Row
           icon={CalendarIcon}
           label="Denial date"
-          badge={denialNoticeDate == null && openEditor !== "denial" ? ImportantBadge : undefined}
+          badge={denialNoticeDate == null && denialPrefillDate == null && openEditor !== "denial" ? ImportantBadge : undefined}
           control={
             openEditor === "denial" ? (
               <CancelLink onClick={close} />
             ) : denialNoticeDate != null ? (
               <ValueEdit value={prettyDate(denialNoticeDate)} onEdit={() => setOpenEditor("denial")} />
+            ) : denialPrefillDate != null ? (
+              <PrefilledConfirm
+                value={prettyDate(denialPrefillDate)}
+                onConfirm={() => onSaveDeadlineDate("denialNoticeDate", denialPrefillDate)}
+                onEdit={() => setOpenEditor("denial")}
+              />
             ) : (
               <AddButton label="Add" onClick={() => setOpenEditor("denial")} />
             )
@@ -622,15 +1067,18 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
           below={
             openEditor === "denial" ? (
               <DateEditor
-                initial={denialNoticeDate}
+                initial={denialNoticeDate ?? denialPrefillDate}
                 prompt="When did you receive the denial? Use the date printed on the insurer's denial letter."
                 onSaved={async (v) => { await onSaveDeadlineDate("denialNoticeDate", v); close(); }}
               />
             ) : undefined
           }
         >
-          {denialNoticeDate == null && openEditor !== "denial"
-            ? "The date printed on your insurer's denial letter — this sets your appeal deadline."
+          {openEditor !== "denial" && denialNoticeDate == null
+            ? denialPrefillDate != null
+              ? /* TODO(copy-proposal S292): provenance line pending approval. */
+                "Date from your bill. Confirm the date of receipt or edit if incorrect."
+              : "The date printed on your insurer's denial letter — this sets your appeal deadline."
             : undefined}
         </Row>
       ),

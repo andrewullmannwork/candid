@@ -15,13 +15,18 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { loadCatalogIdentity } from "../plan/catalog-identity";
-import type { PlanCoverageInput } from "../claims/recovery-math";
+import type { PlanCoverageInput, CostProvenance } from "../claims/recovery-math";
 import type { ParsedBill } from "../billing/types";
 import {
   buildAcaCoverageFallback,
   type AcaFallbackResult,
 } from "./aca-coverage-fallback";
 import { normalizeCoinsuranceForStorage } from "../billing/coinsurance";
+// S294 — `canonical_coverage_completeness_v1` is a GLOBAL flag, so it resolves
+// here rather than being threaded through all six loadPlanCoverageMeta call
+// sites (claim detail, claims list, /compare, evidence resolver, dispute-ground
+// basis, accumulator loader). Global target ⇒ no user email needed.
+import { isFeatureEnabled } from "../config/product-flags";
 
 export type PlanCoverageMap = Map<string, PlanCoverageInput>;
 
@@ -422,14 +427,51 @@ export function resolveSecondaryCoverage(
  *               which is why mig 217 could not be written safely. Must never be
  *               rendered as "you told us" — we don't know that.
  */
-function readCostProvenance(row: Record<string, unknown>): "user" | "card" | "unknown" {
+/**
+ * S294 — sources that mean "these numbers were read off a real coverage
+ * DOCUMENT". The honesty gate turns on this distinction, so the list is
+ * explicit rather than a negation: anything not named here is treated as
+ * undocumented, which is the safe direction.
+ *
+ * `admin_attested` and `coldstart_regen_v1` are the catalog's own SBC
+ * extractions — the same filing the member would upload, parsed with a source
+ * excerpt and a section-verified flag. `sbc_parser` / `plan_doc*` / `eoc*` are
+ * the member's own uploads.
+ */
+const DOCUMENTED_COST_SOURCES = new Set([
+  "sbc_parser",
+  "plan_doc_parser",
+  "plan_document",
+  "eoc_parser",
+  "eoc_upload",
+  "admin_attested",
+  "coldstart_regen_v1",
+]);
+
+/** Confidence a documented row must clear to count as documented (Data Rule #8:
+ *  single-source starts at 0.5). Deliberately the SAME floor the dispute letter
+ *  already applies (MIN_PLAN_BENEFIT_CONFIDENCE) — one bar, not a new one. */
+export const DOCUMENTED_COST_CONFIDENCE_FLOOR = 0.5;
+
+function readCostProvenance(row: Record<string, unknown>): CostProvenance {
   const fp = row.field_provenance as Record<string, { source?: string }> | null | undefined;
   const src = fp?.in_copay?.source ?? fp?.in_coinsurance?.source ?? null;
   if (src === "user_correction" || src === "user_initial_entry") return "user";
   if (src === "card_corroboration") return "card";
   // Row-level source still identifies post-fix card writes even if the blob
   // wasn't selected on this path.
-  if ((row.source as string | null) === "insurance_card") return "card";
+  const rowSource = (row.source as string | null) ?? null;
+  if (rowSource === "insurance_card") return "card";
+  // S294 — a member's own parsed plan document. This is what the honesty gate
+  // was always meant to trust; it previously had no way to say so, because
+  // provenance was read from a flag on the PLAN ROW rather than from the row
+  // carrying the numbers.
+  if (
+    (src && DOCUMENTED_COST_SOURCES.has(src)) ||
+    (rowSource && DOCUMENTED_COST_SOURCES.has(rowSource))
+  ) {
+    return "plan_document";
+  }
   return "unknown";
 }
 
@@ -463,6 +505,106 @@ const COVERAGE_CITEGRADE_SELECT = "confidence, sbc_excerpt, sbc_page, field_prov
 /** The user-scope coverage SELECT — base, plus the dispute-letter cite-grade columns when asked. */
 export function coverageSelect(citeGrade: boolean): string {
   return citeGrade ? `${COVERAGE_BASE_SELECT}, ${COVERAGE_CITEGRADE_SELECT}` : COVERAGE_BASE_SELECT;
+}
+
+// ============================================================================
+// S294 — the CANONICAL-scope coverage READ. Twin of COVERAGE_BASE_SELECT above.
+// ============================================================================
+//
+// The user-scope side has had ONE shared column list since S240 precisely so a
+// new coverage column lands in a single place for every adapter. The canonical
+// side never got the same treatment: four call sites each hand-wrote their own
+// list, and three of them omitted `in_deductible_applies`.
+//
+// The cost of that omission is not a missing display field — it changes the
+// ANSWER. A canonical row reading `in_copay=0, in_deductible_applies=true`
+// ("No Charge after deductible", straight off the SBC) arrived at the engine as
+// "$0 copay, deductible treatment unknown". The engine then inferred the
+// missing half, could not ground the result, and degraded the whole bill to
+// "we can't fully check this one yet" — while `/plan`, which selects the full
+// row, displayed the correct terms on the same plan at the same moment.
+//
+// Everything below is a column the table already holds and
+// `PlanCoverageInput` already declares. Nothing is invented here.
+const CANONICAL_COVERAGE_SELECT =
+  "id, canonical_plan_id, service_slug, place_of_service, component, plan_tier_label, " +
+  "covered, in_copay, in_coinsurance, in_deductible_applies, " +
+  "out_copay, out_coinsurance, out_deductible_applies, " +
+  "requires_referral, prior_auth_required, visit_limit, annual_limit, confidence, source";
+
+/**
+ * Shared canonical coverage row fetch, batched over canonical plan ids.
+ *
+ * ORDERING IS PART OF THE CONTRACT, not a nicety. A slug can carry several
+ * Pattern-S variants (this corpus has `pcp_visit` at both `pcp_office` and
+ * `virtual`), and every consumer collapses them into one slug-keyed map. With
+ * no ORDER BY, which variant survived was Postgres heap order — stable until a
+ * VACUUM, then silently different. S289 killed exactly this nondeterminism in
+ * /compare; the shared read now carries the fix for everyone.
+ *
+ * Precedence: `any` (the umbrella row) first, then remaining variants by
+ * place_of_service, then id. Consumers take FIRST-WINS.
+ *
+ * NOTE — this deliberately picks a *stable* variant, not the *right* one for a
+ * given bill line. Matching a line's actual place of service against Pattern-S
+ * modifiers is a real feature and a separate one; it is not needed to fix the
+ * dropped column, and pretending otherwise would smuggle a second change in
+ * here. Where variants disagree, consumers still see one deterministic answer.
+ */
+export async function loadCanonicalCoverageRows(
+  supabase: SupabaseClient,
+  canonicalPlanIds: string[],
+): Promise<{ data: Record<string, unknown>[] | null; error: unknown }> {
+  const { data, error } = await supabase
+    .from("canonical_plan_services")
+    .select(CANONICAL_COVERAGE_SELECT)
+    .in("canonical_plan_id", canonicalPlanIds)
+    // `any` sorts before every concrete place_of_service value in this corpus
+    // ('any' < 'pcp_office' < 'specialist_office' < 'virtual'); the explicit id
+    // tiebreak makes the order total rather than merely usually-stable.
+    .order("place_of_service", { ascending: true, nullsFirst: true })
+    .order("id", { ascending: true });
+  return { data: (data as unknown as Record<string, unknown>[] | null) ?? null, error };
+}
+
+/**
+ * S294 — canonical row → PlanCoverageInput. Canonical parity with
+ * `planCoverageFromRow`, so a service resolved from the community catalog and
+ * the same service resolved from the user's own upload reach the engine in the
+ * SAME shape.
+ *
+ * `costProvenance` is deliberately absent: canonical rows are not the user's
+ * own document, and the caller tags them `canonical_inherited` /
+ * `canonical_archive` so the letter layer keeps that distinction.
+ */
+export function canonicalCoverageFromRow(row: Record<string, unknown>): PlanCoverageInput {
+  // S294 — the catalog's own SBC extraction is document provenance. Gated on
+  // the ROW's declared source + confidence, never on "it lives in the canonical
+  // table": promotion paths evolve, and a weak row landing here must not
+  // inherit trust from its neighbours (the same reason mig 218 stores a link's
+  // confidence alongside the link).
+  const src = (row.source as string | null) ?? null;
+  const conf = (row.confidence as number | null) ?? null;
+  const documented =
+    !!src &&
+    DOCUMENTED_COST_SOURCES.has(src) &&
+    conf != null &&
+    conf >= DOCUMENTED_COST_CONFIDENCE_FLOOR;
+  return {
+    covered: (row.covered as boolean | null) ?? null,
+    copay: (row.in_copay as number | null) ?? null,
+    costProvenance: documented ? "plan_document" : "unknown",
+    // canonical_plan_services.in_coinsurance is decimal-stored; normalize
+    // defensively (parity with planCoverageFromRow).
+    coinsurance: normalizeCoinsuranceForStorage(row.in_coinsurance as number | null),
+    // THE COLUMN THIS WHOLE MODULE EXISTS FOR. Absent → null → the engine
+    // infers, which is the pre-S294 behavior and still correct for rows the
+    // parser genuinely could not resolve.
+    deductibleApplies: (row.in_deductible_applies as boolean | null) ?? null,
+    outCopay: (row.out_copay as number | null) ?? null,
+    outCoinsurance: normalizeCoinsuranceForStorage(row.out_coinsurance as number | null),
+    outDeductibleApplies: (row.out_deductible_applies as boolean | null) ?? null,
+  };
 }
 
 /**
@@ -581,13 +723,24 @@ export async function loadPlanCoverageMeta(
     .select("id, is_aca_compliant, canonical_plan_id")
     .in("id", ids);
   const canonicalByPlan = new Map<string, string>();
+  // S294 — plans that had ZERO user-scoped coverage rows. This is the ONLY set
+  // permitted to take the canonical's metal-level ACA guess (see below).
+  const acaEligiblePlanIds = new Set<string>();
+  // S294 — gap-fill replaces the all-or-nothing rule. Flag-gated: OFF keeps the
+  // pre-S294 condition (canonical only when the plan has no coverage rows).
+  const completeness = await isFeatureEnabled("canonical_coverage_completeness_v1");
   for (const p of plans ?? []) {
     const entry = out.get(p.id as string);
     if (!entry) continue;
     entry.acaCompliant = (p.is_aca_compliant as boolean | null) ?? null;
     const canonicalId = p.canonical_plan_id as string | null;
-    // Fallback candidates: zero user-scoped coverage rows + a linked canonical.
-    if (entry.coveredMeta.length === 0 && canonicalId) {
+    if (!canonicalId) continue;
+    const hasUserRows = entry.coveredMeta.length > 0;
+    if (!hasUserRows) acaEligiblePlanIds.add(p.id as string);
+    // Pre-S294: candidates were zero-user-row plans only. With the flag ON,
+    // ANY plan with a linked canonical is a candidate — the canonical fills
+    // gaps beneath the user's own rows rather than replacing them wholesale.
+    if (completeness || !hasUserRows) {
       canonicalByPlan.set(p.id as string, canonicalId);
     }
   }
@@ -596,24 +749,60 @@ export async function loadPlanCoverageMeta(
     const canonMeta = await loadCanonicalCoverageMeta(
       supabase,
       Array.from(new Set(canonicalByPlan.values())),
+      { completeness },
     );
     for (const [planId, canonicalId] of canonicalByPlan) {
       const entry = out.get(planId);
       const canon = canonMeta.get(canonicalId);
       if (!entry || !canon) continue;
-      entry.coveredMeta = canon.coveredMeta;
-      for (const m of canon.coveredMeta) {
-        // Canonical scope carries in-network terms only (no out_* / no
-        // deductible-applies column) — absent fields stay null and the engine
-        // applies its usual inference; preventive is deductible-exempt anyway.
-        entry.coverageMap.set(m.slug, { ...m.coverage, source: "canonical_inherited" });
-      }
-      // Explicit user answer (user_override true/false) wins; only fill the
-      // unknown case with the S161 D1 metal-level inference.
-      if (entry.acaCompliant == null) entry.acaCompliant = canon.acaCompliant;
+      applyCanonicalGapFill(entry, canon, {
+        allowAcaInference: acaEligiblePlanIds.has(planId),
+      });
     }
   }
   return out;
+}
+
+/**
+ * S294 — the canonical-under-user merge POLICY, pure and separately testable.
+ *
+ * The user's own documents WIN on every service they cover; canonical fills
+ * only slugs those documents never mention. This is the S286 supplement-merge
+ * policy (fill gaps, never erase) applied to the READ path, which is where it
+ * always belonged.
+ *
+ * The pre-S294 code did `entry.coveredMeta = canon.coveredMeta` — a wholesale
+ * REPLACE that was only safe because it ran exclusively on plans with no
+ * coverage rows. Uploading a plan document therefore REMOVED coverage the user
+ * could see the day before: one `plan_covered_services` row and the canonical
+ * vanished entirely, taking every service the upload didn't enumerate with it.
+ *
+ * Filled rows keep the `canonical_inherited` tag, so provenance stays visible
+ * and the letter layer's gating is unchanged.
+ *
+ * ⚠ `allowAcaInference` exists to STOP the metal-level ACA guess widening as a
+ * side effect of gap-fill. It stays reachable only for plans that had zero
+ * user-scoped rows — exactly its pre-S294 reach. Andrew's S154
+ * confirmed-ACA-only direction was reaffirmed at S294 (a metal tier is not an
+ * ACA entailment: large-group plans are marketed with tier names, grandfathered
+ * plans are exempt from §2713, and the column is parser-populated from document
+ * text). Letting it ride along here would have been a silent policy change
+ * smuggled in by an unrelated fix. Explicit user answers always win.
+ */
+export function applyCanonicalGapFill(
+  entry: PlanCoverageMeta,
+  canon: PlanCoverageMeta,
+  opts: { allowAcaInference: boolean },
+): PlanCoverageMeta {
+  for (const m of canon.coveredMeta) {
+    if (entry.coverageMap.has(m.slug)) continue; // user row wins, always
+    entry.coverageMap.set(m.slug, { ...m.coverage, source: "canonical_inherited" });
+    entry.coveredMeta.push(m);
+  }
+  if (entry.acaCompliant == null && opts.allowAcaInference) {
+    entry.acaCompliant = canon.acaCompliant;
+  }
+  return entry;
 }
 
 /**
@@ -622,15 +811,38 @@ export async function loadPlanCoverageMeta(
  * (unlike `plan_covered_services`), so category comes from a second lookup.
  *
  * `canonical_plans` carries no `is_aca_compliant` column (that lives only on
- * `insurance_plans`, mig 093) — so ACA-compliance is inferred from `metal_level`:
- * a metal tier is an ACA-marketplace construct, so preventive care is federally
- * mandated at $0. Absent metal ⇒ null (unknown ⇒ the ACA $0 floor stays excluded,
- * matching `resolveSecondaryCoverage`'s confirmed-ACA-only rule).
+ * `insurance_plans`, mig 093), so ACA-compliance is guessed from `metal_level`.
+ *
+ * ⚠ S294 — that guess is a HEURISTIC, not an entailment, and the previous
+ * comment here overstated it. A metal tier does not prove an ACA plan: large-
+ * group and self-insured plans are routinely marketed with tier names,
+ * grandfathered plans are exempt from §2713 regardless, short-term products
+ * borrow the same vocabulary, and this column is parser-populated from document
+ * text — it records what the document SAID, not the plan's regulatory status.
+ *
+ * Kept as-is at S294 (behavior unchanged, Andrew's call) because it is narrowly
+ * scoped: it only ever fills the UNKNOWN case, an explicit user answer always
+ * wins, and its single consumer — `resolveSecondaryCoverage`'s preventive
+ * backstop — is the weakest link in the coverage cascade. Do not widen its
+ * reach without a decision; `loadPlanCoverageMeta` deliberately guards it (see
+ * `acaEligiblePlanIds` there).
  */
 export async function loadCanonicalCoverageMeta(
   supabase: SupabaseClient,
   canonicalPlanIds: Array<string | null | undefined>,
+  /**
+   * S294 — `canonical_coverage_completeness_v1`. Passed down by
+   * `loadPlanCoverageMeta` (which has already resolved it) so the flag costs one
+   * lookup per request, not one per nested loader. Omitted → resolved here, for
+   * the /compare backstop caller.
+   *
+   * OFF returns the pre-S294 three-field coverage shape, so the flag genuinely
+   * means what mig 219 says it means.
+   */
+  opts?: { completeness?: boolean },
 ): Promise<Map<string, PlanCoverageMeta>> {
+  const completeness =
+    opts?.completeness ?? (await isFeatureEnabled("canonical_coverage_completeness_v1"));
   const out = new Map<string, PlanCoverageMeta>();
   const ids = Array.from(new Set(canonicalPlanIds.filter((id): id is string => Boolean(id))));
   if (ids.length === 0) return out;
@@ -638,10 +850,7 @@ export async function loadCanonicalCoverageMeta(
     out.set(id, { coverageMap: new Map(), coveredMeta: [], acaCompliant: null });
   }
 
-  const { data: services, error } = await supabase
-    .from("canonical_plan_services")
-    .select("canonical_plan_id, service_slug, in_copay, in_coinsurance, covered")
-    .in("canonical_plan_id", ids);
+  const { data: services, error } = await loadCanonicalCoverageRows(supabase, ids);
   if (error) {
     console.warn("[coverage-loader] loadCanonicalCoverageMeta services load failed", error);
   }
@@ -652,21 +861,36 @@ export async function loadCanonicalCoverageMeta(
     supabase,
     rows.map((r) => r.service_slug as string | null),
   );
+  // S294 — FIRST-WINS variant collapse, per loadCanonicalCoverageRows' ordering
+  // contract (`any` umbrella first, then place_of_service, then id). Previously
+  // this pushed EVERY variant and let the slug-keyed consumers resolve the
+  // collision by heap order.
+  const seenSlugPerPlan = new Map<string, Set<string>>();
   for (const r of rows) {
-    const entry = out.get(r.canonical_plan_id as string);
+    const planId = r.canonical_plan_id as string;
+    const entry = out.get(planId);
     if (!entry) continue;
     const slug = r.service_slug as string | null;
     if (!slug) continue;
+    let seen = seenSlugPerPlan.get(planId);
+    if (!seen) {
+      seen = new Set<string>();
+      seenSlugPerPlan.set(planId, seen);
+    }
+    if (seen.has(slug)) continue;
+    seen.add(slug);
+    // S294 — the shared mapper carries in_deductible_applies + out_* rather than
+    // the three-field subset this loader used to build by hand. Flag OFF
+    // projects back down to that subset, so OFF is byte-identical for every
+    // consumer (the row ORDER is not projected away — determinism replaces
+    // Postgres heap order and cannot itself produce a wrong answer).
+    const full = canonicalCoverageFromRow(r);
     entry.coveredMeta.push({
       slug,
       category: catalogIdentity.get(slug)?.category ?? null,
-      coverage: {
-        covered: r.covered as boolean | null,
-        copay: r.in_copay as number | null,
-        // canonical_plan_services.in_coinsurance is decimal-stored; normalize defensively
-        // (parity with loadPlanCoverageMeta).
-        coinsurance: normalizeCoinsuranceForStorage(r.in_coinsurance as number | null),
-      },
+      coverage: completeness
+        ? full
+        : { covered: full.covered, copay: full.copay, coinsurance: full.coinsurance },
     });
   }
 
@@ -676,8 +900,9 @@ export async function loadCanonicalCoverageMeta(
     .in("id", ids);
   for (const p of plans ?? []) {
     const entry = out.get(p.id as string);
-    // D1 (S161) — metal tier present ⇒ ACA-marketplace plan ⇒ preventive $0
-    // mandated. Absent ⇒ null (unknown; the ACA floor stays excluded).
+    // D1 (S161) — metal tier present ⇒ TREAT as ACA-marketplace for the
+    // preventive backstop. See the heuristic caveat in this function's doc
+    // comment. Absent ⇒ null (unknown; the ACA floor stays excluded).
     if (entry) entry.acaCompliant = (p.metal_level as string | null) ? true : null;
   }
   return out;

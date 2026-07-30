@@ -34,7 +34,9 @@ import { buildDirectEntryProvenance } from "@/lib/parser/provenance-builders";
 import { SOURCE_DEFAULT_CONFIDENCE } from "@/lib/parser/field-categories";
 
 let failures = 0;
+let total = 0; // S293 — real counter (was a hardcoded 30 at the summary, silently wrong as cases get added)
 function check(name: string, cond: boolean, detail = ""): void {
+  total++;
   if (!cond) failures++;
   console.log(`${cond ? "PASS" : "FAIL"}  ${name}${detail ? "  — " + detail : ""}`);
 }
@@ -214,6 +216,49 @@ check(
   JSON.stringify([...afterDone]),
 );
 
+// ── S293 (#1) — counted ⟺ the answering row is on screen ────────────────────
+// The inverse failure of the case above: the SAME field counting when its
+// owning row does NOT render (parsed/canonical cost → no editable row) put an
+// amber badge over a band with nothing to answer — "Done → amber though every
+// visible row is Done-confirmable" (E2E account andrewullmanntest292). The
+// visibility arg mirrors the banner's actual render conditions; explicit TRUE
+// keeps the S291 protection, explicit FALSE releases the field.
+{
+  const rowVisible = pendingAssumptionFields(
+    [asum("deductible_applies")],
+    { userNetworkOverride: "in_network", deductibleMet: false, oopMet: false } as Parameters<typeof pendingAssumptionFields>[1],
+    undefined,
+    { deductibleAppliesRowVisible: true },
+  );
+  check(
+    "S293: deductible_applies with a VISIBLE editable row → still counted",
+    rowVisible.has("deductible_applies"),
+    JSON.stringify([...rowVisible]),
+  );
+  const rowHidden = pendingAssumptionFields(
+    [asum("deductible_applies")],
+    { userNetworkOverride: "in_network", deductibleMet: false, oopMet: false } as Parameters<typeof pendingAssumptionFields>[1],
+    undefined,
+    { deductibleAppliesRowVisible: false },
+  );
+  check(
+    "S293: deductible_applies with NO row on screen → not counted (badge can go green on Done)",
+    !rowHidden.has("deductible_applies") && rowHidden.size === 0,
+    JSON.stringify([...rowHidden]),
+  );
+  const acaHidden = pendingAssumptionFields(
+    [asum("aca_preventive")],
+    { userNetworkOverride: "in_network", deductibleMet: false, oopMet: false } as Parameters<typeof pendingAssumptionFields>[1],
+    undefined,
+    { acaRowVisible: false },
+  );
+  check(
+    "S293: aca_preventive dismissed via Not-sure (block hidden) → not counted",
+    acaHidden.size === 0,
+    JSON.stringify([...acaHidden]),
+  );
+}
+
 const allAnswered = pendingAssumptionFields(
   [],
   { userNetworkOverride: "in_network", deductibleMet: false, oopMet: false } as Parameters<typeof pendingAssumptionFields>[1],
@@ -282,7 +327,82 @@ check(
   JSON.stringify(cardProv.in_copay?.value),
 );
 
-const total = 21;
+// ── Accumulator rows are DATA, not assumptions (S291 transparency reversal) ─
+// The deductible/OOP rows are now emitted even when our tally already knows, so
+// the user can see and override them instead of watching them vanish. They must
+// NOT be counted as assumptions — doing so silently demotes every
+// accumulator-backed bill from `confident` to `correct` with identical dollars.
+function knownAccBill(acc: ComputeCostShareV2Args["accumulator"]): ComputeCostShareV2Args {
+  const a = cleanBill(DOC_PLAN, false);
+  return {
+    ...a,
+    service: { copay: 20, coinsurance: null, deductibleApplies: true, covered: true } as unknown as ComputeCostShareV2Args["service"],
+    accumulator: acc,
+  };
+}
+const accKnown = computeCostShareV2(
+  knownAccBill({ deductibleApplied: 3000, deductibleMax: 3000, oopApplied: 100, oopMax: 7900 }),
+);
+check(
+  "accumulator-known → rows ARE emitted (they used to disappear)",
+  accKnown.assumptions.filter((a) => a.reason === "accumulator").length === 2,
+  JSON.stringify(accKnown.assumptions.map((a) => `${a.field}/${a.reason}`)),
+);
+check(
+  "accumulator-known → still `confident`, not demoted to `correct`",
+  accKnown.verdict === "confident",
+  `got ${accKnown.verdict}`,
+);
+const accAbsent = computeCostShareV2(knownAccBill(null));
+check(
+  "no accumulator → a real assumption → `correct`",
+  accAbsent.verdict === "correct",
+  `got ${accAbsent.verdict}`,
+);
+check(
+  "emitting the rows changed no dollars",
+  accKnown.potentialRecovery === 0 && accKnown.shouldOwe === 20,
+  `shouldOwe ${accKnown.shouldOwe} recovery ${accKnown.potentialRecovery}`,
+);
+check(
+  "an accumulator row is NOT pending (visible, already answered, still overridable)",
+  !pendingAssumptionFields(
+    [asum("deductible_met", { reason: "accumulator" }), asum("oop_met", { reason: "accumulator" })],
+    null,
+  ).size,
+);
+
+// ── A user's own answer is attributed to the USER, not the tally ───────────
+// Andrew's question — "when a user adds their data, does it move to confident?"
+// — surfaced that a user-supplied answer was being tagged `accumulator`, which
+// would have rendered "Based on the bills you've uploaded" for something the
+// user typed. Right verdict, lying label.
+const userAnswered = computeCostShareV2({
+  ...knownAccBill(null),
+  overrides: { deductibleMet: false } as unknown as ComputeCostShareV2Args["overrides"],
+});
+check(
+  "user answered → `confident` (they told us; we assumed nothing)",
+  userAnswered.verdict === "confident",
+  `got ${userAnswered.verdict}`,
+);
+check(
+  "user answered → tagged user_override, NOT accumulator",
+  userAnswered.assumptions.some((a) => a.field === "deductible_met" && a.reason === "user_override"),
+  JSON.stringify(userAnswered.assumptions.map((a) => `${a.field}/${a.reason}`)),
+);
+check(
+  "a user answer is not outstanding input",
+  pendingAssumptionFields(
+    [asum("deductible_met", { reason: "user_override" })],
+    { deductibleMet: false } as Parameters<typeof pendingAssumptionFields>[1],
+  ).size === 0,
+);
+check(
+  "unanswered with no tally stays `correct` (genuinely assumed)",
+  computeCostShareV2(knownAccBill(null)).verdict === "correct",
+);
+
 console.log(`\n${total} assertions — ${total - failures} passed, ${failures} failed`);
 if (failures > 0) {
   console.error("✗ s291-plan-honesty fixture RED");

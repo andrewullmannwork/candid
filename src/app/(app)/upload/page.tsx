@@ -135,6 +135,20 @@ function UploadForm() {
       parsedInsurer?: string;
       existingPlanName?: string;
       parsedPlanName?: string;
+      /**
+       * S292 — plan-identity resolver verdict (flag `plan_identity_resolver_v1`).
+       * Declared here rather than left to the loosely-typed fetch payload: the
+       * `verdict === "same"` branch above decides whether we hold on the receipt
+       * or auto-redirect, and a silent `any` would let a rename break that
+       * branch with nothing failing.
+       */
+      identity?: {
+        verdict?: "same" | "different" | "uncertain";
+        reason?: string;
+        evidence?: string;
+        existingPlanId?: string;
+        existingPlanName?: string | null;
+      };
       pending_canonical_match?: {
         canonicalPlanId: string;
         matchedPlanName: string;
@@ -308,8 +322,17 @@ function UploadForm() {
 
         if (data.status === "processed") {
           active = false;
-          if (data.insurerMismatch?.mismatch || data.insurerMismatch?.pending_canonical_match) {
-            // Mismatch or canonical match confirmation needed — show prompt
+          if (
+            data.insurerMismatch?.mismatch ||
+            data.insurerMismatch?.pending_canonical_match ||
+            // S292 — the identity resolver merged this into an existing plan.
+            // The parse succeeded, so the old code auto-redirected and the user
+            // never learned WHICH plan absorbed the document — the silence that
+            // let a wrong merge go unnoticed. Hold on the receipt instead; it
+            // carries the escape hatch.
+            data.insurerMismatch?.identity?.verdict === "same"
+          ) {
+            // Mismatch, canonical confirmation, or a merge receipt — show prompt
             setProcessingProgress(data);
           } else {
             // No mismatch — decide between auto-redirect or premium prompt.
@@ -923,6 +946,43 @@ function UploadForm() {
     setDocumentId(null);
   }, [user, documentId]);
 
+  /**
+   * S292 item 4C — "This isn't my plan" on the merge receipt.
+   *
+   * REVERTS the supplement-merge rather than preventing it: at the 0.85 identity
+   * floor the merge has already landed by the time this receipt renders. The
+   * server replays the pre-merge snapshot with compare-and-swap semantics, so
+   * anything the user corrected between the merge and this click is kept.
+   *
+   * Deliberately NOT fire-and-forget, unlike the disambiguation log above: this
+   * mutates the user's own plan, so it awaits the result and surfaces a failure
+   * rather than clearing the screen and implying an undo that didn't happen.
+   */
+  const onNotMyPlanFromMatch = useCallback(async () => {
+    if (!user || !documentId) return;
+    const token = await user.firebaseUser.getIdToken().catch(() => null);
+    if (!token) return;
+    try {
+      const res = await fetch("/api/plan/unwind-merge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ documentId }),
+      });
+      if (!res.ok) {
+        const d = (await res.json().catch(() => ({}))) as { error?: string };
+        setError(d.error || "We couldn't undo that. Please try again.");
+        return;
+      }
+      setUploaded(false);
+      setUploadStatus(null);
+      setFileName("");
+      setProcessingProgress(null);
+      setDocumentId(null);
+    } catch {
+      setError("We couldn't undo that. Please try again.");
+    }
+  }, [user, documentId]);
+
   const onSwitchYearRollover = useCallback(async () => {
     if (!user) return;
     try {
@@ -1070,6 +1130,7 @@ function UploadForm() {
     onCancelConfirmation,
     onUseThisPlanFromMismatch,
     onKeepCurrentFromMismatch,
+    onNotMyPlanFromMatch,
     onSwitchYearRollover,
     onKeepCurrentYearRollover,
     onConfirmCanonicalMatch,

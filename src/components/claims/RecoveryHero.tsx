@@ -64,6 +64,16 @@ export function RecoveryHero({
   const { totalRecovery, billsCount, issuesCount, disputesCount, reviewCount } = stats;
   const isCalm = variant === "calm";
 
+  // S292 (#3) — placeholder state: recovery reads $0.00 while ≥1 bill is still
+  // awaiting the user's input, so "$0.00" would be a premature verdict. Shows
+  // "$?.??" + "Answer the questions below and we'll finish the math." instead.
+  // `reviewCount` is the SAME live openQuestionCount-derived count the "Bills
+  // awaiting your input" tile below renders (useClaimPipeline counts.review,
+  // S290 supersession) — deliberately NOT a second derivation, so the hero and
+  // the tile can never disagree. A genuine $0.00 with nothing pending keeps
+  // the real figure + the standard sentence.
+  const awaitingMath = totalRecovery === 0 && reviewCount > 0;
+
   const steps: Array<{
     id: NextStepView;
     count: number;
@@ -126,16 +136,25 @@ export function RecoveryHero({
               className="font-bold tracking-[-0.035em] text-gray-900 tabular-nums"
               style={{ fontSize: "clamp(48px, 7vw, 76px)", lineHeight: 1 }}
             >
-              ${formatCurrency(totalRecovery)}
+              {awaitingMath ? "$?.??" : `$${formatCurrency(totalRecovery)}`}
             </span>
           </div>
-          <p className="mt-2.5 max-w-[66ch] text-sm leading-[1.55] text-gray-600">
-            Across {billsCount} {billsCount === 1 ? "bill" : "bills"} you uploaded, Candid found{" "}
-            <strong className="font-semibold text-gray-900">
-              ${formatCurrency(totalRecovery)} you can recover
-            </strong>
-            . Complete the steps below to get started.
-          </p>
+          {awaitingMath ? (
+            // S292 (#3) — placeholder subline replaces the "Candid found $0.00
+            // you can recover" sentence, which would contradict the "$?.??"
+            // figure above (the math isn't finished, nothing was "found" yet).
+            <p className="mt-2.5 max-w-[66ch] text-sm leading-[1.55] text-gray-600">
+              Answer the questions below and we&apos;ll finish the math.
+            </p>
+          ) : (
+            <p className="mt-2.5 max-w-[66ch] text-sm leading-[1.55] text-gray-600">
+              Across {billsCount} {billsCount === 1 ? "bill" : "bills"} you uploaded, Candid found{" "}
+              <strong className="font-semibold text-gray-900">
+                ${formatCurrency(totalRecovery)} you can recover
+              </strong>
+              . Complete the steps below to get started.
+            </p>
+          )}
         </div>
 
         {/* "Your next steps" strip — 3 clickable tiles that filter the list below. */}

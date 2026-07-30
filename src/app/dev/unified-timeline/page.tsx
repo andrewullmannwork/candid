@@ -129,6 +129,9 @@ function UnifiedTimelinePreview() {
   if (process.env.NODE_ENV === "production") notFound();
 
   const shared = {
+    // S291 — preview harness has no plan-year mismatch scenario yet.
+    planYearMismatch: null,
+    planYearResolved: false,
     nameMismatch: null,
     nameResolved: false,
     onResolvePatient: noop,
