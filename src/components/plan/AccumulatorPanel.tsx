@@ -362,6 +362,11 @@ export function AccumulatorPanelView({ ledger, insurer, className, defaultCollap
           <h3 className="text-[19px] font-bold text-gray-900 tracking-[-0.01em] leading-tight">Your plan spending</h3>
           <p className="text-[13px] text-gray-500 mt-0.5">
             {ledger.planYear} plan year · {scopeLabel}
+            {/* S294 — the loader diverted to the most-recent-billed plan (the
+                active plan has no bills yet — e.g. every January). Name whose
+                ledger this is so the tally is never silently attributed to the
+                plan card above it. */}
+            {ledger.talliedPlanName ? ` · ${ledger.talliedPlanName}` : ""}
           </p>
         </div>
         <Chevron className={cn("text-gray-400 transition-transform shrink-0", collapsed && "rotate-180")} />
