@@ -42,6 +42,7 @@ interface ProfileShape {
   copay_primary: string;
   copay_specialist: string;
   copay_er: string;
+  coinsurance_er?: string;
   coinsurance_pct: string;
   primary_concern: string;
   date_of_birth: string;
@@ -459,6 +460,7 @@ export function ProfileDashboard({
             copayPrimary: profile.copay_primary,
             copaySpecialist: profile.copay_specialist,
             copayER: profile.copay_er,
+            coinsuranceER: profile.coinsurance_er ?? "",
             coinsurancePct: profile.coinsurance_pct,
           }}
           outOfNetwork={{

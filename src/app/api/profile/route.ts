@@ -174,6 +174,13 @@ export async function GET(req: NextRequest) {
       fillNull("copay_primary", chip("pcp_visit"));
       fillNull("copay_specialist", chip("specialist_visit"));
       fillNull("copay_er", chip("er_visit"));
+      // S294 (Andrew) — an ER slot with no copay but a real coinsurance (HSA
+      // bronze plans commonly run ER at coinsurance-after-deductible) rendered
+      // "—" while the /plan tab showed the percent. Response-only key (no
+      // profiles column): the grid's ER tile renders it when the copay is
+      // absent. Coverage stores decimal 0-1 → the chip's integer percent.
+      const erCoins = meta?.coverageMap.get("er_visit")?.coinsurance ?? null;
+      fillNull("coinsurance_er", erCoins != null ? Math.round(erCoins * 100) : null);
       // Plan-level coinsurance default → percent (profiles.coinsurance_pct is
       // the user-facing integer percent; the stored default may be decimal or
       // percent — the shared normalizer resolves the unit).

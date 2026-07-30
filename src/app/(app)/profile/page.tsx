@@ -182,6 +182,8 @@ interface ProfileData {
   copay_primary: string;
   copay_specialist: string;
   copay_er: string;
+  /** S294 — ER coinsurance %, response-only from the profile GET overlay (no DB column). */
+  coinsurance_er: string;
   copay_urgent_care: string;
   copay_rx: string;
   coinsurance_pct: string;
@@ -245,6 +247,7 @@ const EMPTY_PROFILE: ProfileData = {
   copay_primary: "",
   copay_specialist: "",
   copay_er: "",
+  coinsurance_er: "",
   copay_urgent_care: "",
   copay_rx: "",
   coinsurance_pct: "",
@@ -433,6 +436,7 @@ function ProfileContent() {
               copay_primary: num(p.copay_primary, ip?.copay_primary),
               copay_specialist: num(p.copay_specialist, ip?.copay_specialist),
               copay_er: num(p.copay_er, ip?.copay_er),
+              coinsurance_er: num(p.coinsurance_er, undefined),
               copay_urgent_care: num(p.copay_urgent_care, ip?.copay_urgent_care),
               copay_rx: num(p.copay_rx, ip?.copay_rx),
               coinsurance_pct: num(p.coinsurance_pct, ip?.coinsurance_pct),
