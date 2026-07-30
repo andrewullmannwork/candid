@@ -30,6 +30,8 @@ interface CostStructureGridProps {
     copayPrimary: string;
     copaySpecialist: string;
     copayER: string;
+    /** S294 — shown on the ER tile when the plan has no ER copay (coinsurance-based ER). */
+    coinsuranceER?: string;
     coinsurancePct: string;
   };
   outOfNetwork: {
@@ -133,7 +135,13 @@ export function CostStructureGrid({
           value={inNetwork.copaySpecialist}
           prefix="$"
         />
-        <StatTile label="ER copay" value={inNetwork.copayER} prefix="$" />
+        {/* S294 — coinsurance-based ER (no copay exists): show the percent under
+            an honest label instead of a dash. Copay wins when both exist. */}
+        {!inNetwork.copayER?.trim() && inNetwork.coinsuranceER?.trim() ? (
+          <StatTile label="ER coinsurance" value={inNetwork.coinsuranceER} suffix="%" />
+        ) : (
+          <StatTile label="ER copay" value={inNetwork.copayER} prefix="$" />
+        )}
         <StatTile
           label="Coinsurance"
           value={inNetwork.coinsurancePct}

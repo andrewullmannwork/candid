@@ -879,11 +879,17 @@ export default function CandidPlanPage() {
         {/* "Your plan spending" — cross-bill deductible/OOP tally vs the insurer's
             accumulator (gated accumulator_ledger_v1; renders null when OFF/no data).
             Merged into the plan card per the redesign (one card, top divider). */}
-        <AccumulatorPanel
-          insurancePlanId={result.insurancePlanId}
-          planYear={result.planYear}
-          insurer={result.insurer}
-        />
+        {/* S294 — NO insurancePlanId/planYear props, deliberately. Those were
+            merely forwarding the DEFAULTS (the active plan and its year), but
+            the loader treats explicit params as a user-chosen pin and never
+            second-guesses them — which disabled its (plan, year) fallbacks on
+            this, the primary surface: a member whose bills pin to last year or
+            to the previously-active plan saw "$0 of $0 · Tallied from 0 bills"
+            (every member's January). Self-resolving reaches the same active
+            plan when it has bills — byte-identical — and falls back to the
+            most-recent-billed (plan, year), honestly labeled, when it doesn't.
+            Explicit props remain the contract for a real pin (year switcher). */}
+        <AccumulatorPanel insurer={result.insurer} />
       </PlanSummaryCard>
       {changePlanEnabled && (
         <ChangePlanModal

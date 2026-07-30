@@ -38,6 +38,7 @@ import {
   EMPTY_PLAN_COST_SHARE_PARAMS,
 } from "../src/lib/claims/cost-share-loader";
 import { pendingAssumptionFields, ASSUMPTION_ANSWERABILITY, DONE_WRITABLE_FIELDS } from "../src/components/claims/CostShareBanner";
+import { decideAccumulatorCarry } from "../src/lib/claims/accumulator-ledger";
 
 let pass = 0;
 const fails: string[] = [];
@@ -320,6 +321,22 @@ const meta = (rows: Array<{ slug: string; deductibleApplies?: boolean | null; co
   check("8g degraded verdict emits plan_provenance so the copy can be honest",
     run("card", false).assumptions.some((a) => a.field === "plan_provenance"),
     run("card", false).assumptions.map((a) => a.field));
+}
+
+// ── 9. THE ACCUMULATOR CARRY LADDER (Andrew's model, S294) ───────────────────
+// Same-benefit-year bills on another plan row: carry only on PROVEN identity
+// (mig-218 pair, same floor as the upload resolver); proven-different excluded
+// silently; unknown is never treated as either answer — it ASKS.
+{
+  const F = 0.85;
+  const link = (id: string | null, conf: number | null) => ({ canonicalPlanId: id, canonicalMatchConfidence: conf });
+  check("9a same canonical, both scored → carry", decideAccumulatorCarry(link("c1", 1.0), link("c1", 0.95), F) === "carry");
+  check("9b different canonical, both scored → exclude (silent)", decideAccumulatorCarry(link("c1", 1.0), link("c2", 0.95), F) === "exclude");
+  check("9c other side unscored → ask (never silent-carry)", decideAccumulatorCarry(link("c1", 1.0), link("c1", null), F) === "ask");
+  check("9d other side missing link → ask", decideAccumulatorCarry(link("c1", 1.0), link(null, null), F) === "ask");
+  check("9e ACTIVE side unusable → ask even on equal ids", decideAccumulatorCarry(link("c1", 0.5), link("c1", 1.0), F) === "ask");
+  check("9f sub-floor is unusable (0.84 < 0.85)", decideAccumulatorCarry(link("c1", 0.84), link("c1", 1.0), F) === "ask");
+  check("9g floor is inclusive (0.85 passes, resolver parity)", decideAccumulatorCarry(link("c1", 0.85), link("c1", 0.85), F) === "carry");
 }
 
 if (fails.length) {

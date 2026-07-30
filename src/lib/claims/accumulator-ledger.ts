@@ -159,16 +159,68 @@ export interface LedgerMember {
   buckets: NetworkPair;
 }
 
+/**
+ * S294 (Andrew's accumulator model) — should a same-benefit-year bill pinned to
+ * ANOTHER plan row carry into the current plan's accumulator?
+ *
+ * The identity oracle is the mig-218 canonical PAIR, judged by the SAME ladder
+ * (and the same floor) the upload resolver uses:
+ *   carry   — both links usable (non-null, confidence ≥ floor) and EQUAL: the
+ *             other row provably IS this plan (re-upload / correction), so its
+ *             bills belong in this accumulator.
+ *   exclude — both usable and DIFFERENT: provably another plan; its bills are
+ *             that plan's history, silently out.
+ *   ask     — anything unusable (missing link, unscored, sub-floor): identity
+ *             UNKNOWN is never treated as either answer. The member is asked;
+ *             their `claim_plan` re-pin is the answer and flows in naturally.
+ *
+ * Pure — the loader supplies rows + floor; the fixture drives it directly.
+ */
+export type AccumulatorCarryVerdict = "carry" | "exclude" | "ask";
+export interface CanonicalLinkLite {
+  canonicalPlanId: string | null;
+  canonicalMatchConfidence: number | null;
+}
+export function decideAccumulatorCarry(
+  active: CanonicalLinkLite,
+  other: CanonicalLinkLite,
+  floor: number,
+): AccumulatorCarryVerdict {
+  const usable = (l: CanonicalLinkLite) =>
+    l.canonicalPlanId != null &&
+    l.canonicalMatchConfidence != null &&
+    l.canonicalMatchConfidence >= floor;
+  if (usable(active) && usable(other)) {
+    return active.canonicalPlanId === other.canonicalPlanId ? "carry" : "exclude";
+  }
+  return "ask";
+}
+
 export type LedgerScope = "individual" | "family_aggregate" | "family_embedded";
+
+export interface SameYearAskBill {
+  claimId: string;
+  providerName: string | null;
+  dateOfService: string | null;
+  totalBilled: number | null;
+  /** where the bill currently sits — named in the modal, no silent moves. */
+  currentPlanName: string | null;
+}
 
 export interface AccumulatorLedger {
   planYear: number;
-  /** S294 — the plan whose bills are tallied, WHEN it differs from the plan the
-   *  caller asked about (the active plan had zero bills, so the loader diverted
-   *  to the most-recent-billed plan). Null when tallying the requested plan.
-   *  The panel appends it to the subtitle so the ledger is never silently
-   *  attributed to the wrong plan. */
-  talliedPlanName?: string | null;
+  /** S294 model — same-benefit-year bills on OTHER plan rows whose identity vs
+   *  this plan is UNKNOWN (carry ladder verdict "ask"). The panel renders the
+   *  plan-change modal from these; the member's `claim_plan` re-pin is the
+   *  answer and flows back in on the next load. */
+  sameYearAsk?: SameYearAskBill[];
+  /** S294 model — the tallied plan's row id + display name (the modal's re-pin
+   *  target and the "under your new {plan}" copy). */
+  planId?: string;
+  planName?: string | null;
+  /** S294 model — the clock has passed this plan's benefit year: prompt for the
+   *  new year's plan document (the accumulator never silently rolls over). */
+  promptNewYearPlan?: boolean;
   /** distinct claims counted (after best-effort dedup). */
   billsCounted: number;
   /** exact-duplicate claims dropped by dedup (§5b). */
