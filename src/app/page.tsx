@@ -494,13 +494,13 @@ function StatStrip() {
     {
       num: "$262 billion",
       label: "in hospital claims denied",
-      cite: "Change Healthcare analysis, 2016",
+      cite: "Change Healthcare analysis",
       href: "https://www.healthcaredive.com/news/report-262b-in-healthcare-claims-initially-denied-last-year/445758/",
     },
     {
       num: "<1%",
       label: "of denied claims are ever appealed",
-      cite: "KFF · healthcare.gov plans, 2023",
+      cite: "KFF · healthcare.gov plans",
       href: "https://www.kff.org/private-insurance/healthcare-gov-insurers-denied-nearly-1-in-5-in-network-claims-in-2023-but-information-about-reasons-is-limited-in-public-data/",
     },
   ];
