@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useRef, useState } from "react";
 import { BillCard } from "@/components/claims/BillCard";
@@ -98,7 +98,6 @@ function formatShortDate(iso: string | null): string {
 
 export default function CandidClaimPage() {
   const { user } = useAuth();
-  const router = useRouter();
   const searchParams = useSearchParams();
 
   // URL-driven selected-claim state (NON-NEGOTIABLE preserve per D-§1.D.1-E).
@@ -181,13 +180,43 @@ export default function CandidClaimPage() {
     return Math.max(1, open);
   }
 
+  /**
+   * S294 (PROD bug, Andrew ×2) — detail open/close navigates via NATIVE
+   * history.pushState, not router.push.
+   *
+   * In the deployed production build, `router.push('/claim?tab=bills')` from
+   * the detail view silently DIED: the transition started, no RSC fetch was
+   * issued, no error was thrown or logged, and Next then RESTORED the detail
+   * URL via replaceState — one revert per click, forever ("the back button
+   * turns blue but nothing happens", 100% reproducible, survives hard reload).
+   * Instrumented live on the broken page: 3 clicks → push:0 / replace:3, each
+   * replace re-asserting `?claim=…`. Opening detail pushed fine; only the
+   * close direction reverted. Dev builds never reproduce it — the dev server
+   * disables the client router cache this dies inside — which is why every
+   * DEV E2E passed while PROD was stuck.
+   *
+   * The native path is not a workaround, it is the correct transport:
+   * `?claim=` / `?from=` / `?tab=` are pure CLIENT view state — no server
+   * payload differs between these URLs — so the router-cache round-trip was
+   * never needed. Next ≥14.1 officially syncs `useSearchParams` from native
+   * pushState (this page derives EVERYTHING from searchParams, line ~111), and
+   * the fix was proven on the live broken page before being written here:
+   * pushState('/claim?tab=bills') rendered the list where router.push could
+   * not.
+   *
+   * scrollTo(0) preserves router.push's scroll-to-top; native pushState alone
+   * keeps the scroll position, which reads as "nothing happened" on a long
+   * list. S109's "explicit push, never router.back()" rule is PRESERVED — the
+   * history entry is still pushed; only the transport changed.
+   */
   function openClaimDetail(claimId: string, sourceTab: Tab) {
-    router.push(`/claim?claim=${claimId}&from=${sourceTab}`);
+    window.history.pushState(null, "", `/claim?claim=${claimId}&from=${sourceTab}`);
+    window.scrollTo({ top: 0, behavior: "auto" });
   }
 
   function closeClaimDetail() {
-    // S109 explicit push (NON-NEGOTIABLE preserve).
-    router.push(`/claim?tab=${tabBeforeDetail}`);
+    window.history.pushState(null, "", `/claim?tab=${tabBeforeDetail}`);
+    window.scrollTo({ top: 0, behavior: "auto" });
   }
 
   // Tile click → set the matching list filter + scroll to the tabbar.

@@ -39,6 +39,7 @@
 
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils/cn";
+import { PatientIdentityChoices } from "@/components/disputes/PatientIdentityChoices";
 import { computeCaseStage, stageActions } from "@/lib/disputes/case-stage";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -354,8 +355,6 @@ export function UnifiedTodo({
   onUndoOutcome,
 }: UnifiedTodoProps) {
   const [expanded, setExpanded] = useState<"patient" | "details" | "planyear" | null>(null);
-  const [who, setWho] = useState<"me" | "dependent" | "wrong">("me");
-  const [correctedName, setCorrectedName] = useState("");
   const [checks, setChecks] = useState<Record<string, boolean>>({});
   const [asking, setAsking] = useState(false);
   // Earlier-letter segments — the immediately-previous letter expands by
@@ -911,64 +910,20 @@ export function UnifiedTodo({
                   <div className="animate-fade-in mt-2 mb-2.5">{planYearStrip}</div>
                 )}
                 {row.id === "patient" && expanded === "patient" && !sent && nameMismatch && (
-                  <div className="animate-fade-in mt-2 mb-2.5 rounded-[14px] border border-blue-200 bg-white p-4 shadow-[0_14px_30px_-20px_rgba(37,99,235,0.35)]">
-                    <div className="mb-3 text-[13px] leading-relaxed text-gray-600">
-                      The bill lists <strong className="text-gray-900">&ldquo;{nameMismatch.billName}&rdquo;</strong>;
-                      your account is <strong className="text-gray-900">{nameMismatch.profileName}</strong>. Which is right?
-                    </div>
-                    <div className="space-y-2">
-                      <ChoiceCard
-                        selected={who === "me"}
-                        tone="good"
-                        title="That's me"
-                        desc={`The bill means you — the letter will use your account name, ${nameMismatch.profileName}.`}
-                        onSelect={() => setWho("me")}
-                      />
-                      <ChoiceCard
-                        selected={who === "dependent"}
-                        tone="good"
-                        title="That's right — it's one of my dependents"
-                        desc={`The visit was for ${nameMismatch.billName}, covered on your plan. The letter keeps their name.`}
-                        onSelect={() => setWho("dependent")}
-                      />
-                      <ChoiceCard
-                        selected={who === "wrong"}
-                        tone="warn"
-                        title="That name is wrong"
-                        desc="Type the patient's correct name and we'll fill the letter."
-                        onSelect={() => setWho("wrong")}
-                      />
-                    </div>
-                    {who === "wrong" && (
-                      <input
-                        type="text"
-                        value={correctedName}
-                        onChange={(e) => setCorrectedName(e.target.value)}
-                        placeholder="Patient's full name"
-                        autoFocus
-                        className="mt-2.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-[13px] text-gray-900 placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
-                      />
-                    )}
-                    <div className="mt-3 flex justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setExpanded(null)}
-                        className="rounded-lg px-3 py-1.5 text-[12.5px] font-semibold text-gray-500 hover:bg-gray-50"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="button"
-                        disabled={who === "wrong" && correctedName.trim().length === 0}
-                        onClick={() => {
-                          onResolvePatient(who, who === "wrong" ? correctedName.trim() : undefined);
-                          setExpanded(null);
-                        }}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-[12.5px] font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        <CheckIcon size={12} /> Confirm
-                      </button>
-                    </div>
+                  <div className="mt-2 mb-2.5">
+                    {/* S294 — THE shared three-choice question (PatientIdentityChoices).
+                        Extracted verbatim from the block that lived here so
+                        CaseNeedsPanel's one-click "This is me" could adopt the
+                        SAME form instead of resolving with no choice. */}
+                    <PatientIdentityChoices
+                      billName={nameMismatch.billName}
+                      profileName={nameMismatch.profileName}
+                      onResolve={(choice, correctedName) => {
+                        onResolvePatient(choice, correctedName);
+                        setExpanded(null);
+                      }}
+                      onCancel={() => setExpanded(null)}
+                    />
                   </div>
                 )}
 
@@ -1166,56 +1121,3 @@ export function UnifiedTodo({
 
 // ── Choice card (patient-identity radios) ───────────────────────────────────
 
-function ChoiceCard({
-  selected,
-  tone,
-  title,
-  desc,
-  onSelect,
-}: {
-  selected: boolean;
-  tone: "good" | "warn";
-  title: string;
-  desc: string;
-  onSelect: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className={cn(
-        "flex w-full items-start gap-3 rounded-xl border p-3 text-left transition-colors",
-        selected
-          ? tone === "good"
-            ? "border-emerald-300 bg-emerald-50/60"
-            : "border-amber-300 bg-amber-50/60"
-          : "border-gray-200 bg-white hover:border-gray-300",
-      )}
-    >
-      <span
-        className={cn(
-          "mt-0.5 grid h-[18px] w-[18px] flex-shrink-0 place-items-center rounded-full border-2",
-          selected
-            ? tone === "good"
-              ? "border-emerald-500"
-              : "border-amber-500"
-            : "border-gray-300",
-        )}
-        aria-hidden
-      >
-        {selected && (
-          <span
-            className={cn(
-              "h-[8px] w-[8px] rounded-full",
-              tone === "good" ? "bg-emerald-500" : "bg-amber-500",
-            )}
-          />
-        )}
-      </span>
-      <span className="min-w-0">
-        <span className="block text-[13px] font-semibold text-gray-900">{title}</span>
-        <span className="mt-0.5 block text-[12px] leading-relaxed text-gray-500">{desc}</span>
-      </span>
-    </button>
-  );
-}

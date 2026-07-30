@@ -42,9 +42,29 @@ export async function POST(
 
   const body = (await req.json().catch(() => null)) as {
     confirmed?: unknown;
+    choice?: unknown;
+    correctedName?: unknown;
   } | null;
   // Default to confirm; an explicit { confirmed: false } undoes a prior confirm.
   const confirmed = body?.confirmed !== false;
+  // S294 — WHICH resolution the user picked, persisted for the flywheel. The
+  // one-click "This is me" surface (CaseNeedsPanel) used to post a bare
+  // {confirmed:true}: the letter then silently adopted the ACCOUNT name for a
+  // bill whose patient was someone else, with no dependent path offered
+  // (observed live: "Patient: Andrew Ullmann Test" on Nicole's bill). Both
+  // surfaces now share the three-choice flow and the answer is DATA:
+  //   me        — the bill means the account holder
+  //   dependent — the bill's patient is a covered dependent; their name stands
+  //   wrong     — the bill's name is wrong; correctedName is the truth
+  // Older clients that post {confirmed} alone stay valid (choice stays unset).
+  const choice =
+    body?.choice === "me" || body?.choice === "dependent" || body?.choice === "wrong"
+      ? body.choice
+      : null;
+  const correctedName =
+    choice === "wrong" && typeof body?.correctedName === "string"
+      ? body.correctedName.trim().slice(0, 120)
+      : null;
 
   const { disputeId } = await params;
   const supabase = createServerClient();
@@ -74,6 +94,17 @@ export async function POST(
   };
   if (confirmed) {
     nextMetadata.patientIdentityResolvedAt = new Date().toISOString();
+    // Persisted only when the client sent one — a bare {confirmed} (legacy
+    // surface, replayed request) must not erase a previously recorded choice.
+    if (choice) {
+      nextMetadata.patientIdentityChoice = choice;
+      nextMetadata.patientCorrectedName = correctedName; // null unless "wrong"
+    }
+  } else {
+    // Undo clears the whole answer, not just the flag — a stale choice under
+    // an unresolved mismatch would masquerade as data.
+    delete nextMetadata.patientIdentityChoice;
+    delete nextMetadata.patientCorrectedName;
   }
 
   const { error: updateErr } = await userScoped(supabase, user.id)

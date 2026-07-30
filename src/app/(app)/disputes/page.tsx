@@ -629,7 +629,14 @@ function DisputesContent() {
   // rejects (callers fire-and-forget); returns whether the write landed so
   // the letter name-fill only runs on success.
   const handleResolvePatientIdentity = useCallback(
-    async (confirmed: boolean): Promise<boolean> => {
+    async (
+      confirmed: boolean,
+      // S294 — the flywheel payload: WHICH resolution, persisted server-side
+      // (metadata.patientIdentityChoice / patientCorrectedName) instead of
+      // being discarded at the click.
+      choice?: "me" | "dependent" | "wrong",
+      correctedName?: string,
+    ): Promise<boolean> => {
       if (!user || !disputeId) return false;
       const prev = patientIdentityResolved;
       mutationGenRef.current += 1;
@@ -642,7 +649,7 @@ function DisputesContent() {
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ confirmed }),
+          body: JSON.stringify({ confirmed, choice, correctedName }),
         });
         if (!res.ok) throw new Error(`confirm-patient-identity ${res.status}`);
         scheduleReconcile();
@@ -657,6 +664,40 @@ function DisputesContent() {
     },
     [user, disputeId, patientIdentityResolved, scheduleReconcile],
   );
+
+  /**
+   * S294 — THE patient-identity resolution, shared by both surfaces that ask
+   * (UnifiedTodo rail + CaseNeedsPanel row, both rendering the shared
+   * PatientIdentityChoices form). "me" -> letter uses the account name;
+   * "wrong" -> the typed name; "dependent" keeps the bill name. The choice is
+   * persisted through confirm-patient-identity; the letter name-fill runs only
+   * when the write lands (S293 #13 optimistic pattern preserved).
+   */
+  const resolvePatientChoice = useCallback(
+    async (choice: "me" | "dependent" | "wrong", correctedName?: string) => {
+      const mismatch = nameMismatch;
+      const to =
+        mismatch == null
+          ? null
+          : choice === "me"
+            ? mismatch.profileName
+            : choice === "wrong"
+              ? (correctedName ?? "").trim()
+              : null;
+      const ok = await handleResolvePatientIdentity(true, choice, correctedName);
+      if (ok && mismatch && to && to !== mismatch.billName) {
+        setEditedBody((body: string) =>
+          body
+            .split(mismatch.billName)
+            .join(to)
+            .split(mismatch.billName.toUpperCase())
+            .join(to.toUpperCase()),
+        );
+      }
+    },
+    [nameMismatch, handleResolvePatientIdentity],
+  );
+
 
   // Block C2 — commit the full service-not-rendered attestation set (POST
   // attest-service). S293 (#13) — optimistic: the needs-panel row + per-line
@@ -1914,7 +1955,7 @@ function DisputesContent() {
           initialCoinsurancePercent: svc.coinsurancePercent,
         })
       }
-      onConfirmName={() => handleResolvePatientIdentity(true)}
+      onResolvePatient={resolvePatientChoice}
       onEditLetter={() => setIsEditing(true)}
       onReviewAttestation={() => {
         // S293 (#11) — jump to the attestation STEP, not the evidence card.
@@ -2203,36 +2244,7 @@ function DisputesContent() {
       }
       nameMismatch={nameMismatch}
       nameResolved={patientIdentityResolved}
-      onResolvePatient={async (choice, correctedName) => {
-        // "me" → letter uses the account name; "wrong" → the typed name;
-        // "dependent" keeps the bill name. All three resolve the mismatch via
-        // the real confirm-patient-identity endpoint. The name fill edits the
-        // letter body like a manual edit (flows into copy/download). S293
-        // (#13): the resolve is optimistic (no awaited refetch), so the fill
-        // runs as soon as the write lands — and survives the debounced
-        // reconcile because fetchDispute now resets editedBody only when the
-        // SERVER letter changed. Mismatch is captured pre-await (the reconcile
-        // nulls it once resolved); the fill is skipped when the write failed.
-        const mismatch = nameMismatch;
-        const to =
-          mismatch == null
-            ? null
-            : choice === "me"
-              ? mismatch.profileName
-              : choice === "wrong"
-                ? (correctedName ?? "").trim()
-                : null;
-        const ok = await handleResolvePatientIdentity(true);
-        if (ok && mismatch && to && to !== mismatch.billName) {
-          setEditedBody((body: string) =>
-            body
-              .split(mismatch.billName)
-              .join(to)
-              .split(mismatch.billName.toUpperCase())
-              .join(to.toUpperCase()),
-          );
-        }
-      }}
+      onResolvePatient={resolvePatientChoice}
       onOpenLetter={() =>
         document
           .getElementById("dispute-letter-article")
