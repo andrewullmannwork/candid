@@ -2281,12 +2281,20 @@ function buildDiscrepancyReason(params: {
   if (actualPatientCost <= expectedPatientCost) return null;
 
   const planName = planContext?.plan?.planName ?? "Your plan";
+  // S295 — the $0 / preventive case; see the twin in templates.ts
+  // (renderLineItemEvidence). "a $0.00 copay" is a machine artifact in a
+  // mailed letter. Non-zero values render byte-identically to before.
+  const zeroCopay = planBenefit.copay === 0;
   const costDescriptor = planBenefit.copay != null
     ? `a ${formatUsd(planBenefit.copay)} copay`
     : planBenefit.coinsurance != null
-    ? `${normalizeCoinsurancePct(planBenefit.coinsurance)}% coinsurance`
+    ? planBenefit.coinsurance === 0
+      ? "no coinsurance"
+      : `${normalizeCoinsurancePct(planBenefit.coinsurance)}% coinsurance`
     : "cost-sharing terms";
-  return `${planName} specifies ${costDescriptor} for this service. Billed patient responsibility is ${formatUsd(actualPatientCost)}.`;
+  return zeroCopay
+    ? `${planName} covers this service with no copay. Billed patient responsibility is ${formatUsd(actualPatientCost)}.`
+    : `${planName} specifies ${costDescriptor} for this service. Billed patient responsibility is ${formatUsd(actualPatientCost)}.`;
 }
 
 function resolveLegalBasis(letterType?: string): LegalBasisRef[] {

@@ -3,7 +3,7 @@
 Sample Health Plan
 Appeals Department
 
-Re: Appeal of Adverse Benefit Determination
+Re: Claim Processing Dispute — Request for Review
 
 Patient: Jordan Sample
 Member ID: MBR000000
@@ -12,7 +12,7 @@ Provider: Sample Medical Center
 
 To Whom It May Concern:
 
-I am writing to formally appeal the denial of my claim for services rendered on March 15, 2024 by Sample Medical Center.
+I am writing to formally dispute how my claim for services rendered on March 15, 2024 by Sample Medical Center was processed.
 
 I believe the services provided were medically necessary and should be covered under my plan. The specific relief I am requesting is set out below, following the supporting detail.
 

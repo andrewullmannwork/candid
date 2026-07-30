@@ -494,6 +494,67 @@ for (const { type, findings } of ZERO_BUG_TYPES) {
     sane.includes("EOB shows: $500.00 billed · $300.00 insurance paid · $100.00 patient responsibility."), sane);
   check("EOB gate — non-reconciling (P+O > billed) OMITS the EOB numbers", !insaneSum.includes("EOB shows:"), insaneSum);
   check("EOB gate — negative figure OMITS the EOB numbers", !insaneNeg.includes("EOB shows:"), insaneNeg);
+
+  // ── S295 — the denial-framing gate. insurance_appeal opened by ASSERTING a
+  //    denial on every claim, including a bill with no insurer figures anywhere
+  //    in evidence — i.e. no adverse determination to appeal. Assert the
+  //    CONSUMER (the rendered opener), not the predicate.
+  const withEob = renderGenerateON(
+    "insurance_appeal", bill, [makeFinding()],
+    eobEvidence({ insurancePaid: 0, patientOwes: 500 }),
+  );
+  const noEob = renderGenerateON(
+    "insurance_appeal", bill, [makeFinding()],
+    eobEvidence({ insurancePaid: null, patientOwes: null }),
+  );
+  check("denial framing — insurer figures present → appeals the denial",
+    withEob.includes("I am writing to formally appeal the denial of my claim"), withEob);
+  check("denial framing — no insurer figures → disputes the PROCESSING, asserts no denial",
+    noEob.includes("I am writing to formally dispute how my claim") &&
+      !noEob.includes("appeal the denial of my claim"), noEob);
+
+  // The Re: header and the subject line are read BEFORE the opener, so they
+  // have to agree with it — all three off the one `hasAdjudicationEvidence` signal.
+  check("denial framing — Re: header asserts the determination only with evidence",
+    withEob.includes("Re: Appeal of Adverse Benefit Determination"), withEob);
+  check("denial framing — Re: header withdraws the assertion without evidence",
+    noEob.includes("Re: Claim Processing Dispute — Request for Review") &&
+      !noEob.includes("Adverse Benefit Determination"), noEob);
+
+  const subjectWith = LETTER_TEMPLATES.insurance_appeal.subject(
+    "Sample Medical Center", eobEvidence({ insurancePaid: 0, patientOwes: 500 }));
+  const subjectWithout = LETTER_TEMPLATES.insurance_appeal.subject(
+    "Sample Medical Center", eobEvidence({ insurancePaid: null, patientOwes: null }));
+  check("denial framing — subject asserts the denial only with evidence",
+    subjectWith === "Appeal of Claim Denial — Sample Medical Center", subjectWith);
+  check("denial framing — subject withdraws the assertion without evidence",
+    subjectWithout === "Claim Processing Dispute — Request for Review — Sample Medical Center",
+    subjectWithout);
+  check("denial framing — a template that ignores the evidence arg is unchanged",
+    LETTER_TEMPLATES.overcharge.subject("Sample Medical Center", null) ===
+      LETTER_TEMPLATES.overcharge.subject("Sample Medical Center"),
+    "overcharge subject must not vary on the additive arg");
+
+  // balance_billing — the one unevidenced assertion outside insurance_appeal:
+  // it recited having REVIEWED AN EOB and an insurance payment having been made,
+  // neither of which a letter drafted from a provider bill alone can support.
+  const bbWith = renderGenerateON(
+    "balance_billing", bill, [makeFinding()],
+    eobEvidence({ insurancePaid: 300, patientOwes: 100 }),
+  );
+  const bbWithout = renderGenerateON(
+    "balance_billing", bill, [makeFinding()],
+    eobEvidence({ insurancePaid: null, patientOwes: null }),
+  );
+  check("balance billing — EOB present → recites the EOB review unchanged",
+    bbWith.includes("After reviewing my Explanation of Benefits and your bill"), bbWith);
+  check("balance billing — no EOB → claims no EOB review and no insurance payment",
+    bbWithout.includes("Reviewing your bill, I have identified charges that may exceed") &&
+      !bbWithout.includes("Explanation of Benefits") &&
+      !bbWithout.includes("minus my insurance payment"), bbWithout);
+  check("balance billing — the NSA ask survives in both (it is already conditional voice)",
+    bbWith.includes("subject to the No Surprises Act") &&
+      bbWithout.includes("subject to the No Surprises Act"), bbWithout);
 }
 
 // ── Report (house style) ─────────────────────────────────────────────────────
