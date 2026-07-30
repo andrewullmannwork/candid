@@ -6,7 +6,7 @@ cluster: "claim"
 order: "2"
 target_query: "how to negotiate a medical bill"
 published: "2026-07-27"
-last_updated: "2026-07-28"
+last_updated: "2026-07-30"
 ---
 
 You want to negotiate a medical bill, but don't know how. Great news! That is what this article is about. We cover the following steps: 
@@ -45,7 +45,7 @@ Both, and before is seriously underused.
 
 **Before scheduled care:** ask the provider for the price and the self-pay rate up front, and ask your insurer what your share would be under the plan. If you are uninsured or paying yourself, ask for a **good faith estimate** in writing - if the final bill lands at least $400 above it, a federal dispute process opens up. A price conversation before care is a negotiation you're having with ***all your leverage intact*** - nothing is owed yet, and you can still walk.
 
-**After care:** the window between the first bill and collections is your working room. Everything in this guide happens there. The earlier you start, the easier the account hold is to get. If a collector already holds the account, stop reading this article.  Different rules apply. Read our collections guide first.
+**After care:** the window between the first bill and collections is your working room. Everything in this guide happens there. The earlier you start, the easier the account hold is to get. If a collector already holds the account, stop reading this article.  Different rules apply. Read our [collections guide first](/learn/medical-bill-in-collections).
 
 ## The ask-ladder: five asks, in this order
 
@@ -73,7 +73,7 @@ Nonprofit hospitals are federally required to have a financial assistance policy
 
 > "Do you have a financial assistance or charity care policy? I'd like to be screened for it. Please send me the application and the eligibility criteria, and place a hold on the account while my application is reviewed."
 
-Eligibility mechanics and the application walkthrough are in hospital charity care and financial assistance. Remember to get a reference number and name for your call. 
+Eligibility mechanics and the application walkthrough are in [hospital charity care and financial assistance](/learn/hospital-charity-care-financial-assistance). Remember to get a reference number and name for your call. 
 
 ### Rung 3: the self-pay or prompt-pay discount
 
@@ -114,7 +114,7 @@ Verbal deals evaporate. Staff rotate, notes get lost, and six months later "the 
 - **Apply for financial assistance anyway.** The application gets a formal review; the phone call didn't.
 - **Shift from negotiation to dispute.** If the refusal involves charges you contest, move to the formal written path in [how to fight a medical bill](/learn/how-to-fight-a-medical-bill) - dispute letter, certified mail, escalation.
 - **Use your state's complaint routes.** State attorney general consumer-protection offices take complaints about billing practices; your state insurance department handles insurer-side problems.
-- **If the account is headed to collections,** the playbook changes - read medical bills in collections before you talk to anyone.
+- **If the account is headed to collections,** the playbook changes - read [medical bills in collections](/learn/medical-bill-in-collections) before you talk to anyone.
 
 ## Tone rules: polite, persistent, documented
 
@@ -148,7 +148,7 @@ There's no magic number, and anyone selling you one is guessing. Offer what you 
 
 ### Can you negotiate a bill that's already in collections?
 
-Yes, but the counterparty and the rules change once a collector holds the account. Demand written validation of the debt first, then negotiate - the specifics are in medical bills in collections.
+Yes, but the counterparty and the rules change once a collector holds the account. Demand written validation of the debt first, then negotiate - the specifics are in [medical bills in collections](/learn/medical-bill-in-collections).
 
 ### Will negotiating a medical bill hurt my credit?
 

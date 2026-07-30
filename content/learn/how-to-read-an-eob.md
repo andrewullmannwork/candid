@@ -6,7 +6,7 @@ cluster: "benefits"
 order: "2"
 target_query: "how to read an EOB"
 published: "2026-07-27"
-last_updated: "2026-07-28"
+last_updated: "2026-07-30"
 ---
 
 An EOB (explanation of benefits) is not a bill. It's your insurer's math for one claim. It shows what the provider charged, the discount your plan negotiated, what the plan paid, and what's left for you to pay (your share). Read those lines in order, then match every medical bill (the bill your provider sends you) against its EOB (your insurer's math for that same claim) before you pay a dollar.
@@ -51,7 +51,7 @@ You don't have to decode them alone. Call member services and have them translat
 
 > "On claim [number], there's a reason code next to a reduced line. Can you explain in plain language why this was reduced or denied - and what, if anything, would change the outcome?"
 
-If the plain-language answer is "the claim was denied," that's not the end of the story. Denials can be challenged - here's how to appeal. Remember to ***ALWAYS*** ask for the reference number for any call. 
+If the plain-language answer is "the claim was denied," that's not the end of the story. Denials can be challenged - here's [how to appeal](/learn/how-to-appeal-a-denied-health-insurance-claim). Remember to ***ALWAYS*** ask for the reference number for any call. 
 
 ## Never pay a bill without matching it to its EOB
 
@@ -88,7 +88,7 @@ What to do:
 
 In your insurer's member portal, usually under "Claims": every processed claim has its EOB, typically as a PDF. Many plans default to paperless, so if you've never seen one in the mail, that's why. You can usually switch paper delivery back on in the portal's settings.
 
-Keep every EOB. Download the PDF into a folder by year - it costs nothing and takes seconds. Billing problems can resurface months or years later, and your EOB stack is the proof of what your plan processed and what you actually owed. If a bill ever lands in collections, that folder is your best friend. Don't count on the portal keeping history forever; your copy is the one that can't disappear.
+Keep every EOB. Download the PDF into a folder by year - it costs nothing and takes seconds. Billing problems can resurface months or years later, and your EOB stack is the proof of what your plan processed and what you actually owed. If a bill ever [lands in collections](/learn/medical-bill-in-collections), that folder is your best friend. Don't count on the portal keeping history forever; your copy is the one that can't disappear.
 
 ## What if the EOB itself is wrong?
 
@@ -101,7 +101,7 @@ The fix starts with a call, not a fight:
 
 > "I believe claim [number] was processed incorrectly - [my deductible was already met / this provider is in-network]. Can you review and reprocess it? And can I get a reference number for this call?"
 
-If reprocessing doesn't happen, put it in writing as a formal appeal - the appeal guide covers exactly how.
+If reprocessing doesn't happen, put it in writing as a formal appeal - [the appeal guide](/learn/how-to-appeal-a-denied-health-insurance-claim) covers exactly how.
 
 ## The fastest free way to do all of this
 

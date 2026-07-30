@@ -5,6 +5,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSlug from "rehype-slug";
 import { getArticle, listArticles, type Article } from "@/lib/learn/articles";
+import { AUTHOR } from "@/lib/learn/author";
 import { LearnFooter, LearnHeader } from "@/components/learn/LearnChrome";
 import { LearnVisit } from "@/components/learn/LearnVisit";
 import { ArticleFeedback } from "@/components/learn/ArticleFeedback";
@@ -90,6 +91,21 @@ function articleJsonLd(article: Article) {
     logo: { "@type": "ImageObject", url: `${ORIGIN}/logo.png` },
   };
 
+  // A named Person, not the Organization. On YMYL pages an identifiable author
+  // who stands behind the words is a materially stronger signal to both search
+  // quality systems and the AI answer engines. `worksFor` links the two
+  // entities without conflating them (the company's own profiles stay on the
+  // Organization's sameAs, where they belong).
+  const author = {
+    "@type": "Person",
+    name: AUTHOR.name,
+    url: `${ORIGIN}${AUTHOR.path}`,
+    jobTitle: AUTHOR.role,
+    description: AUTHOR.bio,
+    worksFor: { "@type": "Organization", name: "Candid Claim", url: ORIGIN },
+    ...(AUTHOR.sameAs.length > 0 ? { sameAs: AUTHOR.sameAs } : {}),
+  };
+
   const graph: Record<string, unknown>[] = [
     {
       "@type": "Article",
@@ -98,7 +114,7 @@ function articleJsonLd(article: Article) {
       datePublished: article.published,
       dateModified: article.last_updated,
       inLanguage: "en-US",
-      author: publisher,
+      author,
       publisher,
       mainEntityOfPage: { "@type": "WebPage", "@id": url },
       isAccessibleForFree: true,
@@ -152,7 +168,11 @@ export default async function LearnArticlePage({
           </nav>
           <h1 className="learn-title">{article.title}</h1>
           <p className="learn-meta">
-            Last updated{" "}
+            By{" "}
+            <Link href={AUTHOR.path} className="learn-byline-link" rel="author">
+              {AUTHOR.name}
+            </Link>{" "}
+            &middot; Last updated{" "}
             <time dateTime={article.last_updated}>{formatDate(article.last_updated)}</time>
           </p>
 
@@ -164,6 +184,20 @@ export default async function LearnArticlePage({
 
           {/* S290 — helpful? thumbs; anonymous-first, identity server-verified. */}
           <ArticleFeedback slug={article.slug} />
+
+          {/* Author box. The visible counterpart to the Person entity above:
+              the signal only counts if a reader can actually see who wrote it. */}
+          <aside className="learn-authorbox">
+            <p className="learn-authorbox-name">
+              Written by{" "}
+              <Link href={AUTHOR.path} rel="author">
+                {AUTHOR.name}
+              </Link>
+            </p>
+            <p className="learn-authorbox-bio">
+              {AUTHOR.name} is the founder of Candid. {AUTHOR.bio}
+            </p>
+          </aside>
         </article>
       </main>
 

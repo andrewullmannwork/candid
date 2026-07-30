@@ -467,3 +467,20 @@ html {
   .learn-title { font-size: var(--text-h3); }
   .learn-prose h2 { font-size: var(--text-h5); }
 }
+
+/* ── /learn author attribution (byline + author box) ─────────────────────
+   The visible counterpart to the Person entity in the article JSON-LD: an
+   authorship signal only counts if a reader can actually see who wrote it. */
+.learn-byline-link { color: var(--candid-blue-600); text-decoration: none; font-weight: var(--weight-medium); }
+.learn-byline-link:hover { text-decoration: underline; }
+.learn-authorbox {
+  margin: var(--space-12) 0 0; padding: var(--space-5) var(--space-6);
+  border: 1px solid var(--border-2); border-radius: var(--radius-lg); background: var(--bg-2);
+}
+.learn-authorbox-name {
+  margin: 0 0 var(--space-2); font-size: var(--text-base);
+  font-weight: var(--weight-semibold); color: var(--fg-1);
+}
+.learn-authorbox-name a { color: var(--candid-blue-600); text-decoration: none; }
+.learn-authorbox-name a:hover { text-decoration: underline; }
+.learn-authorbox-bio { margin: 0; font-size: var(--text-body); line-height: var(--leading-relaxed); color: var(--fg-3); }
