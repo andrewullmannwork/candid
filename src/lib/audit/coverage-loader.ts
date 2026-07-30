@@ -439,6 +439,13 @@ export function resolveSecondaryCoverage(
  * the member's own uploads.
  */
 const DOCUMENTED_COST_SOURCES = new Set([
+  // The REAL vocabulary, enumerated from PROD rather than guessed (S294):
+  // plan_covered_services carries sbc_parsed / plan_doc_parsed;
+  // canonical_plan_services carries admin_attested (+ coldstart_regen_v1 via
+  // seeded_via). The *_parser spellings are kept defensively for any older
+  // writer, but the observed strings are the load-bearing ones.
+  "sbc_parsed",
+  "plan_doc_parsed",
   "sbc_parser",
   "plan_doc_parser",
   "plan_document",
