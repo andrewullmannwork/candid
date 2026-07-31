@@ -11,6 +11,7 @@ import { InlineSubscribePanel } from "@/components/billing/InlineSubscribePanel"
 import { downloadCaseFile } from "@/lib/casefile";
 import { disputeUrlForResult } from "@/lib/disputes/url";
 import { letterRecipientKind } from "@/lib/disputes";
+import { isTerminalRung, suggestDoors } from "@/lib/guides/pack-registry";
 import { DisputeLetterHero } from "@/components/disputes/DisputeLetterHero";
 import { EvidenceStrengthModal } from "@/components/disputes/EvidenceStrengthModal";
 import { DisputeRecipientCard } from "@/components/disputes/DisputeRecipientCard";
@@ -335,6 +336,10 @@ function DisputesContent() {
     denialNoticeDate: string | null;
     collectorFirstContactDate: string | null;
   }>({ denialNoticeDate: null, collectorFirstContactDate: null });
+  // Guided Steps v1 (S297) — spine packs C/D gate + per-row notes
+  // (dispute.metadata.checklistNotes, hydrated from the GET).
+  const { enabled: guidedStepsOn } = useFeatureFlag("guided_steps_v1");
+  const [checklistNotes, setChecklistNotes] = useState<Record<string, string>>({});
   // Dispute Letters v2 (Zone-2) — recovery estimate + deadline surface hydrated from the GET.
   const [amountDisputed, setAmountDisputed] = useState<number | null>(null);
   const [deadlineData, setDeadlineData] = useState<{
@@ -452,6 +457,14 @@ function DisputesContent() {
     setChecklist(
       data.checklist && typeof data.checklist === "object" && !Array.isArray(data.checklist)
         ? (data.checklist as Record<string, boolean>)
+        : {},
+    );
+    // Guided Steps v1 (S297) — per-row notes beside the booleans.
+    setChecklistNotes(
+      data.checklistNotes &&
+        typeof data.checklistNotes === "object" &&
+        !Array.isArray(data.checklistNotes)
+        ? (data.checklistNotes as Record<string, string>)
         : {},
     );
     // S109 PR #2 (Chunk B) — banner visibility + letter framing both gated
@@ -1326,6 +1339,28 @@ function DisputesContent() {
           });
         } catch (err) {
           console.error("[dispute-checklist] persist failed:", err);
+        }
+      })();
+    },
+    [user, disputeId],
+  );
+
+  // Guided Steps v1 (S297) — note persistence, same optimistic fire-and-forget
+  // idiom as handlePersistCheck (the route's S297 note extension).
+  const handlePersistNote = useCallback(
+    (key: string, note: string) => {
+      setChecklistNotes((prev) => ({ ...prev, [key]: note }));
+      if (!user || !disputeId) return;
+      void (async () => {
+        try {
+          const token = await user.firebaseUser.getIdToken();
+          await fetch(`/api/disputes/${disputeId}/checklist`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ key, note }),
+          });
+        } catch (err) {
+          console.error("[dispute-checklist] note persist failed:", err);
         }
       })();
     },
@@ -2327,6 +2362,54 @@ function DisputesContent() {
       onEscalateNext={handleSuggestedNextStep}
       onUndoSent={handleUndoSent}
       onUndoOutcome={handleUndoOutcome}
+      // Guided Steps v1 (S297) — Pack C on the collections track; Pack D at
+      // the ladder's terminal rung. Both null when the flag is OFF.
+      guidedPackC={
+        guidedStepsOn && letterRecipientKind(letter.letterType) === "collector"
+          ? {
+              // Collector NAME is never persisted (generate consumes it into
+              // the letter only) — the chip renders date-only, honestly.
+              collectorName: null,
+              firstContactDateLabel: deadlineInputs.collectorFirstContactDate
+                ? formatFiledDate(deadlineInputs.collectorFirstContactDate)
+                : null,
+              validationDeadlineLabel: (() => {
+                // Engine value where the GET provides it; else a display-only
+                // +30d off the GET's own first-contact date (§6 — no third
+                // derivation, same 30d the engine's fdcpa_validation_30 uses).
+                if (
+                  deadlineData?.deadlineType === "fdcpa_validation_30" &&
+                  deadlineData.governingDeadlineDate
+                ) {
+                  return formatFiledDate(deadlineData.governingDeadlineDate);
+                }
+                const first = deadlineInputs.collectorFirstContactDate;
+                if (!first) return null;
+                const t = Date.parse(
+                  /^\d{4}-\d{2}-\d{2}$/.test(first) ? `${first}T00:00:00` : first,
+                );
+                if (Number.isNaN(t)) return null;
+                return formatFiledDate(new Date(t + 30 * 86_400_000).toISOString().slice(0, 10));
+              })(),
+            }
+          : null
+      }
+      guidedPackD={
+        guidedStepsOn && isTerminalRung({ letterType: letter.letterType, status: disputeStatus })
+          ? {
+              suggested: suggestDoors({
+                track:
+                  letterRecipientKind(letter.letterType) === "insurer" ? "insurer" : "provider",
+                hasCollections:
+                  letterRecipientKind(letter.letterType) === "collector" ||
+                  deadlineInputs.collectorFirstContactDate != null,
+                grounds: [letter.letterType],
+              }),
+            }
+          : null
+      }
+      initialNotes={checklistNotes}
+      onPersistNote={handlePersistNote}
     >
       {renderCaseNeedsPanel(true)}
     </UnifiedTodo>

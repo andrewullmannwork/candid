@@ -54,6 +54,14 @@ jobs:
         # Also: no dangling "Source: ." on citation-less confirmed benefits.
         run: npx tsx scripts/calibration/fixtures/dispute-grounds/confirmed-service-clause.ts
 
+      - name: Guided Steps registry contract (S297)
+        # Guided Steps v1 — step-id stability (persisted check-off keys), the
+        # attest-only banned-phrase lint, autofill honesty (full ctx = no
+        # placeholder holes; empty ctx = prep-chip path), the finding→clause
+        # composer, suggestDoors, and KEY_RE/note-extension sync with BOTH
+        # checklist routes.
+        run: npx tsx scripts/calibration/fixtures/guided-steps/registry.ts
+
       - name: Canonical link is a pair (S292 / mig 218)
         # Fails the build if any code writes insurance_plans.canonical_plan_id
         # without canonical_match_confidence. An unscored link reads as UNKNOWN to

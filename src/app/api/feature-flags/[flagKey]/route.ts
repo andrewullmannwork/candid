@@ -25,6 +25,7 @@ const EXPOSED_FLAGS = new Set([
   "dispute_plan_pinning_v1", // S210 Mid-year plan change × disputes — plan pinning (P0)
   "dispute_letters_free_start_v1", // 2026-07 dispute-letters free-to-start FE alignment gate
   "onboarding_simplified_v1", // Simplified onboarding (S285) — /onboarding route, profile meter, signup redirect
+  "guided_steps_v1", // S297 Guided Steps v1 — phone subflow on /claim, spine packs C/D, done-step rail collapse
 ]);
 
 // KV-store flags exposed through this same endpoint. Two-system note: the keys

@@ -12,6 +12,10 @@
  * un-checks. User-scoped write to the user's own dispute row only (Pattern 1
  * #14 — no canonical surface involved).
  *
+ * Guided Steps v1 (S297): also accepts an optional short `note` (≤500 chars),
+ * stored at `dispute.metadata.checklistNotes[key]` — additive; boolean-only
+ * callers are unaffected, and either field may arrive alone.
+ *
  * Auth: Firebase bearer token. Verifies user owns the dispute (userScoped).
  */
 import { NextRequest, NextResponse } from "next/server";
@@ -40,7 +44,7 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: { key?: unknown; done?: unknown };
+  let body: { key?: unknown; done?: unknown; note?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -48,11 +52,19 @@ export async function POST(
   }
   const key = typeof body.key === "string" ? body.key : null;
   const done = typeof body.done === "boolean" ? body.done : null;
-  if (!key || !KEY_RE.test(key) || done == null) {
+  // Guided Steps v1 (S297) — additive optional note (packC:*/packD:* rows save
+  // a short free-text note, e.g. a USPS tracking or confirmation number).
+  // Existing callers send { key, done } only and are unaffected; note-only
+  // writes leave the checklist booleans untouched.
+  const note = typeof body.note === "string" ? body.note : null;
+  if (!key || !KEY_RE.test(key) || (done == null && note == null)) {
     return NextResponse.json(
-      { error: "Expected { key: string (1-64 chars), done: boolean }" },
+      { error: "Expected { key: string (1-64 chars), done?: boolean, note?: string } with at least one of done/note" },
       { status: 400 },
     );
+  }
+  if (note != null && note.length > 500) {
+    return NextResponse.json({ error: "note exceeds 500 characters" }, { status: 400 });
   }
 
   const { disputeId } = await params;
@@ -79,13 +91,19 @@ export async function POST(
   const meta = (dispute.metadata as Record<string, unknown>) ?? {};
   const checklist = {
     ...((meta.checklist as Record<string, boolean> | undefined) ?? {}),
-    [key]: done,
+    ...(done != null ? { [key]: done } : {}),
+  };
+  // S297 — notes live beside the booleans, keyed identically, so a note can
+  // exist on an unchecked row (tracking number saved before "Receipt saved").
+  const checklistNotes = {
+    ...((meta.checklistNotes as Record<string, string> | undefined) ?? {}),
+    ...(note != null ? { [key]: note } : {}),
   };
 
   const { error: updateErr } = await userScoped(supabase, user.id)
     .table("dispute_outcomes")
     .update({
-      metadata: { ...meta, checklist },
+      metadata: { ...meta, checklist, checklistNotes },
       updated_at: new Date().toISOString(),
     })
     .eq("id", dispute.id);
@@ -98,5 +116,5 @@ export async function POST(
     );
   }
 
-  return NextResponse.json({ checklist });
+  return NextResponse.json({ checklist, checklistNotes });
 }

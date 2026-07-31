@@ -20,6 +20,10 @@ import { readServicesConfirmedAt } from "@/lib/claims/effective-totals";
 import { CostShareBanner, hasAssumptionRows, pendingAssumptionFields, type BannerAssumption, type CostShareVerdict, type CostShareOverrideRequest } from "@/components/claims/CostShareBanner";
 import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
 import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recovery-math";
+import { useFeatureFlag } from "@/lib/config/use-feature-flag";
+import { GuidedPhoneSteps, ShowFullStepButton, type GuideStepState } from "@/components/claims/GuidedPhoneSteps";
+import { letterRecipientKind } from "@/lib/disputes";
+import type { GuideFillContext, GuideFinding } from "@/lib/guides/pack-registry";
 
 interface CodeIdentityState {
   identityId: string | null;
@@ -511,6 +515,13 @@ export function ClaimDetail({
   // sees it: a dismissed block must stop counting, or the badge goes amber over
   // a band with nothing left to answer.
   const [acaDismissed, setAcaDismissed] = useState(false);
+  // Guided Steps v1 (S297) — one flag gates the phone subflow AND the done-
+  // step rail collapse. OFF (or still loading) = today's page, byte-identical.
+  const guidedStepsFlag = useFeatureFlag("guided_steps_v1");
+  // "Show full step" client state for the done-collapsed rail steps 1-2
+  // (collapsed by default when done; expansion is throwaway, not persisted).
+  const [assumpFullOpen, setAssumpFullOpen] = useState(false);
+  const [svcFullOpen, setSvcFullOpen] = useState(false);
 
 
   // Read localStorage once on mount per claim.
@@ -1251,6 +1262,118 @@ export function ClaimDetail({
   // don't count — the letter has to actually exist.
   const hasDraftedDispute = data.disputes.some((d) => d.status !== "cancelled");
 
+  // ── Guided Steps v1 (S297) ─────────────────────────────────────────────────
+  const guidedOn = guidedStepsFlag.enabled;
+  // Done rail-step collapse — steps 1-2 ONLY (step 3 "What you could save"
+  // stays expanded as the signal of what the steps are for; step 4 is the
+  // action hub holding the dispute cards + phone subflow — Andrew S297).
+  const assumpBodyVisible = !(guidedOn && assumptionsDone && !assumpFullOpen);
+  const svcBodyVisible = !(guidedOn && isFlagged && svcOk && !svcFullOpen);
+
+  // Track-awareness (§4.5): drafted → the letter's own recipient is the page's
+  // signal; undrafted → the SAME dominant-type hint BulkDisputeButton computes
+  // (shared helpers = one derivation; the subflow and the drafted letter can
+  // never disagree). Collector letters follow the provider branch.
+  const guidedTrack: "insurer" | "provider" = (() => {
+    const active = data.disputes.find((d) => d.status !== "cancelled");
+    if (active) {
+      return letterRecipientKind(active.dispute_type) === "insurer" ? "insurer" : "provider";
+    }
+    const types = collectActionableFindingTypes(
+      primaryLineItems,
+      visibleClaimLevelFindings,
+      showDismissed,
+    );
+    return letterTypeHintFromTypes(types) === "insurance_appeal" ? "insurer" : "provider";
+  })();
+
+  // Fill context — a projection of values ALREADY rendered on this page
+  // (§4.4: consume, never re-derive). null = not on file; scripts degrade to
+  // the prep-chip path, never invented values.
+  const guidedCtx: GuideFillContext | null = (() => {
+    if (!guidedOn || !isFlagged) return null;
+    const meta = (claim.metadata as Record<string, unknown>) ?? {};
+    const patient = (meta.patient as Record<string, unknown> | undefined) ?? {};
+    const provider = (meta.provider as Record<string, unknown> | undefined) ?? {};
+    const firstCovered = primaryLineItems.find((li) => li.planCoverage != null) ?? null;
+    const dosMonthDay = fmtDateMonthDayUTC((claim.date_of_service as string | null) ?? null);
+    const findings: GuideFinding[] = [];
+    for (const li of primaryLineItems) {
+      const all = (li.metadata?.auditFindings || []) as AuditFinding[];
+      const live = showDismissed ? all : all.filter((f) => !f.dismissed);
+      for (const f of live) {
+        if (!f.actionable) continue;
+        findings.push({
+          type: f.type,
+          lineNumber: li.line_number ?? null,
+          dateLabel: dosMonthDay,
+          serviceNoun: li.description ? li.description.toLowerCase() : null,
+          parentLabel: null,
+        });
+      }
+    }
+    const rawClaimNumber =
+      (claim.external_claim_number as string | null | undefined) ??
+      (meta.external_claim_number as string | undefined) ??
+      (meta.claim_number as string | undefined);
+    return {
+      track: guidedTrack,
+      serviceLabel: primaryLineItems[0]?.description ?? null,
+      dosLong: fmtDateLongUTC((claim.date_of_service as string | null) ?? null),
+      providerName: providerName !== "Unknown Provider" ? providerName : null,
+      billedAmount: billTotals.billed > 0 ? billTotals.billed : null,
+      planVerdictLabel:
+        firstCovered != null ? spokenPlanSays(buildPlanSays(firstCovered.planCoverage)) : null,
+      insurerPaid: data.effectiveTotals ? billTotals.insurancePaid : null,
+      patientPaid: data.effectiveTotals ? billTotals.patientPaid : null,
+      accountNumber:
+        typeof patient.accountNumber === "string" && patient.accountNumber
+          ? patient.accountNumber
+          : null,
+      claimNumber: typeof rawClaimNumber === "string" && rawClaimNumber ? rawClaimNumber : null,
+      // insurance_plans.member_id doesn't ride this payload today — dashed
+      // prep chip, honestly absent (§4.4: verify before claiming; it isn't here).
+      memberIdOnFile: false,
+      planNameOnFile: pinnedPlan != null,
+      providerPhone: typeof provider.phone === "string" && provider.phone ? provider.phone : null,
+      // No schema field holds a member-services number today — chip path.
+      memberServicesPhone: null,
+      findings,
+      flaggedCount: flaggedLineCount,
+      flaggedTotal: billTotals.potentialRecovery >= 1 ? billTotals.potentialRecovery : null,
+    };
+  })();
+  const guideStepsMeta =
+    ((claim.metadata as Record<string, unknown>)?.guideSteps as
+      | Record<string, GuideStepState>
+      | undefined) ?? {};
+
+  // Provider-track step-1 CTA — mirrors the legacy RequestItemizedBill flow on
+  // /disputes (Case-2 generate: no findings, no persistence), prefilled from
+  // this bill's own payload instead of an empty form.
+  const requestItemizedLetter = async () => {
+    const meta = (claim.metadata as Record<string, unknown>) ?? {};
+    const patient = (meta.patient as Record<string, unknown> | undefined) ?? {};
+    try {
+      const res = await fetch("/api/disputes/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          patientName: typeof patient.name === "string" ? patient.name : "",
+          providerName: providerName === "Unknown Provider" ? "" : providerName,
+          serviceDate: (claim.date_of_service as string | null) ?? "",
+          accountNumber: typeof patient.accountNumber === "string" ? patient.accountNumber : "",
+          type: "itemized_request",
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(typeof d?.error === "string" ? d.error : "generate failed");
+      window.location.href = disputeUrlForResult(d);
+    } catch {
+      alert("Failed to generate letter. Please try again.");
+    }
+  };
+
   // Disputes list — step 4 body on flagged bills, bottom "Disputes" section
   // otherwise. Defined once so both placements render identically.
   const disputesListNode =
@@ -1622,7 +1745,17 @@ export function ClaimDetail({
               attention={assumptionsAttention}
               title="Verify our assumptions"
               sub="The savings math relies on these following details. Please verify or correct each line as needed."
+              right={
+                guidedOn && assumptionsDone ? (
+                  <ShowFullStepButton
+                    open={assumpFullOpen}
+                    onToggle={() => setAssumpFullOpen((v) => !v)}
+                  />
+                ) : undefined
+              }
             >
+              {/* S297 — done steps collapse to their header (Show full step). */}
+              {assumpBodyVisible && (
               <CostShareBanner
                 variant="assumptions"
                 verdict={data.costShareBill.verdict}
@@ -1670,6 +1803,7 @@ export function ClaimDetail({
                 onUploadEob={() => router.push("/upload?type=eob")}
                 onBack={onBack}
               />
+              )}
             </RailStep>
           )}
 
@@ -1744,6 +1878,14 @@ export function ClaimDetail({
                     </svg>
                   )}
                 </button>
+                {/* S297 — done-step collapse control (body = the line-items
+                    table below; hidden while collapsed). */}
+                {guidedOn && svcOk && (
+                  <ShowFullStepButton
+                    open={svcFullOpen}
+                    onToggle={() => setSvcFullOpen((v) => !v)}
+                  />
+                )}
               </div>
             }
           />
@@ -1839,6 +1981,9 @@ export function ClaimDetail({
         {isFlagged && (
           <span className="absolute -top-4 bottom-1 left-[14px] hidden w-[1.5px] bg-gray-200 sm:block" aria-hidden />
         )}
+        {/* S297 — step-2 body: hidden while the done step is collapsed (the
+            outer wrapper + connector stay, keeping the rail continuous). */}
+        {svcBodyVisible && (
         <div className={isFlagged ? "sm:ml-[43px]" : undefined}>
       {/* Session 86 round 6 — responsive layout strategy:
           • md+ (≥768px) → 7-column table with single-line headers, raw
@@ -2721,6 +2866,7 @@ export function ClaimDetail({
         })}
       </div>{/* /table outer (rounded-xl) */}
         </div>
+        )}{/* /S297 svcBodyVisible */}
       </div>{/* /step-3 body wrapper */}
 
       {isFlagged && (
@@ -2920,6 +3066,18 @@ export function ClaimDetail({
               cancels the rail body's indent so it runs from under the step badge
               all the way across (matches the Quality-measures bar width); mb-4
               restores breathing room (the `last` RailStep has no pb). */}
+          {/* Guided Steps v1 (S297) — Pack A′ phone subflow: ONE row per bill,
+              above the dispute card(s) in both drafted and undrafted states.
+              Flag OFF → guidedCtx is null → nothing mounts (byte-identical). */}
+          {guidedCtx && (
+            <GuidedPhoneSteps
+              claimId={claimId}
+              ctx={guidedCtx}
+              initialSteps={guideStepsMeta}
+              getAuthToken={getAuthToken}
+              onItemizedRequest={requestItemizedLetter}
+            />
+          )}
           {data.disputes.length > 0 ? (
             disputesListNode
           ) : (
@@ -3478,6 +3636,101 @@ function buildPlanSays(planCoverage: LineItem["planCoverage"]): string {
 
   if (parts.length === 0) return "Covered · $0";
   return `Covered · ${parts.join(" · ")}`;
+}
+
+// ── Guided Steps v1 (S297) — shared pure helpers ───────────────────────────
+// These are the ONE derivation for both BulkDisputeButton's letter-type hint
+// and the phone subflow's track ordering — extracted so the two can never
+// disagree on the same page (S292 invariant extended to scripts).
+
+/** The gap-line synthesis gate from BulkDisputeButton, verbatim semantics. */
+function lineGapFindingKind(li: LineItem): "mystery" | "recovery" | null {
+  if (li.coverageStatus === "not_covered") return null;
+  const billed = li.billed_amount || 0;
+  const ins = li.insurance_paid || 0;
+  const owed = li.patient_owes || 0;
+  const refund = li.recovery?.refundComponent ?? 0;
+  const forgiveness = li.recovery?.forgivenessComponent ?? 0;
+  const onEngine = li.costShareVerdict != null;
+  const isMysteryGap = !onEngine && billed > 0 && ins === 0 && owed === 0;
+  const hasRecoveryStory = onEngine
+    ? li.costShareVerdict === "recovery"
+    : li.planCoverage != null && (refund >= 1 || forgiveness >= 1);
+  return isMysteryGap ? "mystery" : hasRecoveryStory ? "recovery" : null;
+}
+
+/** Every actionable finding type the bulk-dispute path would bundle,
+ *  including the synthesized missing_adjustment gap findings. */
+function collectActionableFindingTypes(
+  lineItems: LineItem[],
+  claimFindings: ClaimLevelFindingMeta[],
+  showDismissed: boolean,
+): string[] {
+  const types: string[] = [];
+  const linesWithReal = new Set<string>();
+  for (const li of lineItems) {
+    const all = (li.metadata?.auditFindings || []) as AuditFinding[];
+    const live = showDismissed ? all : all.filter((f) => !f.dismissed);
+    for (const f of live) {
+      if (!f.actionable) continue;
+      types.push(f.type);
+      linesWithReal.add(li.id);
+    }
+  }
+  for (const f of claimFindings) {
+    if (!f.dismissed && f.actionable) types.push(f.type);
+  }
+  for (const li of lineItems) {
+    if (linesWithReal.has(li.id)) continue;
+    if (lineGapFindingKind(li) != null) types.push("missing_adjustment");
+  }
+  return types;
+}
+
+/** Dominant type wins; mixed falls back to insurance_appeal (was inline in
+ *  BulkDisputeButton pre-S297). */
+function letterTypeHintFromTypes(types: string[]): string {
+  const counts = new Map<string, number>();
+  for (const t of types) counts.set(t, (counts.get(t) ?? 0) + 1);
+  const dominantType = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  if (!dominantType) return "insurance_appeal";
+  if (dominantType === "balance_billing") return "balance_billing";
+  if (dominantType === "duplicate") return "duplicate_charge";
+  if (dominantType === "overcharge") return "overcharge";
+  return "insurance_appeal";
+}
+
+/** "Covered · 0% coinsurance" → "covered with 0% coinsurance" — the plan-says
+ *  card string adapted for a spoken script (first mid-dot → "with", any
+ *  further → "and"). Same source string as the card; a transform, never a
+ *  second derivation. */
+function spokenPlanSays(label: string): string {
+  return label.toLowerCase().replace(" · ", " with ").replace(/ · /g, " and ");
+}
+
+/** "2024-04-25" → "April 25, 2024" (UTC — date-only strings must not slip a day). */
+function fmtDateLongUTC(d: string | null): string | null {
+  if (!d) return null;
+  const t = Date.parse(d);
+  if (Number.isNaN(t)) return null;
+  return new Date(t).toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+/** "2024-04-25" → "April 25" (clause dates). */
+function fmtDateMonthDayUTC(d: string | null): string | null {
+  if (!d) return null;
+  const t = Date.parse(d);
+  if (Number.isNaN(t)) return null;
+  return new Date(t).toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    timeZone: "UTC",
+  });
 }
 
 // ── Quality reporting codes ───────────────────────────────────────────────
@@ -4066,7 +4319,6 @@ function BulkDisputeButton({
     if (li.coverageStatus === "not_covered") continue;
     const billed = li.billed_amount || 0;
     const ins = li.insurance_paid || 0;
-    const owed = li.patient_owes || 0;
     const refund = li.recovery?.refundComponent ?? 0;
     const forgiveness = li.recovery?.forgivenessComponent ?? 0;
     // Cost-Share v2 (S214) — when the engine ran (verdict present), the dispute
@@ -4076,12 +4328,11 @@ function BulkDisputeButton({
     // other verdict (correct/confident/not_covered/insufficient) is suppressed —
     // the engine-fed recovery block already corrects the ~10 display surfaces.
     // OFF (verdict absent) = today's deductible-blind logic, verbatim.
-    const onEngine = li.costShareVerdict != null;
-    const isMysteryGap = !onEngine && billed > 0 && ins === 0 && owed === 0;
-    const hasRecoveryStory = onEngine
-      ? li.costShareVerdict === "recovery"
-      : li.planCoverage != null && (refund >= 1 || forgiveness >= 1);
-    if (!isMysteryGap && !hasRecoveryStory) continue;
+    // S297 — gate extracted to lineGapFindingKind (shared with the guided-steps
+    // track derivation; one derivation).
+    const gapKind = lineGapFindingKind(li);
+    if (gapKind == null) continue;
+    const isMysteryGap = gapKind === "mystery";
 
     const syntheticId = `gap-${li.id}`;
     const serviceLabel = li.description || li.service_slug?.replace(/_/g, " ") || "service";
@@ -4147,17 +4398,13 @@ function BulkDisputeButton({
   // table column + amber finding card, not as a CTA promise.
 
   // Letter type: dominant type wins; mixed falls back to insurance_appeal.
-  const typeCounts = new Map<string, number>();
-  for (const e of aggregated) typeCounts.set(e.finding.type, (typeCounts.get(e.finding.type) ?? 0) + 1);
-  for (const f of claimActionable) typeCounts.set(f.type, (typeCounts.get(f.type) ?? 0) + 1);
-  const dominantType = Array.from(typeCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
-  const letterTypeHint = (() => {
-    if (!dominantType) return "insurance_appeal";
-    if (dominantType === "balance_billing") return "balance_billing";
-    if (dominantType === "duplicate") return "duplicate_charge";
-    if (dominantType === "overcharge") return "overcharge";
-    return "insurance_appeal";
-  })();
+  // S297 — extracted to letterTypeHintFromTypes, shared with the guided-steps
+  // track derivation (one derivation; the subflow's call order and the drafted
+  // letter's recipient can never disagree).
+  const letterTypeHint = letterTypeHintFromTypes([
+    ...aggregated.map((e) => e.finding.type),
+    ...claimActionable.map((f) => f.type),
+  ]);
 
   async function submitDispute(pinnedPlanId?: string) {
     if (loading) return;

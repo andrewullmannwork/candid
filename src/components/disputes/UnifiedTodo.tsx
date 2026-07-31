@@ -41,6 +41,7 @@ import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils/cn";
 import { PatientIdentityChoices } from "@/components/disputes/PatientIdentityChoices";
 import { computeCaseStage, stageActions } from "@/lib/disputes/case-stage";
+import { GuidedPackCSection, GuidedPackDSection } from "@/components/disputes/GuidedSpineSteps";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -193,6 +194,21 @@ export interface UnifiedTodoProps {
   onEscalateNext?: () => void;
   onUndoSent?: () => void;
   onUndoOutcome?: () => void;
+
+  // ── Guided Steps v1 (S297) — spine packs. The PAGE decides mounting (flag +
+  // track/terminal predicates); null/omitted → nothing renders (flag-OFF =
+  // byte-identical spine). Booleans persist via the EXISTING checklist
+  // plumbing (initialChecks/onPersistCheck); notes via the S297 extension.
+  guidedPackC?: {
+    collectorName: string | null;
+    firstContactDateLabel: string | null;
+    validationDeadlineLabel: string | null;
+  } | null;
+  guidedPackD?: { suggested: Array<"ag" | "cfpb" | "cms" | "doi"> } | null;
+  /** Persisted per-row notes from dispute.metadata.checklistNotes. */
+  initialNotes?: Record<string, string>;
+  /** Persist one note (fire-and-forget; local state is optimistic). */
+  onPersistNote?: (key: string, note: string) => void;
 }
 
 type RowState = "todo" | "done" | "locked" | "skipped";
@@ -370,6 +386,10 @@ export function UnifiedTodo({
   onEscalateNext,
   onUndoSent,
   onUndoOutcome,
+  guidedPackC = null,
+  guidedPackD = null,
+  initialNotes,
+  onPersistNote,
 }: UnifiedTodoProps) {
   const [expanded, setExpanded] = useState<"patient" | "details" | "planyear" | null>(null);
   const [checks, setChecks] = useState<Record<string, boolean>>({});
@@ -385,6 +405,15 @@ export function UnifiedTodo({
     onPersistCheck?.(id, v);
   };
   const toggleCheck = (id: string) => setCheck(id, !effChecks[id]);
+
+  // Guided Steps v1 (S297) — per-row notes beside the booleans, same
+  // optimistic-local + fire-and-forget persistence idiom as setCheck.
+  const [notesLocal, setNotesLocal] = useState<Record<string, string>>({});
+  const effNotes: Record<string, string> = { ...(initialNotes ?? {}), ...notesLocal };
+  const saveNote = (key: string, note: string) => {
+    setNotesLocal((n) => ({ ...n, [key]: note }));
+    onPersistNote?.(key, note);
+  };
 
   // S295 — real confirmation state wins when we have it; the persisted check is
   // the fallback for the case where the details block isn't rendering (nothing
@@ -727,6 +756,23 @@ export function UnifiedTodo({
             </>
           )}
         </div>
+      )}
+
+      {/* Guided Steps v1 (S297) — Pack C collections guard-rail, above the
+          letter work it wraps. Page-gated (collections track + flag). */}
+      {guidedPackC && (
+        <GuidedPackCSection
+          collectorName={guidedPackC.collectorName}
+          firstContactDateLabel={guidedPackC.firstContactDateLabel}
+          validationDeadlineLabel={guidedPackC.validationDeadlineLabel}
+          checks={effChecks}
+          notes={effNotes}
+          onToggle={toggleCheck}
+          onNote={saveNote}
+          onOpenLetter={onOpenLetter}
+          onReportOutcome={onReportOutcome}
+          onNeedFirstContact={() => setExpanded("details")}
+        />
       )}
 
       {/* Earlier letters — un-numbered, checked history (approved: items stay
@@ -1118,6 +1164,20 @@ export function UnifiedTodo({
             </button>
           ) : null}
         </div>
+      )}
+
+      {/* Guided Steps v1 (S297) — Pack D regulator doors, the terminal zone
+          (external_review / final_notice reached, or resolved loss). */}
+      {guidedPackD && (
+        <GuidedPackDSection
+          suggested={guidedPackD.suggested}
+          checks={effChecks}
+          notes={effNotes}
+          onToggle={toggleCheck}
+          onNote={saveNote}
+          onDownload={onDownload}
+          onReportOutcome={onReportOutcome}
+        />
       )}
 
       {/* Later letters — visible only when viewing an earlier letter. */}
