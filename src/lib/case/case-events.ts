@@ -21,11 +21,11 @@
  * complaint_filed, document_attached) are a code change when their emitter or
  * UI exists, not a migration.
  *
- * Phase-0 emitter coverage: 16 of 18 kinds fire from existing server routes.
- * `letter_downloaded` (download is client-side today — needs a one-line ping
- * when the letter page work lands) and `collection_resumed_reported` (its
- * quiet door is approved phase-1 rail UI) are vocabulary-present,
- * emitter-pending — S298 checkpoint note, not silent scope.
+ * Emitter coverage: 17 of 18 kinds fire from server routes.
+ * `collection_resumed_reported` fires from the rail's quiet door
+ * (POST /api/claims/[claimId]/case-events, S299 phase 1a). Remaining:
+ * `letter_downloaded` (download is client-side today — a one-line ping lands
+ * with the phase-2 letter-page work) — checkpoint note, not silent scope.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { isFeatureEnabled } from "@/lib/config/product-flags";

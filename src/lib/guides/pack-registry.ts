@@ -634,3 +634,93 @@ export const ALL_GUIDE_STEPS: GuideStep[] = [
   ...PACK_C_STEPS,
   ...PACK_D_STEPS,
 ];
+
+// ── Case rail (S299 — timeline unification phase 1a) ────────────────────────
+// The extended claim rail's approved copy, VERBATIM. Sources: the approved
+// S298 mock (plans/mocks/s298-extended-rail-mock.html, v4) · agenda §0.9d
+// rulings 1/4/6/7 · net-new strings Andrew-approved S299 (day-grammar +
+// overdue variants, door ack, "Open this letter", insurer fallback). Dates,
+// names, and counts interpolate as arguments — copy changes go to Andrew
+// BEFORE they land here. Exercised by fixtures/case-timeline/rail-steps.ts.
+
+export const CASE_RAIL = {
+  // Case-header chip (§0.9a rule 2d — projector-derived, never stored).
+  headerChip: (waiting: number, firstDueLabel: string | null): string =>
+    waiting === 1
+      ? `Waiting on 1 response${firstDueLabel ? ` · due ${firstDueLabel}` : ""}`
+      : `Waiting on ${waiting} responses${firstDueLabel ? ` · first due ${firstDueLabel}` : ""}`,
+
+  // Waiting-step titles (ruling 4 grammar: "Waiting on «counterparty» — your «letter»").
+  waitTitleAppeal: (insurer: string | null): string =>
+    `Waiting on ${insurer ?? "your plan"} — your appeal`,
+  waitTitleCollector: (collector: string | null): string =>
+    `Waiting on ${collector ?? "the collector"}`,
+  waitTitleGeneric: (counterparty: string, letterNoun: string): string =>
+    `Waiting on ${counterparty} — your ${letterNoun}`,
+
+  // Waiting-step subs — letter-type-keyed; other types render no sub.
+  waitSubAppeal: "Your plan has 60 days to answer an internal appeal.",
+  waitSubValidation:
+    "They must prove this debt before they can collect — that's what your letter requires.",
+
+  // Chips.
+  chipSentAgo: (days: number): string =>
+    days <= 0 ? "Sent today" : days === 1 ? "Sent 1 day ago" : `Sent ${days} days ago`,
+  chipDeadline: (dateLabel: string, daysRemaining: number): string =>
+    daysRemaining < 0
+      ? `Their deadline: ${dateLabel} · passed`
+      : daysRemaining === 0
+        ? `Their deadline: ${dateLabel} · due today`
+        : daysRemaining === 1
+          ? `Their deadline: ${dateLabel} · 1 day left`
+          : `Their deadline: ${dateLabel} · ${daysRemaining} days left`,
+  chipCollectionPause: "Collection must pause until they prove the debt",
+
+  // Card actions + doors.
+  ctaLogResponse: "Log their response",
+  doorSomethingElse: "Something else happened",
+  doorCollectionResumed: "Collection resumed anyway",
+  doorCollectionResumedAck: "Logged — this is on your case record.",
+  ctaOpenLetter: "Open this letter",
+  quietUndoResult: "Undo this result",
+
+  // Reminder foot — dated waits only; hidden once the deadline passes.
+  remindFoot: (dateLabel: string): string =>
+    `We'll remind you before ${dateLabel} if nothing arrives.`,
+
+  // "What happens next" (ruling 1 — display-only rows INSIDE the waiting card;
+  // sets are per wait type, keyed by letter type; unlisted types omit the
+  // section rather than shipping invented promises).
+  whnHeading: "What happens next",
+  whnAppeal: (deadlineLabel: string | null): Array<[string, string]> => {
+    const rows: Array<[string, string]> = [
+      ["They fix it and pay", "you mark the case resolved"],
+      ["They say no", "your external-review letter is ready"],
+    ];
+    if (deadlineLabel) rows.push([`Nothing by ${deadlineLabel}`, "your follow-up letter is ready"]);
+    return rows;
+  },
+  whnValidation: (): Array<[string, string]> => [
+    ["They prove the debt", "your dispute continues, and the next letters are ready"],
+    ["They can't prove it", "they must stop collecting"],
+    ["Collection resumes without proof", "log it here — it goes on your case record"],
+  ],
+
+  // Receipts (ruling 4: "«outcome» · logged «date»").
+  outcomeReceipt: (outcomeLabel: string, loggedLabel: string | null): string =>
+    loggedLabel ? `${outcomeLabel} · logged ${loggedLabel}` : outcomeLabel,
+
+  // Extension send-steps.
+  sendTitleValidation: "Answer the collector",
+  sendTitleGeneric: (letterNoun: string): string => `Send the ${letterNoun}`,
+  sendReceiptValidation: (collector: string | null, dateLabel: string, certified: boolean): string =>
+    `Debt-validation letter sent${collector ? ` to ${collector}` : ""} · ${dateLabel}${certified ? " · certified mail" : ""}`,
+  sendReceiptGeneric: (letterLabel: string, dateLabel: string, certified: boolean): string =>
+    `${letterLabel} sent · ${dateLabel}${certified ? " · certified mail" : ""}`,
+
+  // Step-4b receipt subs (the primary letter's send step, per guided track).
+  receipt4bInsurer: (insurer: string | null, dateLabel: string, certified: boolean): string =>
+    `Appeal sent${insurer ? ` to ${insurer}` : ""} · ${dateLabel}${certified ? " · certified mail" : ""}`,
+  receipt4bProvider: (provider: string | null, dateLabel: string, certified: boolean): string =>
+    `Dispute letter sent${provider ? ` to ${provider}` : ""} · ${dateLabel}${certified ? " · certified mail" : ""}`,
+} as const;

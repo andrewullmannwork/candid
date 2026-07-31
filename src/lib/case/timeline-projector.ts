@@ -113,6 +113,18 @@ export interface ProjectedLetterStep {
   /** Parity-exact responseDueDate (governing ?? sent+30d, date-only). */
   responseDueDate: string | null;
   deadlineType: string | null;
+  // ── S299 phase-1a per-letter display derivations — ALL clock math lives in
+  // this pure layer (fixture-deterministic; the rail renders, never recomputes).
+  /** Floor calendar days since latestSendAt's date (0 = sent today); null when unsent. */
+  daysSinceSent: number | null;
+  /** Ceil days until responseDueDate (sentLetterMeta semantics); null without a due date. */
+  daysRemaining: number | null;
+  /** daysRemaining <= amberDays (BillCard re-amber parity); false when no due date. */
+  amber: boolean;
+  /** Collector display name (metadata.collector.name) on collector letters; null otherwise. */
+  counterpartyName: string | null;
+  /** Dispute-side "Mail it certified" attest (metadata.checklist.mailcert === true). */
+  mailedCertified: boolean;
   outcome: { detail: OutcomeDetail; status: string; loggedAt: string | null } | null;
 }
 
@@ -303,9 +315,14 @@ export function deriveResponseDueDate(d: ProjectorDisputeRow): string | null {
   return new Date(t + 30 * 86_400_000).toISOString().slice(0, 10);
 }
 
-function projectLetterStep(d: ProjectorDisputeRow): ProjectedLetterStep {
+function projectLetterStep(
+  d: ProjectorDisputeRow,
+  now: Date,
+  amberDays: number,
+): ProjectedLetterStep {
   const meta = d.metadata ?? {};
   const letterType = resolveLetterType(d);
+  const recipientKind = letterRecipientKind(letterType);
   const outcomeDetail =
     typeof meta.outcomeDetail === "string" && isOutcomeDetail(meta.outcomeDetail)
       ? meta.outcomeDetail
@@ -315,10 +332,14 @@ function projectLetterStep(d: ProjectorDisputeRow): ProjectedLetterStep {
   const hasNextStep = outcomeDetail
     ? suggestNextStep(letterType as DisputeLetterType, outcomeDetail) != null
     : false;
+  const responseDueDate = deriveResponseDueDate(d);
+  const daysRemaining = responseDueDate != null ? daysUntil(responseDueDate, now) : null;
+  const collector = meta.collector as { name?: unknown } | null | undefined;
+  const checklist = meta.checklist as Record<string, unknown> | null | undefined;
   return {
     disputeId: d.id,
     letterType,
-    recipientKind: letterRecipientKind(letterType),
+    recipientKind,
     startAt: d.created_at,
     stage: computeCaseStage({
       status: d.status,
@@ -330,8 +351,20 @@ function projectLetterStep(d: ProjectorDisputeRow): ProjectedLetterStep {
     sendCount: 0, // filled from merged history below
     unsendCount: 0,
     redraftCount: 0,
-    responseDueDate: deriveResponseDueDate(d),
+    responseDueDate,
     deadlineType: d.deadline_type,
+    daysSinceSent: d.sent_at != null ? daysSince(d.sent_at, now) : null,
+    daysRemaining,
+    amber: daysRemaining != null && daysRemaining <= amberDays,
+    counterpartyName:
+      recipientKind === "collector" &&
+      collector != null &&
+      typeof collector === "object" &&
+      typeof collector.name === "string" &&
+      collector.name.length > 0
+        ? collector.name
+        : null,
+    mailedCertified: checklist != null && checklist.mailcert === true,
     outcome: outcomeDetail
       ? {
           detail: outcomeDetail,
@@ -380,7 +413,7 @@ export function projectCaseTimeline(input: ProjectTimelineInput): ProjectedCaseT
 
   // Letters — rows are the current-state authority; history fills counts.
   const letters = claimDisputes
-    .map(projectLetterStep)
+    .map((d) => projectLetterStep(d, now, amberDays))
     .sort(
       (a, b) =>
         normalizeTs(a.startAt) - normalizeTs(b.startAt) ||
@@ -433,10 +466,31 @@ export function deriveSentLetterMetaParity(
       .filter((x): x is string => typeof x === "string" && x.length > 0)
       .sort()[0] ?? null;
   if (!due) return { responseDueDate: null, daysRemaining: null, amber: false };
-  const t = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(due) ? `${due}T00:00:00` : due);
-  if (Number.isNaN(t)) return { responseDueDate: due, daysRemaining: null, amber: false };
-  const daysRemaining = Math.ceil((t - now.getTime()) / 86_400_000);
+  const daysRemaining = daysUntil(due, now);
+  if (daysRemaining == null) return { responseDueDate: due, daysRemaining: null, amber: false };
   return { responseDueDate: due, daysRemaining, amber: daysRemaining <= amberDays };
+}
+
+/**
+ * Ceil days from `now` to a date string — the sentLetterMeta semantics
+ * (date-only strings parse as LOCAL midnight), shared by the case-level fold
+ * above and the per-letter fields. Null on parse failure.
+ */
+export function daysUntil(dateStr: string, now: Date): number | null {
+  const t = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? `${dateStr}T00:00:00` : dateStr);
+  if (Number.isNaN(t)) return null;
+  return Math.ceil((t - now.getTime()) / 86_400_000);
+}
+
+/**
+ * Floor calendar days since an ISO timestamp's DATE (local midnight) —
+ * 0 = sent today, 6 = "Sent 6 days ago". Null on parse failure.
+ */
+export function daysSince(iso: string, now: Date): number | null {
+  const day = iso.slice(0, 10);
+  const t = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(day) ? `${day}T00:00:00` : iso);
+  if (Number.isNaN(t)) return null;
+  return Math.floor((now.getTime() - t) / 86_400_000);
 }
 
 function normalizeTs(iso: string): number {

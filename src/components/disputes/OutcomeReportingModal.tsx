@@ -17,7 +17,7 @@
 "use client";
 
 import { useState } from "react";
-import { mapOutcomeToStatus, type OutcomeDetail } from "@/lib/disputes/outcome-taxonomy";
+import { mapOutcomeToStatus, OUTCOME_LABELS, type OutcomeDetail } from "@/lib/disputes/outcome-taxonomy";
 
 interface Props {
   open: boolean;
@@ -32,16 +32,17 @@ interface Props {
 
 // Outcomes shown in the modal (collections routes through its own entry). `money`
 // gates the amount + resolution-date fields; `resolved_win` shows the recode
-// sub-question below.
+// sub-question below. Labels come from OUTCOME_LABELS (outcome-taxonomy) — the
+// one source shared with the case rail's receipts (S299).
 const OUTCOME_OPTIONS: { value: OutcomeDetail; label: string; money: boolean }[] = [
-  { value: "resolved_win", label: "Resolved — they approved it / paid in full", money: true },
-  { value: "denied_partial", label: "Partially paid — less than the billed amount", money: true },
-  { value: "denied_some_covered", label: "Covered some services, denied others", money: true },
-  { value: "denied_counteroffer", label: "They made a counteroffer", money: true },
-  { value: "denied_fully", label: "Fully denied — no payment", money: false },
-  { value: "needs_info", label: "They asked for more information", money: false },
-  { value: "no_response", label: "No response yet", money: false },
-  { value: "new_problem", label: "A new problem came up", money: false },
+  { value: "resolved_win", label: OUTCOME_LABELS.resolved_win, money: true },
+  { value: "denied_partial", label: OUTCOME_LABELS.denied_partial, money: true },
+  { value: "denied_some_covered", label: OUTCOME_LABELS.denied_some_covered, money: true },
+  { value: "denied_counteroffer", label: OUTCOME_LABELS.denied_counteroffer, money: true },
+  { value: "denied_fully", label: OUTCOME_LABELS.denied_fully, money: false },
+  { value: "needs_info", label: OUTCOME_LABELS.needs_info, money: false },
+  { value: "no_response", label: OUTCOME_LABELS.no_response, money: false },
+  { value: "new_problem", label: OUTCOME_LABELS.new_problem, money: false },
 ];
 
 // CPT (5 digits), HCPCS L2 (letter + 4 digits), G-codes (G + 4 digits),

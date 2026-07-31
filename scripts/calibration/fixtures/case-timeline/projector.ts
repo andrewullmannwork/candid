@@ -312,6 +312,85 @@ const project = (
   check("exclusions · redraftCount wired", t.letters[0].redraftCount === 1);
 }
 
+// ── 9 · S299 phase-1a per-letter display fields ─────────────────────────────
+// All rail clock math lives in the projector (one derivation): daysSinceSent
+// (date-only floor), daysRemaining (sentLetterMeta ceil semantics), amber,
+// counterpartyName (collector letters only), mailedCertified (checklist attest).
+{
+  const dated = mkDispute({
+    status: "filed",
+    sent_at: iso(-6),
+    governing_deadline_date: dateOnly(54),
+    deadline_type: "plan_response",
+    metadata: { letterType: "insurance_appeal" },
+  });
+  const t = project(mkClaim(), [dated]);
+  const l = t.letters[0];
+  check("s299 · daysSinceSent = calendar floor (6)", l.daysSinceSent === 6, l.daysSinceSent);
+  check("s299 · daysRemaining = ceil (54)", l.daysRemaining === 54, l.daysRemaining);
+  check("s299 · amber false outside threshold", l.amber === false);
+  check(
+    "s299 · per-letter daysRemaining matches the case fold",
+    t.sentLetterMeta?.daysRemaining === l.daysRemaining,
+  );
+
+  const today = project(mkClaim(), [mkDispute({ status: "filed", sent_at: iso(0) })]);
+  check("s299 · sent today → daysSinceSent 0", today.letters[0].daysSinceSent === 0, today.letters[0].daysSinceSent);
+
+  const overdue = project(mkClaim(), [
+    mkDispute({
+      status: "filed",
+      sent_at: iso(-40),
+      governing_deadline_date: dateOnly(-3),
+      deadline_type: "plan_response",
+    }),
+  ]);
+  check(
+    "s299 · overdue → negative daysRemaining",
+    (overdue.letters[0].daysRemaining ?? 0) < 0,
+    overdue.letters[0].daysRemaining,
+  );
+  check("s299 · overdue is amber", overdue.letters[0].amber === true);
+
+  const draft = project(mkClaim(), [mkDispute({})]);
+  check(
+    "s299 · unsent letter has no clocks",
+    draft.letters[0].daysSinceSent === null &&
+      draft.letters[0].daysRemaining === null &&
+      draft.letters[0].amber === false,
+  );
+
+  const collector = project(mkClaim(), [
+    mkDispute({
+      status: "filed",
+      sent_at: iso(-1),
+      metadata: {
+        letterType: "debt_validation",
+        collector: { name: "Cascade Recovery", address: null, originalCreditor: null },
+        checklist: { mailcert: true },
+      },
+    }),
+  ]);
+  check(
+    "s299 · counterpartyName from metadata.collector.name",
+    collector.letters[0].counterpartyName === "Cascade Recovery",
+  );
+  check("s299 · mailedCertified from checklist attest", collector.letters[0].mailedCertified === true);
+
+  const insurerLetter = project(mkClaim(), [
+    mkDispute({
+      status: "filed",
+      sent_at: iso(-1),
+      metadata: { letterType: "insurance_appeal", collector: { name: "X" } },
+    }),
+  ]);
+  check(
+    "s299 · counterpartyName null on non-collector letters",
+    insurerLetter.letters[0].counterpartyName === null,
+  );
+  check("s299 · mailedCertified defaults false", insurerLetter.letters[0].mailedCertified === false);
+}
+
 console.log(`\ncase-timeline projector fixture: ${pass} passed, ${fails.length} failed`);
 if (fails.length) {
   console.log(fails.join("\n"));
