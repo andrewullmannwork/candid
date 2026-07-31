@@ -1859,6 +1859,10 @@ export function ClaimDetail({
             title="Verify the services"
             done={svcOk}
             headerOnly
+            // S297 — with the third (Show full step) button the cluster never
+            // fits inline in the 728px column; render it under the title,
+            // left-aligned. Flag OFF keeps today's inline header slot.
+            rightBelow={guidedOn}
             sub={
               svcIssue ? (
                 <span className="font-semibold text-amber-700">
@@ -3509,6 +3513,7 @@ export function RailStep({
   done,
   attention,
   right,
+  rightBelow,
   last,
   headerOnly,
   children,
@@ -3525,6 +3530,11 @@ export function RailStep({
    */
   attention?: boolean;
   right?: React.ReactNode;
+  /** S297 (Andrew E2E) — render the right cluster INSIDE the title column,
+   *  below the sub, left-aligned with the text. For clusters that never fit
+   *  inline (step 2's three buttons in the 728px column) this reads as an
+   *  intentional row instead of a floaty wrapped one. */
+  rightBelow?: boolean;
   last?: boolean;
   headerOnly?: boolean;
   children?: React.ReactNode;
@@ -3557,11 +3567,14 @@ export function RailStep({
         <div className="min-w-[12rem] flex-1 pt-0.5">
           <div className="text-[16.5px] font-bold tracking-[-0.005em] text-gray-900">{title}</div>
           {sub && <div className="mt-0.5 text-[13px] leading-normal text-gray-500">{sub}</div>}
+          {rightBelow && right && <div className="mt-2.5">{right}</div>}
         </div>
         {/* S297 (Andrew E2E) — sm:ml-auto: when flex-wrap drops the right
             cluster to its own row, it right-aligns instead of starting at
             x=0 under the badge and crossing the rail connector line. */}
-        {right && <div className="w-full sm:ml-auto sm:w-auto sm:flex-shrink-0 sm:self-center">{right}</div>}
+        {!rightBelow && right && (
+          <div className="w-full sm:ml-auto sm:w-auto sm:flex-shrink-0 sm:self-center">{right}</div>
+        )}
       </header>
       {children != null && <div className="sm:ml-[43px]">{children}</div>}
     </section>

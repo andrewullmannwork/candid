@@ -471,7 +471,15 @@ export async function POST(req: NextRequest) {
         const letterRecoveryResult = deductibleAware
           ? resolveLetterRecovery(evidence!, disputeGroundBasis!, letterRecipientKind(letter.letterType))
           : null;
-        const amountDisputed = letterRecoveryResult ? letterRecoveryResult.total : totalDisputed;
+        // S297 (Andrew) — when the recipient-aware fold nets $0 (insurer-track
+        // appeals: the ask is reprocessing, no dollar demand in the body), the
+        // persisted headline falls back to the findings' recovery sum — the
+        // refund+forgiveness number the claim page shows — so the spine, cards
+        // and follow-ups never read "$0" on a bill showing a real recovery.
+        const amountDisputed =
+          letterRecoveryResult && letterRecoveryResult.total > 0
+            ? letterRecoveryResult.total
+            : totalDisputed;
         strengthenLetter = letterRecoveryResult
           ? { weakened: letterRecoveryResult.weakened, fields: letterRecoveryResult.strengthenableFields }
           : null;

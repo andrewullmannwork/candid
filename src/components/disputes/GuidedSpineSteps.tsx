@@ -76,17 +76,29 @@ function StepCheckbox({
   timestampNote?: string | null;
 }) {
   if (step.control !== "checkbox" || !step.checkboxLabel) return null;
+  // S297 (Andrew) — same attest-button grammar as the phone pack: outline ask
+  // → green confirmed with check; click again un-attests. (The dispute
+  // checklist stores booleans, so no "completed —" stamp subtitle here yet.)
   return (
-    <label className="mt-1.5 flex cursor-pointer items-center gap-2 text-[12.5px] text-gray-700">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={onToggle}
-        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-200"
-      />
-      <span className="font-medium">{step.checkboxLabel}</span>
+    <span className="mt-1.5 flex items-center gap-2">
+      <button
+        type="button"
+        onClick={onToggle}
+        className={
+          checked
+            ? "inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-[7px] text-[12.5px] font-semibold text-emerald-700"
+            : "inline-flex items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3.5 py-[7px] text-[12.5px] font-semibold text-gray-700 transition-colors hover:bg-gray-50"
+        }
+      >
+        {step.checkboxLabel}
+        {checked && (
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M5 13l4 4L19 7" />
+          </svg>
+        )}
+      </button>
       {timestampNote && <span className="text-[11px] text-gray-400">{timestampNote}</span>}
-    </label>
+    </span>
   );
 }
 

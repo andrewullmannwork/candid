@@ -1271,27 +1271,29 @@ function renderLineItemEvidence(
     // mails to the insurer); the prior `> *"..."*` Markdown rendered as literal
     // noise in all three. The quoted excerpt itself stays verbatim — CF-60 inv1:
     // do NOT alter the text inside the quotes.
-    // S297 (Andrew E2E) — contradiction guard: never quote plan language that
-    // DEFEATS the bullet's own coverage assertion. Real case: the SBC parser
-    // stores the WHOLE table row as the excerpt ("Teladoc Health consultation
-    // $0 Not covered" — the "$0" is in-network, the "Not covered" is the OON
-    // column), so a covered-service bullet would quote "Not covered" at the
-    // insurer. Fail-closed suppression: the structured plan statement above
-    // stands alone; a self-contradicting quote is worse than none. Universal
-    // (insurer/doc-type-agnostic negation patterns), CF-60 inv1 intact — we
-    // omit the quote, never alter it. Parser-side excerpt hygiene tracked
-    // separately (S297 cross-workstream note).
-    const excerptContradicts =
-      li.planBenefit.covered === true &&
-      /\bnot\s+covered\b|\bno\s+coverage\b|\bexcluded\b|\bexclusion\b/i.test(
-        li.planBenefit.sbcExcerpt ?? "",
+    // S297 (Andrew E2E) — contradiction guard, TRUNCATE not omit (Andrew: the
+    // quote is evidence; it just must not carry the words "Not covered").
+    // Real case: the SBC parser stores the WHOLE table row as the excerpt
+    // ("Teladoc Health consultation $0 Not covered" — "$0" is in-network,
+    // "Not covered" is the OON column), so a covered-service bullet would
+    // quote self-defeating words at the insurer. We keep the verbatim PREFIX
+    // and mark the cut with an ellipsis — an honest partial quotation (CF-60
+    // inv1: never alter quoted words; truncation-with-ellipsis alters none).
+    // Degenerate case (negation leads the excerpt → nothing quotable) falls
+    // back to omitting the line. Universal negation patterns; parser-side
+    // excerpt hygiene tracked separately (S297 cross-workstream note).
+    let quotableExcerpt = li.planBenefit.sbcExcerpt?.trim() ?? "";
+    if (li.planBenefit.covered === true && quotableExcerpt) {
+      const negation = /\bnot\s+covered\b|\bno\s+coverage\b|\bexcluded\b|\bexclusion\b/i.exec(
+        quotableExcerpt,
       );
-    if (
-      li.planBenefit.sbcExcerpt &&
-      !excerptContradicts &&
-      (!gateUnverified || li.planBenefit.sbcExcerptVerified)
-    ) {
-      bullets.push(`     Plan language: "${li.planBenefit.sbcExcerpt.trim()}"`);
+      if (negation) {
+        const prefix = quotableExcerpt.slice(0, negation.index).replace(/[\s.·|,;:—–-]+$/, "");
+        quotableExcerpt = prefix.length >= 8 ? `${prefix} …` : "";
+      }
+    }
+    if (quotableExcerpt && (!gateUnverified || li.planBenefit.sbcExcerptVerified)) {
+      bullets.push(`     Plan language: "${quotableExcerpt}"`);
     }
   }
 

@@ -286,14 +286,17 @@ check("route sync: claims guideSteps storage", claimRoute.includes("guideSteps")
 check("route sync: claims foreign → 404", claimRoute.includes('{ error: "Claim not found" }, { status: 404 }'));
 check("route sync: dispute foreign → 404", disputeRoute.includes('{ error: "Dispute not found" }, { status: 404 }'));
 check("route sync: claims server-side timestamp", claimRoute.includes("new Date().toISOString()"));
-// S297 excerpt-contradiction guard — a letter must never quote plan language
-// that defeats its own coverage assertion (the SBC whole-row-excerpt case).
+// S297 excerpt-contradiction guard — a covered-service bullet must never
+// quote plan language carrying a negation (the SBC whole-row-excerpt case);
+// the quote TRUNCATES at the negation with an ellipsis (CF-60: verbatim
+// prefix, no altered words) and omits entirely when nothing quotable is left.
 const templatesSrc = readFileSync(resolve(repoRoot, "src/lib/disputes/templates.ts"), "utf8");
-check("templates: excerpt contradiction guard present", templatesSrc.includes("excerptContradicts"));
+check("templates: truncating excerpt guard present", templatesSrc.includes("quotableExcerpt"));
 check(
   "templates: guard covers the not-covered negation",
-  /excerptContradicts[\s\S]{0,400}not\\s\+covered/.test(templatesSrc),
+  /quotableExcerpt[\s\S]{0,600}not\\s\+covered/.test(templatesSrc),
 );
+check("templates: truncation marks the cut with an ellipsis", templatesSrc.includes("} …`"));
 
 // S297 noteHistory — accidental note deletes must be recoverable on BOTH routes.
 check("route sync: claims noteHistory banked", claimRoute.includes("noteHistory"));
