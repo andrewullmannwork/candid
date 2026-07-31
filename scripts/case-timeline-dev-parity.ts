@@ -41,27 +41,12 @@ const sb = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
 );
 
-// VERBATIM copy of resolveLetterTypeFromDispute ([disputeId]/route.ts:963) —
-// the display path's own derivation, kept independent of the projector.
-function todayLetterType(d: { dispute_type: string; metadata: Record<string, unknown> | null }): string {
-  const metaType =
-    d.metadata && typeof d.metadata === "object"
-      ? (d.metadata as { letterType?: string }).letterType
-      : undefined;
-  if (metaType) return metaType;
-  switch (d.dispute_type) {
-    case "internal_appeal":
-      return "insurance_appeal";
-    case "negotiation":
-      return "negotiation";
-    case "complaint":
-      return "balance_billing";
-    case "external_appeal":
-      return "insurance_appeal";
-    default:
-      return "overcharge";
-  }
-}
+// letterType: since the S298 consolidation the display path and the projector
+// IMPORT THE SAME resolver (src/lib/disputes/letter-type.ts), so this input is
+// shared by construction — the parity signal lives in the stage machine, the
+// responseDueDate math, and sentLetterMeta, which remain independently derived
+// on the "today" side below.
+import { resolveLetterTypeFromDispute as todayLetterType } from "../src/lib/disputes/letter-type";
 
 (async () => {
   console.log("PROJECT:", process.env.NEXT_PUBLIC_SUPABASE_URL);

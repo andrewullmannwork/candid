@@ -41,6 +41,7 @@ import {
   type OutcomeDetail,
 } from "@/lib/disputes/outcome-taxonomy";
 import { letterRecipientKind, type LetterRecipientKind } from "@/lib/disputes";
+import { resolveLetterTypeFromDispute } from "@/lib/disputes/letter-type";
 import type { DisputeLetterType } from "@/lib/billing/types";
 import type { CaseEventKind, CaseEventActor } from "@/lib/case/case-events";
 
@@ -138,31 +139,15 @@ export interface ProjectedCaseTimeline {
 // ── Letter-type resolution ──────────────────────────────────────────────────
 
 /**
- * VERBATIM parity with resolveLetterTypeFromDispute in the [disputeId] GET
- * (route.ts:963) — the derivation today's page actually displays. That
- * includes its quirks, deliberately: legacy `external_appeal` (no metadata)
- * falls to "insurance_appeal" (not external_review), and unknown types coerce
- * to "overcharge". Fixing the mapping is a PHASE-1 decision behind the flag;
- * Phase 0's job is byte-parity. (The GET + redraft route each carry a private
- * copy of this function — consolidating all three onto this export is the
- * phase-1 cleanup, noted in the PR.)
+ * ONE resolver for all consumers (S298, Andrew: "fix it now") — the shared
+ * resolveLetterTypeFromDispute in src/lib/disputes/letter-type.ts, also
+ * imported by the [disputeId] GET and the redraft route (whose private copies
+ * had drifted from each other). Includes the corrected legacy mapping
+ * (external_appeal → external_review). Parity holds by construction: the
+ * display path and the projector now share the derivation.
  */
 export function resolveLetterType(d: ProjectorDisputeRow): string {
-  const meta = d.metadata ?? {};
-  const fromMeta = typeof meta.letterType === "string" ? meta.letterType : null;
-  if (fromMeta && fromMeta.length > 0) return fromMeta;
-  switch (d.dispute_type) {
-    case "internal_appeal":
-      return "insurance_appeal";
-    case "negotiation":
-      return "negotiation";
-    case "complaint":
-      return "balance_billing";
-    case "external_appeal":
-      return "insurance_appeal";
-    default:
-      return "overcharge";
-  }
+  return resolveLetterTypeFromDispute(d);
 }
 
 // ── Shared row→event synthesis (projector virtual union + backfill writes) ──

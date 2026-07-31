@@ -64,8 +64,8 @@ jobs:
 
       - name: Case-timeline projector (S298 Phase 0, mig 221)
         # Timeline unification Phase 0 — the projector's parity contract
-        # (stage / responseDueDate / sentLetterMeta reproduce today's surfaces,
-        # GET letterType quirks included), §0.9 send→unsend→resend version
+        # (stage / responseDueDate / sentLetterMeta reproduce today's surfaces;
+        # letterType via the ONE shared resolver), §0.9 send→unsend→resend version
         # counts, dual concurrent waits, escalate-chain next-outranks-resolved,
         # the no-letter cases, stored∪virtual history dedupe, and the
         # synthesis exclusions (deadline_lapsed / followup_sent are cron-owned).

@@ -91,12 +91,35 @@ const project = (
   check("resolveLetterType · metadata wins", resolveLetterType(meta) === "debt_validation");
   const legacy = mkDispute({ metadata: null, dispute_type: "internal_appeal" });
   check("resolveLetterType · legacy internal_appeal → insurance_appeal", resolveLetterType(legacy) === "insurance_appeal");
-  // Verbatim GET-route parity, quirks included (route.ts:963): legacy
-  // external_appeal → insurance_appeal; unknown types coerce to overcharge.
+  // S298 consolidation + correction (one shared resolver, letter-type.ts):
+  // legacy external_appeal now maps to external_review — the insurer track's
+  // TERMINAL letter, not its first rung (the old GET guess would offer a
+  // denied legacy external review an escalation to itself).
   const legacyExternal = mkDispute({ metadata: null, dispute_type: "external_appeal" });
-  check("resolveLetterType · GET quirk: legacy external_appeal → insurance_appeal", resolveLetterType(legacyExternal) === "insurance_appeal");
+  check("resolveLetterType · CORRECTED: legacy external_appeal → external_review", resolveLetterType(legacyExternal) === "external_review");
+  const legacyComplaint = mkDispute({ metadata: null, dispute_type: "complaint" });
+  check("resolveLetterType · legacy complaint → balance_billing (GET side of the drift, kept)", resolveLetterType(legacyComplaint) === "balance_billing");
   const unknown = mkDispute({ metadata: null, dispute_type: "cost_share_misapplication" });
-  check("resolveLetterType · GET quirk: unknown coerces to overcharge", resolveLetterType(unknown) === "overcharge");
+  check("resolveLetterType · unknown coerces to overcharge", resolveLetterType(unknown) === "overcharge");
+  // The corrected mapping closes the track: a denied legacy external review
+  // must offer NO next step (external_review exhausts the insurer ladder).
+  {
+    const t = project(mkClaim(), [mkDispute({
+      metadata: null,
+      dispute_type: "external_appeal",
+      status: "lost",
+      sent_at: iso(-10),
+    })]);
+    // No outcomeDetail on this legacy row → hasNextStep false by the page rule;
+    // with one logged, the exhausted track still offers none:
+    const t2 = project(mkClaim(), [mkDispute({
+      metadata: { outcomeDetail: "denied_fully", outcomeReportedAt: iso(-1) },
+      dispute_type: "external_appeal",
+      status: "lost",
+      sent_at: iso(-10),
+    })]);
+    check("resolveLetterType · corrected mapping: denied legacy external review offers NO next step", t.letters[0].hasNextStep === false && t2.letters[0].hasNextStep === false && t2.letters[0].stage === "resolved", { t: t.letters[0].stage, t2: t2.letters[0].stage });
+  }
 
   const governed = mkDispute({ governing_deadline_date: "2026-09-29", sent_at: iso(-6) });
   check("responseDueDate · governing wins", deriveResponseDueDate(governed) === "2026-09-29");
