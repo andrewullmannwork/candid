@@ -91,6 +91,22 @@ export default function LearnHubPage() {
       <main className="learn-main">
         <h1 className="learn-title">Guides</h1>
         <p className="learn-lede">{LEDE}</p>
+        {/* Newsletter link — Andrew-approved copy (2026-07-31). A plain <a>,
+            deliberately NEVER Substack's embed widget: the embed injects
+            third-party script and the marketing surface is verified
+            zero-third-party-scripts. */}
+        <p className="learn-chronicle">
+          <strong>The Candid Chronicle</strong> - a weekly brief on medical bills and health
+          insurance, from the author of these guides.{" "}
+          <a
+            href="https://thecandidchronicle.substack.com/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="learn-chronicle-link"
+          >
+            Subscribe free →
+          </a>
+        </p>
 
         {clusters.map((group) => (
           <section key={group.cluster} className="learn-cluster">
