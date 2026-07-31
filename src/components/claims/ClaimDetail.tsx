@@ -20,6 +20,10 @@ import { readServicesConfirmedAt } from "@/lib/claims/effective-totals";
 import { CostShareBanner, hasAssumptionRows, pendingAssumptionFields, type BannerAssumption, type CostShareVerdict, type CostShareOverrideRequest } from "@/components/claims/CostShareBanner";
 import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
 import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recovery-math";
+import { useFeatureFlag } from "@/lib/config/use-feature-flag";
+import { GuidedPhoneSteps, ShowFullStepButton, derivePhonePackState, type GuideStepState, type PhonePackState } from "@/components/claims/GuidedPhoneSteps";
+import { letterRecipientKind } from "@/lib/disputes";
+import { GUIDE_4B, GUIDE_CHROME, PHONE_OUTCOME, type GuideFillContext, type GuideFinding } from "@/lib/guides/pack-registry";
 
 interface CodeIdentityState {
   identityId: string | null;
@@ -511,6 +515,18 @@ export function ClaimDetail({
   // sees it: a dismissed block must stop counting, or the badge goes amber over
   // a band with nothing left to answer.
   const [acaDismissed, setAcaDismissed] = useState(false);
+  // Guided Steps v1 (S297) — one flag gates the phone subflow AND the done-
+  // step rail collapse. OFF (or still loading) = today's page, byte-identical.
+  const guidedStepsFlag = useFeatureFlag("guided_steps_v1");
+  // "Show full step" client state for the done-collapsed rail steps 1-2
+  // (collapsed by default when done; expansion is throwaway, not persisted).
+  const [assumpFullOpen, setAssumpFullOpen] = useState(false);
+  const [svcFullOpen, setSvcFullOpen] = useState(false);
+  // 4a/4b split (S297) — 4a's Show-full-step reopen + the LIVE pack state
+  // mirrored up from GuidedPhoneSteps (initial render derives from the
+  // persisted meta; the component emits on every persist).
+  const [phoneFullOpen, setPhoneFullOpen] = useState(false);
+  const [guidedPackLive, setGuidedPackLive] = useState<PhonePackState | null>(null);
 
 
   // Read localStorage once on mount per claim.
@@ -1251,6 +1267,123 @@ export function ClaimDetail({
   // don't count — the letter has to actually exist.
   const hasDraftedDispute = data.disputes.some((d) => d.status !== "cancelled");
 
+  // ── Guided Steps v1 (S297) ─────────────────────────────────────────────────
+  const guidedOn = guidedStepsFlag.enabled;
+  // Done rail-step collapse — steps 1-2 ONLY (step 3 "What you could save"
+  // stays expanded as the signal of what the steps are for; step 4 is the
+  // action hub holding the dispute cards + phone subflow — Andrew S297).
+  const assumpBodyVisible = !(guidedOn && assumptionsDone && !assumpFullOpen);
+  const svcBodyVisible = !(guidedOn && isFlagged && svcOk && !svcFullOpen);
+
+  // Track-awareness (§4.5): drafted → the letter's own recipient is the page's
+  // signal; undrafted → the SAME dominant-type hint BulkDisputeButton computes
+  // (shared helpers = one derivation; the subflow and the drafted letter can
+  // never disagree). Collector letters follow the provider branch.
+  const guidedTrack: "insurer" | "provider" = (() => {
+    const active = data.disputes.find((d) => d.status !== "cancelled");
+    if (active) {
+      return letterRecipientKind(active.dispute_type) === "insurer" ? "insurer" : "provider";
+    }
+    const types = collectActionableFindingTypes(
+      primaryLineItems,
+      visibleClaimLevelFindings,
+      showDismissed,
+    );
+    return letterTypeHintFromTypes(types) === "insurance_appeal" ? "insurer" : "provider";
+  })();
+
+  // Fill context — a projection of values ALREADY rendered on this page
+  // (§4.4: consume, never re-derive). null = not on file; scripts degrade to
+  // the prep-chip path, never invented values.
+  const guidedCtx: GuideFillContext | null = (() => {
+    if (!guidedOn || !isFlagged) return null;
+    const meta = (claim.metadata as Record<string, unknown>) ?? {};
+    const patient = (meta.patient as Record<string, unknown> | undefined) ?? {};
+    const provider = (meta.provider as Record<string, unknown> | undefined) ?? {};
+    const firstCovered = primaryLineItems.find((li) => li.planCoverage != null) ?? null;
+    const dosMonthDay = fmtDateMonthDayUTC((claim.date_of_service as string | null) ?? null);
+    const findings: GuideFinding[] = [];
+    for (const li of primaryLineItems) {
+      const all = (li.metadata?.auditFindings || []) as AuditFinding[];
+      const live = showDismissed ? all : all.filter((f) => !f.dismissed);
+      for (const f of live) {
+        if (!f.actionable) continue;
+        findings.push({
+          type: f.type,
+          lineNumber: li.line_number ?? null,
+          dateLabel: dosMonthDay,
+          serviceNoun: li.description ? li.description.toLowerCase() : null,
+          parentLabel: null,
+        });
+      }
+    }
+    const rawClaimNumber =
+      (claim.external_claim_number as string | null | undefined) ??
+      (meta.external_claim_number as string | undefined) ??
+      (meta.claim_number as string | undefined);
+    return {
+      track: guidedTrack,
+      serviceLabel: primaryLineItems[0]?.description ?? null,
+      dosLong: fmtDateLongUTC((claim.date_of_service as string | null) ?? null),
+      providerName: providerName !== "Unknown Provider" ? providerName : null,
+      billedAmount: billTotals.billed > 0 ? billTotals.billed : null,
+      planVerdictLabel:
+        firstCovered != null ? spokenPlanSays(buildPlanSays(firstCovered.planCoverage)) : null,
+      insurerPaid: data.effectiveTotals ? billTotals.insurancePaid : null,
+      patientPaid: data.effectiveTotals ? billTotals.patientPaid : null,
+      accountNumber:
+        typeof patient.accountNumber === "string" && patient.accountNumber
+          ? patient.accountNumber
+          : null,
+      claimNumber: typeof rawClaimNumber === "string" && rawClaimNumber ? rawClaimNumber : null,
+      // insurance_plans.member_id doesn't ride this payload today — dashed
+      // prep chip, honestly absent (§4.4: verify before claiming; it isn't here).
+      memberIdOnFile: false,
+      planNameOnFile: pinnedPlan != null,
+      providerPhone: typeof provider.phone === "string" && provider.phone ? provider.phone : null,
+      // No schema field holds a member-services number today — chip path.
+      memberServicesPhone: null,
+      findings,
+      flaggedCount: flaggedLineCount,
+      flaggedTotal: billTotals.potentialRecovery >= 1 ? billTotals.potentialRecovery : null,
+    };
+  })();
+  const guideStepsMeta =
+    ((claim.metadata as Record<string, unknown>)?.guideSteps as
+      | Record<string, GuideStepState>
+      | undefined) ?? {};
+  // 4a/4b split — pack state for the rail chrome (done pill / resolved chip /
+  // skipped) and 4b's activation. Live component state wins once it emits.
+  const guidedPack = guidedPackLive ?? derivePhonePackState(guidedTrack, guideStepsMeta);
+  const guidedOutcomeDateLabel =
+    guidedPack.outcomeAt != null ? fmtStampDateLocal(guidedPack.outcomeAt) : null;
+
+  // Provider-track step-1 CTA — mirrors the legacy RequestItemizedBill flow on
+  // /disputes (Case-2 generate: no findings, no persistence), prefilled from
+  // this bill's own payload instead of an empty form.
+  const requestItemizedLetter = async () => {
+    const meta = (claim.metadata as Record<string, unknown>) ?? {};
+    const patient = (meta.patient as Record<string, unknown> | undefined) ?? {};
+    try {
+      const res = await fetch("/api/disputes/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          patientName: typeof patient.name === "string" ? patient.name : "",
+          providerName: providerName === "Unknown Provider" ? "" : providerName,
+          serviceDate: (claim.date_of_service as string | null) ?? "",
+          accountNumber: typeof patient.accountNumber === "string" ? patient.accountNumber : "",
+          type: "itemized_request",
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(typeof d?.error === "string" ? d.error : "generate failed");
+      window.location.href = disputeUrlForResult(d);
+    } catch {
+      alert("Failed to generate letter. Please try again.");
+    }
+  };
+
   // Disputes list — step 4 body on flagged bills, bottom "Disputes" section
   // otherwise. Defined once so both placements render identically.
   const disputesListNode =
@@ -1282,6 +1415,43 @@ export function ClaimDetail({
           </button>
         </div>
     ) : null;
+
+  // Step-4 recover panel + drafted cards — ONE builder for the flag-OFF step 4
+  // AND the guided 4b (S297). muted=true is 4b's inactive treatment (white bg,
+  // greyed button) until the phone question concludes "Not yet"/skip — the
+  // button STAYS clickable per the locked contract §3.6 (the pack never blocks
+  // letter generation); muted=false emits today's classes byte-identically.
+  const recoverBranchNode = (muted: boolean) =>
+    data.disputes.length > 0 ? (
+      disputesListNode
+    ) : (
+      <div className={`mb-4 flex flex-col gap-4 rounded-[18px] border ${muted ? "border-gray-200 bg-white" : "border-blue-200 bg-gradient-to-br from-blue-50 to-white"} px-6 py-5 sm:-ml-[43px] sm:flex-row sm:items-center sm:justify-between`}>
+        <div className="max-w-[50ch] text-[13px] leading-[1.55] text-gray-600">
+          <div className={`mb-1.5 flex items-center gap-1.5 text-sm font-bold ${muted ? "text-gray-700" : "text-blue-900"}`}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+            Recover ${fmtMoney(billTotals.potentialRecovery)} from this bill
+          </div>
+          <p className="m-0">
+            Candid will write the appeal letter for you using your uploaded plan, the EOB, and Medicare benchmark comparisons. You review and mail it — we never send anything on your behalf.
+          </p>
+        </div>
+        <div className="sm:flex-shrink-0">
+          <BulkDisputeButton
+            claimId={claimId}
+            claim={claim}
+            primaryLineItems={primaryLineItems}
+            claimLevelFindings={visibleClaimLevelFindings}
+            showDismissed={showDismissed}
+            getAuthToken={getAuthToken}
+            onGenerated={(result) => router.push(disputeUrlForResult(result))}
+            existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
+            muted={muted}
+          />
+        </div>
+      </div>
+    );
 
   return (
     <div>
@@ -1622,7 +1792,17 @@ export function ClaimDetail({
               attention={assumptionsAttention}
               title="Verify our assumptions"
               sub="The savings math relies on these following details. Please verify or correct each line as needed."
+              right={
+                guidedOn && assumptionsDone ? (
+                  <ShowFullStepButton
+                    open={assumpFullOpen}
+                    onToggle={() => setAssumpFullOpen((v) => !v)}
+                  />
+                ) : undefined
+              }
             >
+              {/* S297 — done steps collapse to their header (Show full step). */}
+              {assumpBodyVisible && (
               <CostShareBanner
                 variant="assumptions"
                 verdict={data.costShareBill.verdict}
@@ -1670,6 +1850,7 @@ export function ClaimDetail({
                 onUploadEob={() => router.push("/upload?type=eob")}
                 onBack={onBack}
               />
+              )}
             </RailStep>
           )}
 
@@ -1744,6 +1925,14 @@ export function ClaimDetail({
                     </svg>
                   )}
                 </button>
+                {/* S297 — done-step collapse control (body = the line-items
+                    table below; hidden while collapsed). */}
+                {guidedOn && svcOk && (
+                  <ShowFullStepButton
+                    open={svcFullOpen}
+                    onToggle={() => setSvcFullOpen((v) => !v)}
+                  />
+                )}
               </div>
             }
           />
@@ -1839,6 +2028,9 @@ export function ClaimDetail({
         {isFlagged && (
           <span className="absolute -top-4 bottom-1 left-[14px] hidden w-[1.5px] bg-gray-200 sm:block" aria-hidden />
         )}
+        {/* S297 — step-2 body: hidden while the done step is collapsed (the
+            outer wrapper + connector stay, keeping the rail continuous). */}
+        {svcBodyVisible && (
         <div className={isFlagged ? "sm:ml-[43px]" : undefined}>
       {/* Session 86 round 6 — responsive layout strategy:
           • md+ (≥768px) → 7-column table with single-line headers, raw
@@ -2220,7 +2412,12 @@ export function ClaimDetail({
                   </div>
                 </dl>
               </div>
-              {/* Desktop table row — hidden at mobile. */}
+              {/* Desktop table row — hidden at mobile. S297 (Andrew E2E #3) —
+                  items-start, not items-center: the "$X before insurance"
+                  sub-line under Billed-to-you was re-centering its cell and
+                  floating the dollar above the row's other numbers. First-line
+                  alignment keeps every number on one line; the sub-line just
+                  grows the row down. */}
               <div
                 role="button"
                 tabIndex={0}
@@ -2231,7 +2428,7 @@ export function ClaimDetail({
                     toggleRowCollapsed(item.id);
                   }
                 }}
-                className={`hidden lg:grid w-full gap-2 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 cursor-pointer ${isMultiLine && isExpanded ? "bg-blue-50/40 hover:bg-blue-50/60" : "hover:bg-gray-50"}`}
+                className={`hidden lg:grid w-full gap-2 items-start px-5 py-3.5 text-left transition-colors border-t border-gray-100 cursor-pointer ${isMultiLine && isExpanded ? "bg-blue-50/40 hover:bg-blue-50/60" : "hover:bg-gray-50"}`}
                 style={{
                   gridTemplateColumns: isMultiLine
                     ? "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 88px 40px"
@@ -2721,12 +2918,19 @@ export function ClaimDetail({
         })}
       </div>{/* /table outer (rounded-xl) */}
         </div>
+        )}{/* /S297 svcBodyVisible */}
       </div>{/* /step-3 body wrapper */}
 
       {isFlagged && (
         <RailStep
           n={railStepSave}
-          done={hasDraftedDispute}
+          // S297 (Andrew E2E) — any engagement PAST this step (a 4a attest/
+          // answer/skip, or a drafted letter) greens it: you've seen the
+          // number and moved on. Flag OFF keeps the drafted-only rule.
+          done={
+            hasDraftedDispute ||
+            (guidedCtx != null && (guidedPack.done > 0 || guidedPack.concluded))
+          }
           title="What you could save"
           sub="Candid compared every line of this bill against your plan's policies"
         >
@@ -2907,8 +3111,83 @@ export function ClaimDetail({
 
       {/* Step 4 — Recover the money (flagged bills only). Drafted bills show
           the real dispute cards (Open dispute letter); undrafted show the
-          recover panel + BulkDisputeButton. */}
-      {isFlagged && (
+          recover panel + BulkDisputeButton.
+          S297 (Andrew): with guided_steps_v1 ON the step SPLITS into 4a "Work
+          it by phone first" + 4b "Send the appeal / dispute letter" — the
+          phone question concludes 4a (auto-collapse; yes carries the resolved
+          date, skip goes amber) and 4b's panel activates white/grey → blue on
+          "Not yet"/skip. Flag OFF renders today's single step, byte-identical. */}
+      {isFlagged && guidedCtx && (() => {
+        const muted4b = !(
+          guidedPack.outcome === "no" ||
+          guidedPack.outcome === "skip" ||
+          hasDraftedDispute
+        );
+        const phoneBodyVisible = !guidedPack.concluded || phoneFullOpen;
+        return (
+          <>
+            <RailStep
+              n="4a"
+              done={guidedPack.concluded}
+              title={GUIDE_CHROME.packATitle}
+              sub={GUIDE_CHROME.packAMeta}
+              right={
+                guidedPack.concluded ? (
+                  <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+                    {guidedPack.outcome === "yes" && guidedOutcomeDateLabel != null && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11.5px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                          <path d="M5 13l4 4L19 7" />
+                        </svg>
+                        {PHONE_OUTCOME.resolvedChipPrefix} · {guidedOutcomeDateLabel}
+                      </span>
+                    )}
+                    {guidedPack.outcome === "no" && guidedPack.done > 0 && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11.5px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">
+                        {GUIDE_CHROME.doneMeta(guidedPack.done, guidedPack.total)}
+                      </span>
+                    )}
+                    <ShowFullStepButton
+                      open={phoneFullOpen}
+                      onToggle={() => setPhoneFullOpen((v) => !v)}
+                    />
+                  </div>
+                ) : undefined
+              }
+            >
+              {/* Mounted-but-hidden while collapsed — an unmount would reset
+                  the component's optimistic state to the (stale) claim meta,
+                  making un-checks look like they never landed (Andrew E2E #3). */}
+              <div className={phoneBodyVisible ? undefined : "hidden"}>
+                <GuidedPhoneSteps
+                  claimId={claimId}
+                  ctx={guidedCtx}
+                  initialSteps={guideStepsMeta}
+                  getAuthToken={getAuthToken}
+                  onItemizedRequest={requestItemizedLetter}
+                  onStateChange={(s) => {
+                    // Collapse ONLY on the not-concluded → concluded TRANSITION;
+                    // collapsing on every emit while concluded slammed the panel
+                    // shut on any in-panel click (the un-check bug).
+                    if (s.concluded && !guidedPack.concluded) setPhoneFullOpen(false);
+                    setGuidedPackLive(s);
+                  }}
+                />
+              </div>
+            </RailStep>
+            <RailStep
+              n="4b"
+              done={hasDraftedDispute}
+              title={guidedTrack === "insurer" ? GUIDE_4B.titleInsurer : GUIDE_4B.titleProvider}
+              sub={guidedPack.outcome === "yes" ? GUIDE_4B.subResolved : GUIDE_4B.sub}
+              last
+            >
+              {recoverBranchNode(muted4b)}
+            </RailStep>
+          </>
+        );
+      })()}
+      {isFlagged && !guidedCtx && (
         <RailStep
           n={railStepRecover}
           done={hasDraftedDispute}
@@ -2920,35 +3199,7 @@ export function ClaimDetail({
               cancels the rail body's indent so it runs from under the step badge
               all the way across (matches the Quality-measures bar width); mb-4
               restores breathing room (the `last` RailStep has no pb). */}
-          {data.disputes.length > 0 ? (
-            disputesListNode
-          ) : (
-        <div className="mb-4 flex flex-col gap-4 rounded-[18px] border border-blue-200 bg-gradient-to-br from-blue-50 to-white px-6 py-5 sm:-ml-[43px] sm:flex-row sm:items-center sm:justify-between">
-          <div className="max-w-[50ch] text-[13px] leading-[1.55] text-gray-600">
-            <div className="mb-1.5 flex items-center gap-1.5 text-sm font-bold text-blue-900">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                <path d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              Recover ${fmtMoney(billTotals.potentialRecovery)} from this bill
-            </div>
-            <p className="m-0">
-              Candid will write the appeal letter for you using your uploaded plan, the EOB, and Medicare benchmark comparisons. You review and mail it — we never send anything on your behalf.
-            </p>
-          </div>
-          <div className="sm:flex-shrink-0">
-            <BulkDisputeButton
-              claimId={claimId}
-              claim={claim}
-              primaryLineItems={primaryLineItems}
-              claimLevelFindings={visibleClaimLevelFindings}
-              showDismissed={showDismissed}
-              getAuthToken={getAuthToken}
-              onGenerated={(result) => router.push(disputeUrlForResult(result))}
-              existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
-            />
-          </div>
-        </div>
-          )}
+          {recoverBranchNode(false)}
         </RailStep>
       )}
 
@@ -3262,7 +3513,8 @@ export function RailStep({
   headerOnly,
   children,
 }: {
-  n: number;
+  /** Badge content — numeric for the classic rail, "4a"/"4b" for the S297 split. */
+  n: number | string;
   title: string;
   sub?: React.ReactNode;
   done?: boolean;
@@ -3298,11 +3550,26 @@ export function RailStep({
         >
           {done ? "\u2713" : n}
         </span>
-        <div className="min-w-0 flex-1 pt-0.5">
+        {/* S297 (Andrew E2E) — min-w-[12rem], not min-w-0: with a wide right
+            cluster, flex was crushing the title into a one-word-per-line
+            sliver through the rail line; now the right cluster wraps below
+            instead (flex-wrap) and the title keeps a readable column. */}
+        <div className="min-w-[12rem] flex-1 pt-0.5">
           <div className="text-[16.5px] font-bold tracking-[-0.005em] text-gray-900">{title}</div>
           {sub && <div className="mt-0.5 text-[13px] leading-normal text-gray-500">{sub}</div>}
         </div>
-        {right && <div className="w-full sm:w-auto sm:flex-shrink-0 sm:self-center">{right}</div>}
+        {/* S297 (Andrew) — three responsive states in pure CSS:
+            · wide: inline, flush RIGHT (ml-auto; the pl-[44px] hides inside
+              the right-aligned box's leading space)
+            · mid (doesn't fit): flex-wrap drops the box to its own row at
+              x=0 — the pl-[44px] lands its content exactly at the TEXT
+              column (badge 30px + gap 14px), left-aligned under the words
+            · mobile (<sm): w-full, no rail indent, buttons align left. */}
+        {right && (
+          <div className="w-full sm:ml-auto sm:w-auto sm:flex-shrink-0 sm:self-center sm:pl-[44px]">
+            {right}
+          </div>
+        )}
       </header>
       {children != null && <div className="sm:ml-[43px]">{children}</div>}
     </section>
@@ -3478,6 +3745,108 @@ function buildPlanSays(planCoverage: LineItem["planCoverage"]): string {
 
   if (parts.length === 0) return "Covered · $0";
   return `Covered · ${parts.join(" · ")}`;
+}
+
+// ── Guided Steps v1 (S297) — shared pure helpers ───────────────────────────
+// These are the ONE derivation for both BulkDisputeButton's letter-type hint
+// and the phone subflow's track ordering — extracted so the two can never
+// disagree on the same page (S292 invariant extended to scripts).
+
+/** The gap-line synthesis gate from BulkDisputeButton, verbatim semantics. */
+function lineGapFindingKind(li: LineItem): "mystery" | "recovery" | null {
+  if (li.coverageStatus === "not_covered") return null;
+  const billed = li.billed_amount || 0;
+  const ins = li.insurance_paid || 0;
+  const owed = li.patient_owes || 0;
+  const refund = li.recovery?.refundComponent ?? 0;
+  const forgiveness = li.recovery?.forgivenessComponent ?? 0;
+  const onEngine = li.costShareVerdict != null;
+  const isMysteryGap = !onEngine && billed > 0 && ins === 0 && owed === 0;
+  const hasRecoveryStory = onEngine
+    ? li.costShareVerdict === "recovery"
+    : li.planCoverage != null && (refund >= 1 || forgiveness >= 1);
+  return isMysteryGap ? "mystery" : hasRecoveryStory ? "recovery" : null;
+}
+
+/** Every actionable finding type the bulk-dispute path would bundle,
+ *  including the synthesized missing_adjustment gap findings. */
+function collectActionableFindingTypes(
+  lineItems: LineItem[],
+  claimFindings: ClaimLevelFindingMeta[],
+  showDismissed: boolean,
+): string[] {
+  const types: string[] = [];
+  const linesWithReal = new Set<string>();
+  for (const li of lineItems) {
+    const all = (li.metadata?.auditFindings || []) as AuditFinding[];
+    const live = showDismissed ? all : all.filter((f) => !f.dismissed);
+    for (const f of live) {
+      if (!f.actionable) continue;
+      types.push(f.type);
+      linesWithReal.add(li.id);
+    }
+  }
+  for (const f of claimFindings) {
+    if (!f.dismissed && f.actionable) types.push(f.type);
+  }
+  for (const li of lineItems) {
+    if (linesWithReal.has(li.id)) continue;
+    if (lineGapFindingKind(li) != null) types.push("missing_adjustment");
+  }
+  return types;
+}
+
+/** Dominant type wins; mixed falls back to insurance_appeal (was inline in
+ *  BulkDisputeButton pre-S297). */
+function letterTypeHintFromTypes(types: string[]): string {
+  const counts = new Map<string, number>();
+  for (const t of types) counts.set(t, (counts.get(t) ?? 0) + 1);
+  const dominantType = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  if (!dominantType) return "insurance_appeal";
+  if (dominantType === "balance_billing") return "balance_billing";
+  if (dominantType === "duplicate") return "duplicate_charge";
+  if (dominantType === "overcharge") return "overcharge";
+  return "insurance_appeal";
+}
+
+/** "Covered · 0% coinsurance" → "covered with 0% coinsurance" — the plan-says
+ *  card string adapted for a spoken script (first mid-dot → "with", any
+ *  further → "and"). Same source string as the card; a transform, never a
+ *  second derivation. */
+function spokenPlanSays(label: string): string {
+  return label.toLowerCase().replace(" · ", " with ").replace(/ · /g, " and ");
+}
+
+/** "2024-04-25" → "April 25, 2024" (UTC — date-only strings must not slip a day). */
+function fmtDateLongUTC(d: string | null): string | null {
+  if (!d) return null;
+  const t = Date.parse(d);
+  if (Number.isNaN(t)) return null;
+  return new Date(t).toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+/** Server ISO timestamp → "Jul 30, 2026" (local; the resolved-by-phone chip). */
+function fmtStampDateLocal(iso: string): string | null {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  return new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+/** "2024-04-25" → "April 25" (clause dates). */
+function fmtDateMonthDayUTC(d: string | null): string | null {
+  if (!d) return null;
+  const t = Date.parse(d);
+  if (Number.isNaN(t)) return null;
+  return new Date(t).toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    timeZone: "UTC",
+  });
 }
 
 // ── Quality reporting codes ───────────────────────────────────────────────
@@ -3994,6 +4363,7 @@ function BulkDisputeButton({
   onGenerated,
   existingDisputeId,
   size = "md",
+  muted = false,
 }: {
   claimId: string;
   claim: Record<string, unknown>;
@@ -4007,6 +4377,9 @@ function BulkDisputeButton({
    *  full-width primary action (onboarding Done-button idiom); default "md"
    *  keeps the inline rail/footer chrome untouched. */
   size?: "md" | "xl";
+  /** S297 4b — greyed inactive look until the phone question concludes.
+   *  STILL CLICKABLE (contract §3.6: the pack never blocks letter generation). */
+  muted?: boolean;
 }) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
@@ -4066,7 +4439,6 @@ function BulkDisputeButton({
     if (li.coverageStatus === "not_covered") continue;
     const billed = li.billed_amount || 0;
     const ins = li.insurance_paid || 0;
-    const owed = li.patient_owes || 0;
     const refund = li.recovery?.refundComponent ?? 0;
     const forgiveness = li.recovery?.forgivenessComponent ?? 0;
     // Cost-Share v2 (S214) — when the engine ran (verdict present), the dispute
@@ -4076,12 +4448,11 @@ function BulkDisputeButton({
     // other verdict (correct/confident/not_covered/insufficient) is suppressed —
     // the engine-fed recovery block already corrects the ~10 display surfaces.
     // OFF (verdict absent) = today's deductible-blind logic, verbatim.
-    const onEngine = li.costShareVerdict != null;
-    const isMysteryGap = !onEngine && billed > 0 && ins === 0 && owed === 0;
-    const hasRecoveryStory = onEngine
-      ? li.costShareVerdict === "recovery"
-      : li.planCoverage != null && (refund >= 1 || forgiveness >= 1);
-    if (!isMysteryGap && !hasRecoveryStory) continue;
+    // S297 — gate extracted to lineGapFindingKind (shared with the guided-steps
+    // track derivation; one derivation).
+    const gapKind = lineGapFindingKind(li);
+    if (gapKind == null) continue;
+    const isMysteryGap = gapKind === "mystery";
 
     const syntheticId = `gap-${li.id}`;
     const serviceLabel = li.description || li.service_slug?.replace(/_/g, " ") || "service";
@@ -4147,17 +4518,13 @@ function BulkDisputeButton({
   // table column + amber finding card, not as a CTA promise.
 
   // Letter type: dominant type wins; mixed falls back to insurance_appeal.
-  const typeCounts = new Map<string, number>();
-  for (const e of aggregated) typeCounts.set(e.finding.type, (typeCounts.get(e.finding.type) ?? 0) + 1);
-  for (const f of claimActionable) typeCounts.set(f.type, (typeCounts.get(f.type) ?? 0) + 1);
-  const dominantType = Array.from(typeCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
-  const letterTypeHint = (() => {
-    if (!dominantType) return "insurance_appeal";
-    if (dominantType === "balance_billing") return "balance_billing";
-    if (dominantType === "duplicate") return "duplicate_charge";
-    if (dominantType === "overcharge") return "overcharge";
-    return "insurance_appeal";
-  })();
+  // S297 — extracted to letterTypeHintFromTypes, shared with the guided-steps
+  // track derivation (one derivation; the subflow's call order and the drafted
+  // letter's recipient can never disagree).
+  const letterTypeHint = letterTypeHintFromTypes([
+    ...aggregated.map((e) => e.finding.type),
+    ...claimActionable.map((f) => f.type),
+  ]);
 
   async function submitDispute(pinnedPlanId?: string) {
     if (loading) return;
@@ -4338,7 +4705,9 @@ function BulkDisputeButton({
         className={
           size === "xl"
             ? "flex w-full items-center justify-center gap-2 rounded-[14px] bg-blue-600 px-6 py-3.5 text-[15px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
-            : "inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-[9px] text-[13px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
+            : muted
+              ? "inline-flex items-center gap-1.5 rounded-xl bg-gray-200 px-4 py-[9px] text-[13px] font-semibold text-gray-500 transition-colors hover:bg-gray-300 disabled:cursor-not-allowed disabled:opacity-50"
+              : "inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-[9px] text-[13px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
         }
       >
         {buttonLabel}

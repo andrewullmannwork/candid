@@ -7,6 +7,7 @@ import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
 import { groundFindingsForEvidence, type GroundFinding, type LineRecovery, type LetterRecoveryResult } from "./dispute-grounds";
 import type { RequestBucket } from "./dispute-ground-catalog";
 import { buildObligationContext, renderObligationClauses } from "./obligation-render";
+import type { GuidedCallLogEntry } from "@/lib/guides/pack-registry";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 
 interface LetterTemplate {
@@ -233,6 +234,57 @@ export function renderGated<T>(value: T | null | undefined, clause: (v: T) => st
   if (typeof value === "string" && value.trim() === "") return "";
   if (Array.isArray(value) && value.length === 0) return "";
   return clause(value);
+}
+
+/** Guided Steps v1 (S297) — attested-call recital. Renders the user's OWN
+ *  attested phone actions (claims.metadata.guideSteps checkedAt) as factual
+ *  prior-contact lines, recipient-matched, injected before the sign-off by
+ *  BOTH build paths (generateDisputeLetter + rerenderDisputeLetter — keep in
+ *  lockstep). Fail-closed: no attested entries → "" (byte-identical letter).
+ *  Log NOTES are deliberately NOT rendered (tracker Item X — structured use
+ *  later). Copy rides the launch-adopted attestation-recital framework; no
+ *  new legal assertion (Andrew copy pass S297). */
+const GUIDED_RECITAL_EXCLUDED: ReadonlySet<string> = new Set([
+  "itemized_request",
+  "negotiation",
+  "debt_validation",
+]);
+
+export function renderGuidedCallRecital(
+  entries: GuidedCallLogEntry[] | null | undefined,
+  recipient: "insurer" | "provider" | "collector",
+  letterType: string,
+): string {
+  if (!entries || entries.length === 0) return "";
+  if (recipient === "collector" || GUIDED_RECITAL_EXCLUDED.has(letterType)) return "";
+  const lines: string[] = [];
+  for (const e of entries) {
+    if (recipient === "insurer") {
+      if (e.kind === "insurer_call") {
+        lines.push(
+          `On ${formatDate(e.calledAt)}, I called your member services line about this claim and asked that it be reviewed and reprocessed.`,
+        );
+      }
+    } else {
+      if (e.kind === "billing_hold_call") {
+        lines.push(
+          `On ${formatDate(e.calledAt)}, I called your billing office and requested a hold on this account — no further billing or collection activity — while this claim is reviewed.`,
+        );
+      }
+      if (e.kind === "itemized_request_call") {
+        lines.push(
+          `On ${formatDate(e.calledAt)}, I requested a fully itemized bill for this account by phone.`,
+        );
+      }
+      if (e.kind === "flagged_charges_call") {
+        lines.push(
+          `On ${formatDate(e.calledAt)}, I called your billing office and disputed specific charges on this account.`,
+        );
+      }
+    }
+  }
+  if (lines.length === 0) return "";
+  return `\n\n${lines.join(" ")}`;
 }
 
 /** dispute-letters v2 S2 — state-specific citation registry. INERT at launch (no verified entries),
@@ -1219,8 +1271,29 @@ function renderLineItemEvidence(
     // mails to the insurer); the prior `> *"..."*` Markdown rendered as literal
     // noise in all three. The quoted excerpt itself stays verbatim — CF-60 inv1:
     // do NOT alter the text inside the quotes.
-    if (li.planBenefit.sbcExcerpt && (!gateUnverified || li.planBenefit.sbcExcerptVerified)) {
-      bullets.push(`     Plan language: "${li.planBenefit.sbcExcerpt.trim()}"`);
+    // S297 (Andrew E2E) — contradiction guard, TRUNCATE not omit (Andrew: the
+    // quote is evidence; it just must not carry the words "Not covered").
+    // Real case: the SBC parser stores the WHOLE table row as the excerpt
+    // ("Teladoc Health consultation $0 Not covered" — "$0" is in-network,
+    // "Not covered" is the OON column), so a covered-service bullet would
+    // quote self-defeating words at the insurer. We keep the verbatim PREFIX
+    // and mark the cut with an ellipsis — an honest partial quotation (CF-60
+    // inv1: never alter quoted words; truncation-with-ellipsis alters none).
+    // Degenerate case (negation leads the excerpt → nothing quotable) falls
+    // back to omitting the line. Universal negation patterns; parser-side
+    // excerpt hygiene tracked separately (S297 cross-workstream note).
+    let quotableExcerpt = li.planBenefit.sbcExcerpt?.trim() ?? "";
+    if (li.planBenefit.covered === true && quotableExcerpt) {
+      const negation = /\bnot\s+covered\b|\bno\s+coverage\b|\bexcluded\b|\bexclusion\b/i.exec(
+        quotableExcerpt,
+      );
+      if (negation) {
+        const prefix = quotableExcerpt.slice(0, negation.index).replace(/[\s.·|,;:—–-]+$/, "");
+        quotableExcerpt = prefix.length >= 8 ? `${prefix} …` : "";
+      }
+    }
+    if (quotableExcerpt && (!gateUnverified || li.planBenefit.sbcExcerptVerified)) {
+      bullets.push(`     Plan language: "${quotableExcerpt}"`);
     }
   }
 

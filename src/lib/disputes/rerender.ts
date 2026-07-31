@@ -14,8 +14,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { DisputeLetterType, AuditReport } from "@/lib/billing/types";
 import type { PlanContext } from "./plan-context";
 import type { DisputeEvidence } from "./evidence-resolver";
-import { LETTER_TEMPLATES } from "./templates";
+import { LETTER_TEMPLATES, renderGuidedCallRecital } from "./templates";
 import { letterRecipientKind } from "./index";
+import { guidedCallLogFromMeta } from "@/lib/guides/pack-registry";
 import { resolveLetterRecovery } from "./dispute-grounds";
 import { loadDisputeGroundBasis } from "./dispute-ground-basis";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
@@ -183,8 +184,25 @@ export async function rerenderDisputeLetter(
     debtWithinWindow: params.debtWithinWindow,
   });
 
+  // Guided Steps v1 (S297) — attested-call recital, same injection as
+  // generateDisputeLetter (the two build paths mirror; keep in lockstep).
+  // The refresh path re-reads guideSteps every render, so a call logged
+  // AFTER drafting lands in the letter on the next refresh/redraft.
+  const guidedRecital = renderGuidedCallRecital(
+    guidedCallLogFromMeta(
+      ((claim.metadata as Record<string, unknown> | null)?.guideSteps as
+        | Record<string, { checkedAt?: string | null; note?: string }>
+        | undefined) ?? null,
+    ),
+    letterRecipientKind(letterType),
+    letterType,
+  );
+  const finalBody = guidedRecital
+    ? body.replace("\n\nSincerely,", `${guidedRecital}\n\nSincerely,`)
+    : body;
+
   return {
-    body,
+    body: finalBody,
     recovery: recovery
       ? { total: recovery.total, weakened: recovery.weakened, strengthenableFields: recovery.strengthenableFields }
       : null,

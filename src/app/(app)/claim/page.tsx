@@ -18,9 +18,12 @@ import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useMinHoldLoading } from "@/lib/loading/use-min-hold";
 import {
   useClaimPipeline,
+  deriveSentLetterMeta,
   type PipelineClaimSummary,
   type PipelineDispute,
+  type SentLetterMeta,
 } from "@/lib/claims/use-claim-pipeline";
+import { useFeatureFlag } from "@/lib/config/use-feature-flag";
 import type { BillState } from "@/lib/claims/derive-bill-state";
 import { cn } from "@/lib/utils/cn";
 
@@ -126,6 +129,20 @@ export default function CandidClaimPage() {
   } = pipeline;
 
   const loading = useMinHoldLoading(pipeline.loading);
+
+  // Guided Steps v1 (S297, Andrew) — letter-lifecycle card treatment. OFF →
+  // guidedFor returns null everywhere → today's cards, byte-identical.
+  const { enabled: guidedStepsOn } = useFeatureFlag("guided_steps_v1");
+  const guidedFor = (claimId: string): { sentMeta: SentLetterMeta | null } | null =>
+    guidedStepsOn
+      ? {
+          sentMeta: deriveSentLetterMeta(
+            disputeData?.disputes ?? [],
+            claimId,
+            disputeData?.sentCountdownAmberDays ?? 7,
+          ),
+        }
+      : null;
 
   // S139 — group claims by claim_group_id for VisitGroupCard rendering on the
   // All-bills tab. Singletons render BillCard; ≥2-member groups render
@@ -362,6 +379,7 @@ export default function CandidClaimPage() {
                     state={billStates.get(unit.claim.id) ?? "clean"}
                     reviewQuestionCount={questionCountFor(unit.claim)}
                     onSelect={(id) => openClaimDetail(id, "bills")}
+                    guided={guidedFor(unit.claim.id)}
                   />
                 ) : (
                   <VisitGroupCard
@@ -383,6 +401,7 @@ export default function CandidClaimPage() {
               questionCountFor={questionCountFor}
               emptyCopy="No flagged bills right now — confirmed overcharges will show up here."
               onSelect={(id) => openClaimDetail(id, "flagged")}
+              guidedFor={guidedFor}
             />
           )}
 
@@ -394,6 +413,7 @@ export default function CandidClaimPage() {
               questionCountFor={questionCountFor}
               emptyCopy="Nothing needs your input right now."
               onSelect={(id) => openClaimDetail(id, "input")}
+              guidedFor={guidedFor}
             />
           )}
 
@@ -449,6 +469,7 @@ export default function CandidClaimPage() {
                         claim={claim}
                         state="overcharge_no_draft"
                         onSelect={(id) => openClaimDetail(id, "letters")}
+                        guided={guidedFor(claim.id)}
                       />
                     ))}
                   </div>
@@ -553,12 +574,14 @@ function FilteredBillList({
   questionCountFor,
   emptyCopy,
   onSelect,
+  guidedFor,
 }: {
   claims: PipelineClaimSummary[];
   billStates: Map<string, BillState>;
   questionCountFor: (claim: PipelineClaimSummary) => number;
   emptyCopy: string;
   onSelect: (claimId: string) => void;
+  guidedFor?: (claimId: string) => { sentMeta: SentLetterMeta | null } | null;
 }) {
   if (claims.length === 0) {
     return (
@@ -576,6 +599,7 @@ function FilteredBillList({
           state={billStates.get(claim.id) ?? "clean"}
           reviewQuestionCount={questionCountFor(claim)}
           onSelect={onSelect}
+          guided={guidedFor?.(claim.id) ?? null}
         />
       ))}
     </div>

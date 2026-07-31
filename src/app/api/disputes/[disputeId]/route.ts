@@ -778,6 +778,12 @@ export async function GET(
       (((dispute.metadata as Record<string, unknown> | null)?.checklist as
         | Record<string, boolean>
         | undefined) ?? {}),
+    // Guided Steps v1 (S297) — short per-row notes beside the booleans
+    // (packC:receipt tracking number, packD:filed confirmation number).
+    checklistNotes:
+      (((dispute.metadata as Record<string, unknown> | null)?.checklistNotes as
+        | Record<string, string>
+        | undefined) ?? {}),
     // Unified case timeline (S286) — the claim's dispute ladder (see above).
     siblings,
     // S74.5 D16 — if sent_at is set, serve the immutable sent_letter as the
