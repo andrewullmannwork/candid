@@ -27,6 +27,10 @@ import { checkEscalateGate } from "@/lib/disputes/escalate-gate";
 import { evaluateDeadline, readDeadlineConfig } from "@/lib/disputes/deadline-engine";
 import { loadServerSubscription } from "@/lib/subscription/server";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import {
+  computeEvidenceFingerprint,
+  loadFingerprintInputForClaim,
+} from "@/lib/disputes/evidence-fingerprint";
 import { emitCaseEvents, type CaseEventInput } from "@/lib/case/case-events";
 
 async function getAuthUser(req: NextRequest) {
@@ -236,6 +240,28 @@ export async function POST(
       .eq("id", result.disputeId);
   } catch (err) {
     console.error("[disputes/escalate] escalation-input metadata persist failed (non-fatal):", err);
+  }
+
+  // S298 (Andrew) — birth fingerprint. Escalation-created letters never got an
+  // evidence_fingerprint (generate's D16 block stamps it; this route didn't),
+  // so isDisputeStale read `current ≠ null-stored` and every freshly escalated
+  // letter greeted the user with the "plan details changed since this was
+  // drafted" banner seconds after drafting. Same flag gate + loader as the
+  // sibling routes; non-fatal like every stamp here.
+  try {
+    const flywheelOn = await isFeatureEnabled("s74_5_categorization_flywheel_v1");
+    const costShareV2 = await isFeatureEnabled("recovery_cost_share_v2");
+    if (flywheelOn || costShareV2) {
+      const fpInput = await loadFingerprintInputForClaim(supabase, dispute.claim_id, user.id);
+      if (fpInput) {
+        await userScoped(supabase, user.id)
+          .table("dispute_outcomes")
+          .update({ evidence_fingerprint: computeEvidenceFingerprint(fpInput) })
+          .eq("id", result.disputeId);
+      }
+    }
+  } catch (err) {
+    console.error("[disputes/escalate] birth fingerprint stamp failed (non-fatal):", err);
   }
 
   // Timeline unification Phase 0 (S298, mig 221) — the track move + the new
