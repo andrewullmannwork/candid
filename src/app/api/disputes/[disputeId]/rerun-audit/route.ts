@@ -21,6 +21,7 @@ import {
   updateOwnedChildren,
 } from "@/lib/security/user-scoped";
 import { runAudit } from "@/lib/audit";
+import { emitCaseEvent } from "@/lib/case/case-events";
 import { refreshClaimLevelFindings } from "@/lib/audit/reaudit";
 import type { ParsedBill } from "@/lib/billing/types";
 
@@ -276,6 +277,23 @@ export async function POST(
     claimId: claim.id,
     findingsTotal: report.findings.length,
     lineItemsUpdated: updatedCount,
+  });
+
+  // Timeline unification Phase 0 (S298, mig 221) — the rerun replaces
+  // auditSummary in place; this event preserves that a rerun happened and the
+  // before/after finding counts (counts are references, not money).
+  await emitCaseEvent(supabase, user.id, {
+    claimId: claim.id as string,
+    disputeId: dispute.id as string,
+    kind: "audit_rerun",
+    payload: {
+      findingsBefore:
+        typeof (claimMetadata.auditSummary as { totalFindings?: number } | undefined)
+          ?.totalFindings === "number"
+          ? (claimMetadata.auditSummary as { totalFindings: number }).totalFindings
+          : null,
+      findingsAfter: report.findings.length,
+    },
   });
 
   return NextResponse.json({

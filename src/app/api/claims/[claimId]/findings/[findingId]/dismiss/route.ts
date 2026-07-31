@@ -25,6 +25,7 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { userScoped, selectOwnedChildren, updateOwnedChildren } from "@/lib/security/user-scoped";
+import { emitCaseEvent } from "@/lib/case/case-events";
 
 const VALID_REASONS = new Set([
   "legitimate_adjustment",
@@ -262,6 +263,20 @@ export async function POST(
     hasNote: note.length > 0,
     touchedLines: touched,
     dismissedAt,
+  });
+
+  // Timeline unification Phase 0 (S298, mig 221) — the user's judgment on our
+  // finding, in sequence (the precision oracle). References only: type,
+  // reason enum, finding id — the amount stays in finding_dismissals.
+  await emitCaseEvent(supabase, user.id, {
+    claimId,
+    kind: "finding_dismissed",
+    payload: {
+      findingId,
+      findingType: touchedFindingType,
+      reason,
+      hasNote: note.length > 0,
+    },
   });
 
   return NextResponse.json({ ok: true, touched, dismissedAt });

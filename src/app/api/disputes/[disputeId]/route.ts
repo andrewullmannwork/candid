@@ -33,6 +33,7 @@ import {
 } from "@/lib/disputes/strength-scoring";
 import { resolveAccountName } from "@/lib/disputes/rerender";
 import { letterRecipientKind } from "@/lib/disputes";
+import { resolveLetterTypeFromDispute } from "@/lib/disputes/letter-type";
 import {
   captureCoverageSnapshot,
   diffCoverageSnapshots,
@@ -957,29 +958,9 @@ function normalizeNameForCompare(name: string): string {
   return name.toLowerCase().replace(/[.,'"()]/g, "").replace(/\s+/g, " ").trim();
 }
 
-// Map a stored dispute row back to a LETTER_TEMPLATES key.
-// Source of truth (newer rows): metadata.letterType. Legacy rows fall back
-// to a dispute_type → letter_type mapping.
-function resolveLetterTypeFromDispute(dispute: { dispute_type: string; metadata?: Record<string, unknown> | null }): import("@/lib/billing/types").DisputeLetterType {
-  const metaType = dispute.metadata && typeof dispute.metadata === "object"
-    ? (dispute.metadata as { letterType?: string }).letterType
-    : undefined;
-  if (metaType) {
-    return metaType as import("@/lib/billing/types").DisputeLetterType;
-  }
-  switch (dispute.dispute_type) {
-    case "internal_appeal":
-      return "insurance_appeal";
-    case "negotiation":
-      return "negotiation";
-    case "complaint":
-      return "balance_billing";
-    case "external_appeal":
-      return "insurance_appeal";
-    default:
-      return "overcharge";
-  }
-}
+// resolveLetterTypeFromDispute — consolidated to src/lib/disputes/letter-type.ts
+// (S298): this route's private copy + redraft's had drifted on legacy rows,
+// and the legacy external_appeal guess is corrected there (→ external_review).
 
 function buildFingerprint(
   planContext: unknown,

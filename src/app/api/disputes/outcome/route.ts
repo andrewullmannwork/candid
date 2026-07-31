@@ -15,6 +15,7 @@ import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
 import { updateDisputeOutcome, getUserDisputes } from "@/lib/disputes/persist";
 import { isOutcomeDetail } from "@/lib/disputes/outcome-taxonomy";
+import { emitCaseEvents, type CaseEventInput } from "@/lib/case/case-events";
 import { isFeatureEnabled, readFeatureFlagConfig } from "@/lib/config/product-flags";
 import {
   computeCooldownUntil,
@@ -348,6 +349,48 @@ export async function POST(req: NextRequest) {
           err,
         );
       }
+    }
+
+    // Timeline unification Phase 0 (S298, mig 221) — case-history events for
+    // this mutation, derived from the request shape + the row's PRIOR state
+    // (existing.* was read before any write above). Flag-gated + fail-soft
+    // inside the emitter; payloads carry references only.
+    if (existing.claim_id) {
+      const claimId = existing.claim_id as string;
+      const events: CaseEventInput[] = [];
+      if (clearSentAt) {
+        events.push({ claimId, disputeId, kind: "letter_unsent" });
+      }
+      if (clearOutcomeDetail) {
+        events.push({ claimId, disputeId, kind: "outcome_undone" });
+      }
+      if (outcomeDetail && isOutcomeDetail(outcomeDetail)) {
+        events.push({
+          claimId,
+          disputeId,
+          // The union carries "collections" for exhaustiveness; if a caller
+          // ever posts it here, the honest event is the collections one.
+          kind: outcomeDetail === "collections" ? "collections_reported" : "response_logged",
+          payload: { outcomeDetail, status },
+        });
+      }
+      // Mirror of the D16 snapshot guard: only the genuine drafted→sent
+      // transition (idempotent re-clicks and undo round-trips excluded).
+      if (
+        status === "filed" &&
+        !existing.sent_at &&
+        !clearSentAt &&
+        !clearOutcomeDetail &&
+        !outcomeDetail
+      ) {
+        events.push({
+          claimId,
+          disputeId,
+          kind: "letter_sent",
+          payload: { statusFrom: existing.status },
+        });
+      }
+      await emitCaseEvents(supabase, userId, events);
     }
 
     return NextResponse.json({ success: true });

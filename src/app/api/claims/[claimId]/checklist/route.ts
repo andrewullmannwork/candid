@@ -20,6 +20,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
+import { emitCaseEvents, type CaseEventInput } from "@/lib/case/case-events";
 
 const KEY_RE = /^[a-zA-Z0-9_.:-]{1,64}$/;
 const NOTE_MAX = 500;
@@ -133,6 +134,38 @@ export async function POST(
       { error: "Failed to persist step" },
       { status: 500 },
     );
+  }
+
+  // Timeline unification Phase 0 (S298, mig 221). The phone-outcome question
+  // is its own kind; its yes/no answer is an ENUM riding `note` (S297), so it
+  // may enter the payload — free-text notes never do (hasNote boolean only).
+  // Note-only saves on ordinary steps are not attestations → no event.
+  {
+    const events: CaseEventInput[] = [];
+    if (stepId === "packA:phone-outcome") {
+      if (checked === false) {
+        events.push({ claimId: claim.id as string, kind: "guide_step_unchecked", payload: { stepId } });
+      } else if (checked === true || note != null) {
+        const answer =
+          typeof next.note === "string" && ["yes", "no", "skip"].includes(next.note)
+            ? next.note
+            : null;
+        events.push({
+          claimId: claim.id as string,
+          kind: "phone_outcome_answered",
+          payload: { stepId, answer },
+        });
+      }
+    } else if (checked === true) {
+      events.push({
+        claimId: claim.id as string,
+        kind: "guide_step_attested",
+        payload: { stepId, hasNote: typeof next.note === "string" && next.note.length > 0 },
+      });
+    } else if (checked === false) {
+      events.push({ claimId: claim.id as string, kind: "guide_step_unchecked", payload: { stepId } });
+    }
+    await emitCaseEvents(supabase, user.id, events);
   }
 
   return NextResponse.json({ guideSteps });

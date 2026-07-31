@@ -33,6 +33,7 @@ export const USER_OWNED_TABLES = [
   "consent_events",
   "subscription_events",
   "user_plan_cost_share_overrides", // Cost-Share v2 (mig 174), W3 route write
+  "claim_case_events", // Timeline unification Phase 0 (mig 221), case-events emitter
   // parent-join children (no user_id) — banned raw; use selectOwnedParentIds()
   "claim_line_items",
   "plan_covered_services",

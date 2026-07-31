@@ -9,6 +9,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
 import { isAuthorizedCron } from "@/lib/security/require-cron-secret";
+import { userScoped } from "@/lib/security/user-scoped";
+import { emitCaseEvent } from "@/lib/case/case-events";
 
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
@@ -38,7 +40,7 @@ export async function GET(req: NextRequest) {
       // Fetch dispute details
       const { data: dispute } = await supabase
         .from("dispute_outcomes")
-        .select("id, dispute_type, status, amount_disputed, filed_date")
+        .select("id, claim_id, dispute_type, status, amount_disputed, filed_date")
         .eq("id", followup.dispute_id)
         .single();
 
@@ -76,9 +78,59 @@ export async function GET(req: NextRequest) {
         .eq("id", followup.id);
 
       sent++;
+
+      // Timeline unification Phase 0 (S298, mig 221) — the nudge, on the
+      // record. Flag-gated + fail-soft inside the emitter.
+      if (dispute.claim_id) {
+        await emitCaseEvent(supabase, followup.user_id, {
+          claimId: dispute.claim_id as string,
+          disputeId: dispute.id as string,
+          kind: "followup_sent",
+          actor: "system",
+          payload: { followupType: followup.followup_type },
+        });
+      }
     } catch (err) {
       console.error(`[cron/send-followups] Failed for followup ${followup.id}:`, err);
     }
+  }
+
+  // Timeline unification Phase 0 (S298, mig 221) — deadline_lapsed detection.
+  // Sent, still-open disputes whose governing deadline has passed get one
+  // system event (the once-only guard is an existing-event check, so cron
+  // re-runs and retries never double-emit). Detection time is occurred_at;
+  // the deadline itself rides the payload. Fail-soft end to end.
+  try {
+    const { data: lapsed } = await supabase
+      .from("dispute_outcomes")
+      .select("id, claim_id, user_id, governing_deadline_date, deadline_type, status")
+      .not("sent_at", "is", null)
+      .not("governing_deadline_date", "is", null)
+      .lt("governing_deadline_date", today)
+      .not("status", "in", "(won,lost,settled,withdrawn,won_on_escalation,settled_on_escalation,cancelled)")
+      .limit(100);
+    for (const d of lapsed ?? []) {
+      if (!d.claim_id || !d.user_id) continue;
+      const { data: already } = await userScoped(supabase, d.user_id as string)
+        .table("claim_case_events")
+        .select("id")
+        .eq("dispute_id", d.id)
+        .eq("kind", "deadline_lapsed")
+        .limit(1);
+      if (already && already.length > 0) continue;
+      await emitCaseEvent(supabase, d.user_id as string, {
+        claimId: d.claim_id as string,
+        disputeId: d.id as string,
+        kind: "deadline_lapsed",
+        actor: "system",
+        payload: {
+          governingDeadlineDate: d.governing_deadline_date,
+          deadlineType: d.deadline_type,
+        },
+      });
+    }
+  } catch (err) {
+    console.error("[cron/send-followups] deadline_lapsed sweep failed (non-fatal):", err);
   }
 
   console.log(`[cron/send-followups] Sent ${sent}/${followups.length} follow-up notifications`);

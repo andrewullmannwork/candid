@@ -31,9 +31,10 @@ import { rerenderDisputeLetter } from "@/lib/disputes/rerender";
 import { reparseField } from "@/lib/plan/reparse-field";
 import { loadDecorationContext } from "@/lib/plan/analyze-decoration";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { emitCaseEvent } from "@/lib/case/case-events";
 import { loadServerSubscription } from "@/lib/subscription/server";
 import { letterRequiresPro, evaluateLetterAccess } from "@/lib/disputes/letter-access";
-import type { DisputeLetterType } from "@/lib/billing/types";
+import { resolveLetterTypeFromDispute } from "@/lib/disputes/letter-type";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -45,21 +46,11 @@ async function getAuthUser(req: NextRequest) {
   }
 }
 
-function resolveLetterTypeFromDispute(dispute: {
-  dispute_type: string;
-  metadata?: Record<string, unknown> | null;
-}): DisputeLetterType {
-  const metaType = dispute.metadata && typeof dispute.metadata === "object"
-    ? (dispute.metadata as { letterType?: string }).letterType
-    : undefined;
-  if (metaType) return metaType as DisputeLetterType;
-  switch (dispute.dispute_type) {
-    case "internal_appeal": return "insurance_appeal";
-    case "negotiation": return "negotiation";
-    case "complaint": return "overcharge";
-    default: return "insurance_appeal";
-  }
-}
+// resolveLetterTypeFromDispute — consolidated to src/lib/disputes/letter-type.ts
+// (S298). This route's private copy had DRIFTED from the [disputeId] GET's on
+// legacy rows (complaint → overcharge here vs balance_billing there; default →
+// insurance_appeal vs overcharge) — a legacy complaint letter would change
+// template on redraft. One shared resolver ends the drift class.
 
 export async function POST(
   req: NextRequest,
@@ -312,6 +303,17 @@ export async function POST(
     .table("dispute_outcomes")
     .update(updatePayload)
     .eq("id", dispute.id);
+
+  // Timeline unification Phase 0 (S298, mig 221) — the redraft moment.
+  // Flag-gated + fail-soft inside the emitter; references only.
+  if (dispute.claim_id) {
+    await emitCaseEvent(supabase, user.id, {
+      claimId: dispute.claim_id as string,
+      disputeId: dispute.id as string,
+      kind: "letter_redrafted",
+      payload: { letterType: letterTypeForRender },
+    });
+  }
 
   return NextResponse.json({
     success: true,

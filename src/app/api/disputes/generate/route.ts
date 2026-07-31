@@ -16,6 +16,7 @@ import {
   type StrengthResult,
 } from "@/lib/disputes/strength-scoring";
 import { persistDisputeLetter } from "@/lib/disputes/persist";
+import { emitCaseEvent } from "@/lib/case/case-events";
 import { evaluateDeadline, readDeadlineConfig, type DeadlineGuard } from "@/lib/disputes/deadline-engine";
 import { createServerClient } from "@/lib/supabase/server";
 import { reparseField } from "@/lib/plan/reparse-field";
@@ -524,6 +525,19 @@ export async function POST(req: NextRequest) {
         if (err instanceof Error && err.message !== "feature_disabled") {
           console.error("[disputes] Failed to persist dispute (non-fatal):", err);
         }
+      }
+
+      // Timeline unification Phase 0 (S298, mig 221) — the letter's birth.
+      // Dedup regenerations are mechanical re-renders of the same row, not
+      // case moments, so only a FRESH persist emits. Flag-gated + fail-soft
+      // inside the emitter.
+      if (disputeId && body.claimId && !deduplicated) {
+        await emitCaseEvent(supabase, auditReport.userId, {
+          claimId: body.claimId as string,
+          disputeId,
+          kind: "letter_drafted",
+          payload: { letterType: letterType || "overcharge" },
+        });
       }
 
       // S74.5 D16 — compute initial evidence_fingerprint and persist on the

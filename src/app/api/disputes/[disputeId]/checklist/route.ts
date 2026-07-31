@@ -22,6 +22,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
+import { emitCaseEvent } from "@/lib/case/case-events";
 
 const KEY_RE = /^[a-zA-Z0-9_.:-]{1,64}$/;
 
@@ -81,7 +82,7 @@ export async function POST(
 
   const { data: dispute, error: fetchErr } = await userScoped(supabase, user.id)
     .table("dispute_outcomes")
-    .select("id, metadata")
+    .select("id, claim_id, metadata")
     .eq("id", disputeId)
     .single();
   if (fetchErr || !dispute) {
@@ -133,6 +134,24 @@ export async function POST(
       { error: "Failed to persist check" },
       { status: 500 },
     );
+  }
+
+  // Timeline unification Phase 0 (S298, mig 221). Attest/uncheck only —
+  // note-only saves are not attestations. Legacy disputes without a linked
+  // claim have no case to anchor to → no event. hasNote is the only trace of
+  // the note (text stays in row metadata).
+  if (dispute.claim_id && done != null) {
+    await emitCaseEvent(supabase, user.id, {
+      claimId: dispute.claim_id as string,
+      disputeId: dispute.id as string,
+      kind: done ? "guide_step_attested" : "guide_step_unchecked",
+      payload: {
+        stepId: key,
+        ...(done
+          ? { hasNote: typeof checklistNotes[key] === "string" && checklistNotes[key].length > 0 }
+          : {}),
+      },
+    });
   }
 
   return NextResponse.json({ checklist, checklistNotes });
