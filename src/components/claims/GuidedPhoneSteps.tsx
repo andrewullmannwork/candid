@@ -160,9 +160,12 @@ export function GuidedPhoneSteps({
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
   const [ctaBusy, setCtaBusy] = useState(false);
 
-  // Hand-off info rows are superseded by rail step 4b (their approved copy
-  // lives on as 4b's sub line) — the pack renders only actionable steps.
-  const steps = packAStepsForTrack(ctx.track).filter((s) => s.control !== "info");
+  // Hand-off rows are superseded by rail step 4b (their approved copy lives
+  // on as 4b's sub line). Filter by ID, not control — the provider track's
+  // "Log the call" is info-control but a REAL row (title + log input).
+  const steps = packAStepsForTrack(ctx.track).filter(
+    (s) => s.id !== "packA:ins-handoff" && s.id !== "packA:prov-handoff",
+  );
   const eff: Record<string, GuideStepState> = { ...initialSteps, ...local };
 
   const checkboxDone = steps.filter(
@@ -170,6 +173,10 @@ export function GuidedPhoneSteps({
   ).length;
   const currentStepId =
     steps.find((s) => s.control === "checkbox" && eff[s.id]?.checkedAt == null)?.id ?? null;
+  // Steps BEYOND the current one render slightly greyed until reached
+  // (Andrew: the dim is the progression signal; every unchecked dot is the
+  // same hollow circle).
+  const currentStepIdx = steps.findIndex((s) => s.id === currentStepId);
 
   const anyCallMade = checkboxDone > 0;
   const outcomeNote = eff[PHONE_OUTCOME.id]?.note;
@@ -275,39 +282,33 @@ export function GuidedPhoneSteps({
         )}
       </div>
 
-      {steps.map((step) => {
+      {steps.map((step, stepIdx) => {
         const state = eff[step.id];
         const checked = state?.checkedAt != null;
         const isCurrent = step.id === currentStepId;
+        const notYetReached = currentStepIdx !== -1 && stepIdx > currentStepIdx;
         const copySegs = resolveCopy(step.copy, ctx);
         const scriptSegs = step.script ? step.script(ctx) : null;
         const phoneLine = phoneLineFor(step);
         const noteValue = noteDrafts[step.id] ?? state?.note ?? "";
 
         return (
-          <div key={step.id} className="flex gap-2.5">
-            {/* 22px leading dot — grey ⋯ in-progress (Andrew: "on the step,
-                not completed") · hollow untouched · green ✓ done */}
+          <div key={step.id} className={notYetReached ? "flex gap-2.5 opacity-60" : "flex gap-2.5"}>
+            {/* 22px leading dot — hollow until attested (current + future look
+                the same; the FUTURE steps' dim is the progression signal —
+                Andrew) · green ✓ done · info rows keep the note glyph zone */}
             <span
               className={
                 "mt-0.5 grid h-[22px] w-[22px] flex-shrink-0 place-items-center rounded-full " +
                 (checked
                   ? "bg-emerald-600 text-white"
-                  : isCurrent
-                    ? "bg-gray-300 text-gray-600"
-                    : "border-[1.5px] border-gray-300 text-transparent")
+                  : "border-[1.5px] border-gray-300 text-transparent")
               }
               aria-hidden
             >
               {checked ? (
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
                   <path d="M5 13l4 4L19 7" />
-                </svg>
-              ) : isCurrent ? (
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-                  <circle cx="5" cy="12" r="2.2" />
-                  <circle cx="12" cy="12" r="2.2" />
-                  <circle cx="19" cy="12" r="2.2" />
                 </svg>
               ) : null}
             </span>
