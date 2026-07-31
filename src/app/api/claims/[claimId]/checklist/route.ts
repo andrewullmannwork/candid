@@ -91,14 +91,32 @@ export async function POST(
 
   const meta = (claim.metadata as Record<string, unknown>) ?? {};
   const guideSteps = {
-    ...((meta.guideSteps as Record<string, { checkedAt: string | null; note?: string }> | undefined) ??
-      {}),
+    ...((meta.guideSteps as Record<
+      string,
+      { checkedAt: string | null; note?: string; noteHistory?: Array<{ note: string; replacedAt: string }> }
+    > | undefined) ?? {}),
   };
   const prior = guideSteps[stepId] ?? { checkedAt: null };
-  const next: { checkedAt: string | null; note?: string } = { ...prior };
+  const next: {
+    checkedAt: string | null;
+    note?: string;
+    noteHistory?: Array<{ note: string; replacedAt: string }>;
+  } = { ...prior };
   if (checked === true) next.checkedAt = new Date().toISOString();
   if (checked === false) next.checkedAt = null;
-  if (note != null) next.note = note;
+  if (note != null) {
+    // S297 noteHistory (Andrew) — these logs are evidence; before replacing a
+    // non-empty note with something different, bank the old value (last 5,
+    // server-stamped) so an accidental delete is recoverable.
+    const priorNote = typeof prior.note === "string" ? prior.note : null;
+    if (priorNote != null && priorNote.length > 0 && priorNote !== note) {
+      next.noteHistory = [
+        ...(prior.noteHistory ?? []),
+        { note: priorNote, replacedAt: new Date().toISOString() },
+      ].slice(-5);
+    }
+    next.note = note;
+  }
   guideSteps[stepId] = next;
 
   const { error: updateErr } = await userScoped(supabase, user.id)

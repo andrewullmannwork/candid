@@ -3550,7 +3550,11 @@ export function RailStep({
         >
           {done ? "\u2713" : n}
         </span>
-        <div className="min-w-0 flex-1 pt-0.5">
+        {/* S297 (Andrew E2E) — min-w-[12rem], not min-w-0: with a wide right
+            cluster, flex was crushing the title into a one-word-per-line
+            sliver through the rail line; now the right cluster wraps below
+            instead (flex-wrap) and the title keeps a readable column. */}
+        <div className="min-w-[12rem] flex-1 pt-0.5">
           <div className="text-[16.5px] font-bold tracking-[-0.005em] text-gray-900">{title}</div>
           {sub && <div className="mt-0.5 text-[13px] leading-normal text-gray-500">{sub}</div>}
         </div>

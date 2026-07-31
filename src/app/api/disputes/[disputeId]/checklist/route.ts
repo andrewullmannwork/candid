@@ -95,15 +95,34 @@ export async function POST(
   };
   // S297 — notes live beside the booleans, keyed identically, so a note can
   // exist on an unchecked row (tracking number saved before "Receipt saved").
+  const priorNotes = (meta.checklistNotes as Record<string, string> | undefined) ?? {};
   const checklistNotes = {
-    ...((meta.checklistNotes as Record<string, string> | undefined) ?? {}),
+    ...priorNotes,
     ...(note != null ? { [key]: note } : {}),
   };
+  // S297 noteHistory (Andrew) — bank the replaced non-empty value (last 5,
+  // server-stamped) so an accidental delete is recoverable.
+  let checklistNoteHistory =
+    (meta.checklistNoteHistory as
+      | Record<string, Array<{ note: string; replacedAt: string }>>
+      | undefined) ?? {};
+  if (note != null) {
+    const priorNote = priorNotes[key];
+    if (typeof priorNote === "string" && priorNote.length > 0 && priorNote !== note) {
+      checklistNoteHistory = {
+        ...checklistNoteHistory,
+        [key]: [
+          ...(checklistNoteHistory[key] ?? []),
+          { note: priorNote, replacedAt: new Date().toISOString() },
+        ].slice(-5),
+      };
+    }
+  }
 
   const { error: updateErr } = await userScoped(supabase, user.id)
     .table("dispute_outcomes")
     .update({
-      metadata: { ...meta, checklist, checklistNotes },
+      metadata: { ...meta, checklist, checklistNotes, checklistNoteHistory },
       updated_at: new Date().toISOString(),
     })
     .eq("id", dispute.id);
