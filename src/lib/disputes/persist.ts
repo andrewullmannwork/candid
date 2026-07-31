@@ -357,13 +357,17 @@ export async function getUserDisputes(
     filedDate: string;
     resolutionDate: string | null;
     claimId: string | null;
+    // Guided Steps v1 (S297) — sent-letter card state on /claim. responseDueDate
+    // mirrors the dispute page's derivation: governing deadline, else sent + 30d.
+    sentAt: string | null;
+    responseDueDate: string | null;
   }>;
   totalRecovered: number;
   activeCount: number;
 }> {
   const { data: disputes } = await supabase
     .from("dispute_outcomes")
-    .select("id, dispute_type, status, amount_disputed, amount_recovered, filed_date, resolution_date, claim_id")
+    .select("id, dispute_type, status, amount_disputed, amount_recovered, filed_date, resolution_date, claim_id, sent_at, governing_deadline_date")
     .eq("user_id", userId)
     .order("filed_date", { ascending: false });
 
@@ -392,6 +396,16 @@ export async function getUserDisputes(
       filedDate: d.filed_date,
       resolutionDate: d.resolution_date,
       claimId: d.claim_id,
+      sentAt: (d.sent_at as string | null) ?? null,
+      responseDueDate: ((): string | null => {
+        const governing = (d.governing_deadline_date as string | null) ?? null;
+        if (governing) return governing;
+        const sent = (d.sent_at as string | null) ?? null;
+        if (!sent) return null;
+        const t = Date.parse(sent);
+        if (Number.isNaN(t)) return null;
+        return new Date(t + 30 * 86_400_000).toISOString().slice(0, 10);
+      })(),
     })),
     totalRecovered,
     activeCount,

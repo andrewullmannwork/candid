@@ -33,12 +33,52 @@ export interface PipelineDispute {
   filedDate: string;
   resolutionDate: string | null;
   claimId: string | null;
+  // Guided Steps v1 (S297) — sent-letter card state (additive; absent on
+  // older cached payloads → treated as not sent).
+  sentAt?: string | null;
+  responseDueDate?: string | null;
 }
 
 export interface PipelineDisputeData {
   disputes: PipelineDispute[];
   totalRecovered: number;
   activeCount: number;
+  /** Config-backed countdown threshold (guided_steps_v1.config; default 7). */
+  sentCountdownAmberDays?: number;
+}
+
+// ── Guided Steps v1 (S297) — sent-letter meta for the BillCard ──────────────
+
+export interface SentLetterMeta {
+  responseDueDate: string | null;
+  daysRemaining: number | null;
+  amber: boolean;
+}
+
+/**
+ * A claim's sent-letter state for the /claim card: null when no non-cancelled
+ * dispute on the claim has been marked sent. Earliest due date wins; `amber`
+ * flips when the window is within `amberDays` (or already passed).
+ */
+export function deriveSentLetterMeta(
+  disputes: PipelineDispute[],
+  claimId: string,
+  amberDays: number,
+): SentLetterMeta | null {
+  const sent = disputes.filter(
+    (d) => d.claimId === claimId && d.status !== "cancelled" && d.sentAt != null,
+  );
+  if (sent.length === 0) return null;
+  const due =
+    sent
+      .map((d) => d.responseDueDate)
+      .filter((x): x is string => typeof x === "string" && x.length > 0)
+      .sort()[0] ?? null;
+  if (!due) return { responseDueDate: null, daysRemaining: null, amber: false };
+  const t = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(due) ? `${due}T00:00:00` : due);
+  if (Number.isNaN(t)) return { responseDueDate: due, daysRemaining: null, amber: false };
+  const daysRemaining = Math.ceil((t - Date.now()) / 86_400_000);
+  return { responseDueDate: due, daysRemaining, amber: daysRemaining <= amberDays };
 }
 
 export interface PipelineClaimSummary {

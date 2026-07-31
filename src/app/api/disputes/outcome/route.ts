@@ -15,7 +15,7 @@ import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
 import { updateDisputeOutcome, getUserDisputes } from "@/lib/disputes/persist";
 import { isOutcomeDetail } from "@/lib/disputes/outcome-taxonomy";
-import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { isFeatureEnabled, readFeatureFlagConfig } from "@/lib/config/product-flags";
 import {
   computeCooldownUntil,
   computeEvidenceFingerprint,
@@ -54,7 +54,15 @@ export async function GET(req: NextRequest) {
   }
 
   const result = await getUserDisputes(supabase, userId);
-  return NextResponse.json(result);
+  // Guided Steps v1 (S297) — the sent-card countdown threshold, config-backed
+  // (guided_steps_v1.config.sent_countdown_amber_days; no key → 7). Tunable
+  // via a config upsert, no deploy.
+  const sentCountdownAmberDays = await readFeatureFlagConfig(
+    "guided_steps_v1",
+    "sent_countdown_amber_days",
+    7,
+  );
+  return NextResponse.json({ ...result, sentCountdownAmberDays });
 }
 
 export async function POST(req: NextRequest) {

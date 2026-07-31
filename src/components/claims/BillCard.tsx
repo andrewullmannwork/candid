@@ -23,6 +23,7 @@
  */
 
 import type { BillState } from "@/lib/claims/derive-bill-state";
+import type { SentLetterMeta } from "@/lib/claims/use-claim-pipeline";
 import { cn } from "@/lib/utils/cn";
 
 interface ClaimSummary {
@@ -149,7 +150,14 @@ function formatCurrency(n: number): string {
   });
 }
 
-function StateIcon({ kind, className }: { kind: "warn" | "search" | "check"; className?: string }) {
+function StateIcon({ kind, className }: { kind: "warn" | "search" | "check" | "clock"; className?: string }) {
+  if (kind === "clock") {
+    return (
+      <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 2m6-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    );
+  }
   if (kind === "warn") {
     return (
       <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -223,6 +231,7 @@ export function BillCard({
   state,
   onSelect,
   reviewQuestionCount,
+  guided = null,
 }: {
   claim: ClaimSummary;
   state: BillState;
@@ -230,8 +239,39 @@ export function BillCard({
   /** needs_review only — count for the "Answer N questions" button (page passes
    *  reviewNeededCount, falling back to that claim's open discrepancy count). */
   reviewQuestionCount?: number;
+  /** Guided Steps v1 (S297, Andrew) — letter-lifecycle card treatment. Non-null
+   *  = flag ON: no-letter → "Review +$X", drafted → "Send letter", sent →
+   *  "Log response" on a WHITE card with the awaiting pill, re-ambering into a
+   *  countdown as the response deadline approaches. Null → today's card,
+   *  byte-identical. */
+  guided?: { sentMeta: SentLetterMeta | null } | null;
 }) {
   const config = STATE_CONFIG[state];
+  // Sent-letter override: calm white chrome + awaiting pill; amber countdown
+  // chrome returns when the window is near/past (his call is needed again).
+  const sentMeta = state === "overcharge_drafted" ? (guided?.sentMeta ?? null) : null;
+  const effConfig = sentMeta
+    ? sentMeta.amber
+      ? {
+          ...config,
+          statusLabel:
+            sentMeta.daysRemaining != null && sentMeta.daysRemaining <= 0
+              ? "Response window has passed"
+              : `Response due in ${sentMeta.daysRemaining} ${sentMeta.daysRemaining === 1 ? "day" : "days"}`,
+        }
+      : {
+          ...config,
+          statusLabel: "Letter sent · awaiting response",
+          statusPillCls: "bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-200",
+          statusDotCls: "bg-blue-500",
+          iconKey: "clock" as const,
+          iconCls: "bg-blue-50 text-blue-600",
+          cardChromeCls: STATE_CONFIG.clean.cardChromeCls,
+          headerBorderCls: STATE_CONFIG.clean.headerBorderCls,
+          amountsBlockCls: STATE_CONFIG.clean.amountsBlockCls,
+          footerBorderCls: STATE_CONFIG.clean.footerBorderCls,
+        }
+    : config;
   const isFlagged = state === "overcharge_drafted" || state === "overcharge_no_draft";
   const isReview = state === "needs_review";
   const showAmountsBlock = isFlagged || isReview;
@@ -248,12 +288,21 @@ export function BillCard({
   // Surface 2 — big state-aware footer button. Labels are built as SINGLE text
   // nodes (a flex gap on the button would otherwise space out interpolated words).
   const questionCount = Math.max(1, reviewQuestionCount ?? claim.reviewNeededCount ?? 1);
-  const footerButton: { label: string; kind: "primary" | "amber" } | null =
+  // Guided Steps v1 (S297, Andrew) — the button IS the letter's next action:
+  // no letter → "Review +$X" · drafted → "Send letter" · sent → "Log response"
+  // (verb unified with the followup banner). guided null → today's labels.
+  const footerButton: { label: string; kind: "primary" | "amber"; icon?: "send" | "clock" } | null =
     state === "overcharge_drafted"
-      ? { label: "Review & send letter", kind: "primary" }
+      ? guided
+        ? sentMeta
+          ? { label: "Log response", kind: sentMeta.amber ? "amber" : "primary", icon: "clock" }
+          : { label: "Send letter", kind: "primary", icon: "send" }
+        : { label: "Review & send letter", kind: "primary" }
       : state === "overcharge_no_draft"
         ? {
-            label: `Review & recover +$${formatCurrency(potentialRecovery)}`,
+            label: guided
+              ? `Review +$${formatCurrency(potentialRecovery)}`
+              : `Review & recover +$${formatCurrency(potentialRecovery)}`,
             kind: "primary",
           }
         : state === "needs_review"
@@ -269,24 +318,24 @@ export function BillCard({
       onClick={() => onSelect(claim.id)}
       className={cn(
         "group block w-full overflow-hidden rounded-2xl border text-left transition-all hover:-translate-y-0.5 hover:shadow-md",
-        config.cardChromeCls,
+        effConfig.cardChromeCls,
       )}
     >
       {/* Header: icon + provider + date + status pill — bg inherits from card chrome */}
       <div
         className={cn(
           "flex items-start justify-between gap-3 border-b px-5 py-4",
-          config.headerBorderCls,
+          effConfig.headerBorderCls,
         )}
       >
         <div className="flex min-w-0 items-center gap-3">
           <div
             className={cn(
               "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl",
-              config.iconCls,
+              effConfig.iconCls,
             )}
           >
-            <StateIcon kind={config.iconKey} className="h-4 w-4" />
+            <StateIcon kind={effConfig.iconKey} className="h-4 w-4" />
           </div>
           <div className="min-w-0">
             <p className="truncate text-[15px] font-semibold leading-snug text-gray-900">{claim.providerName}</p>
@@ -304,11 +353,11 @@ export function BillCard({
         <span
           className={cn(
             "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold",
-            config.statusPillCls,
+            effConfig.statusPillCls,
           )}
         >
-          <span className={cn("h-1.5 w-1.5 rounded-full", config.statusDotCls)} />
-          {config.statusLabel}
+          <span className={cn("h-1.5 w-1.5 rounded-full", effConfig.statusDotCls)} />
+          {effConfig.statusLabel}
         </span>
       </div>
 
@@ -320,7 +369,7 @@ export function BillCard({
           <div
             className={cn(
               "flex items-center justify-between rounded-xl border px-4 py-3.5",
-              config.amountsBlockCls,
+              effConfig.amountsBlockCls,
             )}
           >
             <div>
@@ -415,7 +464,7 @@ export function BillCard({
       <div
         className={cn(
           "mt-4 flex flex-wrap items-center justify-between gap-3 border-t px-5 py-3",
-          config.footerBorderCls,
+          effConfig.footerBorderCls,
         )}
       >
         <span className={cn("text-xs font-semibold", bottomRow.cls)}>{bottomRow.text}</span>
@@ -431,7 +480,13 @@ export function BillCard({
           >
             {footerButton.label}
             <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" aria-hidden="true">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M12 5l7 7-7 7" />
+              {footerButton.icon === "send" ? (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
+              ) : footerButton.icon === "clock" ? (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 2m6-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M12 5l7 7-7 7" />
+              )}
             </svg>
           </span>
         ) : (
