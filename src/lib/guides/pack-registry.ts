@@ -540,6 +540,56 @@ export function isTerminalRung(input: { letterType: string | null; status: strin
   return input.letterType === "external_review" || input.letterType === "final_notice";
 }
 
+// ── Letter recital source (S297) — attested calls → letter facts ───────────
+
+export type GuidedCallLogEntry = {
+  kind: "insurer_call" | "billing_hold_call" | "itemized_request_call" | "flagged_charges_call";
+  /** Server-issued checkedAt of the attestation. */
+  calledAt: string;
+  /** The user's log note — carried for future STRUCTURED use (tracker Item X);
+   *  deliberately NOT rendered into letters in v1 (raw prose needs a voice pass). */
+  note?: string;
+};
+
+const CALL_LOG_STEP_KINDS: Record<string, GuidedCallLogEntry["kind"]> = {
+  "packA:ins-call-insurer": "insurer_call",
+  "packA:ins-ask-hold": "billing_hold_call",
+  "packA:prov-ask-hold": "billing_hold_call",
+  "packA:prov-itemized": "itemized_request_call",
+  "packA:prov-call-flagged": "flagged_charges_call",
+};
+
+/**
+ * Project claims.metadata.guideSteps into letter-recital entries. Attested-only
+ * (checkedAt present); one entry per kind (both tracks map their hold step to
+ * billing_hold_call — earliest wins); chronological.
+ */
+export function guidedCallLogFromMeta(
+  guideSteps:
+    | Record<string, { checkedAt?: string | null; note?: string }>
+    | null
+    | undefined,
+): GuidedCallLogEntry[] {
+  if (!guideSteps) return [];
+  const entries: GuidedCallLogEntry[] = [];
+  for (const [stepId, kind] of Object.entries(CALL_LOG_STEP_KINDS)) {
+    const row = guideSteps[stepId];
+    if (!row || typeof row.checkedAt !== "string" || row.checkedAt.length === 0) continue;
+    entries.push({
+      kind,
+      calledAt: row.checkedAt,
+      note: typeof row.note === "string" && row.note.length > 0 ? row.note : undefined,
+    });
+  }
+  entries.sort((a, b) => a.calledAt.localeCompare(b.calledAt));
+  const seen = new Set<GuidedCallLogEntry["kind"]>();
+  return entries.filter((e) => {
+    if (seen.has(e.kind)) return false;
+    seen.add(e.kind);
+    return true;
+  });
+}
+
 // ── All packs (fixture surface) ─────────────────────────────────────────────
 
 export const ALL_GUIDE_STEPS: GuideStep[] = [

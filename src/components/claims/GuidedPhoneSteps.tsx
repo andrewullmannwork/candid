@@ -176,17 +176,21 @@ export function GuidedPhoneSteps({
     }
   };
 
-  // Prep chips — presence-derived from the context, never fetched (§5.2).
-  const chips: Array<{ text: string; onFile: boolean }> = [];
-  if (ctx.memberIdOnFile) chips.push({ text: PREP_CHIPS.memberIdOnFile, onFile: true });
-  else chips.push({ text: "member ID — it's on your insurance card", onFile: false });
-  if (ctx.planNameOnFile) chips.push({ text: PREP_CHIPS.planNameOnFile, onFile: true });
-  if (ctx.claimNumber != null) chips.push({ text: PREP_CHIPS.claimNumberOnFile, onFile: true });
-  else chips.push({ text: PREP_CHIPS.claimNumberMissing, onFile: false });
-  if (ctx.track === "insurer" && ctx.memberServicesPhone == null)
-    chips.push({ text: PREP_CHIPS.insurerPhoneMissing, onFile: false });
-  if (ctx.providerPhone == null)
-    chips.push({ text: PREP_CHIPS.billingPhoneMissing, onFile: false });
+  // Prep row — presence-derived from the context, never fetched (§5.2).
+  // S297 simplification (Andrew): on-file values stay green chips; everything
+  // absent folds into ONE quiet "Have ready" text line instead of dashed chips.
+  const onFileChips: string[] = [];
+  if (ctx.memberIdOnFile) onFileChips.push(PREP_CHIPS.memberIdOnFile);
+  if (ctx.planNameOnFile) onFileChips.push(PREP_CHIPS.planNameOnFile);
+  if (ctx.claimNumber != null) onFileChips.push(PREP_CHIPS.claimNumberOnFile);
+  const haveReadyParts: string[] = [];
+  if (!ctx.memberIdOnFile) haveReadyParts.push("member ID (insurance card)");
+  if (ctx.claimNumber == null) haveReadyParts.push("claim # (EOB)");
+  const insurerPhoneMissing = ctx.track === "insurer" && ctx.memberServicesPhone == null;
+  const billingPhoneMissing = ctx.providerPhone == null;
+  if (insurerPhoneMissing && billingPhoneMissing) haveReadyParts.push("phone numbers (card + bill)");
+  else if (insurerPhoneMissing) haveReadyParts.push("insurer phone (card)");
+  else if (billingPhoneMissing) haveReadyParts.push("billing office phone (bill)");
 
   // Which step gets the on-file phone line under its title.
   const phoneLineFor = (step: GuideStep): ScriptSegment[] | null => {
@@ -251,26 +255,24 @@ export function GuidedPhoneSteps({
 
       {expanded && (
         <div className="border-t border-gray-100 px-4 pb-4 pt-3">
-          {/* Have-ready prep chips */}
-          <div className="mb-3.5 flex flex-wrap items-center gap-1.5">
-            <span className="text-[12px] font-medium text-gray-500">{GUIDE_CHROME.haveReady}</span>
-            {chips.map((c) => (
+          {/* Have-ready prep row — green chips for on-file, one quiet line for the rest */}
+          <div className="mb-3.5 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[12px] text-gray-500">
+            {onFileChips.map((c) => (
               <span
-                key={c.text}
-                className={
-                  c.onFile
-                    ? "inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11.5px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200"
-                    : "inline-flex items-center rounded-full border border-dashed border-gray-300 px-2.5 py-0.5 text-[11.5px] text-gray-500"
-                }
+                key={c}
+                className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11.5px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200"
               >
-                {c.onFile && (
-                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                    <path d="M5 13l4 4L19 7" />
-                  </svg>
-                )}
-                {c.text}
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M5 13l4 4L19 7" />
+                </svg>
+                {c}
               </span>
             ))}
+            {haveReadyParts.length > 0 && (
+              <span>
+                {GUIDE_CHROME.haveReady} {haveReadyParts.join(" · ")}
+              </span>
+            )}
           </div>
 
           <div className="flex flex-col gap-4">
@@ -315,7 +317,12 @@ export function GuidedPhoneSteps({
                   </span>
 
                   <div className="min-w-0 flex-1">
-                    <div className="text-[13.5px] font-bold text-gray-900">{step.title}</div>
+                    {/* S297 simplification — info/hand-off rows carry their
+                        full approved sentence in `copy`; a title would repeat
+                        it (the "No fix on the phone?" duplication). */}
+                    {step.control !== "info" && (
+                      <div className="text-[13.5px] font-bold text-gray-900">{step.title}</div>
+                    )}
                     {phoneLine && (
                       <div className="mt-0.5 text-[12px] text-gray-600">
                         <Segments segments={phoneLine} />
@@ -332,7 +339,7 @@ export function GuidedPhoneSteps({
                         <summary className="cursor-pointer text-[12px] font-semibold text-blue-700 hover:underline">
                           Show the script
                         </summary>
-                        <blockquote className="mt-1.5 rounded-r-lg border-l-2 border-blue-300 bg-blue-50/40 px-3.5 py-2.5 font-serif text-[13.5px] leading-[1.65] text-gray-800">
+                        <blockquote className="mt-1.5 rounded-r-lg border-l-2 border-blue-300 bg-blue-50/40 px-3 py-2 font-serif text-[13px] leading-[1.6] text-gray-800">
                           &ldquo;
                           <Segments segments={scriptSegs} />
                           &rdquo;
@@ -357,40 +364,44 @@ export function GuidedPhoneSteps({
                       </button>
                     )}
 
-                    {step.note && (
-                      <input
-                        type="text"
-                        value={noteValue}
-                        placeholder={step.note.placeholder}
-                        maxLength={500}
-                        onChange={(e) =>
-                          setNoteDrafts((n) => ({ ...n, [step.id]: e.target.value }))
-                        }
-                        onBlur={() => {
-                          const draft = noteDrafts[step.id];
-                          if (draft != null && draft !== (state?.note ?? "")) {
-                            void persist(step.id, { note: draft });
-                          }
-                        }}
-                        className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-[7px] text-[12.5px] text-gray-800 placeholder:text-gray-400 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-100"
-                      />
-                    )}
-
-                    {step.control === "checkbox" && step.checkboxLabel && (
-                      <label className="mt-2 flex cursor-pointer items-center gap-2 text-[12.5px] text-gray-700">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => void persist(step.id, { checked: !checked })}
-                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-200"
-                        />
-                        <span className="font-medium">{step.checkboxLabel}</span>
-                        {state?.checkedAt != null && (
-                          <span className="text-[11px] text-gray-400">
-                            saves with a timestamp — {fmtStamp(state.checkedAt)}
-                          </span>
+                    {/* S297 simplification — log input + checkbox share one row. */}
+                    {(step.note || (step.control === "checkbox" && step.checkboxLabel)) && (
+                      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2">
+                        {step.note && (
+                          <input
+                            type="text"
+                            value={noteValue}
+                            placeholder={step.note.placeholder}
+                            maxLength={500}
+                            onChange={(e) =>
+                              setNoteDrafts((n) => ({ ...n, [step.id]: e.target.value }))
+                            }
+                            onBlur={() => {
+                              const draft = noteDrafts[step.id];
+                              if (draft != null && draft !== (state?.note ?? "")) {
+                                void persist(step.id, { note: draft });
+                              }
+                            }}
+                            className="min-w-[220px] flex-1 rounded-lg border border-gray-200 px-3 py-[7px] text-[12.5px] text-gray-800 placeholder:text-gray-400 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                          />
                         )}
-                      </label>
+                        {step.control === "checkbox" && step.checkboxLabel && (
+                          <label className="flex cursor-pointer items-center gap-2 whitespace-nowrap text-[12.5px] text-gray-700">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => void persist(step.id, { checked: !checked })}
+                              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-200"
+                            />
+                            <span className="font-medium">{step.checkboxLabel}</span>
+                            {state?.checkedAt != null && (
+                              <span className="text-[11px] text-gray-400">
+                                saves with a timestamp — {fmtStamp(state.checkedAt)}
+                              </span>
+                            )}
+                          </label>
+                        )}
+                      </div>
                     )}
                   </div>
                 </div>

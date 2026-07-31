@@ -4,6 +4,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { generateDisputeLetter, generateItemizedBillRequest, letterRecipientKind } from "@/lib/disputes";
+import { guidedCallLogFromMeta } from "@/lib/guides/pack-registry";
 import type { PlanBenefitEvidence } from "@/lib/disputes";
 import { resolvePlanContext } from "@/lib/disputes/plan-context";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
@@ -399,6 +400,20 @@ export async function POST(req: NextRequest) {
         })();
       }
 
+      // Guided Steps v1 (S297) — attested phone-call recital source: the
+      // claim's OWN guideSteps, read server-side (owner-scoped), never
+      // client-supplied. Absent/unattested → empty → byte-identical letter.
+      const { data: guidedClaimRow } = await userScoped(supabase, authedUser.id)
+        .table("claims")
+        .select("metadata")
+        .eq("id", auditReport.id)
+        .single();
+      const guidedCallLog = guidedCallLogFromMeta(
+        ((guidedClaimRow?.metadata as Record<string, unknown> | null)?.guideSteps as
+          | Record<string, { checkedAt?: string | null; note?: string }>
+          | undefined) ?? null,
+      );
+
       const letter = generateDisputeLetter(auditReport, findingIds, letterType, {
         planEvidence,
         planContext,
@@ -413,6 +428,7 @@ export async function POST(req: NextRequest) {
         appealExhausted,
         collector,
         debtWithinWindow,
+        guidedCallLog,
       });
 
       // Defense-in-depth: generateDisputeLetter returns null when the data-trust

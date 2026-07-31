@@ -7,6 +7,7 @@ import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
 import { groundFindingsForEvidence, type GroundFinding, type LineRecovery, type LetterRecoveryResult } from "./dispute-grounds";
 import type { RequestBucket } from "./dispute-ground-catalog";
 import { buildObligationContext, renderObligationClauses } from "./obligation-render";
+import type { GuidedCallLogEntry } from "@/lib/guides/pack-registry";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 
 interface LetterTemplate {
@@ -233,6 +234,57 @@ export function renderGated<T>(value: T | null | undefined, clause: (v: T) => st
   if (typeof value === "string" && value.trim() === "") return "";
   if (Array.isArray(value) && value.length === 0) return "";
   return clause(value);
+}
+
+/** Guided Steps v1 (S297) — attested-call recital. Renders the user's OWN
+ *  attested phone actions (claims.metadata.guideSteps checkedAt) as factual
+ *  prior-contact lines, recipient-matched, injected before the sign-off by
+ *  BOTH build paths (generateDisputeLetter + rerenderDisputeLetter — keep in
+ *  lockstep). Fail-closed: no attested entries → "" (byte-identical letter).
+ *  Log NOTES are deliberately NOT rendered (tracker Item X — structured use
+ *  later). Copy rides the launch-adopted attestation-recital framework; no
+ *  new legal assertion (Andrew copy pass S297). */
+const GUIDED_RECITAL_EXCLUDED: ReadonlySet<string> = new Set([
+  "itemized_request",
+  "negotiation",
+  "debt_validation",
+]);
+
+export function renderGuidedCallRecital(
+  entries: GuidedCallLogEntry[] | null | undefined,
+  recipient: "insurer" | "provider" | "collector",
+  letterType: string,
+): string {
+  if (!entries || entries.length === 0) return "";
+  if (recipient === "collector" || GUIDED_RECITAL_EXCLUDED.has(letterType)) return "";
+  const lines: string[] = [];
+  for (const e of entries) {
+    if (recipient === "insurer") {
+      if (e.kind === "insurer_call") {
+        lines.push(
+          `On ${formatDate(e.calledAt)}, I called your member services line about this claim and asked that it be reviewed and reprocessed.`,
+        );
+      }
+    } else {
+      if (e.kind === "billing_hold_call") {
+        lines.push(
+          `On ${formatDate(e.calledAt)}, I called your billing office and requested a hold on this account — no further billing or collection activity — while this claim is reviewed.`,
+        );
+      }
+      if (e.kind === "itemized_request_call") {
+        lines.push(
+          `On ${formatDate(e.calledAt)}, I requested a fully itemized bill for this account by phone.`,
+        );
+      }
+      if (e.kind === "flagged_charges_call") {
+        lines.push(
+          `On ${formatDate(e.calledAt)}, I called your billing office and disputed specific charges on this account.`,
+        );
+      }
+    }
+  }
+  if (lines.length === 0) return "";
+  return `\n\n${lines.join(" ")}`;
 }
 
 /** dispute-letters v2 S2 — state-specific citation registry. INERT at launch (no verified entries),

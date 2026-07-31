@@ -7,8 +7,9 @@ import type {
   DisputeLetterType,
   FindingType,
 } from "../billing/types";
-import { LETTER_TEMPLATES } from "./templates";
+import { LETTER_TEMPLATES, renderGuidedCallRecital } from "./templates";
 import type { PlanBenefitEvidence } from "./templates";
+import type { GuidedCallLogEntry } from "@/lib/guides/pack-registry";
 import type { PlanContext } from "./plan-context";
 import type { DisputeEvidence } from "./evidence-resolver";
 import { resolveLetterRecovery } from "./dispute-grounds";
@@ -129,6 +130,10 @@ export interface GenerateDisputeLetterOptions {
   appealExhausted?: { attested: boolean; denialDate?: string | null };
   collector?: { name: string; address?: string | null; originalCreditor?: string | null };
   debtWithinWindow?: boolean;
+  /** Guided Steps v1 (S297) — attested phone-call entries (server-derived from
+   *  claims.metadata.guideSteps, never client-supplied). Absent/empty → the
+   *  recital is omitted (byte-identical letter). */
+  guidedCallLog?: GuidedCallLogEntry[];
 }
 
 export function generateDisputeLetter(
@@ -149,7 +154,7 @@ export function generateDisputeLetter(
     ? { planEvidence: optionsOrPlanEvidence }
     : (optionsOrPlanEvidence ?? {});
   const { planEvidence, planContext, evidence, gateUnverified, enforceDataTrustGate, disputeGroundsOn, disputeGroundBasis, noPlanCoverageRequestOn,
-    priorContactDates, certifiedMail, appealExhausted, collector, debtWithinWindow } =
+    priorContactDates, certifiedMail, appealExhausted, collector, debtWithinWindow, guidedCallLog } =
     options;
 
   // Resolve the letter type up front (was below, before the template lookup) so the recovery fold
@@ -188,7 +193,7 @@ export function generateDisputeLetter(
 
   const bill = report.parsedBill;
 
-  const body = template.body({
+  let body = template.body({
     patientName: bill.patient.name,
     providerName: bill.provider.name,
     serviceDate: bill.serviceDate,
@@ -211,6 +216,14 @@ export function generateDisputeLetter(
     collector,
     debtWithinWindow,
   });
+
+  // Guided Steps v1 (S297) — attested-call recital, injected before the
+  // sign-off (every composed body carries exactly one "Sincerely,"). Empty
+  // recital → untouched body. Mirrored in rerenderDisputeLetter.
+  const guidedRecital = renderGuidedCallRecital(guidedCallLog, recipientKind, resolvedType);
+  if (guidedRecital) {
+    body = body.replace("\n\nSincerely,", `${guidedRecital}\n\nSincerely,`);
+  }
 
   // Recipient: insurance appeals use insurer + appeals address when available;
   // fall back to provider for billing-department letters.

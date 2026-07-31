@@ -33,6 +33,7 @@ import {
   PACK_D_STEPS,
   composeFindingClauses,
   countCheckboxSteps,
+  guidedCallLogFromMeta,
   isTerminalRung,
   packCDeadlineSentence,
   packCFirstContactCopy,
@@ -41,6 +42,7 @@ import {
   type GuideFinding,
   type ScriptSegment,
 } from "../../../../src/lib/guides/pack-registry";
+import { renderGuidedCallRecital } from "../../../../src/lib/disputes/templates";
 
 let pass = 0;
 const fails: string[] = [];
@@ -282,6 +284,48 @@ check("route sync: claims guideSteps storage", claimRoute.includes("guideSteps")
 check("route sync: claims foreign → 404", claimRoute.includes('{ error: "Claim not found" }, { status: 404 }'));
 check("route sync: dispute foreign → 404", disputeRoute.includes('{ error: "Dispute not found" }, { status: 404 }'));
 check("route sync: claims server-side timestamp", claimRoute.includes("new Date().toISOString()"));
+
+// ── 8. Call-log → letter recital (S297) ────────────────────────────────────
+
+const META = {
+  "packA:ins-call-insurer": { checkedAt: "2026-07-30T14:10:00Z", note: "Maria · ref 8812 · will reprocess" },
+  "packA:ins-ask-hold": { checkedAt: "2026-07-30T14:20:00Z" },
+  "packA:prov-ask-hold": { checkedAt: "2026-07-30T15:00:00Z" },
+  "packA:prov-itemized": { checkedAt: null },
+  "packC:not-paid": { checkedAt: "2026-07-30T16:00:00Z" },
+};
+const logEntries = guidedCallLogFromMeta(META);
+check("callLog: attested-only + no packC leak", logEntries.length === 2, JSON.stringify(logEntries));
+check("callLog: insurer call present", logEntries.some((e) => e.kind === "insurer_call"));
+check("callLog: hold deduped to earliest", logEntries.filter((e) => e.kind === "billing_hold_call").length === 1 && logEntries.find((e) => e.kind === "billing_hold_call")?.calledAt === "2026-07-30T14:20:00Z");
+check("callLog: note carried (not rendered)", logEntries.find((e) => e.kind === "insurer_call")?.note === "Maria · ref 8812 · will reprocess");
+check("callLog: chronological", logEntries[0].kind === "insurer_call");
+check("callLog: null meta → []", guidedCallLogFromMeta(null).length === 0);
+check("callLog: unattested-only → []", guidedCallLogFromMeta({ "packA:prov-itemized": { checkedAt: null, note: "x" } }).length === 0);
+
+const insurerRecital = renderGuidedCallRecital(logEntries, "insurer", "insurance_appeal");
+check("recital: insurer letter cites the member-services call", insurerRecital.includes("I called your member services line about this claim and asked that it be reviewed and reprocessed."));
+check("recital: insurer letter omits provider-side calls", !insurerRecital.includes("billing office"));
+check("recital: note NEVER rendered", !insurerRecital.includes("Maria") && !insurerRecital.includes("8812"));
+const providerRecital = renderGuidedCallRecital(logEntries, "provider", "overcharge");
+check("recital: provider letter cites the hold call", providerRecital.includes("requested a hold on this account — no further billing or collection activity"));
+check("recital: provider letter omits the insurer call", !providerRecital.includes("member services"));
+check("recital: collector → empty", renderGuidedCallRecital(logEntries, "collector", "debt_validation") === "");
+check("recital: excluded letter types → empty", renderGuidedCallRecital(logEntries, "provider", "itemized_request") === "" && renderGuidedCallRecital(logEntries, "provider", "negotiation") === "");
+check("recital: empty entries → empty", renderGuidedCallRecital([], "provider", "overcharge") === "");
+check("recital: no matching kinds → empty", renderGuidedCallRecital([{ kind: "insurer_call", calledAt: "2026-07-30T14:10:00Z" }], "provider", "overcharge") === "");
+sweep("recital.insurer", insurerRecital);
+sweep("recital.provider", providerRecital);
+const allKinds = guidedCallLogFromMeta({
+  "packA:ins-call-insurer": { checkedAt: "2026-07-30T10:00:00Z" },
+  "packA:prov-itemized": { checkedAt: "2026-07-30T11:00:00Z" },
+  "packA:prov-call-flagged": { checkedAt: "2026-07-30T12:00:00Z" },
+  "packA:prov-ask-hold": { checkedAt: "2026-07-30T13:00:00Z" },
+});
+const fullProvider = renderGuidedCallRecital(allKinds, "provider", "final_notice");
+check("recital: itemized + flagged + hold all render on provider letters",
+  fullProvider.includes("fully itemized bill") && fullProvider.includes("disputed specific charges") && fullProvider.includes("requested a hold"));
+sweep("recital.fullProvider", fullProvider);
 
 // ── Report ──────────────────────────────────────────────────────────────────
 
