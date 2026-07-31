@@ -2924,7 +2924,13 @@ export function ClaimDetail({
       {isFlagged && (
         <RailStep
           n={railStepSave}
-          done={hasDraftedDispute}
+          // S297 (Andrew E2E) — any engagement PAST this step (a 4a attest/
+          // answer/skip, or a drafted letter) greens it: you've seen the
+          // number and moved on. Flag OFF keeps the drafted-only rule.
+          done={
+            hasDraftedDispute ||
+            (guidedCtx != null && (guidedPack.done > 0 || guidedPack.concluded))
+          }
           title="What you could save"
           sub="Candid compared every line of this bill against your plan's policies"
         >
@@ -3155,7 +3161,10 @@ export function ClaimDetail({
                 ) : undefined
               }
             >
-              {phoneBodyVisible && (
+              {/* Mounted-but-hidden while collapsed — an unmount would reset
+                  the component's optimistic state to the (stale) claim meta,
+                  making un-checks look like they never landed (Andrew E2E #3). */}
+              <div className={phoneBodyVisible ? undefined : "hidden"}>
                 <GuidedPhoneSteps
                   claimId={claimId}
                   ctx={guidedCtx}
@@ -3163,11 +3172,14 @@ export function ClaimDetail({
                   getAuthToken={getAuthToken}
                   onItemizedRequest={requestItemizedLetter}
                   onStateChange={(s) => {
+                    // Collapse ONLY on the not-concluded → concluded TRANSITION;
+                    // collapsing on every emit while concluded slammed the panel
+                    // shut on any in-panel click (the un-check bug).
+                    if (s.concluded && !guidedPack.concluded) setPhoneFullOpen(false);
                     setGuidedPackLive(s);
-                    if (s.concluded) setPhoneFullOpen(false);
                   }}
                 />
-              )}
+              </div>
             </RailStep>
             <RailStep
               n="4b"

@@ -395,7 +395,7 @@ export function GuidedPhoneSteps({
                       </button>
                       <span className="text-center text-[10.5px] text-gray-400">
                         {state?.checkedAt != null
-                          ? `saves with a timestamp — ${fmtStamp(state.checkedAt)}`
+                          ? `completed — ${fmtStamp(state.checkedAt)}`
                           : "saves with a timestamp"}
                       </span>
                     </span>
@@ -416,7 +416,14 @@ export function GuidedPhoneSteps({
           <div className="mt-1.5 flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={() => void persist(PHONE_OUTCOME.id, { checked: true, note: "yes" })}
+              onClick={() =>
+                void persist(
+                  PHONE_OUTCOME.id,
+                  outcomeAnswer === "yes"
+                    ? { checked: false, note: "" }
+                    : { checked: true, note: "yes" },
+                )
+              }
               className={
                 outcomeAnswer === "yes"
                   ? "inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-[7px] text-[12.5px] font-semibold text-emerald-700"
@@ -432,7 +439,14 @@ export function GuidedPhoneSteps({
             </button>
             <button
               type="button"
-              onClick={() => void persist(PHONE_OUTCOME.id, { checked: true, note: "no" })}
+              onClick={() =>
+                void persist(
+                  PHONE_OUTCOME.id,
+                  outcomeAnswer === "no"
+                    ? { checked: false, note: "" }
+                    : { checked: true, note: "no" },
+                )
+              }
               className={
                 outcomeAnswer === "no"
                   ? "inline-flex items-center rounded-xl border border-blue-300 bg-blue-50 px-3.5 py-[7px] text-[12.5px] font-semibold text-blue-700"
@@ -452,7 +466,14 @@ export function GuidedPhoneSteps({
         <div className="flex justify-end border-t border-gray-100 pt-2">
           <button
             type="button"
-            onClick={() => void persist(PHONE_OUTCOME.id, { checked: true, note: "skip" })}
+            onClick={() =>
+              void persist(
+                PHONE_OUTCOME.id,
+                outcomeAnswer === "skip"
+                  ? { checked: false, note: "" }
+                  : { checked: true, note: "skip" },
+              )
+            }
             className="text-[12px] font-medium text-gray-400 underline-offset-2 transition-colors hover:text-gray-600 hover:underline"
           >
             {PHONE_OUTCOME.skipLabel}
