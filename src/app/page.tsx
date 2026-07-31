@@ -479,7 +479,8 @@ function CompareMockup() {
 
 /* ── Stat strip ──────────────────────────────────────────────────────── */
 function StatStrip() {
-  // Copy sheet v6.2 (Andrew-approved 2026-07-30). Every figure is exactly what
+  // Copy sheet v6.2 (Andrew-approved 2026-07-30; tile-3 label tightened to
+  // "of denied claims are appealed" per Andrew, S296c). Every figure is exactly what
   // its linked source says — cites render as links deliberately: fact-check
   // armor for readers and a citation signal for AI engines. The prior tiles
   // (MBAA "3 in 4", "$1,300" NerdWallet, "92%" CDC) were untraceable or
@@ -499,7 +500,7 @@ function StatStrip() {
     },
     {
       num: "<1%",
-      label: "of denied claims are ever appealed",
+      label: "of denied claims are appealed",
       cite: "KFF · healthcare.gov plans",
       href: "https://www.kff.org/private-insurance/healthcare-gov-insurers-denied-nearly-1-in-5-in-network-claims-in-2023-but-information-about-reasons-is-limited-in-public-data/",
     },
