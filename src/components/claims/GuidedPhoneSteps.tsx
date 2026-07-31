@@ -433,9 +433,11 @@ export function GuidedPhoneSteps({
                       </button>
                     )}
 
-                    {/* S297 simplification — log input + checkbox share one row. */}
+                    {/* S297 simplification — log input + attest button share one
+                        row, top-aligned so the button lines up with the input
+                        (the subtitle hangs below without shifting it). */}
                     {(step.note || (step.control === "checkbox" && step.checkboxLabel)) && (
-                      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2">
+                      <div className="mt-2 flex flex-wrap items-start gap-x-3 gap-y-2">
                         {step.note && (
                           <input
                             type="text"
@@ -455,11 +457,12 @@ export function GuidedPhoneSteps({
                           />
                         )}
                         {step.control === "checkbox" && step.checkboxLabel && (
-                          <span className="flex flex-col gap-0.5">
+                          <span className="flex flex-col items-center gap-0.5">
                             {/* S297 (Andrew) — attestation is a BUTTON: click
-                                advances the blue current marker to the next
-                                step; click again un-attests. Blue when it's
-                                the current step's action. */}
+                                advances the blue marker; click again un-attests.
+                                Unclicked = outline (blue accent on the current
+                                step — an ASK, never a filled done-look);
+                                clicked = green confirmed. */}
                             <button
                               type="button"
                               onClick={() => void persist(step.id, { checked: !checked })}
@@ -467,7 +470,7 @@ export function GuidedPhoneSteps({
                                 checked
                                   ? "inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-[7px] text-[12.5px] font-semibold text-emerald-700"
                                   : isCurrent
-                                    ? "inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-3.5 py-[7px] text-[12.5px] font-semibold text-white transition-colors hover:bg-blue-700"
+                                    ? "inline-flex items-center gap-1.5 rounded-xl border-[1.5px] border-blue-400 bg-white px-3.5 py-[6.5px] text-[12.5px] font-semibold text-blue-700 transition-colors hover:bg-blue-50"
                                     : "inline-flex items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3.5 py-[7px] text-[12.5px] font-semibold text-gray-700 transition-colors hover:bg-gray-50"
                               }
                             >
@@ -478,7 +481,7 @@ export function GuidedPhoneSteps({
                                 </svg>
                               )}
                             </button>
-                            <span className="text-[10.5px] text-gray-400">
+                            <span className="text-center text-[10.5px] text-gray-400">
                               {state?.checkedAt != null
                                 ? `saves with a timestamp — ${fmtStamp(state.checkedAt)}`
                                 : "saves with a timestamp"}
