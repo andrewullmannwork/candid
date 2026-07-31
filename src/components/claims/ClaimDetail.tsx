@@ -522,6 +522,9 @@ export function ClaimDetail({
   // (collapsed by default when done; expansion is throwaway, not persisted).
   const [assumpFullOpen, setAssumpFullOpen] = useState(false);
   const [svcFullOpen, setSvcFullOpen] = useState(false);
+  // Phone-outcome "Not yet" → one-time highlight ring on the letter CTA below
+  // (no auto-scroll; the button is a hop away — the glow points the eye).
+  const [guidedCtaPulse, setGuidedCtaPulse] = useState(false);
 
 
   // Read localStorage once on mount per claim.
@@ -3081,9 +3084,14 @@ export function ClaimDetail({
               initialSteps={guideStepsMeta}
               getAuthToken={getAuthToken}
               onItemizedRequest={requestItemizedLetter}
+              onNotResolved={() => {
+                setGuidedCtaPulse(true);
+                window.setTimeout(() => setGuidedCtaPulse(false), 2600);
+              }}
             />
           )}
-          {data.disputes.length > 0 ? (
+          {(() => {
+          const branchNode = data.disputes.length > 0 ? (
             disputesListNode
           ) : (
         <div className="mb-4 flex flex-col gap-4 rounded-[18px] border border-blue-200 bg-gradient-to-br from-blue-50 to-white px-6 py-5 sm:-ml-[43px] sm:flex-row sm:items-center sm:justify-between">
@@ -3111,7 +3119,23 @@ export function ClaimDetail({
             />
           </div>
         </div>
-          )}
+          );
+          // Wrapper exists ONLY when guided is on (flag OFF keeps today's DOM
+          // byte-identical); the ring pulses on "Not yet".
+          return guidedCtx ? (
+            <div
+              className={
+                guidedCtaPulse
+                  ? "rounded-[18px] ring-2 ring-blue-400 ring-offset-2 transition-shadow"
+                  : undefined
+              }
+            >
+              {branchNode}
+            </div>
+          ) : (
+            branchNode
+          );
+          })()}
         </RailStep>
       )}
 

@@ -27,6 +27,7 @@ import { readFileSync } from "fs";
 import {
   ALL_GUIDE_STEPS,
   GUIDE_KEY_RE,
+  PHONE_OUTCOME,
   PACK_A_INSURER_STEPS,
   PACK_A_PROVIDER_STEPS,
   PACK_C_STEPS,
@@ -284,6 +285,15 @@ check("route sync: claims guideSteps storage", claimRoute.includes("guideSteps")
 check("route sync: claims foreign → 404", claimRoute.includes('{ error: "Claim not found" }, { status: 404 }'));
 check("route sync: dispute foreign → 404", disputeRoute.includes('{ error: "Dispute not found" }, { status: 404 }'));
 check("route sync: claims server-side timestamp", claimRoute.includes("new Date().toISOString()"));
+
+// ── 7b. Phone-outcome question (S297) ──────────────────────────────────────
+
+check("phone-outcome: id KEY_RE", GUIDE_KEY_RE.test(PHONE_OUTCOME.id));
+check("phone-outcome: id not colliding with steps", !EXPECTED_IDS.includes(PHONE_OUTCOME.id));
+for (const [k, v] of Object.entries(PHONE_OUTCOME)) {
+  if (k === "id") continue;
+  sweep(`phone-outcome.${k}`, v);
+}
 
 // ── 8. Call-log → letter recital (S297) ────────────────────────────────────
 

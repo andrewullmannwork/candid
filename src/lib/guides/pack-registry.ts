@@ -540,6 +540,23 @@ export function isTerminalRung(input: { letterType: string | null; status: strin
   return input.letterType === "external_review" || input.letterType === "final_notice";
 }
 
+// ── Phone-outcome question (S297, Andrew) ───────────────────────────────────
+// Replaces the passive hand-off row ONCE ≥1 call is attested. Both answers
+// persist (claim-scoped, server-stamped; the answer rides in `note` as
+// "yes"/"no"). "Not yet" re-surfaces the approved hand-off copy + pulses the
+// letter CTA below; "Yes" shows the watch-for-the-corrected-EOB line — the
+// honest yes-branch (phone fixes are promises until the corrected EOB lands).
+export const PHONE_OUTCOME = {
+  id: "packA:phone-outcome",
+  question: "Did the calls fix it?",
+  yesLabel: "Yes — it's resolved",
+  noLabel: "Not yet",
+  yesLineInsurer:
+    "Logged. Watch for the corrected bill or EOB — if nothing changes in 30 days, the appeal below is still ready.",
+  yesLineProvider:
+    "Logged. Watch for the corrected bill or EOB — if nothing changes in 30 days, your letter below is still ready.",
+} as const;
+
 // ── Letter recital source (S297) — attested calls → letter facts ───────────
 
 export type GuidedCallLogEntry = {

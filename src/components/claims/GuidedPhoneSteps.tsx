@@ -21,6 +21,7 @@
 import { useState } from "react";
 import {
   GUIDE_CHROME,
+  PHONE_OUTCOME,
   PREP_CHIPS,
   PHONE_LINES,
   countCheckboxSteps,
@@ -114,6 +115,7 @@ export function GuidedPhoneSteps({
   initialSteps,
   getAuthToken,
   onItemizedRequest,
+  onNotResolved,
 }: {
   claimId: string;
   ctx: GuideFillContext;
@@ -123,6 +125,9 @@ export function GuidedPhoneSteps({
   /** Provider-track step-1 CTA — the EXISTING itemized-request flow, wired by
    *  the parent (legacy generate path; see RequestItemizedBill precedent). */
   onItemizedRequest?: () => Promise<void>;
+  /** "Not yet" on the phone-outcome question — the parent pulses the letter
+   *  CTA below so the eye lands on the next action (no auto-scroll). */
+  onNotResolved?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [local, setLocal] = useState<Record<string, GuideStepState>>({});
@@ -138,6 +143,12 @@ export function GuidedPhoneSteps({
   ).length;
   const currentStepId =
     steps.find((s) => s.control === "checkbox" && eff[s.id]?.checkedAt == null)?.id ?? null;
+
+  // Phone-outcome question (S297, Andrew) — replaces the passive hand-off row
+  // once ≥1 call is attested. The answer rides in the note ("yes"/"no").
+  const anyCallMade = checkboxDone > 0;
+  const outcomeNote = eff[PHONE_OUTCOME.id]?.note;
+  const outcomeAnswer = outcomeNote === "yes" ? "yes" : outcomeNote === "no" ? "no" : null;
 
   const persist = async (stepId: string, patch: { checked?: boolean; note?: string }) => {
     const prev = eff[stepId] ?? { checkedAt: null };
@@ -287,7 +298,9 @@ export function GuidedPhoneSteps({
 
               return (
                 <div key={step.id} className="flex gap-2.5">
-                  {/* 22px leading dot — blue current · hollow untouched · green done */}
+                  {/* 22px leading dot — blue current · hollow untouched · green
+                      done (Andrew: keep the blue/white distinction; clicking
+                      the attest button advances the blue marker). */}
                   <span
                     className={
                       "mt-0.5 grid h-[22px] w-[22px] flex-shrink-0 place-items-center rounded-full " +
@@ -328,10 +341,66 @@ export function GuidedPhoneSteps({
                         <Segments segments={phoneLine} />
                       </div>
                     )}
-                    {copySegs && (
-                      <div className="mt-0.5 text-[12.5px] leading-[1.55] text-gray-500">
-                        <Segments segments={copySegs} />
+                    {step.control === "info" && anyCallMade ? (
+                      /* Phone-outcome question (S297, Andrew) — the hand-off row
+                         becomes a real decision point once a call is attested.
+                         Both answers persist; "Not yet" re-surfaces the approved
+                         hand-off copy and pulses the letter CTA below. */
+                      <div>
+                        <div className="text-[13.5px] font-bold text-gray-900">
+                          {PHONE_OUTCOME.question}
+                        </div>
+                        <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void persist(PHONE_OUTCOME.id, { checked: true, note: "yes" })}
+                            className={
+                              outcomeAnswer === "yes"
+                                ? "inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-[7px] text-[12.5px] font-semibold text-emerald-700"
+                                : "inline-flex items-center rounded-xl border border-gray-200 bg-white px-3.5 py-[7px] text-[12.5px] font-semibold text-gray-700 transition-colors hover:bg-gray-50"
+                            }
+                          >
+                            {PHONE_OUTCOME.yesLabel}
+                            {outcomeAnswer === "yes" && (
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                                <path d="M5 13l4 4L19 7" />
+                              </svg>
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void persist(PHONE_OUTCOME.id, { checked: true, note: "no" });
+                              onNotResolved?.();
+                            }}
+                            className={
+                              outcomeAnswer === "no"
+                                ? "inline-flex items-center rounded-xl border border-blue-300 bg-blue-50 px-3.5 py-[7px] text-[12.5px] font-semibold text-blue-700"
+                                : "inline-flex items-center rounded-xl border border-gray-200 bg-white px-3.5 py-[7px] text-[12.5px] font-semibold text-gray-700 transition-colors hover:bg-gray-50"
+                            }
+                          >
+                            {PHONE_OUTCOME.noLabel}
+                          </button>
+                        </div>
+                        {outcomeAnswer === "yes" && (
+                          <p className="mt-1.5 text-[12.5px] leading-[1.55] text-gray-600">
+                            {ctx.track === "insurer"
+                              ? PHONE_OUTCOME.yesLineInsurer
+                              : PHONE_OUTCOME.yesLineProvider}
+                          </p>
+                        )}
+                        {outcomeAnswer === "no" && copySegs && (
+                          <div className="mt-1.5 text-[12.5px] leading-[1.55] text-gray-500">
+                            <Segments segments={copySegs} />
+                          </div>
+                        )}
                       </div>
+                    ) : (
+                      copySegs && (
+                        <div className="mt-0.5 text-[12.5px] leading-[1.55] text-gray-500">
+                          <Segments segments={copySegs} />
+                        </div>
+                      )
                     )}
 
                     {scriptSegs && (
@@ -386,20 +455,35 @@ export function GuidedPhoneSteps({
                           />
                         )}
                         {step.control === "checkbox" && step.checkboxLabel && (
-                          <label className="flex cursor-pointer items-center gap-2 whitespace-nowrap text-[12.5px] text-gray-700">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => void persist(step.id, { checked: !checked })}
-                              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-200"
-                            />
-                            <span className="font-medium">{step.checkboxLabel}</span>
-                            {state?.checkedAt != null && (
-                              <span className="text-[11px] text-gray-400">
-                                saves with a timestamp — {fmtStamp(state.checkedAt)}
-                              </span>
-                            )}
-                          </label>
+                          <span className="flex flex-col gap-0.5">
+                            {/* S297 (Andrew) — attestation is a BUTTON: click
+                                advances the blue current marker to the next
+                                step; click again un-attests. Blue when it's
+                                the current step's action. */}
+                            <button
+                              type="button"
+                              onClick={() => void persist(step.id, { checked: !checked })}
+                              className={
+                                checked
+                                  ? "inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-[7px] text-[12.5px] font-semibold text-emerald-700"
+                                  : isCurrent
+                                    ? "inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-3.5 py-[7px] text-[12.5px] font-semibold text-white transition-colors hover:bg-blue-700"
+                                    : "inline-flex items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3.5 py-[7px] text-[12.5px] font-semibold text-gray-700 transition-colors hover:bg-gray-50"
+                              }
+                            >
+                              {step.checkboxLabel}
+                              {checked && (
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                                  <path d="M5 13l4 4L19 7" />
+                                </svg>
+                              )}
+                            </button>
+                            <span className="text-[10.5px] text-gray-400">
+                              {state?.checkedAt != null
+                                ? `saves with a timestamp — ${fmtStamp(state.checkedAt)}`
+                                : "saves with a timestamp"}
+                            </span>
+                          </span>
                         )}
                       </div>
                     )}
