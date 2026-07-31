@@ -36,6 +36,9 @@ interface Followup {
     status: string;
     amount_disputed: number;
     filed_date: string;
+    // S297 (Andrew E2E #1) — which bill + deeplink target.
+    claim_id?: string | null;
+    provider_name?: string | null;
   };
 }
 
@@ -139,9 +142,18 @@ export function FollowupBanner() {
                   : `Did you get a response? Logging it helps us flag similar disputes for other users.`}
               </p>
               <p className="mt-0.5 text-[11px] text-amber-700/80">
+                {/* S297 (Andrew E2E #1) — name the bill this response is for. */}
+                {current.dispute.provider_name ? `${current.dispute.provider_name} · ` : ""}
                 ${current.dispute.amount_disputed.toLocaleString()} disputed
                 {followups.length > 1 && ` · ${followups.length} pending followups`}
               </p>
+              <a
+                href={`/disputes?dispute=${current.dispute.id}`}
+                className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-amber-900 underline underline-offset-2 hover:text-amber-700"
+              >
+                Open dispute letter
+                <span aria-hidden>→</span>
+              </a>
             </div>
 
             {/* X dismiss — top-right, calls "dismiss" action */}

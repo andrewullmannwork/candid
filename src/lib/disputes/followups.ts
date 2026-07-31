@@ -83,6 +83,10 @@ export interface ActiveFollowup extends FollowupRow {
     filed_date: string;
     insurer_name?: string;
     service_slug?: string;
+    // S297 (Andrew E2E #1) — which BILL this follow-up is about, so the
+    // banner can say so and deeplink. Additive; null when unresolvable.
+    claim_id?: string | null;
+    provider_name?: string | null;
   };
 }
 
@@ -250,16 +254,42 @@ export async function getActiveFollowups(
 
   const { data, error } = await userScoped(supabase, userId)
     .table("dispute_followups")
-    .select("*, dispute_outcomes!inner(id, dispute_type, status, amount_disputed, filed_date, metadata)")
+    .select("*, dispute_outcomes!inner(id, dispute_type, status, amount_disputed, filed_date, claim_id, metadata)")
     .eq("status", "pending")
     .lte("due_date", today)
     .order("due_date", { ascending: true });
 
   if (error || !data) return [];
 
+  // S297 (Andrew E2E #1) — resolve each follow-up's bill so the banner can
+  // name it. One batched owner-scoped read; absent/failed → null (banner
+  // degrades to today's copy, never blocks).
+  const claimIds = Array.from(
+    new Set(
+      data
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map((row) => (row.dispute_outcomes as any)?.claim_id as string | null)
+        .filter((id): id is string => typeof id === "string" && id.length > 0),
+    ),
+  );
+  const providerByClaim = new Map<string, string>();
+  if (claimIds.length > 0) {
+    const { data: claimRows } = await userScoped(supabase, userId)
+      .table("claims")
+      .select("id, metadata")
+      .in("id", claimIds);
+    for (const c of (claimRows ?? []) as Array<{ id: string; metadata: unknown }>) {
+      const name = ((c.metadata as Record<string, unknown> | null)?.provider as
+        | Record<string, unknown>
+        | undefined)?.name;
+      if (typeof name === "string" && name.trim().length > 0) providerByClaim.set(c.id, name);
+    }
+  }
+
   return data.map((row) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const dispute = row.dispute_outcomes as any;
+    const claimId = (dispute.claim_id as string | null) ?? null;
     return {
       ...row,
       dispute: {
@@ -268,6 +298,8 @@ export async function getActiveFollowups(
         status: dispute.status,
         amount_disputed: dispute.amount_disputed,
         filed_date: dispute.filed_date,
+        claim_id: claimId,
+        provider_name: claimId ? (providerByClaim.get(claimId) ?? null) : null,
       },
     };
   });

@@ -2365,7 +2365,12 @@ export function ClaimDetail({
                   </div>
                 </dl>
               </div>
-              {/* Desktop table row — hidden at mobile. */}
+              {/* Desktop table row — hidden at mobile. S297 (Andrew E2E #3) —
+                  items-start, not items-center: the "$X before insurance"
+                  sub-line under Billed-to-you was re-centering its cell and
+                  floating the dollar above the row's other numbers. First-line
+                  alignment keeps every number on one line; the sub-line just
+                  grows the row down. */}
               <div
                 role="button"
                 tabIndex={0}
@@ -2376,7 +2381,7 @@ export function ClaimDetail({
                     toggleRowCollapsed(item.id);
                   }
                 }}
-                className={`hidden lg:grid w-full gap-2 items-center px-5 py-3.5 text-left transition-colors border-t border-gray-100 cursor-pointer ${isMultiLine && isExpanded ? "bg-blue-50/40 hover:bg-blue-50/60" : "hover:bg-gray-50"}`}
+                className={`hidden lg:grid w-full gap-2 items-start px-5 py-3.5 text-left transition-colors border-t border-gray-100 cursor-pointer ${isMultiLine && isExpanded ? "bg-blue-50/40 hover:bg-blue-50/60" : "hover:bg-gray-50"}`}
                 style={{
                   gridTemplateColumns: isMultiLine
                     ? "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 88px 40px"
