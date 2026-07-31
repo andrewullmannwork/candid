@@ -21,9 +21,9 @@ import { CostShareBanner, hasAssumptionRows, pendingAssumptionFields, type Banne
 import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
 import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recovery-math";
 import { useFeatureFlag } from "@/lib/config/use-feature-flag";
-import { GuidedPhoneSteps, ShowFullStepButton, type GuideStepState } from "@/components/claims/GuidedPhoneSteps";
+import { GuidedPhoneSteps, ShowFullStepButton, derivePhonePackState, type GuideStepState, type PhonePackState } from "@/components/claims/GuidedPhoneSteps";
 import { letterRecipientKind } from "@/lib/disputes";
-import type { GuideFillContext, GuideFinding } from "@/lib/guides/pack-registry";
+import { GUIDE_4B, GUIDE_CHROME, PHONE_OUTCOME, type GuideFillContext, type GuideFinding } from "@/lib/guides/pack-registry";
 
 interface CodeIdentityState {
   identityId: string | null;
@@ -522,9 +522,11 @@ export function ClaimDetail({
   // (collapsed by default when done; expansion is throwaway, not persisted).
   const [assumpFullOpen, setAssumpFullOpen] = useState(false);
   const [svcFullOpen, setSvcFullOpen] = useState(false);
-  // Phone-outcome "Not yet" → one-time highlight ring on the letter CTA below
-  // (no auto-scroll; the button is a hop away — the glow points the eye).
-  const [guidedCtaPulse, setGuidedCtaPulse] = useState(false);
+  // 4a/4b split (S297) — 4a's Show-full-step reopen + the LIVE pack state
+  // mirrored up from GuidedPhoneSteps (initial render derives from the
+  // persisted meta; the component emits on every persist).
+  const [phoneFullOpen, setPhoneFullOpen] = useState(false);
+  const [guidedPackLive, setGuidedPackLive] = useState<PhonePackState | null>(null);
 
 
   // Read localStorage once on mount per claim.
@@ -1350,6 +1352,11 @@ export function ClaimDetail({
     ((claim.metadata as Record<string, unknown>)?.guideSteps as
       | Record<string, GuideStepState>
       | undefined) ?? {};
+  // 4a/4b split — pack state for the rail chrome (done pill / resolved chip /
+  // skipped) and 4b's activation. Live component state wins once it emits.
+  const guidedPack = guidedPackLive ?? derivePhonePackState(guidedTrack, guideStepsMeta);
+  const guidedOutcomeDateLabel =
+    guidedPack.outcomeAt != null ? fmtStampDateLocal(guidedPack.outcomeAt) : null;
 
   // Provider-track step-1 CTA — mirrors the legacy RequestItemizedBill flow on
   // /disputes (Case-2 generate: no findings, no persistence), prefilled from
@@ -1408,6 +1415,43 @@ export function ClaimDetail({
           </button>
         </div>
     ) : null;
+
+  // Step-4 recover panel + drafted cards — ONE builder for the flag-OFF step 4
+  // AND the guided 4b (S297). muted=true is 4b's inactive treatment (white bg,
+  // greyed button) until the phone question concludes "Not yet"/skip — the
+  // button STAYS clickable per the locked contract §3.6 (the pack never blocks
+  // letter generation); muted=false emits today's classes byte-identically.
+  const recoverBranchNode = (muted: boolean) =>
+    data.disputes.length > 0 ? (
+      disputesListNode
+    ) : (
+      <div className={`mb-4 flex flex-col gap-4 rounded-[18px] border ${muted ? "border-gray-200 bg-white" : "border-blue-200 bg-gradient-to-br from-blue-50 to-white"} px-6 py-5 sm:-ml-[43px] sm:flex-row sm:items-center sm:justify-between`}>
+        <div className="max-w-[50ch] text-[13px] leading-[1.55] text-gray-600">
+          <div className={`mb-1.5 flex items-center gap-1.5 text-sm font-bold ${muted ? "text-gray-700" : "text-blue-900"}`}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+            Recover ${fmtMoney(billTotals.potentialRecovery)} from this bill
+          </div>
+          <p className="m-0">
+            Candid will write the appeal letter for you using your uploaded plan, the EOB, and Medicare benchmark comparisons. You review and mail it — we never send anything on your behalf.
+          </p>
+        </div>
+        <div className="sm:flex-shrink-0">
+          <BulkDisputeButton
+            claimId={claimId}
+            claim={claim}
+            primaryLineItems={primaryLineItems}
+            claimLevelFindings={visibleClaimLevelFindings}
+            showDismissed={showDismissed}
+            getAuthToken={getAuthToken}
+            onGenerated={(result) => router.push(disputeUrlForResult(result))}
+            existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
+            muted={muted}
+          />
+        </div>
+      </div>
+    );
 
   return (
     <div>
@@ -3061,8 +3105,83 @@ export function ClaimDetail({
 
       {/* Step 4 — Recover the money (flagged bills only). Drafted bills show
           the real dispute cards (Open dispute letter); undrafted show the
-          recover panel + BulkDisputeButton. */}
-      {isFlagged && (
+          recover panel + BulkDisputeButton.
+          S297 (Andrew): with guided_steps_v1 ON the step SPLITS into 4a "Work
+          it by phone first" + 4b "Send the appeal / dispute letter" — the
+          phone question concludes 4a (auto-collapse; yes carries the resolved
+          date, skip goes amber) and 4b's panel activates white/grey → blue on
+          "Not yet"/skip. Flag OFF renders today's single step, byte-identical. */}
+      {isFlagged && guidedCtx && (() => {
+        const muted4b = !(
+          guidedPack.outcome === "no" ||
+          guidedPack.outcome === "skip" ||
+          hasDraftedDispute
+        );
+        const phoneBodyVisible = !guidedPack.concluded || phoneFullOpen;
+        return (
+          <>
+            <RailStep
+              n="4a"
+              done={guidedPack.concluded && guidedPack.outcome !== "skip"}
+              attention={guidedPack.outcome === "skip"}
+              title={GUIDE_CHROME.packATitle}
+              sub={GUIDE_CHROME.packAMeta}
+              right={
+                guidedPack.concluded ? (
+                  <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+                    {guidedPack.outcome === "yes" && guidedOutcomeDateLabel != null && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11.5px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                          <path d="M5 13l4 4L19 7" />
+                        </svg>
+                        {PHONE_OUTCOME.resolvedChipPrefix} · {guidedOutcomeDateLabel}
+                      </span>
+                    )}
+                    {guidedPack.outcome === "no" && guidedPack.done > 0 && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11.5px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">
+                        {GUIDE_CHROME.doneMeta(guidedPack.done, guidedPack.total)}
+                      </span>
+                    )}
+                    {guidedPack.outcome === "skip" && (
+                      <span className="inline-flex items-center rounded-full bg-amber-50 px-2.5 py-0.5 text-[11.5px] font-semibold text-amber-700 ring-1 ring-inset ring-amber-200">
+                        {PHONE_OUTCOME.skippedChip}
+                      </span>
+                    )}
+                    <ShowFullStepButton
+                      open={phoneFullOpen}
+                      onToggle={() => setPhoneFullOpen((v) => !v)}
+                    />
+                  </div>
+                ) : undefined
+              }
+            >
+              {phoneBodyVisible && (
+                <GuidedPhoneSteps
+                  claimId={claimId}
+                  ctx={guidedCtx}
+                  initialSteps={guideStepsMeta}
+                  getAuthToken={getAuthToken}
+                  onItemizedRequest={requestItemizedLetter}
+                  onStateChange={(s) => {
+                    setGuidedPackLive(s);
+                    if (s.concluded) setPhoneFullOpen(false);
+                  }}
+                />
+              )}
+            </RailStep>
+            <RailStep
+              n="4b"
+              done={hasDraftedDispute}
+              title={guidedTrack === "insurer" ? GUIDE_4B.titleInsurer : GUIDE_4B.titleProvider}
+              sub={guidedPack.outcome === "yes" ? GUIDE_4B.subResolved : GUIDE_4B.sub}
+              last
+            >
+              {recoverBranchNode(muted4b)}
+            </RailStep>
+          </>
+        );
+      })()}
+      {isFlagged && !guidedCtx && (
         <RailStep
           n={railStepRecover}
           done={hasDraftedDispute}
@@ -3074,68 +3193,7 @@ export function ClaimDetail({
               cancels the rail body's indent so it runs from under the step badge
               all the way across (matches the Quality-measures bar width); mb-4
               restores breathing room (the `last` RailStep has no pb). */}
-          {/* Guided Steps v1 (S297) — Pack A′ phone subflow: ONE row per bill,
-              above the dispute card(s) in both drafted and undrafted states.
-              Flag OFF → guidedCtx is null → nothing mounts (byte-identical). */}
-          {guidedCtx && (
-            <GuidedPhoneSteps
-              claimId={claimId}
-              ctx={guidedCtx}
-              initialSteps={guideStepsMeta}
-              getAuthToken={getAuthToken}
-              onItemizedRequest={requestItemizedLetter}
-              onNotResolved={() => {
-                setGuidedCtaPulse(true);
-                window.setTimeout(() => setGuidedCtaPulse(false), 2600);
-              }}
-            />
-          )}
-          {(() => {
-          const branchNode = data.disputes.length > 0 ? (
-            disputesListNode
-          ) : (
-        <div className="mb-4 flex flex-col gap-4 rounded-[18px] border border-blue-200 bg-gradient-to-br from-blue-50 to-white px-6 py-5 sm:-ml-[43px] sm:flex-row sm:items-center sm:justify-between">
-          <div className="max-w-[50ch] text-[13px] leading-[1.55] text-gray-600">
-            <div className="mb-1.5 flex items-center gap-1.5 text-sm font-bold text-blue-900">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                <path d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              Recover ${fmtMoney(billTotals.potentialRecovery)} from this bill
-            </div>
-            <p className="m-0">
-              Candid will write the appeal letter for you using your uploaded plan, the EOB, and Medicare benchmark comparisons. You review and mail it — we never send anything on your behalf.
-            </p>
-          </div>
-          <div className="sm:flex-shrink-0">
-            <BulkDisputeButton
-              claimId={claimId}
-              claim={claim}
-              primaryLineItems={primaryLineItems}
-              claimLevelFindings={visibleClaimLevelFindings}
-              showDismissed={showDismissed}
-              getAuthToken={getAuthToken}
-              onGenerated={(result) => router.push(disputeUrlForResult(result))}
-              existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
-            />
-          </div>
-        </div>
-          );
-          // Wrapper exists ONLY when guided is on (flag OFF keeps today's DOM
-          // byte-identical); the ring pulses on "Not yet".
-          return guidedCtx ? (
-            <div
-              className={
-                guidedCtaPulse
-                  ? "rounded-[18px] ring-2 ring-blue-400 ring-offset-2 transition-shadow"
-                  : undefined
-              }
-            >
-              {branchNode}
-            </div>
-          ) : (
-            branchNode
-          );
-          })()}
+          {recoverBranchNode(false)}
         </RailStep>
       )}
 
@@ -3449,7 +3507,8 @@ export function RailStep({
   headerOnly,
   children,
 }: {
-  n: number;
+  /** Badge content — numeric for the classic rail, "4a"/"4b" for the S297 split. */
+  n: number | string;
   title: string;
   sub?: React.ReactNode;
   done?: boolean;
@@ -3748,6 +3807,13 @@ function fmtDateLongUTC(d: string | null): string | null {
     year: "numeric",
     timeZone: "UTC",
   });
+}
+
+/** Server ISO timestamp → "Jul 30, 2026" (local; the resolved-by-phone chip). */
+function fmtStampDateLocal(iso: string): string | null {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  return new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
 /** "2024-04-25" → "April 25" (clause dates). */
@@ -4276,6 +4342,7 @@ function BulkDisputeButton({
   onGenerated,
   existingDisputeId,
   size = "md",
+  muted = false,
 }: {
   claimId: string;
   claim: Record<string, unknown>;
@@ -4289,6 +4356,9 @@ function BulkDisputeButton({
    *  full-width primary action (onboarding Done-button idiom); default "md"
    *  keeps the inline rail/footer chrome untouched. */
   size?: "md" | "xl";
+  /** S297 4b — greyed inactive look until the phone question concludes.
+   *  STILL CLICKABLE (contract §3.6: the pack never blocks letter generation). */
+  muted?: boolean;
 }) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
@@ -4614,7 +4684,9 @@ function BulkDisputeButton({
         className={
           size === "xl"
             ? "flex w-full items-center justify-center gap-2 rounded-[14px] bg-blue-600 px-6 py-3.5 text-[15px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
-            : "inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-[9px] text-[13px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
+            : muted
+              ? "inline-flex items-center gap-1.5 rounded-xl bg-gray-200 px-4 py-[9px] text-[13px] font-semibold text-gray-500 transition-colors hover:bg-gray-300 disabled:cursor-not-allowed disabled:opacity-50"
+              : "inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-[9px] text-[13px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
         }
       >
         {buttonLabel}

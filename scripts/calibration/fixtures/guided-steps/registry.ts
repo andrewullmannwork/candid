@@ -26,6 +26,7 @@ import { resolve } from "path";
 import { readFileSync } from "fs";
 import {
   ALL_GUIDE_STEPS,
+  GUIDE_4B,
   GUIDE_KEY_RE,
   PHONE_OUTCOME,
   PACK_A_INSURER_STEPS,
@@ -293,6 +294,9 @@ check("phone-outcome: id not colliding with steps", !EXPECTED_IDS.includes(PHONE
 for (const [k, v] of Object.entries(PHONE_OUTCOME)) {
   if (k === "id") continue;
   sweep(`phone-outcome.${k}`, v);
+}
+for (const [k, v] of Object.entries(GUIDE_4B)) {
+  sweep(`guide-4b.${k}`, v);
 }
 
 // ── 8. Call-log → letter recital (S297) ────────────────────────────────────

@@ -555,6 +555,20 @@ export const PHONE_OUTCOME = {
     "Logged. Watch for the corrected bill or EOB — if nothing changes in 30 days, the appeal below is still ready.",
   yesLineProvider:
     "Logged. Watch for the corrected bill or EOB — if nothing changes in 30 days, your letter below is still ready.",
+  /** 4a/4b split (S297): the no-calls escape hatch + collapsed-header chrome. */
+  skipLabel: "Skip this step",
+  skippedChip: "skipped",
+  resolvedChipPrefix: "Resolved by phone",
+} as const;
+
+/** Step 4b — the letter step of the S297 4a/4b split. Title is track-aware;
+ *  sub carries the approved hand-off sentence (its directive prefix now lives
+ *  in the title + question); subResolved is the yes-state watch-guidance. */
+export const GUIDE_4B = {
+  titleInsurer: "Send the appeal",
+  titleProvider: "Send the dispute letter",
+  sub: "It cites everything above, and what you logged here rides with your case.",
+  subResolved: "Still here if the fix doesn't land — watch for the corrected bill or EOB.",
 } as const;
 
 // ── Letter recital source (S297) — attested calls → letter facts ───────────
