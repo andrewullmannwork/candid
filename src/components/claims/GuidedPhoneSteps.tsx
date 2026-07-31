@@ -249,8 +249,31 @@ export function GuidedPhoneSteps({
     return null;
   };
 
+  const outcomeAt = eff[PHONE_OUTCOME.id]?.checkedAt ?? null;
+
   return (
     <div className="mb-4 flex flex-col gap-4">
+      {/* Skip escape hatch — TOP of 4a (Andrew), pre-call only; clicking the
+          selected state again un-skips. Once a call is attested the bottom
+          question owns the exit. */}
+      {!anyCallMade && (
+        <div className="-mb-2 flex justify-end">
+          <button
+            type="button"
+            onClick={() =>
+              void persist(
+                PHONE_OUTCOME.id,
+                outcomeAnswer === "skip"
+                  ? { checked: false, note: "" }
+                  : { checked: true, note: "skip" },
+              )
+            }
+            className="text-[12px] font-medium text-gray-400 underline-offset-2 transition-colors hover:text-gray-600 hover:underline"
+          >
+            {PHONE_OUTCOME.skipLabel}
+          </button>
+        </div>
+      )}
       {/* Have-ready prep row */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[12px] text-gray-500">
         {onFileChips.map((c) => (
@@ -458,28 +481,18 @@ export function GuidedPhoneSteps({
           </div>
           {outcomeAnswer === "yes" && (
             <p className="mt-1.5 text-[12.5px] leading-[1.55] text-gray-600">
-              {ctx.track === "insurer" ? PHONE_OUTCOME.yesLineInsurer : PHONE_OUTCOME.yesLineProvider}
+              {/* "Resolved at «server date-time»." — the answered-at stamp IS
+                  the resolution log (Andrew E2E). */}
+              {outcomeAt != null
+                ? `${PHONE_OUTCOME.resolvedAtPrefix} ${fmtStamp(outcomeAt)}. `
+                : ""}
+              {ctx.track === "insurer"
+                ? PHONE_OUTCOME.yesLineRestInsurer
+                : PHONE_OUTCOME.yesLineRestProvider}
             </p>
           )}
         </div>
-      ) : (
-        <div className="flex justify-end border-t border-gray-100 pt-2">
-          <button
-            type="button"
-            onClick={() =>
-              void persist(
-                PHONE_OUTCOME.id,
-                outcomeAnswer === "skip"
-                  ? { checked: false, note: "" }
-                  : { checked: true, note: "skip" },
-              )
-            }
-            className="text-[12px] font-medium text-gray-400 underline-offset-2 transition-colors hover:text-gray-600 hover:underline"
-          >
-            {PHONE_OUTCOME.skipLabel}
-          </button>
-        </div>
-      )}
+      ) : null}
     </div>
   );
 }

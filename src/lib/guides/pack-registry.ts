@@ -166,6 +166,7 @@ export const PACK_A_INSURER_STEPS: GuideStep[] = [
     script: billingHoldScript,
     control: "checkbox",
     checkboxLabel: "I asked for the hold",
+    note: { placeholder: "Log it: name · reference # · what they said" },
   },
   {
     id: "packA:ins-handoff",
@@ -321,6 +322,7 @@ export const PACK_A_PROVIDER_STEPS: GuideStep[] = [
     ],
     control: "checkbox",
     checkboxLabel: "I asked for the hold",
+    note: { placeholder: "Log it: name · reference # · what they said" },
   },
   {
     id: "packA:prov-handoff",
@@ -551,10 +553,12 @@ export const PHONE_OUTCOME = {
   question: "Did the calls fix it?",
   yesLabel: "Yes — it's resolved",
   noLabel: "Not yet",
-  yesLineInsurer:
-    "Logged. Watch for the corrected bill or EOB — if nothing changes in 30 days, the appeal below is still ready.",
-  yesLineProvider:
-    "Logged. Watch for the corrected bill or EOB — if nothing changes in 30 days, your letter below is still ready.",
+  /** Yes-state line = "Resolved at «server date-time». " + the rest below. */
+  resolvedAtPrefix: "Resolved at",
+  yesLineRestInsurer:
+    "Watch for the corrected bill or EOB — if nothing changes in 30 days, the appeal below will still be ready.",
+  yesLineRestProvider:
+    "Watch for the corrected bill or EOB — if nothing changes in 30 days, your letter below will still be ready.",
   /** 4a/4b split (S297): the no-calls escape hatch + collapsed-header chrome. */
   skipLabel: "Skip this step",
   skippedChip: "skipped",
