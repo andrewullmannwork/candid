@@ -253,27 +253,8 @@ export function GuidedPhoneSteps({
 
   return (
     <div className="mb-4 flex flex-col gap-4">
-      {/* Skip escape hatch — TOP of 4a (Andrew), pre-call only; clicking the
-          selected state again un-skips. Once a call is attested the bottom
-          question owns the exit. */}
-      {!anyCallMade && (
-        <div className="-mb-2 flex justify-end">
-          <button
-            type="button"
-            onClick={() =>
-              void persist(
-                PHONE_OUTCOME.id,
-                outcomeAnswer === "skip"
-                  ? { checked: false, note: "" }
-                  : { checked: true, note: "skip" },
-              )
-            }
-            className="text-[12px] font-medium text-gray-400 underline-offset-2 transition-colors hover:text-gray-600 hover:underline"
-          >
-            {PHONE_OUTCOME.skipLabel}
-          </button>
-        </div>
-      )}
+      {/* No skip affordance (Andrew): non-callers click through via 4b's
+          always-clickable draft button (§3.6). */}
       {/* Have-ready prep row */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[12px] text-gray-500">
         {onFileChips.map((c) => (
@@ -305,14 +286,15 @@ export function GuidedPhoneSteps({
 
         return (
           <div key={step.id} className="flex gap-2.5">
-            {/* 22px leading dot — blue current · hollow untouched · green done */}
+            {/* 22px leading dot — grey ⋯ in-progress (Andrew: "on the step,
+                not completed") · hollow untouched · green ✓ done */}
             <span
               className={
                 "mt-0.5 grid h-[22px] w-[22px] flex-shrink-0 place-items-center rounded-full " +
                 (checked
                   ? "bg-emerald-600 text-white"
                   : isCurrent
-                    ? "bg-blue-600 text-white"
+                    ? "bg-gray-300 text-gray-600"
                     : "border-[1.5px] border-gray-300 text-transparent")
               }
               aria-hidden
@@ -322,8 +304,10 @@ export function GuidedPhoneSteps({
                   <path d="M5 13l4 4L19 7" />
                 </svg>
               ) : isCurrent ? (
-                <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-                  <path d="M8 5v14l11-7z" />
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                  <circle cx="5" cy="12" r="2.2" />
+                  <circle cx="12" cy="12" r="2.2" />
+                  <circle cx="19" cy="12" r="2.2" />
                 </svg>
               ) : null}
             </span>

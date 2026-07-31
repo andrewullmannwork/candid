@@ -157,7 +157,7 @@ export const PACK_A_INSURER_STEPS: GuideStep[] = [
       "every highlight autofilled from this bill and your plan — the same numbers the letter uses",
     control: "checkbox",
     checkboxLabel: "I made the call",
-    note: { placeholder: "Log it: name · reference # · what they said" },
+    note: { placeholder: "Enter the call reference #, name of the agent, and what you discussed" },
   },
   {
     id: "packA:ins-ask-hold",
@@ -166,7 +166,7 @@ export const PACK_A_INSURER_STEPS: GuideStep[] = [
     script: billingHoldScript,
     control: "checkbox",
     checkboxLabel: "I asked for the hold",
-    note: { placeholder: "Log it: name · reference # · what they said" },
+    note: { placeholder: "Enter the call reference #, name of the agent, and what you discussed" },
   },
   {
     id: "packA:ins-handoff",
@@ -311,7 +311,7 @@ export const PACK_A_PROVIDER_STEPS: GuideStep[] = [
     title: "Log the call",
     copy: "Who you talked to, the reference number, what they said. This log becomes your evidence if you escalate.",
     control: "info",
-    note: { placeholder: "Name · reference # · what they said" },
+    note: { placeholder: "Enter the call reference #, name of the agent, and what you discussed" },
   },
   {
     id: "packA:prov-ask-hold",
@@ -322,7 +322,7 @@ export const PACK_A_PROVIDER_STEPS: GuideStep[] = [
     ],
     control: "checkbox",
     checkboxLabel: "I asked for the hold",
-    note: { placeholder: "Log it: name · reference # · what they said" },
+    note: { placeholder: "Enter the call reference #, name of the agent, and what you discussed" },
   },
   {
     id: "packA:prov-handoff",
@@ -559,9 +559,10 @@ export const PHONE_OUTCOME = {
     "Watch for the corrected bill or EOB — if nothing changes in 30 days, the appeal below will still be ready.",
   yesLineRestProvider:
     "Watch for the corrected bill or EOB — if nothing changes in 30 days, your letter below will still be ready.",
-  /** 4a/4b split (S297): the no-calls escape hatch + collapsed-header chrome. */
-  skipLabel: "Skip this step",
-  skippedChip: "skipped",
+  /** 4a/4b split (S297) — collapsed-header chrome. (The skip affordance was
+   *  removed at Andrew's call: the muted-but-clickable 4b button IS the
+   *  click-through for non-callers; "skip" remains a tolerated stored value
+   *  from earlier sessions.) */
   resolvedChipPrefix: "Resolved by phone",
 } as const;
 

@@ -3128,8 +3128,7 @@ export function ClaimDetail({
           <>
             <RailStep
               n="4a"
-              done={guidedPack.concluded && guidedPack.outcome !== "skip"}
-              attention={guidedPack.outcome === "skip"}
+              done={guidedPack.concluded}
               title={GUIDE_CHROME.packATitle}
               sub={GUIDE_CHROME.packAMeta}
               right={
@@ -3146,11 +3145,6 @@ export function ClaimDetail({
                     {guidedPack.outcome === "no" && guidedPack.done > 0 && (
                       <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11.5px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">
                         {GUIDE_CHROME.doneMeta(guidedPack.done, guidedPack.total)}
-                      </span>
-                    )}
-                    {guidedPack.outcome === "skip" && (
-                      <span className="inline-flex items-center rounded-full bg-amber-50 px-2.5 py-0.5 text-[11.5px] font-semibold text-amber-700 ring-1 ring-inset ring-amber-200">
-                        {PHONE_OUTCOME.skippedChip}
                       </span>
                     )}
                     <ShowFullStepButton
