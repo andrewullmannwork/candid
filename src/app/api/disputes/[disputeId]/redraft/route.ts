@@ -31,6 +31,7 @@ import { rerenderDisputeLetter } from "@/lib/disputes/rerender";
 import { reparseField } from "@/lib/plan/reparse-field";
 import { loadDecorationContext } from "@/lib/plan/analyze-decoration";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { emitCaseEvent } from "@/lib/case/case-events";
 import { loadServerSubscription } from "@/lib/subscription/server";
 import { letterRequiresPro, evaluateLetterAccess } from "@/lib/disputes/letter-access";
 import type { DisputeLetterType } from "@/lib/billing/types";
@@ -312,6 +313,17 @@ export async function POST(
     .table("dispute_outcomes")
     .update(updatePayload)
     .eq("id", dispute.id);
+
+  // Timeline unification Phase 0 (S298, mig 221) — the redraft moment.
+  // Flag-gated + fail-soft inside the emitter; references only.
+  if (dispute.claim_id) {
+    await emitCaseEvent(supabase, user.id, {
+      claimId: dispute.claim_id as string,
+      disputeId: dispute.id as string,
+      kind: "letter_redrafted",
+      payload: { letterType: letterTypeForRender },
+    });
+  }
 
   return NextResponse.json({
     success: true,

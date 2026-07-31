@@ -25,6 +25,7 @@ import { resolvePlanContext } from "@/lib/disputes/plan-context";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
 import { captureCoverageSnapshot } from "@/lib/disputes/coverage-snapshot";
+import { emitCaseEvent } from "@/lib/case/case-events";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -173,6 +174,21 @@ export async function POST(
   if (updateErr) {
     console.error("[repin] update failed:", updateErr);
     return NextResponse.json({ error: "Failed to re-pin dispute" }, { status: 500 });
+  }
+
+  // Timeline unification Phase 0 (S298, mig 221) — the case's evidentiary
+  // basis changed; letters drafted before vs after argue from different plans.
+  // Unchanged-pin posts returned early above, so this is a real change.
+  if (dispute.claim_id) {
+    await emitCaseEvent(supabase, user.id, {
+      claimId: dispute.claim_id as string,
+      disputeId: dispute.id as string,
+      kind: "plan_repinned",
+      payload: {
+        fromInsurancePlanId: (dispute.insurance_plan_id as string | null) ?? null,
+        toInsurancePlanId: insurancePlanId,
+      },
+    });
   }
 
   return NextResponse.json({ success: true, insurancePlanId });

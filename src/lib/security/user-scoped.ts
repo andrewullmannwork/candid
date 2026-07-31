@@ -59,6 +59,10 @@ export const DIRECT_USER_OWNED_TABLES = [
   // cost-share-override route (W3). Registered so a route write goes through
   // userScoped (the B9 backstop), not raw `.from()`.
   "user_plan_cost_share_overrides",
+  // Timeline unification Phase 0 (mig 221) — append-only case-history spine.
+  // All writes go through src/lib/case/case-events.ts (fail-soft emitter);
+  // registered so those inserts ride userScoped's user_id stamping.
+  "claim_case_events",
 ] as const;
 
 export type DirectUserOwnedTable = (typeof DIRECT_USER_OWNED_TABLES)[number];

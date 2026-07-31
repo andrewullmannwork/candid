@@ -27,6 +27,7 @@ import { checkEscalateGate } from "@/lib/disputes/escalate-gate";
 import { evaluateDeadline, readDeadlineConfig } from "@/lib/disputes/deadline-engine";
 import { loadServerSubscription } from "@/lib/subscription/server";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { emitCaseEvents, type CaseEventInput } from "@/lib/case/case-events";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -235,6 +236,39 @@ export async function POST(
       .eq("id", result.disputeId);
   } catch (err) {
     console.error("[disputes/escalate] escalation-input metadata persist failed (non-fatal):", err);
+  }
+
+  // Timeline unification Phase 0 (S298, mig 221) — the track move + the new
+  // rung's draft, in one batch. A debt_validation escalation IS the collections
+  // capture (CollectorModal routes here), so it also emits collections_reported.
+  // Flag-gated + fail-soft inside the emitter; references only.
+  {
+    const events: CaseEventInput[] = [
+      {
+        claimId: dispute.claim_id,
+        disputeId: dispute.id,
+        kind: "escalated",
+        payload: { toDisputeId: result.disputeId, targetLetterType: letterType },
+      },
+      {
+        claimId: dispute.claim_id,
+        disputeId: result.disputeId,
+        kind: "letter_drafted",
+        payload: { letterType, escalatedFromDisputeId: dispute.id },
+      },
+    ];
+    if (letterType === "debt_validation") {
+      events.push({
+        claimId: dispute.claim_id,
+        disputeId: result.disputeId,
+        kind: "collections_reported",
+        payload: {
+          hasCollector: !!collector,
+          hasFirstContactDate: !!collectorFirstContactDate,
+        },
+      });
+    }
+    await emitCaseEvents(supabase, user.id, events);
   }
 
   return NextResponse.json({
