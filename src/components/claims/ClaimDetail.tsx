@@ -3558,7 +3558,10 @@ export function RailStep({
           <div className="text-[16.5px] font-bold tracking-[-0.005em] text-gray-900">{title}</div>
           {sub && <div className="mt-0.5 text-[13px] leading-normal text-gray-500">{sub}</div>}
         </div>
-        {right && <div className="w-full sm:w-auto sm:flex-shrink-0 sm:self-center">{right}</div>}
+        {/* S297 (Andrew E2E) — sm:ml-auto: when flex-wrap drops the right
+            cluster to its own row, it right-aligns instead of starting at
+            x=0 under the badge and crossing the rail connector line. */}
+        {right && <div className="w-full sm:ml-auto sm:w-auto sm:flex-shrink-0 sm:self-center">{right}</div>}
       </header>
       {children != null && <div className="sm:ml-[43px]">{children}</div>}
     </section>

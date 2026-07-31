@@ -2242,7 +2242,11 @@ function DisputesContent() {
     <UnifiedTodo
       key={disputeId ?? "letter"}
       amountLabel={
-        amountDisputed != null
+        // S297 (Andrew E2E) — a $0 headline reads as nonsense ("get your
+        // $0.00 moving"); insurer-track deductible-aware folds legitimately
+        // persist amount_disputed=0 (the ask is reprocessing, not a dollar
+        // demand). ≤0 → null → the approved generic line renders instead.
+        amountDisputed != null && amountDisputed > 0
           ? `$${amountDisputed.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
           : null
       }

@@ -142,10 +142,17 @@ export function FollowupBanner() {
                   : `Did you get a response? Logging it helps us flag similar disputes for other users.`}
               </p>
               <p className="mt-0.5 text-[11px] text-amber-700/80">
-                {/* S297 (Andrew E2E #1) — name the bill this response is for. */}
-                {current.dispute.provider_name ? `${current.dispute.provider_name} · ` : ""}
-                ${current.dispute.amount_disputed.toLocaleString()} disputed
-                {followups.length > 1 && ` · ${followups.length} pending followups`}
+                {/* S297 (Andrew E2E #1) — name the bill this response is for.
+                    $0 amounts (insurer-track folds) simply omit the segment. */}
+                {[
+                  current.dispute.provider_name || null,
+                  current.dispute.amount_disputed > 0
+                    ? `$${current.dispute.amount_disputed.toLocaleString()} disputed`
+                    : null,
+                  followups.length > 1 ? `${followups.length} pending followups` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
               </p>
               <a
                 href={`/disputes?dispute=${current.dispute.id}`}

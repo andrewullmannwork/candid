@@ -286,6 +286,15 @@ check("route sync: claims guideSteps storage", claimRoute.includes("guideSteps")
 check("route sync: claims foreign → 404", claimRoute.includes('{ error: "Claim not found" }, { status: 404 }'));
 check("route sync: dispute foreign → 404", disputeRoute.includes('{ error: "Dispute not found" }, { status: 404 }'));
 check("route sync: claims server-side timestamp", claimRoute.includes("new Date().toISOString()"));
+// S297 excerpt-contradiction guard — a letter must never quote plan language
+// that defeats its own coverage assertion (the SBC whole-row-excerpt case).
+const templatesSrc = readFileSync(resolve(repoRoot, "src/lib/disputes/templates.ts"), "utf8");
+check("templates: excerpt contradiction guard present", templatesSrc.includes("excerptContradicts"));
+check(
+  "templates: guard covers the not-covered negation",
+  /excerptContradicts[\s\S]{0,400}not\\s\+covered/.test(templatesSrc),
+);
+
 // S297 noteHistory — accidental note deletes must be recoverable on BOTH routes.
 check("route sync: claims noteHistory banked", claimRoute.includes("noteHistory"));
 check("route sync: claims noteHistory capped", claimRoute.includes(".slice(-5)"));

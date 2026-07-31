@@ -1271,7 +1271,26 @@ function renderLineItemEvidence(
     // mails to the insurer); the prior `> *"..."*` Markdown rendered as literal
     // noise in all three. The quoted excerpt itself stays verbatim — CF-60 inv1:
     // do NOT alter the text inside the quotes.
-    if (li.planBenefit.sbcExcerpt && (!gateUnverified || li.planBenefit.sbcExcerptVerified)) {
+    // S297 (Andrew E2E) — contradiction guard: never quote plan language that
+    // DEFEATS the bullet's own coverage assertion. Real case: the SBC parser
+    // stores the WHOLE table row as the excerpt ("Teladoc Health consultation
+    // $0 Not covered" — the "$0" is in-network, the "Not covered" is the OON
+    // column), so a covered-service bullet would quote "Not covered" at the
+    // insurer. Fail-closed suppression: the structured plan statement above
+    // stands alone; a self-contradicting quote is worse than none. Universal
+    // (insurer/doc-type-agnostic negation patterns), CF-60 inv1 intact — we
+    // omit the quote, never alter it. Parser-side excerpt hygiene tracked
+    // separately (S297 cross-workstream note).
+    const excerptContradicts =
+      li.planBenefit.covered === true &&
+      /\bnot\s+covered\b|\bno\s+coverage\b|\bexcluded\b|\bexclusion\b/i.test(
+        li.planBenefit.sbcExcerpt ?? "",
+      );
+    if (
+      li.planBenefit.sbcExcerpt &&
+      !excerptContradicts &&
+      (!gateUnverified || li.planBenefit.sbcExcerptVerified)
+    ) {
       bullets.push(`     Plan language: "${li.planBenefit.sbcExcerpt.trim()}"`);
     }
   }
