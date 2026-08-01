@@ -41,12 +41,8 @@ import {
   readUserPatientPaidOverride,
   applyUserPatientPaidOverride,
 } from "@/lib/claims/effective-totals";
-import { isFeatureEnabled, readFeatureFlagConfig } from "@/lib/config/product-flags";
-import {
-  projectCaseTimeline,
-  type ProjectorDisputeRow,
-  type ProjectorEventRow,
-} from "@/lib/case/timeline-projector";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { loadCaseTimelinePayload } from "@/lib/case/load-case-timeline";
 import {
   loadFingerprintInputForClaim,
   computeEvidenceFingerprint,
@@ -833,88 +829,20 @@ export async function GET(
     });
   }
 
-  // S299 phase 1a — the case-timeline projection (timeline-projector, agenda
-  // §1 ONE derivation), computed from the RAW dispute rows (which carry
-  // metadata; enrichedDisputes deliberately drops it) + the claim's case
-  // events. Attached ONLY when case_rail_v1 is ON. history[] is omitted from
-  // the payload until phase 2 renders it — events are still fetched so the
-  // per-letter send/unsend counts are true. Fail-soft: a projection failure
-  // must never take down the claim page.
+  // S299 phase 2a — the shared projection loader (load-case-timeline.ts; the
+  // dispute GET consumes the identical load — agenda §1 one derivation). The
+  // raw rows fetched above are passed through so nothing double-fetches.
+  // Attached ONLY when case_rail_v1 is ON; OFF = byte-identical payload.
   let caseTimeline: Record<string, unknown> | null = null;
   if (caseRailV1 && disputes && disputes.length > 0) {
-    try {
-      const { data: eventRows, error: eventsError } = await userScoped(supabase, user.id)
-        .table("claim_case_events")
-        .select("dispute_id, kind, actor, occurred_at, payload")
-        .eq("claim_id", claimId)
-        .order("occurred_at", { ascending: true });
-      if (eventsError) {
-        console.error(
-          "[claims GET] case events load failed; projecting from rows only:",
-          eventsError,
-        );
-      }
-      const amberDays = await readFeatureFlagConfig(
-        "guided_steps_v1",
-        "sent_countdown_amber_days",
-        7,
-      );
-      const projected = projectCaseTimeline({
-        claim: {
-          id: claim.id as string,
-          created_at: claim.created_at as string,
-          metadata: (claim.metadata as Record<string, unknown> | null) ?? null,
-        },
-        disputes: disputes as unknown as ProjectorDisputeRow[],
-        events: (eventRows ?? []) as ProjectorEventRow[],
-        now: new Date(),
-        amberDays,
-      });
-      // Wait titles need insurer display names — resolved from each letter's
-      // PINNED plan (dispute_plan_pinning_v1, migs 171+172). Unpinned rows /
-      // load failures fall back to the approved "your plan" rendering
-      // client-side; the raw plan rows never reach the payload.
-      const insurerNameByDispute: Record<string, string> = {};
-      const planIds = Array.from(
-        new Set(
-          (disputes as Array<Record<string, unknown>>)
-            .map((d) => d.insurance_plan_id)
-            .filter((v): v is string => typeof v === "string" && v.length > 0),
-        ),
-      );
-      if (planIds.length > 0) {
-        const { data: planRows, error: planError } = await userScoped(supabase, user.id)
-          .table("insurance_plans")
-          .select("id, insurer_name")
-          .in("id", planIds);
-        if (planError) {
-          console.error(
-            "[claims GET] pinned-plan insurer load failed; wait titles fall back:",
-            planError,
-          );
-        }
-        const insurerByPlan = new Map(
-          (planRows ?? []).map((p) => [p.id as string, p.insurer_name as string | null]),
-        );
-        for (const d of disputes as Array<Record<string, unknown>>) {
-          const planId = d.insurance_plan_id;
-          const name = typeof planId === "string" ? insurerByPlan.get(planId) : null;
-          if (typeof name === "string" && name.length > 0) {
-            insurerNameByDispute[d.id as string] = name;
-          }
-        }
-      }
-      caseTimeline = {
-        letters: projected.letters,
-        waitingCount: projected.waitingCount,
-        soonestResponseDue: projected.soonestResponseDue,
-        sentLetterMeta: projected.sentLetterMeta,
-        insurerNameByDispute,
-      };
-    } catch (err) {
-      console.error("[claims GET] case-timeline projection failed; rail omitted:", err);
-      caseTimeline = null;
-    }
+    caseTimeline = await loadCaseTimelinePayload(supabase, user.id, claimId, {
+      claimRow: {
+        id: claim.id as string,
+        created_at: claim.created_at as string,
+        metadata: (claim.metadata as Record<string, unknown> | null) ?? null,
+      },
+      disputeRows: disputes as Array<Record<string, unknown>>,
+    });
   }
 
   // Fetch related claims in same group. S139 (B4.2 multi-line) — lift

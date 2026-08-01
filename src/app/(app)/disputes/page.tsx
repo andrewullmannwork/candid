@@ -12,6 +12,9 @@ import { downloadCaseFile } from "@/lib/casefile";
 import { disputeUrlForResult } from "@/lib/disputes/url";
 import { letterRecipientKind } from "@/lib/disputes";
 import { LETTER_TYPE_LABELS, parseLetterDate } from "@/lib/disputes/letter-type";
+import { LetterView } from "@/components/disputes/LetterView";
+import { fmtRailDate } from "@/lib/case/rail-steps";
+import type { ProjectedLetterStep } from "@/lib/case/timeline-projector";
 import { isTerminalRung, suggestDoors } from "@/lib/guides/pack-registry";
 import { DisputeLetterHero } from "@/components/disputes/DisputeLetterHero";
 import { EvidenceStrengthModal } from "@/components/disputes/EvidenceStrengthModal";
@@ -277,6 +280,21 @@ function DisputesContent() {
   // OFF → v3DesignOn false → current single-column UI; strength ignored.
   const [v3DesignOn, setV3DesignOn] = useState(false);
   const [strength, setStrength] = useState<StrengthResult | null>(null);
+  // S299 phase 2a — the shared projection + one-letter-page fields (dispute
+  // GET; absent while case_rail_v1 is OFF).
+  const caseRailFlag = useFeatureFlag("case_rail_v1");
+  const [caseTimeline, setCaseTimeline] = useState<{
+    letters: ProjectedLetterStep[];
+    insurerNameByDispute: Record<string, string>;
+    providerName: string | null;
+  } | null>(null);
+  const [sentVersions, setSentVersions] = useState<
+    Array<{ body: string; sentAt: string; unsentAt?: string }>
+  >([]);
+  const [letterCollector, setLetterCollector] = useState<{
+    name?: string;
+    address?: string | null;
+  } | null>(null);
   // Block C2 — sticky patient-identity confirmation + the service-not-rendered
   // attestation set, both from the GET payload. Drive the resolve banner/rail CTAs
   // and the attestation flow + per-line markers.
@@ -491,6 +509,20 @@ function DisputesContent() {
     // Block C — flag gate + 3-axis strength (additive; ignored by the OLD UI).
     setV3DesignOn(data.v3DesignOn === true);
     setStrength((data.strength as StrengthResult | null) ?? null);
+    // S299 phase 2a — the shared projection + letter-page fields.
+    setCaseTimeline(
+      (data.caseTimeline as {
+        letters: ProjectedLetterStep[];
+        insurerNameByDispute: Record<string, string>;
+        providerName: string | null;
+      } | null) ?? null,
+    );
+    setSentVersions(
+      (data.sentVersions as Array<{ body: string; sentAt: string; unsentAt?: string }>) ?? [],
+    );
+    setLetterCollector(
+      (data.collector as { name?: string; address?: string | null } | null) ?? null,
+    );
     // Block C2 — sticky identity confirmation + attestation set from the payload.
     setPatientIdentityResolved(data.patientIdentityResolved === true);
     setServiceAttestedLineIds(
@@ -994,6 +1026,8 @@ function DisputesContent() {
   // Once filed, T2.2 follow-up reminders fire on their schedule and the toolbar
   // button rotates to a read-only "Sent on <date>" pill.
   const alreadySent = isSentStatus(disputeStatus);
+  // S299 phase 2a — the one-letter page gate ("/disputes = ONE LETTER").
+  const letterViewOn = caseRailFlag.enabled && caseTimeline != null;
   const handleMarkSent = async () => {
     if (!user || !disputeId || markingSent || alreadySent) return;
     // Optimistic (S266) — flip status locally so the stage-action bar advances
@@ -2252,6 +2286,7 @@ function DisputesContent() {
           : null
       }
       sent={alreadySent}
+      letterOnly={letterViewOn}
       sentDateLabel={sentDateLabel}
       responseDueLabel={responseDueLabel}
       status={disputeStatus}
@@ -2370,7 +2405,9 @@ function DisputesContent() {
       // Guided Steps v1 (S297) — Pack C on the collections track; Pack D at
       // the ladder's terminal rung. Both null when the flag is OFF.
       guidedPackC={
-        guidedStepsOn && letterRecipientKind(letter.letterType) === "collector"
+        // S299 2a: in one-letter mode the packs are case furniture — Pack C's
+        // relocation to the rail is the next unit (Andrew's held critique).
+        !letterViewOn && guidedStepsOn && letterRecipientKind(letter.letterType) === "collector"
           ? {
               // Collector NAME is never persisted (generate consumes it into
               // the letter only) — the chip renders date-only, honestly.
@@ -2400,7 +2437,8 @@ function DisputesContent() {
           : null
       }
       guidedPackD={
-        guidedStepsOn && isTerminalRung({ letterType: letter.letterType, status: disputeStatus })
+        // S299 2a: the rail's stage-8 regulator card owns this now (phase 1b).
+        !letterViewOn && guidedStepsOn && isTerminalRung({ letterType: letter.letterType, status: disputeStatus })
           ? {
               suggested: suggestDoors({
                 track:
@@ -2419,6 +2457,47 @@ function DisputesContent() {
       {renderCaseNeedsPanel(true)}
     </UnifiedTodo>
   );
+
+  // S299 phase 2a — the one-letter SENT page (Panel E): when the rail flag is
+  // ON and the letter is sent, LetterView REPLACES the case-wide composition
+  // ("/disputes = ONE LETTER"). Draft letters keep the letter-work engine
+  // below with letterOnly suppressing the case furniture. Body renders the
+  // immutable sent_letter (the GET serves it as letterContent when sent).
+  if (letterViewOn && alreadySent && letter && caseTimeline) {
+    const entry =
+      caseTimeline.letters.find((l) => l.disputeId === disputeId) ?? null;
+    const primaryId =
+      caseTimeline.letters.find((l) => l.stage !== "none")?.disputeId ?? null;
+    return (
+      <div className="mx-auto max-w-4xl px-4 py-6">
+        <LetterView
+          letterType={letter.letterType}
+          insurerName={
+            (disputeId ? caseTimeline.insurerNameByDispute[disputeId] : null) ?? null
+          }
+          collector={letterCollector}
+          providerName={caseTimeline.providerName}
+          stepBadge={disputeId != null && disputeId === primaryId ? "4b" : null}
+          claimId={letter.auditReportId}
+          sentAtIso={disputeSentAt ?? letter.createdAt}
+          certified={entry?.mailedCertified ?? false}
+          body={letter.body}
+          strengthBand={strength?.evidenceStrength.band ?? null}
+          appealsAddress={planContext?.insurer?.appealsAddress ?? null}
+          versions={sentVersions}
+          waitingDueLabel={
+            entry?.stage === "awaiting" && entry.responseDueDate
+              ? fmtRailDate(entry.responseDueDate)
+              : null
+          }
+          canUnlock={entry?.stage === "awaiting"}
+          onDownload={handleDownload}
+          onDraftUpdated={() => void handleRedraft()}
+          onUnlock={() => void handleUndoSent()}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className={v3DesignOn ? "mx-auto max-w-6xl space-y-5" : "max-w-4xl mx-auto space-y-5"}>

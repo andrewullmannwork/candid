@@ -16,6 +16,7 @@ import { userScoped } from "@/lib/security/user-scoped";
 import { updateDisputeOutcome, getUserDisputes } from "@/lib/disputes/persist";
 import { isOutcomeDetail } from "@/lib/disputes/outcome-taxonomy";
 import { emitCaseEvents, type CaseEventInput } from "@/lib/case/case-events";
+import { bankSentVersion, stampUnsent } from "@/lib/disputes/sent-versions";
 import { isFeatureEnabled, readFeatureFlagConfig } from "@/lib/config/product-flags";
 import {
   computeCooldownUntil,
@@ -200,9 +201,22 @@ export async function POST(req: NextRequest) {
         if (clearSentAt) {
           patch.sent_at = null;
           patch.cooldown_until = null;
+          // §0.9b (S299 phase 2a) — the marked-sent snapshot is RETAINED and
+          // labeled ("Marked sent «date», then unsent — never mailed"), never
+          // again rendered as a mailed letter. sent_letter itself is left in
+          // place (S74.5 column semantics unchanged; the stack is the label
+          // authority).
+          patch.metadata = stampUnsent(
+            (existing.metadata as Record<string, unknown> | null) ?? null,
+            new Date().toISOString(),
+          );
         }
         if (clearOutcomeDetail) {
-          const baseMetadata = { ...((existing.metadata as Record<string, unknown>) ?? {}) };
+          const baseMetadata = {
+            ...(((patch.metadata as Record<string, unknown> | undefined) ??
+              (existing.metadata as Record<string, unknown>)) ??
+              {}),
+          };
           delete baseMetadata.outcomeDetail;
           delete baseMetadata.outcomeReportedAt;
           patch.metadata = baseMetadata;
@@ -317,6 +331,14 @@ export async function POST(req: NextRequest) {
               evidence_fingerprint:
                 fingerprint ?? undefined,
               last_refresh_at: sentAt.toISOString(),
+              // §0.9 rule 4 (S299 phase 2a) — bank this send into the version
+              // stack (additive metadata; sent_letter stays the current-
+              // artifact column). Same write as the snapshot, no extra trip.
+              metadata: bankSentVersion(
+                (existing.metadata as Record<string, unknown> | null) ?? null,
+                (existing.letter_content as string) ?? "",
+                sentAt.toISOString(),
+              ),
             })
             .eq("id", disputeId);
         }

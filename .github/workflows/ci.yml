@@ -81,6 +81,12 @@ jobs:
         # and the sole-active-wait default-open rule.
         run: npx tsx scripts/calibration/fixtures/case-timeline/rail-steps.ts
 
+      - name: Letter sent-versions stack (S299 phase 2a / §0.9 rule 4)
+        # Banking on mark-sent (double-submit idempotent), the §0.9b unsend
+        # stamp (retained + labeled, latest un-unsent only, legacy no-op),
+        # Case-2 resend (two artifacts, one step), defensive reads.
+        run: npx tsx scripts/calibration/fixtures/dispute-grounds/sent-versions.ts
+
       - name: Canonical link is a pair (S292 / mig 218)
         # Fails the build if any code writes insurance_plans.canonical_plan_id
         # without canonical_match_confidence. An unscored link reads as UNKNOWN to
