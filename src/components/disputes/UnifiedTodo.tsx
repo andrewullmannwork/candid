@@ -97,6 +97,10 @@ export interface UnifiedTodoProps {
   /** "$775.00" — used in "Finish this list to get your $X moving." */
   amountLabel: string | null;
   sent: boolean;
+  /** S299 phase 2a — one-letter mode: suppress the case-ladder furniture
+   *  (earlier/later segments, viewing-past banner); the claim rail owns case
+   *  navigation now. The letter-work rows are untouched. */
+  letterOnly?: boolean;
   /** Formatted sent date — prefers sent_at over filed_date (S286). */
   sentDateLabel: string | null;
   /** Formatted response-due date — governing deadline, else sent + 30 days. */
@@ -353,6 +357,7 @@ const TERMINAL = new Set([
 export function UnifiedTodo({
   amountLabel,
   sent,
+  letterOnly = false,
   sentDateLabel,
   responseDueLabel,
   status = null,
@@ -663,7 +668,9 @@ export function UnifiedTodo({
 
   // Ladder partition — earlier letters render above the viewed letter's steps,
   // later ones (visible only when viewing an old letter) below the action bar.
-  const viewedLetter = letters.find((l) => l.viewed) ?? null;
+  // letterOnly (S299 2a): an empty partition suppresses ALL ladder furniture
+  // (segments, viewing-past banner, later letters) in one gate.
+  const viewedLetter = letterOnly ? null : (letters.find((l) => l.viewed) ?? null);
   const earlierLetters = viewedLetter
     ? letters.filter((l) => l.ordinal < viewedLetter.ordinal)
     : [];

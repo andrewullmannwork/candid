@@ -225,13 +225,22 @@ export async function POST(
   try {
     const { data: newRow } = await userScoped(supabase, user.id)
       .table("dispute_outcomes")
-      .select("metadata")
+      .select("metadata, sent_at")
       .eq("id", result.disputeId)
       .single();
     const baseMeta = (newRow?.metadata as Record<string, unknown>) ?? {};
     const merged: Record<string, unknown> = { ...baseMeta, escalatedFromDisputeId: dispute.id };
-    if (collector) merged.collector = collector;
-    if (collectorFirstContactDate) merged.collectorFirstContactDate = collectorFirstContactDate;
+    // S299 guard — a SENT letter's recipient identity is immutable (S74.5
+    // spirit; the E2E "Test" clobber re-addressed a mailed letter's metadata).
+    // On a sent child, collector fields fill only when MISSING; drafts keep
+    // today's overwrite semantics.
+    const childSent = newRow?.sent_at != null;
+    if (collector && (!childSent || baseMeta.collector == null)) merged.collector = collector;
+    if (
+      collectorFirstContactDate &&
+      (!childSent || baseMeta.collectorFirstContactDate == null)
+    )
+      merged.collectorFirstContactDate = collectorFirstContactDate;
     if (denialNoticeDate) merged.denialNoticeDate = denialNoticeDate;
     if (appealExhausted) merged.appealExhausted = appealExhausted;
     await userScoped(supabase, user.id)

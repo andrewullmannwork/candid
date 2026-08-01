@@ -42,6 +42,7 @@ import {
   type CoverageDiff,
 } from "@/lib/disputes/coverage-snapshot";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { loadCaseTimelinePayload } from "@/lib/case/load-case-timeline";
 import {
   evaluateDeadline,
   readDeadlineConfig,
@@ -189,6 +190,14 @@ export async function GET(
       createdAt: (r.created_at as string | null) ?? null,
     }));
   }
+
+  // S299 phase 2a — the dispute GET joins the one-derivation contract (agenda
+  // §1): the letter page reads the SAME projection the claim rail renders
+  // (breadcrumb step identity, insurer display names, wait state). Null when
+  // case_rail_v1 is OFF → byte-identical payload.
+  const caseTimeline = dispute.claim_id
+    ? await loadCaseTimelinePayload(supabase, user.id, dispute.claim_id as string)
+    : null;
 
   // S74.5 D16 — sent_letter immutability + drift detection.
   // sent_at non-null means user clicked Mark-as-Sent; the sent_letter
@@ -787,6 +796,20 @@ export async function GET(
         | undefined) ?? {}),
     // Unified case timeline (S286) — the claim's dispute ladder (see above).
     siblings,
+    // S299 phase 2a — the shared projection (absent when case_rail_v1 OFF).
+    ...(caseTimeline ? { caseTimeline } : {}),
+    // S299 phase 2a — the letter's OWN collector (metadata), so the Sent-to
+    // cell reads the LETTER, not claim/track defaults (§5 banked defect #1).
+    collector:
+      (((dispute.metadata as Record<string, unknown> | null)?.collector as
+        | { name?: string; address?: string | null }
+        | undefined) ?? null),
+    // §0.9 rule 4 (S299 phase 2a) — the letter version stack (labels + dates
+    // + bodies; bodies are small and few). The unsent label is §0.9b-approved.
+    sentVersions:
+      (((dispute.metadata as Record<string, unknown> | null)?.sentVersions as
+        | Array<{ body: string; sentAt: string; unsentAt?: string }>
+        | undefined) ?? []),
     // S74.5 D16 — if sent_at is set, serve the immutable sent_letter as the
     // letter content; UI surfaces drift banner via driftState when current
     // findings differ. Block A — null when the data-trust HARD STOP fires (flag
